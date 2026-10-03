@@ -1,6 +1,8 @@
 ---
 title: "Hardware and FFI"
 description: "unsafe boundaries, from-native imports, C-ABI export, files, and process control."
+section: "Memory, Systems, and Concurrency"
+icon: "Cpu"
 ---
 
 # Hardware and FFI

@@ -1,6 +1,8 @@
 ---
 title: "Bindings and Scope"
 description: "let and const bindings, lexical scopes, shadowing, tuples, and destructuring."
+section: "Syntax and Primitives"
+icon: "KeyRound"
 ---
 
 # Bindings and Scope

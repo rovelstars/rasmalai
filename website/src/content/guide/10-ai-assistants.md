@@ -1,6 +1,7 @@
 ---
 title: "AI Assistants & MCP"
 description: "Connect Claude, Codex, Cursor, Pi, omp, opencode, Hermes, Cline, and Goose to Rasmalai through rnx mcp."
+icon: "Terminal"
 ---
 
 # AI Assistants & MCP

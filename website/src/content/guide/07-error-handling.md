@@ -1,6 +1,7 @@
 ---
 title: "Error Handling"
 description: "Absence with null and T?, Result, throws and try/catch, and the null-safe operators."
+icon: "TriangleAlert"
 ---
 
 # Error Handling

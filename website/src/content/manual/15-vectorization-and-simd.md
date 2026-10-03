@@ -1,6 +1,8 @@
 ---
 title: "Vectorization and SIMD"
 description: "Vec4f hardware lane mapping, lane arithmetic, and horizontal reductions."
+section: "Memory, Systems, and Concurrency"
+icon: "Timer"
 ---
 
 # Vectorization and SIMD

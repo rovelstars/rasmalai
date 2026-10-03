@@ -1,6 +1,7 @@
 ---
 title: "Data Structures"
 description: "Structs, classes, records, and enums."
+icon: "Boxes"
 ---
 
 # Data Structures

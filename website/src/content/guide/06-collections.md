@@ -1,6 +1,7 @@
 ---
 title: "Collections"
 description: "Arrays, functional transforms, Map, and Set."
+icon: "Type"
 ---
 
 # Collections

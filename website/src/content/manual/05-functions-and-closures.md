@@ -1,6 +1,8 @@
 ---
 title: "Functions and Closures"
 description: "Signatures, defaults, generics, lambdas, methods, throws, and failure channels."
+section: "Syntax and Primitives"
+icon: "Braces"
 ---
 
 # Functions and Closures

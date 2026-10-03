@@ -79,6 +79,9 @@ export interface DocMeta {
 	description: string;
 	track?: string;
 	sourceLang?: string;
+	section?: string;
+	order?: string;
+	icon?: string;
 }
 
 export function parseFrontmatter(src: string): { meta: DocMeta; body: string } {
@@ -94,7 +97,7 @@ export function parseFrontmatter(src: string): { meta: DocMeta; body: string } {
 			.slice(colon + 1)
 			.trim()
 			.replace(/^"(.*)"$/, '$1');
-		if (key === 'title' || key === 'description' || key === 'track' || key === 'sourceLang') {
+		if (key === 'title' || key === 'description' || key === 'track' || key === 'sourceLang' || key === 'section' || key === 'order' || key === 'icon') {
 			(meta as unknown as Record<string, string>)[key] = value;
 		}
 	}

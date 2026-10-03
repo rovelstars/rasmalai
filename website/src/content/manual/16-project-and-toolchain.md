@@ -1,6 +1,8 @@
 ---
 title: "Project and Toolchain"
 description: "Project.config spec, modules, SemVer deps, testing, docs, and the rnx CLI."
+section: "Toolchain and Diagnostics"
+icon: "Terminal"
 ---
 
 # Project and Toolchain

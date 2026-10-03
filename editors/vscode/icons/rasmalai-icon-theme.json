@@ -1,0 +1,10 @@
+{
+	"iconDefinitions": {
+		"_f_rnx": {
+			"iconPath": "./rasmalai.svg"
+		}
+	},
+	"fileExtensions": {
+		"rnx": "_f_rnx"
+	}
+}

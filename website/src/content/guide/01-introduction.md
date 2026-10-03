@@ -1,6 +1,7 @@
 ---
-title: "Introduction: A Language That Frees On Time"
+title: "Introduction"
 description: "What Rasmalai is, how to install the toolchain, and your first running program."
+icon: "Rocket"
 ---
 
 # Introduction: A Language That Frees On Time

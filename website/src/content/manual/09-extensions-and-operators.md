@@ -1,6 +1,8 @@
 ---
 title: "Extensions and Operators"
 description: "Extension blocks, static receiver desugaring, Iterable, and operator hooks."
+section: "Type System and Object Model"
+icon: "Zap"
 ---
 
 # Extensions and Operators

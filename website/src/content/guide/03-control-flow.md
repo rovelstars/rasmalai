@@ -1,6 +1,7 @@
 ---
 title: "Control Flow"
 description: "Branches, loops, switch patterns, and defer."
+icon: "Split"
 ---
 
 # Control Flow

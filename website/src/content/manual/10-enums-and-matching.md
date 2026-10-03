@@ -1,6 +1,8 @@
 ---
 title: "Enums and Matching"
 description: "Tagged unions, payload binding, and exhaustive pattern matching."
+section: "Type System and Object Model"
+icon: "Dices"
 ---
 
 # Enums and Matching

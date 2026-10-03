@@ -1,6 +1,7 @@
 ---
 title: "Editor Setup"
 description: "Syntax highlighting and rnx lsp in VS Code, Zed, Helix, and Neovim, through rnx setup or by hand."
+icon: "Monitor"
 ---
 
 # Editor Setup
@@ -79,6 +80,24 @@ Zed has no registry package for Rasmalai, so setup is a dev extension. The comma
 ```
 
 3. Confirm `rnx` is on `PATH`, restart Zed, and open a `.rnx` file.
+
+## File icons
+
+The canonical `.rnx` artwork is the `rnx` glyph kept next to the
+website logo (`website/static/favicon.svg`, copied for packaging into
+`editors/vscode/icons/rasmalai.svg`). Icon packs that do not know
+Rasmalai fall back as follows:
+
+- **VS Code**: the Rasmalai extension ships a minimal `Rasmalai Icons`
+  file-icon theme covering `.rnx` only. Pick it in
+  File → Preferences → File Icon Theme when your main theme shows a
+  generic icon. It is a fallback, not a full theme: it styles `.rnx`
+  files and leaves everything else to VS Code defaults.
+- **Zed**: extensions cannot ship custom file icons — Zed renders its
+  built-in generic icon and there is nothing to configure. Upstream
+  icon support is the only fix; the canonical SVG above is what to
+  point it at.
+- **Helix / Neovim**: terminal UIs have no file icons to theme.
 
 ## <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/helix.svg" alt="Helix" width="20" height="20" class="harness-logo harness-inv" /> Helix
 
