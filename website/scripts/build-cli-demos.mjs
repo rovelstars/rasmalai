@@ -1,5 +1,5 @@
 import { execFileSync, execSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,13 @@ function rnxBin() {
 	} catch {
 		throw new Error('cargo build failed');
 	}
-	return join(compilerDir, 'target', 'debug', 'rnx');
+	const candidates = [
+		join(compilerDir, '..', 'target', 'debug', 'rnx'),
+		join(compilerDir, 'target', 'debug', 'rnx')
+	];
+	const hit = candidates.find((p) => existsSync(p));
+	if (!hit) throw new Error('rnx binary not found in workspace or compiler target dir');
+	return hit;
 }
 
 function makeFixture(withError) {
