@@ -1,6 +1,8 @@
 ---
 title: "Structs and Records"
 description: "Value types: struct layout and lifecycle, positional records, anonymous records."
+section: "Type System and Object Model"
+icon: "Boxes"
 ---
 
 # Structs and Records

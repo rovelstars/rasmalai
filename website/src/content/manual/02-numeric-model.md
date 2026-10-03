@@ -1,6 +1,8 @@
 ---
 title: "Numeric Model"
 description: "Unified 64-bit semantics: integers, floats, bitwise ops, and conversions."
+section: "Syntax and Primitives"
+icon: "Sigma"
 ---
 
 # Numeric Model

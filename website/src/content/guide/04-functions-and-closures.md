@@ -1,6 +1,7 @@
 ---
 title: "Functions and Closures"
 description: "Signatures, arrow lambdas, default arguments, and throwing functions."
+icon: "Braces"
 ---
 
 # Functions and Closures

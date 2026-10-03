@@ -1,6 +1,8 @@
 ---
 title: "Lexicon and Structure"
 description: "Source encoding, comments, whitespace, statements, identifiers, and reserved keywords."
+section: "Syntax and Primitives"
+icon: "Type"
 ---
 
 # Lexicon and Structure

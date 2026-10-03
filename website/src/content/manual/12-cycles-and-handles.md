@@ -1,6 +1,8 @@
 ---
 title: "Cycles and Handles"
 description: "GenRef weak handles, the byId registry pattern, decay, and intentional cycles."
+section: "Memory, Systems, and Concurrency"
+icon: "Recycle"
 ---
 
 # Cycles and Handles

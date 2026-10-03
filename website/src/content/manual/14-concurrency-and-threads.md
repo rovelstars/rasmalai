@@ -1,6 +1,8 @@
 ---
 title: "Concurrency and Threads"
 description: "Threadpool architecture, barriers, synchronization, and lock-free Atomics."
+section: "Memory, Systems, and Concurrency"
+icon: "Activity"
 ---
 
 # Concurrency and Threads

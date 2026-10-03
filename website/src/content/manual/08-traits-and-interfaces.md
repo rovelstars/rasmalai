@@ -1,6 +1,8 @@
 ---
 title: "Traits and Interfaces"
 description: "Trait composition with with, interface dispatch, is and typeOf."
+section: "Type System and Object Model"
+icon: "Library"
 ---
 
 # Traits and Interfaces

@@ -1,6 +1,8 @@
 ---
 title: "Control Flow"
 description: "if and else, loops, switch matching, defer, and guard — with exact body rules."
+section: "Syntax and Primitives"
+icon: "Split"
 ---
 
 # Control Flow

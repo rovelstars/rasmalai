@@ -1,6 +1,8 @@
 ---
 title: "Classes and Objects"
 description: "Heap reference types under ARC: construction, inheritance, methods, binding."
+section: "Type System and Object Model"
+icon: "Shapes"
 ---
 
 # Classes and Objects

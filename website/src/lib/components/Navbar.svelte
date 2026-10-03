@@ -56,8 +56,8 @@
 	class="sticky top-0 z-40 border-b border-aura-border bg-aura-bg/90 backdrop-blur"
 >
 	<nav class="mx-auto flex h-16 max-w-7xl items-center gap-4 px-4">
-		<a href="/" class="flex shrink-0 items-baseline gap-2">
-			<span class="font-mono font-bold text-aura-purple">[rnx]</span>
+		<a href="/" class="flex shrink-0 items-center gap-2" aria-label="Rasmalai home">
+			<img src="/favicon.svg" alt="" class="h-9 w-9" />
 			<span class="font-semibold tracking-tight">Rasmalai</span>
 		</a>
 		<div class="hidden flex-1 items-center justify-center gap-4 text-sm lg:flex lg:gap-7">

@@ -1,6 +1,8 @@
 ---
 title: "Memory and ARC"
 description: "Deterministic ARC: scopes, stack vs heap, retains, releases, and write-dominance."
+section: "Memory, Systems, and Concurrency"
+icon: "HardDrive"
 ---
 
 # Memory and ARC

@@ -1,6 +1,8 @@
 ---
 title: "Diagnostics Directory"
 description: "Every compiler diagnostic code: causes, examples, and resolution patterns."
+section: "Toolchain and Diagnostics"
+icon: "Stethoscope"
 ---
 
 # Diagnostics Directory

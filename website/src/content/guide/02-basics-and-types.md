@@ -1,6 +1,7 @@
 ---
 title: "Basics and Types"
 description: "Bindings, unified 64-bit numbers, strings, and operators."
+icon: "Hash"
 ---
 
 # Basics and Types

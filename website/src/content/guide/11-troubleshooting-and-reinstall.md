@@ -1,6 +1,7 @@
 ---
 title: "Troubleshooting & Reinstall"
 description: "Read a diagnostic, fix the common breakages, and reinstall cleanly on Linux, macOS, and Windows."
+icon: "Wrench"
 ---
 
 # Troubleshooting & Reinstall

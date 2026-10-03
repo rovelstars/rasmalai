@@ -1,6 +1,7 @@
 ---
 title: "Modules and Packages"
 description: "ESM imports, the embedded standard library, and the project manifest."
+icon: "Library"
 ---
 
 # Modules and Packages

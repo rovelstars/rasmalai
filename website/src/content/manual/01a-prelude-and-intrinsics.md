@@ -1,6 +1,8 @@
 ---
 title: "Prelude and Intrinsics"
 description: "The implicit environment: resolution order, root intrinsics, and core types."
+section: "Syntax and Primitives"
+icon: "Sparkles"
 ---
 
 # Prelude and Intrinsics
