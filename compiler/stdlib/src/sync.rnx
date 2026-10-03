@@ -1,0 +1,830 @@
+//! Atomics, channels, locks, and barriers for threads.
+//!
+//! Every type here is a thin handle over a number. A handle carries nothing
+//! but a registry id, so passing a handle between threads shares the same
+//! underlying cell, queue, or lock, and two handles built from the same id
+//! always name the same object. The registries are separate per type: an
+//! `AtomicInt` and a `Mutex` that both use id 5 are unrelated objects.
+//!
+//! That sharing rule is the whole design. A handle created in one thread with
+//! `byId(5)` reaches the same object as a handle created in another thread
+//! with `byId(5)`, without any registration step, because both look the id up
+//! in one process-wide table. Pick ids that no other code in the program uses.
+//!
+//! Values start at their zero state the first time an id is touched, and the
+//! entry then lives for the rest of the run. There is no way to unregister an
+//! id, so reuse an id only when you mean to reopen the same object.
+//!
+//! Blocking calls park the calling thread until the condition is met.
+//! `Channel.recv`, `Mutex.lock`, `RwLock.readLock`, `RwLock.writeLock`,
+//! `Condvar.wait`, `Barrier.wait`, and `Thread.join` all block. Each has a
+//! non-blocking or bounded partner where one makes sense, and a
+//! non-blocking call reports absence in its return value rather than by
+//! throwing, so polling loops stay easy to write.
+//!
+//! Locks are not reentrant and not owned. A lock does not track which thread
+//! holds it, so unlocking a lock you do not hold aborts the program instead of
+//! returning an error. `Thread.join` is the one call here that reports failure
+//! as a value.
+//!
+//! ```rnx
+//! import { AtomicInt, Channel } from "@std/sync";
+//!
+//! let counter = AtomicInt.byId(1);
+//! counter.set(0);
+//!
+//! let jobs = Channel.byId(2);
+//! jobs.send("first");
+//! jobs.send("second");
+//!
+//! print(counter.fetchAdd(5), counter.get());
+//! print("queued:", jobs.len(), "took:", jobs.tryRecv());
+//! ```
+import { Result } from "@std/prelude";
+
+/**
+* A 64-bit integer cell shared through the registry, with atomic access.
+*
+* The cell starts at 0 the first time its id is used. Every operation is
+* sequentially consistent, so a value stored with `set` is visible to the
+* next `get` from any thread, and `fetchAdd` and `cas` read-modify-write
+* the cell without a lock in between.
+*
+* Reach for `fetchAdd` to build counters and for `cas` when a thread must
+* only write if nobody else moved the value first. Ordinary non-atomic
+* fields of an object are not covered by this: only the cell itself is
+* atomic.
+*
+* Handles share by id, so a thread that only knows the number reaches the
+* same cell with `AtomicInt.byId(id)`.
+*
+* ```rnx
+* import { AtomicInt } from "@std/sync";
+*
+* let a = AtomicInt.byId(11);
+* a.set(41);
+* print(a.get() + 1);
+* ```
+*/
+class AtomicInt {
+    /** Registry id shared across threads. Handles built from the same id name the same cell. */
+    let id: Int;
+
+    init(id: Int) {
+        this.id = id;
+    }
+
+    /**
+    * Open the shared cell registered under id, creating it at 0 if this is
+    * the first use of that id.
+    * @param id registry slot shared with other threads. Pick an id no other
+    * code in the program uses; a number reused by a different primitive
+    * names a different object.
+    * @returns handle to the cell.
+    */
+    static byId(id: Int): AtomicInt {
+        return new AtomicInt(id);
+    }
+
+    /**
+    * Read the cell.
+    * @returns current value, as stored by the most recent `set` or atomic
+    * update that this thread can observe.
+    * @example
+    * import { AtomicInt } from "@std/sync";
+    *
+    * let a = AtomicInt.byId(11);
+    * a.set(41);
+    * print(a.get() + 1);
+    */
+    get(): Int {
+        return __rnx_sync_atomic_get(this.id);
+    }
+
+    /**
+    * Store a new value, replacing whatever was there.
+    * @param val value to store. Written in full, so a reader never sees a
+    * half-updated value.
+    */
+    set(val: Int) {
+        __rnx_sync_atomic_set(this.id, val);
+    }
+
+    /**
+    * Add delta to the cell and report the value that was there first.
+    *
+    * The read and the write are one indivisible step, so several threads
+    * can add to the same cell without losing updates. This is the building
+    * block for counters, unique id handouts, and work queues.
+    *
+    * @param delta amount to add. Negative values subtract.
+    * @returns value before the add.
+    * @example
+    * import { AtomicInt } from "@std/sync";
+    *
+    * let a = AtomicInt.byId(1);
+    * a.set(10);
+    * print(a.fetchAdd(5), a.get());
+    */
+    fetchAdd(delta: Int): Int {
+        return __rnx_sync_atomic_fetch_add(this.id, delta);
+    }
+
+    /**
+    * Compare-and-swap: store newVal only when the cell holds expected.
+    *
+    * The comparison and the store are one indivisible step, so the call
+    * either swaps or reports that another thread got there first. When it
+    * returns false the cell is left alone, so read it again to see what the
+    * current value is.
+    *
+    * @param expected value that must be present for the swap to happen.
+    * @param newVal value to store on match.
+    * @returns true when the swap happened.
+    * @example
+    * import { AtomicInt } from "@std/sync";
+    *
+    * let slot = AtomicInt.byId(8);
+    * slot.set(1);
+    * print(slot.cas(1, 2), slot.get());
+    * print(slot.cas(1, 3), slot.get());
+    */
+    cas(expected: Int, newVal: Int): Bool {
+        return __rnx_sync_atomic_cas(this.id, expected, newVal);
+    }
+}
+
+/**
+* An unbounded first-in-first-out queue shared through the registry.
+*
+* Any thread holding a handle for an id can enqueue and dequeue on the same
+* queue. Values arrive in the order they were sent, and the queue grows to
+* fit whatever is written to it, so a fast producer can outrun a slow
+* consumer and use memory until it is drained.
+*
+* `send` takes an `Any`, and `recv` hands the value back as an `Any`, so
+* narrow the result with an `is` check before you use it. Heap payloads
+* (strings, arrays, objects) are retained for the receiver and released
+* when it drops them, so a value sent across threads stays valid.
+*
+* Queued values are tracked per originating heap, so a value sent by one
+* thread is delivered to whichever receiver can take ownership of it. A
+* queue drained from a different heap than the one that filled it releases
+* the leftovers instead of handing them out.
+*
+* `close` releases whatever is queued and leaves the id registered, so a
+* later `send` on the same handle still works. It does not wake a thread
+* already parked in `recv`: a blocked consumer stays blocked until a value
+* arrives, so treat `close` as a way to free buffered values rather than as
+* a shutdown signal.
+*
+* ```rnx
+* import { Channel } from "@std/sync";
+*
+* let jobs = Channel.byId(9);
+* jobs.send(7);
+* jobs.send(8);
+* print("queued:", jobs.len());
+* print("took:", jobs.tryRecv());
+* print("next:", jobs.recv());
+* print("empty:", jobs.tryRecv());
+* ```
+*/
+class Channel {
+    /** Registry id shared across threads. Handles built from the same id name the same queue. */
+    let id: Int;
+
+    init(id: Int) {
+        this.id = id;
+    }
+
+    /**
+    * Open the shared queue registered under id, creating it empty on first
+    * use.
+    * @param id registry slot shared with other threads. Pick an id no other
+    * code in the program uses; a number reused by a different primitive
+    * names a different object.
+    * @returns handle to the queue.
+    */
+    static byId(id: Int): Channel {
+        return new Channel(id);
+    }
+
+    /**
+    * Enqueue a value, retaining heap payloads for the receiver.
+    *
+    * The call never blocks, whatever the queue length. Values come out in
+    * the order they went in.
+    *
+    * @param val Int, Float, String, Array, or object. A heap payload is
+    * retained on the way in, so the receiver owns it after `recv`.
+    * @example
+    * import { Channel } from "@std/sync";
+    *
+    * let jobs = Channel.byId(9);
+    * jobs.send(7);
+    * jobs.send(8);
+    * print("queued:", jobs.len());
+    * print("took:", jobs.tryRecv());
+    */
+    send(val: Any): Void {
+        __rnx_sync_channel_send(this.id, val);
+    }
+
+    /**
+    * Dequeue the oldest value, blocking until one arrives.
+    *
+    * Parks the calling thread while the queue is empty. `close` does not
+    * release it, so a consumer waiting here needs a `send` from elsewhere,
+    * or a `Condvar` with a timeout to bound the wait.
+    *
+    * @returns the value as Any; cast before use.
+    * @example
+    * import { Channel, Thread } from "@std/sync";
+    *
+    * fn produce(): Int {
+    *     let inbox = Channel.byId(3);
+    *     inbox.send("payload");
+    *     return 1;
+    * }
+    *
+    * let inbox = Channel.byId(3);
+    * let worker = Thread.spawn(produce);
+    * print("received:", inbox.recv());
+    * print("worker done:", worker.join().unwrap());
+    */
+    recv(): Any {
+        return __rnx_sync_channel_recv(this.id);
+    }
+
+    /**
+    * Dequeue the oldest value only if one is already queued.
+    *
+    * The polling counterpart to `recv`: it reports absence in the return
+    * value instead of parking, so a loop over it never blocks.
+    *
+    * @returns the value as Any when one was ready, or -1 when the queue was
+    * empty. Test against -1, not against a boolean, and narrow a real value
+    * with an `is` check before using it.
+    * @example
+    * import { Channel } from "@std/sync";
+    *
+    * let jobs = Channel.byId(9);
+    * jobs.send(7);
+    * print(jobs.tryRecv(), jobs.tryRecv());
+    */
+    tryRecv(): Int {
+        return __rnx_sync_channel_try_recv(this.id);
+    }
+
+    /**
+    * Queued message count.
+    * @returns number of waiting messages. Advisory only: another thread may
+    * enqueue or dequeue right after the read, so do not build a decision on
+    * it that `tryRecv` has to undo.
+    */
+    len(): Int {
+        return __rnx_sync_channel_len(this.id);
+    }
+
+    /**
+    * Drop the queue, releasing anything still queued.
+    *
+    * Queued heap payloads are freed here. The id stays registered and a
+    * later `send` on the same handle works again, so this releases
+    * buffered values without unregistering the queue. A thread parked in
+    * `recv` is not woken.
+    */
+    close(): Void {
+        __rnx_sync_channel_drop(this.id);
+    }
+}
+
+/**
+* Mutual exclusion lock shared through the registry.
+*
+* One thread holds the lock at a time. The others park in `lock` until it
+* is released, which is what makes a read-modify-write on shared state safe.
+*
+* The lock is not reentrant and carries no owner. A thread that already
+* holds it and calls `lock` again parks forever, and `unlock` on a lock
+* nobody holds aborts the program. Every `lock` needs exactly one matching
+* `unlock` on each path out of the critical section, including error paths.
+*
+* For waiting on a condition rather than for the lock itself, pair this with
+* `Condvar`, which releases the mutex while a thread sleeps.
+*
+* ```rnx
+* import { Mutex } from "@std/sync";
+*
+* let m = Mutex.byId(31);
+* m.lock();
+* m.unlock();
+* print(m.tryLock());
+* m.unlock();
+* ```
+*/
+class Mutex {
+    /** Registry id shared across threads. Handles built from the same id name the same lock. */
+    let id: Int;
+
+    init(id: Int) {
+        this.id = id;
+    }
+
+    /**
+    * Open the shared mutex registered under id, unlocked on first use.
+    * @param id registry slot shared with other threads. Pick an id no other
+    * code in the program uses; a number reused by a different primitive
+    * names a different object.
+    * @returns handle to the mutex.
+    */
+    static byId(id: Int): Mutex {
+        return new Mutex(id);
+    }
+
+    /**
+    * Acquire the lock, blocking until it is free.
+    *
+    * Parks the calling thread while another thread holds the lock. Deadlocks
+    * if the same thread already holds it, or if two threads take two locks
+    * in opposite orders.
+    *
+    * @example
+    * import { Mutex } from "@std/sync";
+    *
+    * let m = Mutex.byId(31);
+    * m.lock();
+    * m.unlock();
+    * print(m.tryLock());
+    * m.unlock();
+    */
+    lock(): Void {
+        __rnx_mutex_lock(this.id);
+    }
+
+    /**
+    * Release a held mutex and wake one thread waiting in `lock`.
+    *
+    * Aborts the program when the lock is not held, so pair every `lock`
+    * with exactly one `unlock`.
+    */
+    unlock(): Void {
+        __rnx_mutex_unlock(this.id);
+    }
+
+    /**
+    * Acquire the lock only when it is free, never blocking.
+    *
+    * The polling counterpart to `lock`, for code that would rather give up
+    * a lock than wait for it. It reports the outcome in the return value,
+    * so a failed attempt leaves the lock untouched.
+    *
+    * @returns true when the lock was taken by this call, false when it was
+    * already held. Release the lock only when this returns true.
+    * @example
+    * import { Mutex } from "@std/sync";
+    *
+    * let a = Mutex.byId(31);
+    * let b = Mutex.byId(31);
+    * a.lock();
+    * print(b.tryLock());
+    * a.unlock();
+    */
+    tryLock(): Bool {
+        return __rnx_mutex_try_lock(this.id);
+    }
+}
+
+/**
+* Reader-writer lock shared through the registry.
+*
+* Many readers may hold the lock at once, or one writer may hold it
+* exclusively, never both. Use it when a shared structure is read far more
+* often than it changes; a plain `Mutex` is simpler and just as cheap when
+* the critical section is short.
+*
+* `writeLock` waits for the last reader as well as for any writer, so keep
+* read sections short or a writer can sit behind a stream of them. There is
+* no way to upgrade a held read lock to a write lock: the thread would wait
+* for its own read access to end.
+*
+* The lock carries no owner and is not reentrant. `readUnlock` with no
+* reader and `writeUnlock` with no writer both abort the program.
+*
+* ```rnx
+* import { RwLock } from "@std/sync";
+*
+* let r = RwLock.byId(41);
+* r.writeLock();
+* print("read while writer:", r.tryReadLock());
+* print("second writer:", r.tryWriteLock());
+* r.writeUnlock();
+* print("read when free:", r.tryReadLock());
+* r.readUnlock();
+* ```
+*/
+class RwLock {
+    /** Registry id shared across threads. Handles built from the same id name the same lock. */
+    let id: Int;
+
+    init(id: Int) {
+        this.id = id;
+    }
+
+    /**
+    * Open the shared rwlock registered under id, fully released on first
+    * use.
+    * @param id registry slot shared with other threads. Pick an id no other
+    * code in the program uses; a number reused by a different primitive
+    * names a different object.
+    * @returns handle to the rwlock.
+    */
+    static byId(id: Int): RwLock {
+        return new RwLock(id);
+    }
+
+    /**
+    * Acquire shared read access, blocking only while a writer holds the
+    * lock.
+    *
+    * Any number of readers hold the lock at the same time, so readers never
+    * wait for each other. Must be released with one `readUnlock`.
+    */
+    readLock(): Void {
+        __rnx_rwlock_read_lock(this.id);
+    }
+
+    /**
+    * Release shared read access.
+    *
+    * Wakes a waiting writer once the last reader is out. Aborts the program
+    * when no read access is held.
+    */
+    readUnlock(): Void {
+        __rnx_rwlock_read_unlock(this.id);
+    }
+
+    /**
+    * Acquire exclusive write access, blocking until no reader and no
+    * writer hold the lock.
+    *
+    * Parks the calling thread for as long as any reader is active. Must be
+    * released with one `writeUnlock`.
+    */
+    writeLock(): Void {
+        __rnx_rwlock_write_lock(this.id);
+    }
+
+    /**
+    * Release exclusive write access and wake everyone waiting on the lock.
+    *
+    * Aborts the program when write access is not held.
+    */
+    writeUnlock(): Void {
+        __rnx_rwlock_write_unlock(this.id);
+    }
+
+    /**
+    * Take read access only when no writer is active, never blocking.
+    *
+    * Succeeds while readers hold the lock, since readers do not exclude
+    * each other. The polling counterpart to `readLock`.
+    *
+    * @returns true when read access was taken by this call. Release it with
+    * `readUnlock` only when this returns true.
+    * @example
+    * import { RwLock } from "@std/sync";
+    *
+    * let r = RwLock.byId(41);
+    * r.writeLock();
+    * print(r.tryReadLock());
+    * r.writeUnlock();
+    */
+    tryReadLock(): Bool {
+        return __rnx_rwlock_try_read_lock(this.id);
+    }
+
+    /**
+    * Take write access only when the lock is completely free, never
+    * blocking.
+    *
+    * Fails while any reader or writer holds the lock. The polling
+    * counterpart to `writeLock`.
+    *
+    * @returns true when write access was taken by this call. Release it with
+    * `writeUnlock` only when this returns true.
+    * @example
+    * import { RwLock } from "@std/sync";
+    *
+    * let r = RwLock.byId(41);
+    * print(r.tryWriteLock());
+    * r.writeUnlock();
+    */
+    tryWriteLock(): Bool {
+        return __rnx_rwlock_try_write_lock(this.id);
+    }
+}
+
+/**
+* Condition variable for wait/notify coordination, shared through the
+* registry.
+*
+* A condvar carries no state of its own. It only parks and wakes threads, so
+* the thing being waited on has to live somewhere else, normally behind the
+* `Mutex` handed to `wait`. The usual shape is a loop: take the mutex, test
+* the condition, and call `wait` while the test still says "not ready".
+*
+* `wait` and `waitTimeout` must be called with that mutex held. The call
+* releases the mutex while the thread sleeps and takes it again before
+* returning, so no other thread can slip in between the test and the sleep.
+* Calling either without holding the mutex aborts the program.
+*
+* ```rnx
+* import { Condvar, Mutex } from "@std/sync";
+*
+* let m = Mutex.byId(51);
+* let c = Condvar.byId(51);
+* m.lock();
+* print("woken:", c.waitTimeout(m, 30));
+* m.unlock();
+* c.notifyAll();
+* print("notify with no waiters is a no-op");
+* ```
+*/
+class Condvar {
+    /** Registry id shared across threads. Handles built from the same id name the same condvar. */
+    let id: Int;
+
+    init(id: Int) {
+        this.id = id;
+    }
+
+    /**
+    * Open the shared condvar registered under id, with no waiters on first
+    * use.
+    * @param id registry slot shared with other threads. Pick an id no other
+    * code in the program uses; a number reused by a different primitive
+    * names a different object.
+    * @returns handle to the condvar.
+    */
+    static byId(id: Int): Condvar {
+        return new Condvar(id);
+    }
+
+    /**
+    * Sleep until notified, releasing the mutex while parked.
+    *
+    * The mutex is released before the thread sleeps and re-taken before
+    * this returns, so the caller still holds it on the way out. A notify
+    * that arrives before the sleep is missed, which is why the condition
+    * has to be re-tested in a loop after waking.
+    *
+    * @param m mutex held by the caller. The call aborts the program when it
+    * is not held.
+    * @example
+    * import { Condvar, Mutex } from "@std/sync";
+    *
+    * let m = Mutex.byId(51);
+    * let c = Condvar.byId(51);
+    * m.lock();
+    * c.notifyAll();
+    * m.unlock();
+    */
+    wait(m: Mutex): Void {
+        __rnx_condvar_wait(this.id, m.id);
+    }
+
+    /**
+    * Sleep until notified or the timeout elapses, whichever comes first.
+    *
+    * Releases and re-takes the mutex the same way `wait` does, so a
+    * notifying thread can make progress while this thread sleeps. Useful for
+    * a poll loop that must not block forever, and for giving up on a thread
+    * that never arrives.
+    *
+    * @param m mutex held by the caller. The call aborts the program when it
+    * is not held.
+    * @param millis maximum park time. A negative value is treated as 0.
+    * @returns true when woken by a notify, false on timeout.
+    * @example
+    * import { Condvar, Mutex } from "@std/sync";
+    *
+    * let m = Mutex.byId(51);
+    * let c = Condvar.byId(51);
+    * m.lock();
+    * print("woken:", c.waitTimeout(m, 30));
+    * m.unlock();
+    */
+    waitTimeout(m: Mutex, millis: Int): Bool {
+        return __rnx_condvar_wait_timeout(this.id, m.id, millis);
+    }
+
+    /**
+    * Wake one parked waiter, if any.
+    *
+    * Does nothing when no thread is waiting, so a notify sent too early is
+    * lost. The woken thread holds its mutex again by the time `wait`
+    * returns.
+    */
+    notifyOne(): Void {
+        __rnx_condvar_notify_one(this.id);
+    }
+
+    /**
+    * Wake every parked waiter, if any.
+    *
+    * Does nothing when no thread is waiting. Use it when several waiters
+    * share a condition and a change releases all of them at once.
+    * @example
+    * import { Condvar, Mutex } from "@std/sync";
+    *
+    * let m = Mutex.byId(51);
+    * let c = Condvar.byId(51);
+    * m.lock();
+    * c.notifyAll();
+    * m.unlock();
+    */
+    notifyAll(): Void {
+        __rnx_condvar_notify_all(this.id);
+    }
+}
+
+/**
+* Rendezvous gate: all count parties block in `wait` until the count-th
+* party arrives, then all are released and the gate resets for the next
+* generation. `wait` returns true for exactly one leader per generation.
+* Construct with `byId(id, count)` where count must be greater than 0.
+*
+* Use it when threads have to reach the same point before any of them can
+* continue, such as the end of a parallel phase. The gate resets itself, so
+* one handle serves every generation without being rebuilt.
+*
+* Because it is a rendezvous, every party must actually arrive. A thread
+* that exits early leaves the others parked forever, and a single thread
+* calling `wait` on a barrier of two or more never returns. A count of 1
+* returns true on every call and never blocks, which is a convenient way to
+* exercise the gate.
+*
+* ```rnx
+* import { Barrier } from "@std/sync";
+*
+* let solo = Barrier.byId(61, 1);
+* print("first generation:", solo.wait());
+* print("gate resets:", solo.wait());
+* let pair = Barrier.byId(62, 2);
+* print("two parties required:", pair.count);
+* ```
+*/
+class Barrier {
+    /** Registry id shared across threads. Handles built from the same id name the same gate. */
+    let id: Int;
+    /** Parties required to trip the gate. */
+    let count: Int;
+
+    init(id: Int, count: Int) {
+        this.id = id;
+        this.count = count;
+    }
+
+    /**
+    * Open the shared barrier registered under id.
+    *
+    * The first party to arrive sets the trip threshold, so every thread
+    * must build its handle with the same count. The gate is reusable: each
+    * trip resets it for the next generation.
+    *
+    * @param id registry slot shared with other threads. Pick an id no other
+    * code in the program uses; a number reused by a different primitive
+    * names a different object.
+    * @param count parties required to trip the gate, greater than 0. Every
+    * handle for this id should pass the same number.
+    * @returns handle to the barrier.
+    * @throws when count is 0 or negative, with a message naming the bad
+    * value. The throw runs in a function that is not declared `throws`, so
+    * an enclosing `try` does not intercept it: the program stops with
+    * `Uncaught exception` and exit status 1. Validate the count before
+    * calling when it comes from outside the program.
+    * @example
+    * import { Barrier } from "@std/sync";
+    *
+    * let solo = Barrier.byId(61, 1);
+    * print("first generation:", solo.wait());
+    * print("gate resets:", solo.wait());
+    */
+    static byId(id: Int, count: Int): Barrier {
+        if count <= 0 {
+            throw "Barrier parties must be greater than 0, got " + count.toString();
+        }
+        return new Barrier(id, count);
+    }
+
+    /**
+    * Block until count parties arrive.
+    *
+    * All count parties park; the count-th arrival releases the whole
+    * generation at once, resets the gate, and returns true for exactly one
+    * leader (false for the rest). The leader is whichever thread arrived
+    * last, so use the return value to elect one thread for per-generation
+    * work such as merging results.
+    *
+    * @returns true for the single party whose arrival tripped the gate,
+    * false for the others. Every party sees the same generation release.
+    * @example
+    * import { Barrier } from "@std/sync";
+    *
+    * let solo = Barrier.byId(61, 1);
+    * print("leader:", solo.wait());
+    */
+    wait(): Bool {
+        return __rnx_barrier_wait(this.id, this.count);
+    }
+}
+
+/**
+* Owned handle to a spawned thread. `Thread.spawn` returns this nominal
+* type so handles can live in collections such as `Array<Thread>`.
+* Handles created before this type existed (bare `Thread.spawn` without
+* importing `@std/sync`) still work as raw ids with the same `join()`.
+*
+* `spawn` is a compiler intrinsic rather than a method here: it takes a
+* zero-argument function that returns an `Int`, `Bool`, `Float`, `String`,
+* or null, and the checker rejects anything else at the call site. The
+* spawned body runs on its own native thread, so what it touches is shared
+* only when it goes through a `byId` handle.
+*
+* A spawned function that throws is not a build error, the way a named
+* `throws` function passed to `spawn` is. The throw is captured and
+* surfaces as an `Err` from `join`.
+*
+* `join` waits up to 30 seconds for the thread to finish and consumes the
+* handle, so joining the same handle twice reports the second attempt as a
+* dead thread. A thread that has not finished by then yields
+* `Err(thread N join timed out after 30s)`.
+*
+* ```rnx
+* import { Thread } from "@std/sync";
+*
+* fn worker(): Int {
+*     return 40 + 2;
+* }
+* let workers: Array<Thread> = [];
+* workers.push(Thread.spawn(worker));
+* print(workers[0].join().unwrap());
+* ```
+*/
+class Thread {
+    /** Native thread slot id. */
+    let id: Int;
+
+    init(id: Int) {
+        this.id = id;
+    }
+
+    /**
+    * Open a handle to an existing native thread slot.
+    *
+    * `Thread.spawn` is an intrinsic and the compiler claims every
+    * `Thread.<name>` call, so this method is not reachable from Rasmalai
+    * source: the compiler answers `unknown Thread.byId` before the class
+    * body is consulted. A handle is a plain wrapper around a slot id, and
+    * the id is readable from a spawned handle's `id` field.
+    *
+    * @param id slot id returned by a previous spawn.
+    * @returns handle to the thread.
+    */
+    static byId(id: Int): Thread {
+        return new Thread(id);
+    }
+
+    /**
+    * Wait for the thread to finish, up to 30 seconds.
+    *
+    * Output the thread produced is merged into this thread's output when it
+    * is joined. The handle is consumed, so a second `join` on the same
+    * handle reports a dead thread.
+    *
+    * @returns Ok(value) with the thread return, Err(message) on failure. The
+    * message is `uncaught <value>` for a body that threw, `Thread panicked`
+    * for a panic, the 30 second timeout note for a thread that ran too
+    * long, `join of dead thread N` for a reused handle, and a spawn failure
+    * note when the thread never started.
+    * @example
+    * import { Thread } from "@std/sync";
+    *
+    * fn worker(): Int {
+    *     return 40 + 2;
+    * }
+    * let workers: Array<Thread> = [];
+    * workers.push(Thread.spawn(worker));
+    * print(workers[0].join().unwrap());
+    */
+    join(): Result<Any, String> {
+        let v = __rnx_thread_join_val(this.id);
+        let e = __rnx_thread_join_err(this.id);
+        if e.len() == 0 {
+            return Result.Ok(v);
+        }
+        return Result.Err(e);
+    }
+}

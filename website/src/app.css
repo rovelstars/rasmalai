@@ -1,0 +1,509 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+	color-scheme: dark;
+}
+
+html {
+	scroll-behavior: smooth;
+}
+
+body {
+	background-color: #15141b;
+	color: #edecee;
+	font-family: Inter, system-ui, sans-serif;
+	-webkit-font-smoothing: antialiased;
+}
+
+html.light body {
+	background-color: #f4f3f7;
+	color: #1c1b22;
+}
+
+/* Light theme: remap fixed Aura tokens so contrast holds in both modes. */
+html.light .bg-aura-bg\/90 {
+	background-color: rgba(244, 243, 247, 0.9);
+}
+html.light .bg-aura-surfaceElevated {
+	background-color: #e6e5ec;
+}
+html.light .border-aura-border {
+	border-color: rgba(0, 0, 0, 0.12);
+}
+html.light .text-aura-text {
+	color: #1c1b22;
+}
+html.light .text-aura-muted {
+	color: #5f5f6b;
+}
+html.light .text-aura-purple {
+	color: #6d3fd4;
+}
+html.light .text-aura-pink {
+	color: #a91bb5;
+}
+html.light .text-aura-orange {
+	color: #925a00;
+}
+html.light .text-aura-cyan {
+	color: #006d9e;
+}
+html.light .text-aura-green {
+	color: #00755a;
+}
+html.light .text-aura-red {
+	color: #cc3333;
+}
+/* Light theme: surfaces that stay dark by default. */
+html.light .bg-aura-surface {
+	background-color: #ffffff;
+}
+html.light .bg-aura-surface\/60 {
+	background-color: rgba(255, 255, 255, 0.75);
+}
+html.light .bg-aura-surface\/70 {
+	background-color: rgba(255, 255, 255, 0.85);
+}
+html.light .bg-aura-bg {
+	background-color: #ecebf1;
+}
+html.light .bg-black\/30 {
+	background-color: rgba(28, 27, 34, 0.06);
+}
+html.light select option {
+	background-color: #ffffff;
+	color: #1c1b22;
+}
+/* Light theme: white-ink text at reduced alpha. */
+html.light .text-aura-text\/70 {
+	color: rgb(28 27 34 / 0.75);
+}
+html.light .text-aura-text\/80 {
+	color: rgb(28 27 34 / 0.85);
+}
+html.light .text-aura-text\/20 {
+	color: rgb(28 27 34 / 0.3);
+}
+html.light .text-aura-muted\/60,
+html.light .text-aura-muted\/50 {
+	color: #5f5f6b;
+}
+html.light .text-aura-muted\/40 {
+	color: rgb(95 95 107 / 0.9);
+}
+/* ANSI transcript palette: dark defaults, light variants. */
+.ans-muted {
+	color: #6d6d6d;
+}
+.ans-red {
+	color: #ff6767;
+}
+.ans-green {
+	color: #61ffca;
+}
+.ans-orange {
+	color: #ffca85;
+}
+.ans-cyan {
+	color: #82e2ff;
+}
+.ans-purple {
+	color: #a277ff;
+}
+.ans-pink {
+	color: #f694ff;
+}
+.ans-text {
+	color: #edecee;
+}
+html.light .ans-muted {
+	color: #5f5f6b;
+}
+html.light .ans-red {
+	color: #cc3333;
+}
+html.light .ans-green {
+	color: #00755a;
+}
+html.light .ans-orange {
+	color: #925a00;
+}
+html.light .ans-cyan {
+	color: #006d9e;
+}
+html.light .ans-purple {
+	color: #6d3fd4;
+}
+html.light .ans-pink {
+	color: #a91bb5;
+}
+html.light .ans-text {
+	color: #1c1b22;
+}
+
+/* Hairline panel: the single container pattern for the whole page. */
+@layer components {
+	.panel {
+		@apply rounded-lg border border-aura-border bg-aura-surface;
+	}
+	html.light .panel {
+		@apply border-black/10 bg-white;
+	}
+	.panel-title {
+		@apply border-b border-aura-border px-4 py-2 font-mono text-xs tracking-wide text-aura-muted;
+	}
+	.tabular {
+		@apply font-mono tabular-nums;
+	}
+	.press {
+		@apply transition-transform duration-150 active:translate-y-[1px] active:scale-[0.98];
+	}
+	/* Scroll-reveal base: hidden until the `reveal` action adds .is-in. */
+	.rv {
+		opacity: 0;
+		transform: translateY(var(--rv-y, 18px));
+		filter: blur(6px);
+		transition:
+			opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+			transform 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+			filter 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+		transition-delay: var(--rv-delay, 0ms);
+		will-change: opacity, transform;
+	}
+	.rv.is-in {
+		opacity: 1;
+		transform: none;
+		filter: none;
+	}
+	/* Switchboard chamber transition: slides with the tab direction, clipped
+	by the container so accent bars never paint outside their area. */
+	@keyframes sw-in-left {
+		from {
+			opacity: 0;
+			transform: translateX(-28px);
+		}
+		to {
+			opacity: 1;
+			transform: none;
+		}
+	}
+	@keyframes sw-in-right {
+		from {
+			opacity: 0;
+			transform: translateX(28px);
+		}
+		to {
+			opacity: 1;
+			transform: none;
+		}
+	}
+	.sw-dir-l {
+		animation: sw-in-left 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+	}
+	.sw-dir-r {
+		animation: sw-in-right 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.sw-dir-l,
+		.sw-dir-r {
+			animation: none;
+		}
+	}
+	/* Star-border CTA: a single comet of accent light orbiting the border. */
+	@property --sa {
+		syntax: '<angle>';
+		initial-value: 0deg;
+		inherits: false;
+	}
+	.btn-star {
+		position: relative;
+		isolation: isolate;
+	}
+	.btn-star::before {
+		content: '';
+		position: absolute;
+		inset: -1px;
+		border-radius: inherit;
+		padding: 1px;
+		background: conic-gradient(
+			from var(--sa),
+			transparent 0 68%,
+			rgba(237, 236, 238, 0.9) 82%,
+			transparent 96%
+		);
+		-webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+		-webkit-mask-composite: xor;
+		mask-composite: exclude;
+		pointer-events: none;
+		animation: star-orbit 3.2s linear infinite;
+	}
+	@keyframes star-orbit {
+		to {
+			--sa: 360deg;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.rv {
+			opacity: 1;
+			transform: none;
+			filter: none;
+			transition: none;
+		}
+		.btn-star::before {
+			animation: none;
+			opacity: 0;
+		}
+	}
+	/* Card hover lift: tactile rise + accent glow. Replaces .press on cards. */
+	.lift {
+		transition:
+			transform 0.2s ease,
+			border-color 0.2s ease,
+			box-shadow 0.2s ease;
+	}
+	.lift:hover {
+		transform: translateY(-2px);
+		box-shadow: 0 8px 30px -12px rgba(162, 119, 255, 0.25);
+	}
+	.lift:active {
+		transform: translateY(0) scale(0.99);
+	}
+	/* Search palette entrance. */
+	@keyframes modal-pop {
+		from {
+			opacity: 0;
+			transform: translateY(8px) scale(0.98);
+		}
+		to {
+			opacity: 1;
+			transform: none;
+		}
+	}
+	.modal-pop {
+		animation: modal-pop 0.18s ease-out;
+	}
+	/* Mobile drawer entrance. */
+	@keyframes drawer-slide {
+		from {
+			opacity: 0;
+			transform: translateX(-24px);
+		}
+		to {
+			opacity: 1;
+			transform: none;
+		}
+	}
+	.drawer-slide {
+		animation: drawer-slide 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+	}
+	/* Inline output drawer: smooth expand/collapse instead of a jump. */
+	.doc-drawer-wrap {
+		display: grid;
+		grid-template-rows: 0fr;
+		transition: grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+	}
+	.doc-drawer-wrap.open {
+		grid-template-rows: 1fr;
+	}
+	.doc-drawer-inner {
+		overflow: hidden;
+		min-height: 0;
+	}
+	@keyframes drawer-in {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+	.drawer-in {
+		animation: drawer-in 0.25s ease-out;
+	}
+	/* Reactive nav + code-button state changes. */
+	nav a,
+	.doc-btn {
+		transition:
+			color 0.15s ease,
+			background-color 0.15s ease,
+			border-color 0.15s ease;
+	}
+	.doc-btn:active {
+		transform: scale(0.96);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.modal-pop,
+		.drawer-slide,
+		.drawer-in {
+			animation: none;
+		}
+		.lift,
+		.lift:hover,
+		.lift:active {
+			transform: none;
+			box-shadow: none;
+		}
+		nav a,
+		.doc-btn {
+			transition: none;
+		}
+		.doc-btn:active {
+			transform: none;
+		}
+	}
+	.doc-prose {
+		@apply min-w-0 leading-relaxed;
+	}
+	.doc-prose h1 {
+		@apply text-3xl font-bold tracking-tight;
+	}
+	.doc-prose h2.doc-h {
+		@apply mt-8 scroll-mt-24 text-xl font-bold tracking-tight;
+	}
+	.doc-prose h3.doc-h {
+		@apply mt-6 scroll-mt-24 text-base font-semibold;
+	}
+	.doc-prose p {
+		@apply mt-3 max-w-[72ch] text-[15px];
+	}
+	.doc-prose ul {
+		@apply mt-3 list-disc space-y-1 pl-6 text-[15px];
+	}
+	.doc-prose ol {
+		@apply mt-3 list-decimal space-y-1 pl-6 text-[15px];
+	}
+	.doc-prose a:not(.doc-anchor) {
+		@apply text-aura-cyan hover:underline;
+	}
+	.doc-prose :not(pre) > code {
+		@apply rounded bg-aura-surfaceElevated px-1.5 py-0.5 font-mono text-[13px] text-aura-orange;
+	}
+	.doc-prose blockquote {
+		@apply mt-3 border-l-2 border-aura-border pl-4 text-aura-muted;
+	}
+	.callout {
+		@apply mt-4 rounded-r-md border-l-2 p-4;
+	}
+	.callout p {
+		@apply mt-2 text-sm leading-relaxed;
+	}
+	.callout p:first-child {
+		@apply mt-0;
+	}
+	.callout-label {
+		@apply flex items-center gap-1.5 font-mono text-xs uppercase tracking-wider;
+	}
+	.callout-label p, .callout > p {
+		@apply max-w-none;
+	}
+	.callout-note {
+		@apply border-aura-cyan bg-aura-cyan/5;
+	}
+	.callout-note .callout-label {
+		@apply text-aura-cyan;
+	}
+	.callout-tip {
+		@apply border-aura-green bg-aura-green/5;
+	}
+	.callout-tip .callout-label {
+		@apply text-aura-green;
+	}
+	.callout-important {
+		@apply border-aura-purple bg-aura-purple/5;
+	}
+	.callout-important .callout-label {
+		@apply text-aura-purple;
+	}
+	.callout-warning {
+		@apply border-aura-orange bg-aura-orange/5;
+	}
+	.callout-warning .callout-label {
+		@apply text-aura-orange;
+	}
+	.callout-caution {
+		@apply border-aura-red bg-aura-red/5;
+	}
+	.callout-caution .callout-label {
+		@apply text-aura-red;
+	}
+	body {
+		@apply overflow-x-clip;
+	}
+	.doc-anchor {
+		@apply ml-1 text-aura-muted opacity-0 no-underline hover:underline;
+	}
+	.doc-h:hover .doc-anchor {
+		@apply opacity-100;
+	}
+	.doc-code {
+		@apply panel mt-3 flex flex-col overflow-hidden;
+	}
+	.doc-code pre {
+		@apply overflow-x-auto p-4 font-mono text-[13px] leading-relaxed;
+	}
+	.doc-codehead {
+		@apply flex min-h-8 flex-wrap items-center gap-2 border-b border-aura-border px-3 py-1;
+	}
+	.doc-lang {
+		@apply font-mono text-[11px] tracking-wide text-aura-muted;
+	}
+	.doc-edited {
+		@apply rounded bg-aura-surfaceElevated px-1.5 py-0.5 font-mono text-[11px] text-aura-orange;
+	}
+	.doc-actions {
+		@apply ml-auto flex flex-wrap items-center gap-1.5;
+	}
+	.doc-btn {
+		@apply flex min-h-8 items-center gap-1.5 rounded border border-aura-border px-3 font-mono text-xs text-aura-muted hover:border-aura-borderHover hover:text-aura-text;
+	}
+	.doc-run {
+		@apply border-aura-green/50 font-semibold text-aura-green hover:border-aura-green hover:text-aura-green;
+	}
+	.doc-tab-active {
+		@apply border-aura-purple/40 bg-aura-surfaceElevated text-aura-purple hover:border-aura-purple/40 hover:text-aura-purple;
+	}
+	.doc-copy {
+		@apply rounded border border-aura-border px-2 py-0.5 font-mono text-[11px] text-aura-muted hover:border-aura-borderHover hover:text-aura-text;
+	}
+	.doc-copy-sec {
+		@apply ml-2 inline-flex min-h-0 items-center rounded border border-aura-border px-2 py-0.5 align-middle font-mono text-[11px] font-normal text-aura-muted hover:border-aura-borderHover hover:text-aura-text;
+	}
+	.doc-play {
+		@apply rounded border border-aura-border px-2 py-0.5 font-mono text-[11px] text-aura-green hover:border-aura-green hover:text-aura-green;
+	}
+	.doc-drawer {
+		@apply border-t border-aura-border bg-aura-bg px-4 py-3 font-mono text-[13px] leading-relaxed;
+	}
+	.doc-drawer-out {
+		@apply overflow-x-auto whitespace-pre-wrap text-aura-text;
+	}
+	.doc-drawer-err {
+		@apply overflow-x-auto whitespace-pre-wrap text-aura-red;
+	}
+	.doc-drawer-meta {
+		@apply mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-aura-muted;
+	}
+	.doc-edit {
+		@apply min-h-[120px] w-full resize-y overflow-auto bg-transparent p-4 font-mono text-[13px] leading-relaxed text-aura-text outline-none;
+	}
+	.doc-table-wrap {
+		@apply panel mt-3 overflow-x-auto;
+	}
+	.doc-table {
+		@apply w-full min-w-[560px] border-collapse font-mono text-[13px];
+	}
+	.doc-table th {
+		@apply border-b border-aura-border px-3 py-2 text-left font-medium text-aura-muted;
+	}
+	.doc-table td {
+		@apply border-b border-aura-border px-3 py-2 align-top;
+	}
+	.doc-table tr:last-child td {
+		@apply border-b-0;
+	}
+	html.light .doc-prose :not(pre) > code {
+		@apply bg-black/5;
+	}
+}

@@ -1,0 +1,401 @@
+//! Terminal streams, pretty-printing, line input, and raw mode.
+//!
+//! `io` owns the terminal: standard streams, color-aware pretty-printing,
+//! line input, size queries, and raw mode. File I/O stays in `@std/fs`.
+//! Every item uses the `export` keyword. There is no ambient `Console`
+//! class. `print` stays in the prelude as a shim over `io.write`.
+//!
+//! ```rnx
+//! import io, { ColorLevel } from "@std/io";
+//! ```
+//!
+//! The default import is the module namespace holding the free functions
+//! below. Streams are `stdin()` / `stdout()` / `stderr()` calls returning
+//! `File` handles built by `File.fromHandle`; each call duplicates the
+//! descriptor, so closing the handle never touches descriptors 0, 1, or 2.
+//! `write` targets a single value, pretty-printed by the shared renderer
+//! (arrays as `[a, b]`, maps as `{k: v}`, class instances as
+//! `Name{field: value}`, depth cap 3, cycles as `<cycle>`, colors when
+//! stdout is a terminal). `print` forwards each argument through the same
+//! renderer and joins with spaces. `colorProfile` reads `NO_COLOR`
+//! through `Env.get`, which cannot tell an empty value
+//! from an unset one, so an explicitly empty `NO_COLOR` is treated as
+//! unset until a presence check exists.
+
+import { Result } from "@std/prelude";
+import { Env } from "@std/env";
+import { ByteBuffer } from "@std/bytes";
+import { File, OpenMode } from "@std/fs";
+import { Map } from "@std/collections";
+
+/**
+* Output color tiers, richest to plainest.
+*
+* `colorProfile()` picks one of these from `NO_COLOR`, `TERM`,
+* `COLORTERM`, and the TTY state. `write` checks the profile
+* internally and emits no escapes for `Ascii`.
+*
+* @example
+* import { ColorLevel } from "@std/io";
+*
+* let level = ColorLevel.Ascii;
+* print(level == ColorLevel.Ascii);
+*/
+export enum ColorLevel {
+    /** 24-bit RGB output. */
+    TrueColor,
+    /** 256-color palette output. */
+    Ansi256,
+    /** 16 named colors output. */
+    Ansi16,
+    /** Plain output, no escapes. */
+    Ascii
+}
+
+/**
+* Standard input as a `File` handle.
+*
+* @returns handle whose isOpen is false when descriptor 0 is bad.
+* @example
+* import io from "@std/io";
+*
+* let inn = io.stdin();
+* print(inn.isOpen);
+* inn.close();
+*/
+fn stdin(): File {
+    return File.fromHandle(0, "stdin", OpenMode.Read);
+}
+
+/**
+* Standard output as a `File` handle.
+*
+* @returns handle whose isOpen is false when descriptor 1 is bad.
+* @example
+* import io from "@std/io";
+*
+* let out = io.stdout();
+* print(out.isOpen);
+* out.close();
+*/
+fn stdout(): File {
+    return File.fromHandle(1, "stdout", OpenMode.Write);
+}
+
+/**
+* Standard error as a `File` handle.
+*
+* @returns handle whose isOpen is false when descriptor 2 is bad.
+* @example
+* import io from "@std/io";
+*
+* let err = io.stderr();
+* print(err.isOpen);
+* err.close();
+*/
+fn stderr(): File {
+    return File.fromHandle(2, "stderr", OpenMode.Write);
+}
+
+/**
+* Print one value with a trailing newline on stdout.
+*
+* Containers render structurally behind one shared renderer: arrays as
+* `[a, b]`, maps as `{k: v}` in insertion order, class instances as
+* `Name{field: value}` in declaration order, results as `Ok(v)` and
+* `Err(e)`. Nesting deeper than 3 renders as `...`, and a value that
+* contains itself renders as `<cycle>` instead of recursing forever.
+* Strings print as-is, never quoted and never re-escaped. Colors follow
+* `colorProfile()` when stdout is a terminal and stay out otherwise.
+* Only fields render for class instances; methods are not listed.
+* `print` forwards each of its arguments through this same renderer and
+* joins them with spaces, so `print([1, 2], "x")` prints `[1, 2] x`.
+*
+* @param value value to print.
+* @example
+* import io from "@std/io";
+*
+* io.write("hello");
+* io.write([1, 2, 3]);
+*/
+fn write(value: Any) {
+    let out = stdout();
+    if out.isOpen {
+        out.writeText(__rnx_io_pretty(value, 1) + "\n");
+    }
+    out.close();
+}
+
+/**
+* Write bytes as-is to stdout: no newline, no pretty-printing.
+*
+* This is the binary door for progress bars and control sequences the
+* caller builds itself.
+*
+* Byte note: native backends emit exactly these bytes. The interpreter
+* `run` console is line-oriented and terminates each flush with `\n`.
+*
+* @param bytes raw bytes to write.
+* @example
+* import io from "@std/io";
+* import { ByteBuffer } from "@std/bytes";
+*
+* io.writeRaw(ByteBuffer.fromString("AB"));
+*/
+fn writeRaw(bytes: ByteBuffer) {
+    let out = stdout();
+    if out.isOpen {
+        out.writeBytes(bytes, 0, -1);
+    }
+    out.close();
+}
+
+/**
+* Print one value with a trailing newline on stderr.
+*
+* Matches `write` but targets descriptor 2, so error text stays separate
+* from stdout when either side is piped. Rendering, depth cap, cycle,
+* and color rules are the same as `write`.
+*
+* @param value value to print.
+* @example
+* import io from "@std/io";
+*
+* io.writeError("boom");
+*/
+fn writeError(value: Any) {
+    let err = stderr();
+    if err.isOpen {
+        err.writeText(__rnx_io_pretty(value, 2) + "\n");
+    }
+    err.close();
+}
+
+/**
+* Clear the screen and home the cursor.
+*
+* TTY-guarded: a no-op returning normally when stdout is not a TTY,
+* never an error.
+*
+* @example
+* import io from "@std/io";
+*
+* io.clear();
+*/
+fn clear() {
+    if __rnx_io_is_tty(1) {
+        let out = stdout();
+        if out.isOpen {
+            let esc = ByteBuffer.fromString("\u{1b}[2J\u{1b}[H");
+            out.writeBytes(esc, 0, -1);
+        }
+        out.close();
+    }
+}
+
+/**
+* Read stdin to EOF.
+*
+* @returns Ok(text) with everything read, Err(message) when stdin is
+* not available or not readable.
+* @example
+* import io from "@std/io";
+*
+* let r = io.read();
+* print(r.isOk());
+*/
+fn read(): Result<String, String> {
+    let inn = stdin();
+    if !inn.isOpen {
+        return Result.Err<String, String>("read failed: stdin is not available");
+    }
+    let r = inn.readText();
+    inn.close();
+    return r;
+}
+
+/**
+* Read one line from stdin.
+*
+* Writes `prompt` to stdout with no newline first, reads until a newline
+* or EOF, and strips the trailing newline (a carriage return before it
+* goes too, so CRLF input reads cleanly). Reads one byte at a time, so a
+* second call never loses bytes buffered past the newline.
+*
+* @param prompt text written to stdout with no newline, defaults to "".
+* @returns Ok(line) without the newline, Err(message) on EOF with no
+* bytes read or on I/O failure.
+* @example
+* import io from "@std/io";
+*
+* let r = io.readLine("> ");
+* print(r.isOk());
+*/
+fn readLine(prompt: String = ""): Result<String, String> {
+    if prompt.len() != 0 {
+        let out = stdout();
+        if out.isOpen {
+            out.writeText(prompt);
+        }
+        out.close();
+    }
+    let inn = stdin();
+    if !inn.isOpen {
+        return Result.Err<String, String>("readLine failed: stdin is not available");
+    }
+    let buf = ByteBuffer.allocate(256);
+    let len = 0;
+    let saw_nl = false;
+    while true {
+        if len >= buf.capacity() {
+            let bigger = ByteBuffer.allocate(buf.capacity() * 2);
+            let i = 0;
+            while i < len {
+                bigger.writeUInt8(i, buf.readUInt8(i));
+                i = i + 1;
+            }
+            buf = bigger;
+        }
+        let r = inn.readBytes(buf, len, 1);
+        if r.isErr() {
+            inn.close();
+            return Result.Err<String, String>("readLine failed: stdin is not readable");
+        }
+        if r.unwrapOr(0) == 0 {
+            break;
+        }
+        if buf.readUInt8(len) == 10 {
+            saw_nl = true;
+            break;
+        }
+        len = len + 1;
+    }
+    inn.close();
+    if !saw_nl && len == 0 {
+        return Result.Err<String, String>("readLine failed: end of input");
+    }
+    let line = buf.readString(0, len);
+    if line.len() != 0 && line.charCodeAt(line.len() - 1) == 13 {
+        line = line.slice(0, line.len() - 1);
+    }
+    return Result.Ok<String, String>(line);
+}
+
+/**
+* Whether stdin is a terminal.
+*
+* @returns true when descriptor 0 is a TTY, false for pipes and files.
+* @example
+* import io from "@std/io";
+*
+* print(io.isTTY() == true || io.isTTY() == false);
+*/
+fn isTTY(): Bool {
+    return __rnx_io_is_tty(0);
+}
+
+/**
+* Terminal width in columns.
+*
+* Falls back to 80 when the size cannot be read (piped output, missing
+* ioctl, non-TTY).
+*
+* @returns columns, 80 on fallback.
+* @example
+* import io from "@std/io";
+*
+* print(io.width() > 0);
+*/
+fn width(): Int {
+    let s = __rnx_io_winsize();
+    return s[0];
+}
+
+/**
+* Terminal height in rows.
+*
+* Falls back to 24 when the size cannot be read (piped output, missing
+* ioctl, non-TTY).
+*
+* @returns rows, 24 on fallback.
+* @example
+* import io from "@std/io";
+*
+* print(io.height() > 0);
+*/
+fn height(): Int {
+    let s = __rnx_io_winsize();
+    return s[1];
+}
+
+/**
+* Output color tier from the environment and the TTY state.
+*
+* Cheapest check first: `NO_COLOR` set to a non-empty value forces
+* `Ascii`; otherwise `COLORTERM` of `truecolor` or `24bit` gives
+* `TrueColor`; `TERM` containing `256color` gives `Ansi256`; `TERM` of
+* `""` or `"dumb"` gives `Ascii`; a TTY with any other `TERM` gives
+* `Ansi16`, and anything else gives `Ascii`. A non-TTY stdout caps the
+* result at `Ansi16`.
+*
+* @returns the tier, cheapest check first.
+* @example
+* import io, { ColorLevel } from "@std/io";
+*
+* print(io.colorProfile() == ColorLevel.Ascii || true);
+*/
+fn colorProfile(): ColorLevel {
+    if Env.get("NO_COLOR").len() != 0 {
+        return ColorLevel.Ascii;
+    }
+    let tty = __rnx_io_is_tty(1);
+    let ct = Env.get("COLORTERM");
+    if ct == "truecolor" || ct == "24bit" {
+        if tty {
+            return ColorLevel.TrueColor;
+        }
+        return ColorLevel.Ansi16;
+    }
+    let term = Env.get("TERM");
+    if term.contains("256color") {
+        if tty {
+            return ColorLevel.Ansi256;
+        }
+        return ColorLevel.Ansi16;
+    }
+    if term.len() == 0 || term == "dumb" {
+        return ColorLevel.Ascii;
+    }
+    if tty {
+        return ColorLevel.Ansi16;
+    }
+    return ColorLevel.Ascii;
+}
+
+/**
+* Toggle character-at-a-time, no-echo input on stdin.
+*
+* Returns `Result`, not `Void`: `Ok(true)` on success, `Err(message)`
+* when stdin is not a TTY or the OS call fails. Callers restore with
+* `setRawMode(false)`; the runtime also restores the saved mode
+* automatically at process exit.
+*
+* @param enabled true to enter raw mode, false to leave it.
+* @returns Ok(true) after toggling, Err(message) otherwise.
+* @example
+* import io from "@std/io";
+*
+* let r = io.setRawMode(false);
+* print(r.isOk() || r.isErr());
+*/
+fn setRawMode(enabled: Bool): Result<Bool, String> {
+    let flag = 0;
+    if enabled {
+        flag = 1;
+    }
+    let e = __rnx_io_set_raw(0, flag);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}

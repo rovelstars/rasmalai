@@ -1,0 +1,23 @@
+[package]
+name = "runtime-native-bundle"
+version = "0.1.0"
+edition = "2024"
+
+# Detached helper workspace: runtime/build.rs drives this manifest with a
+# nested cargo invocation. Without this marker the bundle would be absorbed
+# by the enclosing workspace above and the nested build would fail with
+# "a member of the wrong workspace".
+[workspace]
+
+[lib]
+name = "runtime_native"
+path = "../src/native/mod.rs"
+crate-type = ["staticlib", "cdylib"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libc = { version = "0.2" }
+memmap2 = { version = "0.9.11" }
+mio = { version = "1", features = ["os-poll", "net"] }
+log = { version = "0.4" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = { version = "0.26" }

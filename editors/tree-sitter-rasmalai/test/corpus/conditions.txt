@@ -1,0 +1,75 @@
+================================================================================
+Unparenthesized conditions
+================================================================================
+
+fn f(x: Int, ok: Bool): Int {
+  if x < 2 {
+    return x;
+  }
+  while x < 10 {
+    x = x + 1;
+  }
+  if ok {
+    return 1;
+  }
+  return 0;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (primitive_type)))
+      (parameter
+        (identifier)
+        (type
+          (primitive_type))))
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (if_statement
+          (relational_expression
+            (expression
+              (identifier))
+            (expression
+              (number_literal)))
+          (block
+            (statement
+              (return_statement
+                (expression
+                  (identifier)))))))
+      (statement
+        (while_statement
+          (relational_expression
+            (expression
+              (identifier))
+            (expression
+              (number_literal)))
+          (block
+            (statement
+              (assign_statement
+                (identifier)
+                (expression
+                  (additive_expression
+                    (expression
+                      (identifier))
+                    (expression
+                      (number_literal)))))))))
+      (statement
+        (if_statement
+          (identifier)
+          (block
+            (statement
+              (return_statement
+                (expression
+                  (number_literal)))))))
+      (statement
+        (return_statement
+          (expression
+            (number_literal)))))))

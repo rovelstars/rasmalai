@@ -1,0 +1,33 @@
+	/* Harness brand marks in guide headings. */
+	.harness-logo {
+		display: inline;
+		height: 1.1em;
+		width: auto;
+		vertical-align: -0.2em;
+		margin-right: 0.35em;
+	}
+	.harness-inv {
+		filter: invert(1);
+	}
+	html.light .harness-inv {
+		filter: none;
+	}
+	.harness-omp {
+		display: inline;
+		height: 1.4em;
+		width: auto;
+		vertical-align: -0.35em;
+		margin-right: 0.35em;
+		background: #14131a;
+		border-radius: 6px;
+		padding: 3px;
+	}
+	.harness-only-light {
+		display: none;
+	}
+	html.light .harness-only-light {
+		display: inline;
+	}
+	html.light .harness-only-dark {
+		display: none;
+	}

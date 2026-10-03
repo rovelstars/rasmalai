@@ -1,0 +1,117 @@
+//! Binary-tree ARC churn in struct-of-arrays form plus flat object loops.
+//! Nodes live in three parallel Array<Int> tables (child = index,
+//! -1 = empty), so every heap read is an Int and temporaries carry no
+//! ownership traffic. Prints RESULT lines with checksums, timings,
+//! and live-alloc deltas; scale via RNX_BENCH_SCALE=tiny|small.
+import { Env } from "@std/env";
+import { Clock } from "@std/time";
+
+class Node {
+    let item: Int;
+    init(item: Int) {
+        this.item = item;
+    }
+    fn mix(): Int {
+        return this.item * 31 + 7;
+    }
+}
+
+fn buildTree(items: Array<Int>, lefts: Array<Int>, rights: Array<Int>, depth: Int, item: Int): Int {
+    let idx = items.length();
+    items.push(item);
+    lefts.push(0 - 1);
+    rights.push(0 - 1);
+    if depth > 0 {
+        let l = buildTree(items, lefts, rights, depth - 1, item * 2 - 1);
+        let r = buildTree(items, lefts, rights, depth - 1, item * 2);
+        lefts[idx] = l;
+        rights[idx] = r;
+    }
+    return idx;
+}
+
+fn checkTree(items: Array<Int>, lefts: Array<Int>, rights: Array<Int>, idx: Int): Int {
+    if idx < 0 {
+        return 0;
+    }
+    return items[idx] + checkTree(items, lefts, rights, lefts[idx]) - checkTree(items, lefts, rights, rights[idx]);
+}
+
+fn oneTree(depth: Int, item: Int): Int {
+    let items: Array<Int> = [];
+    let lefts: Array<Int> = [];
+    let rights: Array<Int> = [];
+    let root = buildTree(items, lefts, rights, depth, item);
+    return checkTree(items, lefts, rights, root);
+}
+
+fn treePhase(minDepth: Int, maxDepth: Int): Int {
+    print("RESULT stretch", oneTree(maxDepth + 1, 0));
+    let llItems: Array<Int> = [];
+    let llLefts: Array<Int> = [];
+    let llRights: Array<Int> = [];
+    let longlived = buildTree(llItems, llLefts, llRights, maxDepth, 0);
+    let total = 0;
+    let d = minDepth;
+    while d <= maxDepth {
+        let n = 2;
+        if maxDepth - d > 0 {
+            n = 4;
+        }
+        if maxDepth - d > 2 {
+            n = 16;
+        }
+        let i = 0;
+        let acc = 0;
+        while i < n {
+            acc = acc + oneTree(d, 0 - i);
+            i = i + 1;
+        }
+        total = total + acc;
+        print("RESULT depth", d, acc);
+        d = d + 2;
+    }
+    print("RESULT longlived", checkTree(llItems, llLefts, llRights, longlived));
+    return total;
+}
+
+fn objectChurn(count: Int): Int {
+    let acc = 0;
+    let i = 0;
+    while i < count {
+        let o = new Node(i);
+        acc = acc + o.mix();
+        i = i + 1;
+    }
+    return acc;
+}
+
+fn Main(): Int {
+    let scale = Env.get("RNX_BENCH_SCALE");
+    let maxDepth = 16;
+    let minDepth = 4;
+    let churn = 100000;
+    if scale == "tiny" {
+        maxDepth = 8;
+        minDepth = 4;
+        churn = 1000;
+    }
+    if scale == "small" {
+        maxDepth = 12;
+        minDepth = 4;
+        churn = 10000;
+    }
+    let live0 = __rnx_debug_live_count();
+    let t0 = Clock.mono().nanos;
+    let loopSum = treePhase(minDepth, maxDepth);
+    let t1 = Clock.mono().nanos;
+    print("RESULT looptotal", loopSum);
+    print("RESULT treems", (t1 - t0) / 1000000);
+    let c0 = Clock.mono().nanos;
+    let mix = objectChurn(churn);
+    let c1 = Clock.mono().nanos;
+    print("RESULT churnmix", mix);
+    print("RESULT churnms", (c1 - c0) / 1000000);
+    print("RESULT live_delta", __rnx_debug_live_count() - live0);
+    return 0;
+}

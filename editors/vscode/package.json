@@ -1,0 +1,45 @@
+{
+    "name": "rasmalai",
+    "displayName": "Rasmalai Language Support",
+    "description": "Rich language support, syntax highlighting, and LSP integration for Rasmalai",
+    "version": "1.0.0",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": ["Programming Languages", "Linters", "Formatters"],
+    "main": "./dist/extension.js",
+    "activationEvents": ["onLanguage:rasmalai"],
+    "contributes": {
+        "languages": [
+            {
+                "id": "rasmalai",
+                "aliases": ["Rasmalai", "rnx"],
+                "extensions": [".rnx"],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "rasmalai",
+                "scopeName": "source.rnx",
+                "path": "./syntaxes/rnx.tmLanguage.json"
+            }
+        ],
+        "configuration": {
+            "title": "Rasmalai",
+            "properties": {
+                "rasmalai.serverPath": {
+                    "type": "string",
+                    "default": "rnx",
+                    "description": "Path to the rnx binary"
+                },
+                "rasmalai.trace.server": {
+                    "type": "string",
+                    "enum": ["off", "messages", "verbose"],
+                    "default": "off",
+                    "description": "Trace communication between the editor and the language server"
+                }
+            }
+        }
+    }
+}

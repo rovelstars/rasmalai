@@ -1,0 +1,77 @@
+name: tree-sitter
+
+# Generated parser outputs (src/parser.c, src/grammar.json, src/node-types.json)
+# are NOT committed. They are rebuilt from the canonical grammar.js here,
+# corpus-tested, and published as CI artifacts for npm / zed / vsce packaging.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "editors/tree-sitter-rasmalai/**"
+      - ".github/workflows/tree-sitter.yml"
+  pull_request:
+    paths:
+      - "editors/tree-sitter-rasmalai/**"
+      - ".github/workflows/tree-sitter.yml"
+  workflow_dispatch:
+  schedule:
+    # Nightly: catches drift between grammar.js and the corpus even with no pushes.
+    - cron: "0 3 * * *"
+
+jobs:
+  generate:
+    name: generate, test, and publish parser outputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install tree-sitter CLI
+        run: npm install -g tree-sitter-cli
+
+      - name: Generate parser from canonical grammar.js
+        working-directory: editors/tree-sitter-rasmalai
+        run: tree-sitter generate
+
+      - name: Corpus must pass
+        working-directory: editors/tree-sitter-rasmalai
+        run: tree-sitter test
+
+      - name: Sync generated outputs to zed grammar dir
+        run: |
+          cp editors/tree-sitter-rasmalai/src/parser.c editors/zed/grammars/rasmalai/src/parser.c
+          cp editors/tree-sitter-rasmalai/src/grammar.json editors/zed/grammars/rasmalai/src/grammar.json
+          cp editors/tree-sitter-rasmalai/src/node-types.json editors/zed/grammars/rasmalai/src/node-types.json
+
+      # NOTE: keyword-table sync (tmLanguage vs grammar.js, the old 56/56 check)
+      # stays covered by compiler/cli/tests/{grammar_test,tree_sitter_test}.rs,
+      # which run on every push/PR in ci.yml. This workflow does not duplicate
+      # that heavy Rust build; it owns generate + corpus + artifacts.
+
+      - name: Upload npm package inputs
+        uses: actions/upload-artifact@v6
+        with:
+          name: tree-sitter-rasmalai-npm
+          path: |
+            editors/tree-sitter-rasmalai/grammar.js
+            editors/tree-sitter-rasmalai/package.json
+            editors/tree-sitter-rasmalai/queries/
+            editors/tree-sitter-rasmalai/test/
+            editors/tree-sitter-rasmalai/src/
+
+      - name: Upload zed grammar inputs
+        uses: actions/upload-artifact@v6
+        with:
+          name: zed-grammar-rasmalai
+          path: editors/zed/grammars/rasmalai/
+
+# TODO (publish wiring, not invented here): release.yml only ships native
+# rnx tarballs. Feeding these artifacts into npm publish / vsce packaging
+# needs a publish job once editors/vscode gains a real build step.
+# TODO (vscode WASM): editors/vscode is TextMate-only today; there is no
+# tree-sitter WASM pipeline to wire up. If one is added, build it here
+# from the generated parser.c above.

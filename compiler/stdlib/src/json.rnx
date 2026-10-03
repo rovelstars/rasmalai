@@ -1,0 +1,193 @@
+//! JSON parsing and serialization over the native tape parser.
+//!
+//! `JSON.parse` turns a document into plain values: `null` decodes to
+//! `null`, `true` and `false` to `Bool`, numbers to `Int` or `Float`,
+//! strings to `String`, arrays to `Array<Any>`, and objects to opaque
+//! handles. Wrap an object handle in a `Map` with `parseObject` or
+//! `asMap` and read fields with `Map.get`.
+//!
+//! Parsing builds one flat tape for the document. A vectorized
+//! structural indexer finds `{`, `}`, `[`, `]`, `:` and `,` outside
+//! string literals in 16-byte SIMD chunks with branch-free
+//! escaped-quote handling, scalars are stored unboxed in the tape,
+//! strings are slices of one string pool, and the whole document is a
+//! single buffer released with its owner. Keys come out in byte-sorted
+//! order and a repeated key keeps its last value, which is what makes
+//! `stringify` output canonical. `get`, `has` and `len` scan the pairs
+//! directly; `set`, `delete`, `clear`, `keys` and `values` materialize
+//! the document into a hash map first.
+//!
+//! Numbers with no fraction and no exponent decode as `Int` up to
+//! 9223372036854775807, and every other number decodes as `Float`,
+//! larger integers included. Strings accept the `\"`, `\\`, `\/`, `\b`,
+//! `\f`, `\n`, `\r`, `\t` and `\uXXXX` escapes, surrogate pairs
+//! included, and reject raw control bytes. Documents may nest 64 levels
+//! deep.
+//!
+//! `JSON.parse<T>` and `JSON.decode<T>` read an object document
+//! straight into a Record or Class `T`, with no tape and no map:
+//! document keys are matched against declared fields by direct integer
+//! comparison, unknown keys are skipped without building values,
+//! missing keys decode as null, and nested objects and arrays decode to
+//! the same values `parse` yields.
+//!
+//! Ownership: a parsed tree is freed when the `Map` owning its handle
+//! is freed. `parseObject` creates that owner, while `asMap` hands an
+//! existing handle to a new wrapper, so wrap a handle once and stop
+//! reading the value it came from.
+import {
+    Map
+} from "@std/collections";
+import {
+    ByteBuffer
+} from "@std/bytes";
+
+/**
+* JSON codec. A number with neither fraction nor exponent decodes to
+* `Int`, every other number to `Float`; object keys are byte-sorted,
+* so `stringify` of a parsed document is canonical whatever order the
+* document used.
+* @example
+* import { JSON } from "@std/json";
+*
+* let data: Any = JSON.parse("[1, true, null]");
+* print(JSON.stringify(data));
+*/
+class JSON {
+    /**
+    * Parse a JSON document. Any value may sit at the top level: `null`,
+    * `true`, `false`, a number, a string, an array, or an object.
+    * Arrays become `Array<Any>`, objects become opaque handles, and a
+    * handle is read with `asMap` or by parsing with `parseObject`.
+    * String escapes decode to the characters they name, control bytes
+    * must be escaped in the document, and a repeated key keeps its
+    * last value.
+    *
+    * Given a type argument, `parse<T>` reads an object document
+    * straight into a Record or Class `T` without building intermediate
+    * values; `JSON.decode<T>` is the same call under a second name.
+    * `T` must be a struct or class with at least one field and no
+    * custom `init`. Document keys are matched against declared fields
+    * in any order, unknown keys are skipped, missing keys decode as
+    * null, and field types are not checked against the document, so
+    * declare a field as `Any` when the value can be an object or an
+    * array.
+    *
+    * @param text JSON source text.
+    * @returns the decoded value as `Any`, or a `T` when a type argument
+    * is given.
+    * @throws aborts with `json parse error: <reason> at offset <n>` on
+    * malformed input or text trailing the top-level value, and with
+    * `json max depth exceeded` past 64 levels of nesting. `parse<T>`
+    * aborts with `typed decode needs a JSON object` when the document
+    * root is not an object.
+    * @example
+    * import { JSON } from "@std/json";
+    *
+    * struct Point {
+    *     let x: Int = 0;
+    *     let y: Int = 0;
+    * }
+    *
+    * let doc: Any = JSON.parse("\{\"b\": 2, \"a\": 1}");
+    * print(JSON.stringify(doc));
+    * let p = JSON.parse<Point>("\{\"y\": 7, \"x\": 3}");
+    * print(p.x);
+    */
+    static fn parse(text: String): Any {
+        return __rnx_json_parse(text);
+    }
+
+    /**
+    * Render a value as canonical JSON: no spaces, object keys in
+    * byte-sorted order, `"` and `\` escaped, and control characters
+    * written as `\n`, `\r`, `\t`, `\b`, `\f` or `\u00xx`. Floats that
+    * are not finite render as `null`, and so does any value that is not
+    * JSON: a `Map` or class instance is not a document, so stringify
+    * the values read out of it instead.
+    * @param value a scalar, a parsed array, a parsed object handle, or
+    * a value read out of one.
+    * @returns the JSON text.
+    * @throws aborts past 64 levels of nesting while writing.
+    * @example
+    * import { JSON } from "@std/json";
+    *
+    * let doc: Any = JSON.parse("\{\"q\": \"a\\\"b\", \"t\": \"x\\ty\"}");
+    * print(JSON.stringify(doc));
+    */
+    static fn stringify(value: Any): String {
+        return __rnx_json_stringify(value);
+    }
+
+    /**
+    * Render a value as canonical JSON straight into a byte buffer,
+    * skipping the intermediate `String`. The output and the escaping
+    * match `stringify`.
+    * @param value a scalar, a parsed array, a parsed object handle, or
+    * a value read out of one.
+    * @param buf destination buffer.
+    * @param pos first byte to write; must lie inside the buffer.
+    * @returns bytes written, not counting `pos`.
+    * @throws aborts with `byte buffer out of bounds` when the buffer
+    * cannot hold the output from `pos`, and past 64 levels of nesting.
+    * @example
+    * import { JSON } from "@std/json";
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let buf = ByteBuffer.allocate(32);
+    * let n = JSON.stringifyInto(JSON.parse("\{\"a\": 1}"), buf, 0);
+    * print(buf.readString(0, n));
+    */
+    static fn stringifyInto(value: Any, buf: ByteBuffer, pos: Int): Int {
+        return __rnx_json_stringify_into(value, buf.handle, pos);
+    }
+
+    /**
+    * Parse a JSON object document straight into a `Map`. The map owns
+    * the parsed tree, so the document is freed when the map goes out of
+    * scope. Fields are read with `get`, `has`, `len`, `keys` and
+    * `values`, and keys arrive in byte-sorted order.
+    * @param text a JSON object document.
+    * @returns a map over the parsed document.
+    * @throws aborts with `json parse error: <reason> at offset <n>` on
+    * malformed input and with `json object expected` when the document
+    * root is not an object.
+    * @example
+    * import { JSON } from "@std/json";
+    *
+    * let m = JSON.parseObject("\{\"count\": 42, \"name\": \"rasmalai\"}");
+    * print(m.get("name"));
+    * print(m.len());
+    */
+    static fn parseObject(text: String): Map<String, Any> {
+        let m = new Map<String, Any>();
+        __rnx_gmap_free(m.handle);
+        m.handle = __rnx_json_unwrap(__rnx_json_parse(text));
+        return m;
+    }
+
+    /**
+    * View a parsed object handle as a `Map`. The wrapper takes the
+    * handle over, so the document is freed when the wrapper goes out of
+    * scope: wrap a handle once and stop reading the value it came
+    * from. Reads behave as on a map from `parseObject`, and a handle
+    * read out of a nested object keeps the shared document alive on
+    * its own.
+    * @param value an object handle from `parse` or `Map.get`.
+    * @returns a map over the same object.
+    * @throws aborts with `json object expected` when value is not a
+    * parsed object handle, `null` included.
+    * @example
+    * import { JSON } from "@std/json";
+    *
+    * let doc: Any = JSON.parse("\{\"ok\": true}");
+    * let view = JSON.asMap(doc);
+    * print(view.get("ok"));
+    */
+    static fn asMap(value: Any): Map<String, Any> {
+        let m = new Map<String, Any>();
+        __rnx_gmap_free(m.handle);
+        m.handle = __rnx_json_unwrap(value);
+        return m;
+    }
+}

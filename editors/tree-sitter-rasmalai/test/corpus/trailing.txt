@@ -1,0 +1,74 @@
+================================================================================
+Trailing closure calls versus condition blocks
+================================================================================
+
+fn panel(): Int {
+  return Column {
+    text("hi");
+  };
+}
+
+fn pick(c: Bool): Int {
+  if c {
+    return 1;
+  } else if c {
+    return 2;
+  } else {
+    return 3;
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (return_statement
+          (expression
+            (trailing_closure_expression
+              (identifier)
+              (block
+                (expression_statement
+                  (expression
+                    (call_expression
+                      (identifier)
+                      (argument_list
+                        (argument
+                          (expression
+                            (string_literal))))))))))))))
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (primitive_type))))
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (if_statement
+          (identifier)
+          (block
+            (statement
+              (return_statement
+                (expression
+                  (number_literal)))))
+          (statement
+            (if_statement
+              (identifier)
+              (block
+                (statement
+                  (return_statement
+                    (expression
+                      (number_literal)))))
+              (block
+                (statement
+                  (return_statement
+                    (expression
+                      (number_literal))))))))))))

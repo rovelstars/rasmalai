@@ -1,0 +1,63 @@
+//! json_stress: generate a ~1 MB document of 20000 flat objects,
+//! run 5 rounds of JSON.parse + JSON.stringify, checksum the output.
+//! Checksum is the char-code sum of the stringified round-trip, which
+//! is key-order insensitive (stringify may reorder keys).
+//! The document is assembled once with linear ByteBuffer writes so the
+//! run measures parse/serialize work, not builder garbage. Each round
+//! renders the full output into a reused buffer with one stringify call
+//! (same shape as the other languages' one-shot serializers) and folds
+//! the checksum over it. Prints RESULT checksum (exact integer) and
+//! RESULT doclen.
+import { ByteBuffer } from "@std/bytes";
+import { JSON } from "@std/json";
+
+fn buildDoc(items: Int): String {
+    let piece = "\{\"id\": 7, \"name\": \"name-7\", \"tags\": [\"a\", \"b\", \"c\"], \"score\": 1.5, \"ok\": true}";
+    let total = 2 + items * (piece.length() + 1);
+    let buf = ByteBuffer.allocate(total);
+    let pos = 0;
+    pos = pos + buf.writeString(pos, "[");
+    let i = 0;
+    while i < items {
+        if i > 0 {
+            pos = pos + buf.writeString(pos, ",");
+        }
+        pos = pos + buf.writeString(pos, piece);
+        i = i + 1;
+    }
+    pos = pos + buf.writeString(pos, "]");
+    return buf.readString(0, pos);
+}
+
+fn checksumWindow(buf: ByteBuffer, n: Int, charsum: Int): Int {
+    let i = 0;
+    while i + 8 <= n {
+        let w = buf.readInt64LE(i);
+        let lo = w & 4294967295;
+        let hi = (w / 4294967296) & 4294967295;
+        charsum = charsum + (lo & 255) + ((lo / 256) & 255) + ((lo / 65536) & 255) + ((lo / 16777216) & 255)
+            + (hi & 255) + ((hi / 256) & 255) + ((hi / 65536) & 255) + ((hi / 16777216) & 255);
+        i = i + 8;
+    }
+    while i < n {
+        charsum = charsum + buf.readUInt8(i);
+        i = i + 1;
+    }
+    return charsum;
+}
+
+fn Main(): Int {
+    let doc = buildDoc(20000);
+    print("RESULT doclen", doc.length());
+    let cbuf = ByteBuffer.allocate(doc.length());
+    let rounds = 0;
+    let charsum = 0;
+    while rounds < 5 {
+        let val = JSON.parse(doc);
+        let n = JSON.stringifyInto(val, cbuf, 0);
+        charsum = checksumWindow(cbuf, n, charsum);
+        rounds = rounds + 1;
+    }
+    print("RESULT checksum", charsum);
+    return 0;
+}

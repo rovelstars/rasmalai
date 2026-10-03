@@ -1,0 +1,341 @@
+//! Scalar math helpers and the Vec2 value type. Angles are radians, so turn
+//! degrees into radians with value * Math.PI() / 180.0.
+//!
+//! ```rnx
+//! import { Math, Vec2 } from "@std/math";
+//!
+//! let v = new Vec2(3.0, 4.0);
+//! print(v.length());
+//! print(Math.sin(Math.PI() / 2.0));
+//! ```
+/**
+* Static numeric helpers: constants, comparisons, rounding, and the
+* runtime-backed transcendental functions. The class declares no init, so an
+* instance holds nothing and reaches no method: call every member as
+* Math.name(...).
+*
+* Angles are radians. Convert degrees with value * Math.PI() / 180.0. The
+* functions backed by the runtime (sqrt, sin, cos, tan, atan2, pow, floor,
+* ceil, round, log) follow IEEE-754: a negative argument to sqrt or log gives
+* NaN, log(0.0) gives -Infinity, and 0.0 raised to a negative power gives
+* Infinity. print renders those as NaN, inf, and -inf.
+*
+* abs, min, max, and clamp are written in Rasmalai and compare with < and >.
+* A NaN loses every such comparison, so a NaN reaching min or max is dropped
+* and the other argument comes back. Reach one with Math.sqrt(0.0 - 1.0).
+*
+* Nothing in this class throws.
+* @example
+* import { Math } from "@std/math";
+*
+* let deg = 90.0;
+* print(Math.sin(deg * Math.PI() / 180.0));
+*/
+class Math {
+    /**
+    * Ratio of a circle's circumference to its diameter. Multiply by a degree
+    * count and divide by 180.0 to turn degrees into radians.
+    * @returns 3.141592653589793.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.PI());
+    */
+    static PI(): Float {
+        return 3.141592653589793;
+    }
+    /**
+    * A full turn in radians: 2 * PI(). Hand a phase in [0.0, TAU()) to sin or
+    * cos rather than normalizing it yourself.
+    * @returns 6.283185307179586.
+    */
+    static TAU(): Float {
+        return 6.283185307179586;
+    }
+    /**
+    * Base of the natural logarithm. log(Math.E()) is exactly 1.0.
+    * @returns 2.718281828459045.
+    */
+    static E(): Float {
+        return 2.718281828459045;
+    }
+
+    /**
+    * Absolute value.
+    * @param x input value.
+    * @returns x when x is not less than 0.0, otherwise 0.0 - x. -0.0 and NaN
+    * are not less than 0.0, so they come back unchanged.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.abs(0.0 - 3.5));
+    */
+    static abs(x: Float): Float {
+        if x < 0.0 {
+            return 0.0 - x;
+        }
+        return x;
+    }
+
+    /**
+    * Smaller of two values.
+    * @param a first candidate.
+    * @param b second candidate.
+    * @returns a when a < b, otherwise b. Equal values give b, and a NaN in
+    * either slot loses the comparison, so the other argument comes back.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.min(3.0, 7.0));
+    */
+    static min(a: Float, b: Float): Float {
+        if a < b {
+            return a;
+        }
+        return b;
+    }
+
+    /**
+    * Larger of two values.
+    * @param a first candidate.
+    * @param b second candidate.
+    * @returns a when a > b, otherwise b. Equal values give b, and a NaN in
+    * either slot loses the comparison, so the other argument comes back.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.max(3.0, 7.0));
+    */
+    static max(a: Float, b: Float): Float {
+        if a > b {
+            return a;
+        }
+        return b;
+    }
+
+    /**
+    * Clamp v into the inclusive range [minVal, maxVal].
+    * @param v value to clamp.
+    * @param minVal lower bound.
+    * @param maxVal upper bound.
+    * @returns minVal when v < minVal, maxVal when v > maxVal, otherwise v. The
+    * two bounds are not checked against each other, and a NaN v comes back as
+    * NaN because both comparisons fail.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.clamp(9.0, 0.0, 1.0));
+    */
+    static clamp(v: Float, minVal: Float, maxVal: Float): Float {
+        if v < minVal {
+            return minVal;
+        }
+        if v > maxVal {
+            return maxVal;
+        }
+        return v;
+    }
+
+    /**
+    * Square root, computed by the runtime math intrinsic.
+    * @param x value to take the root of.
+    * @returns sqrt(x) as a Float. A negative x yields NaN, which IEEE-754
+    * requires rather than a thrown error.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.sqrt(9.0));
+    */
+    static sqrt(x: Float): Float {
+        return __rnx_math_sqrt(x);
+    }
+    /**
+    * Sine of an angle in radians.
+    * @param x angle in radians; convert degrees with x * Math.PI() / 180.0.
+    * @returns sin(x), in [-1.0, 1.0].
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.sin(Math.PI() / 2.0));
+    */
+    static sin(x: Float): Float {
+        return __rnx_math_sin(x);
+    }
+    /**
+    * Cosine of an angle in radians.
+    * @param x angle in radians; convert degrees with x * Math.PI() / 180.0.
+    * @returns cos(x), in [-1.0, 1.0]. It is 1.0 at 0.0 and -1.0 at Math.PI().
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.cos(Math.PI()));
+    */
+    static cos(x: Float): Float {
+        return __rnx_math_cos(x);
+    }
+    /**
+    * Tangent of an angle in radians.
+    * @param x angle in radians; convert degrees with x * Math.PI() / 180.0.
+    * @returns tan(x). The result is unbounded: it grows without limit as x
+    * approaches Math.PI() / 2.0 from either side.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.round(Math.tan(Math.PI() / 4.0) * 1000.0) / 1000.0);
+    */
+    static tan(x: Float): Float {
+        return __rnx_math_tan(x);
+    }
+    /**
+    * Four-quadrant arctangent: the angle of the vector (x, y).
+    * @param y vertical component.
+    * @param x horizontal component. The order is y first, x second.
+    * @returns the angle in radians in [-PI, PI], measured counterclockwise
+    * from the positive x axis. atan2(0.0, 0.0) is 0.0, and atan2(0.0, -1.0) is
+    * Math.PI().
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.atan2(1.0, 1.0) * 180.0 / Math.PI());
+    */
+    static atan2(y: Float, x: Float): Float {
+        return __rnx_math_atan2(y, x);
+    }
+    /**
+    * Exponentiation, computed by the runtime math intrinsic.
+    * @param base value to raise.
+    * @param exp exponent.
+    * @returns base raised to exp. pow(0.0, 0.0) is 1.0, a negative base with a
+    * fractional exponent gives NaN, and 0.0 raised to a negative power gives
+    * Infinity.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.pow(2.0, 10.0));
+    */
+    static pow(base: Float, exp: Float): Float {
+        return __rnx_math_pow(base, exp);
+    }
+    /**
+    * Largest integer not greater than x.
+    * @param x input value.
+    * @returns floor(x) as a Float, so 2.7 gives 2.0 and -2.5 gives -3.0.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.floor(0.0 - 2.5));
+    */
+    static floor(x: Float): Float {
+        return __rnx_math_floor(x);
+    }
+    /**
+    * Smallest integer not less than x.
+    * @param x input value.
+    * @returns ceil(x) as a Float, so 2.1 gives 3.0 and -2.7 gives -2.0.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.ceil(2.1));
+    */
+    static ceil(x: Float): Float {
+        return __rnx_math_ceil(x);
+    }
+    /**
+    * Nearest integer, returned as a Float.
+    * @param x input value.
+    * @returns round(x). Ties go away from zero rather than to the nearest even
+    * number, so 2.5 gives 3.0, 0.5 gives 1.0, and -2.5 gives -3.0.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.round(2.5));
+    * print(Math.round(0.0 - 2.5));
+    */
+    static round(x: Float): Float {
+        return __rnx_math_round(x);
+    }
+    /**
+    * Natural logarithm, computed by the runtime math intrinsic.
+    * @param x value to take the logarithm of.
+    * @returns ln(x). log(1.0) is 0.0 and log(Math.E()) is 1.0. Per IEEE-754,
+    * log(0.0) is -Infinity and a negative x gives NaN.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.log(Math.E()));
+    */
+    static log(x: Float): Float {
+        return __rnx_math_log(x);
+    }
+}
+
+/**
+* 2D float vector with dot products and lengths. The fields are public and
+* mutable, so a Vec2 works as a plain record: nothing is normalized, no
+* component is range-checked, and the type is meant for positions, offsets,
+* and directions.
+* @example
+* import { Vec2 } from "@std/math";
+*
+* let v = new Vec2(3.0, 4.0);
+* print(v.length());
+*/
+class Vec2 {
+    /** Horizontal component. */
+    let x: Float;
+    /** Vertical component. */
+    let y: Float;
+
+    /**
+    * Build a vector from its two components.
+    * @param x horizontal component.
+    * @param y vertical component.
+    * @returns the new Vec2, storing both values as given.
+    */
+    init(x: Float, y: Float) {
+        this.x = x;
+        this.y = y;
+    }
+
+    /**
+    * Dot product of two 2D vectors: one length times the projection of the
+    * other onto it.
+    * @param other right-hand vector.
+    * @returns this.x * other.x + this.y * other.y, which is 0.0 for two
+    * non-zero vectors that are perpendicular.
+    * @example
+    * import { Vec2 } from "@std/math";
+    *
+    * print(new Vec2(1.0, 2.0).dot(new Vec2(3.0, 4.0)));
+    */
+    dot(other: Vec2): Float {
+        return this.x * other.x + this.y * other.y;
+    }
+
+    /**
+    * Squared length. Comparing squares skips the square root, so prefer this
+    * when you only need to know which of two vectors is longer or whether two
+    * distances are equal.
+    * @returns this.dot(this), the sum of the squared components.
+    * @example
+    * import { Vec2 } from "@std/math";
+    *
+    * print(new Vec2(3.0, 4.0).lengthSq());
+    */
+    lengthSq(): Float {
+        return this.dot(this);
+    }
+
+    /**
+    * Euclidean length: the distance from the origin to this vector.
+    * @returns Math.sqrt(this.lengthSq()).
+    * @example
+    * import { Vec2 } from "@std/math";
+    *
+    * let v = new Vec2(3.0, 4.0);
+    * print(v.length());
+    */
+    length(): Float {
+        return Math.sqrt(this.lengthSq());
+    }
+}

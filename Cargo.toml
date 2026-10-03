@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "compiler/cli",
+    "compiler/cranelift",
+    "compiler/diagnostics",
+    "compiler/frontend",
+    "compiler/linker",
+    "compiler/lir",
+    "compiler/llvm",
+    "compiler/runtime",
+    "compiler/stdlib",
+    "compiler/wasm_playground",
+]
+exclude = [
+    "compiler/runtime/bundle",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT OR Apache-2.0"

@@ -1,0 +1,14 @@
+name = "Rasmalai"
+grammar = "rasmalai"
+path_suffixes = ["rnx"]
+line_comments = ["// "]
+block_comment = ["/*", "*/"]
+brackets = [
+    { start = "{", end = "}", close = true, newline = true },
+    { start = "[", end = "]", close = true, newline = true },
+    { start = "(", end = ")", close = true, newline = false },
+]
+
+# Wire the language server in Zed settings.json:
+# "lsp": { "rnx-lsp": { "binary": { "path": "rnx", "args": ["lsp"] } } },
+# "languages": { "Rasmalai": { "language_servers": ["rnx-lsp"] } }

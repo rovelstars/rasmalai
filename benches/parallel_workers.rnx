@@ -1,0 +1,58 @@
+//! Parallel worker scaling: parallelFor reductions over 1/2/4/8 workers.
+//! Each index writes its checksum to a private AtomicInt slot; the main
+//! thread aggregates after join. Prints RESULT lines per worker count
+//! with in-language milliseconds; scale via RNX_BENCH_SCALE=tiny|small.
+import { Env } from "@std/env";
+import { Clock } from "@std/time";
+import { AtomicInt } from "@std/sync";
+
+fn workInto(i: Int) {
+    let acc = 0;
+    let k = 1;
+    while k <= 40 {
+        acc = acc + (i * k) % 1000003;
+        k = k + 1;
+    }
+    AtomicInt.byId(5000 + i).set(acc);
+}
+
+fn runConfig(tag: Int, workers: Int, n: Int, chunk: Int): Int {
+    let pool = ThreadPool.byId(tag, workers);
+    let t0 = Clock.mono().nanos;
+    pool.parallelFor(0, n, chunk, workInto);
+    pool.join();
+    pool.shutdown();
+    let t1 = Clock.mono().nanos;
+    let sum = 0;
+    let j = 0;
+    while j < n {
+        sum = sum + AtomicInt.byId(5000 + j).get();
+        j = j + 1;
+    }
+    print("RESULT workers", workers, (t1 - t0) / 1000000, sum);
+    return sum;
+}
+
+fn Main(): Int {
+    let scale = Env.get("RNX_BENCH_SCALE");
+    let n = 200000;
+    if scale == "tiny" {
+        n = 2000;
+    }
+    if scale == "small" {
+        n = 20000;
+    }
+    let live0 = __rnx_debug_live_count();
+    let c1 = runConfig(610, 1, n, 500);
+    let c2 = runConfig(620, 2, n, 500);
+    let c4 = runConfig(630, 4, n, 500);
+    let c8 = runConfig(640, 8, n, 500);
+    print("RESULT checksums", c1, c2, c4, c8);
+    if c1 == c2 && c2 == c4 && c4 == c8 {
+        print("RESULT scaling_ok", 1);
+    } else {
+        print("RESULT scaling_ok", 0);
+    }
+    print("RESULT live_delta", __rnx_debug_live_count() - live0);
+    return 0;
+}

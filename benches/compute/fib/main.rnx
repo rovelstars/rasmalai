@@ -1,0 +1,14 @@
+//! fib(35): naive double recursion, call overhead stress.
+//! Prints RESULT checksum 9227465. Fixed size, no input.
+
+fn fib(n: Int): Int {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn Main(): Int {
+    print("RESULT checksum", fib(35));
+    return 0;
+}

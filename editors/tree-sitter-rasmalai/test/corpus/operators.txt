@@ -1,0 +1,232 @@
+================================================================================
+Operators: nullish, bitwise, shifts, is, as, updates
+================================================================================
+
+fn ops(a: Int, b: Int): Int {
+  let n = a ?? b;
+  let o = a | b;
+  let x = a ^ b;
+  let y = a & b;
+  let s = a << 2;
+  let t = a >> 1;
+  let z = a >>> 1;
+  let w = -a + !ok + ~a;
+  ++a;
+  b--;
+  return n + o + x + y + s + t + z + w;
+}
+
+fn pick(c: Bool, x: Int, y: Int): Int {
+  let t = c ? x : y;
+  return t;
+}
+
+fn checks(v: Any): Bool {
+  return v is Int;
+}
+
+fn conv(v: Any): Int {
+  return v as Int;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (primitive_type)))
+      (parameter
+        (identifier)
+        (type
+          (primitive_type))))
+    (type
+      (primitive_type))
+    (block
+      (variable_declaration
+        (identifier)
+        (expression
+          (nullish_expression
+            (expression
+              (identifier))
+            (expression
+              (identifier)))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (bitwise_or_expression
+            (expression
+              (identifier))
+            (expression
+              (identifier)))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (bitwise_xor_expression
+            (expression
+              (identifier))
+            (expression
+              (identifier)))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (bitwise_and_expression
+            (expression
+              (identifier))
+            (expression
+              (identifier)))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (shift_expression
+            (expression
+              (identifier))
+            (expression
+              (number_literal)))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (shift_expression
+            (expression
+              (identifier))
+            (expression
+              (number_literal)))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (shift_expression
+            (expression
+              (identifier))
+            (expression
+              (number_literal)))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (additive_expression
+            (expression
+              (additive_expression
+                (expression
+                  (unary_expression
+                    (expression
+                      (identifier))))
+                (expression
+                  (unary_expression
+                    (expression
+                      (identifier))))))
+            (expression
+              (unary_expression
+                (expression
+                  (identifier)))))))
+      (expression_statement
+        (expression
+          (prefix_update_expression
+            (expression
+              (identifier)))))
+      (expression_statement
+        (expression
+          (postfix_update_expression
+            (expression
+              (identifier)))))
+      (statement
+        (return_statement
+          (expression
+            (additive_expression
+              (expression
+                (additive_expression
+                  (expression
+                    (additive_expression
+                      (expression
+                        (additive_expression
+                          (expression
+                            (additive_expression
+                              (expression
+                                (additive_expression
+                                  (expression
+                                    (additive_expression
+                                      (expression
+                                        (identifier))
+                                      (expression
+                                        (identifier))))
+                                  (expression
+                                    (identifier))))
+                              (expression
+                                (identifier))))
+                          (expression
+                            (identifier))))
+                      (expression
+                        (identifier))))
+                  (expression
+                    (identifier))))
+              (expression
+                (identifier))))))))
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (primitive_type)))
+      (parameter
+        (identifier)
+        (type
+          (primitive_type)))
+      (parameter
+        (identifier)
+        (type
+          (primitive_type))))
+    (type
+      (primitive_type))
+    (block
+      (variable_declaration
+        (identifier)
+        (expression
+          (ternary_expression
+            (expression
+              (identifier))
+            (expression
+              (identifier))
+            (expression
+              (identifier)))))
+      (statement
+        (return_statement
+          (expression
+            (identifier))))))
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (identifier))))
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (return_statement
+          (expression
+            (is_expression
+              (expression
+                (identifier))
+              (type
+                (primitive_type))))))))
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (identifier))))
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (return_statement
+          (expression
+            (cast_expression
+              (expression
+                (identifier))
+              (type
+                (primitive_type)))))))))

@@ -1,0 +1,183 @@
+//! Operating system queries and hardware introspection.
+//!
+//! Every call in this module reads a snapshot from the host. Nothing here
+//! changes system state: no environment writes, no file creation, no process
+//! control. Each call costs a syscall or an environment lookup, so read what
+//! you need once and keep the value.
+import {
+    ByteBuffer
+} from "@std/bytes";
+
+/**
+* Host OS surface: platform, architecture, host identity, directories,
+* CPU count, and uptime. All queries are read-only snapshots.
+*
+* Every method is static, so call them as OS.method() without constructing
+* anything. Values come from the process that runs the program, which means
+* they follow the environment (a `TMPDIR` override changes what tmpdir()
+* reports) rather than a fixed build-time answer.
+*
+* Result values are not errors: a query that cannot be answered returns a
+* documented fallback (an empty string, "unknown", 0.0, or 1) instead of
+* throwing. Check the value when it matters.
+*
+* @example
+* import { OS } from "@std/os";
+*
+* print(OS.platform());
+* print(OS.arch());
+*/
+class OS {
+    /**
+    * OS platform: "linux", "macos", "windows", or the Rust target-OS name.
+    *
+    * FreeBSD, Solaris, and other targets keep their Rust names
+    * ("freebsd", "solaris"), so compare against the exact string rather
+    * than assuming one of the three common ones.
+    *
+    * @returns platform string, never empty.
+    * @example
+    * import { OS } from "@std/os";
+    *
+    * if (OS.platform() == "windows") {
+    *     print("windows path separator rules");
+    * }
+    */
+    static platform(): String {
+        return __rnx_os_platform();
+    }
+
+    /**
+    * CPU architecture: "x86_64", "aarch64", or the Rust target-arch name.
+    *
+    * This is the architecture of the running program, not of the physical
+    * machine. An x86_64 build under emulation reports "x86_64".
+    *
+    * @returns architecture string, never empty.
+    * @example
+    * import { OS } from "@std/os";
+    *
+    * let is64 = OS.arch() == "x86_64" || OS.arch() == "aarch64";
+    * print(is64);
+    */
+    static arch(): String {
+        return __rnx_os_arch();
+    }
+
+    /**
+    * System hostname ("unknown" when it cannot be determined).
+    *
+    * Resolution order: the HOSTNAME variable, then the contents of
+    * /etc/hostname, then COMPUTERNAME on Windows. A container with none of
+    * those set reports "unknown" rather than an empty string.
+    *
+    * @returns hostname string, never empty.
+    * @example
+    * import { OS } from "@std/os";
+    *
+    * print(OS.hostname() != "unknown");
+    */
+    static hostname(): String {
+        return __rnx_os_hostname();
+    }
+
+    /**
+    * System temporary directory (`TMPDIR`/`TEMP`/`TMP`, else the OS default).
+    *
+    * The first non-empty variable wins, in that order, so TMPDIR set in the
+    * shell overrides the OS default. The directory is not created; it is
+    * whatever the host already reports, which is /tmp on Linux and macOS
+    * when none of the variables are set.
+    *
+    * @returns temp directory path.
+    * @example
+    * import { OS } from "@std/os";
+    *
+    * print(OS.tmpdir());
+    */
+    static tmpdir(): String {
+        return __rnx_os_tmpdir();
+    }
+
+    /**
+    * Current user's home directory (`HOME`/`USERPROFILE`, else "").
+    *
+    * Returns "" when neither variable is set, which happens in stripped
+    * containers and in daemons started without a login environment. Treat
+    * the empty string as "unknown home" instead of a usable path.
+    *
+    * @returns home directory path, or "" when undetermined.
+    * @example
+    * import { OS } from "@std/os";
+    *
+    * let home = OS.homedir();
+    * if (home == "") {
+    *     print("no home directory in this environment");
+    * }
+    */
+    static homedir(): String {
+        return __rnx_os_homedir();
+    }
+
+    /**
+    * Logical CPU execution threads available to this process (at least 1).
+    *
+    * This is the scheduler-visible count, so CPU affinity masks and
+    * container CPU quotas shrink it. A machine with 16 hardware threads
+    * limited to 4 cores reports 4. Returns 1 when the host cannot answer.
+    *
+    * Use it to size worker pools.
+    *
+    * @returns core count, never below 1.
+    * @example
+    * import { OS } from "@std/os";
+    *
+    * let workers = OS.cpuCount();
+    * print(workers);
+    */
+    static cpuCount(): Int {
+        return __rnx_os_cpu_count();
+    }
+
+    /**
+    * System uptime in fractional seconds (0.0 when unavailable).
+    *
+    * Seconds since boot, not since the program started, and not per-core
+    * time. Currently reads /proc/uptime, so it returns 0.0 on macOS and
+    * Windows. Test uptime-gated logic against 0.0 as "unknown".
+    *
+    * @returns uptime as Float.
+    * @example
+    * import { OS } from "@std/os";
+    *
+    * let seconds = OS.uptime();
+    * if (seconds > 0.0) {
+    *     print("host has been up for a while");
+    * }
+    */
+    static uptime(): Float {
+        return __rnx_os_uptime();
+    }
+
+    /**
+    * End-of-line marker for this platform ("\r\n" on Windows, "\n" elsewhere).
+    *
+    * Returns a string, not a character: its length is 2 on Windows and 1
+    * everywhere else. Build multi-line output with it instead of hardcoding
+    * "\n", which leaves stray carriage returns when the same file is read
+    * on Windows.
+    *
+    * @returns eol string.
+    * @example
+    * import { OS } from "@std/os";
+    *
+    * let header = "name" + OS.eol() + "value" + OS.eol();
+    * print(header);
+    */
+    static eol(): String {
+        if OS.platform() == "windows" {
+            return ByteBuffer.fromArray([13, 10]).readString(0, 2);
+        }
+        return "\n";
+    }
+}

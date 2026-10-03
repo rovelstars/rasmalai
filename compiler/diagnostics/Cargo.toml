@@ -1,0 +1,8 @@
+[package]
+name = "diagnostics"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+name = "diagnostics"
+path = "src/lib.rs"

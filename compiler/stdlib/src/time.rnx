@@ -1,0 +1,262 @@
+//! Time sources for measuring elapsed work and for tests that need a clock
+//! they control.
+//!
+//! The module has two kinds of clock, and they answer different questions.
+//! `Clock.mono()` is monotonic hardware time: it always moves forward, and it
+//! is unaffected by system clock adjustments, so it is what you want for
+//! timeouts, deadlines, and profiling. `Clock.virtual()` is a plain `Int` you
+//! advance yourself: it never reads the OS clock, so the same sequence of
+//! ticks produces the same timestamps on every run.
+//!
+//! Nothing here reports calendar time. A `Duration` counts nanoseconds from an
+//! epoch chosen by its source, so it can measure how long something took but
+//! cannot tell you what date it is.
+//!
+//! ```rnx
+//! import { Clock } from "@std/time";
+//!
+//! let clock = Clock.virtual(0);
+//! clock.tick(2500000);
+//! print(clock.now().toMillis());
+//! ```
+/**
+* A signed nanosecond count, plus conversions to other units.
+*
+* `Duration` is a thin wrapper: it holds one `Int` of nanoseconds and does no
+* validation, so the value may be negative, and callers may overwrite the
+* `nanos` field directly. Build one from a source, or with `new Duration(n)`
+* when you already have a count.
+*
+* The unit is always nanoseconds inside the type. Convert at the boundary with
+* `toMillis()` for whole milliseconds and `toSeconds()` when you need the
+* sub-millisecond part.
+*
+* @example
+* import { Duration } from "@std/time";
+*
+* let half_second = new Duration(500000000);
+* print(half_second.toMillis());
+*/
+class Duration {
+    /**
+    * Signed nanosecond count. No range checking: negative and very large
+    * values are stored as given, and `Int` is 64-bit.
+    */
+    let nanos: Int;
+
+    /**
+    * Wrap an existing nanosecond count.
+    * @param nanos signed nanoseconds; stored unchanged.
+    */
+    init(nanos: Int) {
+        this.nanos = nanos;
+    }
+
+    /**
+    * Whole milliseconds, truncating the remainder.
+    *
+    * Integer division truncates toward zero, so 2_500_000 ns reports 2 and
+    * -1_500_000 ns reports -1. The sub-millisecond part is discarded; read
+    * `toSeconds()` when it matters.
+    *
+    * @returns nanos / 1000000 as Int.
+    * @example
+    * import { Clock } from "@std/time";
+    *
+    * let c = Clock.virtual(0);
+    * c.tick(2500000);
+    * print(c.now().toMillis());
+    */
+    toMillis(): Int {
+        return this.nanos / 1000000;
+    }
+
+    /**
+    * Seconds as a Float, keeping sub-millisecond precision.
+    *
+    * Conversion happens in Float, so 2_500_000 ns gives 0.0025 rather than a
+    * truncated 0. Float is 64-bit, so counts past 2^53 ns (about 104 days)
+    * lose the last digits of precision. Use `nanos` directly when you need
+    * exact arithmetic.
+    *
+    * @returns nanos / 1000000000.0 as Float.
+    * @example
+    * import { Clock } from "@std/time";
+    *
+    * let c = Clock.virtual(0);
+    * c.tick(2500000);
+    * print(c.now().toSeconds());
+    */
+    toSeconds(): Float {
+        return Float(this.nanos) / 1000000000.0;
+    }
+}
+
+/**
+* Manually advanced clock for deterministic tests and simulations.
+*
+* `VirtualClock` never calls the OS. Its timestamp is one `Int` field that
+* starts at whatever you pass to the constructor and moves only when you call
+* `tick()` or `reset()`. Same ticks, same timestamps, every run, on every
+* machine.
+*
+* The clock is monotonic only if you keep it that way: `tick()` accepts
+* negative values and `reset()` accepts any value, so time can move backward.
+* Passing non-negative deltas and never calling `reset()` is what gives you a
+* monotonic virtual clock.
+*
+* Because nothing waits, a virtual clock says nothing about real elapsed time.
+* Use `Clock.mono()` to measure how long work actually took.
+*
+* @example
+* import { Clock } from "@std/time";
+*
+* let c = Clock.virtual(0);
+* c.tick(60_000_000_000);
+* print(c.now().toSeconds());
+*/
+class VirtualClock {
+    /**
+    * Current time in nanoseconds. `tick()` and `reset()` are the methods
+    * meant to move it.
+    */
+    let currentNanos: Int;
+
+    /**
+    * Start a clock at an explicit timestamp.
+    *
+    * Use 0 for a clock that only measures time relative to a known start,
+    * which is the usual choice in tests.
+    *
+    * @param initialNanos starting timestamp in nanoseconds; any signed value.
+    */
+    init(initialNanos: Int) {
+        this.currentNanos = initialNanos;
+    }
+
+    /**
+    * Read the current virtual time.
+    *
+    * Reading does not advance the clock: repeated calls return equal
+    * timestamps until you tick or reset.
+    *
+    * @returns fresh Duration wrapping currentNanos.
+    * @example
+    * import { Clock } from "@std/time";
+    *
+    * let c = Clock.virtual(0);
+    * print(c.now().nanos == c.now().nanos);
+    */
+    now(): Duration {
+        return new Duration(this.currentNanos);
+    }
+
+    /**
+    * Advance the clock by a delta, without touching the OS.
+    *
+    * The delta is added to `currentNanos`, so a negative delta moves the
+    * clock backward and repeated calls accumulate. Nothing here yields or
+    * blocks, so ticking by 1_000_000_000 records that one second passed
+    * without spending it.
+    *
+    * @param deltaNanos signed nanoseconds to add.
+    * @example
+    * import { Clock } from "@std/time";
+    *
+    * let c = Clock.virtual(0);
+    * c.tick(2000000);
+    * print(c.now().toMillis());
+    */
+    tick(deltaNanos: Int) {
+        this.currentNanos = this.currentNanos + deltaNanos;
+    }
+
+    /**
+    * Jump to an explicit timestamp.
+    *
+    * This overwrites the clock instead of adding to it, which breaks
+    * monotonicity when the new value is smaller than the current one. Use it
+    * to start a scenario from a fixed point or to rewind after an
+    * exploratory step.
+    *
+    * @param nanos new currentNanos value, in nanoseconds.
+    * @example
+    * import { Clock } from "@std/time";
+    *
+    * let c = Clock.virtual(0);
+    * c.tick(1500000000);
+    * c.reset(0);
+    * print(c.now().nanos);
+    */
+    reset(nanos: Int) {
+        this.currentNanos = nanos;
+    }
+}
+
+/**
+* Entry point for both clock kinds: virtual clocks you advance yourself, and
+* the hardware monotonic clock.
+*
+* Both methods are static, so call them as `Clock.method()` without
+* constructing anything.
+*
+* Reach for `mono()` to measure real elapsed time and for a deadline check;
+* reach for `virtual()` when the test needs to reach a timeout without
+* actually waiting.
+*
+* @example
+* import { Clock } from "@std/time";
+*
+* let start = Clock.mono();
+* let timeout = Clock.virtual(start.nanos + 30_000_000_000);
+* print(timeout.now().nanos - start.nanos);
+*/
+class Clock {
+    /**
+    * Build a virtual clock starting at startNanos.
+    *
+    * Pass the current `Clock.mono()` reading to get a virtual clock whose
+    * timestamps share a base with real measurements, or pass 0 for a clock
+    * that only counts from its own start.
+    *
+    * @param startNanos initial timestamp in nanoseconds.
+    * @returns fresh VirtualClock for simulations and tests.
+    * @example
+    * import { Clock } from "@std/time";
+    *
+    * let c = Clock.virtual(1_000_000_000);
+    * print(c.now().toSeconds());
+    */
+    static virtual(startNanos: Int): VirtualClock {
+        return new VirtualClock(startNanos);
+    }
+
+    /**
+    * Hardware monotonic time, unaffected by wall-clock adjustments.
+    *
+    * The reading is nanoseconds elapsed since the first `Clock.mono()` call
+    * in this process, so the first call returns a small value near zero.
+    * Only differences between two readings are meaningful; the absolute value
+    * is not a wall-clock time and cannot be converted to one.
+    *
+    * Readings never decrease. Changing the system date, an NTP step, or a
+    * daylight-saving change does not move this clock, which is why it is the
+    * right source for timeouts, retries, and profiling. Each call costs one
+    * monotonic clock read, so sample it around a region of work rather than
+    * inside a loop.
+    *
+    * The value is signed 64-bit nanoseconds, good for about 292 years of
+    * process uptime.
+    *
+    * @returns Duration of nanoseconds since this process started reading time.
+    * @example
+    * import { Clock } from "@std/time";
+    *
+    * let a = Clock.mono();
+    * let b = Clock.mono();
+    * print(b.nanos >= a.nanos);
+    */
+    static mono(): Duration {
+        return new Duration(__rnx_clock_mono());
+    }
+}

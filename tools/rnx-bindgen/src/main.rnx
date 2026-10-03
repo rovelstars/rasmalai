@@ -1,0 +1,111 @@
+import { runClangAst } from "./clang";
+import { extractFunctions, extractStructs, extractDefines, matchPrefix, FnDecl } from "./extract";
+import { emitPackage } from "./emit";
+import { File, OpenMode } from "@std/fs";
+
+fn usage(): Int {
+    print("usage: rnx-bindgen --header <file.h> --native-lib <lib> --pkg-name <name> --out <dir> [--pkg-version <ver>] [--prefix <pfx>]... [--skip <name>]... [--include <dir>]... [--clang-flags \"<flags>\"]");
+    return 2;
+}
+
+fn readHeader(path: String): String {
+    let f = File.open(path, OpenMode.Read);
+    if !f.isOpen {
+        print("rnx-bindgen: cannot read " + path);
+        return "";
+    }
+    let text = f.readText().unwrapOr("");
+    f.close();
+    return text;
+}
+
+fn Main(): Int {
+    let args = rnx.args;
+    let header = "";
+    let nativeLib = "";
+    let pkgName = "";
+    let pkgVersion = "0.1.0";
+    let outDir = "";
+    let includes: Array<String> = [];
+    let prefixes: Array<String> = [];
+    let skips: Array<String> = [];
+    let rawFlags = "";
+    let i = 0;
+    while i < args.length() {
+        let a = args[i];
+        if a == "--header" && i + 1 < args.length() {
+            header = args[i + 1];
+            i = i + 2;
+        } else if a == "--native-lib" && i + 1 < args.length() {
+            nativeLib = args[i + 1];
+            i = i + 2;
+        } else if a == "--pkg-name" && i + 1 < args.length() {
+            pkgName = args[i + 1];
+            i = i + 2;
+        } else if a == "--pkg-version" && i + 1 < args.length() {
+            pkgVersion = args[i + 1];
+            i = i + 2;
+        } else if a == "--out" && i + 1 < args.length() {
+            outDir = args[i + 1];
+            i = i + 2;
+        } else if a == "--include" && i + 1 < args.length() {
+            includes.push(args[i + 1]);
+            i = i + 2;
+        } else if a == "--prefix" && i + 1 < args.length() {
+            prefixes.push(args[i + 1]);
+            i = i + 2;
+        } else if a == "--skip" && i + 1 < args.length() {
+            skips.push(args[i + 1]);
+            i = i + 2;
+        } else if a == "--clang-flags" && i + 1 < args.length() {
+            rawFlags = args[i + 1];
+            i = i + 2;
+        } else {
+            print("rnx-bindgen: unknown argument: " + a);
+            return usage();
+        }
+    }
+    if header == "" || nativeLib == "" || pkgName == "" || outDir == "" {
+        return usage();
+    }
+    let ast = runClangAst(header, includes, rawFlags);
+    if ast.length() == 0 {
+        return 1;
+    }
+    let fns = extractFunctions(ast, prefixes);
+    let kept: Array<FnDecl> = [];
+    let fi = 0;
+    while fi < fns.length() {
+        if skips.length() == 0 || !matchPrefix(fns[fi].name, skips) {
+            kept.push(fns[fi]);
+        }
+        fi = fi + 1;
+    }
+    let fns = kept;
+    if fns.length() == 0 {
+        print("rnx-bindgen: no matching functions found in " + header);
+        return 1;
+    }
+    let structs = extractStructs(ast, prefixes);
+    let headerText = readHeader(header);
+    if headerText == "" {
+        return 1;
+    }
+    let consts = extractDefines(headerText, prefixes);
+    let base = header;
+    let slash = -1;
+    let k = 0;
+    while k < base.length() {
+        if base.charCodeAt(k) == 47 {
+            slash = k;
+        }
+        k = k + 1;
+    }
+    if slash != -1 {
+        base = base.slice(slash + 1, base.length());
+    }
+    if !emitPackage(outDir, pkgName, pkgVersion, nativeLib, base, fns, structs, consts) {
+        return 1;
+    }
+    return 0;
+}

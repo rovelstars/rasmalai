@@ -1,0 +1,16 @@
+{
+    "name": "tree-sitter-rasmalai",
+    "version": "0.2.0",
+    "description": "Tree-sitter grammar for the Rasmalai programming language",
+    "main": "bindings/node",
+    "keywords": ["tree-sitter", "rasmalai", "parser"],
+    "tree-sitter": [
+        {
+            "scope": "source.rnx",
+            "file-types": ["rnx"],
+            "highlights": "queries/highlights.scm",
+            "locals": "queries/locals.scm",
+            "folds": "queries/folds.scm"
+        }
+    ]
+}

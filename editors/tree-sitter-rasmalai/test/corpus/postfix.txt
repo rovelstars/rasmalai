@@ -1,0 +1,117 @@
+================================================================================
+Postfix: optional chaining, new, tuples, spread, switch expressions
+================================================================================
+
+fn chains(u: User): String {
+  let a = u?.name;
+  let b = u?.name();
+  let c = new User("ab", 3);
+  let d = new Map<String, Int>();
+  let t = (1, 2);
+  let arr = [1, ...rest];
+  let r = { name: "x", ...base };
+  let v = switch c {
+    case .Red: "red",
+    default: "other",
+  };
+  return b;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (identifier))))
+    (type
+      (primitive_type))
+    (block
+      (variable_declaration
+        (identifier)
+        (expression
+          (optional_chain_expression
+            (expression
+              (identifier))
+            (identifier))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (optional_call_expression
+            (expression
+              (identifier))
+            (identifier)
+            (argument_list))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (new_expression
+            (identifier)
+            (argument_list
+              (argument
+                (expression
+                  (string_literal)))
+              (argument
+                (expression
+                  (number_literal)))))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (new_expression
+            (identifier)
+            (turbofish
+              (type
+                (primitive_type))
+              (type
+                (primitive_type)))
+            (argument_list))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (tuple_expression
+            (expression
+              (number_literal))
+            (expression
+              (number_literal)))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (array_literal
+            (expression
+              (number_literal))
+            (spread_expression
+              (expression
+                (identifier))))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (record_literal
+            (record_field
+              (identifier)
+              (expression
+                (string_literal)))
+            (spread_expression
+              (expression
+                (identifier))))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (switch_expression
+            (identifier)
+            (switch_expression_arm
+              (pattern
+                (expression
+                  (implicit_member_expression
+                    (identifier))))
+              (expression
+                (string_literal)))
+            (switch_expression_default
+              (expression
+                (string_literal))))))
+      (statement
+        (return_statement
+          (expression
+            (identifier)))))))

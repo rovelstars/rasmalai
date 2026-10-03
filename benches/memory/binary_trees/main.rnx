@@ -1,0 +1,60 @@
+//! binary_trees: Benchmarks-Game shape in struct-of-arrays form
+//! (three parallel Array<Int> tables). minDepth 4, maxDepth 16,
+//! stretch depth 17. Prints RESULT checksum (exact integer).
+
+fn buildTree(items: Array<Int>, lefts: Array<Int>, rights: Array<Int>, depth: Int, item: Int): Int {
+    let idx = items.length();
+    items.push(item);
+    lefts.push(0 - 1);
+    rights.push(0 - 1);
+    if depth > 0 {
+        let l = buildTree(items, lefts, rights, depth - 1, item * 2 - 1);
+        let r = buildTree(items, lefts, rights, depth - 1, item * 2);
+        lefts[idx] = l;
+        rights[idx] = r;
+    }
+    return idx;
+}
+
+fn checkTree(items: Array<Int>, lefts: Array<Int>, rights: Array<Int>, idx: Int): Int {
+    if idx < 0 {
+        return 0;
+    }
+    return items[idx] + checkTree(items, lefts, rights, lefts[idx]) - checkTree(items, lefts, rights, rights[idx]);
+}
+
+fn oneTree(depth: Int, item: Int): Int {
+    let items: Array<Int> = [];
+    let lefts: Array<Int> = [];
+    let rights: Array<Int> = [];
+    let root = buildTree(items, lefts, rights, depth, item);
+    return checkTree(items, lefts, rights, root);
+}
+
+fn Main(): Int {
+    let minDepth = 4;
+    let maxDepth = 16;
+    let total = oneTree(maxDepth + 1, 0);
+    let llItems: Array<Int> = [];
+    let llLefts: Array<Int> = [];
+    let llRights: Array<Int> = [];
+    let ll = buildTree(llItems, llLefts, llRights, maxDepth, 0);
+    total = total + checkTree(llItems, llLefts, llRights, ll);
+    let d = minDepth;
+    while d <= maxDepth {
+        let iters = 8;
+        if maxDepth > d {
+            iters = 2 * iters;
+        }
+        let cs = 0;
+        let k = 0;
+        while k < iters {
+            cs = cs + oneTree(d, k);
+            k = k + 1;
+        }
+        total = total + cs;
+        d = d + 2;
+    }
+    print("RESULT checksum", total);
+    return 0;
+}

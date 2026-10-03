@@ -1,0 +1,14 @@
+id = "rasmalai"
+name = "Rasmalai"
+version = "0.2.0"
+schema_version = 1
+authors = ["Rasmalai contributors"]
+repository = "https://github.com/rovelstars/rasmalai"
+
+[grammars.rasmalai]
+repository = "https://github.com/rovelstars/rasmalai"
+rev = "main"
+
+[language_servers.rnx-lsp]
+name = "Rasmalai LSP"
+languages = ["Rasmalai"]

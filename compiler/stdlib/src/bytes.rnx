@@ -1,0 +1,777 @@
+//! Raw byte buffers with numeric lanes in either byte order.
+//!
+//! `ByteBuffer` is a fixed-size block of bytes with an address, a length,
+//! and endian-aware accessors for the usual integer and float widths. Use
+//! it for file contents, network frames, C ABI calls, and hand-written
+//! wire formats, where the byte order and the lane width both matter.
+//!
+//! The size is picked once by `allocate` and never changes: there is no
+//! resize, so `length()` and `capacity()` always report the same number.
+//! Out-of-range access is neither clamped nor reported as an error value.
+//! A read or write that reaches past the end, or starts at a negative
+//! offset, stops the program with `byte buffer out of bounds`. A negative
+//! capacity stops it with `negative byte buffer capacity`.
+//!
+//! Offsets and sizes are plain `Int`. Narrow integer lanes widen into a
+//! 64-bit `Int` on the way out: signed lanes sign-extend, unsigned lanes
+//! zero-extend. Float lanes widen the same way, and the 32-bit float
+//! accessors narrow a `Float` to 32 bits on the way in, which leaves
+//! about 7 decimal digits.
+//!
+//! The `LE` and `BE` suffixes pick the byte order. Little-endian puts the
+//! least significant byte at the lowest offset, which is what x86, ARM,
+//! and most desktop formats use. Big-endian puts the most significant
+//! byte at the lowest offset, which is network byte order and what most
+//! file formats use. Write a lane with the same order you read it with;
+//! mixing the two on one field is a common source of silent corruption.
+//!
+//! Build a buffer with `fromString` or `fromArray` for text and byte
+//! lists, or with `allocate` plus the `write*` methods for anything
+//! else. `slice` copies a range out into a new buffer, and `copyWithin`
+//! shifts a range inside the buffer that already exists. `address` hands
+//! the raw pointer to `Pointer.fromAddress` for `unsafe` work and C calls.
+
+/**
+* Fixed-size raw byte buffer. All offsets and sizes are plain `Int`;
+* integer lanes widen into 64-bit `Int` (signed lanes sign-extend,
+* unsigned lanes zero-extend) and float lanes widen into 64-bit `Float`.
+* Any access past the buffer length aborts with an out-of-bounds error.
+*
+* A buffer never grows or shrinks, so `length()` and `capacity()` are the
+* same number and the address from `address()` stays put for the life of
+* the buffer. Build one with `allocate` for raw space, `fromString` for
+* text, or `fromArray` for a list of byte values.
+*
+* Reads come in a signed and an unsigned flavour per width. `readInt8`
+* sign-extends, so `0xFF` comes back as -1, while `readUInt8`
+* zero-extends and gives 255. The `write*` methods have no such split:
+* they all store the low bits of the value, so `writeInt8` and
+* `writeUInt8` are the same operation and differ only in what a later
+* read makes of the byte.
+*/
+class ByteBuffer {
+    /**
+    * Opaque handle to the native buffer. Other standard library modules
+    * read it to hand the buffer to a native call, for example
+    * `JSON.stringifyInto`. Do not invent a handle by hand: start from
+    * `allocate`, `fromString`, or `fromArray`.
+    */
+    let handle: Int;
+
+    /**
+    * Wrap an existing native buffer handle.
+    *
+    * Called by the static factories and by other standard library
+    * modules. Passing a handle that did not come from
+    * `__rnx_bytes_alloc` is undefined; use the factories instead.
+    */
+    init(handle: Int) {
+        this.handle = handle;
+    }
+
+    /**
+    * Allocate a zero-filled buffer.
+    *
+    * Every byte starts as 0, and the size is final: the buffer never
+    * resizes, so `length()` and `capacity()` both report `capacity`
+    * for the rest of the buffer's life.
+    *
+    * @param capacity byte count; length and capacity both start here.
+    * @returns buffer of `capacity` zero bytes.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(4);
+    * print(b.length(), b.capacity(), b.readUInt8(3));
+    */
+    static allocate(capacity: Int): ByteBuffer {
+        return new ByteBuffer(__rnx_bytes_alloc(capacity));
+    }
+
+    /**
+    * Build a buffer holding the UTF-8 bytes of a string.
+    *
+    * The size is the UTF-8 byte count of `str`, not `str.length()`:
+    * `length()` counts characters, and any character outside ASCII
+    * takes more bytes than it has characters. The buffer holds exactly
+    * the encoding with nothing spare, so writing past the end stops the
+    * program with `byte buffer out of bounds`.
+    *
+    * @param str source text; any text, encoded as UTF-8.
+    * @returns buffer of the UTF-8 byte count of `str`.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.fromString("hi");
+    * print(b.length(), b.readString(0, b.length()));
+    */
+    static fromString(str: String): ByteBuffer {
+        let b = ByteBuffer.allocate(utf8Len(str));
+        b.writeString(0, str);
+        return b;
+    }
+
+    /**
+    * Build a buffer from byte values (each masked to 8 bits).
+    *
+    * Each value is stored through the same path as `writeUInt8`, so only
+    * the low 8 bits survive: 300 becomes 44, and -1 becomes 255.
+    *
+    * @param bytes source bytes; length sets the buffer size.
+    * @returns buffer holding the low 8 bits of every value.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.fromArray([0, 127, 128, 255]);
+    * print(b.length(), b.readUInt8(2), b.readInt8(2));
+    */
+    static fromArray(bytes: Array<Int>): ByteBuffer {
+        let b = ByteBuffer.allocate(bytes.length());
+        let i = 0;
+        while i < bytes.length() {
+            b.writeUInt8(i, bytes[i]);
+            i = i + 1;
+        }
+        return b;
+    }
+
+    /**
+    * Live byte count.
+    *
+    * A buffer has no resize, so this never changes after `allocate` and
+    * always equals `capacity()`.
+    *
+    * @returns number of bytes in the buffer.
+    */
+    fn length(): Int {
+        return __rnx_bytes_len(this.handle);
+    }
+
+    /**
+    * Allocated byte count.
+    *
+    * There is no growth path, so this equals `length()`. It is the bound
+    * to check a raw pointer from `address()` against.
+    *
+    * @returns number of allocated bytes.
+    */
+    fn capacity(): Int {
+        return __rnx_bytes_cap(this.handle);
+    }
+
+    /**
+    * Raw address of the first byte, for `Pointer.fromAddress` inside
+    * `unsafe` blocks.
+    * The buffer must outlive every pointer made from it, and writes must
+    * stay within `capacity()` so the backing store never moves.
+    *
+    * Nothing here checks the type you pick for the pointer, so
+    * `Pointer.fromAddress<Int>` over a 2-byte buffer reads 8 bytes and
+    * walks off the end. Size the buffer for the element type first.
+    *
+    * @returns address of byte 0, for `Pointer.fromAddress`.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(2);
+    * unsafe {
+    *     let p = Pointer.fromAddress<Byte>(b.address());
+    *     p.write(9);
+    *     print(b.readUInt8(0), p.read());
+    * }
+    */
+    fn address(): Int {
+        return __rnx_bytes_data(this.handle);
+    }
+
+    /**
+    * Copy a sub-range into a fresh buffer.
+    *
+    * The source is copied one byte at a time, so the two buffers share
+    * nothing afterwards. A `end` above `length()` or a `start` below 0
+    * stops the program with `byte buffer out of bounds`, and a `end`
+    * below `start` sizes the result negative and stops it with
+    * `negative byte buffer capacity`. An empty range gives an empty
+    * buffer.
+    *
+    * @param start first byte, inclusive.
+    * @param end one past the last byte.
+    * @returns new buffer holding bytes `start` through `end - 1`.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.fromArray([0, 1, 2, 3, 4]);
+    * let mid = b.slice(1, 3);
+    * print(mid.length(), mid.readUInt8(0), mid.readUInt8(1));
+    */
+    fn slice(start: Int, end: Int): ByteBuffer {
+        let out = ByteBuffer.allocate(end - start);
+        let i = start;
+        while i < end {
+            out.writeUInt8(i - start, this.readUInt8(i));
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+    * Copy bytes within this buffer (overlap-safe, like TypedArray.set).
+    *
+    * The source range is moved as a block, so it survives a target that
+    * overlaps it. Both the source range and the target range are checked
+    * before anything is written: a `end` past `length()`, or a `target`
+    * where `target + (end - start)` would pass `length()`, stops the
+    * program with `byte buffer out of bounds` and leaves the buffer
+    * untouched.
+    *
+    * @param target offset to write to.
+    * @param start first byte to read, inclusive.
+    * @param end one past the last byte to read.
+    * @returns the same buffer, so calls can be chained.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.fromArray([0, 1, 2, 3, 4, 5]);
+    * b.copyWithin(1, 0, 4);
+    * print(b.readUInt8(0), b.readUInt8(1), b.readUInt8(4));
+    */
+    fn copyWithin(target: Int, start: Int, end: Int): ByteBuffer {
+        __rnx_bytes_copy_within(this.handle, target, start, end);
+        return this;
+    }
+
+    /**
+    * Signed 8-bit lane, sign-extended.
+    *
+    * @param offset byte to read; outside 0..length() stops the program
+    * with `byte buffer out of bounds`.
+    * @returns the byte widened to a 64-bit `Int` with its top 56 bits
+    * filled from bit 7, so 0xFF reads back as -1.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(1);
+    * b.writeUInt8(0, 255);
+    * print(b.readInt8(0), b.readUInt8(0));
+    */
+    fn readInt8(offset: Int): Int {
+        return __rnx_bytes_read_i8(this.handle, offset);
+    }
+
+    /**
+    * Unsigned 8-bit lane, zero-extended.
+    *
+    * @param offset byte to read; outside 0..length() stops the program
+    * with `byte buffer out of bounds`.
+    * @returns the byte widened to a 64-bit `Int`, 0 through 255.
+    */
+    fn readUInt8(offset: Int): Int {
+        return __rnx_bytes_read_u8(this.handle, offset);
+    }
+
+    /**
+    * Store the low 8 bits.
+    *
+    * @param offset byte to write; outside 0..length() stops the program
+    * with `byte buffer out of bounds`.
+    * @param val source value; only the low 8 bits are kept, so 300
+    * stores 44 and -1 stores 255.
+    *
+    * Identical to `writeUInt8`. A later `readInt8` sign-extends the byte
+    * and a later `readUInt8` does not.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(2);
+    * b.writeInt8(0, 300);
+    * b.writeUInt8(1, -1);
+    * print(b.readUInt8(0), b.readUInt8(1));
+    */
+    fn writeInt8(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u8(this.handle, offset, val);
+    }
+
+    /**
+    * Store the low 8 bits.
+    *
+    * @param offset byte to write; outside 0..length() stops the program
+    * with `byte buffer out of bounds`.
+    * @param val source value; only the low 8 bits are kept, so 300
+    * stores 44 and -1 stores 255.
+    *
+    * Identical to `writeInt8`. Pick the reader that matches how the byte
+    * should be interpreted.
+    */
+    fn writeUInt8(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u8(this.handle, offset, val);
+    }
+
+    /**
+    * Signed 16-bit lane, little-endian, sign-extended.
+    *
+    * @param offset first of the two bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 2` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the two bytes read low byte first, widened to a 64-bit
+    * `Int` and sign-extended from 16 bits.
+    */
+    fn readInt16LE(offset: Int): Int {
+        return __rnx_bytes_read_i16le(this.handle, offset);
+    }
+
+    /**
+    * Signed 16-bit lane, big-endian, sign-extended.
+    *
+    * @param offset first of the two bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 2` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the two bytes read high byte first, widened to a 64-bit
+    * `Int` and sign-extended from 16 bits.
+    */
+    fn readInt16BE(offset: Int): Int {
+        return __rnx_bytes_read_i16be(this.handle, offset);
+    }
+
+    /**
+    * Unsigned 16-bit lane, little-endian, zero-extended.
+    *
+    * @param offset first of the two bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 2` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the two bytes read low byte first, widened to a 64-bit
+    * `Int`, 0 through 65535.
+    */
+    fn readUInt16LE(offset: Int): Int {
+        return __rnx_bytes_read_u16le(this.handle, offset);
+    }
+
+    /**
+    * Unsigned 16-bit lane, big-endian, zero-extended.
+    *
+    * The same bytes read with the two orders give two different numbers,
+    * so the suffix has to match the writer.
+    *
+    * @param offset first of the two bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 2` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the two bytes read high byte first, widened to a 64-bit
+    * `Int`, 0 through 65535.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(2);
+    * b.writeUInt16BE(0, 0x1234);
+    * print(b.readUInt8(0), b.readUInt8(1), b.readUInt16BE(0));
+    */
+    fn readUInt16BE(offset: Int): Int {
+        return __rnx_bytes_read_u16be(this.handle, offset);
+    }
+
+    /**
+    * Store the low 16 bits, little-endian.
+    *
+    * @param offset first of the two bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; only the low 16 bits are kept.
+    *
+    * Identical to `writeUInt16LE`.
+    */
+    fn writeInt16LE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u16le(this.handle, offset, val);
+    }
+
+    /**
+    * Store the low 16 bits, big-endian.
+    *
+    * @param offset first of the two bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; only the low 16 bits are kept.
+    *
+    * Identical to `writeUInt16BE`.
+    */
+    fn writeInt16BE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u16be(this.handle, offset, val);
+    }
+
+    /**
+    * Store the low 16 bits, little-endian.
+    *
+    * @param offset first of the two bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; only the low 16 bits are kept, so 70000
+    * stores 4464.
+    *
+    * Identical to `writeInt16LE`.
+    */
+    fn writeUInt16LE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u16le(this.handle, offset, val);
+    }
+
+    /**
+    * Store the low 16 bits, big-endian.
+    *
+    * @param offset first of the two bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; only the low 16 bits are kept.
+    *
+    * Identical to `writeInt16BE`.
+    */
+    fn writeUInt16BE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u16be(this.handle, offset, val);
+    }
+
+    /**
+    * Signed 32-bit lane, little-endian, sign-extended.
+    *
+    * @param offset first of the four bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 4` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the four bytes read low byte first, widened to a 64-bit
+    * `Int` and sign-extended from 32 bits.
+    */
+    fn readInt32LE(offset: Int): Int {
+        return __rnx_bytes_read_i32le(this.handle, offset);
+    }
+
+    /**
+    * Signed 32-bit lane, big-endian, sign-extended.
+    *
+    * @param offset first of the four bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 4` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the four bytes read high byte first, widened to a 64-bit
+    * `Int` and sign-extended from 32 bits.
+    */
+    fn readInt32BE(offset: Int): Int {
+        return __rnx_bytes_read_i32be(this.handle, offset);
+    }
+
+    /**
+    * Unsigned 32-bit lane, little-endian, zero-extended.
+    *
+    * The signed and unsigned readers differ on the same bytes: 0xFFFFFFFF
+    * reads as 4294967295 here and as -1 through `readInt32LE`.
+    *
+    * @param offset first of the four bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 4` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the four bytes read low byte first, widened to a 64-bit
+    * `Int`, 0 through 4294967295.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(4);
+    * b.writeInt32LE(0, -1);
+    * print(b.readUInt32LE(0), b.readInt32LE(0));
+    */
+    fn readUInt32LE(offset: Int): Int {
+        return __rnx_bytes_read_u32le(this.handle, offset);
+    }
+
+    /**
+    * Unsigned 32-bit lane, big-endian, zero-extended.
+    *
+    * @param offset first of the four bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 4` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the four bytes read high byte first, widened to a 64-bit
+    * `Int`, 0 through 4294967295.
+    */
+    fn readUInt32BE(offset: Int): Int {
+        return __rnx_bytes_read_u32be(this.handle, offset);
+    }
+
+    /**
+    * Store the low 32 bits, little-endian.
+    *
+    * @param offset first of the four bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; only the low 32 bits are kept.
+    *
+    * Identical to `writeUInt32LE`.
+    */
+    fn writeInt32LE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u32le(this.handle, offset, val);
+    }
+
+    /**
+    * Store the low 32 bits, big-endian.
+    *
+    * @param offset first of the four bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; only the low 32 bits are kept.
+    *
+    * Identical to `writeUInt32BE`.
+    */
+    fn writeInt32BE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u32be(this.handle, offset, val);
+    }
+
+    /**
+    * Store the low 32 bits, little-endian.
+    *
+    * @param offset first of the four bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; only the low 32 bits are kept, so a value
+    * above 4294967295 wraps into the low 32 bits.
+    *
+    * Identical to `writeInt32LE`.
+    */
+    fn writeUInt32LE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u32le(this.handle, offset, val);
+    }
+
+    /**
+    * Store the low 32 bits, big-endian.
+    *
+    * @param offset first of the four bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; only the low 32 bits are kept.
+    *
+    * Identical to `writeInt32BE`.
+    */
+    fn writeUInt32BE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u32be(this.handle, offset, val);
+    }
+
+    /**
+    * Signed 64-bit lane, little-endian.
+    *
+    * There is no unsigned 64-bit accessor, because `Int` is already 64
+    * bits wide and holds the full bit pattern either way. Use `readUInt32`
+    * when the field is known to be 32 bits and a non-negative value.
+    *
+    * @param offset first of the eight bytes. The lane has to fit inside
+    * the buffer, so an offset above `length() - 8` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the eight bytes read low byte first, widened to a 64-bit
+    * `Int`.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(8);
+    * b.writeInt64LE(0, -2);
+    * print(b.readInt64LE(0), b.readUInt8(0), b.readUInt8(7));
+    */
+    fn readInt64LE(offset: Int): Int {
+        return __rnx_bytes_read_i64le(this.handle, offset);
+    }
+
+    /**
+    * Signed 64-bit lane, big-endian.
+    *
+    * @param offset first of the eight bytes. The lane has to fit inside
+    * the buffer, so an offset above `length() - 8` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the eight bytes read high byte first, widened to a 64-bit
+    * `Int`.
+    */
+    fn readInt64BE(offset: Int): Int {
+        return __rnx_bytes_read_i64be(this.handle, offset);
+    }
+
+    /**
+    * Store 64 bits, little-endian.
+    *
+    * @param offset first of the eight bytes; the lane has to fit inside
+    * the buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; all 64 bits are kept.
+    */
+    fn writeInt64LE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u64le(this.handle, offset, val);
+    }
+
+    /**
+    * Store 64 bits, big-endian.
+    *
+    * @param offset first of the eight bytes; the lane has to fit inside
+    * the buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; all 64 bits are kept.
+    */
+    fn writeInt64BE(offset: Int, val: Int): Void {
+        __rnx_bytes_write_u64be(this.handle, offset, val);
+    }
+
+    /**
+    * 32-bit float lane, little-endian, widened to `Float`.
+    *
+    * @param offset first of the four bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 4` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the four bytes as a 32-bit float, widened to 64 bits, so
+    * the value keeps about 7 decimal digits.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(4);
+    * b.writeFloat32LE(0, 1.5);
+    * print(b.readFloat32LE(0), b.readUInt8(0), b.readUInt8(3));
+    */
+    fn readFloat32LE(offset: Int): Float {
+        return __rnx_bytes_read_f32le(this.handle, offset);
+    }
+
+    /**
+    * 32-bit float lane, big-endian, widened to `Float`.
+    *
+    * @param offset first of the four bytes. The lane has to fit inside the
+    * buffer, so an offset above `length() - 4` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the four bytes as a 32-bit float, widened to 64 bits, so
+    * the value keeps about 7 decimal digits.
+    */
+    fn readFloat32BE(offset: Int): Float {
+        return __rnx_bytes_read_f32be(this.handle, offset);
+    }
+
+    /**
+    * Store a `Float` narrowed to 32 bits, little-endian.
+    *
+    * @param offset first of the four bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; narrowed to a 32-bit float, so 0.1 comes
+    * back from a read as 0.10000000149011612. A value outside the 32-bit
+    * range becomes infinity.
+    *
+    * Identical to `writeFloat32BE` except for the byte order.
+    */
+    fn writeFloat32LE(offset: Int, val: Float): Void {
+        __rnx_bytes_write_f32le(this.handle, offset, val);
+    }
+
+    /**
+    * Store a `Float` narrowed to 32 bits, big-endian.
+    *
+    * @param offset first of the four bytes; the lane has to fit inside the
+    * buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; narrowed to a 32-bit float, so 0.1 comes
+    * back from a read as 0.10000000149011612.
+    */
+    fn writeFloat32BE(offset: Int, val: Float): Void {
+        __rnx_bytes_write_f32be(this.handle, offset, val);
+    }
+
+    /**
+    * 64-bit float lane, little-endian.
+    *
+    * @param offset first of the eight bytes. The lane has to fit inside
+    * the buffer, so an offset above `length() - 8` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the eight bytes as a 64-bit float, with no precision lost.
+    */
+    fn readFloat64LE(offset: Int): Float {
+        return __rnx_bytes_read_f64le(this.handle, offset);
+    }
+
+    /**
+    * 64-bit float lane, big-endian.
+    *
+    * The IEEE-754 layout puts the sign bit in the first byte and the low
+    * mantissa bits in the last, which is the reverse of the little-endian
+    * order.
+    *
+    * @param offset first of the eight bytes. The lane has to fit inside
+    * the buffer, so an offset above `length() - 8` stops the program with
+    * `byte buffer out of bounds`.
+    * @returns the eight bytes as a 64-bit float, with no precision lost.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(8);
+    * b.writeFloat64BE(0, 1.0);
+    * print(b.readFloat64BE(0), b.readUInt8(0), b.readUInt8(7));
+    */
+    fn readFloat64BE(offset: Int): Float {
+        return __rnx_bytes_read_f64be(this.handle, offset);
+    }
+
+    /**
+    * Store 64 bits of float, little-endian.
+    *
+    * @param offset first of the eight bytes; the lane has to fit inside
+    * the buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; all 64 bits are kept, so a round trip
+    * through the buffer is exact.
+    */
+    fn writeFloat64LE(offset: Int, val: Float): Void {
+        __rnx_bytes_write_f64le(this.handle, offset, val);
+    }
+
+    /**
+    * Store 64 bits of float, big-endian.
+    *
+    * @param offset first of the eight bytes; the lane has to fit inside
+    * the buffer or the program stops with `byte buffer out of bounds`.
+    * @param val source value; all 64 bits are kept, so a round trip
+    * through the buffer is exact.
+    */
+    fn writeFloat64BE(offset: Int, val: Float): Void {
+        __rnx_bytes_write_f64be(this.handle, offset, val);
+    }
+
+    /**
+    * Decode UTF-8 bytes as a string.
+    *
+    * The decode never fails: bytes that are not valid UTF-8 each become
+    * one U+FFFD replacement character, so a buffer of arbitrary bytes
+    * still produces a string, just not the original text. The returned
+    * string counts characters, while the buffer counts bytes, so a
+    * multi-byte string is longer than the range it came from.
+    *
+    * @param offset first byte.
+    * @param length byte count; the range has to fit inside the buffer or
+    * the program stops with `byte buffer out of bounds`.
+    * @returns the decoded text.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.fromString("ok");
+    * print(b.readString(0, 2));
+    */
+    fn readString(offset: Int, length: Int): String {
+        return __rnx_bytes_read_string(this.handle, offset, length);
+    }
+
+    /**
+    * Encode a string as UTF-8 bytes.
+    *
+    * The whole encoding has to fit, so a hand-sized buffer needs room
+    * for every byte of the encoding, not for every character of the
+    * string. Nothing past the string is touched, and no NUL terminator
+    * is appended: a C function that expects one needs a 0 byte stored
+    * at the offset after the text, with room left for it.
+    *
+    * @param offset first byte to write.
+    * @param str source text.
+    * @returns bytes written, which is the UTF-8 byte count of `str`, not
+    * its character count.
+    * @example
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let b = ByteBuffer.allocate(8);
+    * let n = b.writeString(0, "hi");
+    * print(n, b.readUInt8(0), b.readUInt8(1), b.readString(0, n));
+    */
+    fn writeString(offset: Int, str: String): Int {
+        return __rnx_bytes_write_string(this.handle, offset, str);
+    }
+}
+
+private fn utf8Len(str: String): Int {
+    let n = 0;
+    let i = 0;
+    while i < str.length() {
+        let cp = str.charCodeAt(i);
+        if cp < 128 {
+            n = n + 1;
+        } else if cp < 2048 {
+            n = n + 2;
+        } else if cp < 65536 {
+            n = n + 3;
+        } else {
+            n = n + 4;
+        }
+        i = i + 1;
+    }
+    return n;
+}
