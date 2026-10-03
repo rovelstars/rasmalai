@@ -1,0 +1,764 @@
+{
+  "system": {
+    "cpu": "AMD EPYC 7763 64-Core Processor",
+    "os": "Linux",
+    "date": "2026-10-03"
+  },
+  "versions": {
+    "rnx": "rnx: rnx 0.1.0",
+    "c": "c compiler: Ubuntu clang version 18.1.3 (1ubuntu1)",
+    "rust": "rustc: rustc 1.99.0 (b940084d7 2026-09-28)",
+    "go": "go: go version go1.24.13 linux/amd64",
+    "node": "node: v22.23.3",
+    "java": "javac: javac 17.0.20.1",
+    "dart": "unavailable"
+  },
+  "rnx_compiler": "release",
+  "benchmarks": {
+    "fib": {
+      "name": "fib(35)",
+      "category": "compute",
+      "description": "Naive double recursion, call overhead",
+      "results": [
+        {
+          "lang": "rnx",
+          "mode": "dev",
+          "label": "rnx dev",
+          "runtime_ms": 92.6,
+          "peak_rss_mb": 3.0,
+          "build_ms": 43.2,
+          "build": "rnx build (Cranelift codegen, unoptimized, linked runnable binary)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rnx",
+          "mode": "rel",
+          "label": "rnx rel",
+          "runtime_ms": 29.3,
+          "peak_rss_mb": 2.6,
+          "build_ms": 122.6,
+          "build": "rnx build --release (LLVM AOT: program default<O3> host-cpu; runtime archive -O3 generic)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "dev",
+          "label": "c dev",
+          "runtime_ms": 54.1,
+          "peak_rss_mb": 1.8,
+          "build_ms": 60.6,
+          "build": "clang -O0",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "rel",
+          "label": "c rel",
+          "runtime_ms": 29.1,
+          "peak_rss_mb": 1.8,
+          "build_ms": 66.7,
+          "build": "clang -O3 -march=native",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "dev",
+          "label": "rust dev",
+          "runtime_ms": 76.9,
+          "peak_rss_mb": 1.9,
+          "build_ms": 49.6,
+          "build": "rustc (unoptimized, no LTO)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "rel",
+          "label": "rust rel",
+          "runtime_ms": 27.5,
+          "peak_rss_mb": 1.9,
+          "build_ms": 54.5,
+          "build": "rustc -C opt-level=3 -C codegen-units=1",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "go",
+          "mode": "rel",
+          "label": "go rel",
+          "runtime_ms": 54.7,
+          "peak_rss_mb": 3.4,
+          "build_ms": 39.1,
+          "build": "go build (only mode: Go always compiles optimized, no dev build exists)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "node",
+          "mode": "rel",
+          "label": "node rel",
+          "runtime_ms": 131.1,
+          "peak_rss_mb": 46.8,
+          "build_ms": 23.1,
+          "build": "node --check (interpreted, V8 JIT: no compile step exists)",
+          "run": "node <file>",
+          "artifact": false
+        },
+        {
+          "lang": "java",
+          "mode": "rel",
+          "label": "java rel",
+          "runtime_ms": 81.1,
+          "peak_rss_mb": 41.8,
+          "build_ms": 495.4,
+          "build": "javac (only mode: javac has no -O; HotSpot tiers its own JIT)",
+          "run": "java -cp <classes> <Class>",
+          "artifact": true
+        }
+      ]
+    },
+    "mandelbrot": {
+      "name": "mandelbrot 400x400",
+      "category": "compute",
+      "description": "Double float loops, branches, 1000 escape iterations",
+      "results": [
+        {
+          "lang": "rnx",
+          "mode": "dev",
+          "label": "rnx dev",
+          "runtime_ms": 327.7,
+          "peak_rss_mb": 3.1,
+          "build_ms": 42.9,
+          "build": "rnx build (Cranelift codegen, unoptimized, linked runnable binary)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rnx",
+          "mode": "rel",
+          "label": "rnx rel",
+          "runtime_ms": 72.8,
+          "peak_rss_mb": 2.5,
+          "build_ms": 146.4,
+          "build": "rnx build --release (LLVM AOT: program default<O3> host-cpu; runtime archive -O3 generic)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "dev",
+          "label": "c dev",
+          "runtime_ms": 237.6,
+          "peak_rss_mb": 1.8,
+          "build_ms": 60.6,
+          "build": "clang -O0 -ffp-contract=off",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "rel",
+          "label": "c rel",
+          "runtime_ms": 86.8,
+          "peak_rss_mb": 1.8,
+          "build_ms": 79.9,
+          "build": "clang -O3 -march=native -ffp-contract=off",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "dev",
+          "label": "rust dev",
+          "runtime_ms": 235.2,
+          "peak_rss_mb": 2.1,
+          "build_ms": 50.9,
+          "build": "rustc (unoptimized, no LTO)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "rel",
+          "label": "rust rel",
+          "runtime_ms": 87.8,
+          "peak_rss_mb": 2.0,
+          "build_ms": 57.1,
+          "build": "rustc -C opt-level=3 -C codegen-units=1",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "go",
+          "mode": "rel",
+          "label": "go rel",
+          "runtime_ms": 88.0,
+          "peak_rss_mb": 3.4,
+          "build_ms": 39.5,
+          "build": "go build (only mode: Go always compiles optimized, no dev build exists)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "node",
+          "mode": "rel",
+          "label": "node rel",
+          "runtime_ms": 114.9,
+          "peak_rss_mb": 48.3,
+          "build_ms": 24.1,
+          "build": "node --check (interpreted, V8 JIT: no compile step exists)",
+          "run": "node <file>",
+          "artifact": false
+        },
+        {
+          "lang": "java",
+          "mode": "rel",
+          "label": "java rel",
+          "runtime_ms": 141.0,
+          "peak_rss_mb": 42.2,
+          "build_ms": 516.2,
+          "build": "javac (only mode: javac has no -O; HotSpot tiers its own JIT)",
+          "run": "java -cp <classes> <Class>",
+          "artifact": true
+        }
+      ],
+      "rnx_variant": "FastFloat with LIR-synthesized single-rounding FMA; strict prologue",
+      "checksum_ref": "27482318",
+      "checksum_ref_rnx": "27482298"
+    },
+    "nbody": {
+      "name": "nbody 100k steps",
+      "category": "compute",
+      "description": "sqrt-heavy float arrays, 5 bodies in Benchmarks-Game units",
+      "results": [
+        {
+          "lang": "rnx",
+          "mode": "dev",
+          "label": "rnx dev",
+          "runtime_ms": 82.8,
+          "peak_rss_mb": 3.3,
+          "build_ms": 53.8,
+          "build": "rnx build (Cranelift codegen, unoptimized, linked runnable binary)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rnx",
+          "mode": "rel",
+          "label": "rnx rel",
+          "runtime_ms": 11.9,
+          "peak_rss_mb": 2.5,
+          "build_ms": 202.4,
+          "build": "rnx build --release (LLVM AOT: program default<O3> host-cpu; runtime archive -O3 generic)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "dev",
+          "label": "c dev",
+          "runtime_ms": 25.7,
+          "peak_rss_mb": 1.8,
+          "build_ms": 72.0,
+          "build": "clang -O0 -ffp-contract=off",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "rel",
+          "label": "c rel",
+          "runtime_ms": 8.2,
+          "peak_rss_mb": 1.9,
+          "build_ms": 100.7,
+          "build": "clang -O3 -march=native -ffp-contract=off",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "dev",
+          "label": "rust dev",
+          "runtime_ms": 47.9,
+          "peak_rss_mb": 1.9,
+          "build_ms": 59.7,
+          "build": "rustc (unoptimized, no LTO)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "rel",
+          "label": "rust rel",
+          "runtime_ms": 8.6,
+          "peak_rss_mb": 2.1,
+          "build_ms": 73.8,
+          "build": "rustc -C opt-level=3 -C codegen-units=1",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "go",
+          "mode": "rel",
+          "label": "go rel",
+          "runtime_ms": 9.0,
+          "peak_rss_mb": 3.5,
+          "build_ms": 38.3,
+          "build": "go build (only mode: Go always compiles optimized, no dev build exists)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "node",
+          "mode": "rel",
+          "label": "node rel",
+          "runtime_ms": 45.3,
+          "peak_rss_mb": 49.2,
+          "build_ms": 22.9,
+          "build": "node --check (interpreted, V8 JIT: no compile step exists)",
+          "run": "node <file>",
+          "artifact": false
+        },
+        {
+          "lang": "java",
+          "mode": "rel",
+          "label": "java rel",
+          "runtime_ms": 88.1,
+          "peak_rss_mb": 44.1,
+          "build_ms": 539.8,
+          "build": "javac (only mode: javac has no -O; HotSpot tiers its own JIT)",
+          "run": "java -cp <classes> <Class>",
+          "artifact": true
+        }
+      ]
+    },
+    "spectral": {
+      "name": "spectral N=300",
+      "category": "compute",
+      "description": "Array traversals and division, 10 power iterations on AtA",
+      "results": [
+        {
+          "lang": "rnx",
+          "mode": "dev",
+          "label": "rnx dev",
+          "runtime_ms": 50.4,
+          "peak_rss_mb": 3.3,
+          "build_ms": 46.6,
+          "build": "rnx build (Cranelift codegen, unoptimized, linked runnable binary)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rnx",
+          "mode": "rel",
+          "label": "rnx rel",
+          "runtime_ms": 7.4,
+          "peak_rss_mb": 2.6,
+          "build_ms": 158.9,
+          "build": "rnx build --release (LLVM AOT: program default<O3> host-cpu; runtime archive -O3 generic)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "dev",
+          "label": "c dev",
+          "runtime_ms": 17.1,
+          "peak_rss_mb": 1.9,
+          "build_ms": 70.4,
+          "build": "clang -O0 -ffp-contract=off",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "rel",
+          "label": "c rel",
+          "runtime_ms": 6.2,
+          "peak_rss_mb": 1.9,
+          "build_ms": 187.7,
+          "build": "clang -O3 -march=native -ffp-contract=off",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "dev",
+          "label": "rust dev",
+          "runtime_ms": 45.3,
+          "peak_rss_mb": 2.1,
+          "build_ms": 60.1,
+          "build": "rustc (unoptimized, no LTO)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "rel",
+          "label": "rust rel",
+          "runtime_ms": 6.1,
+          "peak_rss_mb": 2.1,
+          "build_ms": 82.5,
+          "build": "rustc -C opt-level=3 -C codegen-units=1",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "go",
+          "mode": "rel",
+          "label": "go rel",
+          "runtime_ms": 6.5,
+          "peak_rss_mb": 3.4,
+          "build_ms": 39.2,
+          "build": "go build (only mode: Go always compiles optimized, no dev build exists)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "node",
+          "mode": "rel",
+          "label": "node rel",
+          "runtime_ms": 39.6,
+          "peak_rss_mb": 49.5,
+          "build_ms": 23.5,
+          "build": "node --check (interpreted, V8 JIT: no compile step exists)",
+          "run": "node <file>",
+          "artifact": false
+        },
+        {
+          "lang": "java",
+          "mode": "rel",
+          "label": "java rel",
+          "runtime_ms": 72.2,
+          "peak_rss_mb": 42.3,
+          "build_ms": 529.4,
+          "build": "javac (only mode: javac has no -O; HotSpot tiers its own JIT)",
+          "run": "java -cp <classes> <Class>",
+          "artifact": true
+        }
+      ]
+    },
+    "matmul": {
+      "name": "matmul 256x256",
+      "category": "compute",
+      "description": "Integer arrays, nested loops, bounds checks",
+      "results": [
+        {
+          "lang": "rnx",
+          "mode": "dev",
+          "label": "rnx dev",
+          "runtime_ms": 96.7,
+          "peak_rss_mb": 4.8,
+          "build_ms": 44.2,
+          "build": "rnx build (Cranelift codegen, unoptimized, linked runnable binary)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rnx",
+          "mode": "rel",
+          "label": "rnx rel",
+          "runtime_ms": 42.4,
+          "peak_rss_mb": 4.2,
+          "build_ms": 1337.6,
+          "build": "rnx build --release (LLVM AOT: program default<O3> host-cpu; runtime archive -O3 generic)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "dev",
+          "label": "c dev",
+          "runtime_ms": 45.4,
+          "peak_rss_mb": 3.3,
+          "build_ms": 61.2,
+          "build": "clang -O0",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "rel",
+          "label": "c rel",
+          "runtime_ms": 40.5,
+          "peak_rss_mb": 3.3,
+          "build_ms": 103.5,
+          "build": "clang -O3 -march=native",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "dev",
+          "label": "rust dev",
+          "runtime_ms": 277.7,
+          "peak_rss_mb": 3.4,
+          "build_ms": 59.4,
+          "build": "rustc (unoptimized, no LTO)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "rel",
+          "label": "rust rel",
+          "runtime_ms": 32.7,
+          "peak_rss_mb": 3.4,
+          "build_ms": 76.7,
+          "build": "rustc -C opt-level=3 -C codegen-units=1",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "go",
+          "mode": "rel",
+          "label": "go rel",
+          "runtime_ms": 26.8,
+          "peak_rss_mb": 5.5,
+          "build_ms": 39.2,
+          "build": "go build (only mode: Go always compiles optimized, no dev build exists)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "node",
+          "mode": "rel",
+          "label": "node rel",
+          "runtime_ms": 79.0,
+          "peak_rss_mb": 50.1,
+          "build_ms": 22.9,
+          "build": "node --check (interpreted, V8 JIT: no compile step exists)",
+          "run": "node <file>",
+          "artifact": false
+        },
+        {
+          "lang": "java",
+          "mode": "rel",
+          "label": "java rel",
+          "runtime_ms": 88.9,
+          "peak_rss_mb": 44.8,
+          "build_ms": 537.2,
+          "build": "javac (only mode: javac has no -O; HotSpot tiers its own JIT)",
+          "run": "java -cp <classes> <Class>",
+          "artifact": true
+        }
+      ]
+    },
+    "binary_trees": {
+      "name": "binary trees depth 16",
+      "category": "memory",
+      "description": "Recursive tree allocation and destruction, struct-of-arrays",
+      "results": [
+        {
+          "lang": "rnx",
+          "mode": "dev",
+          "label": "rnx dev",
+          "runtime_ms": 76.8,
+          "peak_rss_mb": 11.3,
+          "build_ms": 44.8,
+          "build": "rnx build (Cranelift codegen, unoptimized, linked runnable binary)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rnx",
+          "mode": "rel",
+          "label": "rnx rel",
+          "runtime_ms": 45.5,
+          "peak_rss_mb": 10.6,
+          "build_ms": 136.0,
+          "build": "rnx build --release (LLVM AOT: program default<O3> host-cpu; runtime archive -O3 generic)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "dev",
+          "label": "c dev",
+          "runtime_ms": 37.3,
+          "peak_rss_mb": 8.4,
+          "build_ms": 65.4,
+          "build": "clang -O0",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "rel",
+          "label": "c rel",
+          "runtime_ms": 21.2,
+          "peak_rss_mb": 8.4,
+          "build_ms": 94.5,
+          "build": "clang -O3 -march=native",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "dev",
+          "label": "rust dev",
+          "runtime_ms": 86.8,
+          "peak_rss_mb": 10.1,
+          "build_ms": 58.5,
+          "build": "rustc (unoptimized, no LTO)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "rel",
+          "label": "rust rel",
+          "runtime_ms": 39.3,
+          "peak_rss_mb": 10.0,
+          "build_ms": 77.0,
+          "build": "rustc -C opt-level=3 -C codegen-units=1",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "go",
+          "mode": "rel",
+          "label": "go rel",
+          "runtime_ms": 74.8,
+          "peak_rss_mb": 20.0,
+          "build_ms": 39.3,
+          "build": "go build (only mode: Go always compiles optimized, no dev build exists)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "node",
+          "mode": "rel",
+          "label": "node rel",
+          "runtime_ms": 173.2,
+          "peak_rss_mb": 119.4,
+          "build_ms": 23.2,
+          "build": "node --check (interpreted, V8 JIT: no compile step exists)",
+          "run": "node <file>",
+          "artifact": false
+        },
+        {
+          "lang": "java",
+          "mode": "rel",
+          "label": "java rel",
+          "runtime_ms": 84.3,
+          "peak_rss_mb": 149.2,
+          "build_ms": 544.7,
+          "build": "javac (only mode: javac has no -O; HotSpot tiers its own JIT)",
+          "run": "java -cp <classes> <Class>",
+          "artifact": true
+        }
+      ]
+    },
+    "json_stress": {
+      "name": "json stress 20k objects",
+      "category": "memory",
+      "description": "Payload parsing and dynamic map insertion, 5 parse+serialize rounds",
+      "results": [
+        {
+          "lang": "rnx",
+          "mode": "dev",
+          "label": "rnx dev",
+          "runtime_ms": 164.6,
+          "peak_rss_mb": 10.2,
+          "build_ms": 49.6,
+          "build": "rnx build (Cranelift codegen, unoptimized, linked runnable binary)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rnx",
+          "mode": "rel",
+          "label": "rnx rel",
+          "runtime_ms": 153.7,
+          "peak_rss_mb": 9.3,
+          "build_ms": 155.7,
+          "build": "rnx build --release (LLVM AOT: program default<O3> host-cpu; runtime archive -O3 generic)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "dev",
+          "label": "c dev",
+          "runtime_ms": 243.1,
+          "peak_rss_mb": 26.7,
+          "build_ms": 74.3,
+          "build": "clang -O0",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "c",
+          "mode": "rel",
+          "label": "c rel",
+          "runtime_ms": 164.4,
+          "peak_rss_mb": 26.7,
+          "build_ms": 155.3,
+          "build": "clang -O3 -march=native",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "dev",
+          "label": "rust dev",
+          "runtime_ms": 330.4,
+          "peak_rss_mb": 24.2,
+          "build_ms": 97.9,
+          "build": "rustc (unoptimized, no LTO)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "rust",
+          "mode": "rel",
+          "label": "rust rel",
+          "runtime_ms": 98.8,
+          "peak_rss_mb": 24.2,
+          "build_ms": 219.1,
+          "build": "rustc -C opt-level=3 -C codegen-units=1",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "go",
+          "mode": "rel",
+          "label": "go rel",
+          "runtime_ms": 217.4,
+          "peak_rss_mb": 22.5,
+          "build_ms": 41.9,
+          "build": "go build (only mode: Go always compiles optimized, no dev build exists)",
+          "run": "linked artifact from the build step",
+          "artifact": true
+        },
+        {
+          "lang": "node",
+          "mode": "rel",
+          "label": "node rel",
+          "runtime_ms": 149.7,
+          "peak_rss_mb": 67.8,
+          "build_ms": 24.5,
+          "build": "node --check (interpreted, V8 JIT: no compile step exists)",
+          "run": "node <file>",
+          "artifact": false
+        },
+        {
+          "lang": "java",
+          "mode": "rel",
+          "label": "java rel",
+          "runtime_ms": 313.0,
+          "peak_rss_mb": 171.1,
+          "build_ms": 726.0,
+          "build": "javac (only mode: javac has no -O; HotSpot tiers its own JIT)",
+          "run": "java -cp <classes> <Class>",
+          "artifact": true
+        }
+      ]
+    }
+  }
+}
