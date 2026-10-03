@@ -110,7 +110,7 @@ MODES = {
 # Exact build step per (language, mode), recorded on every result row. For
 # C the per-bench float flags are appended at build time.
 BUILD = {
-    ("rnx", "dev"): "rnx build (Cranelift codegen, unoptimized, linked runnable binary)",
+    ("rnx", "dev"): "rnx build (LLVM AOT dev: unoptimized object + linked runnable binary)",
     ("rnx", "rel"): "rnx build --release (LLVM AOT: program default<O3> host-cpu; runtime archive -O3 generic)",
     ("c", "dev"): "clang -O0",
     ("c", "rel"): "clang -O3 -march=native",
