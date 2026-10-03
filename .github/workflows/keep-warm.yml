@@ -21,5 +21,8 @@ jobs:
             "https://rasmalai.rovelstars.com/packages" \
             "https://rasmalai.rovelstars.com/" \
           ; do
-            curl -s -o /dev/null -w "%{http_code} %{time_total}s $url\n" --max-time 60 "$url" || true
+            echo "== $url"
+            curl -s -D - -o /dev/null --max-time 60 \
+              -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" \
+              "$url" | grep -iE "^HTTP|^(server|cf-mitigated|cf-ray|content-type):" || true
           done
