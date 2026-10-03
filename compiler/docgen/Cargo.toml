@@ -1,0 +1,13 @@
+[package]
+name = "docgen"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "docgen"
+path = "src/main.rs"
+
+[dependencies]
+diagnostics = { path = "../diagnostics" }
+frontend = { path = "../frontend" }
+stdlib = { path = "../stdlib" }
