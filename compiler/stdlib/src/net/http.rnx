@@ -1,0 +1,83 @@
+//! HTTP/1.1 message shaping for `@std/net` sockets.
+//!
+//! Pure string shaping with no sockets: `encodeRequestLine` builds the
+//! opening line of a request, `statusCode` reads the three-digit status out
+//! of a response status line, and `isSuccess` tests the 2xx range. Send the
+//! bytes with `TcpStream.write()` and read the reply with `read()`.
+//!
+//! ```rnx
+//! import { encodeRequestLine, statusCode } from "@std/net/http";
+//!
+//! let line = encodeRequestLine("GET", "/health");
+//! print(line);
+//! print(statusCode("HTTP/1.1 200 OK"));
+//! ```
+
+/**
+* Request target split into dial and send parts. `host` and `port` select
+* the socket for `TcpStream.connect()`; `path` is the origin-form target
+* placed on the request line by `encodeRequestLine`.
+*/
+record HttpTarget(host: String, port: Int, path: String)
+
+/**
+* Opening line of an HTTP/1.1 request: method, origin-form target, and
+* version joined by single spaces and terminated with CRLF.
+*
+* @param method uppercase method such as `GET` or `POST`.
+* @param target origin-form path such as `/health`.
+* @returns request line terminated with CRLF.
+* @example
+* import { encodeRequestLine } from "@std/net/http";
+*
+* print(encodeRequestLine("GET", "/health"));
+*/
+fn encodeRequestLine(method: String, target: String): String {
+    return method + " " + target + " HTTP/1.1\u{D}\u{A}";
+}
+
+/**
+* Three-digit status code at the head of a response status line such as
+* `HTTP/1.1 200 OK`. Anything that is not a version, a space, and three
+* ASCII digits reads as -1 rather than throwing, so callers can branch on
+* the sentinel.
+*
+* @param statusLine raw status line including the version prefix.
+* @returns status code 100..599, or -1 when the line is malformed.
+* @example
+* import { statusCode } from "@std/net/http";
+*
+* print(statusCode("HTTP/1.1 404 Not Found"));
+*/
+fn statusCode(statusLine: String): Int {
+    let i = 0;
+    while i < statusLine.length() && statusLine.charCodeAt(i) != 32 {
+        i = i + 1;
+    }
+    if i + 4 > statusLine.length() {
+        return 0 - 1;
+    }
+    let code = 0;
+    let k = 0;
+    while k < 3 {
+        let c = statusLine.charCodeAt(i + 1 + k);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        code = code * 10 + (c - 48);
+        k = k + 1;
+    }
+    return code;
+}
+
+/**
+* True for 2xx status codes: the request was received, understood, and
+* accepted. Every other code, including the -1 malformed sentinel from
+* `statusCode`, reads as false.
+*
+* @param code status code from `statusCode`.
+* @returns true for codes 200..299.
+*/
+fn isSuccess(code: Int): Bool {
+    return code >= 200 && code < 300;
+}

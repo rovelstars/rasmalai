@@ -1,0 +1,81 @@
+//! JSON ingestion stress: parse + stringify a generated nested document
+//! in a loop. Prints RESULT lines with document bytes, rounds, timing,
+//! throughput, and a checksum; scale via RNX_BENCH_SCALE=tiny|small.
+import { Env } from "@std/env";
+import { Clock } from "@std/time";
+import { JSON } from "@std/json";
+
+fn chunkDoc(items: Int): String {
+    let piece = "\{\"id\": 7, \"name\": \"name-7\", \"tags\": [\"a\", \"b\", \"c\"], \"score\": 1.5, \"ok\": true}";
+    let out = "";
+    let i = 0;
+    while i < items {
+        if i > 0 {
+            out = out + ",";
+        }
+        out = out + piece;
+        i = i + 1;
+    }
+    return out;
+}
+
+fn buildDoc(chunkItems: Int, chunks: Int): String {
+    let chunk = chunkDoc(chunkItems);
+    let doc = "[";
+    let c = 0;
+    while c < chunks {
+        if c > 0 {
+            doc = doc + ",";
+        }
+        doc = doc + chunk;
+        c = c + 1;
+    }
+    return doc + "]";
+}
+
+fn checksum(s: String): Int {
+    let acc = 0;
+    let i = 0;
+    while i < s.length() {
+        acc = acc + s.charCodeAt(i);
+        i = i + 1;
+    }
+    return acc;
+}
+
+fn Main(): Int {
+    let scale = Env.get("RNX_BENCH_SCALE");
+    let chunkItems = 150;
+    let chunks = 80;
+    let rounds = 5;
+    if scale == "tiny" {
+        chunkItems = 30;
+        chunks = 1;
+        rounds = 2;
+    }
+    if scale == "small" {
+        chunkItems = 150;
+        chunks = 2;
+        rounds = 10;
+    }
+    let doc = buildDoc(chunkItems, chunks);
+    print("RESULT docbytes", doc.length());
+    let live0 = __rnx_debug_live_count();
+    let t0 = Clock.mono().nanos;
+    let r = 0;
+    let sum = 0;
+    while r < rounds {
+        let v: Any = JSON.parse(doc);
+        let s = JSON.stringify(v);
+        sum = sum + s.length();
+        r = r + 1;
+    }
+    let t1 = Clock.mono().nanos;
+    let ms = (t1 - t0) / 1000000;
+    print("RESULT rounds", rounds);
+    print("RESULT jsonms", ms);
+    print("RESULT outbytes", sum);
+    print("RESULT jsonsum", sum % 1000000007);
+    print("RESULT live_delta", __rnx_debug_live_count() - live0);
+    return 0;
+}

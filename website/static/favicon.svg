@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>
+    .bg { fill: #15141b; }
+    .glyph { fill: #a277ff; font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: bold; }
+    .caret { fill: #ffca85; }
+    @media (prefers-color-scheme: light) {
+      .bg { fill: #f4f3f7; }
+      .glyph { fill: #6d3fd4; }
+      .caret { fill: #925a00; }
+    }
+  </style>
+  <rect class="bg" x="0" y="0" width="64" height="64" rx="12"/>
+  <text class="glyph" x="32" y="38" font-size="22" text-anchor="middle">rnx</text>
+  <rect class="caret" x="16" y="44" width="32" height="4" rx="2"/>
+</svg>

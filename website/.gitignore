@@ -1,0 +1,33 @@
+node_modules
+
+# Generated WASM artifacts (rebuild with `npm run build:wasm`)
+# Generated social banner (rebuild with `node scripts/build-og.mjs`, runs in prebuild)
+static/og-banner.png
+
+# Local stdlib doc snapshot (written by scripts/seed-std.mjs)
+.std-doc/
+src/lib/wasm/wasm_playground.js
+src/lib/wasm/wasm_playground_bg.wasm
+src/lib/wasm/package.json
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*

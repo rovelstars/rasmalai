@@ -1,0 +1,45 @@
+//! mandelbrot 400x400, escape iterations capped at 1000.
+//! Prints RESULT checksum (integer sum of per-pixel iteration counts).
+//!
+//! The orbit recurrence is `FastFloat`: orbit iteration is a
+//! visuals-grade simulation (spec 04_NUMERICS lists this class under
+//! FastFloat use). LIR synthesis canonicalizes both fused
+//! multiply-adds and the add-of-sub reassociation up front, so LLVM and
+//! Cranelift lower the loop literally and agree bit-for-bit. The pixel
+//! coordinates stay strict `Float` (exact IEEE division, identical on
+//! every backend) and convert once at the loop boundary: this keeps the
+//! LLVM-only reciprocal fold out of the checksum. The checksum differs
+//! from the all-strict spelling (single rounding in the loop) but is
+//! stable across every backend and language config in the matrix.
+
+fn Main(): Int {
+    let total = 0;
+    let py = 0;
+    while py < 400 {
+        let y0s = (py * 3.0 / 399.0) - 1.5;
+        let y0 = y0s.asFast();
+        let px = 0;
+        while px < 400 {
+            let x0s = (px * 3.0 / 399.0) - 2.0;
+            let x0 = x0s.asFast();
+            let zx: FastFloat = 0.0.asFast();
+            let zy: FastFloat = 0.0.asFast();
+            let iter = 0;
+            while iter < 1000 {
+                let zx2 = zx * zx;
+                let zy2 = zy * zy;
+                if zx2 + zy2 > 4.0.asFast() {
+                    break;
+                }
+                zy = 2.0.asFast() * zx * zy + y0;
+                zx = zx2 - zy2 + x0;
+                iter = iter + 1;
+            }
+            total = total + iter;
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+    print("RESULT checksum", total);
+    return 0;
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Rasmalai Programming Language",
+  "short_name": "Rasmalai",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "theme_color": "#15141b",
+  "background_color": "#15141b",
+  "display": "standalone"
+}

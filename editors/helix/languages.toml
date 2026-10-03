@@ -1,0 +1,15 @@
+[[language]]
+name = "rasmalai"
+scope = "source.rnx"
+file-types = ["rnx", "Project.config", "Project.deplock"]
+roots = ["Project.config", ".git"]
+comment-tokens = ["//"]
+block-comment-tokens = [{ start = "/*", end = "*/" }]
+indent = { tab-width = 4, unit = "    " }
+language-servers = ["rnx-lsp"]
+
+[language-server.rnx-lsp]
+command = "rnx"
+args = ["lsp"]
+
+# Rasmalai manifests are `.rnx` modules; highlight them as such.

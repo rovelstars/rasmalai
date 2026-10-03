@@ -1,0 +1,72 @@
+name: Monthly benchmarks
+
+# Re-measures the benchmark suite on the first of every month and
+# force-pushes the result to the orphan benchmarks branch. The homepage
+# Pareto chart fetches that branch at runtime, so the published chart
+# reflects the current tree without any snapshot committed to main.
+# Standard runners are noisy neighbors: treat
+# month-to-month deltas as trends, not records.
+on:
+  schedule:
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: benchmarks
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install LLVM 22
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22-dev libpolly-22-dev
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-release
+          save-if: false
+
+      - name: Build rnx (release)
+        run: |
+          ulimit -c 0
+          cargo build --release --bin rnx
+
+      - name: Run benchmark harness
+        run: |
+          python3 benches/harness/runner.py --out benches/data/benchmarks.json
+
+      - name: Deploy benchmarks to orphan branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rm -rf /tmp/bench-upload
+          mkdir -p /tmp/bench-upload
+          cd /tmp/bench-upload
+
+          git init -b benchmarks
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          cp "$GITHUB_WORKSPACE/benches/data/benchmarks.json" ./benchmarks.json
+
+          git add benchmarks.json
+          git commit -m "chore(bench): update benchmarks.json [skip ci]"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" benchmarks

@@ -1,0 +1,135 @@
+//! Async socket ping-pong: one server thread echoes fixed 64-byte binary
+//! payloads, the client measures round trips through the mio reactor.
+//! Prints RESULT lines with ping count, milliseconds, and a checksum;
+//! scale via RNX_BENCH_SCALE=tiny|small (ping count).
+import { Env } from "@std/env";
+import { Clock } from "@std/time";
+import { TcpStream, TcpListener } from "@std/net";
+
+fn payloadByte(i: Int): Int {
+    return (i * 37 + 11) % 256;
+}
+
+fn serveEcho(sh: Int, pings: Int): Int {
+    let done = 0;
+    while done < pings {
+        let msg: Array<Int> = [];
+        while msg.length() < 64 {
+            let n = __rnx_net_recv_or_wait(sh, 64 - msg.length());
+            if n <= 0 {
+                return 0 - 1;
+            }
+            let k = 0;
+            while k < n {
+                msg.push(__rnx_net_recv_get(sh, k));
+                k = k + 1;
+            }
+        }
+        let sent = 0;
+        while sent < 64 {
+            let r = __rnx_net_send_or_wait(sh, msg[sent]);
+            if r < 0 {
+                return 0 - 2;
+            }
+            sent = sent + 1;
+        }
+        done = done + 1;
+    }
+    return done;
+}
+
+fn serveOne(lh: Int, pings: Int): Int {
+    let r = __rnx_net_listener_accept_start(lh);
+    let sh = r;
+    if r < 0 {
+        if r == 0 - 1 {
+            return 0 - 1;
+        }
+        sh = __rnx_net_listener_accept_wait(0 - r);
+        if sh < 0 {
+            return 0 - 2;
+        }
+    }
+    let n = serveEcho(sh, pings);
+    __rnx_net_close(sh);
+    return n;
+}
+
+fn pingOnce(sh: Int, seed: Int): Int {
+    let i = 0;
+    while i < 64 {
+        let r = __rnx_net_send_or_wait(sh, payloadByte(seed + i));
+        if r < 0 {
+            return 0 - 1;
+        }
+        i = i + 1;
+    }
+    let sum = 0;
+    let got = 0;
+    while got < 64 {
+        let n = __rnx_net_recv_or_wait(sh, 64 - got);
+        if n <= 0 {
+            return 0 - 2;
+        }
+        let k = 0;
+        while k < n {
+            sum = sum + __rnx_net_recv_get(sh, k);
+            k = k + 1;
+        }
+        got = got + n;
+    }
+    return sum;
+}
+
+fn clientLoop(port: Int, pings: Int): Int {    let h = __rnx_net_connect_start("127.0.0.1", port);
+    if h < 0 {
+        print("RESULT connect_fail", __rnx_net_error_text(-1));
+        return 0 - 1;
+    }
+    if __rnx_net_connect_wait(h) != 0 {
+        print("RESULT connect_fail", __rnx_net_error_text(h));
+        return 0 - 2;
+    }
+    let t0 = Clock.mono().nanos;
+    let total = 0;
+    let p = 0;
+    while p < pings {
+        let s = pingOnce(h, p);
+        if s < 0 {
+            print("RESULT ping_fail", p);
+            return 0 - 3;
+        }
+        total = total + s;
+        p = p + 1;
+    }
+    let t1 = Clock.mono().nanos;
+    __rnx_net_close(h);
+    print("RESULT pings", pings);
+    print("RESULT pingms", (t1 - t0) / 1000000);
+    print("RESULT pingsum", total);
+    return 0;
+}
+
+fn Main(): Int {
+    let scale = Env.get("RNX_BENCH_SCALE");
+    let pings = 300;
+    if scale == "tiny" {
+        pings = 20;
+    }
+    if scale == "small" {
+        pings = 200;
+    }
+    let listener = TcpListener.bind("127.0.0.1", 0);
+    let port = listener.port();
+    let live0 = __rnx_debug_live_count();
+    let srv = Thread.spawn((): Int => serveOne(listener.handle, pings));
+    let rc = clientLoop(port, pings);
+    if rc != 0 {
+        return rc;
+    }
+    let done = srv.join().unwrap();
+    print("RESULT served", done);
+    print("RESULT live_delta", __rnx_debug_live_count() - live0);
+    listener.close();
+    return 0;
+}

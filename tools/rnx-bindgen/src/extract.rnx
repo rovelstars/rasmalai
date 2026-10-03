@@ -1,0 +1,459 @@
+import { JSON } from "@std/json";
+import { Map } from "@std/collections";
+
+export struct Param {
+    let name: String;
+    let ctype: String;
+}
+
+export struct FnDecl {
+    let name: String;
+    let ret: String;
+    let params: Array<Param>;
+}
+
+export struct StructField {
+    let name: String;
+    let ctype: String;
+}
+
+export struct StructDecl {
+    let name: String;
+    let fields: Array<StructField>;
+}
+
+export struct ConstDecl {
+    let name: String;
+    let value: Int;
+}
+
+fn wantFn(name: String): Bool {
+    if name == "compress" { return true; }
+    if name == "compress2" { return true; }
+    if name == "compressBound" { return true; }
+    if name == "uncompress" { return true; }
+    if name == "uncompress2" { return true; }
+    if name == "deflate" { return true; }
+    if name == "deflateEnd" { return true; }
+    if name == "deflateInit_" { return true; }
+    if name == "deflateInit2_" { return true; }
+    if name == "inflate" { return true; }
+    if name == "inflateEnd" { return true; }
+    if name == "inflateInit_" { return true; }
+    if name == "inflateInit2_" { return true; }
+    if name == "zlibVersion" { return true; }
+    if name == "zlibCompileFlags" { return true; }
+    return false;
+}
+
+fn isIntType(t: String): Bool {
+    if t == "int" { return true; }
+    if t == "unsigned int" { return true; }
+    if t == "short" { return true; }
+    if t == "unsigned short" { return true; }
+    if t == "long" { return true; }
+    if t == "unsigned long" { return true; }
+    if t == "long long" { return true; }
+    if t == "unsigned long long" { return true; }
+    if t == "size_t" { return true; }
+    if t == "uInt" { return true; }
+    if t == "uLong" { return true; }
+    if t == "uLongf" { return true; }
+    if t == "z_size_t" { return true; }
+    if t == "sqlite3_int64" { return true; }
+    if t == "sqlite3_uint64" { return true; }
+    if t == "sqlite_int64" { return true; }
+    if t == "sqlite_uint64" { return true; }
+    return false;
+}
+
+fn isFloatType(t: String): Bool {
+    if t == "float" { return true; }
+    if t == "double" { return true; }
+    if t == "sqlite3_rtree_dbl" { return true; }
+    return false;
+}
+
+export fn mapType(t: String): String {
+    if t == "void" { return "Void"; }
+    if t.indexOf("*") != -1 { return "Pointer<Byte>"; }
+    if t.indexOf("(") != -1 { return "Pointer<Byte>"; }
+    if isIntType(t) { return "Int"; }
+    if t == "char" { return "Byte"; }
+    if t == "signed char" { return "Byte"; }
+    if t == "unsigned char" { return "Byte"; }
+    if t == "Byte" { return "Byte"; }
+    if t == "Bytef" { return "Byte"; }
+    if isFloatType(t) { return "Float"; }
+    if t == "sqlite3_filename" { return "Pointer<Byte>"; }
+    return "Pointer<Byte>";
+}
+
+export fn mapFieldType(t: String): String {
+    if t.indexOf("[") != -1 { return ""; }
+    if t.indexOf("*") != -1 { return "Pointer<Byte>"; }
+    if t.indexOf("(") != -1 { return "Pointer<Byte>"; }
+    if isIntType(t) { return "Int"; }
+    if t == "char" { return "Byte"; }
+    if t == "signed char" { return "Byte"; }
+    if t == "unsigned char" { return "Byte"; }
+    if isFloatType(t) { return "Float"; }
+    if t == "sqlite3_filename" { return "Pointer<Byte>"; }
+    return "";
+}
+
+fn isKeyword(name: String): Bool {
+    if name == "class" { return true; }
+    if name == "struct" { return true; }
+    if name == "record" { return true; }
+    if name == "trait" { return true; }
+    if name == "enum" { return true; }
+    if name == "fn" { return true; }
+    if name == "init" { return true; }
+    if name == "new" { return true; }
+    if name == "let" { return true; }
+    if name == "const" { return true; }
+    if name == "static" { return true; }
+    if name == "if" { return true; }
+    if name == "else" { return true; }
+    if name == "for" { return true; }
+    if name == "while" { return true; }
+    if name == "in" { return true; }
+    if name == "return" { return true; }
+    if name == "try" { return true; }
+    if name == "catch" { return true; }
+    if name == "throw" { return true; }
+    if name == "throws" { return true; }
+    if name == "switch" { return true; }
+    if name == "case" { return true; }
+    if name == "default" { return true; }
+    if name == "is" { return true; }
+    if name == "import" { return true; }
+    if name == "export" { return true; }
+    if name == "from" { return true; }
+    if name == "as" { return true; }
+    if name == "pub" { return true; }
+    if name == "public" { return true; }
+    if name == "private" { return true; }
+    if name == "unsafe" { return true; }
+    if name == "async" { return true; }
+    if name == "await" { return true; }
+    if name == "pass" { return true; }
+    if name == "self" { return true; }
+    return false;
+}
+
+export fn sanitize(name: String): String {
+    if name.length() == 0 { return "arg"; }
+    if isKeyword(name) { return "_" + name; }
+    return name;
+}
+
+fn returnOf(qual: String): String {
+    let cut = qual.indexOf(" (");
+    if cut == -1 { return qual; }
+    return qual.slice(0, cut);
+}
+
+fn strOf(v: Any): String {
+    return "" + v;
+}
+
+fn collectParams(node: Map<String, Any>, out: Array<Param>): Void {
+    let innerv = node.get("inner");
+    if innerv == null { return; }
+    let inner: Any = innerv;
+    let n = __rnx_array_len(inner);
+    let i = 0;
+    let anon = 0;
+    while i < n {
+        let child = JSON.asMap(inner[i]);
+        if child.get("kind") == "ParmVarDecl" {
+            let pnamev = child.get("name");
+            let pname = "arg" + "${anon}";
+            if pnamev != null {
+                pname = sanitize(strOf(pnamev));
+            }
+            let ptype = "";
+            let typev = child.get("type");
+            if typev != null {
+                let tm = JSON.asMap(typev);
+                let qv = tm.get("qualType");
+                if qv != null {
+                    ptype = strOf(qv);
+                }
+            }
+            out.push(Param(pname, mapType(ptype)));
+            anon = anon + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn fromSystemHeader(node: Map<String, Any>): Bool {
+    let locv = node.get("loc");
+    if locv == null { return false; }
+    let loc = JSON.asMap(locv);
+    let filev = loc.get("file");
+    if filev == null { return false; }
+    let file = strOf(filev);
+    if file.indexOf("/usr/include") != -1 { return true; }
+    if file.indexOf("/usr/lib/") != -1 { return true; }
+    if file.indexOf("lib/clang/") != -1 { return true; }
+    return false;
+}
+
+export fn matchPrefix(name: String, prefixes: Array<String>): Bool {
+    if prefixes.length() == 0 { return true; }
+    let i = 0;
+    while i < prefixes.length() {
+        if name.startsWith(prefixes[i]) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn foldLower(code: Int): Int {
+    if code >= 65 && code <= 90 { return code + 32; }
+    return code;
+}
+
+export fn matchPrefixFold(name: String, prefixes: Array<String>): Bool {
+    if prefixes.length() == 0 { return true; }
+    let i = 0;
+    while i < prefixes.length() {
+        let pre = prefixes[i];
+        if prefixFoldHit(name, pre) { return true; }
+        if prefixFoldHit(name, trimTrailingId(pre)) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn trimTrailingId(pre: String): String {
+    let end = pre.length();
+    while end > 0 {
+        let c = foldLower(pre.charCodeAt(end - 1));
+        if (c < 48 || c > 57) && c != 95 { break; }
+        end = end - 1;
+    }
+    return pre.slice(0, end);
+}
+
+fn prefixFoldHit(name: String, pre: String): Bool {
+    if pre.length() == 0 { return true; }
+    if name.length() < pre.length() { return false; }
+    let k = 0;
+    while k < pre.length() {
+        if foldLower(name.charCodeAt(k)) != foldLower(pre.charCodeAt(k)) { return false; }
+        k = k + 1;
+    }
+    return true;
+}
+
+fn qualOf(node: Map<String, Any>): String {
+    let typev = node.get("type");
+    if typev == null { return ""; }
+    let tm = JSON.asMap(typev);
+    let qv = tm.get("qualType");
+    if qv == null { return ""; }
+    return strOf(qv);
+}
+
+fn isVariadic(qual: String): Bool {
+    if qual.length() < 5 { return false; }
+    return qual.slice(qual.length() - 4, qual.length()) == "...)";
+}
+
+export fn extractFunctions(astJson: String, prefixes: Array<String>): Array<FnDecl> {
+    let found: Array<FnDecl> = [];
+    let top: Any = JSON.parse(astJson);
+    let root = JSON.asMap(top);
+    let innerv = root.get("inner");
+    if innerv == null { return found; }
+    let inner: Any = innerv;
+    let n = __rnx_array_len(inner);
+    let i = 0;
+    while i < n {
+        let node = JSON.asMap(inner[i]);
+        if node.get("kind") == "FunctionDecl" {
+            let namev = node.get("name");
+            if namev != null {
+                let fname = strOf(namev);
+                let keep = wantFn(fname);
+                if prefixes.length() > 0 {
+                    keep = matchPrefix(fname, prefixes);
+                }
+                if fname.length() > 0 && fname.charCodeAt(0) != 95 && keep && !fromSystemHeader(node) {
+                    let qual = qualOf(node);
+                    if !isVariadic(qual) {
+                        let params: Array<Param> = [];
+                        collectParams(node, params);
+                        found.push(FnDecl(fname, mapType(returnOf(qual)), params));
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return found;
+}
+
+fn structIndex(structs: Array<StructDecl>, name: String): Int {
+    let i = 0;
+    while i < structs.length() {
+        if structs[i].name == name { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn collectFields(node: Map<String, Any>, out: Array<StructField>): Bool {
+    let innerv = node.get("inner");
+    if innerv == null { return true; }
+    let inner: Any = innerv;
+    let n = __rnx_array_len(inner);
+    let i = 0;
+    while i < n {
+        let child = JSON.asMap(inner[i]);
+        let kind = child.get("kind");
+        if kind == "FieldDecl" {
+            let fnamev = child.get("name");
+            if fnamev == null { return false; }
+            let mapped = mapFieldType(qualOf(child));
+            if mapped == "" { return false; }
+            out.push(StructField(sanitize(strOf(fnamev)), mapped));
+        } else if kind == "RecordDecl" {
+            let completev = child.get("completeDefinition");
+            if completev != null { return false; }
+        } else {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+export fn extractStructs(astJson: String, prefixes: Array<String>): Array<StructDecl> {
+    let structs: Array<StructDecl> = [];
+    let top: Any = JSON.parse(astJson);
+    let root = JSON.asMap(top);
+    let innerv = root.get("inner");
+    if innerv == null { return structs; }
+    let inner: Any = innerv;
+    let n = __rnx_array_len(inner);
+    let i = 0;
+    while i < n {
+        let node = JSON.asMap(inner[i]);
+        if node.get("kind") == "RecordDecl" {
+            let tagv = node.get("tagUsed");
+            let completev = node.get("completeDefinition");
+            let namev = node.get("name");
+            if tagv != null && completev != null && namev != null && strOf(tagv) == "struct" {
+                let sname = strOf(namev);
+                if sname.length() > 0 && sname.charCodeAt(0) != 95 && matchPrefix(sname, prefixes) && !fromSystemHeader(node) {
+                    let fields: Array<StructField> = [];
+                    if collectFields(node, fields) {
+                        let at = structIndex(structs, sname);
+                        if at == -1 {
+                            structs.push(StructDecl(sname, fields));
+                        } else {
+                            structs[at] = StructDecl(sname, fields);
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return structs;
+}
+
+fn isDigit(code: Int): Bool {
+    return code >= 48 && code <= 57;
+}
+
+fn isNameChar(code: Int): Bool {
+    if code >= 48 && code <= 57 { return true; }
+    if code >= 65 && code <= 90 { return true; }
+    if code == 95 { return true; }
+    return false;
+}
+
+fn parseDefineValue(text: String, pos: Int): Int {
+    let neg = false;
+    if pos < text.length() && text.charCodeAt(pos) == 45 {
+        neg = true;
+        pos = pos + 1;
+    }
+    let start = pos;
+    while pos < text.length() && isDigit(text.charCodeAt(pos)) {
+        pos = pos + 1;
+    }
+    if pos == start { return 0; }
+    let v = 0;
+    let k = start;
+    while k < pos {
+        v = v * 10 + (text.charCodeAt(k) - 48);
+        k = k + 1;
+    }
+    if neg { return 0 - v; }
+    return v;
+}
+
+fn defineValueOk(text: String, pos: Int): Bool {
+    let p = pos;
+    if p < text.length() && text.charCodeAt(p) == 45 {
+        p = p + 1;
+    }
+    let start = p;
+    while p < text.length() && isDigit(text.charCodeAt(p)) {
+        p = p + 1;
+    }
+    if p == start { return false; }
+    if p - start > 18 { return false; }
+    if p >= text.length() { return true; }
+    let c = text.charCodeAt(p);
+    return c == 32 || c == 9 || c == 47;
+}
+
+export fn extractDefines(headerText: String, prefixes: Array<String>): Array<ConstDecl> {
+    let consts: Array<ConstDecl> = [];
+    let lines = headerText.split("\n");
+    let i = 0;
+    while i < lines.length() {
+        let line = lines[i];
+        if line.startsWith("#define ") {
+            let p = 8;
+            while p < line.length() && line.charCodeAt(p) == 32 {
+                p = p + 1;
+            }
+            let start = p;
+            while p < line.length() && isNameChar(line.charCodeAt(p)) {
+                p = p + 1;
+            }
+            if p > start {
+                let dname = line.slice(start, p);
+                while p < line.length() && line.charCodeAt(p) == 32 {
+                    p = p + 1;
+                }
+                if defineValueOk(line, p) && matchPrefixFold(dname, prefixes) {
+                    let at = -1;
+                    let k = 0;
+                    while k < consts.length() {
+                        if consts[k].name == dname { at = k; }
+                        k = k + 1;
+                    }
+                    let val = parseDefineValue(line, p);
+                    if at == -1 {
+                        consts.push(ConstDecl(dname, val));
+                    } else {
+                        consts[at] = ConstDecl(dname, val);
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return consts;
+}

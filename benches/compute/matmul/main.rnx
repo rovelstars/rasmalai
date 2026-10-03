@@ -1,0 +1,49 @@
+//! matmul 256x256 integer matrices, ijk loop order.
+//! Prints RESULT checksum (exact integer sum of C).
+
+fn Main(): Int {
+    let n = 256;
+    let a: Array<Int> = [];
+    let b: Array<Int> = [];
+    let c: Array<Int> = [];
+    let i = 0;
+    while i < n * n {
+        a.push(0);
+        b.push(0);
+        c.push(0);
+        i = i + 1;
+    }
+    let r = 0;
+    while r < n {
+        let k = 0;
+        while k < n {
+            a[r * n + k] = (r + k) % 64;
+            b[r * n + k] = (r * k) % 64;
+            k = k + 1;
+        }
+        r = r + 1;
+    }
+    let x = 0;
+    while x < n {
+        let y = 0;
+        while y < n {
+            let s = 0;
+            let z = 0;
+            while z < n {
+                s = s + a[x * n + z] * b[z * n + y];
+                z = z + 1;
+            }
+            c[x * n + y] = s;
+            y = y + 1;
+        }
+        x = x + 1;
+    }
+    let total = 0;
+    let t = 0;
+    while t < n * n {
+        total = total + c[t];
+        t = t + 1;
+    }
+    print("RESULT checksum", total);
+    return 0;
+}

@@ -1,0 +1,79 @@
+//! spectral-norm N=300, 10 power iterations on AtA.
+//! Prints RESULT checksum (norm estimate, float, compare with tolerance).
+//!
+//! The accumulation is `FastFloat`: power iteration is a visuals-grade
+//! estimate (spec 04_NUMERICS lists this class under FastFloat use).
+//! All values stay finite, so dropping per-op NaN canonicalization is
+//! bit-neutral here; LIR FMA synthesis fuses the `s + a*x` reduction
+//! identically on both backends. The estimate agrees with the strict
+//! spelling to ~1e-15 relative, inside the harness float tolerance, on
+//! every backend and language.
+import { Math } from "@std/math";
+
+fn a_elem(i: Int, j: Int): FastFloat {
+    let w = (i + j) * (i + j + 1) / 2 + i + 1;
+    return 1.0.asFast() / FastFloat(w);
+}
+
+fn av(x: Array<FastFloat>, y: Array<FastFloat>, n: Int) {
+    let i = 0;
+    while i < n {
+        let s: FastFloat = 0.0.asFast();
+        let j = 0;
+        while j < n {
+            s = s + a_elem(i, j) * x[j];
+            j = j + 1;
+        }
+        y[i] = s;
+        i = i + 1;
+    }
+}
+
+fn atv(x: Array<FastFloat>, y: Array<FastFloat>, n: Int) {
+    let i = 0;
+    while i < n {
+        let s: FastFloat = 0.0.asFast();
+        let j = 0;
+        while j < n {
+            s = s + a_elem(j, i) * x[j];
+            j = j + 1;
+        }
+        y[i] = s;
+        i = i + 1;
+    }
+}
+
+fn atav(x: Array<FastFloat>, y: Array<FastFloat>, tmp: Array<FastFloat>, n: Int) {
+    av(x, tmp, n);
+    atv(tmp, y, n);
+}
+
+fn Main(): Int {
+    let n = 300;
+    let u: Array<FastFloat> = [];
+    let v: Array<FastFloat> = [];
+    let tmp: Array<FastFloat> = [];
+    let i = 0;
+    while i < n {
+        u.push(1.0.asFast());
+        v.push(0.0.asFast());
+        tmp.push(0.0.asFast());
+        i = i + 1;
+    }
+    let k = 0;
+    while k < 10 {
+        atav(u, v, tmp, n);
+        atav(v, u, tmp, n);
+        k = k + 1;
+    }
+    let vBv: FastFloat = 0.0.asFast();
+    let vv: FastFloat = 0.0.asFast();
+    let j = 0;
+    while j < n {
+        vBv = vBv + u[j] * v[j];
+        vv = vv + v[j] * v[j];
+        j = j + 1;
+    }
+    print("RESULT checksum", Math.sqrt((vBv / vv).asStrict()).asFast());
+    return 0;
+}

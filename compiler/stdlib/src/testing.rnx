@@ -1,0 +1,47 @@
+//! Benchmark helper that keeps measured work from being optimized away.
+//!
+//! `bench` blocks are timed by `rnx bench`. An optimizing backend is free to
+//! delete a loop whose result nobody reads, which turns a benchmark into a
+//! measurement of nothing. `blackBox` hands the value to the runtime as an
+//! opaque value and hands it straight back, so the work stays in the timing.
+//!
+//! Tests are not this module's job: write `test fn` blocks, check values with
+//! the `assert(cond, message)` builtin, and run them with `rnx test`.
+
+/**
+    * Opaque pass-through that defeats dead-code elimination in benchmarks.
+    * The value goes through the backend's black-box barrier instead of being
+    * folded at compile time, then comes back untouched, so a call to it reads
+    * like any other call. It takes exactly one argument: two or more is a
+    * compile error, reported as "std.testing.blackBox takes 1 args". A tuple
+    * argument is refused as well: "tuple value cannot be used in `blackBox`".
+    *
+    * The result is typed `Any`. The runtime type survives, so `typeOf` still
+    * reports `Int`, `Float`, `String`, and the rest, and arithmetic on the
+    * result works. Assigning it to a narrower binding is not: `let n: Int =
+    * blackBox(7)` is a type error, so pass the result straight on or declare
+    * the binding as `Any`.
+    *
+    * @param val any single value.
+    * @returns val unchanged.
+    * @example
+    * import { blackBox } from "@std/testing";
+    *
+    * bench "sum" {
+    *     let total = 0;
+    *     let i = 0;
+    *     while i < 1000 {
+    *         total = total + i;
+    *         i = i + 1;
+    *     }
+    *     blackBox(total);
+    * }
+    *
+    * fn Main(): Int {
+    *     print(blackBox(2) + blackBox(3));
+    *     return 0;
+    * }
+    */
+pub fn blackBox(val: Any): Any {
+    return val;
+}

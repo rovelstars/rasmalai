@@ -1,0 +1,102 @@
+//! nbody: 5 bodies (sun + 4 giants) in classic Benchmarks-Game units
+//! (solar mass = 4*pi^2), 100k leapfrog steps, dt = 0.01.
+//! Prints RESULT checksum (total energy, float, compare with tolerance).
+//!
+//! Positions, velocities and masses are `FastFloat`: leapfrog integration
+//! is a visuals-grade simulation (spec 04_NUMERICS lists this class under
+//! FastFloat use), and dropping per-op NaN canonicalization is what lets
+//! the inner loop match C. The energy checksum agrees with the strict
+//! spelling to ~1e-15 relative, inside the harness float tolerance, on
+//! every backend and language.
+import { Math } from "@std/math";
+
+fn offsetMomentum(px: Array<FastFloat>, py: Array<FastFloat>, pz: Array<FastFloat>, vx: Array<FastFloat>, vy: Array<FastFloat>, vz: Array<FastFloat>, m: Array<FastFloat>) {
+    let px0: FastFloat = 0.0.asFast();
+    let py0: FastFloat = 0.0.asFast();
+    let pz0: FastFloat = 0.0.asFast();
+    let i = 1;
+    while i < 5 {
+        px0 = px0 + vx[i] * m[i];
+        py0 = py0 + vy[i] * m[i];
+        pz0 = pz0 + vz[i] * m[i];
+        i = i + 1;
+    }
+    vx[0] = 0.0.asFast() - px0 / m[0];
+    vy[0] = 0.0.asFast() - py0 / m[0];
+    vz[0] = 0.0.asFast() - pz0 / m[0];
+}
+
+fn advance(px: Array<FastFloat>, py: Array<FastFloat>, pz: Array<FastFloat>, vx: Array<FastFloat>, vy: Array<FastFloat>, vz: Array<FastFloat>, m: Array<FastFloat>, steps: Int) {
+    let s = 0;
+    while s < steps {
+        let i = 0;
+        while i < 5 {
+            let j = i + 1;
+            while j < 5 {
+                let dx = px[i] - px[j];
+                let dy = py[i] - py[j];
+                let dz = pz[i] - pz[j];
+                let dist2 = dx * dx + dy * dy + dz * dz;
+                let mag = 0.01.asFast() / (dist2 * Math.sqrt(dist2.asStrict()).asFast());
+                vx[i] = vx[i] - dx * m[j] * mag;
+                vy[i] = vy[i] - dy * m[j] * mag;
+                vz[i] = vz[i] - dz * m[j] * mag;
+                vx[j] = vx[j] + dx * m[i] * mag;
+                vy[j] = vy[j] + dy * m[i] * mag;
+                vz[j] = vz[j] + dz * m[i] * mag;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        let k = 0;
+        while k < 5 {
+            px[k] = px[k] + 0.01.asFast() * vx[k];
+            py[k] = py[k] + 0.01.asFast() * vy[k];
+            pz[k] = pz[k] + 0.01.asFast() * vz[k];
+            k = k + 1;
+        }
+        s = s + 1;
+    }
+}
+
+fn energy(px: Array<FastFloat>, py: Array<FastFloat>, pz: Array<FastFloat>, vx: Array<FastFloat>, vy: Array<FastFloat>, vz: Array<FastFloat>, m: Array<FastFloat>): FastFloat {
+    let e: FastFloat = 0.0.asFast();
+    let i = 0;
+    while i < 5 {
+        e = e + 0.5.asFast() * m[i] * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
+        let j = i + 1;
+        while j < 5 {
+            let dx = px[i] - px[j];
+            let dy = py[i] - py[j];
+            let dz = pz[i] - pz[j];
+            e = e - m[i] * m[j] / Math.sqrt((dx * dx + dy * dy + dz * dz).asStrict()).asFast();
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return e;
+}
+
+fn Main(): Int {
+    let pi: FastFloat = 3.141592653589793.asFast();
+    let solar = 4.0.asFast() * pi * pi;
+    let px: Array<FastFloat> = [0.0.asFast(), 4.8414314424647209.asFast(), 8.3433667182445799.asFast(), 12.894369562139131.asFast(), 15.3796971148509165.asFast()];
+    let py: Array<FastFloat> = [0.0.asFast(), -1.1603200440274284.asFast(), 4.1247985641243048.asFast(), -15.1111514016986312.asFast(), -25.9193146099879641.asFast()];
+    let pz: Array<FastFloat> = [0.0.asFast(), -0.10362204447112311.asFast(), -0.40352341711432138.asFast(), -0.22330757889265573.asFast(), 0.17925877295037118.asFast()];
+    let vx: Array<FastFloat> = [0.0.asFast(), 0.0016600766427440369.asFast(), -0.0027674251072686241.asFast(), 0.0029646013756476162.asFast(), 0.0026806777249038932.asFast()];
+    let vy: Array<FastFloat> = [0.0.asFast(), 0.0076990111841974043.asFast(), 0.0049985280123491724.asFast(), 0.0023784717395948095.asFast(), 0.001628241700382423.asFast()];
+    let vz: Array<FastFloat> = [0.0.asFast(), -0.0000690460016972063.asFast(), 0.00002304172975737639.asFast(), -0.00002965895685402376.asFast(), -0.00009515922545197159.asFast()];
+    let m: Array<FastFloat> = [solar, 0.00095479193842432661.asFast() * solar, 0.00028588598066613081.asFast() * solar, 0.00004366244043351563.asFast() * solar, 0.00005151389302046611.asFast() * solar];
+    let f: FastFloat = 365.24.asFast();
+    let s = 0;
+    while s < 5 {
+        vx[s] = vx[s] * f;
+        vy[s] = vy[s] * f;
+        vz[s] = vz[s] * f;
+        s = s + 1;
+    }
+    offsetMomentum(px, py, pz, vx, vy, vz, m);
+    advance(px, py, pz, vx, vy, vz, m, 100000);
+    print("RESULT checksum", energy(px, py, pz, vx, vy, vz, m));
+    return 0;
+}

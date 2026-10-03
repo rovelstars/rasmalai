@@ -1,0 +1,12 @@
+import { error, redirect } from '@sveltejs/kit';
+import { LEGACY_GUIDE_REDIRECTS } from '$lib/docs/nav';
+
+export function entries() {
+	return Object.keys(LEGACY_GUIDE_REDIRECTS).map((slug) => ({ slug }));
+}
+
+export async function load({ params }) {
+	const target = LEGACY_GUIDE_REDIRECTS[params.slug];
+	if (target) redirect(308, target);
+	error(404, 'guide not found');
+}

@@ -1,0 +1,655 @@
+//! Host process control and child process lifecycle.
+//!
+//! `Process` covers the running program: command-line arguments, the
+//! environment, the working directory, the process id, and exit. Two
+//! ways to start a child:
+//!
+//! - `Process.run()` waits for the child, captures stdout and stderr, and
+//!   returns the exit code with both buffers.
+//! - `Process.spawn()` returns immediately with a `ChildProcess` handle.
+//!   The caller owns waiting, reading, and killing.
+//!
+//! `SpawnOptions` wires each of the three child streams separately
+//! (`Stdio.Inherit`, `Stdio.Piped`, `Stdio.Null`), sets the child working
+//! directory, and passes an environment table. Children start from a
+//! cleared environment: only `PATH` (plus `SYSTEMROOT` on Windows) is
+//! forwarded from the host, then the entries in `SpawnOptions.env`.
+//! Anything else the child needs has to be listed explicitly.
+//!
+//! ```rnx
+//! import { Process } from "@std/process";
+//!
+//! let out = Process.run("echo", ["hello"]);
+//! print(out.exitCode);
+//! print(out.stdoutText());
+//! ```
+//!
+//! Spawning is subject to the `sys:exec` grant. Without it the runtime
+//! stops the program with `[S401]: Unapproved Child Process`, and a
+//! command that cannot be started aborts the process.
+import {
+    ByteBuffer
+} from "@std/bytes";
+import {
+    Map
+} from "@std/collections";
+import {
+    Env
+} from "@std/env";
+
+/**
+ * Stdio wiring for one child stream: inherit the host descriptor,
+ * create a pipe, or connect to the null device.
+ */
+enum Stdio {
+    /** Share the host's own stdin, stdout, or stderr. */
+    Inherit,
+    /** Create a pipe the parent reads or writes through the child handle. */
+    Piped,
+    /** Attach the OS null device: the stream reads as empty. */
+    Null,
+}
+
+/**
+ * Captured result of `Process.run()`: exit code plus buffered
+ * stdout/stderr. Buffers are exact-size and owned by this object.
+ * Only `Stdio.Piped` streams are captured; an inherited or null stream
+ * contributes an empty buffer.
+ */
+class ProcessOutput {
+    /** Child exit code: 0-255 normally, 128+signal on Unix when a signal ended the child. */
+    let exitCode: Int;
+    /** Every byte the child wrote to stdout. Empty unless stdout was piped. */
+    let stdout: ByteBuffer;
+    /** Every byte the child wrote to stderr. Empty unless stderr was piped. */
+    let stderr: ByteBuffer;
+
+    /**
+    * Wrap already-collected output. `Process.run()` builds one of these
+    * for you; the constructor exists for tests that fabricate a result.
+    */
+    init(exitCode: Int, stdout: ByteBuffer, stderr: ByteBuffer) {
+        this.exitCode = exitCode;
+        this.stdout = stdout;
+        this.stderr = stderr;
+    }
+
+    /**
+    * Buffered stdout decoded as UTF-8.
+    * @returns stdout text.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * let out = Process.run("echo", ["hi"]);
+    * print(out.stdoutText());
+    */
+    fn stdoutText(): String {
+        return this.stdout.readString(0, this.stdout.length());
+    }
+
+    /**
+    * Buffered stderr decoded as UTF-8.
+    * @returns stderr text.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * let out = Process.run("sh", ["-c", "echo oops 1>&2"]);
+    * print(out.stderrText());
+    */
+    fn stderrText(): String {
+        return this.stderr.readString(0, this.stderr.length());
+    }
+}
+
+/**
+ * Spawn configuration: working directory, environment overrides merged
+ * over the inherited environment, and per-stream stdio wiring.
+ *
+ * Defaults when no options are passed: all three streams piped, no
+ * working directory change, and no environment entries beyond `PATH`.
+ *
+ * ```rnx
+ * import { Process, Stdio, SpawnOptions } from "@std/process";
+ * import { Map } from "@std/collections";
+ *
+ * let env = new Map<String, String>();
+ * env.set("GREETING", "hi");
+ * let opts = new SpawnOptions(null, env, Stdio.Piped, Stdio.Piped, Stdio.Piped);
+ * let out = Process.run("sh", ["-c", "echo $GREETING"], opts);
+ * print(out.stdoutText());
+ * ```
+ */
+class SpawnOptions {
+    /** Child working directory, or null to keep the host's. */
+    let cwd: String?;
+    /** Extra environment entries, or null for none. The table is read-only input. */
+    let env: Map<String, String>?;
+    /** Child stdin wiring. Default `Stdio.Piped`. */
+    let stdin: Stdio;
+    /** Child stdout wiring. Default `Stdio.Piped`. */
+    let stdout: Stdio;
+    /** Child stderr wiring. Default `Stdio.Piped`. */
+    let stderr: Stdio;
+
+    /**
+    * Fill in only what differs from the defaults. Every argument after
+    * `cwd` needs its leading arguments too: to silence stderr, pass
+    * `new SpawnOptions(null, null, Stdio.Piped, Stdio.Piped, Stdio.Null)`.
+    */
+    init(
+        cwd: String? = null,
+        env: Map<String, String>? = null,
+        stdin: Stdio = Stdio.Piped,
+        stdout: Stdio = Stdio.Piped,
+        stderr: Stdio = Stdio.Piped) {
+            this.cwd = cwd;
+            this.env = env;
+            this.stdin = stdin;
+            this.stdout = stdout;
+            this.stderr = stderr;
+        }
+}
+
+/**
+ * Live child process. Either `wait()` for the exit code or let the
+ * handle drop: dropping detaches (pipes close, child keeps running).
+ * Always `wait()` children you spawn; never leak running children.
+ *
+ * Handles are tracked in one host-wide table. `handle` is that table
+ * slot, not the OS pid; use `pid` for anything the host outside can see.
+ */
+class ChildProcess {
+    /** Opaque native child-table handle. */
+    let handle: Int;
+    /** OS process id, 0 once reaped. */
+    let pid: Int;
+
+    /** Wrap a child-table slot. `Process.spawn()` builds one for you. */
+    init(handle: Int, pid: Int) {
+        this.handle = handle;
+        this.pid = pid;
+    }
+
+    /**
+    * Release the table slot without waiting; the child keeps running.
+    *
+    * The parent stops holding the pipes, so the child sees EOF on
+    * stdin and may fail on a full pipe. On Unix nobody reaps the child
+    * afterwards, so it stays a zombie until the host exits. Detach only
+    * for children you deliberately do not wait on.
+    */
+    deinit {
+        __rnx_process_forget(this.handle);
+    }
+
+    /**
+    * Write buffer bytes into the child stdin pipe.
+    * @param buf source buffer.
+    * @param offset first byte to send.
+    * @param len byte count, or -1 to send to the end of the buffer.
+    * @returns bytes written, or -1 when stdin is closed.
+    *
+    * A short write is normal on a pipe with a small buffer; loop until
+    * the total matches the bytes you meant to send. Needs `Stdio.Piped`
+    * stdin, otherwise the first call reports -1.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * let child = Process.spawn("cat");
+    * child.writeStdinText("ping\n");
+    * child.closeStdin();
+    * print(child.readStdoutText());
+    * print(child.wait());
+    */
+    fn writeStdin(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Int {
+        return __rnx_process_write_stdin(this.handle, buf.handle, offset, len);
+    }
+
+    /**
+    * Write text into the child stdin pipe.
+    * @param text encoded as UTF-8 and written in one call.
+    * @returns bytes written, or -1 when stdin is closed.
+    *
+    * Same short-write caveat as `writeStdin`. The buffer is converted
+    * for the call, so no byte buffer is left for you to manage.
+    */
+    fn writeStdinText(text: String): Int {
+        return this.writeStdin(ByteBuffer.fromString(text));
+    }
+
+    /**
+    * Close the child stdin pipe (sends EOF).
+    *
+    * Safe to call more than once. Programs reading stdin to EOF, such
+    * as `cat` or a filter, finish after this. Call it before `wait()`
+    * or the child may wait for input that never arrives.
+    */
+    fn closeStdin() {
+        __rnx_process_close_stdin(this.handle);
+    }
+
+    /**
+    * Blocking read from the child stdout pipe into a buffer.
+    * @param buf destination buffer, written from `offset`.
+    * @param offset first byte to write.
+    * @param len capacity to use, or -1 for the rest of the buffer.
+    * @returns bytes read (0 on EOF), or -1 when not piped.
+    *
+    * Blocks until the child writes or closes the stream. Returns -1 when
+    * stdout was not `Stdio.Piped` or the pipe is already consumed by
+    * `wait()`. To read a stream of unknown length, either loop until 0
+    * or use `readStdoutText()`.
+    * @example
+    * import { Process } from "@std/process";
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let child = Process.spawn("echo", ["abc"]);
+    * let buf = ByteBuffer.allocate(3);
+    * print(child.readStdout(buf));
+    * print(buf.readString(0, 3));
+    * print(child.wait());
+    */
+    fn readStdout(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Int {
+        return __rnx_process_read_stdout(this.handle, buf.handle, offset, len);
+    }
+
+    /**
+    * Blocking read from the child stderr pipe into a buffer.
+    * @param buf destination buffer, written from `offset`.
+    * @param offset first byte to write.
+    * @param len capacity to use, or -1 for the rest of the buffer.
+    * @returns bytes read (0 on EOF), or -1 when not piped.
+    *
+    * The stderr twin of `readStdout`. Reading both streams needs two
+    * buffers and careful ordering: a child that fills one pipe blocks
+    * until it is drained. `Process.run()` does the interleaving for you.
+    */
+    fn readStderr(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Int {
+        return __rnx_process_read_stderr(this.handle, buf.handle, offset, len);
+    }
+
+    /**
+    * Drain the child stdout pipe to EOF and decode as UTF-8.
+    * @returns stdout text.
+    *
+    * Reads in 4096-byte chunks until the pipe closes, so it blocks as
+    * long as the child keeps stdout open. Returns whatever was read so
+    * far when the stream reports an error. Empty string when stdout was
+    * not piped.
+    */
+    fn readStdoutText(): String {
+        let out = "";
+        let chunk = ByteBuffer.allocate(4096);
+        while true {
+            let n = this.readStdout(chunk);
+            if n <= 0 {
+                return out;
+            }
+            out = out + chunk.readString(0, n);
+        }
+        return out;
+    }
+
+    /**
+    * Drain the child stderr pipe to EOF and decode as UTF-8.
+    * @returns stderr text.
+    *
+    * Same draining behavior as `readStdoutText`, on stderr.
+    */
+    fn readStderrText(): String {
+        let out = "";
+        let chunk = ByteBuffer.allocate(4096);
+        while true {
+            let n = this.readStderr(chunk);
+            if n <= 0 {
+                return out;
+            }
+            out = out + chunk.readString(0, n);
+        }
+        return out;
+    }
+
+    /**
+    * Non-blocking poll: exit code when the child finished, else null.
+    * @returns code after exit, null while running.
+    *
+    * Returns as soon as the child is reaped and keeps returning that
+    * code, so a poll loop can check for null until it gets a value.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * let child = Process.spawn("sh", ["-c", "echo hi"]);
+    * print(child.readStdoutText());
+    * while child.tryWait() == null {
+    * }
+    */
+    fn tryWait(): Int? {
+        let code = __rnx_process_try_wait(this.handle);
+        if code == -1 {
+            return null;
+        }
+        return code;
+    }
+
+    /**
+    * Block until the child exits, reap it, and close its pipes.
+    * @returns exit code (128+signal when killed by a Unix signal).
+    *
+    * Also closes stdin first, so a child blocked on input gets EOF.
+    * Calling it twice returns the same code. Capture anything you need
+    * from the pipes before waiting: the pipes close on the way out.
+    */
+    fn wait(): Int {
+        return __rnx_process_wait(this.handle);
+    }
+
+    /**
+    * Send a signal (15 SIGTERM by default, 9 SIGKILL).
+    * @param signal Unix signal number; ignored on Windows, which always force kills.
+    * @returns true when the signal was delivered.
+    *
+    * False when the child has already been reaped or the handle is gone.
+    * Signal 15 lets a child run cleanup handlers; 9 does not. You still
+    * owe the child a `wait()` after killing it.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * let child = Process.spawn("sh", ["-c", "sleep 5"]);
+    * print(child.kill());
+    * print(child.wait());
+    */
+    fn kill(signal: Int = 15): Bool {
+        return __rnx_process_kill(this.handle, signal) == 1;
+    }
+}
+
+/**
+ * Host process surface: argv, environment, cwd, identity, exit,
+ * plus child spawning. Thin wrappers over `@std/env` where it
+ * already covers the call; new intrinsics only for the gaps.
+ */
+class Process {
+    /**
+    * Command-line arguments including the program name at index 0.
+    * @returns argument array.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * print(Process.args().length() > 0);
+    */
+    static args(): Array<String> {
+        return Env.args();
+    }
+
+    /**
+    * Read an environment variable.
+    * @param key variable name.
+    * @returns value when set, null otherwise.
+    *
+    * Unset is null here, while `Env.get()` answers with an empty
+    * string. The lookup walks a fresh snapshot of the environment, so
+    * it sees changes made by `setEnv()` earlier in the run.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * Process.setEnv("DEMO", "on");
+    * print(Process.env("DEMO"));
+    */
+    static env(key: String): String? {
+        let table = Process.allEnv();
+        return table.get(key);
+    }
+
+    /**
+    * Write an environment variable for this process and its children.
+    * @param key variable name.
+    * @param value new value.
+    *
+    * This process sees the change immediately. Children spawned
+    * afterwards do not inherit it: spawn clears the environment and
+    * forwards `PATH` plus the table passed in `SpawnOptions.env`.
+    */
+    static setEnv(key: String, value: String) {
+        Env.set(key, value);
+    }
+
+    /**
+    * Remove an environment variable.
+    * @param key variable name.
+    *
+    * Removing a variable that was never set does nothing.
+    */
+    static removeEnv(key: String) {
+        __rnx_process_remove_env(key);
+    }
+
+    /**
+    * Snapshot of the whole environment.
+    * @returns name-to-value map.
+    *
+    * A fresh map each call: edits to it do not touch the real
+    * environment. Use `setEnv()` for that. Entries whose names contain
+    * `=` are skipped, since they cannot be split unambiguously.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * Process.setEnv("COUNTED", "1");
+    * print(Process.allEnv().get("COUNTED"));
+    */
+    static allEnv(): Map<String, String> {
+        let table = new Map<String, String>();
+        let n = __rnx_process_all_env_count();
+        let i = 0;
+        while i < n {
+            let pair = __rnx_process_all_env_get(i);
+            let eq = pair.indexOf("=");
+            if eq != -1 {
+                table.set(pair.slice(0, eq), pair.slice(eq + 1, pair.length()));
+            }
+            i = i + 1;
+        }
+        return table;
+    }
+
+    /**
+    * Current working directory as an absolute path.
+    * @returns cwd string.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * print(Process.cwd().length() > 0);
+    */
+    static cwd(): String {
+        return Env.cwd();
+    }
+
+    /**
+    * Change the working directory.
+    * @param path new working directory.
+    * @returns true on success.
+    *
+    * Affects this process only. Relative paths resolve against the
+    * current directory, and a missing or unreadable directory returns
+    * false instead of failing the run.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * let before = Process.cwd();
+    * print(Process.chdir("/tmp"));
+    * print(Process.chdir(before));
+    */
+    static chdir(path: String): Bool {
+        return __rnx_process_chdir(path) == 1;
+    }
+
+    /**
+    * Host process id.
+    * @returns pid, always positive.
+    *
+    * The id of the running program, not of any child.
+    */
+    static pid(): Int {
+        return __rnx_process_pid();
+    }
+
+    /**
+    * Terminate immediately with an exit code. Deferred blocks do not run.
+    * @param code exit code passed to the host.
+    *
+    * Nothing after this line runs, and buffered handles are not flushed
+    * by any runtime teardown.
+    */
+    static exit(code: Int = 0) {
+        Env.exit(code);
+    }
+
+    /**
+    * Spawn a child without waiting. Caller owns waiting via the handle.
+    * @param command program to run, resolved through `PATH`.
+    * @param args arguments after the program name.
+    * @param options spawn configuration, or null for the defaults.
+    * @returns live child handle.
+    *
+    * With no options, all three streams are piped, which means `wait()`
+    * alone can deadlock on a chatty child: it blocks on a full pipe
+    * while the parent waits. Drain the pipes first, or use
+    * `Process.run()`.
+    *
+    * A missing program aborts the process; so does a command outside
+    * the `sys:exec` grant, which stops with `[S401]`. `args` is never
+    * run through a shell, so quoting is your job.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * let child = Process.spawn("echo", ["streamed"]);
+    * print(child.readStdoutText());
+    * print(child.wait());
+    */
+    static spawn(
+        command: String,
+        args: Array<String> = [],
+        options: SpawnOptions? = null): ChildProcess {
+            let cwd = "";
+            let env_pairs: Array<String> = [];
+            let si = 1;
+            let so = 1;
+            let se = 1;
+            if options != null {
+                let o = options;
+                if o.cwd != null {
+                    cwd = o.cwd;
+                }
+                if o.env != null {
+                    env_pairs = Process.flattenEnv(o.env);
+                }
+                si = Process.stdioMode(o.stdin);
+                so = Process.stdioMode(o.stdout);
+                se = Process.stdioMode(o.stderr);
+            }
+            let handle = __rnx_process_spawn(command, args, cwd, env_pairs, si, so, se);
+            return new ChildProcess(handle, __rnx_process_pid_of(handle));
+        }
+
+    /**
+    * Run to completion: close stdin, drain both pipes concurrently,
+    * wait, and capture everything.
+    * @param command program to run, resolved through `PATH`.
+    * @param args arguments after the program name.
+    * @param options spawn configuration, or null for the defaults.
+    * @returns exit code plus buffered stdout/stderr.
+    *
+    * The child gets EOF on stdin right away. stdout is drained on a
+    * helper thread while stderr is drained inline, so neither pipe can
+    * fill and stall the child; then the child is waited on. Inherited
+    * or null streams are not captured and arrive as empty buffers.
+    *
+    * Output is buffered whole, so a child that never stops writing
+    * grows the host's memory. For long output, use `spawn()` and read
+    * in chunks.
+    *
+    * A missing program aborts the process; so does a command outside
+    * the `sys:exec` grant, which stops with `[S401]`. `args` is never
+    * run through a shell, so quoting is your job.
+    * @example
+    * import { Process } from "@std/process";
+    *
+    * let out = Process.run("sh", ["-c", "echo hi; echo bad 1>&2; exit 3"]);
+    * print(out.exitCode);
+    * print(out.stdoutText());
+    * print(out.stderrText());
+    * @example
+    * import { Process, Stdio, SpawnOptions } from "@std/process";
+    *
+    * let opts = new SpawnOptions(null, null, Stdio.Piped, Stdio.Null, Stdio.Piped);
+    * let out = Process.run("sh", ["-c", "echo hidden; echo shown 1>&2"], opts);
+    * print(out.stdoutText().length());
+    * print(out.stderrText());
+    */
+    static run(
+        command: String,
+        args: Array<String> = [],
+        options: SpawnOptions? = null): ProcessOutput {
+            let cwd = "";
+            let env_pairs: Array<String> = [];
+            let si = 1;
+            let so = 1;
+            let se = 1;
+            if options != null {
+                let o = options;
+                if o.cwd != null {
+                    cwd = o.cwd;
+                }
+                if o.env != null {
+                    env_pairs = Process.flattenEnv(o.env);
+                }
+                si = Process.stdioMode(o.stdin);
+                so = Process.stdioMode(o.stdout);
+                se = Process.stdioMode(o.stderr);
+            }
+            let handle = __rnx_process_run(command, args, cwd, env_pairs, si, so, se);
+            let code = __rnx_process_exit_code(handle);
+            let out = new ByteBuffer(__rnx_process_take_stdout(handle));
+            let err = new ByteBuffer(__rnx_process_take_stderr(handle));
+            __rnx_process_forget(handle);
+            return new ProcessOutput(code, out, err);
+        }
+
+    /**
+    * Map an env table to `KEY=value` pairs for the spawn boundary.
+    * @param env name-to-value table.
+    * @returns one `KEY=value` string per entry.
+    *
+    * A key mapped to null becomes `KEY=` with an empty value. Used by
+    * `spawn()` and `run()`; call it directly only to inspect what a
+    * table would produce.
+    */
+    static flattenEnv(env: Map<String, String>): Array<String> {
+        let pairs: Array<String> = [];
+        let keys = env.keys();
+        let i = 0;
+        while i < keys.length() {
+            let k = keys[i];
+            pairs.push(k + "=" + (env.get(k) ?? ""));
+            i = i + 1;
+        }
+        return pairs;
+    }
+
+    /**
+    * Encode one stdio wire mode: inherit 0, piped 1, null 2.
+    * @param s stdio wiring to encode.
+    * @returns wire number passed to the spawn intrinsic.
+    *
+    * This is the translation layer for `SpawnOptions`. Rarely needed
+    * directly.
+    */
+    static stdioMode(s: Stdio): Int {
+        if s == Stdio.Piped {
+            return 1;
+        }
+        if s == Stdio.Null {
+            return 2;
+        }
+        return 0;
+    }
+}

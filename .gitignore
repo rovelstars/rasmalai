@@ -1,0 +1,42 @@
+# Build artifacts
+target/
+**/target/
+*.coredump
+core*
+*.profraw
+compiler/runtime/bundle/Cargo.lock
+benches/data/benchmarks.json
+website/src/lib/benchmarks/pareto.json
+website/static/data/
+
+# Editor build outputs (wasm built from generated parser.c, see .github/workflows/tree-sitter.yml)
+editors/zed/extension.wasm
+editors/zed/grammars/rasmalai.wasm
+
+# Tree-sitter generated outputs (regenerated in CI from grammar.js, see .github/workflows/tree-sitter.yml)
+editors/tree-sitter-rasmalai/src/parser.c
+editors/tree-sitter-rasmalai/src/grammar.json
+editors/tree-sitter-rasmalai/src/node-types.json
+editors/zed/grammars/rasmalai/src/parser.c
+editors/zed/grammars/rasmalai/src/grammar.json
+editors/zed/grammars/rasmalai/src/node-types.json
+
+# Web & WASM
+node_modules/
+**/node_modules/
+.svelte-kit/
+build/
+
+# Cloudflare CLI local state (auth profiles, account cache)
+.cloudflare/
+dist/
+website/src/lib/wasm/wasm_playground.js
+website/src/lib/wasm/wasm_playground.d.ts
+website/src/lib/wasm/wasm_playground_bg.wasm
+website/src/lib/wasm/wasm_playground_bg.wasm.d.ts
+
+# IDEs & System
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -1,0 +1,1538 @@
+//! Filesystem one-shots, file handles, and path helpers.
+//!
+//! ```rnx
+//! import fs, { File, Path } from "@std/fs";
+//! ```
+//!
+//! The bare `fs` name is sync and blocking; the `Async` suffix returns
+//! a `Promise`. Fallible operations return `Result<T, String>`; only
+//! `File.open` keeps the `isOpen` sentinel for a refused open.
+
+import { Result, Promise, PromiseWithResolvers } from "@std/prelude";
+import { ByteBuffer } from "@std/bytes";
+import { Mutex, Channel, AtomicInt } from "@std/sync";
+
+/**
+* Open modes for File.open.
+*/
+enum OpenMode {
+    /** Read-only; opening a missing file leaves isOpen false. */
+    Read,
+    /** Write-only, truncating existing content. */
+    Write,
+    /** Write-only, appending to existing content. */
+    Append,
+    /** Read and write without truncating. */
+    ReadWrite
+}
+
+/**
+* Creation modes for File.create.
+*/
+enum WriteMode {
+    /** Create the file, fail when it exists. */
+    CreateNew,
+    /** Create the file when missing, keep existing content. */
+    Create,
+    /** Create the file when missing, truncate existing content. */
+    Overwrite,
+    /** Create the file when missing, append to existing content. */
+    Append
+}
+
+/**
+* Copy behavior when the destination exists.
+*/
+enum CopyMode {
+    /** Replace the destination. */
+    Overwrite,
+    /** Keep the destination, report success without copying. */
+    SkipExisting
+}
+
+/**
+* Create one directory, failing when the parent is missing.
+* @param path directory to create.
+* @returns Ok(true) on success, Err(message) otherwise.
+*/
+fn mkdir(path: String): Result<Bool, String> {
+    let e = __rnx_fs_mkdir_err(path, 0);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}
+
+/**
+* Create a directory and every missing parent.
+* @param path directory to create.
+* @returns Ok(true) on success, Err(message) otherwise.
+*/
+fn mkdirAll(path: String): Result<Bool, String> {
+    let e = __rnx_fs_mkdir_err(path, 1);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}
+
+/**
+* Remove one file, symlink, or empty directory.
+* @param path file or empty directory to remove.
+* @returns Ok(true) when something was removed, Ok(false) when the
+* path was already missing, Err(message) otherwise.
+*/
+fn remove(path: String): Result<Bool, String> {
+    let ok = __rnx_fs_remove(path);
+    if !ok {
+        let e = __rnx_fs_remove_err(path);
+        if e.len() != 0 {
+            return Result.Err<Bool, String>(e);
+        }
+    }
+    return Result.Ok<Bool, String>(ok);
+}
+
+/**
+* Remove a file or a directory tree.
+* @param path file or directory to remove with all its content.
+* @returns Ok(true) when something was removed, Ok(false) when the
+* path was already missing, Err(message) otherwise.
+*/
+fn removeAll(path: String): Result<Bool, String> {
+    let ok = __rnx_fs_remove_all(path);
+    if !ok {
+        let e = __rnx_fs_remove_all_err(path);
+        if e.len() != 0 {
+            return Result.Err<Bool, String>(e);
+        }
+    }
+    return Result.Ok<Bool, String>(ok);
+}
+
+/**
+* Copy one file.
+* @param from source file.
+* @param to destination file.
+* @param mode `.Overwrite` replaces the destination, `.SkipExisting`
+* keeps it and reports success without copying.
+* @returns Ok(true) on success, Err(message) otherwise.
+*/
+fn copy(src: String, dst: String, mode: CopyMode): Result<Bool, String> {
+    let m = 0;
+    if mode == CopyMode.SkipExisting {
+        m = 1;
+    }
+    let e = __rnx_fs_copy_err(src, dst, m);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}
+
+/**
+* Move a file, falling back to copy plus remove across filesystems.
+* @param from source path.
+* @param to destination path.
+* @returns Ok(true) on success, Err(message) otherwise.
+*/
+fn move(src: String, dst: String): Result<Bool, String> {
+    let e = __rnx_fs_move_err(src, dst);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}
+
+/**
+* Rename a file without cross-filesystem fallback.
+* @param from source path.
+* @param to destination path.
+* @returns Ok(true) on success, Err(message) otherwise.
+*/
+fn rename(src: String, dst: String): Result<Bool, String> {
+    let e = __rnx_fs_rename_err(src, dst);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}
+
+/**
+* Resize a file, padding with zeros when growing.
+* @param path file to resize.
+* @param len new length in bytes, never negative.
+* @returns Ok(true) on success, Err(message) otherwise.
+*/
+fn truncate(path: String, len: Int): Result<Bool, String> {
+    let e = __rnx_fs_truncate_err(path, len);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}
+
+/**
+* Set Unix permission bits such as 493 (`0o755`).
+* @param path file to change.
+* @param mode permission bits.
+* @returns Ok(true) on success, Err(message) otherwise.
+*/
+fn chmod(path: String, mode: Int): Result<Bool, String> {
+    let e = __rnx_fs_chmod_err(path, mode);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}
+
+/**
+* Create a symlink holding `target` at `link`.
+* @param target stored path the link points at.
+* @param link symlink to create.
+* @returns Ok(true) on success, Err(message) otherwise.
+*/
+fn symlink(target: String, link: String): Result<Bool, String> {
+    let e = __rnx_fs_symlink_err(target, link);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}
+
+/**
+* Flush file content to durable storage.
+* @param path file to sync.
+* @returns Ok(true) on success, Err(message) otherwise.
+*/
+fn fsync(path: String): Result<Bool, String> {
+    let e = __rnx_fs_fsync_err(path);
+    if e.len() != 0 {
+        return Result.Err<Bool, String>(e);
+    }
+    return Result.Ok<Bool, String>(true);
+}
+
+/**
+* Read a whole file as text.
+* @param path file to read.
+* @returns Ok(content) on success, Err(message) when missing.
+*/
+fn readText(path: String): Result<String, String> {
+    let e = __rnx_fs_read_text_err(path);
+    if e.len() != 0 {
+        return Result.Err<String, String>(e);
+    }
+    return Result.Ok<String, String>(__rnx_fs_read_text(path));
+}
+
+/**
+* Write a whole file from text.
+* @param path file to write.
+* @param text content to store.
+* @param mode `.CreateNew` fails when the file exists, `.Create`
+* keeps existing content past the write, `.Overwrite` truncates,
+* `.Append` writes at the end.
+* @returns Ok(bytes written) on success, Err(message) otherwise.
+*/
+fn writeText(path: String, text: String, mode: WriteMode): Result<Int, String> {
+    let m = 2;
+    if mode == WriteMode.CreateNew {
+        m = 0;
+    }
+    if mode == WriteMode.Create {
+        m = 1;
+    }
+    if mode == WriteMode.Append {
+        m = 3;
+    }
+    let n = __rnx_fs_write_text(path, text, m);
+    if n == -1 {
+        let e = __rnx_fs_write_text_err(path, text, m);
+        if e.len() != 0 {
+            return Result.Err<Int, String>(e);
+        }
+        return Result.Err<Int, String>("writeText failed for `" + path + "`");
+    }
+    return Result.Ok<Int, String>(n);
+}
+
+/**
+* Read a whole file as bytes.
+* @param path file to read.
+* @returns Ok(buffer) on success, Err(message) when missing.
+*/
+fn readBytes(path: String): Result<ByteBuffer, String> {
+    let e = __rnx_fs_read_bytes_err(path);
+    if e.len() != 0 {
+        return Result.Err<ByteBuffer, String>(e);
+    }
+    return Result.Ok<ByteBuffer, String>(new ByteBuffer(__rnx_fs_read_bytes(path)));
+}
+
+/**
+* Write a whole file from a byte buffer.
+* @param path file to write.
+* @param buf content to store.
+* @param mode `.CreateNew` fails when the file exists, `.Create`
+* keeps existing content past the write, `.Overwrite` truncates,
+* `.Append` writes at the end.
+* @returns Ok(bytes written) on success, Err(message) otherwise.
+*/
+fn writeBytes(path: String, buf: ByteBuffer, mode: WriteMode): Result<Int, String> {
+    let m = 2;
+    if mode == WriteMode.CreateNew {
+        m = 0;
+    }
+    if mode == WriteMode.Create {
+        m = 1;
+    }
+    if mode == WriteMode.Append {
+        m = 3;
+    }
+    let n = __rnx_fs_write_bytes(path, buf.handle, m);
+    if n == -1 {
+        let e = __rnx_fs_write_bytes_err(path, buf.handle, m);
+        if e.len() != 0 {
+            return Result.Err<Int, String>(e);
+        }
+        return Result.Err<Int, String>("writeBytes failed for `" + path + "`");
+    }
+    return Result.Ok<Int, String>(n);
+}
+/**
+* Live memory mapping of a file or of anonymous pages.
+*
+* Build one with `mmap` for a file or `mmapAnon` for blank pages, then
+* take the raw start with `address()` inside `unsafe` and hand it to
+* `Pointer.fromAddress<Byte>`. Writes through a `.ReadWrite` file map
+* reach the file once `flush()` runs.
+*
+* The address stays valid until `close()`. Closing unmaps the region,
+* so every address taken from it must be forgotten first: using one
+* afterwards reads or writes freed memory. `close()` twice is safe,
+* `flush()` on a closed map does nothing, and `address()` on a closed
+* map answers 0. The mapped length is fixed at build time and stays
+* readable through `len()` after `close()`.
+*
+* A file map tracks the file it was built from. When another process
+* truncates the file below a page the program then touches, the fault
+* is not catchable: the OS delivers SIGBUS on POSIX (an access
+* violation on Windows), which no `Result` and no `catch` can cover.
+* Size the file before mapping it and never truncate a mapped file.
+*
+* WebAssembly has no mapping support: `mmap` and `mmapAnon` both
+* answer Err("mmap is not supported on this target") there.
+*/
+class Mmap {
+    /** Opaque mapping handle. */
+    let handle: Int;
+    /** Mapped length in bytes, fixed when the map is built. */
+    let length: Int;
+    /** False after close(). */
+    let isOpen: Bool;
+
+    init(handle: Int, length: Int) {
+        this.handle = handle;
+        this.length = length;
+        this.isOpen = true;
+    }
+
+    /**
+    * Raw address of the first mapped byte, for `Pointer.fromAddress`
+    * inside `unsafe` blocks. The map must outlive every pointer made
+    * from it, and the address must be forgotten before `close()`.
+    * @returns address of byte 0, or 0 when the map is closed.
+    */
+    unsafe fn address(): Int {
+        if ! this.isOpen {
+            return 0;
+        }
+        return __rnx_fs_mmap_addr(this.handle);
+    }
+
+    /**
+    * Mapped length in bytes, as fixed when the map was built.
+    * @returns byte count covered by the map.
+    */
+    len(): Int {
+        return this.length;
+    }
+
+    /**
+    * Write dirty pages back to the file. No-op when closed, and a
+    * no-op for read-only and anonymous maps, which have nothing to
+    * write back.
+    */
+    flush() {
+        if this.isOpen {
+            __rnx_fs_mmap_flush(this.handle);
+        }
+    }
+
+    /**
+    * Unmap the region and mark isOpen false. Closing twice is safe.
+    * Every address from `address()` must be forgotten first.
+    */
+    close() {
+        if this.isOpen {
+            __rnx_fs_mmap_close(this.handle);
+            this.isOpen = false;
+        }
+    }
+}
+
+/**
+* Map a whole file into memory.
+*
+* `.Read` gives a read-only view, `.ReadWrite` a writable one; the
+* other modes behave as `.ReadWrite`. The file must exist and must not
+* be empty: size it with `writeText`, `writeBytes`, or `truncate`
+* first. A writable map of a protected path traps with S301.
+*
+* When another process truncates the file below a page the program
+* then touches, the fault is not catchable: the OS delivers SIGBUS on
+* POSIX (an access violation on Windows), which no `Result` and no
+* `catch` can cover. Never truncate a mapped file.
+* @param path file to map.
+* @param mode `.Read` for a read-only view, `.ReadWrite` for writes.
+* @returns Ok(map) on success, Err(message) otherwise.
+*/
+unsafe fn mmap(path: String, mode: OpenMode): Result<Mmap, String> {
+    let m = 3;
+    if mode == OpenMode.Read {
+        m = 0;
+    }
+    let h = __rnx_fs_mmap(path, m);
+    if h == 0 {
+        let e = __rnx_fs_mmap_err(path, m);
+        if e.len() != 0 {
+            return Result.Err<Mmap, String>(e);
+        }
+        return Result.Err<Mmap, String>("mmap failed for `" + path + "`");
+    }
+    return Result.Ok<Mmap, String>(new Mmap(h, __rnx_fs_mmap_len(h)));
+}
+
+/**
+* Map anonymous zeroed pages, backed by nothing on disk.
+* @param len byte count to map, must be positive.
+* @returns Ok(map) covering len zeroed bytes, Err(message) otherwise.
+*/
+fn mmapAnon(len: Int): Result<Mmap, String> {
+    let h = __rnx_fs_mmap_anon(len);
+    if h == 0 {
+        let e = __rnx_fs_mmap_anon_err(len);
+        if e.len() != 0 {
+            return Result.Err<Mmap, String>(e);
+        }
+        return Result.Err<Mmap, String>("mmapAnon failed");
+    }
+    return Result.Ok<Mmap, String>(new Mmap(h, __rnx_fs_mmap_len(h)));
+}
+
+/**
+* Metadata snapshot for one path, as reported by `stat`.
+* A symlink reports itself, not its target: `isLink` is true and
+* `size` is the length of the stored target path.
+*/
+class FileStat {
+    /** File length in bytes, or the target path length for a symlink. */
+    let size: Int;
+    /** True for a regular file (false for a symlink, even a live one). */
+    let isFile: Bool;
+    /** True for a directory. */
+    let isDir: Bool;
+    /** True for a symlink, live or dangling. */
+    let isLink: Bool;
+    /** Last modification time as seconds since the Unix epoch, 0 when unknown. */
+    let modified: Int;
+    /** Unix permission bits, 0 on platforms without them. */
+    let mode: Int;
+
+    init(size: Int, isFile: Bool, isDir: Bool, isLink: Bool, modified: Int, mode: Int) {
+        this.size = size;
+        this.isFile = isFile;
+        this.isDir = isDir;
+        this.isLink = isLink;
+        this.modified = modified;
+        this.mode = mode;
+    }
+}
+
+/**
+* Metadata for a path.
+* @param path file or directory to inspect.
+* @returns Ok(stat) on success, Err(message) when the path is missing.
+*/
+fn stat(path: String): Result<FileStat, String> {
+    let e = __rnx_fs_stat_err(path);
+    if e.len() != 0 {
+        return Result.Err<FileStat, String>(e);
+    }
+    let f = __rnx_fs_stat(path);
+    return Result.Ok<FileStat, String>(new FileStat(f[0], f[1] == 1, f[2] == 1, f[3] == 1, f[4], f[5]));
+}
+
+/**
+* True when a path exists, false for anything missing.
+* @param path path to probe.
+* @returns true when the path exists.
+*/
+fn exists(path: String): Bool {
+    return __rnx_fs_exists(path);
+}
+
+/**
+* True when a path is a regular file.
+* @param path path to probe.
+* @returns true for a regular file, false for missing paths and links.
+*/
+fn isFile(path: String): Bool {
+    return __rnx_fs_is_file(path);
+}
+
+/**
+* True when a path is a directory.
+* @param path path to probe.
+* @returns true for a directory, false otherwise.
+*/
+fn isDir(path: String): Bool {
+    return __rnx_fs_is_dir(path);
+}
+
+/**
+* Entry names inside a directory, sorted for deterministic builds.
+* @param path directory to list.
+* @returns Ok(names) sorted lexicographically, Err(message) when unreadable.
+*/
+fn readDir(path: String): Result<Array<String>, String> {
+    let e = __rnx_fs_read_dir_err(path);
+    if e.len() != 0 {
+        return Result.Err<Array<String>, String>(e);
+    }
+    return Result.Ok<Array<String>, String>(__rnx_fs_read_dir(path));
+}
+
+/**
+* Paths matching a pattern, sorted for deterministic builds.
+* Supports `*` and `?` within a path component and `**` for any
+* depth of directories. A pattern with no match gives an empty array.
+* @param pattern glob such as `src/*.rnx`.
+* @returns Ok(paths) sorted lexicographically, Err(message) on misuse.
+*/
+fn glob(pattern: String): Result<Array<String>, String> {
+    let e = __rnx_fs_glob_err(pattern);
+    if e.len() != 0 {
+        return Result.Err<Array<String>, String>(e);
+    }
+    return Result.Ok<Array<String>, String>(__rnx_fs_glob(pattern));
+}
+
+/**
+* Target stored in a symlink.
+* @param path symlink to read.
+* @returns Ok(target) with the stored path, Err(message) otherwise.
+*/
+fn readLink(path: String): Result<String, String> {
+    let e = __rnx_fs_read_link_err(path);
+    if e.len() != 0 {
+        return Result.Err<String, String>(e);
+    }
+    return Result.Ok<String, String>(__rnx_fs_read_link(path));
+}
+
+/**
+* Registry slot for the advisory lock on one path. Every handle opened
+* on the same path hashes to the same slot, so `lockSync` on one handle
+* excludes `tryLockSync` on another. Slots live in the high id range to
+* stay clear of hand-picked `@std/sync` ids.
+* @param path file whose lock slot to compute.
+* @returns stable non-negative registry id for the path.
+*/
+fn fileLockId(path: String): Int {
+    let h = 0;
+    let i = 0;
+    while i < path.length() {
+        h = (h * 31 + path.charCodeAt(i)) % 1000000007;
+        i = i + 1;
+    }
+    return 700000000 + (h % 1000000);
+}
+
+/**
+* Buffered OS file handle with a cursor. Open with `open` or `create`
+* and always `close` what you open. A refused open gives `isOpen == false`
+* instead of throwing; every other fallible operation answers `Result`.
+*/
+class File {
+    /** Opaque OS handle. Only handles from open, create, or fromHandle are
+    valid; any other value fails safe (unknown handles close as a no-op and
+    read/write answer errors instead of touching memory). */
+    let handle: Int;
+    /** Path passed to open() or create(). */
+    let path: String;
+    /** False when the OS refused the open, or after close(). */
+    let isOpen: Bool;
+
+    init(handle: Int, path: String) {
+        this.handle = handle;
+        this.path = path;
+        this.isOpen = true;
+    }
+
+    /**
+    * Open a file.
+    * @param path file to open.
+    * @param mode `.Read`, `.Write`, `.Append`, or `.ReadWrite`.
+    * @returns handle whose isOpen is false when the OS refused the open.
+    */
+    static open(path: String, mode: OpenMode): File {
+        let modeInt = 0;
+        if mode == OpenMode.Write {
+            modeInt = 1;
+        }
+        if mode == OpenMode.Append {
+            modeInt = 2;
+        }
+        if mode == OpenMode.ReadWrite {
+            modeInt = 3;
+        }
+        let h = __rnx_file_open(path, modeInt);
+        let f = new File(h, path);
+        if h == 0 {
+            f.isOpen = false;
+        }
+        return f;
+    }
+
+    /**
+    * Create or open a file for writing.
+    * @param path file to create.
+    * @param mode `.CreateNew` fails when the file exists, `.Create` keeps
+    * existing content, `.Overwrite` truncates, `.Append` writes at the end.
+    * @returns handle whose isOpen is false when the OS refused the create.
+    */
+    static create(path: String, mode: WriteMode): File {
+        let modeInt = 1;
+        if mode == WriteMode.CreateNew {
+            modeInt = 4;
+        }
+        if mode == WriteMode.Create {
+            modeInt = 5;
+        }
+        if mode == WriteMode.Append {
+            modeInt = 2;
+        }
+        let h = __rnx_file_open(path, modeInt);
+        let f = new File(h, path);
+        if h == 0 {
+            f.isOpen = false;
+        }
+        return f;
+    }
+
+    /**
+    * Wrap an already-open descriptor without opening a path.
+    * @param fd descriptor number, 0, 1, or 2 for the standard streams.
+    * @param label handle name used in errors, such as "stdin".
+    * @param mode `.Read`, `.Write`, `.Append`, or `.ReadWrite`, used
+    * for the read/write checks only.
+    * @returns handle whose isOpen is false when the descriptor is bad.
+    * The handle never owns the descriptor: `close()` detaches from it
+    * while descriptors 0, 1, and 2 stay usable, and a second `close()`
+    * is a no-op. No path guard applies since descriptors are not paths.
+    */
+    static fromHandle(fd: Int, label: String, mode: OpenMode): File {
+        let readable = 0;
+        if mode == OpenMode.Read {
+            readable = 1;
+        }
+        if mode == OpenMode.ReadWrite {
+            readable = 1;
+        }
+        let writable = 0;
+        if mode == OpenMode.Write {
+            writable = 1;
+        }
+        if mode == OpenMode.Append {
+            writable = 1;
+        }
+        if mode == OpenMode.ReadWrite {
+            writable = 1;
+        }
+        let h = __rnx_file_from_handle(fd, readable, writable);
+        let f = new File(h, label);
+        if h == 0 {
+            f.isOpen = false;
+        }
+        return f;
+    }
+
+    /**
+    * Read the whole remaining content as text, from the cursor to the end.
+    * @returns Ok(content), Err(message) when the handle is closed or
+    * not open for reading (a write-only handle answers Err, never traps).
+    */
+    readText(): Result<String, String> {
+        if ! this.isOpen {
+            return Result.Err<String, String>("readText failed for `" + this.path + "`: closed handle");
+        }
+        let e = __rnx_file_read_text_err(this.handle);
+        if e.len() != 0 {
+            return Result.Err<String, String>(e);
+        }
+        return Result.Ok<String, String>(__rnx_file_read_text(this.handle));
+    }
+
+    /**
+    * Write text at the cursor.
+    * @param text content to write.
+    * @returns Ok(bytes written), Err(message) when the handle is closed.
+    */
+    writeText(text: String): Result<Int, String> {
+        if ! this.isOpen {
+            return Result.Err<Int, String>("writeText failed for `" + this.path + "`: closed handle");
+        }
+        let n = __rnx_file_write_text(this.handle, text);
+        if n == -1 {
+            return Result.Err<Int, String>("writeText failed for `" + this.path + "`: write failed");
+        }
+        return Result.Ok<Int, String>(n);
+    }
+
+    /**
+    * Read raw bytes at the cursor into a buffer.
+    * @param buf destination buffer.
+    * @param offset first buffer byte to fill, defaults to 0.
+    * @param len bytes to read, defaults to the rest of the buffer (-1).
+    * @returns Ok(bytes read, 0 on EOF), Err(message) when closed.
+    */
+    readBytes(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Result<Int, String> {
+        if ! this.isOpen {
+            return Result.Err<Int, String>("readBytes failed for `" + this.path + "`: closed handle");
+        }
+        let n = __rnx_file_read_bytes(this.handle, buf.handle, offset, len);
+        if n == -1 {
+            return Result.Err<Int, String>("readBytes failed for `" + this.path + "`: read failed");
+        }
+        return Result.Ok<Int, String>(n);
+    }
+
+    /**
+    * Write raw buffer bytes at the cursor.
+    * @param buf source buffer.
+    * @param offset first buffer byte to write, defaults to 0.
+    * @param len bytes to write, defaults to the rest of the buffer (-1).
+    * @returns Ok(bytes written), Err(message) when the handle is closed.
+    */
+    writeBytes(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Result<Int, String> {
+        if ! this.isOpen {
+            return Result.Err<Int, String>("writeBytes failed for `" + this.path + "`: closed handle");
+        }
+        let n = __rnx_file_write_bytes(this.handle, buf.handle, offset, len);
+        if n == -1 {
+            return Result.Err<Int, String>("writeBytes failed for `" + this.path + "`: write failed");
+        }
+        return Result.Ok<Int, String>(n);
+    }
+
+    /**
+    * Move the cursor to an absolute byte position.
+    * @param pos byte offset from the start of the file, never negative.
+    * @returns Ok(pos) after repositioning, Err(message) otherwise.
+    */
+    seek(pos: Int): Result<Int, String> {
+        if ! this.isOpen {
+            return Result.Err<Int, String>("seek failed for `" + this.path + "`: closed handle");
+        }
+        if pos < 0 {
+            return Result.Err<Int, String>("seek failed for `" + this.path + "`: negative position");
+        }
+        if __rnx_file_seek(this.handle, pos) == -1 {
+            return Result.Err<Int, String>("seek failed for `" + this.path + "`: refusing position");
+        }
+        return Result.Ok<Int, String>(pos);
+    }
+
+    /**
+    * Current cursor position in bytes, or -1 when the handle is closed.
+    * @returns byte offset from the start of the file.
+    */
+    tell(): Int {
+        if ! this.isOpen {
+            return -1;
+        }
+        return __rnx_file_tell(this.handle);
+    }
+
+    /**
+    * File length in bytes, flushed before measuring.
+    * @returns Ok(length), Err(message) when closed or stat fails.
+    */
+    len(): Result<Int, String> {
+        if ! this.isOpen {
+            return Result.Err<Int, String>("len failed for `" + this.path + "`: closed handle");
+        }
+        __rnx_file_flush(this.handle);
+        let e = __rnx_fs_stat_err(this.path);
+        if e.len() != 0 {
+            return Result.Err<Int, String>(e);
+        }
+        let f = __rnx_fs_stat(this.path);
+        return Result.Ok<Int, String>(f[0]);
+    }
+
+    /**
+    * Flush buffered writes to the OS. No-op when closed.
+    */
+    flush() {
+        if this.isOpen {
+            __rnx_file_flush(this.handle);
+        }
+    }
+
+    /**
+    * Flush buffered writes and force the OS to durable storage.
+    * @returns Ok(true) once durable, Err(message) otherwise.
+    */
+    sync(): Result<Bool, String> {
+        if ! this.isOpen {
+            return Result.Err<Bool, String>("sync failed for `" + this.path + "`: closed handle");
+        }
+        __rnx_file_flush(this.handle);
+        let e = __rnx_fs_fsync_err(this.path);
+        if e.len() != 0 {
+            return Result.Err<Bool, String>(e);
+        }
+        return Result.Ok<Bool, String>(true);
+    }
+
+    /**
+    * Resize the file, padding with zeros when growing.
+    * @param n new length in bytes, never negative.
+    * @returns Ok(true) after resizing, Err(message) otherwise.
+    */
+    truncate(n: Int): Result<Bool, String> {
+        if ! this.isOpen {
+            return Result.Err<Bool, String>("truncate failed for `" + this.path + "`: closed handle");
+        }
+        __rnx_file_flush(this.handle);
+        let e = __rnx_fs_truncate_err(this.path, n);
+        if e.len() != 0 {
+            return Result.Err<Bool, String>(e);
+        }
+        return Result.Ok<Bool, String>(true);
+    }
+
+    /**
+    * Take the advisory lock for this path, blocking until it is free.
+    * The lock is shared by every handle on the same path across threads;
+    * it is not reentrant, so the holding thread must not lock twice.
+    * Ids hash the path into a shared range, so unrelated paths can
+    * rarely share an id and over-serialize; never rely on it for safety.
+    */
+    lockSync() {
+        Mutex.byId(fileLockId(this.path)).lock();
+    }
+
+    /**
+    * Take the advisory lock for this path only when it is free.
+    * @returns true when this call took the lock, false when another
+    * handle holds it. Unlock only when this returns true.
+    */
+    tryLockSync(): Bool {
+        return Mutex.byId(fileLockId(this.path)).tryLock();
+    }
+
+    /**
+    * Release the advisory lock taken by `lockSync` or `tryLockSync`.
+    */
+    unlockSync() {
+        Mutex.byId(fileLockId(this.path)).unlock();
+    }
+
+    /**
+    * Release the handle and mark isOpen false. Closing twice is safe.
+    */
+    close() {
+        if this.isOpen {
+            __rnx_file_close(this.handle);
+            this.isOpen = false;
+        }
+    }
+}
+
+/**
+* Path strings plus read-only filesystem queries. The string helpers are
+* pure; only exists(), isFile(), and isDir() touch the filesystem.
+*/
+class Path {
+    /**
+    * Join two path segments with a separator.
+    * @param a parent segment, may be empty.
+    * @param b child segment, may be empty.
+    * @returns a + "/" + b, or whichever side is non-empty.
+    */
+    static join(a: String, b: String): String {
+        if a == "" {
+            return b;
+        }
+        if b == "" {
+            return a;
+        }
+        return a + "/" + b;
+    }
+
+    /**
+    * Directory holding a path, with trailing slashes ignored.
+    * @param p path to inspect.
+    * @returns parent directory, "/" for a top-level absolute path, "."
+    * when the path holds no separator.
+    */
+    static dir(p: String): String {
+        let n = p.length();
+        let end = n;
+        while end > 1 && p.charCodeAt(end - 1) == 47 {
+            end = end - 1;
+        }
+        let cut = -1;
+        let i = 0;
+        while i < end {
+            if p.charCodeAt(i) == 47 {
+                cut = i;
+            }
+            i = i + 1;
+        }
+        if cut == -1 {
+            return ".";
+        }
+        if cut == 0 {
+            return "/";
+        }
+        return p.slice(0, cut);
+    }
+
+    /**
+    * Final segment of a path, with trailing slashes ignored.
+    * @param p path to inspect.
+    * @returns file or directory name, "/" for the root, "" for empty input.
+    */
+    static base(p: String): String {
+        let end = p.length();
+        while end > 1 && p.charCodeAt(end - 1) == 47 {
+            end = end - 1;
+        }
+        if end == 0 {
+            return "";
+        }
+        if end == 1 && p.charCodeAt(0) == 47 {
+            return "/";
+        }
+        let cut = -1;
+        let i = 0;
+        while i < end {
+            if p.charCodeAt(i) == 47 {
+                cut = i;
+            }
+            i = i + 1;
+        }
+        return p.slice(cut + 1, end);
+    }
+
+    /**
+    * Extension of a path, including the leading dot.
+    * @param p path to inspect.
+    * @returns suffix from the last dot in the final segment (".txt"),
+    * or "" when the name has no dot past its first character.
+    */
+    static ext(p: String): String {
+        let end = p.length();
+        while end > 1 && p.charCodeAt(end - 1) == 47 {
+            end = end - 1;
+        }
+        let cut = -1;
+        let i = 0;
+        while i < end {
+            if p.charCodeAt(i) == 47 {
+                cut = i;
+            }
+            i = i + 1;
+        }
+        let dot = -1;
+        let j = cut + 1;
+        while j < end {
+            if p.charCodeAt(j) == 46 {
+                dot = j;
+            }
+            j = j + 1;
+        }
+        if dot <= cut + 1 {
+            return "";
+        }
+        return p.slice(dot, end);
+    }
+
+    /**
+    * True for absolute paths starting with "/".
+    * @param p path to inspect.
+    * @returns true when p names from the filesystem root.
+    */
+    static isAbs(p: String): Bool {
+        if p.length() == 0 {
+            return false;
+        }
+        return p.charCodeAt(0) == 47;
+    }
+
+    /**
+    * True when a path exists on the filesystem.
+    * @param p path to probe.
+    * @returns true for any existing file, directory, or live link.
+    */
+    static exists(p: String): Bool {
+        return __rnx_fs_exists(p);
+    }
+
+    /**
+    * True when a path is a regular file.
+    * @param p path to probe.
+    * @returns true for a regular file, false for missing paths and links.
+    */
+    static isFile(p: String): Bool {
+        return __rnx_fs_is_file(p);
+    }
+
+    /**
+    * True when a path is a directory.
+    * @param p path to probe.
+    * @returns true for a directory, false otherwise.
+    */
+    static isDir(p: String): Bool {
+        return __rnx_fs_is_dir(p);
+    }
+}
+
+/**
+* Request bundle for one pooled text read. The pool worker receives the
+* whole bundle through the readText channel, so arguments and the settling
+* handle travel together and concurrent calls cannot interleave.
+* Fields stay Any because a concrete heap-typed field needs a native
+* field release the backends cannot build for generic payloads.
+*/
+class FsTextReq {
+    /** File to read. */
+    let path: Any;
+    /** Settles with the read outcome. */
+    let wr: Any;
+
+    init(path: String, wr: PromiseWithResolvers<Result<String, String>>) {
+        this.path = path;
+        this.wr = wr;
+    }
+}
+
+/**
+* Request bundle for one pooled byte read.
+*/
+class FsBytesReq {
+    /** File to read. */
+    let path: Any;
+    /** Settles with the read outcome. */
+    let wr: Any;
+
+    init(path: String, wr: PromiseWithResolvers<Result<ByteBuffer, String>>) {
+        this.path = path;
+        this.wr = wr;
+    }
+}
+
+/**
+* Request bundle for one pooled text write.
+*/
+class FsWriteTextReq {
+    /** File to write. */
+    let path: Any;
+    /** Content to store. */
+    let text: Any;
+    /** Write mode as 0 CreateNew, 1 Create, 2 Overwrite, 3 Append. */
+    let mode: Int;
+    /** Settles with the byte count outcome. */
+    let wr: Any;
+
+    init(path: String, text: String, mode: Int, wr: PromiseWithResolvers<Result<Int, String>>) {
+        this.path = path;
+        this.text = text;
+        this.mode = mode;
+        this.wr = wr;
+    }
+}
+
+/**
+* Request bundle for one pooled byte write. Bytes travel as an array
+* because a native buffer handle cannot cross threads by itself.
+*/
+class FsWriteBytesReq {
+    /** File to write. */
+    let path: Any;
+    /** Content to store, one value per byte. */
+    let data: Any;
+    /** Write mode as 0 CreateNew, 1 Create, 2 Overwrite, 3 Append. */
+    let mode: Int;
+    /** Settles with the byte count outcome. */
+    let wr: Any;
+
+    init(path: String, data: Array<Int>, mode: Int, wr: PromiseWithResolvers<Result<Int, String>>) {
+        this.path = path;
+        this.data = data;
+        this.mode = mode;
+        this.wr = wr;
+    }
+}
+
+/**
+* Request bundle for one pooled stat call.
+*/
+class FsStatReq {
+    /** Path to inspect. */
+    let path: Any;
+    /** Settles with the metadata outcome. */
+    let wr: Any;
+
+    init(path: String, wr: PromiseWithResolvers<Result<FileStat, String>>) {
+        this.path = path;
+        this.wr = wr;
+    }
+}
+
+/**
+* Request bundle for one pooled directory listing or glob.
+*/
+class FsDirReq {
+    /** Directory to list, or pattern to match. */
+    let path: Any;
+    /** Settles with the sorted names outcome. */
+    let wr: Any;
+
+    init(path: String, wr: PromiseWithResolvers<Result<Array<String>, String>>) {
+        this.path = path;
+        this.wr = wr;
+    }
+}
+
+/**
+* Request bundle for one pooled copy.
+*/
+class FsCopyReq {
+    /** Source file. */
+    let src: Any;
+    /** Destination file. */
+    let dst: Any;
+    /** 0 Overwrite, 1 SkipExisting. */
+    let mode: Int;
+    /** Settles with the copy outcome. */
+    let wr: Any;
+
+    init(src: String, dst: String, mode: Int, wr: PromiseWithResolvers<Result<Bool, String>>) {
+        this.src = src;
+        this.dst = dst;
+        this.mode = mode;
+        this.wr = wr;
+    }
+}
+
+/**
+* Request bundle for one pooled move or rename.
+*/
+class FsMoveReq {
+    /** Source path. */
+    let src: Any;
+    /** Destination path. */
+    let dst: Any;
+    /** Settles with the outcome. */
+    let wr: Any;
+
+    init(src: String, dst: String, wr: PromiseWithResolvers<Result<Bool, String>>) {
+        this.src = src;
+        this.dst = dst;
+        this.wr = wr;
+    }
+}
+
+/**
+* Worker count the fs pool was sized with, 0 when never sized.
+* Internal: `fsWorkers` fills it on first use, `setWorkers` sets it.
+* @returns live pool size, or 0 before the first async call.
+*/
+fn fsPoolSize(): Int {
+    return AtomicInt.byId(710000002).get();
+}
+
+/**
+* Worker count for the next pool ensure. The first call measures the
+* machine with `__rnx_os_cpu_count` and clamps into 1..8.
+* @returns worker count between 1 and 8.
+*/
+fn fsWorkers(): Int {
+    let n = AtomicInt.byId(710000002).get();
+    if n != 0 {
+        return n;
+    }
+    n = __rnx_os_cpu_count();
+    if n < 1 {
+        n = 1;
+    }
+    if n > 8 {
+        n = 8;
+    }
+    AtomicInt.byId(710000002).set(n);
+    return n;
+}
+
+/**
+* Resize the process-wide fs pool, clamped into 1..8.
+* The default is the CPU count capped at 8. Call it only when no async
+* operation is in flight: resizing stops the old pool, so anything still
+* queued never runs and its promise never settles.
+* @param n desired worker count, clamped into 1..8.
+* @returns the clamped count the pool was sized with.
+*/
+fn setWorkers(n: Int): Int {
+    let c = n;
+    if c < 1 {
+        c = 1;
+    }
+    if c > 8 {
+        c = 8;
+    }
+    AtomicInt.byId(710000002).set(c);
+    ThreadPool.byId(710000001, c);
+    return c;
+}
+
+/**
+* Map a stored write mode back onto `WriteMode`.
+* @param m 0 CreateNew, 1 Create, 2 Overwrite, anything else Append.
+* @returns the matching mode.
+*/
+fn fsWriteModeOf(m: Int): WriteMode {
+    if m == 0 {
+        return WriteMode.CreateNew;
+    }
+    if m == 1 {
+        return WriteMode.Create;
+    }
+    if m == 3 {
+        return WriteMode.Append;
+    }
+    return WriteMode.Overwrite;
+}
+
+/**
+* Read a whole file as text on the fs pool.
+* @param path file to read.
+* @returns pending promise settling with Ok(content) or Err(message).
+*/
+fn readTextAsync(path: String): Promise<Result<String, String>> {
+    let wr = Promise.withResolvers<Result<String, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(readText(path));
+        return wr.promise;
+    }
+    Channel.byId(710000011).send(new FsTextReq(path, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000011).recv() as FsTextReq;
+        let w: PromiseWithResolvers<Result<String, String>> = req.wr;
+        let p: String = req.path;
+        w.resolve(readText(p));
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}
+
+/**
+* Read a whole file as bytes on the fs pool.
+* @param path file to read.
+* @returns pending promise settling with Ok(buffer) or Err(message).
+*/
+fn readBytesAsync(path: String): Promise<Result<ByteBuffer, String>> {
+    let wr = Promise.withResolvers<Result<ByteBuffer, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(readBytes(path));
+        return wr.promise;
+    }
+    Channel.byId(710000012).send(new FsBytesReq(path, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000012).recv() as FsBytesReq;
+        let w: PromiseWithResolvers<Result<ByteBuffer, String>> = req.wr;
+        let p: String = req.path;
+        w.resolve(readBytes(p));
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}
+
+/**
+* Write a whole file from text on the fs pool.
+* @param path file to write.
+* @param text content to store.
+* @param mode `.CreateNew` fails when the file exists, `.Create` keeps
+* existing content past the write, `.Overwrite` truncates,
+* `.Append` writes at the end.
+* @returns pending promise settling with Ok(bytes written) or Err(message).
+*/
+fn writeTextAsync(path: String, text: String, mode: WriteMode): Promise<Result<Int, String>> {
+    let m = 2;
+    if mode == WriteMode.CreateNew {
+        m = 0;
+    }
+    if mode == WriteMode.Create {
+        m = 1;
+    }
+    if mode == WriteMode.Append {
+        m = 3;
+    }
+    let wr = Promise.withResolvers<Result<Int, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(writeText(path, text, mode));
+        return wr.promise;
+    }
+    Channel.byId(710000013).send(new FsWriteTextReq(path, text, m, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000013).recv() as FsWriteTextReq;
+        let w: PromiseWithResolvers<Result<Int, String>> = req.wr;
+        let p: String = req.path;
+        let t: String = req.text;
+        let q: Int = req.mode;
+        w.resolve(writeText(p, t, fsWriteModeOf(q)));
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}
+
+/**
+* Write a whole file from a byte buffer on the fs pool.
+* @param path file to write.
+* @param buf content to store.
+* @param mode `.CreateNew` fails when the file exists, `.Create` keeps
+* existing content past the write, `.Overwrite` truncates,
+* `.Append` writes at the end.
+* @returns pending promise settling with Ok(bytes written) or Err(message).
+*/
+fn writeBytesAsync(path: String, buf: ByteBuffer, mode: WriteMode): Promise<Result<Int, String>> {
+    let m = 2;
+    if mode == WriteMode.CreateNew {
+        m = 0;
+    }
+    if mode == WriteMode.Create {
+        m = 1;
+    }
+    if mode == WriteMode.Append {
+        m = 3;
+    }
+    let data: Array<Int> = [];
+    let i = 0;
+    while i < buf.length() {
+        data.push(buf.readUInt8(i));
+        i = i + 1;
+    }
+    let wr = Promise.withResolvers<Result<Int, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(writeBytes(path, buf, mode));
+        return wr.promise;
+    }
+    Channel.byId(710000014).send(new FsWriteBytesReq(path, data, m, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000014).recv() as FsWriteBytesReq;
+        let w: PromiseWithResolvers<Result<Int, String>> = req.wr;
+        let p: String = req.path;
+        let d: Array<Int> = req.data;
+        let q: Int = req.mode;
+        w.resolve(writeBytes(p, ByteBuffer.fromArray(d), fsWriteModeOf(q)));
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}
+
+/**
+* Metadata for a path on the fs pool.
+* @param path file or directory to inspect.
+* @returns pending promise settling with Ok(stat) or Err(message).
+*/
+fn statAsync(path: String): Promise<Result<FileStat, String>> {
+    let wr = Promise.withResolvers<Result<FileStat, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(stat(path));
+        return wr.promise;
+    }
+    Channel.byId(710000015).send(new FsStatReq(path, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000015).recv() as FsStatReq;
+        let w: PromiseWithResolvers<Result<FileStat, String>> = req.wr;
+        let p: String = req.path;
+        w.resolve(stat(p));
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}
+
+/**
+* Entry names inside a directory on the fs pool, sorted for
+* deterministic builds.
+* @param path directory to list.
+* @returns pending promise settling with Ok(names) or Err(message).
+*/
+fn readDirAsync(path: String): Promise<Result<Array<String>, String>> {
+    let wr = Promise.withResolvers<Result<Array<String>, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(readDir(path));
+        return wr.promise;
+    }
+    Channel.byId(710000016).send(new FsDirReq(path, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000016).recv() as FsDirReq;
+        let w: PromiseWithResolvers<Result<Array<String>, String>> = req.wr;
+        let p: String = req.path;
+        w.resolve(readDir(p));
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}
+
+/**
+* Paths matching a pattern on the fs pool, sorted for deterministic
+* builds. Supports `*` and `?` within a path component and `**` for any
+* depth of directories.
+* @param pattern glob such as `src/*.rnx`.
+* @returns pending promise settling with Ok(paths) or Err(message).
+*/
+fn globAsync(pattern: String): Promise<Result<Array<String>, String>> {
+    let wr = Promise.withResolvers<Result<Array<String>, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(glob(pattern));
+        return wr.promise;
+    }
+    Channel.byId(710000017).send(new FsDirReq(pattern, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000017).recv() as FsDirReq;
+        let w: PromiseWithResolvers<Result<Array<String>, String>> = req.wr;
+        let p: String = req.path;
+        w.resolve(glob(p));
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}
+
+/**
+* Copy one file on the fs pool.
+* @param from source file.
+* @param to destination file.
+* @param mode `.Overwrite` replaces the destination, `.SkipExisting`
+* keeps it and reports success without copying.
+* @returns pending promise settling with Ok(true) or Err(message).
+*/
+fn copyAsync(src: String, dst: String, mode: CopyMode): Promise<Result<Bool, String>> {
+    let m = 0;
+    if mode == CopyMode.SkipExisting {
+        m = 1;
+    }
+    let wr = Promise.withResolvers<Result<Bool, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(copy(src, dst, mode));
+        return wr.promise;
+    }
+    Channel.byId(710000018).send(new FsCopyReq(src, dst, m, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000018).recv() as FsCopyReq;
+        let w: PromiseWithResolvers<Result<Bool, String>> = req.wr;
+        let s: String = req.src;
+        let d: String = req.dst;
+        let q: Int = req.mode;
+        if q == 1 {
+            w.resolve(copy(s, d, CopyMode.SkipExisting));
+        } else {
+            w.resolve(copy(s, d, CopyMode.Overwrite));
+        }
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}
+
+/**
+* Move a file on the fs pool, falling back to copy plus remove across
+* filesystems.
+* @param from source path.
+* @param to destination path.
+* @returns pending promise settling with Ok(true) or Err(message).
+*/
+fn moveAsync(src: String, dst: String): Promise<Result<Bool, String>> {
+    let wr = Promise.withResolvers<Result<Bool, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(move(src, dst));
+        return wr.promise;
+    }
+    Channel.byId(710000019).send(new FsMoveReq(src, dst, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000019).recv() as FsMoveReq;
+        let w: PromiseWithResolvers<Result<Bool, String>> = req.wr;
+        let s: String = req.src;
+        let d: String = req.dst;
+        w.resolve(move(s, d));
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}
+
+/**
+* Rename a file on the fs pool without cross-filesystem fallback.
+* @param from source path.
+* @param to destination path.
+* @returns pending promise settling with Ok(true) or Err(message).
+*/
+fn renameAsync(src: String, dst: String): Promise<Result<Bool, String>> {
+    let wr = Promise.withResolvers<Result<Bool, String>>();
+    if __rnx_fs_pool_depth(0) > 0 {
+        wr.resolve(rename(src, dst));
+        return wr.promise;
+    }
+    Channel.byId(710000020).send(new FsMoveReq(src, dst, wr));
+    let pool = ThreadPool.byId(710000001, fsWorkers());
+    pool.submit((): Int => {
+        __rnx_fs_pool_depth(1);
+        let req = Channel.byId(710000020).recv() as FsMoveReq;
+        let w: PromiseWithResolvers<Result<Bool, String>> = req.wr;
+        let s: String = req.src;
+        let d: String = req.dst;
+        w.resolve(rename(s, d));
+        __rnx_fs_pool_depth(-1);
+        return 0;
+    });
+    return wr.promise;
+}

@@ -1,0 +1,119 @@
+================================================================================
+Strings and nested generics
+================================================================================
+
+fn docs(name: String, n: Int): String {
+  let a = "plain";
+  let esc = "tab\there \"q\" \u{1F600}";
+  let slash = "// not a comment /* also not */";
+  let brace = "json \{\"k\": true\} tail}";
+  let money = "cost: $5";
+  let both = "user ${name} has {n} msgs";
+  let m: Map<String, Array<Int>> = empty;
+  let p = Promise.reject<Array<Int>>("bad");
+  return a + esc + slash + brace + money + both;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (primitive_type)))
+      (parameter
+        (identifier)
+        (type
+          (primitive_type))))
+    (type
+      (primitive_type))
+    (block
+      (variable_declaration
+        (identifier)
+        (expression
+          (string_literal)))
+      (variable_declaration
+        (identifier)
+        (expression
+          (string_literal)))
+      (variable_declaration
+        (identifier)
+        (expression
+          (string_literal)))
+      (variable_declaration
+        (identifier)
+        (expression
+          (string_literal)))
+      (variable_declaration
+        (identifier)
+        (expression
+          (string_literal)))
+      (variable_declaration
+        (identifier)
+        (expression
+          (string_literal
+            (interpolation
+              (expression
+                (identifier)))
+            (interpolation
+              (expression
+                (identifier))))))
+      (variable_declaration
+        (identifier)
+        (type
+          (generic_type
+            (identifier)
+            (type
+              (primitive_type))
+            (type
+              (generic_type
+                (identifier)
+                (type
+                  (primitive_type))))))
+        (expression
+          (identifier)))
+      (variable_declaration
+        (identifier)
+        (expression
+          (call_expression
+            (member_expression
+              (expression
+                (identifier))
+              (identifier))
+            (turbofish
+              (type
+                (generic_type
+                  (identifier)
+                  (type
+                    (primitive_type)))))
+            (argument_list
+              (argument
+                (expression
+                  (string_literal)))))))
+      (statement
+        (return_statement
+          (expression
+            (additive_expression
+              (expression
+                (additive_expression
+                  (expression
+                    (additive_expression
+                      (expression
+                        (additive_expression
+                          (expression
+                            (additive_expression
+                              (expression
+                                (identifier))
+                              (expression
+                                (identifier))))
+                          (expression
+                            (identifier))))
+                      (expression
+                        (identifier))))
+                  (expression
+                    (identifier))))
+              (expression
+                (identifier)))))))))

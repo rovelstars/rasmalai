@@ -1,0 +1,25 @@
+import { Process } from "@std/process";
+
+export fn runClangAst(header: String, includes: Array<String>, rawFlags: String): String {
+    let args: Array<String> = ["-Xclang", "-ast-dump=json", "-fsyntax-only", "-Wno-everything"];
+    let i = 0;
+    while i < includes.length() {
+        args.push("-I");
+        args.push(includes[i]);
+        i = i + 1;
+    }
+    if rawFlags.length() > 0 {
+        for flag in rawFlags.split(" ") {
+            if flag.length() > 0 {
+                args.push(flag);
+            }
+        }
+    }
+    args.push(header);
+    let out = Process.run("clang", args);
+    if out.exitCode != 0 {
+        print("rnx-bindgen: clang failed: " + out.stderrText());
+        return "";
+    }
+    return out.stdoutText();
+}

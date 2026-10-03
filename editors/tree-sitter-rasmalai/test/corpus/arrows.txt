@@ -1,0 +1,194 @@
+================================================================================
+Arrow functions
+================================================================================
+
+fn F(): Int {
+  let a = (x) => x * 2;
+  let b = x => x + 1;
+  let c = (a: Int, b: Int): Int => a + b;
+  let d = () => { return 42; };
+  return a(1);
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (type
+      (primitive_type))
+    (block
+      (variable_declaration
+        (identifier)
+        (expression
+          (arrow_function
+            (parameter_list
+              (parameter
+                (identifier)))
+            (expression
+              (multiplicative_expression
+                (expression
+                  (identifier))
+                (expression
+                  (number_literal)))))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (arrow_function
+            (identifier)
+            (expression
+              (additive_expression
+                (expression
+                  (identifier))
+                (expression
+                  (number_literal)))))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (arrow_function
+            (parameter_list
+              (parameter
+                (identifier)
+                (type
+                  (primitive_type)))
+              (parameter
+                (identifier)
+                (type
+                  (primitive_type))))
+            (type
+              (primitive_type))
+            (expression
+              (additive_expression
+                (expression
+                  (identifier))
+                (expression
+                  (identifier)))))))
+      (variable_declaration
+        (identifier)
+        (expression
+          (arrow_function
+            (parameter_list)
+            (block
+              (statement
+                (return_statement
+                  (expression
+                    (number_literal))))))))
+      (statement
+        (return_statement
+          (expression
+            (call_expression
+              (identifier)
+              (argument_list
+                (argument
+                  (expression
+                    (number_literal)))))))))))
+
+================================================================================
+Block bodies and decay closures
+================================================================================
+
+fn Double(x: Int): Int { return x * 2; }
+
+class B {
+  fn get(): Int { return this.v; }
+  init() { this.cb = fn decay(this) { this.flush(); } }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (primitive_type))))
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (return_statement
+          (expression
+            (multiplicative_expression
+              (expression
+                (identifier))
+              (expression
+                (number_literal))))))))
+  (class_declaration
+    (identifier)
+    (class_body
+      (method_declaration
+        (identifier)
+        (parameter_list)
+        (type
+          (primitive_type))
+        (block
+          (statement
+            (return_statement
+              (expression
+                (member_expression
+                  (expression
+                    (this_expression))
+                  (identifier)))))))
+      (init_declaration
+        (parameter_list)
+        (block
+          (statement
+            (assign_statement
+              (member_expression
+                (expression
+                  (this_expression))
+                (identifier))
+              (expression
+                (closure_expression
+                  (parameter_list
+                    (parameter
+                      (this_expression)))
+                  (block
+                    (expression_statement
+                      (expression
+                        (call_expression
+                          (member_expression
+                            (expression
+                              (this_expression))
+                            (identifier))
+                          (argument_list))))))))))))))
+
+================================================================================
+Fn arrow hybrid is an error
+================================================================================
+
+fn F(): Int {
+  let f = fn(x) => x * 2;
+  return 0;
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    (parameter_list)
+    (type
+      (primitive_type))
+    body: (block
+      (variable_declaration
+        name: (identifier)
+        (ERROR)
+        (expression
+          (arrow_function
+            parameters: (parameter_list
+              (parameter
+                name: (identifier)))
+            body: (expression
+              (multiplicative_expression
+                (expression
+                  (identifier))
+                (expression
+                  (number_literal)))))))
+      (statement
+        (return_statement
+          (expression
+            (number_literal)))))))

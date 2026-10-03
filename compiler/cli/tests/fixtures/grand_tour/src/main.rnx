@@ -1,0 +1,71 @@
+import { Clock } from "@std/time";
+import { Rng } from "@std/random";
+import fs, { File, OpenMode, Path } from "@std/fs";
+import { Env } from "@std/env";
+import { Math, Vec2 } from "@std/math";
+import { Map, Set } from "@std/collections";
+import { AtomicInt, Channel } from "@std/sync";
+
+fn worker(): Int {
+    let chan = Channel.byId(99);
+    let counter = AtomicInt.byId(99);
+    counter.fetchAdd(5);
+    chan.send(7);
+    return 0;
+}
+
+async fn computeScore(): Int {
+    return 10;
+}
+
+async fn Main(): Int {
+    let vclock = Clock.virtual(1000);
+    vclock.tick(500);
+    let timeOk = vclock.now().nanos == 1500;
+
+    let rng = Rng.seeded(42);
+    let rVal = rng.int(1, 10);
+    let rngOk = rVal >= 1 && rVal <= 10;
+
+    let testFile = "target/grand_tour_tmp.txt";
+    if Path.exists(testFile) {
+        fs.remove(testFile);
+    }
+    let fOut = File.open(testFile, OpenMode.Write);
+    fOut.writeText("rnx");
+    fOut.close();
+    let fIn = File.open(testFile, OpenMode.Read);
+    let text = fIn.readText().unwrapOr("");
+    fIn.close();
+    fs.remove(testFile);
+    let ioOk = text == "rnx";
+
+    Env.set("RNX_TOUR", "ACTIVE");
+    let envOk = Env.get("RNX_TOUR") == "ACTIVE";
+
+    let v = new Vec2(3.0, 4.0);
+    let mathOk = Math.sqrt(16.0) == 4.0 && v.length() == 5.0;
+
+    let m = new Map();
+    m.set("k1", 100);
+    let s = new Set();
+    s.add("item1");
+    let collOk = (m.get("k1") ?? -1) == 100 && s.has("item1");
+
+    let chan = Channel.byId(99);
+    let counter = AtomicInt.byId(99);
+    counter.set(10);
+    let th = Thread.spawn(worker);
+    let msg = chan.recv();
+    th.join();
+    let syncOk = msg == 7 && counter.get() == 15;
+
+    let asyncVal = await computeScore();
+    let asyncOk = asyncVal == 10;
+
+    if timeOk && rngOk && ioOk && envOk && mathOk && collOk && syncOk && asyncOk {
+        print("Phase 5 Grand Tour verified: 42");
+        return 42;
+    }
+    return 1;
+}

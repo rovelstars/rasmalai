@@ -1,0 +1,78 @@
+//! Deterministic seeded random streams and OS entropy.
+/**
+* Seeded Xoshiro256++ stream. Same seed replays the same sequence,
+* which makes randomized tests reproducible.
+*/
+class Rng {
+    /** Opaque 4-word stream state. */
+    let state: Array<Int>;
+
+    init(seed: Int) {
+        this.state = [0, 0, 0, 0];
+        __rnx_prng_seed(this.state, seed);
+    }
+
+    /**
+    * Construct a stream from a seed.
+    * @param seed any integer; equal seeds give equal streams.
+    * @returns fresh Rng.
+    * @example
+    * import { Rng } from "@std/random";
+    *
+    * let a = Rng.seeded(7);
+    * let b = Rng.seeded(7);
+    * print(a.next() == b.next());
+    */
+    static seeded(seed: Int): Rng {
+        return new Rng(seed);
+    }
+
+    /**
+    * Next raw word of the stream, advancing internal state.
+    * @returns signed 64-bit draw.
+    */
+    next(): Int {
+        return __rnx_prng_next(this.state);
+    }
+
+    /**
+    * Draw an integer in [min, max], inclusive on both ends.
+    * @param min lower bound.
+    * @param max upper bound.
+    * @returns deterministic draw from the stream.
+    * @example
+    * import { Rng } from "@std/random";
+    *
+    * let r = Rng.seeded(7);
+    * print(r.int(1, 10));
+    */
+    int(min: Int, max: Int): Int {
+        let range = max - min + 1;
+        let raw = this.next();
+        if raw < 0 {
+            raw = 0 - raw;
+        }
+        return min + (raw % range);
+    }
+
+    /**
+    * Fair coin flip.
+    * @returns true on even draws, false on odd draws.
+    */
+    bool(): Bool {
+        return(this.next() % 2) == 0;
+    }
+}
+
+/**
+* Non-deterministic OS entropy for keys and tokens. Never seed-dependent.
+*/
+class CryptoRng {
+    /**
+    * One cryptographic random word from the OS.
+    * @returns unsigned 64-bit value as Int.
+    */
+    static int(): Int {
+        return __rnx_crypto_random_u64();
+    }
+}

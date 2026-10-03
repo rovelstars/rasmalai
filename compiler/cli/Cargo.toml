@@ -1,0 +1,33 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "rnx"
+path = "src/main.rs"
+
+[dependencies]
+diagnostics = { path = "../diagnostics" }
+frontend = { path = "../frontend" }
+lir = { path = "../lir" }
+runtime = { path = "../runtime" }
+stdlib = { path = "../stdlib" }
+llvm = { path = "../llvm" }
+linker = { path = "../linker" }
+cranelift = { path = "../cranelift" }
+clap = { version = "4.5", features = ["derive", "suggestions", "color", "env"] }
+clap_complete = "4.5"
+ureq = { version = "3.4.2", features = ["rustls"] }
+rmcp = { version = "3.4.0", features = ["server", "transport-io", "macros", "schemars"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "io-util", "io-std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+schemars = "1.2.2"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+rustyline = "14"
+
+[dev-dependencies]
+fancy-regex = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = "0.14"

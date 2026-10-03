@@ -1,0 +1,404 @@
+//! Insertion-ordered `Map` and `Set`.
+//!
+//! `Map<K, V>` maps keys to values and `Set<T>` keeps distinct members;
+//! `Set` is a `Map<T, Bool>` whose values are always `true`. Both iterate
+//! with `for..in`, and both hand their items back in insertion order.
+//!
+//! Keys must be `Int`, `Float`, `Bool`, `String`, or a heap object
+//! compared by identity: two class instances with equal fields are
+//! different keys, so look an object up with the same reference that was
+//! stored. `Int` and `Float` never mix, so `set(1, ...)` and
+//! `set(1.0, ...)` fill two entries. `Float` keys compare by bit pattern,
+//! which makes `0.0` and `-0.0` different keys while every `NaN` is one
+//! key. Nothing else is hashable: `Array` and `null` keys abort the
+//! interpreter with `unhashable key type`.
+//!
+//! An entry keeps the position its key was first given. Setting a key that
+//! is already there leaves that position alone; deleting a key and setting
+//! it again moves it to the end. `Map.keys()` and `Map.values()` line up
+//! index by index, and each call returns a fresh array, so writes to the
+//! map never change an array you already took.
+//!
+//! The map owns a reference to every key and value it holds. The count
+//! goes up on `set` and down when an entry is overwritten, deleted,
+//! cleared, or when the map itself is deinitialized; keys and values need
+//! no cleanup of their own.
+//!
+//! One lock guards the table, so a single map or set can be shared between
+//! threads. A read-modify-write pair such as `get` then `set` is two
+//! separate operations, though: hold a `Mutex` from `@std/sync` around it
+//! when threads race.
+//!
+//! ```rnx
+//! import { Map, Set } from "@std/collections";
+//!
+//! let ore = new Map<String, Int>();
+//! ore.set("iron", 12);
+//! ore.set("coal", 7);
+//! print(ore.get("iron") ?? 0);
+//!
+//! let seen = new Set<String>();
+//! seen.add("iron");
+//! seen.add("iron");
+//! print(seen.len(), seen.values().join(", "));
+//! ```
+import {
+    ArrayIter, Iterable, Iterator
+} from "@std/prelude";
+
+/**
+* Insertion-ordered hash table from keys to values. Build one with
+* `new Map<K, V>()`, fill it with `set`, and read it back with `get` or
+* `has`. A missing key reads as `null` rather than aborting, so `??` and
+* `?.` supply defaults.
+*
+* Entries keep insertion order: setting an existing key keeps its slot,
+* and deleting a key then setting it again appends it at the end. The
+* `deinit` block frees the table and drops the map's reference to every
+* key and value it still holds.
+*
+* Keys must be `Int`, `Float`, `Bool`, `String`, or a heap object compared
+* by identity; see the module notes for the full key rules. Printing a map
+* renders `{k: v, ...}` in insertion order through the `@std/io` pretty
+* renderer, so read the contents with `keys()` or `values()` when you need
+* the pieces as values instead.
+* @example
+* import { Map } from "@std/collections";
+*
+* let ore = new Map<String, Int>();
+* ore.set("iron", 12);
+* ore.set("coal", 7);
+* print(ore.get("iron") ?? 0, ore.get("gold") ?? 0);
+* print(ore.keys().join(","));
+* print(ore.len());
+*/
+class Map<K, V> with Iterable<K> {
+    /**
+    * Opaque handle to the native hash table. Every method reads it, so
+    * treat it as read-only; `@std/json` is the one exception, swapping in
+    * a parsed document handle.
+    */
+    let handle: Int;
+
+    init() {
+        this.handle = __rnx_gmap_new();
+    }
+
+    deinit {
+        __rnx_gmap_free(this.handle);
+    }
+
+    /**
+    * Store val under key. An existing entry for key is overwritten: the
+    * key keeps its position in insertion order, the old value's reference
+    * is dropped, and `len()` does not change. A key that was deleted
+    * earlier is a new entry and lands at the end.
+    *
+    * The map takes a reference to val and keeps it until the entry is
+    * overwritten, deleted, or cleared. Nothing is returned, so calls
+    * cannot be chained.
+    * @param key entry key; must be `Int`, `Float`, `Bool`, `String`, or
+    * a heap object compared by identity.
+    * @param val value to store.
+    * @example
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, Int>();
+    * m.set("a", 1);
+    * m.set("b", 2);
+    * m.set("a", 10);
+    * print(m.keys().join(","));
+    * print(m.values().join(","));
+    */
+    set(key: K, val: V) {
+        __rnx_gmap_set(this.handle, key, val);
+    }
+
+    /**
+    * Read the value stored under key.
+    *
+    * A missing key reads as `null` instead of aborting, which means a
+    * `null` you stored yourself looks the same as an absent key. Use
+    * `has` to tell them apart, or `??` and `?.` to pick a default.
+    * @param key entry key.
+    * @returns the stored value, or `null` when key has no entry.
+    * @example
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, Int>();
+    * m.set("ore", 7);
+    * print(m.get("ore") ?? 0);
+    * print(m.get("coal") ?? 0);
+    */
+    get(key: K): V? {
+        if __rnx_gmap_has(this.handle, key) {
+            return __rnx_gmap_get(this.handle, key);
+        }
+        return null;
+    }
+
+    /**
+    * Test whether key currently has an entry. An entry holding `null`
+    * still counts as present, which is the one case `get` cannot report.
+    * @param key entry key.
+    * @returns true when key is present, false when it is absent.
+    * @example
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, Int>();
+    * m.set("ore", 7);
+    * print(m.has("ore"), m.has("coal"));
+    */
+    has(key: K): Bool {
+        return __rnx_gmap_has(this.handle, key);
+    }
+
+    /**
+    * Remove the entry for key and drop the map's reference to that key
+    * and value. The remaining keys keep their order, and a key set again
+    * later is appended at the end rather than returning to its old slot.
+    * @param key entry key.
+    * @returns true when an entry was removed, false when key had none.
+    * @example
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, Int>();
+    * m.set("a", 1);
+    * m.set("b", 2);
+    * print(m.delete("a"), m.len());
+    * print(m.delete("a"));
+    * print(m.keys().join(","));
+    */
+    delete(key: K): Bool {
+        return __rnx_gmap_delete(this.handle, key);
+    }
+
+    /**
+    * Number of live entries. Overwriting a key does not change it, and a
+    * deleted key stops counting right away.
+    * @returns entry count; 0 for an empty map.
+    */
+    len(): Int {
+        return __rnx_gmap_len(this.handle);
+    }
+
+    /**
+    * Drop every entry at once, releasing the map's reference to each key
+    * and value. The map stays usable, and later entries start a fresh
+    * insertion order.
+    * @example
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, Int>();
+    * m.set("a", 1);
+    * m.set("b", 2);
+    * m.clear();
+    * print(m.len(), m.keys().join(","));
+    */
+    clear() {
+        __rnx_gmap_clear(this.handle);
+    }
+
+    /**
+    * Snapshot of every key in insertion order, aligned index by index
+    * with `values()`. Mutating the returned array does not touch the map.
+    * @returns a new key array; empty when the map is empty.
+    * @example
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, Int>();
+    * m.set("iron", 12);
+    * m.set("coal", 7);
+    * m.set("iron", 14);
+    * print(m.keys().join(", "));
+    * print(m.len());
+    */
+    keys(): Array<K> {
+        return __rnx_gmap_keys(this.handle);
+    }
+
+    /**
+    * Snapshot of every value in key insertion order, aligned index by
+    * index with `keys()`. Mutating the returned array does not touch the
+    * map.
+    * @returns a new value array; empty when the map is empty.
+    * @example
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, Int>();
+    * m.set("iron", 12);
+    * m.set("coal", 7);
+    * print(m.values().join(", "));
+    */
+    values(): Array<V> {
+        return __rnx_gmap_values(this.handle);
+    }
+
+    /**
+    * Fresh iterator over the keys in insertion order. This is what
+    * `for..in` calls, and every call restarts at the first key; `next()`
+    * yields `null` once the keys run out.
+    * @returns an iterator over the keys.
+    * @example
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, Int>();
+    * m.set("iron", 12);
+    * m.set("coal", 7);
+    * for name in m {
+    *     print(name, m.get(name) ?? 0);
+    * }
+    */
+    iterator(): Iterator<K> {
+        return new ArrayIter<K>(this.keys());
+    }
+}
+
+/**
+* Distinct members backed by a `Map<T, Bool>`, so members follow the same
+* rules as `Map` keys: only hashable types, kept by reference count, handed
+* back in insertion order. Adding a member that is already there keeps one
+* copy and leaves its position alone. `values()` is the member list, since
+* the member is the key.
+*
+* The table lock makes a set shareable between threads; guard a
+* check-then-add pair with a `Mutex` from `@std/sync` when threads race.
+* The `deinit` block frees the backing map.
+* @example
+* import { Set } from "@std/collections";
+*
+* let seen = new Set<String>();
+* seen.add("iron");
+* seen.add("coal");
+* seen.add("iron");
+* print(seen.len(), seen.has("coal"));
+* print(seen.values().join(", "));
+*/
+class Set<T> with Iterable<T> {
+    /**
+    * Backing table; a member is present when its value is `true`. Read
+    * it through `has` and friends rather than touching it directly.
+    */
+    let inner: Map<T, Bool>;
+
+    init() {
+        this.inner = new Map<T, Bool>();
+    }
+
+    /**
+    * Add val as a member. A member that is already present is left
+    * untouched, so the length does not change and its position in
+    * insertion order stays where it was. A member that was deleted
+    * earlier is added again at the end.
+    *
+    * The set takes a reference to val and keeps it until the member is
+    * deleted or the set is cleared. Nothing is returned, so calls cannot
+    * be chained.
+    * @param val member value; must be a hashable type.
+    * @example
+    * import { Set } from "@std/collections";
+    *
+    * let s = new Set<String>();
+    * s.add("ore");
+    * s.add("ore");
+    * print(s.has("ore"), s.len());
+    * print(s.values().join(", "));
+    */
+    add(val: T) {
+        this.inner.set(val, true);
+    }
+
+    /**
+    * Test whether val is currently a member.
+    * @param val member value.
+    * @returns true when val is present, false when it is not.
+    * @example
+    * import { Set } from "@std/collections";
+    *
+    * let s = new Set<String>();
+    * s.add("ore");
+    * print(s.has("ore"), s.has("coal"));
+    */
+    has(val: T): Bool {
+        return this.inner.has(val);
+    }
+
+    /**
+    * Remove a member and drop the set's reference to it. The remaining
+    * members keep their order, and a member added again later lands at
+    * the end.
+    * @param val member value.
+    * @returns true when a member was removed, false when val was absent.
+    * @example
+    * import { Set } from "@std/collections";
+    *
+    * let s = new Set<String>();
+    * s.add("ore");
+    * s.add("coal");
+    * print(s.delete("ore"), s.len());
+    * print(s.values().join(", "));
+    */
+    delete(val: T): Bool {
+        return this.inner.delete(val);
+    }
+
+    /**
+    * Number of distinct members.
+    * @returns member count; 0 for an empty set.
+    */
+    len(): Int {
+        return this.inner.len();
+    }
+
+    /**
+    * Drop every member at once, releasing the set's reference to each
+    * one. The set stays usable and later members start a fresh insertion
+    * order.
+    * @example
+    * import { Set } from "@std/collections";
+    *
+    * let s = new Set<String>();
+    * s.add("ore");
+    * s.add("coal");
+    * s.clear();
+    * print(s.len(), s.values().join(","));
+    */
+    clear() {
+        this.inner.clear();
+    }
+
+    /**
+    * Snapshot of every member in insertion order. Mutating the returned
+    * array does not touch the set.
+    * @returns a new member array; empty when the set is empty.
+    * @example
+    * import { Set } from "@std/collections";
+    *
+    * let s = new Set<String>();
+    * s.add("iron");
+    * s.add("coal");
+    * print(s.values().join(", "));
+    */
+    values(): Array<T> {
+        return this.inner.keys();
+    }
+
+    /**
+    * Fresh iterator over the members in insertion order. This is what
+    * `for..in` calls, and every call restarts at the first member;
+    * `next()` yields `null` once the members run out.
+    * @returns an iterator over the members.
+    * @example
+    * import { Set } from "@std/collections";
+    *
+    * let s = new Set<String>();
+    * s.add("iron");
+    * s.add("coal");
+    * for member in s {
+    *     print(member);
+    * }
+    */
+    iterator(): Iterator<T> {
+        return new ArrayIter<T>(this.values());
+    }
+}

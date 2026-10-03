@@ -1,0 +1,3140 @@
+//! HTTP and URL primitives: status codes, header tables, URL parsing,
+//! query strings, and a small HTTP/1.1 client.
+//!
+//! Every item except `fetch()` is pure string and table work: no I/O, no
+//! capabilities, same answer on every backend. Use them to build and
+//! inspect requests offline. `fetch()` opens a socket through `@std/net`,
+//! so a project that calls it must grant the `net` capability domain.
+//! `WebSocket` is out of scope until the network RFC lands (see
+//! requirements 12_STDLIB).
+import {
+    ArrayIter, Iterable, Iterator
+} from "@std/prelude";
+import {
+    Map
+} from "@std/collections";
+import {
+    TcpStream
+} from "@std/net";
+import {
+    TlsStream
+} from "@std/net";
+import {
+    JSON
+} from "@std/json";
+
+/**
+* The HTTP status codes this module names. The grammar has no `= N`
+* discriminants, so the numbers live in `statusCode()`, the phrases in
+* `statusReason()`, and the reverse lookup in `statusFromCode()`. Codes
+* outside this list are still handled: `isSuccess()`,
+* `isClientError()`, and `isServerError()` work on any number.
+* @example
+* import { HttpStatus, statusCode, statusReason } from "@std/web";
+*
+* print(statusCode(HttpStatus.NotFound), statusReason(HttpStatus.NotFound));
+* print(statusReason(HttpStatus.Ok), statusReason(HttpStatus.NoContent));
+*/
+enum HttpStatus {
+    /**
+    * 200: the request succeeded and the body holds the result.
+    */
+    Ok,
+    /**
+    * 201: the request created a new resource.
+    */
+    Created,
+    /**
+    * 202: accepted for processing, not finished yet.
+    */
+    Accepted,
+    /**
+    * 204: succeeded, with no body to send back.
+    */
+    NoContent,
+    /**
+    * 301: the resource moved; update stored links.
+    */
+    MovedPermanently,
+    /**
+    * 302: the resource moved for now; keep the old link valid.
+    */
+    Found,
+    /**
+    * 304: the cached copy is still good, sent for a conditional request.
+    */
+    NotModified,
+    /**
+    * 400: the request was malformed or the query was rejected.
+    */
+    BadRequest,
+    /**
+    * 401: the request needs authentication credentials.
+    */
+    Unauthorized,
+    /**
+    * 403: the server understood the request and refuses it.
+    */
+    Forbidden,
+    /**
+    * 404: nothing lives at this path.
+    */
+    NotFound,
+    /**
+    * 405: the path exists, but not for this HTTP method.
+    */
+    MethodNotAllowed,
+    /**
+    * 409: the request conflicts with the current state of the resource.
+    */
+    Conflict,
+    /**
+    * 500: the server hit an unexpected condition.
+    */
+    InternalServerError,
+    /**
+    * 502: an upstream server answered with something invalid.
+    */
+    BadGateway,
+    /**
+    * 503: the server is overloaded or down for maintenance.
+    */
+    ServiceUnavailable,
+    /**
+    * 504: an upstream server did not answer in time.
+    */
+    GatewayTimeout
+}
+
+/**
+* Numeric code for a status.
+* @param s status to convert.
+* @returns e.g. 200 for Ok, 404 for NotFound. Every variant maps to a
+* fixed code; there is no "other" case.
+* @example
+* import { HttpStatus, statusCode } from "@std/web";
+*
+* print(statusCode(HttpStatus.NotFound));
+* print(statusCode(HttpStatus.Ok));
+*/
+fn statusCode(s: HttpStatus): Int {
+    if s == HttpStatus.Ok {
+        return 200;
+    }
+    if s == HttpStatus.Created {
+        return 201;
+    }
+    if s == HttpStatus.Accepted {
+        return 202;
+    }
+    if s == HttpStatus.NoContent {
+        return 204;
+    }
+    if s == HttpStatus.MovedPermanently {
+        return 301;
+    }
+    if s == HttpStatus.Found {
+        return 302;
+    }
+    if s == HttpStatus.NotModified {
+        return 304;
+    }
+    if s == HttpStatus.BadRequest {
+        return 400;
+    }
+    if s == HttpStatus.Unauthorized {
+        return 401;
+    }
+    if s == HttpStatus.Forbidden {
+        return 403;
+    }
+    if s == HttpStatus.NotFound {
+        return 404;
+    }
+    if s == HttpStatus.MethodNotAllowed {
+        return 405;
+    }
+    if s == HttpStatus.Conflict {
+        return 409;
+    }
+    if s == HttpStatus.InternalServerError {
+        return 500;
+    }
+    if s == HttpStatus.BadGateway {
+        return 502;
+    }
+    if s == HttpStatus.ServiceUnavailable {
+        return 503;
+    }
+    return 504;
+}
+
+/**
+* Reason phrase for a status, the text a server puts after the code in
+* a status line.
+* @param s status to convert.
+* @returns e.g. "OK" for Ok, "Not Found" for NotFound. The phrase is
+* fixed per variant, not read off the wire.
+* @example
+* import { HttpStatus, statusReason } from "@std/web";
+*
+* print(statusReason(HttpStatus.NoContent));
+* print(statusReason(HttpStatus.ServiceUnavailable));
+*/
+fn statusReason(s: HttpStatus): String {
+    if s == HttpStatus.Ok {
+        return "OK";
+    }
+    if s == HttpStatus.Created {
+        return "Created";
+    }
+    if s == HttpStatus.Accepted {
+        return "Accepted";
+    }
+    if s == HttpStatus.NoContent {
+        return "No Content";
+    }
+    if s == HttpStatus.MovedPermanently {
+        return "Moved Permanently";
+    }
+    if s == HttpStatus.Found {
+        return "Found";
+    }
+    if s == HttpStatus.NotModified {
+        return "Not Modified";
+    }
+    if s == HttpStatus.BadRequest {
+        return "Bad Request";
+    }
+    if s == HttpStatus.Unauthorized {
+        return "Unauthorized";
+    }
+    if s == HttpStatus.Forbidden {
+        return "Forbidden";
+    }
+    if s == HttpStatus.NotFound {
+        return "Not Found";
+    }
+    if s == HttpStatus.MethodNotAllowed {
+        return "Method Not Allowed";
+    }
+    if s == HttpStatus.Conflict {
+        return "Conflict";
+    }
+    if s == HttpStatus.InternalServerError {
+        return "Internal Server Error";
+    }
+    if s == HttpStatus.BadGateway {
+        return "Bad Gateway";
+    }
+    if s == HttpStatus.ServiceUnavailable {
+        return "Service Unavailable";
+    }
+    return "Gateway Timeout";
+}
+
+/**
+* Look up a status by numeric code, the reverse of `statusCode()`. Only
+* the 17 codes named by `HttpStatus` are known; anything else has no
+* variant, which is why the result is nullable.
+* @param code numeric status code, as parsed off a status line.
+* @returns the matching variant, or `null` when unknown.
+* @example
+* import { HttpStatus, statusCode, statusFromCode } from "@std/web";
+*
+* print(statusCode(statusFromCode(201) ?? HttpStatus.Ok));
+* print(statusFromCode(999) == null);
+*/
+fn statusFromCode(code: Int): HttpStatus? {
+    if code == 200 {
+        return HttpStatus.Ok;
+    }
+    if code == 201 {
+        return HttpStatus.Created;
+    }
+    if code == 202 {
+        return HttpStatus.Accepted;
+    }
+    if code == 204 {
+        return HttpStatus.NoContent;
+    }
+    if code == 301 {
+        return HttpStatus.MovedPermanently;
+    }
+    if code == 302 {
+        return HttpStatus.Found;
+    }
+    if code == 304 {
+        return HttpStatus.NotModified;
+    }
+    if code == 400 {
+        return HttpStatus.BadRequest;
+    }
+    if code == 401 {
+        return HttpStatus.Unauthorized;
+    }
+    if code == 403 {
+        return HttpStatus.Forbidden;
+    }
+    if code == 404 {
+        return HttpStatus.NotFound;
+    }
+    if code == 405 {
+        return HttpStatus.MethodNotAllowed;
+    }
+    if code == 409 {
+        return HttpStatus.Conflict;
+    }
+    if code == 500 {
+        return HttpStatus.InternalServerError;
+    }
+    if code == 502 {
+        return HttpStatus.BadGateway;
+    }
+    if code == 503 {
+        return HttpStatus.ServiceUnavailable;
+    }
+    if code == 504 {
+        return HttpStatus.GatewayTimeout;
+    }
+    return null;
+}
+
+/**
+* True for 2xx codes. Works on any number, so it also answers for codes
+* `HttpStatus` has no variant for, such as 207.
+* @param code numeric status code.
+* @returns true when 200 <= code < 300.
+* @example
+* import { isSuccess } from "@std/web";
+*
+* print(isSuccess(204), isSuccess(301), isSuccess(199));
+*/
+fn isSuccess(code: Int): Bool {
+    return code >= 200 && code < 300;
+}
+
+/**
+* True for 4xx codes. A 4xx means the request needs to change before it
+* can succeed.
+* @param code numeric status code.
+* @returns true when 400 <= code < 500.
+* @example
+* import { isClientError } from "@std/web";
+*
+* print(isClientError(404), isClientError(500), isClientError(399));
+*/
+fn isClientError(code: Int): Bool {
+    return code >= 400 && code < 500;
+}
+
+/**
+* True for 5xx codes. A 5xx means the request was fine and the server
+* failed; retrying can help.
+* @param code numeric status code.
+* @returns true when 500 <= code < 600.
+* @example
+* import { isServerError } from "@std/web";
+*
+* print(isServerError(503), isServerError(404), isServerError(600));
+*/
+fn isServerError(code: Int): Bool {
+    return code >= 500 && code < 600;
+}
+
+/**
+* ASCII-only lowercase fold for header names and schemes.
+* @param s input string.
+* @returns s with A-Z mapped to a-z; other scalars untouched. Bytes
+* above 127 stay as they are, so this never changes text outside ASCII.
+* @example
+* import { lowerAscii } from "@std/web";
+*
+* print(lowerAscii("Content-Type"));
+* print(lowerAscii("ABC123-_."));
+*/
+fn lowerAscii(s: String): String {
+    let out = "";
+    let i = 0;
+    while i < s.length() {
+        let code = s.charCodeAt(i);
+        if code >= 65 && code <= 90 {
+            out = out + __rnx_string_from_char_code(code + 32);
+        } else {
+            out = out + s.slice(i, i + 1);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+/**
+* True for the scalar codes of ASCII 0-9.
+* @param code scalar code from `charCodeAt()`.
+* @returns true when 48 <= code <= 57.
+* @example
+* import { isDigitCode } from "@std/web";
+*
+* print(isDigitCode("7".charCodeAt(0)), isDigitCode("a".charCodeAt(0)));
+*/
+fn isDigitCode(code: Int): Bool {
+    return code >= 48 && code <= 57;
+}
+
+/**
+* True for every-char-digits strings (empty counts as false). Used to
+* tell a port from a host when splitting an authority, where an empty or
+* non-numeric tail means there was no port at all.
+* @param s input string.
+* @returns true when s is non-empty and all ASCII digits.
+* @example
+* import { isAllDigits } from "@std/web";
+*
+* print(isAllDigits("8080"), isAllDigits(""), isAllDigits("80a"));
+*/
+fn isAllDigits(s: String): Bool {
+    if s == "" {
+        return false;
+    }
+    let i = 0;
+    while i < s.length() {
+        if ! isDigitCode(s.charCodeAt(i)) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/**
+* Value of one hex digit. Both cases count, so this reads a
+* percent-escape written by any producer.
+* @param code scalar code from `charCodeAt()`.
+* @returns 0..15, or -1 when the scalar is not a hex digit.
+* @example
+* import { hexVal } from "@std/web";
+*
+* print(hexVal("f".charCodeAt(0)), hexVal("A".charCodeAt(0)), hexVal("z".charCodeAt(0)));
+*/
+fn hexVal(code: Int): Int {
+    if code >= 48 && code <= 57 {
+        return code - 48;
+    }
+    if code >= 65 && code <= 70 {
+        return code - 55;
+    }
+    if code >= 97 && code <= 102 {
+        return code - 87;
+    }
+    return -1;
+}
+
+/**
+* Decode two hex characters into a byte value, one `%XX` escape
+* without the percent sign.
+* @param hi high nibble character.
+* @param lo low nibble character.
+* @returns 0..255, or -1 when either character is not hex.
+* @example
+* import { hexPair } from "@std/web";
+*
+* print(hexPair("4", "1"), hexPair("f", "F"), hexPair("z", "0"));
+*/
+fn hexPair(hi: String, lo: String): Int {
+    let h = hexVal(hi.charCodeAt(0));
+    let l = hexVal(lo.charCodeAt(0));
+    if h == -1 || l == -1 {
+        return -1;
+    }
+    return h * 16 + l;
+}
+
+/**
+* One uppercase hex digit for a nibble, the encoder side of
+* `hexPair()`.
+* @param v value 0..15.
+* @returns single character "0" through "9", then "A" through "F".
+* @example
+* import { hexDigit } from "@std/web";
+*
+* print(hexDigit(0), hexDigit(9), hexDigit(15));
+*/
+fn hexDigit(v: Int): String {
+    return "0123456789ABCDEF".slice(v, v + 1);
+}
+
+/**
+* True for the scalars RFC 3986 calls unreserved: letters, digits, and
+* `-` `.` `_` `~`. These pass through percent-encoding untouched
+* because no layer has to escape them.
+* @param code scalar code from `charCodeAt()`.
+* @returns true for unreserved scalars, false for everything else.
+* @example
+* import { isUnreserved } from "@std/web";
+*
+* print(isUnreserved("A".charCodeAt(0)), isUnreserved("~".charCodeAt(0)));
+* print(isUnreserved("/".charCodeAt(0)), isUnreserved(" ".charCodeAt(0)));
+*/
+fn isUnreserved(code: Int): Bool {
+    if code >= 48 && code <= 57 {
+        return true;
+    }
+    if code >= 65 && code <= 90 {
+        return true;
+    }
+    if code >= 97 && code <= 122 {
+        return true;
+    }
+    if code == 45 || code == 46 || code == 95 || code == 126 {
+        return true;
+    }
+    return false;
+}
+
+/**
+* Append one `%XX` escape to a string under construction.
+* @param out text built so far.
+* @param b byte value 0..255.
+* @returns out with the escape for b added, using uppercase hex.
+* @example
+* import { appendByte } from "@std/web";
+*
+* print(appendByte("%", 65));
+* print(appendByte(appendByte("", 0), 255));
+*/
+fn appendByte(out: String, b: Int): String {
+    return out + "%" + hexDigit(b / 16) + hexDigit(b - (b / 16) * 16);
+}
+
+/**
+* Percent-encode a string as UTF-8 with uppercase hex. Every scalar
+* above 127 becomes its UTF-8 bytes, each written as `%XX`. `URLSearchParams.toString()`
+* uses this with form set, which is why a space turns into `+` there.
+* @param s input string.
+* @param form when true, space encodes as `+` (form encoding);
+* otherwise space encodes as `%20` (URL encoding).
+* @returns encoded string; unreserved scalars pass through.
+* @example
+* import { encodeComponent } from "@std/web";
+*
+* print(encodeComponent("a b&c=d", false));
+* print(encodeComponent("a b&c=d", true));
+* print(encodeComponent("safe-._~", true));
+*/
+fn encodeComponent(s: String, form: Bool): String {
+    let out = "";
+    let i = 0;
+    while i < s.length() {
+        let cp = s.charCodeAt(i);
+        if isUnreserved(cp) {
+            out = out + s.slice(i, i + 1);
+        } else if form && cp == 32 {
+            out = out + "+";
+        } else {
+            let code = cp;
+            if code >= 55296 && code <= 57343 {
+                code = 65533;
+            }
+            if code < 128 {
+                out = appendByte(out, code);
+            } else if code < 2048 {
+                out = appendByte(out, 192 + code / 64);
+                out = appendByte(out, 128 + (code - (code / 64) * 64));
+            } else if code < 65536 {
+                let q1 = code / 64;
+                out = appendByte(out, 224 + code / 4096);
+                out = appendByte(out, 128 + (q1 - (code / 4096) * 64));
+                out = appendByte(out, 128 + (code - q1 * 64));
+            } else {
+                let q1 = code / 64;
+                let q2 = code / 4096;
+                out = appendByte(out, 240 + code / 262144);
+                out = appendByte(out, 128 + (q2 - (code / 262144) * 64));
+                out = appendByte(out, 128 + (q1 - q2 * 64));
+                out = appendByte(out, 128 + (code - q1 * 64));
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+/**
+* Percent-decode a string, assembling UTF-8 sequences into scalars. A
+* multi-byte escape becomes one scalar only when the continuation bytes
+* are all present and the result is a valid scalar; overlong forms,
+* surrogates, and out-of-range values are rejected.
+* @param s input string.
+* @param plus when true, `+` decodes to space (query strings).
+* @returns decoded string; malformed `%` sequences pass through literally,
+* so decoding never fails and never throws.
+* @example
+* import { decodeComponent, encodeComponent } from "@std/web";
+*
+* print(decodeComponent("a+b%20c", true));
+* print(encodeComponent("a b", true));
+* print(decodeComponent("%E2%9C%93", false));
+* print(decodeComponent("a+b", false));
+*/
+fn decodeComponent(s: String, plus: Bool): String {
+    let out = "";
+    let i = 0;
+    let n = s.length();
+    while i < n {
+        let ch = s.slice(i, i + 1);
+        if plus && ch == "+" {
+            out = out + " ";
+            i = i + 1;
+        } else if ch == "%" && i + 2 < n + 1 {
+            let b0 = hexPair(s.slice(i + 1, i + 2), s.slice(i + 2, i + 3));
+            if b0 == -1 {
+                out = out + "%";
+                i = i + 1;
+            } else if b0 < 128 {
+                out = out + __rnx_string_from_char_code(b0);
+                i = i + 3;
+            } else {
+                let want = 0;
+                if b0 >= 194 && b0 < 224 {
+                    want = 2;
+                } else if b0 >= 224 && b0 < 240 {
+                    want = 3;
+                } else if b0 >= 240 && b0 < 245 {
+                    want = 4;
+                }
+                if want == 0 || i + want * 3 > n {
+                    out = out + "%";
+                    i = i + 1;
+                } else {
+                    let b1 = hexPair(s.slice(i + 4, i + 5), s.slice(i + 5, i + 6));
+                    let b2 = 128;
+                    let b3 = 128;
+                    if want >= 3 {
+                        b2 = hexPair(s.slice(i + 7, i + 8), s.slice(i + 8, i + 9));
+                    }
+                    if want >= 4 {
+                        b3 = hexPair(s.slice(i + 10, i + 11), s.slice(i + 11, i + 12));
+                    }
+                    let ok = b1 >= 128 && b1 < 192 && b2 >= 128 && b2 < 192 && b3 >= 128 && b3 < 192;
+                    if ! ok {
+                        out = out + "%";
+                        i = i + 1;
+                    } else {
+                        let cp = 0;
+                        if want == 2 {
+                            cp = (b0 - 192) * 64 + (b1 - 128);
+                        } else if want == 3 {
+                            cp = (b0 - 224) * 4096 + (b1 - 128) * 64 + (b2 - 128);
+                        } else {
+                            cp = (b0 - 240) * 262144 + (b1 - 128) * 4096 + (b2 - 128) * 64 + (b3 - 128);
+                        }
+                        let valid = cp >= 128 && cp <= 1114111;
+                        if want == 2 && cp < 128 {
+                            valid = false;
+                        }
+                        if want == 3 && cp < 2048 {
+                            valid = false;
+                        }
+                        if want == 4 && cp < 65536 {
+                            valid = false;
+                        }
+                        if cp >= 55296 && cp <= 57343 {
+                            valid = false;
+                        }
+                        if valid {
+                            out = out + __rnx_string_from_char_code(cp);
+                            i = i + want * 3;
+                        } else {
+                            out = out + "%";
+                            i = i + 1;
+                        }
+                    }
+                }
+            }
+        } else {
+            out = out + ch;
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
+/**
+* Case-insensitive multi-value header table preserving insertion order.
+* HTTP header names are case-insensitive, so every name is folded to
+* lowercase on the way in: `set("Content-Type", ...)` and
+* `get("content-type")` touch the same entry. One name holds one value;
+* a repeated name overwrites, so this is not a multi-map like
+* `URLSearchParams`. New headers start empty, and `keys()` lists them in
+* the order they were first stored.
+* @example
+* import { Headers } from "@std/web";
+*
+* let h = new Headers();
+* h.set("Content-Type", "text/plain");
+* h.set("X-Request-Id", "abc");
+* print(h.len(), h.keys().join(","));
+* print(h.get("content-type") ?? "", h.has("x-request-id"));
+*/
+class Headers {
+    /** Lowercased names to values. */
+    let table: Map<String, String>;
+
+    /**
+    * New table with no entries. Fill it with `set()`, or build one from
+    * existing data with `fromMap()` or `fromPairs()`.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = new Headers();
+    * print(h.len(), h.keys().length);
+    */
+    init() {
+        this.table = new Map<String, String>();
+    }
+
+    /**
+    * Build from a Map of name to value. Names go through the same
+    * lowercase fold as `set()`, and the Map's own order is kept.
+    * @param m source entries.
+    * @returns header table copy.
+    * @example
+    * import { Headers } from "@std/web";
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, String>();
+    * m.set("Accept", "text/plain");
+    * m.set("X-Trace", "abc");
+    * let h = Headers.fromMap(m);
+    * print(h.len(), h.get("accept") ?? "");
+    */
+    static fromMap(m: Map<String, String>): Headers {
+        let h = new Headers();
+        let ks = m.keys();
+        let i = 0;
+        while i < ks.length() {
+            let k: String = ks[i];
+            h.set(k, m.get(k) ?? "");
+            i = i + 1;
+        }
+        return h;
+    }
+
+    /**
+    * Build from [name, value] pairs; short pairs are skipped. Only the
+    * first two elements of each pair are read, so extra elements are
+    * ignored rather than treated as an error.
+    * @param pairs name/value arrays.
+    * @returns header table copy.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = Headers.fromPairs([["Content-Type", "text/plain"], ["X-N", "1"]]);
+    * print(h.get("content-type") ?? "", h.len());
+    */
+    static fromPairs(pairs: Array<Array<String>>): Headers {
+        let h = new Headers();
+        let i = 0;
+        while i < pairs.length() {
+            let p: Array<String> = pairs[i];
+            if p.length() >= 2 {
+                h.set(p[0], p[1]);
+            }
+            i = i + 1;
+        }
+        return h;
+    }
+
+    /**
+    * Read a header by case-insensitive name.
+    * @param name header name; case does not matter.
+    * @returns value, or `null` when missing. A header set to the empty
+    * string gives `""`, not `null`.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = new Headers();
+    * h.set("Content-Type", "text/plain");
+    * print(h.get("CONTENT-TYPE") ?? "none", h.get("missing") ?? "none");
+    */
+    get(name: String): String? {
+        let k = lowerAscii(name);
+        if this.table.has(k) {
+            return this.table.get(k);
+        }
+        return null;
+    }
+
+    /**
+    * Store a header, overwriting any previous value. The name is folded
+    * to lowercase, and a repeated name keeps its original position in
+    * `keys()`.
+    * @param name header name.
+    * @param value header value.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = new Headers();
+    * h.set("Accept", "text/plain");
+    * h.set("accept", "text/html");
+    * print(h.len(), h.get("Accept") ?? "");
+    */
+    set(name: String, value: String) {
+        this.table.set(lowerAscii(name), value);
+    }
+
+    /**
+    * Membership test by case-insensitive name.
+    * @param name header name.
+    * @returns true when set and not deleted.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = new Headers();
+    * h.set("X-Key", "v");
+    * print(h.has("x-key"), h.has("X-Other"));
+    */
+    has(name: String): Bool {
+        return this.table.has(lowerAscii(name));
+    }
+
+    /**
+    * Remove a header.
+    * @param name header name; case does not matter.
+    * @returns true when an entry was removed, false when there was none.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = Headers.fromPairs([["X-Key", "v"]]);
+    * print(h.delete("x-key"), h.len());
+    * print(h.delete("x-key"));
+    */
+    delete(name: String): Bool {
+        return this.table.delete(lowerAscii(name));
+    }
+
+    /**
+    * Number of live entries.
+    * @returns entry count. Names differing only in case count once.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = Headers.fromPairs([["A", "1"], ["B", "2"]]);
+    * print(h.len());
+    * h.clear();
+    * print(h.len());
+    */
+    len(): Int {
+        return this.table.len();
+    }
+
+    /**
+    * Drop every entry at once. The table stays usable, so a cleared
+    * header table can be filled again from scratch.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = Headers.fromPairs([["A", "1"], ["B", "2"]]);
+    * h.clear();
+    * print(h.len(), h.keys().length);
+    */
+    clear() {
+        this.table.clear();
+    }
+
+    /**
+    * All names in insertion order, lowercased as stored.
+    * @returns name array copy with typed entries.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = Headers.fromPairs([["Content-Type", "text/plain"], ["X-N", "1"]]);
+    * print(h.keys().join(","));
+    */
+    keys(): Array<String> {
+        let raw = this.table.keys();
+        let out: Array<String> = [];
+        let i = 0;
+        while i < raw.length() {
+            let k: String = raw[i];
+            out.push(k);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+    * All values in name insertion order.
+    * @returns value array copy aligned with keys(), so `keys()[i]` and
+    * `values()[i]` are the same header.
+    * @example
+    * import { Headers } from "@std/web";
+    *
+    * let h = Headers.fromPairs([["A", "1"], ["B", "2"]]);
+    * print(h.values().join(","));
+    * print(h.keys()[0], h.values()[0]);
+    */
+    values(): Array<String> {
+        let raw = this.table.values();
+        let out: Array<String> = [];
+        let i = 0;
+        while i < raw.length() {
+            let v: String = raw[i];
+            out.push(v);
+            i = i + 1;
+        }
+        return out;
+    }
+}
+
+/**
+* Parsed URL parts holder used by the parser and resolver.
+* Internal scaffolding; use URL instead. Every field starts as an empty
+* string, and `parseAbsolute()` fills in whichever parts the text
+* carries. The `host` and `port` fields are separate here, while `URL`
+* also offers a combined `host()` accessor.
+* @example
+* import { UrlParts, parseAbsolute } from "@std/web";
+*
+* let p = new UrlParts();
+* print(parseAbsolute("https://a.com:8080/x?y=1#f", p));
+* print(p.scheme, p.host, p.port, p.path, p.query, p.fragment);
+*/
+class UrlParts {
+    /**
+    * Scheme without the trailing colon, lowercased by
+    * `parseAbsolute()`.
+    */
+    let scheme: String;
+    /**
+    * Host without the port, lowercased by `parseAuthority()`.
+    */
+    let host: String;
+    /**
+    * Port digits with no `:` prefix, "" when the authority had none.
+    */
+    let port: String;
+    /**
+    * Path still percent-encoded, starting at the first `/` when the URL
+    * is hosted and otherwise possibly "".
+    */
+    let path: String;
+    /** Query without the leading `?`, "" when the text had none. */
+    let query: String;
+    /** Fragment without the leading `#`, "" when the text had none. */
+    let fragment: String;
+
+    /**
+    * New holder with every part set to the empty string, ready for
+    * `parseAbsolute()` to fill in.
+    * @example
+    * import { UrlParts } from "@std/web";
+    *
+    * let p = new UrlParts();
+    * print(p.scheme == "", p.host == "", p.path == "");
+    */
+    init() {
+        this.scheme = "";
+        this.host = "";
+        this.port = "";
+        this.path = "";
+        this.query = "";
+        this.fragment = "";
+    }
+}
+
+/**
+* True for a scalar allowed in a URL scheme, per RFC 3986.
+* @param code scalar code from `charCodeAt()`.
+* @param first true for the first character of the scheme, which may not
+* be a digit, `+`, `-`, or `.`.
+* @returns true when the scalar fits at that position.
+* @example
+* import { isSchemeCode } from "@std/web";
+*
+* print(isSchemeCode("h".charCodeAt(0), true), isSchemeCode("1".charCodeAt(0), true));
+* print(isSchemeCode("1".charCodeAt(0), false), isSchemeCode("+".charCodeAt(0), true));
+*/
+fn isSchemeCode(code: Int, first: Bool): Bool {
+    if code >= 48 && code <= 57 {
+        return ! first;
+    }
+    if code >= 65 && code <= 90 {
+        return true;
+    }
+    if code >= 97 && code <= 122 {
+        return true;
+    }
+    if code == 43 || code == 45 || code == 46 {
+        return ! first;
+    }
+    return false;
+}
+
+/**
+* Peel the fragment and then the query off a URL tail, storing both in
+* the holder. The fragment is cut first because anything after a `#`
+* belongs to it, including a `?`.
+* @param rest text after the scheme and authority.
+* @param parts output holder; `query` and `fragment` are overwritten.
+* @returns the remaining path text.
+* @example
+* import { splitFragQuery, UrlParts } from "@std/web";
+*
+* let p = new UrlParts();
+* print(splitFragQuery("/a/b?x=1#f", p), p.query, p.fragment);
+*/
+fn splitFragQuery(rest: String, parts: UrlParts): String {
+    let out = rest;
+    let hi = out.indexOf("#");
+    if hi != -1 {
+        parts.fragment = out.slice(hi + 1, out.length());
+        out = out.slice(0, hi);
+    }
+    let qi = out.indexOf("?");
+    if qi != -1 {
+        parts.query = out.slice(qi + 1, out.length());
+        out = out.slice(0, qi);
+    }
+    return out;
+}
+
+/**
+* Split an authority into host and port. The host is lowercased; the
+* port is kept as digits, without a leading `:`. A colon with a
+* non-numeric tail is not a port, so the whole string stays the host:
+* that keeps IPv6 literals and `host:` from being mangled.
+* @param auth authority text, without the leading `//`.
+* @param parts output holder; `host` and `port` are overwritten.
+* @example
+* import { parseAuthority, UrlParts } from "@std/web";
+*
+* let p = new UrlParts();
+* parseAuthority("Example.COM:8080", p);
+* print(p.host, p.port);
+*/
+fn parseAuthority(auth: String, parts: UrlParts) {
+    let colon = auth.indexOf(":");
+    if colon == -1 {
+        parts.host = lowerAscii(auth);
+        parts.port = "";
+        return;
+    }
+    let tail = auth.slice(colon + 1, auth.length());
+    if isAllDigits(tail) {
+        parts.host = lowerAscii(auth.slice(0, colon));
+        parts.port = tail;
+        return;
+    }
+    parts.host = lowerAscii(auth);
+    parts.port = "";
+}
+
+/**
+* Parse an absolute URL into parts. Surrounding whitespace is trimmed,
+* the scheme is required and lowercased, and `//authority` is optional,
+* so `mailto:someone@example.com` parses with no host. A hosted URL with
+* an empty path gets `/`. Dot segments are left alone here; only
+* relative resolution removes them.
+* @param s candidate URL text.
+* @param parts output holder; every field is overwritten.
+* @returns true when s carries a valid scheme; false otherwise.
+* @example
+* import { parseAbsolute, UrlParts } from "@std/web";
+*
+* let p = new UrlParts();
+* print(parseAbsolute("https://a.com/x?y=1#f", p), p.scheme, p.host, p.path);
+* print(parseAbsolute("/no/scheme", p));
+*/
+fn parseAbsolute(s: String, parts: UrlParts): Bool {
+    let t = s.trim();
+    let colon = t.indexOf(":");
+    if colon <= 0 {
+        return false;
+    }
+    let head = t.slice(0, colon);
+    if head.indexOf("/") != -1 || head.indexOf("?") != -1 || head.indexOf("#") != -1 {
+        return false;
+    }
+    let i = 0;
+    while i < head.length() {
+        if ! isSchemeCode(head.charCodeAt(i), i == 0) {
+            return false;
+        }
+        i = i + 1;
+    }
+    parts.scheme = lowerAscii(head);
+    let rest = t.slice(colon + 1, t.length());
+    if rest.startsWith("//") {
+        rest = rest.slice(2, rest.length());
+        let end = rest.length();
+        let si = rest.indexOf("/");
+        if si != -1 && si < end {
+            end = si;
+        }
+        let qi = rest.indexOf("?");
+        if qi != -1 && qi < end {
+            end = qi;
+        }
+        let hi = rest.indexOf("#");
+        if hi != -1 && hi < end {
+            end = hi;
+        }
+        parseAuthority(rest.slice(0, end), parts);
+        rest = rest.slice(end, rest.length());
+    }
+    parts.path = splitFragQuery(rest, parts);
+    if parts.host != "" && parts.path == "" {
+        parts.path = "/";
+    }
+    return true;
+}
+
+/**
+* Well-known default port per scheme, "" when none. Serialization uses
+* this to drop a port that adds nothing: `https://a.com:443/` and
+* `https://a.com/` produce the same href, and `port()` still reports
+* `443` because that field keeps what the text said.
+* @param scheme lowercased scheme, without the colon.
+* @returns port digits or "".
+* @example
+* import { defaultPort } from "@std/web";
+*
+* print(defaultPort("https"), defaultPort("http"), defaultPort("ftp"));
+*/
+fn defaultPort(scheme: String): String {
+    if scheme == "http" || scheme == "ws" {
+        return "80";
+    }
+    if scheme == "https" || scheme == "wss" {
+        return "443";
+    }
+    if scheme == "ftp" {
+        return "21";
+    }
+    return "";
+}
+
+/**
+* Resolve dot segments in a path, preserving empty segments. `.`
+* drops a segment, `..` drops one and its parent, and a trailing `..`
+* or `.` leaves the trailing slash in place. A `..` at the root is
+* dropped, since there is nothing above it.
+* @param path slash-separated path.
+* @returns normalized path.
+* @example
+* import { removeDotSegments } from "@std/web";
+*
+* print(removeDotSegments("/a/b/../c"));
+* print(removeDotSegments("/a/./b/"));
+* print(removeDotSegments("/a/../../b"));
+*/
+fn removeDotSegments(path: String): String {
+    let segs = path.split("/");
+    let out: Array<String> = [];
+    let i = 0;
+    while i < segs.length() {
+        let seg = segs[i];
+        if seg == "." {
+            if i == segs.length() - 1 {
+                out.push("");
+            }
+        } else if seg == ".." {
+            if out.length() > 0 {
+                out.pop();
+            }
+            if i == segs.length() - 1 {
+                out.push("");
+            }
+        } else {
+            out.push(seg);
+        }
+        i = i + 1;
+    }
+    return out.join("/");
+}
+
+/**
+* Merge a relative reference path onto a base path: everything up to and
+* including the base's last `/` is kept, and the reference is appended.
+* A base with no `/` at all cannot be merged, so the reference becomes
+* the whole path under the root.
+* @param basePath path of the base URL.
+* @param refPath path of the relative reference, without a leading `/`.
+* @returns merged path.
+* @example
+* import { mergePaths } from "@std/web";
+*
+* print(mergePaths("/a/b/", "c"));
+* print(mergePaths("", "c"), mergePaths("/a", "c"));
+*/
+fn mergePaths(basePath: String, refPath: String): String {
+    if basePath == "" {
+        return "/" + refPath;
+    }
+    let last = -1;
+    let start = 0;
+    while true {
+        let at = basePath.indexOf("/", start);
+        if at == -1 {
+            break;
+        }
+        last = at;
+        start = at + 1;
+    }
+    if last == -1 {
+        return "/" + refPath;
+    }
+    return basePath.slice(0, last + 1) + refPath;
+}
+
+/**
+* Lexicographic less-than for strings, scalar by scalar. Compares
+* scalar values, not UTF-8 bytes, and a prefix sorts before the longer
+* string that starts with it. Used to order parameter names.
+* @param a left string.
+* @param b right string.
+* @returns true when a sorts before b.
+* @example
+* import { lessThan } from "@std/web";
+*
+* print(lessThan("abc", "abd"), lessThan("ab", "abc"), lessThan("abc", "abc"));
+*/
+fn lessThan(a: String, b: String): Bool {
+    let i = 0;
+    while i < a.length() && i < b.length() {
+        let ac = a.charCodeAt(i);
+        let bc = b.charCodeAt(i);
+        if ac != bc {
+            return ac < bc;
+        }
+        i = i + 1;
+    }
+    return a.length() < b.length();
+}
+
+/**
+* WHATWG-subset URL: absolute parse plus relative resolution.
+* No IPv6 literals, no credentials, no IDNA: hosts fold ASCII case only.
+*
+* Construct with an absolute URL, or with a relative reference plus an
+* absolute base. The reference forms follow RFC 3986: `//host/path`
+* borrows the base scheme, `/path` replaces the path, `?query` keeps the
+* path, `#frag` keeps path and query, `""` keeps everything, and anything
+* else merges onto the base directory and then removes dot segments.
+* Resolution removes dot segments; parsing an absolute URL does not, so
+* `new URL("https://a.com/a/../b").pathname()` is `/a/../b`. Percent
+* escapes are stored as written and never decoded here; use
+* `decodeComponent()` when you need the decoded text.
+*
+* Nothing is normalized beyond case folding of the scheme and host, and
+* serialization drops a port that matches the scheme default.
+* @param url absolute URL or relative reference.
+* @param base absolute base URL for relative references, "" when none.
+* @example
+* import { URL } from "@std/web";
+*
+* let u = new URL("../x?y=1", "https://a.com/b/c/d");
+* print(u.href());
+* print(new URL("//cdn.a.com/lib", "https://a.com").href());
+*/
+class URL {
+    /**
+    * Scheme without the trailing colon, lowercased, "" for a relative
+    * URL. Read `protocol()` when you want the colon back.
+    */
+    let scheme: String;
+    /**
+    * Host without the port, lowercased, "" when the URL has no
+    * authority. `host()` appends a non-default port.
+    */
+    let host: String;
+    /**
+    * Port digits exactly as written, "" when absent. No default is
+    * filled in; `port()` returns this same string.
+    */
+    let port: String;
+    /**
+    * Path, still percent-encoded, "/" when hosted with an empty path.
+    * `pathname()` returns this same string.
+    */
+    let path: String;
+    /**
+    * Query without the leading `?`, "" when absent. `search()`
+    * prepends the `?`.
+    */
+    let query: String;
+    /**
+    * Fragment without the leading `#`, "" when absent. `hash()`
+    * prepends the `#`.
+    */
+    let fragment: String;
+
+    /**
+    * Parse an absolute URL, or resolve ref against base. Passing only
+    * `url` parses it; adding a `base` resolves a relative reference
+    * against it. A reference that cannot be resolved and has no usable
+    * base is kept as a path-only URL with no scheme or host.
+    * @param url absolute URL or relative reference.
+    * @param base absolute base URL for relative references, "" when none.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * print(new URL("https://a.com/x").href());
+    * print(new URL("../y", "https://a.com/b/c/d").href());
+    * print(new URL("/only/path").href());
+    */
+    init(url: String, base: String = "") {
+        this.scheme = "";
+        this.host = "";
+        this.port = "";
+        this.path = "";
+        this.query = "";
+        this.fragment = "";
+        let parts = new UrlParts();
+        if parseAbsolute(url, parts) {
+            this.scheme = parts.scheme;
+            this.host = parts.host;
+            this.port = parts.port;
+            this.path = parts.path;
+            this.query = parts.query;
+            this.fragment = parts.fragment;
+            return;
+        }
+        if base != "" {
+            let b = new UrlParts();
+            if parseAbsolute(base, b) {
+                let t = url.trim();
+                if t.startsWith("//") {
+                    this.scheme = b.scheme;
+                    let rest = t.slice(2, t.length());
+                    let end = rest.length();
+                    let si = rest.indexOf("/");
+                    if si != -1 && si < end {
+                        end = si;
+                    }
+                    let qi = rest.indexOf("?");
+                    if qi != -1 && qi < end {
+                        end = qi;
+                    }
+                    let hi = rest.indexOf("#");
+                    if hi != -1 && hi < end {
+                        end = hi;
+                    }
+                    let auth = new UrlParts();
+                    parseAuthority(rest.slice(0, end), auth);
+                    this.host = auth.host;
+                    this.port = auth.port;
+                    let tail = new UrlParts();
+                    this.path = splitFragQuery(rest.slice(end, rest.length()), tail);
+                    this.query = tail.query;
+                    this.fragment = tail.fragment;
+                    if this.path == "" {
+                        this.path = "/";
+                    }
+                    return;
+                }
+                this.scheme = b.scheme;
+                this.host = b.host;
+                this.port = b.port;
+                if t.startsWith("/") {
+                    let tail = new UrlParts();
+                    this.path = removeDotSegments(splitFragQuery(t, tail));
+                    this.query = tail.query;
+                    this.fragment = tail.fragment;
+                    return;
+                }
+                if t.startsWith("?") {
+                    this.path = b.path;
+                    let tail = new UrlParts();
+                    splitFragQuery(t, tail);
+                    this.query = tail.query;
+                    this.fragment = tail.fragment;
+                    return;
+                }
+                if t.startsWith("#") {
+                    this.path = b.path;
+                    this.query = b.query;
+                    this.fragment = t.slice(1, t.length());
+                    return;
+                }
+                if t == "" {
+                    this.path = b.path;
+                    this.query = b.query;
+                    return;
+                }
+                let tail = new UrlParts();
+                let relPath = splitFragQuery(t, tail);
+                this.path = removeDotSegments(mergePaths(b.path, relPath));
+                this.query = tail.query;
+                this.fragment = tail.fragment;
+                return;
+            }
+        }
+        let tail = new UrlParts();
+        this.path = splitFragQuery(url.trim(), tail);
+        this.query = tail.query;
+        this.fragment = tail.fragment;
+    }
+
+    /**
+    * Full serialized URL, same string as `toString()`.
+    * @returns href string.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * let u = new URL("https://example.com:8080/a/b?x=1#frag");
+    * print(u.href());
+    * print(u.hostname(), u.port(), u.pathname());
+    */
+    href(): String {
+        return this.toString();
+    }
+
+    /**
+    * Serialize to the href string. A hosted URL prints
+    * `scheme://host[:port]/path[?query][#frag]` with a default port left
+    * out and an empty path written as `/`; a relative URL prints just
+    * its path, query, and fragment.
+    * @returns serialized URL.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * print(new URL("https://a.com:443/x").href());
+    * print(new URL("/only/a/path?x=1").href());
+    */
+    toString(): String {
+        if this.scheme == "" {
+            let out = this.path;
+            if this.query != "" {
+                out = out + "?" + this.query;
+            }
+            if this.fragment != "" {
+                out = out + "#" + this.fragment;
+            }
+            return out;
+        }
+        let out = this.scheme + "://" + this.host;
+        if this.port != "" && this.port != defaultPort(this.scheme) {
+            out = out + ":" + this.port;
+        }
+        let p = this.path;
+        if p == "" {
+            p = "/";
+        }
+        out = out + p;
+        if this.query != "" {
+            out = out + "?" + this.query;
+        }
+        if this.fragment != "" {
+            out = out + "#" + this.fragment;
+        }
+        return out;
+    }
+
+    /**
+    * Scheme with trailing colon.
+    * @returns e.g. "https:" or "" for relative URLs.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * print(new URL("https://a.com/").protocol());
+    * print(new URL("/rel").protocol() == "");
+    */
+    protocol(): String {
+        if this.scheme == "" {
+            return "";
+        }
+        return this.scheme + ":";
+    }
+
+    /**
+    * Host with non-default port.
+    * @returns e.g. "example.com:8080", or just the host when the port
+    * is absent or matches the scheme default.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * print(new URL("https://a.com:8443/x").host());
+    * print(new URL("https://a.com:443/x").host());
+    */
+    host(): String {
+        if this.port != "" && this.port != defaultPort(this.scheme) {
+            return this.hostname() + ":" + this.port;
+        }
+        return this.hostname();
+    }
+
+    /**
+    * Lowercased host without port.
+    * @returns host string, "" when the URL has no authority.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * print(new URL("http://A.com:8080/x").hostname());
+    */
+    hostname(): String {
+        return this.host;
+    }
+
+    /**
+    * Port digits, "" when absent. This is the port as written, with no
+    * default filled in: `https://a.com/x` reports `""`, not `443`. Use
+    * `defaultPort()` to add the scheme default yourself.
+    * @returns port string.
+    * @example
+    * import { URL, defaultPort } from "@std/web";
+    *
+    * let u = new URL("https://a.com/x");
+    * print(u.port() == "", defaultPort(u.scheme));
+    */
+    port(): String {
+        return this.port;
+    }
+
+    /**
+    * Raw (still-encoded) path.
+    * @returns path string, "" for a relative reference with no path and
+    * "/" for a hosted URL with an empty path.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * print(new URL("https://a.com/a/b%20c").pathname());
+    */
+    pathname(): String {
+        return this.path;
+    }
+
+    /**
+    * Query with leading `?`, "" when absent.
+    * @returns search string, percent-encoding untouched.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * print(new URL("https://a.com/?x=1&y=2").search());
+    */
+    search(): String {
+        if this.query == "" {
+            return "";
+        }
+        return "?" + this.query;
+    }
+
+    /**
+    * Fragment with leading `#`, "" when absent.
+    * @returns hash string. A URL built from a base drops the base's
+    * fragment unless the reference carried one, and a reference that is
+    * just `?query` drops it too.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * print(new URL("https://a.com/x#top").hash());
+    * print(new URL("?q=1", "https://a.com/x#top").hash() == "");
+    */
+    hash(): String {
+        if this.fragment == "" {
+            return "";
+        }
+        return "#" + this.fragment;
+    }
+
+    /**
+    * Scheme, host, and non-default port.
+    * @returns origin string, or "null" for relative URLs. A URL without
+    * a host, such as `mailto:someone@example.com`, also gives "null":
+    * the result is the string `"null"`, not a null value.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * print(new URL("https://a.com:8443/x").origin());
+    * print(new URL("/rel").origin());
+    */
+    origin(): String {
+        if this.scheme == "" || this.host == "" {
+            return "null";
+        }
+        let out = this.scheme + "://" + this.host;
+        if this.port != "" && this.port != defaultPort(this.scheme) {
+            out = out + ":" + this.port;
+        }
+        return out;
+    }
+
+    /**
+    * Query parsed into parameters (snapshot, not live). Names and values
+    * are percent-decoded with `+` read as a space. The returned table is
+    * a copy: changing it does not change the URL, and changing the URL
+    * does not change an earlier table. Write results back with
+    * `setSearch()`.
+    * @returns parameter table.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * let u = new URL("https://a.com/?q=a+b&tag=x%20y");
+    * let p = u.searchParams();
+    * print(p.get("q") ?? "", p.get("tag") ?? "");
+    * p.set("q", "c+d");
+    * u.setSearch(p.toString());
+    * print(u.search());
+    */
+    searchParams(): URLSearchParams {
+        return new URLSearchParams(this.query);
+    }
+
+    /**
+    * Replace the path; a missing leading slash is added when hosted. An
+    * empty path becomes `/` on a hosted URL and stays empty on a
+    * relative one. Dot segments are not removed here: call
+    * `removeDotSegments()` yourself if you need that.
+    * @param p new path.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * let u = new URL("https://a.com/old");
+    * u.setPathname("new");
+    * print(u.href());
+    */
+    setPathname(p: String) {
+        if this.host != "" {
+            if p == "" {
+                this.path = "/";
+                return;
+            }
+            if ! p.startsWith("/") {
+                this.path = "/" + p;
+                return;
+            }
+        }
+        this.path = p;
+    }
+
+    /**
+    * Replace the query; a leading `?` is stripped. The text is stored as
+    * given, with no encoding applied, so passing
+    * `URLSearchParams.toString()` output round-trips.
+    * @param q new query, with or without the leading `?`.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * let u = new URL("https://a.com/x?old=1");
+    * u.setSearch("?a=1&b=2");
+    * print(u.href());
+    */
+    setSearch(q: String) {
+        if q.startsWith("?") {
+            this.query = q.slice(1, q.length());
+            return;
+        }
+        this.query = q;
+    }
+
+    /**
+    * Replace the fragment; a leading `#` is stripped. The text is stored
+    * as given, so a fragment of `""` clears it.
+    * @param h new fragment, with or without the leading `#`.
+    * @example
+    * import { URL } from "@std/web";
+    *
+    * let u = new URL("https://a.com/x");
+    * u.setHash("#top");
+    * print(u.hash());
+    * u.setHash("");
+    * print(u.href());
+    */
+    setHash(h: String) {
+        if h.startsWith("#") {
+            this.fragment = h.slice(1, h.length());
+            return;
+        }
+        this.fragment = h;
+    }
+}
+
+/**
+* Insertion-ordered query parameter table with form encoding.
+*
+* Names and values are stored decoded, so `a+b` and `a%20b` both read
+* back as `"a b"`; `toString()` re-encodes with form rules, which turns
+* a space into `+` again. Entries are kept in insertion order and a
+* name may repeat, which is how repeated query keys stay distinct.
+* `get()` returns the first match and `getAll()` returns every one.
+*
+* Construct from a query string with a leading `?` if you like. To build
+* one from scratch, start empty and use `append()` or `set()`.
+* @param query raw query text, "" for empty.
+* @example
+* import { URLSearchParams } from "@std/web";
+*
+* let p = new URLSearchParams("?a=1&a=2&b=x+y");
+* print(p.size(), p.getAll("a").length(), p.get("b") ?? "");
+* p.append("c", "a b");
+* print(p.toString());
+*/
+class URLSearchParams with Iterable<Array<String>> {
+    /**
+    * Parameter names in order, already decoded, with duplicates kept.
+    * `keys()` returns a copy of this.
+    */
+    let names: Array<String>;
+    /**
+    * Parameter values in order, aligned with `names`. `values()`
+    * returns a copy of this.
+    */
+    let values: Array<String>;
+
+    /**
+    * Parse a query string; a leading `?` is stripped. Split on `&`, then
+    * on the first `=` of each piece; a piece with no `=` gets an empty
+    * value. `+` decodes to a space. Use `parse()` to add to a table that
+    * already has entries.
+    * @param query raw query text, "" for empty.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams();
+    * print(p.size(), p.toString() == "");
+    * p.append("a", "1");
+    * print(p.toString());
+    */
+    init(query: String = "") {
+        this.names = [];
+        this.values = [];
+        this.parse(query);
+    }
+
+    /**
+    * Build from a Map of name to value. The Map's order becomes the
+    * parameter order, and values are taken as decoded text: a name or
+    * value that already contains `%` or `+` is stored literally, not
+    * decoded again.
+    * @param m source entries.
+    * @returns parameter table copy.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, String>();
+    * m.set("q", "rasmalai");
+    * m.set("page", "2");
+    * print(URLSearchParams.fromMap(m).toString());
+    */
+    static fromMap(m: Map<String, String>): URLSearchParams {
+        let p = new URLSearchParams();
+        let ks = m.keys();
+        let i = 0;
+        while i < ks.length() {
+            let k: String = ks[i];
+            p.append(k, m.get(k) ?? "");
+            i = i + 1;
+        }
+        return p;
+    }
+
+    /**
+    * Add every parameter in a query string to the table. This appends;
+    * it does not clear what is already there, so calling it twice with
+    * the same text gives two copies of every entry.
+    * @param query raw query text, with or without the leading `?`.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("a=1");
+    * p.parse("b=2&c");
+    * print(p.size(), p.toString());
+    */
+    parse(query: String) {
+        let q = query;
+        if q.startsWith("?") {
+            q = q.slice(1, q.length());
+        }
+        if q == "" {
+            return;
+        }
+        let parts = q.split("&");
+        let i = 0;
+        while i < parts.length() {
+            let part: String = parts[i];
+            let eq = part.indexOf("=");
+            if eq == -1 {
+                this.names.push(decodeComponent(part, true));
+                this.values.push("");
+            } else {
+                this.names.push(decodeComponent(part.slice(0, eq), true));
+                this.values.push(decodeComponent(part.slice(eq + 1, part.length()), true));
+            }
+            i = i + 1;
+        }
+    }
+
+    /**
+    * First value for name. Names are matched exactly, with no case
+    * folding and no decoding applied to the name you pass in.
+    * @param name parameter name.
+    * @returns value, or `null` when missing. A name present with an
+    * empty value gives `""`, not `null`.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("a=1&a=2&flag");
+    * print(p.get("a") ?? "none", p.get("flag") ?? "none", p.get("zz") ?? "none");
+    */
+    get(name: String): String? {
+        let i = 0;
+        while i < this.names.length() {
+            if this.names[i] == name {
+                return this.values[i];
+            }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    /**
+    * Every value for name in order. This is how a repeated query key
+    * stays visible: `?tag=a&tag=b` gives two entries here. An empty
+    * result means the name is absent, not that its value is empty.
+    * @param name parameter name.
+    * @returns value array in insertion order, empty when missing.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("a=1&a=2&b=3");
+    * print(p.getAll("a").length(), p.get("b") ?? "");
+    */
+    getAll(name: String): Array<String> {
+        let out: Array<String> = [];
+        let i = 0;
+        while i < this.names.length() {
+            if this.names[i] == name {
+                out.push(this.values[i]);
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+    * Set name to a single value, dropping previous entries. The new
+    * entry goes to the end of the order, so `set()` on a repeated name
+    * both collapses the duplicates and moves the value to the end.
+    * @param name parameter name.
+    * @param value parameter value, stored decoded.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("a=1&b=2&a=3");
+    * p.set("a", "9");
+    * print(p.toString());
+    */
+    set(name: String, value: String) {
+        let nn: Array<String> = [];
+        let vv: Array<String> = [];
+        let i = 0;
+        while i < this.names.length() {
+            if this.names[i] != name {
+                nn.push(this.names[i]);
+                vv.push(this.values[i]);
+            }
+            i = i + 1;
+        }
+        nn.push(name);
+        vv.push(value);
+        this.names = nn;
+        this.values = vv;
+    }
+
+    /**
+    * Append another value for name. Nothing is removed, so a name that
+    * already exists gains a second entry. Unlike `set()`, the order of
+    * the other names is untouched.
+    * @param name parameter name.
+    * @param value parameter value, stored decoded.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("tag=x");
+    * p.append("tag", "y");
+    * print(p.getAll("tag").join(","), p.size());
+    */
+    append(name: String, value: String) {
+        this.names.push(name);
+        this.values.push(value);
+    }
+
+    /**
+    * Remove every entry for name, all duplicates included. The
+    * remaining names keep their relative order.
+    * @param name parameter name.
+    * @returns true when anything was removed.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("a=1&b=2&a=3");
+    * print(p.delete("a"), p.toString());
+    * print(p.size());
+    */
+    delete(name: String): Bool {
+        let nn: Array<String> = [];
+        let vv: Array<String> = [];
+        let dropped = false;
+        let i = 0;
+        while i < this.names.length() {
+            if this.names[i] == name {
+                dropped = true;
+            } else {
+                nn.push(this.names[i]);
+                vv.push(this.values[i]);
+            }
+            i = i + 1;
+        }
+        this.names = nn;
+        this.values = vv;
+        return dropped;
+    }
+
+    /**
+    * Membership test.
+    * @param name parameter name.
+    * @returns true when at least one entry exists, even if its value is
+    * empty.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("flag&a=1");
+    * print(p.has("flag"), p.has("a"), p.has("b"));
+    */
+    has(name: String): Bool {
+        return this.get(name) != null;
+    }
+
+    /**
+    * Number of entries.
+    * @returns entry count, so a repeated name counts once per value.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * print(new URLSearchParams("a=1&a=2").size());
+    */
+    size(): Int {
+        return this.names.length();
+    }
+
+    /**
+    * All names in order, duplicates kept.
+    * @returns name array copy, aligned with `values()`.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * print(new URLSearchParams("a=1&b=2&a=3").keys().join(","));
+    */
+    keys(): Array<String> {
+        let out: Array<String> = [];
+        let i = 0;
+        while i < this.names.length() {
+            out.push(this.names[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+    * All values in order.
+    * @returns value array copy, aligned with `keys()`. Empty values from
+    * a key written without `=` are kept as `""`.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * print(new URLSearchParams("a=1&flag&b=2").values().join("|"));
+    */
+    values(): Array<String> {
+        let out: Array<String> = [];
+        let i = 0;
+        while i < this.values.length() {
+            out.push(this.values[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+    * All [name, value] pairs in order. The pairs are fresh two-element
+    * arrays, so changing one does not change the table.
+    * @returns pair array.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("a=1&b=2");
+    * for pair in p.entries() {
+    *     print(pair[0], pair[1]);
+    * }
+    */
+    entries(): Array<Array<String>> {
+        let out: Array<Array<String>> = [];
+        let i = 0;
+        while i < this.names.length() {
+            out.push([this.names[i], this.values[i]]);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+    * Stable sort by name, keeping duplicate order. Names compare
+    * scalar by scalar, so uppercase sorts before lowercase, and
+    * entries sharing a name stay in the order they were added.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("c=3&a=1&a=2");
+    * p.sort();
+    * print(p.toString());
+    */
+    sort() {
+        let i = 1;
+        while i < this.names.length() {
+            let kn: String = this.names[i];
+            let kv: String = this.values[i];
+            let j = i - 1;
+            while j >= 0 && lessThan(kn, this.names[j]) {
+                this.names[j + 1] = this.names[j];
+                this.values[j + 1] = this.values[j];
+                j = j - 1;
+            }
+            this.names[j + 1] = kn;
+            this.values[j + 1] = kv;
+            i = i + 1;
+        }
+    }
+
+    /**
+    * Form-encode entries joined by `&`. Names and values are
+    * percent-encoded with form rules, so a space becomes `+` and every
+    * entry keeps its `=`, even one with an empty value. An empty table
+    * gives `""`, with no leading `?`; add that yourself when building a
+    * URL.
+    * @returns encoded query string.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams();
+    * p.append("q", "a b&c");
+    * print(p.toString());
+    */
+    toString(): String {
+        let out = "";
+        let i = 0;
+        while i < this.names.length() {
+            if i > 0 {
+                out = out + "&";
+            }
+            out = out + encodeComponent(this.names[i], true) + "=" + encodeComponent(this.values[i], true);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+    * Iterate [name, value] pairs in order with `for..in`. This is what
+    * makes `URLSearchParams` an `Iterable`, so a `for` loop over one
+    * yields pairs. The iterator walks a snapshot from `entries()`, so
+    * changing the table inside the loop does not affect the walk.
+    * @returns pair iterator.
+    * @example
+    * import { URLSearchParams } from "@std/web";
+    *
+    * let p = new URLSearchParams("x=1&y=2");
+    * for pair in p {
+    *     print(pair[0], pair[1]);
+    * }
+    */
+    iterator(): Iterator<Array<String>> {
+        return new ArrayIter<Array<String>>(this.entries());
+    }
+}
+
+/**
+* HTTP response holder returned by fetch().
+*
+* The whole body is read before this is built and stored as text, so
+* there is no streaming and no `body` stream to consume. A non-2xx
+* status is a normal return, not a failure: check `status` or
+* `isSuccess()` yourself and decide what to do.
+*
+* Construct one directly to exercise code that consumes responses
+* without a server: supply the status, the reason phrase from the status
+* line, the header table, and the body text.
+* @param status numeric status code from the status line.
+* @param statusText reason phrase from the status line.
+* @param headers response headers; names are folded to lowercase.
+* @param body body text, already decoded from UTF-8 bytes.
+* @example
+* import { Response, Headers, isSuccess } from "@std/web";
+* import { JSON } from "@std/json";
+*
+* let r = new Response(404, "Not Found", Headers.fromPairs([["Content-Type", "text/plain"]]), "no such page");
+* print(r.status, r.statusText, isSuccess(r.status));
+* print(r.headers.get("content-type") ?? "", r.text());
+*/
+class Response {
+    /**
+    * Numeric status code from the status line. This is the raw number,
+    * not an `HttpStatus` variant; feed it to `statusFromCode()` or to
+    * `isSuccess()` and friends.
+    */
+    let status: Int;
+    /**
+    * Reason phrase from the status line, "" when the server sent none.
+    * `statusReason()` gives the phrase for a variant, which is a
+    * different lookup.
+    */
+    let statusText: String;
+    /**
+    * Response headers, names lowercased. Read with `get()` or `has()`
+    * rather than `headers.table`.
+    */
+    let headers: Headers;
+    /**
+    * Body text, UTF-8 decoded and complete. `text()` returns this same
+    * string.
+    */
+    let body: String;
+
+    /**
+    * Build a response from its parts. Nothing is validated here: the
+    * status may be any number and the body may be empty, which is what a
+    * 204 response looks like.
+    * @param status numeric status code from the status line.
+    * @param statusText reason phrase from the status line.
+    * @param headers response headers; names are folded to lowercase.
+    * @param body body text, already decoded from UTF-8 bytes.
+    * @example
+    * import { Response, Headers } from "@std/web";
+    *
+    * let h = Headers.fromPairs([["Content-Type", "text/plain"]]);
+    * let r = new Response(204, "No Content", h, "");
+    * print(r.status, r.text() == "");
+    */
+    init(status: Int, statusText: String, headers: Headers, body: String) {
+        this.status = status;
+        this.statusText = statusText;
+        this.headers = headers;
+        this.body = body;
+    }
+
+    /**
+    * Body as text. Same string as the `body` field; the body is already
+    * decoded, so this does no charset conversion.
+    * @returns response body string.
+    * @example
+    * import { Response, Headers } from "@std/web";
+    *
+    * print(new Response(200, "OK", new Headers(), "hello").text());
+    */
+    fn text(): String {
+        return this.body;
+    }
+
+    /**
+    * Body parsed as JSON. Numbers without a fraction decode to `Int`,
+    * the rest to `Float`.
+    * @returns decoded body value as `Any`; aborts with a parse offset
+    * when the body is not valid JSON. Check `status` and `text()` first
+    * if the body might not be JSON, since a parse failure is a fault
+    * and not a catchable error value.
+    * @example
+    * import { Response, Headers } from "@std/web";
+    * import { JSON } from "@std/json";
+    *
+    * let r = new Response(200, "OK", new Headers(), "\{\"n\":7,\"ok\":true}");
+    * print(JSON.stringify(r.json()));
+    */
+    fn json(): Any {
+        return JSON.parse(this.body);
+    }
+}
+
+/**
+* Per-request knobs for fetch(). Pass an instance as the options
+* argument: method override, extra request headers, and an optional
+* ASCII body.
+*
+* The three fields are public, so set them directly and the accessors
+* read them back. A new instance means GET with no headers and an empty
+* body. Header names go through the same lowercase fold as `Headers`, and
+* fetch() writes them after its own `Host`, `Connection`, `User-Agent`,
+* and `Accept` lines, so a name repeated here is sent twice.
+*
+* The method string is sent as written, so use the uppercase form the
+* server expects.
+* @param method HTTP method, `"GET"` by default.
+* @example
+* import { RequestOptions } from "@std/web";
+*
+* let o = new RequestOptions("POST");
+* o.headers.set("Content-Type", "application/json");
+* o.body = "\{\"name\":\"ada\"}";
+* print(o.methodName(), o.bodyText(), o.extraHeaders().get("content-type") ?? "");
+*/
+class RequestOptions {
+    /**
+    * HTTP method to send, used as written with no case folding.
+    * `methodName()` returns this same string.
+    */
+    let method: String;
+    /**
+    * Extra request headers, sent after fetch()'s own `Host`,
+    * `Connection`, `User-Agent`, and `Accept` lines. `extraHeaders()`
+    * returns this same table.
+    */
+    let headers: Headers;
+    /**
+    * Request body text; "" sends no body and no `Content-Length`.
+    * `bodyText()` returns this same string.
+    */
+    let body: String;
+
+    /**
+    * Build request options. The method defaults to GET with an empty
+    * header table and an empty body; set the `headers` and `body` fields
+    * to fill in the rest.
+    * @param method HTTP method, `"GET"` by default.
+    * @example
+    * import { RequestOptions } from "@std/web";
+    *
+    * let o = new RequestOptions();
+    * print(o.methodName(), o.bodyText() == "", o.extraHeaders().len());
+    */
+    init(method: String = "GET") {
+        this.method = method;
+        this.headers = new Headers();
+        this.body = "";
+    }
+
+    /**
+    * HTTP method to send.
+    * @returns method string exactly as set, with no uppercasing.
+    * @example
+    * import { RequestOptions } from "@std/web";
+    *
+    * let o = new RequestOptions("PATCH");
+    * print(o.methodName());
+    */
+    fn methodName(): String {
+        return this.method;
+    }
+
+    /**
+    * Extra request headers.
+    * @returns live header table, not a copy: setting a header here after
+    * building the options still affects the next fetch().
+    * @example
+    * import { RequestOptions } from "@std/web";
+    *
+    * let o = new RequestOptions();
+    * o.extraHeaders().set("Accept-Language", "en");
+    * print(o.extraHeaders().len());
+    */
+    fn extraHeaders(): Headers {
+        return this.headers;
+    }
+
+    /**
+    * Request body text.
+    * @returns body string, "" when none was set. fetch() adds
+    * `Content-Length` from this length and skips the header when the
+    * body is empty.
+    * @example
+    * import { RequestOptions } from "@std/web";
+    *
+    * let o = new RequestOptions("POST");
+    * o.body = "name=ada";
+    * print(o.bodyText().length);
+    */
+    fn bodyText(): String {
+        return this.body;
+    }
+}
+
+/**
+* Parse a non-negative decimal integer.
+* @param s digit string, "" for none.
+* @returns the value, or -1 when s is empty or holds a non-digit. The
+* -1 marks failure; valid input never parses to it.
+* @example
+* import { parseDec } from "@std/web";
+*
+* print(parseDec("404"), parseDec(""), parseDec("4a"));
+*/
+fn parseDec(s: String): Int {
+    if s == "" {
+        return 0 - 1;
+    }
+    let v = 0;
+    let i = 0;
+    while i < s.length() {
+        let c = s.charCodeAt(i);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        v = v * 10 + (c - 48);
+        i = i + 1;
+    }
+    return v;
+}
+
+/**
+* String to scalar codes, one array element per character. A character
+* above 127 becomes its UTF-8 bytes, so the array is the UTF-8 encoding
+* of the string and is what a socket write wants.
+* @param s text to encode.
+* @returns array of byte values 0..255.
+* @example
+* import { strBytes } from "@std/web";
+*
+* let b = strBytes("Hi");
+* print(b.length, b[0], b[1]);
+*/
+fn strBytes(s: String): Array<Int> {
+    let out: Array<Int> = [];
+    let i = 0;
+    while i < s.length() {
+        out.push(s.charCodeAt(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+/**
+* Copy a range of a byte array.
+* @param buf source bytes.
+* @param start first index, inclusive.
+* @param to last index, exclusive.
+* @returns new array holding `buf[start..to]`. Empty when start >= to.
+* @example
+* import { strBytes, sliceBytes } from "@std/web";
+*
+* let b = strBytes("abcdef");
+* print(sliceBytes(b, 1, 4).length, sliceBytes(b, 4, 2).length);
+*/
+fn sliceBytes(buf: Array<Int>, start: Int, to: Int): Array<Int> {
+    let out: Array<Int> = [];
+    let i = start;
+    while i < to {
+        out.push(buf[i]);
+        i = i + 1;
+    }
+    return out;
+}
+
+/**
+* Decode raw bytes as UTF-8 text. Blocks keep string building linear;
+* a trailing split multibyte sequence carries into the next block.
+* A byte that cannot start or finish a valid sequence is not replaced
+* with a substitution character: the percent form is left in the output.
+* There is no charset sniffing, so the input is always read as UTF-8.
+* @param data byte values 0..255.
+* @returns decoded text, "" for empty input.
+* @example
+* import { strBytes, bytesToString } from "@std/web";
+*
+* print(bytesToString(strBytes("ok")));
+* print(bytesToString(strBytes("a\u{E9}b")));
+* print(bytesToString([]));
+*/
+fn bytesToString(data: Array<Int>): String {
+    let out = "";
+    let pos = 0;
+    while pos < data.length() {
+        let end = pos + 4096;
+        if end > data.length() {
+            end = data.length();
+        }
+        end = completePrefix(data, pos, end);
+        if isAsciiRange(data, pos, end) {
+            out = out + asciiBlock(data, pos, end);
+        } else {
+            out = out + decodeBlock(data, pos, end);
+        }
+        pos = end;
+    }
+    return out;
+}
+
+/**
+* True when every byte in a range is below 128.
+* @param data byte values.
+* @param start first index, inclusive.
+* @param to last index, exclusive.
+* @returns true for an all-ASCII range; an empty range counts as ASCII.
+* @example
+* import { strBytes, isAsciiRange } from "@std/web";
+*
+* let b = strBytes("ok");
+* print(isAsciiRange(b, 0, b.length), isAsciiRange(strBytes("a\u{E9}b"), 0, 1));
+*/
+fn isAsciiRange(data: Array<Int>, start: Int, to: Int): Bool {
+    let i = start;
+    while i < to {
+        if data[i] >= 128 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/**
+* Decode an all-ASCII byte range, 64 bytes at a time so the
+* concatenation stays linear instead of quadratic.
+* @param data byte values; every byte in the range must be below 128.
+* @param start first index, inclusive.
+* @param to last index, exclusive.
+* @returns text for the range.
+* @example
+* import { strBytes, asciiBlock } from "@std/web";
+*
+* let b = strBytes("abcdef");
+* print(asciiBlock(b, 1, 4));
+*/
+fn asciiBlock(data: Array<Int>, start: Int, to: Int): String {
+    let out = "";
+    let i = start;
+    while i < to {
+        let j = i + 64;
+        if j > to {
+            j = to;
+        }
+        out = out + asciiChunk(data, i, j);
+        i = j;
+    }
+    return out;
+}
+
+/**
+* Decode a short all-ASCII byte range one character at a time. This is
+* the inner step of `asciiBlock()`; use `asciiBlock()` for anything
+* larger than a chunk.
+* @param data byte values; every byte in the range must be below 128.
+* @param start first index, inclusive.
+* @param to last index, exclusive.
+* @returns text for the range.
+* @example
+* import { strBytes, asciiChunk } from "@std/web";
+*
+* let b = strBytes("abcdef");
+* print(asciiChunk(b, 0, 3));
+*/
+fn asciiChunk(data: Array<Int>, start: Int, to: Int): String {
+    let out = "";
+    let i = start;
+    while i < to {
+        out = out + __rnx_string_from_char_code(data[i]);
+        i = i + 1;
+    }
+    return out;
+}
+
+/**
+* Trim a block boundary back so it never lands inside a multi-byte
+* UTF-8 sequence. If the last bytes before `to` are an unfinished
+* sequence, the boundary moves back to that sequence's lead byte, which
+* `bytesToString()` then picks up on its next pass.
+* @param data byte values.
+* @param start first index of the block, inclusive.
+* @param to proposed last index, exclusive.
+* @returns a boundary at or before `to` that starts no partial sequence.
+* @example
+* import { strBytes, completePrefix } from "@std/web";
+*
+* print(completePrefix(strBytes("abc"), 0, 3));
+* print(completePrefix(strBytes("a\u{E9}"), 0, 2));
+*/
+fn completePrefix(data: Array<Int>, start: Int, to: Int): Int {
+    let i = to - 1;
+    let cont = 0;
+    while i >= start && data[i] >= 128 && data[i] < 192 {
+        cont = cont + 1;
+        i = i - 1;
+    }
+    if i <= start {
+        return to;
+    }
+    let lead = data[i];
+    if lead < 128 {
+        return to;
+    }
+    let need = 1;
+    if lead >= 240 {
+        need = 4;
+    } else if lead >= 224 {
+        need = 3;
+    } else if lead >= 192 {
+        need = 2;
+    }
+    if cont + 1 >= need {
+        return to;
+    }
+    return i;
+}
+
+/**
+* Decode a byte range that holds at least one non-ASCII byte, by
+* percent-encoding it and handing it to `decodeComponent()`. The range
+* must already be aligned to a sequence boundary; `completePrefix()`
+* arranges that.
+* @param data byte values.
+* @param start first index, inclusive.
+* @param to last index, exclusive.
+* @returns UTF-8 decoded text for the range.
+* @example
+* import { strBytes, decodeBlock } from "@std/web";
+*
+* let b = strBytes("a\u{C3}\u{A9}b");
+* print(decodeBlock(b, 0, b.length));
+*/
+fn decodeBlock(data: Array<Int>, start: Int, to: Int): String {
+    let enc = "";
+    let i = start;
+    while i < to {
+        let b = data[i];
+        enc = enc + "%" + hexDigit(b / 16) + hexDigit(b - (b / 16) * 16);
+        i = i + 1;
+    }
+    return decodeComponent(enc, false);
+}
+
+/**
+* Find the end of an HTTP header block, which is the blank line after
+* the last header. Only CRLF counts, so this waits for more bytes when a
+* server sends bare LF line endings.
+* @param data bytes received so far.
+* @returns index just past the CRLFCRLF, or -1 when the block has not
+* arrived in full.
+* @example
+* import { strBytes, findHeadersEnd } from "@std/web";
+*
+* let eol = "\u{D}\u{A}";
+* let raw = strBytes("HTTP/1.1 200 OK" + eol + eol);
+* print(findHeadersEnd(raw));
+* print(findHeadersEnd(strBytes("no blank line yet")));
+*/
+fn findHeadersEnd(data: Array<Int>): Int {
+    let i = 0;
+    while i + 3 < data.length() {
+        if data[i] == 13 && data[i + 1] == 10 && data[i + 2] == 13 && data[i + 3] == 10 {
+            return i + 4;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+/**
+* Read one chunk from a stream and append it to a growing buffer.
+* @param s stream to read.
+* @param buf buffer appended in place, so the caller keeps the bytes it
+* already had.
+* @returns count of bytes appended, 0 at end of stream.
+*/
+async fn readMore(s: TcpStream, buf: Array<Int>): Promise<Int> {
+    let chunk: Array<Int> = await s.read(4096);
+    let i = 0;
+    while i < chunk.length() {
+        buf.push(chunk[i]);
+        i = i + 1;
+    }
+    return chunk.length();
+}
+
+/**
+* Read until the CRLFCRLF that ends the header block shows up in the
+* buffer. Bytes past the header end are left in the buffer, since they
+* are usually the start of the body.
+* @param s stream to read.
+* @param buf buffer appended in place.
+* @returns index just past the header block, or -1 when the stream ends
+* first.
+*/
+async fn readHeaders(s: TcpStream, buf: Array<Int>): Promise<Int> {
+    let end = findHeadersEnd(buf);
+    while end < 0 {
+        let n: Int = await readMore(s, buf);
+        if n == 0 {
+            return 0 - 1;
+        }
+        end = findHeadersEnd(buf);
+    }
+    return end;
+}
+
+/**
+* Read a response body, stopping when `bodyDone()` says the framing is
+* satisfied or the stream ends. A stream that ends early does not throw
+* here; the caller compares the byte count against the framing and
+* decides whether that is a truncated body.
+* @param s stream to read.
+* @param buf buffer appended in place, already holding the headers.
+* @param hend index just past the header block.
+* @param mode framing: 0 close-delimited, 1 Content-Length, 2 chunked.
+* @param want byte count for mode 1; ignored otherwise.
+* @returns body bytes, without the chunk headers in mode 2.
+*/
+async fn readBodyInto(s: TcpStream, buf: Array<Int>, hend: Int, mode: Int, want: Int): Promise<Array<Int>> {
+    let done = bodyDone(buf, hend, mode, want);
+    while ! done {
+        let n: Int = await readMore(s, buf);
+        if n == 0 {
+            done = true;
+        } else {
+            done = bodyDone(buf, hend, mode, want);
+        }
+    }
+    return sliceBody(buf, hend, mode, want);
+}
+
+/**
+* Find the CRLF ending a chunk-size line.
+* @param buf bytes holding the chunked body.
+* @param pos index where the size line starts.
+* @returns index of the CR, or -1 when no CRLF has arrived yet.
+* @example
+* import { strBytes, chunkLineEnd } from "@std/web";
+*
+* let eol = "\u{D}\u{A}";
+* let raw = strBytes("4" + eol + "Wiki");
+* print(chunkLineEnd(raw, 0));
+*/
+fn chunkLineEnd(buf: Array<Int>, pos: Int): Int {
+    let i = pos;
+    let found = 0 - 1;
+    while i + 1 < buf.length() && found < 0 {
+        if buf[i] == 13 && buf[i + 1] == 10 {
+            found = i;
+        }
+        i = i + 1;
+    }
+    return found;
+}
+
+/**
+* Parse a chunk-size line as a hex byte count. Anything after a `;`
+* (chunk extensions) is ignored, and either hex case works.
+* @param buf bytes holding the chunked body.
+* @param pos index where the size line starts.
+* @param end index of the CR ending the line.
+* @returns chunk size in bytes, or -1 when the line holds no hex digit
+* or a non-hex character. A size of 0 is valid and means last chunk.
+* @example
+* import { strBytes, chunkLineEnd, chunkLineValue } from "@std/web";
+*
+* let eol = "\u{D}\u{A}";
+* let raw = strBytes("1A" + eol + "payload" + eol);
+* print(chunkLineValue(raw, 0, chunkLineEnd(raw, 0)));
+*/
+fn chunkLineValue(buf: Array<Int>, pos: Int, end: Int): Int {
+    let v = 0;
+    let i = pos;
+    let bad = false;
+    let empty = true;
+    while i < end && ! bad {
+        if buf[i] == 59 {
+            i = end;
+        } else {
+            let h = hexVal(buf[i]);
+            if h < 0 {
+                bad = true;
+            } else {
+                empty = false;
+                v = v * 16 + h;
+                i = i + 1;
+            }
+        }
+    }
+    if bad || empty {
+        return 0 - 1;
+    }
+    return v;
+}
+
+/**
+* Walk a chunked body to its terminating zero-size chunk, recursing
+* chunk by chunk.
+* @param buf bytes received so far, starting at the first size line.
+* @param pos index where the next size line starts.
+* @returns index where the last chunk begins, -1 when more bytes are
+* needed, or -2 when a size line is malformed.
+* @example
+* import { strBytes, findHeadersEnd, chunkTerminalEnd } from "@std/web";
+*
+* let eol = "\u{D}\u{A}";
+* let raw = strBytes("HTTP/1.1 200 OK" + eol + eol + "4" + eol + "Wiki" + eol + "0" + eol + eol);
+* let h = findHeadersEnd(raw);
+* print(chunkTerminalEnd(raw, h));
+* print(chunkTerminalEnd(strBytes("zz"), 0));
+*/
+fn chunkTerminalEnd(buf: Array<Int>, pos: Int): Int {
+    let end = chunkLineEnd(buf, pos);
+    if end < 0 {
+        return 0 - 1;
+    }
+    let size = chunkLineValue(buf, pos, end);
+    if size < 0 {
+        return 0 - 2;
+    }
+    if size == 0 {
+        return pos;
+    }
+    if buf.length() < end + 2 + size + 2 {
+        return 0 - 1;
+    }
+    return chunkTerminalEnd(buf, end + 2 + size + 2);
+}
+
+/**
+* Copy the payload of every chunk in a range, skipping size lines, the
+* CRLF after each, and the trailing CRLF of each chunk. Chunk
+* extensions are skipped with the size line.
+* @param buf bytes holding the chunked body.
+* @param pos index where the first size line starts.
+* @param stop exclusive end, as returned by `chunkTerminalEnd()`.
+* @param out array the payload bytes are appended to in place.
+* @example
+* import { strBytes, findHeadersEnd, chunkTerminalEnd, appendChunks, bytesToString } from "@std/web";
+*
+* let eol = "\u{D}\u{A}";
+* let raw = strBytes("HTTP/1.1 200 OK" + eol + eol + "4" + eol + "Wiki" + eol + "0" + eol + eol);
+* let h = findHeadersEnd(raw);
+* let body: Array<Int> = [];
+* appendChunks(raw, h, chunkTerminalEnd(raw, h), body);
+* print(bytesToString(body));
+*/
+fn appendChunks(buf: Array<Int>, pos: Int, stop: Int, out: Array<Int>) {
+    if pos < stop {
+        let end = chunkLineEnd(buf, pos);
+        let size = chunkLineValue(buf, pos, end);
+        if size > 0 {
+            let i = 0;
+            while i < size {
+                out.push(buf[end + 2 + i]);
+                i = i + 1;
+            }
+            appendChunks(buf, end + 2 + size + 2, stop, out);
+        }
+    }
+}
+
+/**
+* True when the framing says the body is complete, which is how the
+* read loop knows to stop.
+* @param buf bytes received so far.
+* @param hend index just past the header block.
+* @param mode framing: 0 close-delimited, 1 Content-Length, 2 chunked.
+* @param want byte count for mode 1; ignored otherwise.
+* @returns true when the body is complete. Mode 0 never reports done:
+* a close-delimited body ends when the stream does, so the read loop
+* runs until the socket closes.
+* @example
+* import { strBytes, findHeadersEnd, bodyDone } from "@std/web";
+*
+* let eol = "\u{D}\u{A}";
+* let raw = strBytes("HTTP/1.1 200 OK" + eol + eol + "hello");
+* let h = findHeadersEnd(raw);
+* print(bodyDone(raw, h, 1, 5), bodyDone(raw, h, 1, 9), bodyDone(raw, h, 0, 0));
+*/
+fn bodyDone(buf: Array<Int>, hend: Int, mode: Int, want: Int): Bool {
+    if mode == 1 {
+        return buf.length() >= hend + want;
+    }
+    if mode == 2 {
+        return chunkTerminalEnd(buf, hend) >= 0;
+    }
+    return false;
+}
+
+/**
+* Cut the body out of the receive buffer according to its framing.
+* @param buf bytes received so far.
+* @param hend index just past the header block.
+* @param mode framing: 0 close-delimited, 1 Content-Length, 2 chunked.
+* @param want byte count for mode 1; ignored otherwise.
+* @returns body bytes: exactly `want` for mode 1, everything to the end
+* for mode 0, and the concatenated chunk payloads for mode 2. A mode 2
+* body that is not fully framed comes back empty.
+* @example
+* import { strBytes, findHeadersEnd, sliceBody, bytesToString } from "@std/web";
+*
+* let eol = "\u{D}\u{A}";
+* let raw = strBytes("HTTP/1.1 200 OK" + eol + eol + "hello");
+* print(bytesToString(sliceBody(raw, findHeadersEnd(raw), 1, 5)));
+*/
+fn sliceBody(buf: Array<Int>, hend: Int, mode: Int, want: Int): Array<Int> {
+    if mode == 1 {
+        return sliceBytes(buf, hend, hend + want);
+    }
+    if mode == 2 {
+        let out: Array<Int> = [];
+        let stop = chunkTerminalEnd(buf, hend);
+        if stop >= 0 {
+            appendChunks(buf, hend, stop, out);
+        }
+        return out;
+    }
+    return sliceBytes(buf, hend, buf.length());
+}
+
+/**
+* Minimal HTTP/1.1 client over `@std/net.TcpStream`: `http://` only,
+* `Connection: close` requests, `Content-Length` / close-delimited /
+* `chunked` bodies. Rejects on DNS, connect, framing, and truncation
+* failures.
+*
+* The request it builds is a plain HTTP/1.1 request line plus
+* `Host`, `Connection: close`, `User-Agent: Rasmalai/1.0`, and a
+* wildcard `Accept`, then the headers from `RequestOptions`, then
+* `Content-Length` when a body was set, then a blank line and the body.
+* Cookies, redirects, compression, keep-alive, and HTTP/2 are all out of
+* scope: a redirect comes back as a 3xx response for you to handle, and
+* every call opens a fresh connection. Body and response text are ASCII
+* plus whatever UTF-8 the bytes hold, decoded by `bytesToString()`.
+* There is no timeout, so a server that accepts and never answers leaves
+* the call waiting.
+*
+* A 4xx or 5xx resolves normally; only transport and framing problems
+* reject.
+* @param url `http://host[:port]/path` URL.
+* @param options `RequestOptions` instance, or null for GET.
+* @returns response promise.
+* @throws "fetch: unsupported scheme" for a scheme other than http or
+* https, "fetch: missing host" when the URL has no host, "fetch: bad port"
+* for a non-numeric or out-of-range port, plus connect, write, header,
+* and framing messages described on `fetchOverTcp()`.
+*/
+async fn fetch(url: String, options: RequestOptions = null): Promise<Response> {
+    let method = "GET";
+    let extra = new Headers();
+    let body = "";
+    if ! (options == null) {
+        method = options.methodName();
+        extra = options.extraHeaders();
+        body = options.bodyText();
+    }
+    return await fetchInner(url, method, extra, body);
+}
+
+/**
+* Build the request bytes and dispatch to TCP or TLS. This is the part
+* of `fetch()` that reads the options, so call it directly only if you
+* already have a method, header table, and body in hand.
+* @param url absolute `http://` or `https://` URL.
+* @param method HTTP method, sent as written.
+* @param extra request headers, sent after the built-in ones.
+* @param body request body text; "" sends no body and no
+* `Content-Length`.
+* @returns response promise.
+* @throws the scheme, host, and port messages listed on `fetch()`; every
+* other failure comes from the transport function.
+*/
+async fn fetchInner(url: String, method: String, extra: Headers, body: String): Promise<Response> {
+    let u = new URL(url);
+    if u.scheme != "http" && u.scheme != "https" {
+        throw "fetch: unsupported scheme";
+    }
+    let host = u.hostname();
+    if host == "" {
+        throw "fetch: missing host";
+    }
+    let port = 80;
+    if u.scheme == "https" {
+        port = 443;
+    }
+    if u.port() != "" {
+        port = parseDec(u.port());
+        if port <= 0 {
+            throw "fetch: bad port";
+        }
+    }
+    let path = u.pathname();
+    if path == "" {
+        path = "/";
+    }
+    if u.search() != "" {
+        path = path + u.search();
+    }
+    let eol = "\u{D}\u{A}";
+    let req = method + " " + path + " HTTP/1.1" + eol + "Host: " + host + eol + "Connection: close" + eol + "User-Agent: Rasmalai/1.0" + eol + "Accept: */*" + eol;
+    let hn = extra.keys();
+    let hi = 0;
+    while hi < hn.length() {
+        let hk: String = hn[hi];
+        req = req + hk + ": " + extra.get(hk) ?? "" + eol;
+        hi = hi + 1;
+    }
+    if body != "" {
+        req = req + "Content-Length: " + __rnx_int_to_str(body.length()) + eol;
+    }
+    req = req + eol + body;
+    if u.scheme == "https" {
+        return await fetchOverTls(host, port, req);
+    }
+    return await fetchOverTcp(host, port, req);
+}
+
+/**
+* Send a prepared request over plain TCP and parse the reply. Reads the
+* status line, folds every header name to lowercase, then picks the body
+* framing: chunked when `Transfer-Encoding` says chunked, otherwise
+* `Content-Length` when the header is there, otherwise read to close.
+* `Transfer-Encoding: chunked` wins over `Content-Length`, matching
+* HTTP/1.1. Only the status line's first two fields are required; the
+* reason phrase is kept as sent and may be empty.
+* @param host DNS name or IP literal, already lowercased.
+* @param port TCP port.
+* @param req full request text, headers and body included.
+* @returns response promise.
+* @throws "fetch: short write" when the socket takes less than the whole
+* request, "fetch: connection closed before headers" at end of stream
+* before CRLFCRLF, "fetch: empty response" for a header block that starts
+* with no line, "fetch: bad status line" when the status line has fewer
+* than two spaces, "fetch: bad status code" for a non-numeric code,
+* "fetch: unsupported transfer-encoding" for any `Transfer-Encoding`
+* other than chunked, "fetch: bad content-length" for a non-numeric
+* `Content-Length`, "fetch: bad chunked body" for malformed chunk
+* framing, and "fetch: truncated body" when fewer bytes arrive than
+* `Content-Length` promised. DNS and connect failures reject as well.
+*/
+async fn fetchOverTcp(host: String, port: Int, req: String): Promise<Response> {
+    let stream: TcpStream = await TcpStream.connect(host, port);
+    let sent: Int = await stream.write(strBytes(req));
+    if sent < req.length() {
+        stream.close();
+        throw "fetch: short write";
+    }
+    let buf: Array<Int> = [];
+    let hend: Int = await readHeaders(stream, buf);
+    if hend < 0 {
+        stream.close();
+        throw "fetch: connection closed before headers";
+    }
+    let headText = bytesToString(sliceBytes(buf, 0, hend));
+    let eol = "\u{D}\u{A}";
+    let lines = headText.split(eol);
+    if lines.length() == 0 {
+        stream.close();
+        throw "fetch: empty response";
+    }
+    let statusLine: String = lines[0];
+    let a = statusLine.indexOf(" ");
+    if a < 0 {
+        stream.close();
+        throw "fetch: bad status line";
+    }
+    let b = statusLine.indexOf(" ", a + 1);
+    if b < 0 {
+        stream.close();
+        throw "fetch: bad status line";
+    }
+    let status = parseDec(statusLine.slice(a + 1, b));
+    if status < 0 {
+        stream.close();
+        throw "fetch: bad status code";
+    }
+    let reason = statusLine.slice(b + 1, statusLine.length());
+    let headers = new Headers();
+    let li = 1;
+    while li < lines.length() {
+        let ln: String = lines[li];
+        if ln != "" {
+            let ci = ln.indexOf(":");
+            if ci >= 0 {
+                headers.set(ln.slice(0, ci), ln.slice(ci + 1, ln.length()).trim());
+            }
+        }
+        li = li + 1;
+    }
+    let mode = 0;
+    let want = 0;
+    if headers.has("transfer-encoding") {
+        let te: String = headers.get("transfer-encoding") ?? "";
+        if lowerAscii(te).indexOf("chunked") != 0 - 1 {
+            mode = 2;
+        } else {
+            stream.close();
+            throw "fetch: unsupported transfer-encoding";
+        }
+    }
+    if mode == 0 && headers.has("content-length") {
+        want = parseDec((headers.get("content-length") ?? "").trim());
+        if want < 0 {
+            stream.close();
+            throw "fetch: bad content-length";
+        }
+        mode = 1;
+    }
+    let bodyBytes: Array<Int> = await readBodyInto(stream, buf, hend, mode, want);
+    if mode == 2 && chunkTerminalEnd(buf, hend) < 0 {
+        stream.close();
+        throw "fetch: bad chunked body";
+    }
+    if mode == 1 && bodyBytes.length() < want {
+        stream.close();
+        throw "fetch: truncated body";
+    }
+    stream.close();
+    return new Response(status, reason, headers, bytesToString(bodyBytes));
+}
+
+/**
+* Read one chunk from a TLS stream and append it to a growing buffer.
+* @param s stream to read.
+* @param buf buffer appended in place.
+* @returns count of bytes appended, 0 at end of stream.
+*/
+async fn readMoreTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
+    let chunk: Array<Int> = await s.read(4096);
+    let i = 0;
+    while i < chunk.length() {
+        buf.push(chunk[i]);
+        i = i + 1;
+    }
+    return chunk.length();
+}
+
+/**
+* Read until the CRLFCRLF that ends the header block shows up in the
+* buffer, over TLS. Bytes past the header end stay in the buffer.
+* @param s stream to read.
+* @param buf buffer appended in place.
+* @returns index just past the header block, or -1 when the stream ends
+* first.
+*/
+async fn readHeadersTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
+    let end = findHeadersEnd(buf);
+    while end < 0 {
+        let n: Int = await readMoreTls(s, buf);
+        if n == 0 {
+            return 0 - 1;
+        }
+        end = findHeadersEnd(buf);
+    }
+    return end;
+}
+
+/**
+* Read a response body over TLS, stopping when `bodyDone()` says the
+* framing is satisfied or the stream ends. An early end does not throw
+* here; the caller compares the byte count and raises the truncated
+* body message.
+* @param s stream to read.
+* @param buf buffer appended in place, already holding the headers.
+* @param hend index just past the header block.
+* @param mode framing: 0 close-delimited, 1 Content-Length, 2 chunked.
+* @param want byte count for mode 1; ignored otherwise.
+* @returns body bytes, without the chunk headers in mode 2.
+*/
+async fn readBodyIntoTls(s: TlsStream, buf: Array<Int>, hend: Int, mode: Int, want: Int): Promise<Array<Int>> {
+    let done = bodyDone(buf, hend, mode, want);
+    while ! done {
+        let n: Int = await readMoreTls(s, buf);
+        if n == 0 {
+            done = true;
+        } else {
+            done = bodyDone(buf, hend, mode, want);
+        }
+    }
+    return sliceBody(buf, hend, mode, want);
+}
+
+/**
+* Send a prepared request over TLS and parse the reply. Opens a TCP
+* connection, wraps it in a `TlsStream` using `host` as the SNI and
+* certificate domain, then does the same status line, header, and body
+* framing work as `fetchOverTcp()`.
+* @param host DNS name or IP literal; also the TLS server name.
+* @param port TCP port, normally 443.
+* @param req full request text, headers and body included.
+* @returns response promise.
+* @throws the same message set as `fetchOverTcp()`, plus whatever the
+* TLS handshake reports: an untrusted certificate or a name mismatch
+* rejects before the request is written.
+*/
+async fn fetchOverTls(host: String, port: Int, req: String): Promise<Response> {
+    let raw: TcpStream = await TcpStream.connect(host, port);
+    let stream: TlsStream = await TlsStream.connect(raw, host);
+    let sent: Int = await stream.write(strBytes(req));
+    if sent < req.length() {
+        stream.close();
+        throw "fetch: short write";
+    }
+    let buf: Array<Int> = [];
+    let hend: Int = await readHeadersTls(stream, buf);
+    if hend < 0 {
+        stream.close();
+        throw "fetch: connection closed before headers";
+    }
+    let eol = "\u{D}\u{A}";
+    let headText = bytesToString(sliceBytes(buf, 0, hend));
+    let lines = headText.split(eol);
+    if lines.length() == 0 {
+        stream.close();
+        throw "fetch: empty response";
+    }
+    let statusLine: String = lines[0];
+    let a = statusLine.indexOf(" ");
+    if a < 0 {
+        stream.close();
+        throw "fetch: bad status line";
+    }
+    let b = statusLine.indexOf(" ", a + 1);
+    if b < 0 {
+        stream.close();
+        throw "fetch: bad status line";
+    }
+    let status = parseDec(statusLine.slice(a + 1, b));
+    if status < 0 {
+        stream.close();
+        throw "fetch: bad status code";
+    }
+    let reason = statusLine.slice(b + 1, statusLine.length());
+    let headers = new Headers();
+    let li = 1;
+    while li < lines.length() {
+        let ln: String = lines[li];
+        if ln != "" {
+            let ci = ln.indexOf(":");
+            if ci >= 0 {
+                headers.set(ln.slice(0, ci), ln.slice(ci + 1, ln.length()).trim());
+            }
+        }
+        li = li + 1;
+    }
+    let mode = 0;
+    let want = 0;
+    if headers.has("transfer-encoding") {
+        let te: String = headers.get("transfer-encoding") ?? "";
+        if lowerAscii(te).indexOf("chunked") != 0 - 1 {
+            mode = 2;
+        } else {
+            stream.close();
+            throw "fetch: unsupported transfer-encoding";
+        }
+    }
+    if mode == 0 && headers.has("content-length") {
+        want = parseDec((headers.get("content-length") ?? "").trim());
+        if want < 0 {
+            stream.close();
+            throw "fetch: bad content-length";
+        }
+        mode = 1;
+    }
+    let bodyBytes: Array<Int> = await readBodyIntoTls(stream, buf, hend, mode, want);
+    if mode == 2 && chunkTerminalEnd(buf, hend) < 0 {
+        stream.close();
+        throw "fetch: bad chunked body";
+    }
+    if mode == 1 && bodyBytes.length() < want {
+        stream.close();
+        throw "fetch: truncated body";
+    }
+    stream.close();
+    return new Response(status, reason, headers, bytesToString(bodyBytes));
+}

@@ -1,0 +1,549 @@
+//! TCP sockets, TLS client sessions, and DNS resolution over a background
+//! reactor.
+//!
+//! Four types with one job each: `Dns` turns a name into an address,
+//! `TcpStream.connect()` opens a connection, `TcpListener` waits for one, and
+//! `TlsStream` upgrades a connected stream to TLS. Importing the module
+//! opens nothing and reads nothing.
+//!
+//! Bytes are `Int` values from 0 to 255, one per octet. Nothing here decodes
+//! text: encode a request line or a JSON body yourself before `write()`, and
+//! decode after `read()`. The encoding belongs to the protocol you are
+//! speaking, not to the socket.
+//!
+//! The sockets are non-blocking, but the calls are not. A call that has to
+//! wait parks the calling thread: one reactor thread keeps every socket in
+//! the kernel poll set, and the calling thread sleeps on a condition
+//! variable until the reactor hands back a result. Nothing spins and other
+//! threads keep running, but the thread that called `read()` executes
+//! nothing else until that read finishes.
+//!
+//! Two consequences are worth stating plainly. There is no timeout anywhere
+//! in this module and no way to cancel a parked call, so a peer that
+//! connects and then goes quiet holds the calling thread for as long as it
+//! keeps the socket open; close the stream from another thread to unblock
+//! it, and the parked call rejects. And the promise a call returns is
+//! already settled when the call returns, so `await` on it returns or throws
+//! immediately: the wait happened inside the call.
+//!
+//! One reader and one writer per stream, one accepter per listener. The
+//! reactor keeps a single read buffer per socket, so two readers race for
+//! the same bytes and two writers interleave theirs.
+//!
+//! Failures reject with a `String` message such as `connect failed: ...` or
+//! `recv failed: ...`. The exception is `TcpListener.bind`, which throws
+//! because it never waits. There is no exception type to match on, so code
+//! that must tell failures apart has to look at the message.
+//!
+//! `write()` sends one byte per reactor round trip. That keeps the socket
+//! code simple and makes backpressure automatic, but it makes bulk payloads
+//! slow: 4 KiB costs 4096 reactor wakeups.
+//!
+//! None of this exists on WebAssembly. That target has no reactor, so
+//! lookups reject with `DNS resolution is unsupported in WebAssembly`,
+//! `bind` throws `Server sockets are unsupported in WebAssembly`, and every
+//! other call reports that networking is not supported.
+//!
+//! ```rnx
+//! import { Dns } from "@std/net";
+//!
+//! let ip = await Dns.lookup("127.0.0.1");
+//! print(ip);
+//! ```
+import { Promise } from "@std/prelude";
+/**
+* A connected TCP socket. Both peers look the same: the client gets one
+* from `TcpStream.connect()`, the server from `TcpListener.accept()`.
+*
+* A read parks until at least one byte arrives and returns whatever the
+* socket had, so the byte count is whatever arrived rather than what you
+* asked for. TCP carries a byte stream, not messages: framing is the
+* protocol's job, and a caller that needs a length prefix or a delimiter
+* has to parse it out of these arrays itself.
+*/
+class TcpStream {
+    /**
+    * Reactor handle behind this stream: the number the constructor was given
+    * and the one the reactor matches readiness events against.
+    */
+    let handle: Int;
+
+    /**
+    * Wrap an existing handle.
+    *
+    * The constructor opens nothing: it makes a stream object out of a
+    * number. `connect()` and `accept()` call it for you, and a number that
+    * is not a live socket gives a stream whose every method fails, so use
+    * it only for a handle that really belongs to a socket.
+    *
+    * @param handle reactor handle, as returned by `handleOf()`.
+    */
+    init(handle: Int) {
+        this.handle = handle;
+    }
+
+    /**
+    * Open a connection to host and port.
+    *
+    * The address is resolved before the socket starts. An IP literal is
+    * used as written, and a hostname goes through the system resolver on
+    * the calling thread, which blocks until the lookup returns; when a name
+    * has both IPv4 and IPv6 results the IPv4 address wins. `Dns.lookup()`
+    * is the way to run that lookup on a worker thread instead.
+    *
+    * The connect itself runs in the reactor and the calling thread parks
+    * until the kernel reports the connection finished. There is no timeout,
+    * so a host that accepts the TCP handshake and then stalls parks the
+    * caller indefinitely.
+    *
+    * @param host hostname or IP literal to connect to.
+    * @param port TCP port, 0 to 65535. Anything outside that range fails
+    * as an invalid port.
+    * @returns promise for the connected stream, already settled when the
+    * call returns. It rejects with `connect failed: ...` when the address
+    * cannot be resolved, the port is out of range, the socket cannot be
+    * created, or the kernel reports a connection error, and with
+    * `connect refused: ...` when the socket reports an error that landed
+    * after the reactor already accepted the connection.
+    */
+    static connect(host: String, port: Int): Promise<TcpStream> {
+        let h = __rnx_net_connect_start(host, port);
+        if h < 0 {
+            return Promise.reject<TcpStream>("connect failed: " + __rnx_net_error_text(-1));
+        }
+        if __rnx_net_connect_wait(h) != 0 {
+            let msg = __rnx_net_error_text(h);
+            __rnx_net_close(h);
+            return Promise.reject<TcpStream>("connect failed: " + msg);
+        }
+        if __rnx_net_take_error(h) != 0 {
+            let msg = __rnx_net_error_text(h);
+            __rnx_net_close(h);
+            return Promise.reject<TcpStream>("connect refused: " + msg);
+        }
+        return Promise.resolve(new TcpStream(h));
+    }
+
+    /**
+    * Read up to max_bytes bytes, parking until at least one arrives.
+    *
+    * The cap is clamped into 1 to 65536, so `read(0)` still reads a single
+    * byte and a larger cap never allocates more than 64 KiB. The result is
+    * whatever the socket had, which can be short, and an empty array means
+    * the peer closed its end. End of stream stays readable, so later reads
+    * keep returning empty arrays instead of rejecting; only `close()` makes
+    * the stream unusable.
+    *
+    * @param max_bytes read cap in bytes; clamped to 1..65536.
+    * @returns promise for the bytes read, each 0..255, or an empty array
+    * at end of stream. It rejects with `recv failed: ...` on a socket
+    * error, and with an empty detail after `close()`.
+    */
+    fn read(max_bytes: Int): Promise<Array<Int>> {
+        let h = this.handle;
+        let n = __rnx_net_recv_or_wait(h, max_bytes);
+        if n < 0 {
+            return Promise.reject<Array<Int>>("recv failed: " + __rnx_net_error_text(h));
+        }
+        let out: Array<Int> = [];
+        let i = 0;
+        while i < n {
+            out.push(__rnx_net_recv_get(h, i));
+            i = i + 1;
+        }
+        return Promise.resolve(out);
+    }
+
+    /**
+    * Send every byte of the payload, parking under backpressure.
+    *
+    * Bytes leave one at a time, each one its own reactor round trip, so a
+    * full send buffer parks the calling thread until the peer drains it.
+    * Each value is truncated to its low 8 bits before it goes out, so 300
+    * travels as 44.
+    *
+    * @param bytes payload bytes, each truncated to 8 bits.
+    * @returns promise for the number of bytes sent, which on success is
+    * always `bytes.length()`. It rejects with `send failed: ...` on a
+    * socket error, and with an empty detail after `close()`.
+    */
+    fn write(bytes: Array<Int>): Promise<Int> {
+        let h = this.handle;
+        let total = 0;
+        let n = bytes.length();
+        while total < n {
+            let r = __rnx_net_send_or_wait(h, bytes[total]);
+            if r < 0 {
+                return Promise.reject<Int>("send failed: " + __rnx_net_error_text(h));
+            }
+            total = total + 1;
+        }
+        return Promise.resolve(total);
+    }
+
+    /**
+    * The reactor handle behind this stream.
+    *
+    * `TlsStream.connect()` needs the handle to move a connected stream into
+    * a TLS session, and a thread that speaks the raw `__rnx_net_*` builtins
+    * takes it as the socket argument. It means nothing outside the process
+    * that opened the socket.
+    *
+    * @returns handle number, the same one the constructor was given.
+    * @example
+    * import { TcpStream } from "@std/net";
+    *
+    * let wrapped = new TcpStream(5);
+    * print(wrapped.handleOf());
+    */
+    fn handleOf(): Int {
+        return this.handle;
+    }
+
+    /**
+    * Close the socket and release the handle.
+    *
+    * The reactor deregisters the socket and fails every queued or parked
+    * operation that names it, so a thread blocked in `read()` or `write()`
+    * rejects instead of waiting forever. Later operations on the stream
+    * reject too, and closing twice does nothing.
+    */
+    fn close() {
+        __rnx_net_close(this.handle);
+    }
+}
+
+/**
+* A bound socket that hands out connected `TcpStream`s.
+*
+* Bind first, then hand the listener to whatever accepts connections:
+* `bind()` and `port()` are the only calls that work before the first peer
+* arrives, and `accept()` is the one that waits.
+*
+* Bind follows the platform defaults of the runtime, so there is nothing to
+* configure: an address-reuse flag is set on Unix, which lets you rebind a
+* port a previous socket left behind, a port another process is listening
+* on still fails, and the accept backlog is fixed rather than settable.
+*
+* The usual server shape is: bind port 0, read `port()` to learn where the
+* OS put the socket, pass the port to whatever client runs, then loop on
+* `accept()` and hand each stream to a worker. Bind port 0 rather than a
+* fixed port when several instances may run at once, and remember that
+* `accept()` parks the thread that calls it.
+*/
+class TcpListener {
+    /**
+    * Reactor handle behind this listener: the number `TcpListener.bind()`
+    * produced and the one the reactor matches events against.
+    */
+    let handle: Int;
+
+    /**
+    * Wrap an existing listener handle.
+    *
+    * The constructor binds nothing; `bind()` calls it for you.
+    *
+    * @param handle reactor handle of a bound listener.
+    */
+    init(handle: Int) {
+        this.handle = handle;
+    }
+
+    /**
+    * Bind a listening socket.
+    *
+    * Resolution works as it does in `TcpStream.connect()`: an IP literal is
+    * used as written and a hostname is resolved on the calling thread, with
+    * IPv4 preferred when a name has both families.
+    *
+    * @param host interface address to bind. `"127.0.0.1"` and `"::1"` are
+    * the loopback addresses a test server wants.
+    * @param port TCP port, 0 to 65535. Port `0` asks the OS for an
+    * ephemeral port, which `port()` reads back.
+    * @returns the bound listener, directly rather than as a promise,
+    * because binding does not wait.
+    * @throws `TcpListener.bind failed: ...` when the address cannot be
+    * resolved, the port is out of range, or the OS refuses the bind. The
+    * thrown value is the message string itself.
+    */
+    static bind(host: String, port: Int): TcpListener {
+        let h = __rnx_net_listener_bind(host, port);
+        if h < 0 {
+            throw "TcpListener.bind failed: " + __rnx_net_error_text(-1);
+        }
+        return new TcpListener(h);
+    }
+
+    /**
+    * Wait for the next peer and wrap it in a stream.
+    *
+    * A connection already waiting in the backlog is taken at once; otherwise
+    * the call parks in the reactor until one arrives, and the calling
+    * thread parks with it. There is no timeout, so a parked `accept()`
+    * waits for a peer that may never come: the way out is to close the
+    * listener from another thread, which makes the call reject.
+    *
+    * @returns promise for the accepted stream, already settled when the
+    * call returns. It is a fresh non-blocking socket with the same one
+    * reader and one writer rule as any other stream. It rejects with
+    * `accept failed: ...` when the listener is closed while the call waits,
+    * and when the OS refuses the connection.
+    */
+    fn accept(): Promise<TcpStream> {
+        let h = this.handle;
+        let r = __rnx_net_listener_accept_start(h);
+        if r == 0 - 1 {
+            return Promise.reject<TcpStream>("accept failed: " + __rnx_net_error_text(h));
+        }
+        if r < 0 {
+            let sh = __rnx_net_listener_accept_wait(0 - r);
+            if sh < 0 {
+                return Promise.reject<TcpStream>("accept failed: " + __rnx_net_error_text(h));
+            }
+            return Promise.resolve(new TcpStream(sh));
+        }
+        return Promise.resolve(new TcpStream(r));
+    }
+
+    /**
+    * Port this listener is bound to.
+    *
+    * Reading the port back is the only way to find out which port an
+    * ephemeral bind landed on, and it is worth doing before the first
+    * peer is accepted.
+    *
+    * @returns bound port, or -1 when the listener is closed or the handle
+    * is not one.
+    */
+    fn port(): Int {
+        return __rnx_net_listener_port(this.handle);
+    }
+
+    /**
+    * Close the listening socket and release the handle.
+    *
+    * A parked `accept()` rejects. Connections that were already accepted are
+    * untouched: each one is its own stream with its own handle, and closing
+    * the listener does not close them.
+    */
+    fn close() {
+        __rnx_net_listener_close(this.handle);
+    }
+}
+
+/**
+* A TLS client session layered over a connected `TcpStream`.
+*
+* `TlsStream.connect()` takes over the TCP socket rather than wrapping it:
+* the handle moves into the session and stops belonging to the stream you
+* passed in, so that stream must not be used again, not even to close it.
+*
+* Handshake, reads, and writes all run in the reactor and park the calling
+* thread the same way they do on a plain stream, and the same one reader
+* and one writer rule applies.
+*
+* Certificates are verified against the Mozilla root set that ships with the
+* runtime, and there is no way to skip that check or to add a private
+* authority from Rasmalai code. Pointing `RNX_TEST_TLS_CA_DER` at a
+* DER-encoded CA file replaces the root set with that one certificate,
+* which is how a test reaches a local server with a self-signed
+* certificate; the root store is built once per process, so the variable
+* has to be set before the first TLS call. Client certificates are not
+* supported.
+*/
+class TlsStream {
+    /**
+    * Reactor handle behind this session. It is the session handle, not the
+    * TCP handle the session was built from.
+    */
+    let handle: Int;
+
+    /**
+    * Wrap an existing session handle.
+    *
+    * The constructor starts no handshake; `connect()` calls it for you.
+    *
+    * @param handle reactor handle of a completed TLS session.
+    */
+    init(handle: Int) {
+        this.handle = handle;
+    }
+
+    /**
+    * Upgrade a connected stream to TLS.
+    *
+    * `domain` is the name the certificate has to match. A DNS name is sent
+    * as SNI as well; an IP literal is not sent as SNI, and a server
+    * presenting a certificate for it has to carry a matching IP subject
+    * alternative name.
+    *
+    * The handshake runs in the reactor and the calling thread parks until
+    * it finishes. A peer that answers part of the handshake and then goes
+    * quiet parks the caller indefinitely.
+    *
+    * @param stream connected TCP stream. It is consumed: the socket moves
+    * into the session and the stream object is dead afterwards, whether the
+    * handshake succeeded or failed.
+    * @param domain name to verify the certificate against, normally the
+    * same host `TcpStream.connect()` was given.
+    * @returns promise for the ready session, already settled when the call
+    * returns. It rejects with `tls init failed: ...` when the stream
+    * handle is unknown or already closed, or when `domain` is neither a
+    * DNS name nor an IP literal, and with `tls handshake failed: ...` when
+    * the peer closes during the handshake, the protocols do not meet, or
+    * the certificate does not verify against the root set.
+    */
+    static connect(stream: TcpStream, domain: String): Promise<TlsStream> {
+        let t = __rnx_tls_connect_start(stream.handleOf(), domain);
+        if t < 0 {
+            return Promise.reject<TlsStream>("tls init failed: " + __rnx_tls_error_text(-1));
+        }
+        let r = __rnx_tls_handshake_start(t);
+        if r == 0 - 1 {
+            let msg = __rnx_tls_error_text(t);
+            __rnx_tls_close(t);
+            return Promise.reject<TlsStream>("tls handshake failed: " + msg);
+        }
+        if r < 0 {
+            let w = __rnx_tls_handshake_wait(0 - r);
+            if w != 0 {
+                let msg = __rnx_tls_error_text(t);
+                __rnx_tls_close(t);
+                return Promise.reject<TlsStream>("tls handshake failed: " + msg);
+            }
+        }
+        return Promise.resolve(new TlsStream(t));
+    }
+
+    /**
+    * Read up to max_bytes decrypted bytes, parking until at least one
+    * arrives.
+    *
+    * The cap is clamped into 1 to 65536, as on a plain stream, and the
+    * result is plaintext: record boundaries, padding, and the certificate
+    * exchange have already been removed, so what arrives is whatever the
+    * peer wrote through its TLS session. An empty array means the peer
+    * closed its end.
+    *
+    * @param max_bytes read cap in bytes; clamped to 1..65536.
+    * @returns promise for the plaintext bytes read, each 0..255, or an
+    * empty array at end of stream. It rejects with `tls recv failed: ...`
+    * on a session error, and with an empty detail after `close()`.
+    */
+    fn read(max_bytes: Int): Promise<Array<Int>> {
+        let h = this.handle;
+        let n = __rnx_tls_recv_or_wait(h, max_bytes);
+        if n < 0 {
+            return Promise.reject<Array<Int>>("tls recv failed: " + __rnx_tls_error_text(h));
+        }
+        let out: Array<Int> = [];
+        let i = 0;
+        while i < n {
+            out.push(__rnx_tls_recv_get(h, i));
+            i = i + 1;
+        }
+        return Promise.resolve(out);
+    }
+
+    /**
+    * Send every byte of the payload through the session, parking under
+    * backpressure.
+    *
+    * Bytes leave one at a time, each one encrypted, flushed, and handed to
+    * the reactor on its own, and each value is truncated to its low 8 bits
+    * before it goes out.
+    *
+    * @param bytes payload bytes, each truncated to 8 bits.
+    * @returns promise for the number of bytes sent, which on success is
+    * always `bytes.length()`. It rejects with `tls send failed: ...` on a
+    * session error, and with an empty detail after `close()`.
+    */
+    fn write(bytes: Array<Int>): Promise<Int> {
+        let h = this.handle;
+        let total = 0;
+        let n = bytes.length();
+        while total < n {
+            let r = __rnx_tls_send_or_wait(h, bytes[total]);
+            if r < 0 {
+                return Promise.reject<Int>("tls send failed: " + __rnx_tls_error_text(h));
+            }
+            total = total + 1;
+        }
+        return Promise.resolve(total);
+    }
+
+    /**
+    * The reactor handle behind this session.
+    *
+    * @returns session handle number, the same one the constructor was
+    * given.
+    * @example
+    * import { TlsStream } from "@std/net";
+    *
+    * let wrapped = new TlsStream(4);
+    * print(wrapped.handleOf());
+    */
+    fn handleOf(): Int {
+        return this.handle;
+    }
+
+    /**
+    * Send `close_notify`, close the socket, and release the handle.
+    *
+    * The alert is queued on the session and the socket is then dropped
+    * without a final flush, so a peer may never see it: treat a clean
+    * shutdown as best effort, not as a guarantee. Parked operations on this
+    * session reject, later ones reject as well, and closing twice does
+    * nothing.
+    */
+    fn close() {
+        __rnx_tls_close(this.handle);
+    }
+}
+
+/**
+* Name resolution, one address per call. The only item here that works
+* without a socket.
+*
+* An IP literal is parsed and returned without touching the network, so it
+* costs nothing. A hostname goes to a short-lived worker thread, which keeps
+* the reactor and the calling thread free while `getaddrinfo` runs. The
+* calling thread still parks until the lookup finishes and there is no
+* timeout, so a slow resolver holds the caller for as long as the system
+* takes, retries included.
+*
+* One call returns one address, and when a name has both IPv4 and IPv6
+* results the IPv4 address wins. There is no cache, no TTL, no way to ask
+* for a particular address family, and no reverse, SRV, MX, or TXT lookup:
+* every call starts a fresh worker thread.
+*/
+class Dns {
+    /**
+    * Resolve a hostname or IP literal to one IP address.
+    *
+    * A literal comes back in its normalized form, so `"0:0:0:0:0:0:0:1"`
+    * resolves to `"::1"`. A name is looked up afresh on a worker thread.
+    *
+    * @param host IP literal (`"127.0.0.1"`, `"::1"`) or DNS name
+    * (`"localhost"`, `"example.com"`).
+    * @returns promise for one IP address as text, already settled when the
+    * call returns. It rejects with a message starting `DNS resolution
+    * failed for host` when the name has no address.
+    * @example
+    * import { Dns } from "@std/net";
+    *
+    * print(await Dns.lookup("127.0.0.1"));
+    * print(await Dns.lookup("::1"));
+    * print(await Dns.lookup("localhost"));
+    */
+    static fn lookup(host: String): Promise<String> {
+        let slot = __rnx_dns_lookup_start(host);
+        if slot < 0 {
+            return Promise.reject<String>(__rnx_dns_lookup_error(slot));
+        }
+        if __rnx_dns_lookup_wait(slot) != 0 {
+            return Promise.reject<String>(__rnx_dns_lookup_error(slot));
+        }
+        return Promise.resolve(__rnx_dns_lookup_get(slot));
+    }
+}

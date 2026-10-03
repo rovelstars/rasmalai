@@ -1,0 +1,176 @@
+================================================================================
+Statements: defer, fallthrough, pass, unsafe, for forms, do-while, destructuring
+================================================================================
+
+fn cleanup(f: File): Int {
+  defer f.close();
+  defer {
+    print("done");
+  }
+  for x in items {
+    print(x);
+  }
+  for (k, v) in pairs {
+    print(k);
+  }
+  do {
+    x = next();
+  } while x;
+  let (a, b) = pair;
+  let [head, ...tail] = items;
+  let { name, ...rest } = user;
+  unsafe {
+    raw();
+  }
+  pass;
+  return 0;
+}
+
+fn arms(c: Int): Int {
+  switch c {
+    case 1:
+      fallthrough;
+    case 2:
+      return 2;
+    default:
+      return 0;
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (identifier))))
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (defer_statement
+          (expression_statement
+            (expression
+              (call_expression
+                (member_expression
+                  (expression
+                    (identifier))
+                  (identifier))
+                (argument_list))))))
+      (statement
+        (defer_statement
+          (block
+            (expression_statement
+              (expression
+                (call_expression
+                  (identifier)
+                  (argument_list
+                    (argument
+                      (expression
+                        (string_literal))))))))))
+      (statement
+        (for_statement
+          (identifier)
+          (identifier)
+          (block
+            (expression_statement
+              (expression
+                (call_expression
+                  (identifier)
+                  (argument_list
+                    (argument
+                      (expression
+                        (identifier))))))))))
+      (statement
+        (for_statement
+          (identifier)
+          (identifier)
+          (identifier)
+          (block
+            (expression_statement
+              (expression
+                (call_expression
+                  (identifier)
+                  (argument_list
+                    (argument
+                      (expression
+                        (identifier))))))))))
+      (statement
+        (do_statement
+          (block
+            (statement
+              (assign_statement
+                (identifier)
+                (expression
+                  (call_expression
+                    (identifier)
+                    (argument_list))))))
+          (expression
+            (identifier))))
+      (statement
+        (destructure_tuple_statement
+          (identifier)
+          (identifier)
+          (expression
+            (identifier))))
+      (statement
+        (destructure_array_statement
+          (identifier)
+          (identifier)
+          (expression
+            (identifier))))
+      (statement
+        (destructure_record_statement
+          (identifier)
+          (identifier)
+          (expression
+            (identifier))))
+      (statement
+        (unsafe_block
+          (block
+            (expression_statement
+              (expression
+                (call_expression
+                  (identifier)
+                  (argument_list)))))))
+      (statement
+        (pass_statement))
+      (statement
+        (return_statement
+          (expression
+            (number_literal))))))
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (primitive_type))))
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (switch_statement
+          (identifier)
+          (case_clause
+            (pattern
+              (expression
+                (number_literal)))
+            (statement
+              (fallthrough_statement)))
+          (case_clause
+            (pattern
+              (expression
+                (number_literal)))
+            (statement
+              (return_statement
+                (expression
+                  (number_literal)))))
+          (default_clause
+            (statement
+              (return_statement
+                (expression
+                  (number_literal))))))))))

@@ -1,0 +1,204 @@
+================================================================================
+Declarations: interface, extension, exports, imports, async, unsafe
+================================================================================
+
+pub interface Iterator<T> {
+  fn next(): T?;
+}
+
+extension Array<T> {
+  fn first(): T {
+    return this.items[0];
+  }
+}
+
+export fn helper(x: Int): Int {
+  return x;
+}
+
+export struct Point {
+  let x: Int;
+  let y: Int;
+}
+
+import "side-effect";
+
+import * as ns from "mod";
+
+import Default, { named } from "mod";
+
+async fn fetch(url: String): Promise<Response> {
+  return await fetchInner(url);
+}
+
+unsafe fn raw(): Int {
+  return 0;
+}
+
+pub record Pair<T>(first: T, second: T) {
+}
+
+fn takes(predicate: fn(Int): Bool, pair: (Int, String)): Bool {
+  return predicate(pair.0);
+}
+
+---
+
+(source_file
+  (interface_declaration
+    (identifier)
+    (type_parameters
+      (identifier))
+    (interface_body
+      (function_signature
+        (identifier)
+        (parameter_list)
+        (type
+          (identifier)))))
+  (extension_declaration
+    (type
+      (generic_type
+        (identifier)
+        (type
+          (identifier))))
+    (extension_body
+      (method_declaration
+        (identifier)
+        (parameter_list)
+        (type
+          (identifier))
+        (block
+          (statement
+            (return_statement
+              (expression
+                (index_expression
+                  (expression
+                    (member_expression
+                      (expression
+                        (this_expression))
+                      (identifier)))
+                  (expression
+                    (number_literal))))))))))
+  (export_declaration
+    (function_declaration
+      (identifier)
+      (parameter_list
+        (parameter
+          (identifier)
+          (type
+            (primitive_type))))
+      (type
+        (primitive_type))
+      (block
+        (statement
+          (return_statement
+            (expression
+              (identifier)))))))
+  (export_declaration
+    (struct_declaration
+      (identifier)
+      (class_body
+        (variable_declaration
+          (identifier)
+          (type
+            (primitive_type)))
+        (variable_declaration
+          (identifier)
+          (type
+            (primitive_type))))))
+  (import_declaration
+    (import_source
+      (string_literal)))
+  (import_declaration
+    (identifier)
+    (import_source
+      (string_literal)))
+  (import_declaration
+    (identifier)
+    (import_specifier
+      (identifier))
+    (import_source
+      (string_literal)))
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (primitive_type))))
+    (type
+      (generic_type
+        (identifier)
+        (type
+          (identifier))))
+    (block
+      (statement
+        (return_statement
+          (expression
+            (unary_expression
+              (expression
+                (call_expression
+                  (identifier)
+                  (argument_list
+                    (argument
+                      (expression
+                        (identifier))))))))))))
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (return_statement
+          (expression
+            (number_literal))))))
+  (record_declaration
+    (identifier)
+    (type_parameters
+      (identifier))
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (identifier)))
+      (parameter
+        (identifier)
+        (type
+          (identifier)))))
+  (expression_statement
+    (expression
+      (record_literal)))
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (fn_type
+            (type
+              (primitive_type))
+            (type
+              (primitive_type)))))
+      (parameter
+        (identifier)
+        (type
+          (tuple_type
+            (type
+              (primitive_type))
+            (type
+              (primitive_type))))))
+    (type
+      (primitive_type))
+    (block
+      (statement
+        (return_statement
+          (expression
+            (call_expression
+              (identifier)
+              (argument_list
+                (argument
+                  (expression
+                    (tuple_index_expression
+                      (expression
+                        (identifier)))))))))))))

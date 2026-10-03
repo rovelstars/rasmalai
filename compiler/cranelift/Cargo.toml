@@ -1,0 +1,17 @@
+[package]
+name = "cranelift"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+diagnostics = { path = "../diagnostics" }
+lir = { path = "../lir" }
+runtime = { path = "../runtime" }
+cranelift-codegen = "=0.135.2"
+cranelift-frontend = "=0.135.2"
+cranelift-jit = "=0.135.2"
+cranelift-module = "=0.135.2"
+cranelift-native = "=0.135.2"
+
+[dev-dependencies]
+frontend = { path = "../frontend" }
