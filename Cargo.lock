@@ -287,6 +287,7 @@ dependencies = [
  "clap_complete",
  "cranelift",
  "diagnostics",
+ "docgen",
  "fancy-regex",
  "frontend",
  "linker",
@@ -593,6 +594,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "docgen"
+version = "0.1.0"
+dependencies = [
+ "diagnostics",
+ "frontend",
+ "stdlib",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 diagnostics = { path = "../diagnostics" }
+docgen = { path = "../docgen" }
 frontend = { path = "../frontend" }
 lir = { path = "../lir" }
 runtime = { path = "../runtime" }

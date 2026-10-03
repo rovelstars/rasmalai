@@ -15,11 +15,10 @@ mkdirSync(outDir, { recursive: true });
 // failing the build. Refresh locally with:
 //   npm run build:docs
 try {
-	execFileSync(
-		'cargo',
-		['run', '-q', '-p', 'cli', '--', 'doc', '--json', '--stdlib', '--out-dir', outDir],
-		{ cwd: compilerDir, stdio: 'inherit' }
-	);
+	execFileSync('cargo', ['run', '-q', '-p', 'docgen', '--', outDir], {
+		cwd: compilerDir,
+		stdio: 'inherit'
+	});
 	console.log('docs: api.json regenerated');
 } catch {
 	if (existsSync(join(outDir, 'api.json'))) {
