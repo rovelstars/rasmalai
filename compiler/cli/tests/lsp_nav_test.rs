@@ -290,7 +290,7 @@ fn test_lsp_config_diagnostics_hover_completion_formatting() {
     session.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///Project.config\"},\"position\":{\"line\":4,\"character\":0}}}");
     let complete = session.recv();
     let labels: Vec<&str> = complete["result"]["items"].as_array().unwrap().iter().filter_map(|i| i["label"].as_str()).collect();
-    assert!(labels.contains(&"entry"), "{complete}");
+    assert!(labels.contains(&"engine"), "{complete}");
     session.send("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/formatting\",\"params\":{\"textDocument\":{\"uri\":\"file:///Project.config\"},\"options\":{}}}");
     let formatted = session.recv();
     let edits = formatted["result"].as_array().unwrap().clone();

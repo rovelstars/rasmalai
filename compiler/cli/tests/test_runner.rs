@@ -132,7 +132,7 @@ fn test_workspace_test_p_flag() {
     std::fs::write(base.join("Project.config"), "export default {\n    workspace: {\n        members: [\"calc\", \"plain\"]\n    }\n}\n").unwrap();
     std::fs::write(
         base.join("calc").join("Project.config"),
-        "export default {\n    project: {\n        name: \"calc\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n",
+        "export default {\n    project: {\n        name: \"calc\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}",
     )
     .unwrap();
     std::fs::write(base.join("calc").join("src").join("lib.rnx"), "fn add(a: Int, b: Int): Int {\n    return a + b;\n}\n").unwrap();

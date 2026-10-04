@@ -12,7 +12,7 @@ pub(super) fn run_init(name: Option<String>) {
                 Ok(root) => {
                     println!("Initialized project `{name}` in {}", root.display());
                     println!("  manifest: Project.config");
-                    println!("  entry: src/main.rnx");
+                    println!("  entries.main: src/main.rnx");
                     println!("Next: cd {name} && rnx run");
                 }
                 Err(e) => {

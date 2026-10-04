@@ -11,7 +11,7 @@ fn fresh_pkg(tag: &str, name: &str, version: &str, lib_src: &str) -> std::path::
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("Project.config"),
-        format!("export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"{version}\",\n        entry: \"src/lib.rnx\"\n    }}\n}}\n"),
+        format!("export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"{version}\"\n    }},\n    entries: {{ main: \"src/lib.rnx\" }}\n}}\n"),
     )
     .unwrap();
     std::fs::write(dir.join("src/lib.rnx"), lib_src).unwrap();

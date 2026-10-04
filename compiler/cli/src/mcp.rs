@@ -92,10 +92,11 @@ raw hardware interop stays behind C-ABI FFI boundaries.";
 
 const MANIFEST_SPEC: &str = "# Project.config Manifest\n\n\
 Every project carries a `Project.config` manifest written as an `.rnx` module exporting a default object (sibling `Project.deplock` pins resolved deps).\n\n\
-```rnx\nexport default {\n    project: {\n        name: \"my-service\",\n        version: \"0.1.0\",\n        edition: \"2026\",\n        engine: \">=0.4.0\"\n    },\n    dependencies: {\n        locallib: \"libs/local-lib\",\n        httpkit: \"^3.45.0\",\n        uikit: \"~1.2.0\"\n    }\n}\n```\n\n\
+```rnx\nexport default {\n    project: {\n        name: \"my-service\",\n        version: \"0.1.0\",\n        engine: \">=0.4.0\"\n    },\n    entries: {\n        main: \"src/main.rnx\"\n    },\n    dependencies: {\n        locallib: \"libs/local-lib\",\n        httpkit: \"^3.45.0\",\n        uikit: \"~1.2.0\"\n    }\n}\n```\n\n\
 ## Sections\n\n\
-- `project`: `name` and `version` are required; `entry` defaults to `src/main.rnx`; \
-`edition` defaults to `2026`; `engine` is the minimum toolchain requirement (e.g. `\">=0.4.0\"`).\n\
+- `project`: `name` and `version` are required; \
+`engine` is the minimum toolchain requirement (e.g. `\">=0.4.0\"`).\n\
+- `entries` (optional): `main` defaults to `src/main.rnx`; `lib` names the library file, `docs` the guides folder, `bins` extra tool shims.\n\
 - `dependencies`: one entry per dependency; only one source kind per entry.\n\
 - `registry` (optional): registry endpoints for published packages.\n\
 - `permissions` (optional): array of capability strings forming the security ceiling.\n\

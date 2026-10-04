@@ -22,6 +22,23 @@ fn walk_rnx(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Diagnostic> {
     Ok(())
 }
 
+fn walk_md(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Diagnostic> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {}: {e}", dir.display())))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot read {}: {e}", dir.display()))
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            walk_md(&path, out)?;
+        } else if path.extension().is_some_and(|e| e == "md") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
 fn excluded(rel: &str) -> bool {
     rel == "target"
         || rel.starts_with("target/")
@@ -88,11 +105,11 @@ pub fn validate_for_pack(
             ),
         ));
     }
-    let entry = package_dir.join(&project.entry);
+    let entry = package_dir.join(&project.entries.main);
     if !entry.is_file() {
         return Err(Diagnostic::new(
             Code::E108,
-            format!("package entry `{}` does not exist", project.entry),
+            format!("package entry `{}` does not exist", project.entries.main),
         ));
     }
     Ok(())
@@ -102,7 +119,7 @@ pub fn package_doc_json(package_dir: &Path, manifest: &Manifest) -> Result<Strin
     let project = manifest.project.as_ref().ok_or_else(|| {
         Diagnostic::new(Code::E108, "rnx pack needs a [project] manifest".to_string())
     })?;
-    let entry = project.entry_path(package_dir);
+    let entry = project.main_path(package_dir);
     let graph = crate::modules::ModuleGraph::build(&entry)?;
     let mut docs = Vec::new();
     for f in &graph.files {
@@ -138,7 +155,7 @@ pub fn build_package_tar(
     if deplock.is_file() {
         push_abs(&deplock);
     }
-    let entry = package_dir.join(&project.entry);
+    let entry = package_dir.join(&project.entries.main);
     if entry.is_file() {
         push_abs(&entry);
     }
@@ -148,6 +165,16 @@ pub fn build_package_tar(
         walk_rnx(&src_dir, &mut found)?;
         for f in found {
             push_abs(&f);
+        }
+    }
+    if let Some(docs) = project.entries.docs.as_deref() {
+        let docs_dir = package_dir.join(docs);
+        if docs_dir.is_dir() {
+            let mut found = Vec::new();
+            walk_md(&docs_dir, &mut found)?;
+            for f in found {
+                push_abs(&f);
+            }
         }
     }
     for name in ["README", "README.md", "LICENSE", "LICENSE.txt"] {

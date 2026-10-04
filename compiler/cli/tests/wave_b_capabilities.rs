@@ -10,7 +10,7 @@ fn fresh_pkg(tag: &str, name: &str, lib_src: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("Project.config"),
-        format!("export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.3.0\",\n        entry: \"src/lib.rnx\"\n    }}\n}}\n"),
+        format!("export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.3.0\"\n    }},\n    entries: {{ main: \"src/lib.rnx\" }}\n}}\n"),
     )
     .unwrap();
     std::fs::write(dir.join("src/lib.rnx"), lib_src).unwrap();
@@ -74,7 +74,7 @@ fn lock_project(tag: &str, app_deps: &str, app_main: &str, dep_lib: &str) -> std
     std::fs::write(dir.join("app").join("src").join("main.rnx"), app_main).unwrap();
     std::fs::write(
         dir.join("dep").join("Project.config"),
-        "export default {\n    project: {\n        name: \"dep\",\n        version: \"0.3.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n",
+        "export default {\n    project: {\n        name: \"dep\",\n        version: \"0.3.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}",
     )
     .unwrap();
     std::fs::write(dir.join("dep").join("src").join("lib.rnx"), dep_lib).unwrap();

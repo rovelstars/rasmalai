@@ -23,14 +23,32 @@ pub struct RegistryConfig {
     pub ca_cert: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entries {
+    pub main: String,
+    pub lib: Option<String>,
+    pub docs: Option<String>,
+    pub bins: BTreeMap<String, String>,
+}
+
+impl Default for Entries {
+    fn default() -> Self {
+        Entries {
+            main: DEFAULT_ENTRY.to_string(),
+            lib: None,
+            docs: None,
+            bins: BTreeMap::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
     pub name: String,
     pub version: String,
     pub description: String,
-    pub edition: String,
     pub engine: String,
-    pub entry: String,
+    pub entries: Entries,
     pub registry: Option<RegistryConfig>,
     pub registries: BTreeMap<String, RegistryConfig>,
     pub dependencies: BTreeMap<String, DependencySpec>,
@@ -60,8 +78,16 @@ impl ProjectConfig {
         }
     }
 
-    pub fn entry_path(&self, root: &Path) -> PathBuf {
-        root.join(&self.entry)
+    pub fn main_path(&self, root: &Path) -> PathBuf {
+        root.join(&self.entries.main)
+    }
+
+    pub fn lib_path(&self, root: &Path) -> Option<PathBuf> {
+        self.entries.lib.as_ref().map(|l| root.join(l))
+    }
+
+    pub fn bin_path(&self, root: &Path, name: &str) -> Option<PathBuf> {
+        self.entries.bins.get(name).map(|b| root.join(b))
     }
 }
 
@@ -377,6 +403,41 @@ fn parse_registry_table(val: &ConfigValue) -> Result<RegistryConfig, String> {
     Ok(RegistryConfig { url, token_env, ca_cert })
 }
 
+fn parse_entries(val: &ConfigValue) -> Result<Entries, String> {
+    let obj = match val {
+        ConfigValue::Object(_) => val,
+        _ => return Err("field `entries` must be an object".to_string()),
+    };
+    let main = match obj_get(obj, "main") {
+        Some(ConfigValue::String(s)) => s.clone(),
+        Some(_) => return Err("field `entries.main` must be a string".to_string()),
+        None => DEFAULT_ENTRY.to_string(),
+    };
+    let opt_entry = |key: &str| match obj_get(obj, key) {
+        Some(ConfigValue::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(format!("field `entries.{key}` must be a string")),
+        None => Ok(None),
+    };
+    let lib = opt_entry("lib")?;
+    let docs = opt_entry("docs")?;
+    let mut bins = BTreeMap::new();
+    match obj_get(obj, "bins") {
+        Some(ConfigValue::Object(items)) => {
+            for (k, v) in items {
+                match v {
+                    ConfigValue::String(s) => {
+                        bins.insert(k.clone(), s.clone());
+                    }
+                    _ => return Err(format!("field `entries.bins.{k}` must be a string")),
+                }
+            }
+        }
+        Some(_) => return Err("field `entries.bins` must be an object".to_string()),
+        None => {}
+    }
+    Ok(Entries { main, lib, docs, bins })
+}
+
 fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<WorkspaceConfig>), String> {
     let root = eval_config_text(text)?;
     let top = match &root {
@@ -391,10 +452,24 @@ fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<Workspace
             };
             let name = req_str(obj, "name")?;
             let version = req_str(obj, "version")?;
-            let entry = opt_str(obj, "entry", DEFAULT_ENTRY)?;
-            let edition = opt_str(obj, "edition", "2026")?;
+            if obj_get(obj, "entry").is_some() {
+                return Err("`entry` was removed, use `entries.main`".to_string());
+            }
+            if obj_get(obj, "edition").is_some() {
+                return Err("`edition` was removed, engine range only".to_string());
+            }
             let engine = opt_str(obj, "engine", "")?;
             let description = opt_str(obj, "description", "")?;
+            if obj_get(top, "entry").is_some() {
+                return Err("`entry` was removed, use `entries.main`".to_string());
+            }
+            if obj_get(top, "edition").is_some() {
+                return Err("`edition` was removed, engine range only".to_string());
+            }
+            let entries = match obj_get(top, "entries") {
+                None => Entries::default(),
+                Some(v) => parse_entries(v)?,
+            };
             let mut dependencies = BTreeMap::new();
             if let Some(deps) = obj_get(top, "dependencies") {
                 match deps {
@@ -461,9 +536,8 @@ fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<Workspace
                 name,
                 version,
                 description,
-                edition,
                 engine,
-                entry,
+                entries,
                 registry,
                 registries,
                 dependencies,
@@ -499,11 +573,12 @@ pub struct ManifestIssue {
     pub message: String,
 }
 
-const PROJECT_KEYS: &[&str] = &["name", "version", "description", "edition", "engine", "entry"];
+const PROJECT_KEYS: &[&str] = &["name", "version", "description", "engine"];
+const ENTRIES_KEYS: &[&str] = &["main", "lib", "docs", "bins"];
 const REGISTRY_KEYS: &[&str] = &["url", "token_env", "ca_cert"];
 const WORKSPACE_KEYS: &[&str] = &["members"];
 const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system"];
-const TOP_LEVEL_KEYS: &[&str] = &["project", "dependencies", "permissions", "registry", "registries", "workspace"];
+const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "registry", "registries", "workspace"];
 
 fn span_line(text: &str, offset: u32) -> usize {
     let off = (offset as usize).min(text.len());
@@ -525,12 +600,6 @@ pub fn manifest_to_rnx(manifest: &Manifest) -> String {
             format!("name: {}", crate::deplock::rnx_string(&p.name)),
             format!("version: {}", crate::deplock::rnx_string(&p.version)),
         ];
-        if p.entry != DEFAULT_ENTRY {
-            fields.push(format!("entry: {}", crate::deplock::rnx_string(&p.entry)));
-        }
-        if p.edition != "2026" {
-            fields.push(format!("edition: {}", crate::deplock::rnx_string(&p.edition)));
-        }
         if !p.engine.is_empty() {
             fields.push(format!("engine: {}", crate::deplock::rnx_string(&p.engine)));
         }
@@ -547,6 +616,45 @@ pub fn manifest_to_rnx(manifest: &Manifest) -> String {
             out.push('\n');
         }
         out.push_str("    },\n");
+        let e = &p.entries;
+        let mut efields: Vec<String> = Vec::new();
+        if e.main != DEFAULT_ENTRY {
+            efields.push(format!("main: {}", crate::deplock::rnx_string(&e.main)));
+        }
+        if let Some(l) = &e.lib {
+            efields.push(format!("lib: {}", crate::deplock::rnx_string(l)));
+        }
+        if let Some(d) = &e.docs {
+            efields.push(format!("docs: {}", crate::deplock::rnx_string(d)));
+        }
+        if !e.bins.is_empty() {
+            let mut names: Vec<&String> = e.bins.keys().collect();
+            names.sort();
+            let inner: Vec<String> = names
+                .iter()
+                .map(|k| {
+                    let key = if is_ident_key(k) {
+                        (*k).clone()
+                    } else {
+                        crate::deplock::rnx_string(k)
+                    };
+                    format!("{key}: {}", crate::deplock::rnx_string(&e.bins[*k]))
+                })
+                .collect();
+            efields.push(format!("bins: {{ {} }}", inner.join(", ")));
+        }
+        if !efields.is_empty() {
+            out.push_str("    entries: {\n");
+            for (i, f) in efields.iter().enumerate() {
+                out.push_str("        ");
+                out.push_str(f);
+                if i + 1 < efields.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            out.push_str("    },\n");
+        }
     }
     if let Some(p) = &manifest.project {
         if !p.dependencies.is_empty() {
@@ -724,12 +832,13 @@ fn dep_to_rnx(spec: &DependencySpec) -> String {
 }
 
 pub fn manifest_sections() -> &'static [&'static str] {
-    &["project", "registry", "dependencies", "workspace", "permissions", "registries"]
+    &["project", "entries", "registry", "dependencies", "workspace", "permissions", "registries"]
 }
 
 pub fn manifest_keys(section: &str) -> &'static [&'static str] {
     match section {
         "project" => PROJECT_KEYS,
+        "entries" => ENTRIES_KEYS,
         "workspace" => WORKSPACE_KEYS,
         _ => &[],
     }
@@ -737,7 +846,8 @@ pub fn manifest_keys(section: &str) -> &'static [&'static str] {
 
 pub fn manifest_section_doc(section: &str) -> Option<&'static str> {
     match section {
-        "project" => Some("Package identity: `name` and `version` are required, `entry` defaults to `src/main.rnx`, `edition` defaults to `2026`."),
+        "project" => Some("Package identity: `name` and `version` are required, `engine` states the minimum toolchain requirement."),
+        "entries" => Some("Entry points: `main` defaults to `src/main.rnx`, `lib` names the library file, `docs` the guides folder, `bins` extra tool shims."),
         "registry" => Some("Default registry for unscoped packages: `url` is required, `token_env` names the auth token env var."),
         "dependencies" => Some("Semver (`\"^1.2.0\"`), path (`\"libs/x\"` or `{ path = \"...\" }`), git (`{ git = \"<url>\", rev/tag/branch = \"...\" }`), tarball (`{ version = \"...\", url = \"...\", checksum = \"...\" }`), or native (`{ native = \"z\", system = true }`)."),
         "workspace" => Some("Monorepo members: `members = [\"alpha\", \"beta\"]` or globs like `[\"crates/*\"]`."),
@@ -753,9 +863,11 @@ pub fn manifest_field_doc(section: &str, key: &str) -> Option<&'static str> {
         ("project", "name") => Some("Package name, used for imports and packaging."),
         ("project", "version") => Some("Package version as `major.minor.patch`."),
         ("project", "description") => Some("One-line package summary shown by `rnx doc`."),
-        ("project", "edition") => Some("Language edition, defaults to `2026`."),
         ("project", "engine") => Some("Minimum toolchain requirement, e.g. `>=0.4.0`."),
-        ("project", "entry") => Some("Entry file, defaults to `src/main.rnx`."),
+        ("entries", "main") => Some("Main entry file, defaults to `src/main.rnx`."),
+        ("entries", "lib") => Some("Library entry file for `import \"pkg\"` consumers."),
+        ("entries", "docs") => Some("Guides folder collected at pack time, at most one nesting level."),
+        ("entries", "bins") => Some("Named tool entry files, one shim per entry."),
         ("registry", "url") => Some("Default registry URL for unscoped packages."),
         ("registry", "token_env") => Some("Env var holding the default registry auth token."),
         ("registry", "ca_cert") => Some("Custom root CA for the registry (enterprise proxy/VPN)."),
@@ -816,12 +928,28 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
     };
     for (key, _) in object_fields(top) {
         if !TOP_LEVEL_KEYS.contains(&key.as_str()) {
-            out.push(ManifestIssue {
-                line: field_line(text, &module, &[], &key),
-                error: false,
-                code: Code::W201,
-                message: format!("unrecognized field `{key}`, it is ignored"),
-            });
+            if key == "entry" {
+                out.push(ManifestIssue {
+                    line: field_line(text, &module, &[], &key),
+                    error: true,
+                    code: Code::E108,
+                    message: "`entry` was removed, use `entries.main`".to_string(),
+                });
+            } else if key == "edition" {
+                out.push(ManifestIssue {
+                    line: field_line(text, &module, &[], &key),
+                    error: true,
+                    code: Code::E108,
+                    message: "`edition` was removed, engine range only".to_string(),
+                });
+            } else {
+                out.push(ManifestIssue {
+                    line: field_line(text, &module, &[], &key),
+                    error: false,
+                    code: Code::W201,
+                    message: format!("unrecognized field `{key}`, it is ignored"),
+                });
+            }
         }
     }
     match obj_get(top, "project") {
@@ -846,12 +974,28 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
             };
             for (key, _) in object_fields(obj) {
                 if !PROJECT_KEYS.contains(&key.as_str()) {
-                    out.push(ManifestIssue {
-                        line: field_line(text, &module, &["project"], &key),
-                        error: false,
-                        code: Code::W201,
-                        message: format!("unrecognized field `project.{key}`, it is ignored"),
-                    });
+                    if key == "entry" {
+                        out.push(ManifestIssue {
+                            line: field_line(text, &module, &["project"], &key),
+                            error: true,
+                            code: Code::E108,
+                            message: "`entry` was removed, use `entries.main`".to_string(),
+                        });
+                    } else if key == "edition" {
+                        out.push(ManifestIssue {
+                            line: field_line(text, &module, &["project"], &key),
+                            error: true,
+                            code: Code::E108,
+                            message: "`edition` was removed, engine range only".to_string(),
+                        });
+                    } else {
+                        out.push(ManifestIssue {
+                            line: field_line(text, &module, &["project"], &key),
+                            error: false,
+                            code: Code::W201,
+                            message: format!("unrecognized field `project.{key}`, it is ignored"),
+                        });
+                    }
                 }
             }
             match obj_get(obj, "name") {
@@ -887,19 +1031,122 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
                 }),
             }
             if let Some(root) = root {
-                let entry = match obj_get(obj, "entry") {
+                let entries_val = obj_get(top, "entries");
+                let main = match entries_val.and_then(|e| obj_get(e, "main")) {
                     Some(ConfigValue::String(s)) => s.clone(),
                     _ => DEFAULT_ENTRY.to_string(),
                 };
-                if !root.join(&entry).is_file() {
+                if !root.join(&main).is_file() {
                     out.push(ManifestIssue {
                         line: 0,
                         error: false,
                         code: Code::W201,
-                        message: format!("entry `{entry}` does not exist"),
+                        message: format!("entries.main `{main}` does not exist"),
                     });
                 }
+                if let Some(ConfigValue::Object(items)) =
+                    entries_val.and_then(|e| obj_get(e, "bins"))
+                {
+                    let mut names: Vec<&str> =
+                        items.iter().map(|(k, _)| k.as_str()).collect();
+                    names.sort();
+                    for name in names {
+                        let target = items
+                            .iter()
+                            .find(|(k, _)| k == name)
+                            .map(|(_, v)| v);
+                        if let Some(ConfigValue::String(p)) = target
+                            && !root.join(p).is_file()
+                        {
+                            out.push(ManifestIssue {
+                                line: 0,
+                                error: true,
+                                code: Code::E108,
+                                message: format!(
+                                    "entries.bins.{name} target `{p}` does not exist"
+                                ),
+                            });
+                        }
+                    }
+                }
+                if let Some(ConfigValue::String(d)) =
+                    entries_val.and_then(|e| obj_get(e, "docs"))
+                {
+                    let dir = root.join(d);
+                    if !dir.is_dir() {
+                        out.push(ManifestIssue {
+                            line: 0,
+                            error: true,
+                            code: Code::E108,
+                            message: format!("entries.docs folder `{d}` does not exist"),
+                        });
+                    } else if let Some(deep) = doc_too_deep(&dir, &dir) {
+                        out.push(ManifestIssue {
+                            line: 0,
+                            error: true,
+                            code: Code::E108,
+                            message: format!(
+                                "entries.docs allows at most one nesting level (`{deep}` is too deep)"
+                            ),
+                        });
+                    }
+                }
             }
+        }
+    }
+    if let Some(e) = obj_get(top, "entries") {
+        match e {
+            ConfigValue::Object(_) => {
+                for (key, _) in object_fields(e) {
+                    if !ENTRIES_KEYS.contains(&key.as_str()) {
+                        out.push(ManifestIssue {
+                            line: 0,
+                            error: false,
+                            code: Code::W201,
+                            message: format!("unrecognized field `entries.{key}`, it is ignored"),
+                        });
+                    }
+                }
+                for key in ["main", "lib", "docs"] {
+                    if let Some(v) = obj_get(e, key)
+                        && !matches!(v, ConfigValue::String(_))
+                    {
+                        out.push(ManifestIssue {
+                            line: 0,
+                            error: true,
+                            code: Code::E108,
+                            message: format!("field `entries.{key}` must be a string"),
+                        });
+                    }
+                }
+                match obj_get(e, "bins") {
+                    Some(ConfigValue::Object(items)) => {
+                        for (k, v) in items {
+                            if !matches!(v, ConfigValue::String(_)) {
+                                out.push(ManifestIssue {
+                                    line: 0,
+                                    error: true,
+                                    code: Code::E108,
+                                    message: format!("field `entries.bins.{k}` must be a string"),
+                                });
+                            }
+                        }
+                    }
+                    Some(_) => out.push(ManifestIssue {
+                        line: 0,
+                        error: true,
+                        code: Code::E108,
+                        message: "field `entries.bins` must be an object".to_string(),
+                    }),
+                    None => {}
+                }
+            }
+            _ => out.push(ManifestIssue {
+                line: 0,
+                error: true,
+                code: Code::E108,
+                message: "field `entries` must be an object".to_string(),
+            }),
         }
     }
     if let Some(ConfigValue::Object(deps)) = obj_get(top, "dependencies") {
@@ -1038,6 +1285,29 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
     out
 }
 
+fn doc_too_deep(dir: &Path, base: &Path) -> Option<String> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            if let Some(hit) = doc_too_deep(&path, base) {
+                return Some(hit);
+            }
+        } else if path.is_file() {
+            if let Ok(rel) = path.strip_prefix(base)
+                && rel.components().count() > 2
+            {
+                return Some(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    None
+}
+
 fn object_fields(v: &ConfigValue) -> &[(String, ConfigValue)] {
     match v {
         ConfigValue::Object(fields) => fields,
@@ -1132,8 +1402,10 @@ mod tests {
              export default {\n\
                  project: {\n\
                      name: \"demo\", // core fields\n\
-                     version: \"0.1.0\",\n\
-                     entry: \"src/app.rnx\" // trailing comment\n\
+                     version: \"0.1.0\"\n\
+                 },\n\
+                 entries: {\n\
+                     main: \"src/app.rnx\" // trailing comment\n\
                  },\n\
                  dependencies: {\n\
                      physics_2d: { path: \"../physics_2d\" },\n\
@@ -1143,9 +1415,9 @@ mod tests {
         );
         assert_eq!(c.name, "demo");
         assert_eq!(c.version, "0.1.0");
-        assert_eq!(c.entry, "src/app.rnx");
+        assert_eq!(c.entries.main, "src/app.rnx");
         assert_eq!(
-            c.entry_path(Path::new("/root")),
+            c.main_path(Path::new("/root")),
             Path::new("/root/src/app.rnx")
         );
         assert_eq!(
@@ -1170,10 +1442,70 @@ mod tests {
                  extra_thing: 1\n\
              }\n",
         );
-        assert_eq!(c.entry, DEFAULT_ENTRY);
-        assert_eq!(c.edition, "2026");
+        assert_eq!(c.entries.main, DEFAULT_ENTRY);
+        assert_eq!(c.entries.lib, None);
+        assert_eq!(c.entries.docs, None);
+        assert!(c.entries.bins.is_empty());
         assert!(c.dependencies.is_empty());
         assert_eq!(c.permissions, None);
+    }
+
+    #[test]
+    fn parses_entries_lib_docs_and_bins() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 entries: {\n\
+                     main: \"src/main.rnx\",\n\
+                     lib: \"src/lib.rnx\",\n\
+                     docs: \"docs/\",\n\
+                     bins: { tool: \"src/bin/tool.rnx\" }\n\
+                 }\n\
+             }\n",
+        );
+        assert_eq!(c.entries.main, "src/main.rnx");
+        assert_eq!(c.entries.lib.as_deref(), Some("src/lib.rnx"));
+        assert_eq!(c.entries.docs.as_deref(), Some("docs/"));
+        assert_eq!(
+            c.entries.bins.get("tool").map(String::as_str),
+            Some("src/bin/tool.rnx")
+        );
+        let root = Path::new("/root");
+        assert_eq!(c.main_path(root), Path::new("/root/src/main.rnx"));
+        assert_eq!(c.lib_path(root), Some(Path::new("/root/src/lib.rnx").to_path_buf()));
+        assert_eq!(
+            c.bin_path(root, "tool"),
+            Some(Path::new("/root/src/bin/tool.rnx").to_path_buf())
+        );
+        assert_eq!(c.bin_path(root, "missing"), None);
+    }
+
+    #[test]
+    fn entry_and_edition_are_hard_errors() {
+        let e = parse_config(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\", entry: \"src/main.rnx\" }\n\
+             }\n",
+        )
+        .unwrap_err();
+        assert!(e.contains("`entry` was removed"), "{e}");
+        let e = parse_config(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\", edition: \"2026\" }\n\
+             }\n",
+        )
+        .unwrap_err();
+        assert!(e.contains("`edition` was removed"), "{e}");
+        for text in [
+            "export default {\n    project: { name: \"a\", version: \"0.1.0\", entry: \"src/main.rnx\" }\n}\n",
+            "export default {\n    project: { name: \"a\", version: \"0.1.0\", edition: \"2026\" }\n}\n",
+        ] {
+            let issues = validate_manifest_text(text, None);
+            assert!(
+                issues.iter().any(|i| i.error && i.code == Code::E108 && i.message.contains("was removed")),
+                "{issues:?}"
+            );
+        }
     }
 
     #[test]
@@ -1276,13 +1608,18 @@ mod tests {
     #[test]
     fn manifest_round_trips_through_serializer() {
         let text = "export default {\n\
-             project: { name: \"demo\", version: \"0.1.0\", entry: \"src/app.rnx\" },\n\
+             project: { name: \"demo\", version: \"0.1.0\" },\n\
+             entries: { main: \"src/app.rnx\", bins: { tool: \"src/bin/tool.rnx\" } },\n\
              dependencies: { helper: \"libs/helper\", zlib: { native: \"z\", system: true } },\n\
              permissions: [\"native:zlib\"]\n\
          }\n";
         let m = parse_manifest(text).unwrap();
         let out = manifest_to_rnx(&Manifest { project: m.0.clone(), workspace: m.1.clone() });
+        assert!(!out.contains("entry:"), "{out}");
+        assert!(!out.contains("edition"), "{out}");
         let again = parse_manifest(&out).unwrap();
-        assert_eq!(again.0.unwrap().dependencies, m.0.unwrap().dependencies);
+        let (first, second) = (again.0.unwrap(), m.0.unwrap());
+        assert_eq!(first.entries, second.entries);
+        assert_eq!(first.dependencies, second.dependencies);
     }
 }

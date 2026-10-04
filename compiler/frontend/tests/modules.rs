@@ -232,7 +232,7 @@ fn pkg_tree(tag: &str, pkgs: &[(&str, &str, &[(&str, &str)])]) -> std::path::Pat
     dir
 }
 
-const LIB_CFG: &str = "export default {\n    project: {\n        name: \"dep_math\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n";
+const LIB_CFG: &str = "export default {\n    project: {\n        name: \"dep_math\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}";
 const APP_CFG: &str = "export default {\n    project: {\n        name: \"app\",\n        version: \"0.1.0\"\n    },\n    dependencies: {\n        dep_math: { path: \"../dep_math\" }\n    }\n}\n";
 
 #[test]
@@ -259,13 +259,13 @@ fn packages_resolve_entry_and_submodule() {
 #[test]
 fn packages_diamond_parsed_once() {
     let dir = pkg_tree("diamond", &[
-        ("shared", "export default {\n    project: {\n        name: \"shared\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n", &[
+        ("shared", "export default {\n    project: {\n        name: \"shared\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}", &[
             ("src/lib.rnx", "fn forty(): Int { return 40; }\n"),
         ]),
-        ("left", "export default {\n    project: {\n        name: \"left\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    },\n    dependencies: {\n        shared: { path: \"../shared\" }\n    }\n}\n", &[
+        ("left", "export default {\n    project: {\n        name: \"left\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" },\n    dependencies: {\n        shared: { path: \"../shared\" }\n    }\n}\n", &[
             ("src/lib.rnx", "import { forty } from \"shared\";\nfn l(): Int { return forty() + 1; }\n"),
         ]),
-        ("right", "export default {\n    project: {\n        name: \"right\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    },\n    dependencies: {\n        shared: { path: \"../shared\" }\n    }\n}\n", &[
+        ("right", "export default {\n    project: {\n        name: \"right\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" },\n    dependencies: {\n        shared: { path: \"../shared\" }\n    }\n}\n", &[
             ("src/lib.rnx", "import { forty } from \"shared\";\nfn r(): Int { return forty() + 2; }\n"),
         ]),
         ("app", "export default {\n    project: {\n        name: \"app\",\n        version: \"0.1.0\"\n    },\n    dependencies: {\n        left: { path: \"../left\" },\n        right: { path: \"../right\" }\n    }\n}\n", &[
@@ -282,10 +282,10 @@ fn packages_diamond_parsed_once() {
 #[test]
 fn packages_transitive_resolution() {
     let dir = pkg_tree("trans", &[
-        ("leaf", "export default {\n    project: {\n        name: \"leaf\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n", &[
+        ("leaf", "export default {\n    project: {\n        name: \"leaf\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}", &[
             ("src/lib.rnx", "fn base(): Int { return 7; }\n"),
         ]),
-        ("mid", "export default {\n    project: {\n        name: \"mid\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    },\n    dependencies: {\n        leaf: { path: \"../leaf\" }\n    }\n}\n", &[
+        ("mid", "export default {\n    project: {\n        name: \"mid\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" },\n    dependencies: {\n        leaf: { path: \"../leaf\" }\n    }\n}\n", &[
             ("src/lib.rnx", "import { base } from \"leaf\";\nfn mid6(): Int { return base() * 6; }\n"),
         ]),
         ("app", "export default {\n    project: {\n        name: \"app\",\n        version: \"0.1.0\"\n    },\n    dependencies: {\n        mid: { path: \"../mid\" }\n    }\n}\n", &[
@@ -302,10 +302,10 @@ fn packages_transitive_resolution() {
 #[test]
 fn packages_cycle_is_e107() {
     let dir = pkg_tree("cycle", &[
-        ("a", "export default {\n    project: {\n        name: \"a\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    },\n    dependencies: {\n        b: { path: \"../b\" }\n    }\n}\n", &[
+        ("a", "export default {\n    project: {\n        name: \"a\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" },\n    dependencies: {\n        b: { path: \"../b\" }\n    }\n}\n", &[
             ("src/lib.rnx", "import { g } from \"b\";\nfn f(): Int { return g(); }\n"),
         ]),
-        ("b", "export default {\n    project: {\n        name: \"b\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    },\n    dependencies: {\n        a: { path: \"../a\" }\n    }\n}\n", &[
+        ("b", "export default {\n    project: {\n        name: \"b\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" },\n    dependencies: {\n        a: { path: \"../a\" }\n    }\n}\n", &[
             ("src/lib.rnx", "import { f } from \"a\";\nfn g(): Int { return f(); }\n"),
         ]),
     ]);
@@ -337,7 +337,7 @@ fn packages_unknown_is_e108() {
 fn packages_workspace_sibling_needs_no_explicit_path() {
     let dir = pkg_tree("sib", &[
         ("ws", "export default {\n    workspace: {\n        members: [\"calc\", \"player\"]\n    }\n}\n", &[]),
-        ("ws/calc", "export default {\n    project: {\n        name: \"calc\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n", &[
+        ("ws/calc", "export default {\n    project: {\n        name: \"calc\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}", &[
             ("src/lib.rnx", "fn score(): Int { return 42; }\n"),
         ]),
         ("ws/player", "export default {\n    project: {\n        name: \"player\",\n        version: \"0.1.0\"\n    }\n}\n", &[
@@ -418,7 +418,7 @@ fn std_prelude_resolves_through_sysroot() {
 #[test]
 fn scoped_package_submodule_resolves() {
     let dir = pkg_tree("scoped", &[
-        ("ui", "export default {\n    project: {\n        name: \"@rovelstars/ui\",\n        version: \"1.2.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n", &[
+        ("ui", "export default {\n    project: {\n        name: \"@rovelstars/ui\",\n        version: \"1.2.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}", &[
             ("src/lib.rnx", "fn render(): Int { return 1; }\n"),
             ("src/theme.rnx", "fn dark(): Int { return 2; }\n"),
         ]),

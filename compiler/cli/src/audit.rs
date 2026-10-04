@@ -180,7 +180,7 @@ pub fn lockfile_drift(dir: &Path) -> Vec<String> {
     {
         return vec!["no Project.deplock found; run `rnx lock`".to_string()];
     }
-    let entry = dir.join(&config.entry);
+    let entry = config.main_path(dir);
     let target = if entry.is_file() { entry } else { dir.to_path_buf() };
     frontend::security::verify_entry(&target)
         .into_iter()

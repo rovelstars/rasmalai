@@ -34,7 +34,7 @@ fn app_manifest(deps: &str, permissions: Option<&str>) -> String {
 }
 
 fn dep_manifest(name: &str) -> String {
-    format!("export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.2.0\",\n        entry: \"src/lib.rnx\"\n    }}\n}}\n")
+    format!("export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.2.0\"\n    }},\n    entries: {{ main: \"src/lib.rnx\" }}\n}}\n")
 }
 
 fn run_headless(args: &[&str], cwd: &std::path::Path) -> std::process::Output {

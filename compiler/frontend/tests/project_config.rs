@@ -20,7 +20,7 @@ fn eval_err(src: &str) -> diagnostics::Diagnostic {
     eval_module(&module, linux()).expect_err("expected eval error")
 }
 
-const BASIC: &str = "export default {\n    project: {\n        name: \"my_app\",\n        version: \"0.1.0\",\n        entry: \"src/main.rnx\",\n        edition: \"2026\",\n        description: \"High-performance app with native FFI\"\n    },\n    dependencies: {\n        utils: { path: \"../utils\" },\n        algo: { git: \"https://github.com/example/algo\", branch: \"main\" }\n    },\n    permissions: [\"native:zlib\", \"native:gui\"]\n}\n";
+const BASIC: &str = "export default {\n    project: {\n        name: \"my_app\",\n        version: \"0.1.0\",\n        description: \"High-performance app with native FFI\"\n    },\n    entries: { main: \"src/main.rnx\" },\n    dependencies: {\n        utils: { path: \"../utils\" },\n        algo: { git: \"https://github.com/example/algo\", branch: \"main\" }\n    },\n    permissions: [\"native:zlib\", \"native:gui\"]\n}\n";
 
 fn load(src: &str) -> project::ProjectConfig {
     let dir = std::env::temp_dir().join(format!("rnx-pcfg-{}-{}", std::process::id(), src.len()));
@@ -36,8 +36,7 @@ fn load(src: &str) -> project::ProjectConfig {
 fn basic_manifest_evaluates() {
     let c = load(BASIC);
     assert_eq!(c.name, "my_app");
-    assert_eq!(c.entry, "src/main.rnx");
-    assert_eq!(c.edition, "2026");
+    assert_eq!(c.entries.main, "src/main.rnx");
     assert_eq!(
         c.dependencies["utils"],
         DependencySpec::Path { path: std::path::PathBuf::from("../utils") }
@@ -119,6 +118,21 @@ fn sandbox_rejects_let_and_calls() {
     assert!(eval_module(&module, linux()).is_ok());
     let e = eval_err("let x = 1;\nexport default { project: { name: \"a\", version: \"0.1.0\" } }\n");
     assert_eq!(e.code, diagnostics::Code::E108);
+}
+
+#[test]
+fn entry_and_edition_are_hard_errors() {
+    for src in [
+        "export default {\n    project: { name: \"a\", version: \"0.1.0\", entry: \"src/main.rnx\" }\n}\n",
+        "export default {\n    project: { name: \"a\", version: \"0.1.0\", edition: \"2026\" }\n}\n",
+        "export default {\n    project: { name: \"a\", version: \"0.1.0\" },\n    entry: \"src/main.rnx\"\n}\n",
+    ] {
+        let issues = project::validate_manifest_text(src, None);
+        assert!(
+            issues.iter().any(|i| i.error && i.code == diagnostics::Code::E108 && i.message.contains("was removed")),
+            "{src}: {issues:?}"
+        );
+    }
 }
 
 #[test]
