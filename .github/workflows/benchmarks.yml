@@ -1,10 +1,12 @@
 name: Monthly benchmarks
 
-# Re-measures the benchmark suite on the first of every month and
-# force-pushes the result to the orphan benchmarks branch. The homepage
-# Pareto chart fetches that branch at runtime, so the published chart
-# reflects the current tree without any snapshot committed to main.
-# Standard runners are noisy neighbors: treat
+# Re-measures the benchmark suite on the first of every month, ingests the
+# result into Turso via POST /api/benchmarks, and force-pushes a copy to
+# the orphan benchmarks branch. The homepage Pareto chart reads the API at
+# runtime with a fallback to that branch, so the published chart reflects
+# the current tree without any snapshot committed to main. The branch push
+# is transitional dual-write: delete the Deploy step once the API history
+# covers two monthly runs. Standard runners are noisy neighbors: treat
 # month-to-month deltas as trends, not records.
 on:
   schedule:
@@ -52,6 +54,38 @@ jobs:
       - name: Run benchmark harness
         run: |
           python3 benches/harness/runner.py --out benches/data/benchmarks.json
+
+      - name: Ingest benchmarks into Turso
+        continue-on-error: true
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: |
+          if [ -z "$PUBLISH_TOKEN" ] || [ -z "$SITE_URL" ]; then
+            echo "benchmarks: PUBLISH_TOKEN or SITE_URL unset, skipping API ingest (branch push still runs)"
+            exit 0
+          fi
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          with open('benches/data/benchmarks.json') as f:
+              snapshot = json.load(f)
+          body = json.dumps({
+              'githubRunId': int(os.environ['GITHUB_RUN_ID']),
+              'commitSha': os.environ['GITHUB_SHA'],
+              'snapshot': snapshot,
+          }).encode()
+          req = urllib.request.Request(
+              os.environ['SITE_URL'].rstrip('/') + '/api/benchmarks',
+              data=body,
+              headers={
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + os.environ['PUBLISH_TOKEN'],
+              },
+              method='POST',
+          )
+          with urllib.request.urlopen(req, timeout=60) as res:
+              print('benchmarks: API ingest', res.status, res.read().decode()[:200])
+          EOF
 
       - name: Deploy benchmarks to orphan branch
         env:

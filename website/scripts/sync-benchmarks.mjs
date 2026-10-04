@@ -11,8 +11,9 @@
 // Default source is ../../benches/data/benchmarks.json (written by
 // `python3 benches/harness/runner.py`; that file is gitignored, generate
 // it locally before syncing). When BENCHMARKS_URL is set, the JSON is
-// fetched over HTTPS instead - the Pages build sets it to the orphan
-// benchmarks branch:
+// fetched over HTTPS instead - point it at /api/benchmarks (the route
+// returns a {snapshot, run} envelope, unwrapped below) or at the legacy
+// orphan benchmarks branch:
 //   https://raw.githubusercontent.com/<owner>/<repo>/benchmarks/benchmarks.json
 // Validates the schema, then writes src/lib/benchmarks/pareto.json.
 //
@@ -43,7 +44,8 @@ if (srcUrl) {
 	}
 	text = readFileSync(srcPath, 'utf8');
 }
-const data = JSON.parse(text);
+const raw = JSON.parse(text);
+const data = raw.snapshot ?? raw;
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
 if (!data.system?.cpu || !data.system?.os || !data.system?.date) {

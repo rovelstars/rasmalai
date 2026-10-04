@@ -20,7 +20,7 @@ other directly on the chart:
 
 | language | dev | rel |
 | --- | --- | --- |
-| rnx | `rnx build` (Cranelift codegen, unoptimized) | `rnx build --release` (LLVM `-O3` AOT) |
+| rnx | `rnx build` (LLVM AOT dev: unoptimized object + linked runnable binary) | `rnx build --release` (LLVM `-O3` AOT) |
 | c | `clang -O0` | `clang -O3 -march=native` |
 | rust | `rustc` (unoptimized) | `rustc -C opt-level=3 -C codegen-units=1` |
 | dart | `dart compile kernel` (JIT snapshot) | `dart compile exe` (AOT native) |
@@ -85,19 +85,20 @@ evaluate strictly. One deliberate exception: the rnx mandelbrot
   tracks both references (`rnx_variant` in `benchmarks.json`); all rnx
   backends agree on the FMA value bit-for-bit, all other languages
   agree on the strict value. Pixel coordinates stay strict `Float` in
-  the rnx source so only the loop rounding differs. `dev_compile_ms` is benchmark source to runnable
-artifact (`rnx build` dev profile with full codegen + link, `-O0` /
-unoptimized compiles, `javac`); Node and Dart have no dev-binary step,
-so they parse (`node --check`) / typecheck (`dart analyze`) the
-benchmark source instead - each result row records its own `dev`
-string, and the chart methodology blurb says which cells are which.
+  the rnx source so only the loop rounding differs. `build_ms` is benchmark source to runnable
+artifact (`rnx build` dev profile: unoptimized LLVM object plus link, `-O0` /
+unoptimized compiles, `javac`); Dart's dev step is a JIT snapshot
+(`dart compile kernel`) rather than a dev binary, and Node has no compile
+step at all, so it runs the `node --check` parse check - each result row
+records its own `build` string, and the chart methodology blurb says which
+cells are which.
 The `rnx` compiler binary prefers `target/release/rnx` when
 present (recorded in `rnx_compiler`); the runtime archive rnx links is
 built at `-O3` (`compiler/runtime/build.rs`), program body at
 LLVM `default<O3>` for the host CPU. Set `RNX_RUNTIME_TARGET_CPU=native`
 (or pass `-C target-cpu=` via `RUSTFLAGS`) before building `rnx` to
 compile the runtime archive for the host CPU as well; default is
-portable generic x86-64. Every result row carries `release` and `dev`
+portable generic x86-64. Every result row carries `build` and `run`
 descriptors with the exact commands, surfaced on the website tooltip
 and methodology list. Languages whose toolchain is missing are skipped
 with a reason; Go/Java sources are provided for machines that have them.

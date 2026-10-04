@@ -27,24 +27,31 @@
 		versions?: Record<string, string>;
 	}
 
-	// The monthly benchmark workflow publishes a single benchmarks.json on the
-	// orphan `benchmarks` branch. The chart reads it at runtime, so no build
-	// carries a snapshot. Point a deploy somewhere else by editing this export.
-	export const benchmarksUrl =
+	// The monthly benchmark workflow publishes snapshots to Turso via
+	// POST /api/benchmarks. The chart reads the API at runtime with a
+	// fallback to the legacy orphan `benchmarks` branch (dual-write until
+	// the branch is deleted), so no build carries a snapshot. Point a
+	// deploy somewhere else by editing this export.
+	export const benchmarksUrl = '/api/benchmarks';
+	const legacyBenchmarksUrl =
 		'https://raw.githubusercontent.com/rovelstars/rasmalai/benchmarks/benchmarks.json';
+
+	async function loadSnapshot(): Promise<Snapshot | null> {
+		const res = await fetch(benchmarksUrl).catch(() => null);
+		const data = res?.ok ? await res.json().catch(() => null) : null;
+		const snap = data?.snapshot ?? data;
+		if (snap?.benchmarks && typeof snap.benchmarks === 'object') return snap as Snapshot;
+		const legacy = await fetch(legacyBenchmarksUrl).catch(() => null);
+		const legacyData = legacy?.ok ? await legacy.json().catch(() => null) : null;
+		return legacyData?.benchmarks ? (legacyData as Snapshot) : null;
+	}
 
 	let snapshot = $state<Snapshot | null>(null);
 	let noData = $state(false);
 
 	onMount(async () => {
-		const res = await fetch(benchmarksUrl).catch(() => null);
-		const data = res?.ok ? await res.json().catch(() => null) : null;
-		const benches = data?.benchmarks;
-		if (benches && typeof benches === 'object' && Object.keys(benches).length > 0) {
-			snapshot = data as Snapshot;
-		} else {
-			noData = true;
-		}
+		snapshot = await loadSnapshot();
+		if (!snapshot) noData = true;
 	});
 
 	const BENCHES: { id: string; bench: Bench }[] = $derived(

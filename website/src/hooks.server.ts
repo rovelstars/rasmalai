@@ -20,7 +20,8 @@ import type { Handle } from '@sveltejs/kit';
 const TTL: Array<[RegExp, number]> = [
 	[/^\/packages\/.+\/\d+\.\d+\.\d+($|\/)/, 86400],
 	[/^\/packages\//, 300],
-	[/^\/api\/packages(\?|$)/, 300]
+	[/^\/api\/packages(\?|$)/, 300],
+	[/^\/api\/benchmarks(\?|$)/, 3600]
 ];
 
 function ttlFor(path: string): number | null {

@@ -40,7 +40,7 @@ export interface VersionDoc {
 	docJson: string;
 }
 
-const BASE_SCHEMA = `
+export const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS scopes (
     name TEXT PRIMARY KEY,
     owner TEXT NOT NULL,
@@ -75,6 +75,32 @@ CREATE TABLE IF NOT EXISTS package_versions (
     created_at INTEGER NOT NULL,
     UNIQUE(package_id, version)
 );
+
+CREATE TABLE IF NOT EXISTS benchmark_runs (
+    id INTEGER PRIMARY KEY,
+    github_run_id INTEGER NOT NULL UNIQUE,
+    commit_sha TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tombstones (
+    package_id TEXT NOT NULL REFERENCES packages(id),
+    version TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (package_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY,
+    action TEXT NOT NULL,
+    full_name TEXT NOT NULL,
+    version TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_name ON audit_log(full_name, created_at);
 `;
 
 const SCOPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -326,4 +352,150 @@ export async function recentVersionCount(
 		args: [parsed.scope, parsed.name, Math.floor(Date.now() / 1000) - sinceSeconds]
 	});
 	return Number(rs.rows[0]?.['n'] ?? 0);
+}
+
+export interface BenchmarkRun {
+	id: number;
+	githubRunId: number;
+	commitSha: string;
+	snapshotJson: string;
+	createdAt: number;
+}
+
+export const MAX_SNAPSHOT_BYTES = 1024 * 1024;
+
+export async function insertBenchmarkRun(
+	env: Record<string, string | undefined>,
+	githubRunId: number,
+	commitSha: string,
+	snapshotJson: string
+): Promise<BenchmarkRun> {
+	const db = getClient(env);
+	if (!db) throw new Error('missing database');
+	await ensureSchema(db);
+	const now = Math.floor(Date.now() / 1000);
+	const res = await db.execute({
+		sql: `INSERT INTO benchmark_runs (github_run_id, commit_sha, snapshot_json, created_at)
+		      VALUES (?, ?, ?, ?)`,
+		args: [githubRunId, commitSha, snapshotJson, now]
+	});
+	return {
+		id: Number(res.lastInsertRowid ?? 0),
+		githubRunId,
+		commitSha,
+		snapshotJson,
+		createdAt: now
+	};
+}
+
+export async function getLatestBenchmarks(
+	env: Record<string, string | undefined>
+): Promise<BenchmarkRun | null> {
+	const db = getClient(env);
+	if (!db) return null;
+	await ensureSchema(db);
+	const rs = await db.execute(
+		'SELECT id, github_run_id, commit_sha, snapshot_json, created_at FROM benchmark_runs ORDER BY id DESC LIMIT 1'
+	);
+	const row = rs.rows[0] as Record<string, unknown> | undefined;
+	if (!row) return null;
+	return {
+		id: Number(row['id']),
+		githubRunId: Number(row['github_run_id']),
+		commitSha: String(row['commit_sha']),
+		snapshotJson: String(row['snapshot_json']),
+		createdAt: Number(row['created_at'])
+	};
+}
+
+export async function listBenchmarkRuns(
+	env: Record<string, string | undefined>,
+	limit: number
+): Promise<Omit<BenchmarkRun, 'snapshotJson'>[]> {
+	const db = getClient(env);
+	if (!db) return [];
+	await ensureSchema(db);
+	const rs = await db.execute({
+		sql: 'SELECT id, github_run_id, commit_sha, created_at FROM benchmark_runs ORDER BY id DESC LIMIT ?',
+		args: [Math.max(1, Math.min(60, Math.floor(limit) || 12))]
+	});
+	return rs.rows.map((r) => ({
+		id: Number(r['id']),
+		githubRunId: Number(r['github_run_id']),
+		commitSha: String(r['commit_sha']),
+		createdAt: Number(r['created_at'])
+	}));
+}
+
+export async function isVersionWithdrawn(
+	env: Record<string, string | undefined>,
+	full: string,
+	version: string
+): Promise<boolean> {
+	const parsed = parsePackageName(full);
+	const db = getClient(env);
+	if (!parsed || !db) return false;
+	await ensureSchema(db);
+	const rs = await db.execute({
+		sql: `SELECT 1 AS n FROM tombstones t
+		      JOIN packages p ON p.id = t.package_id
+		      WHERE p.scope = ? AND p.name = ? AND t.version = ?`,
+		args: [parsed.scope, parsed.name, version]
+	});
+	return rs.rows.length > 0;
+}
+
+export async function versionReuseBlocked(
+	env: Record<string, string | undefined>,
+	full: string,
+	version: string
+): Promise<boolean> {
+	const parsed = parsePackageName(full);
+	const db = getClient(env);
+	if (!parsed || !db) return false;
+	await ensureSchema(db);
+	const id = packageId(parsed.scope, parsed.name);
+	const live = await db.execute({
+		sql: 'SELECT 1 AS n FROM package_versions WHERE package_id = ? AND version = ?',
+		args: [id, version]
+	});
+	if (live.rows.length > 0) return true;
+	if (await isVersionWithdrawn(env, full, version)) return true;
+	const audit = await db.execute({
+		sql: `SELECT 1 AS n FROM audit_log
+		      WHERE full_name = ? AND version = ?
+		      AND action IN ('takedown', 'transfer', 'special-delete', 'publish')`,
+		args: [parsed.full, version]
+	});
+	return audit.rows.length > 0;
+}
+
+export async function recordTombstone(
+	env: Record<string, string | undefined>,
+	full: string,
+	version: string,
+	reason: string
+): Promise<void> {
+	const parsed = parsePackageName(full);
+	const db = getClient(env);
+	if (!parsed || !db) throw new Error('invalid package name or missing database');
+	const now = Math.floor(Date.now() / 1000);
+	await ensureSchema(db);
+	const id = packageId(parsed.scope, parsed.name);
+	await db.execute({
+		sql: `INSERT INTO tombstones (package_id, version, reason, created_at)
+		      VALUES (?, ?, ?, ?)
+		      ON CONFLICT(package_id, version) DO NOTHING`,
+		args: [id, version, reason, now]
+	});
+	await db.execute({
+		sql: `UPDATE package_versions SET status = 'tombstoned'
+		      WHERE package_id = ? AND version = ?`,
+		args: [id, version]
+	});
+	await db.execute({
+		sql: `INSERT INTO audit_log (action, full_name, version, details_json, created_at)
+		      VALUES ('takedown', ?, ?, ?, ?)`,
+		args: [parsed.full, version, JSON.stringify({ reason }), now]
+	});
 }
