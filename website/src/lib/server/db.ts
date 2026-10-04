@@ -1,4 +1,5 @@
 import { createClient, type Client } from '@libsql/client/web';
+import { maxSatisfying, parseSemver, levelize, satisfiesRange } from './registry.js';
 
 // Temporary ownership model (no account system yet): a single org owner.
 // `rovelstars` owns every scope published through the org token, and the
@@ -101,6 +102,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_name ON audit_log(full_name, created_at);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    hash TEXT PRIMARY KEY,
+    size_bytes INTEGER NOT NULL,
+    bytes BLOB NOT NULL,
+    first_seen_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS manifest_chunks (
+    chunk_hash TEXT NOT NULL REFERENCES chunks(hash),
+    version_id TEXT NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+    ord INTEGER NOT NULL,
+    PRIMARY KEY (chunk_hash, version_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mc_version ON manifest_chunks(version_id);
 `;
 
 const SCOPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -163,6 +179,27 @@ async function ensureSchema(db: Client): Promise<void> {
 	const vnames = new Set(vcols.rows.map((r) => String(r['name'])));
 	if (!vnames.has('status')) {
 		await db.execute("ALTER TABLE package_versions ADD COLUMN status TEXT NOT NULL DEFAULT 'live'");
+	}
+	const backfill: Array<[string, string]> = [
+		['semver_major', 'INTEGER NOT NULL DEFAULT 0'],
+		['semver_minor', 'INTEGER NOT NULL DEFAULT 0'],
+		['semver_patch', 'INTEGER NOT NULL DEFAULT 0'],
+		['prerelease', "TEXT NOT NULL DEFAULT ''"],
+		['engine_range', "TEXT NOT NULL DEFAULT ''"],
+		['manifest_json', "TEXT NOT NULL DEFAULT '{}'"],
+		['guides_json', "TEXT NOT NULL DEFAULT '[]'"],
+		['tarball_sha256', "TEXT NOT NULL DEFAULT ''"],
+		['request_id', "TEXT NOT NULL DEFAULT ''"]
+	];
+	for (const [col, ddl] of backfill) {
+		if (!vnames.has(col)) {
+			await db.execute(`ALTER TABLE package_versions ADD COLUMN ${col} ${ddl}`);
+		}
+	}
+	const acols = await db.execute('SELECT name FROM pragma_table_info(?)', ['audit_log']);
+	const anames = new Set(acols.rows.map((r) => String(r['name'])));
+	if (!anames.has('request_id')) {
+		await db.execute("ALTER TABLE audit_log ADD COLUMN request_id TEXT NOT NULL DEFAULT ''");
 	}
 	schemaReady = true;
 }
@@ -289,6 +326,11 @@ export interface PublishPayload {
 	readme: string;
 	docJson: string;
 	checksum: string;
+	engineRange?: string;
+	manifestJson?: string;
+	guidesJson?: string;
+	tarballSha256?: string;
+	requestId?: string;
 }
 
 export interface PublishResult {
@@ -313,6 +355,8 @@ export async function publishPackage(
 	const parsed = parsePackageName(p.name);
 	const db = getClient(env);
 	if (!parsed || !db) throw new Error('invalid package name or missing database');
+	const sem = parseSemver(p.version);
+	if (!sem) throw new Error('invalid package version (expected X.Y.Z)');
 	const now = Math.floor(Date.now() / 1000);
 	await ensureSchema(db);
 	await db.execute({
@@ -328,12 +372,39 @@ export async function publishPackage(
 		args: [id, parsed.scope, parsed.name, p.description, p.author, p.license, p.tags.join(','), now, now]
 	});
 	const res = await db.execute({
-		sql: `INSERT INTO package_versions (id, package_id, version, readme_markdown, doc_json, checksum, status, created_at)
-		      VALUES (?, ?, ?, ?, ?, ?, 'live', ?)
+		sql: `INSERT INTO package_versions (id, package_id, version, readme_markdown, doc_json, checksum, status, created_at,
+		      semver_major, semver_minor, semver_patch, prerelease,
+		      engine_range, manifest_json, guides_json, tarball_sha256, request_id)
+		      VALUES (?, ?, ?, ?, ?, ?, 'live', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		      ON CONFLICT(package_id, version) DO NOTHING`,
-		args: [`ver_${id}_${p.version}`, id, p.version, p.readme, p.docJson, p.checksum, now]
+		args: [
+			`ver_${id}_${p.version}`,
+			id,
+			p.version,
+			p.readme,
+			p.docJson,
+			p.checksum,
+			now,
+			sem.major,
+			sem.minor,
+			sem.patch,
+			sem.prerelease,
+			p.engineRange ?? '',
+			p.manifestJson ?? '{}',
+			p.guidesJson ?? '[]',
+			p.tarballSha256 ?? '',
+			p.requestId ?? ''
+		]
 	});
-	return { name: parsed.full, version: p.version, created: (res.rowsAffected ?? 0) > 0 };
+	const created = (res.rowsAffected ?? 0) > 0;
+	if (created) {
+		await db.execute({
+			sql: `INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
+			      VALUES ('publish', ?, ?, ?, ?, ?)`,
+			args: [parsed.full, p.version, JSON.stringify({ checksum: p.checksum }), p.requestId ?? '', now]
+		});
+	}
+	return { name: parsed.full, version: p.version, created };
 }
 
 export async function recentVersionCount(
@@ -352,6 +423,383 @@ export async function recentVersionCount(
 		args: [parsed.scope, parsed.name, Math.floor(Date.now() / 1000) - sinceSeconds]
 	});
 	return Number(rs.rows[0]?.['n'] ?? 0);
+}
+
+export interface VersionRow {
+	id: string;
+	version: string;
+	status: string;
+	checksum: string;
+	tarballSha256: string;
+	engineRange: string;
+	manifestJson: string;
+	guidesJson: string;
+	requestId: string;
+	createdAt: number;
+}
+
+const VERSION_COLS = `id, package_id, version, readme_markdown, doc_json, checksum,
+	tarball_sha256, engine_range, manifest_json, guides_json, request_id,
+	semver_major, semver_minor, semver_patch, prerelease, status, created_at`;
+
+function toVersionRow(r: Record<string, unknown>): VersionRow {
+	return {
+		id: String(r['id']),
+		version: String(r['version']),
+		status: String(r['status'] ?? 'live'),
+		checksum: String(r['checksum'] ?? ''),
+		tarballSha256: String(r['tarball_sha256'] ?? ''),
+		engineRange: String(r['engine_range'] ?? ''),
+		manifestJson: String(r['manifest_json'] ?? '{}'),
+		guidesJson: String(r['guides_json'] ?? '[]'),
+		requestId: String(r['request_id'] ?? ''),
+		createdAt: Number(r['created_at'] ?? 0)
+	};
+}
+
+const SEMVER_ORDER = `semver_major DESC, semver_minor DESC, semver_patch DESC,
+	CASE WHEN prerelease = '' THEN 1 ELSE 0 END DESC, prerelease DESC, created_at DESC`;
+
+export async function getVersionRow(
+	env: Record<string, string | undefined>,
+	full: string,
+	version: string
+): Promise<{ row: VersionRow; withdrawn: boolean } | null> {
+	const parsed = parsePackageName(full);
+	const db = getClient(env);
+	if (!parsed || !db) return null;
+	await ensureSchema(db);
+	const rs = await db.execute({
+		sql: `SELECT ${VERSION_COLS} FROM package_versions v
+		      JOIN packages p ON p.id = v.package_id
+		      WHERE p.scope = ? AND p.name = ? AND v.version = ?`,
+		args: [parsed.scope, parsed.name, version]
+	});
+	const r = rs.rows[0] as Record<string, unknown> | undefined;
+	if (!r) return null;
+	const row = toVersionRow(r);
+	const withdrawn = row.status === 'tombstoned' || (await isVersionWithdrawn(env, full, version));
+	return { row, withdrawn };
+}
+
+export async function listLiveVersions(
+	env: Record<string, string | undefined>,
+	full: string
+): Promise<string[]> {
+	const parsed = parsePackageName(full);
+	const db = getClient(env);
+	if (!parsed || !db) return [];
+	await ensureSchema(db);
+	const rs = await db.execute({
+		sql: `SELECT v.version FROM package_versions v
+		      JOIN packages p ON p.id = v.package_id
+		      WHERE p.scope = ? AND p.name = ? AND v.status IN ('live', 'yanked')
+		      ORDER BY ${SEMVER_ORDER}`,
+		args: [parsed.scope, parsed.name]
+	});
+	return rs.rows.map((r) => String(r['version']));
+}
+
+export async function getLatestVersion(
+	env: Record<string, string | undefined>,
+	full: string
+): Promise<string | null> {
+	const versions = await listLiveVersions(env, full);
+	return versions[0] ?? null;
+}
+
+export async function yankVersion(
+	env: Record<string, string | undefined>,
+	full: string,
+	version: string
+): Promise<boolean> {
+	const parsed = parsePackageName(full);
+	const db = getClient(env);
+	if (!parsed || !db) throw new Error('invalid package name or missing database');
+	await ensureSchema(db);
+	const id = packageId(parsed.scope, parsed.name);
+	const res = await db.execute({
+		sql: `UPDATE package_versions SET status = 'yanked'
+		      WHERE package_id = ? AND version = ? AND status = 'live'`,
+		args: [id, version]
+	});
+	if ((res.rowsAffected ?? 0) === 0) return false;
+	await db.execute({
+		sql: `INSERT INTO audit_log (action, full_name, version, created_at)
+		      VALUES ('yank', ?, ?, ?)`,
+		args: [parsed.full, version, Math.floor(Date.now() / 1000)]
+	});
+	return true;
+}
+
+export async function transferScope(
+	env: Record<string, string | undefined>,
+	scope: string,
+	newOwner: string,
+	force: boolean
+): Promise<void> {
+	const db = getClient(env);
+	if (!db) throw new Error('missing database');
+	await ensureSchema(db);
+	if (!force) {
+		const live = await db.execute({
+			sql: `SELECT COUNT(*) AS n FROM package_versions v
+			      JOIN packages p ON p.id = v.package_id
+			      WHERE p.scope = ? AND v.status IN ('live', 'yanked')`,
+			args: [scope]
+		});
+		if (Number(live.rows[0]?.['n'] ?? 0) > 0) {
+			throw new Error('scope has live versions (retry with force)');
+		}
+	}
+	await db.execute({
+		sql: 'UPDATE packages SET scope = ?, updated_at = ? WHERE scope = ?',
+		args: [`${newOwner}`, Math.floor(Date.now() / 1000), scope]
+	});
+	await db.execute({
+		sql: `INSERT INTO audit_log (action, full_name, details_json, created_at)
+		      VALUES ('transfer', ?, ?, ?)`,
+		args: [`@${scope}`, JSON.stringify({ newOwner, force }), Math.floor(Date.now() / 1000)]
+	});
+}
+
+export async function putChunk(
+	env: Record<string, string | undefined>,
+	hash: string,
+	sizeBytes: number,
+	bytes: Uint8Array
+): Promise<void> {
+	const db = getClient(env);
+	if (!db) throw new Error('missing database');
+	await ensureSchema(db);
+	await db.execute({
+		sql: `INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
+		      VALUES (?, ?, ?, ?)
+		      ON CONFLICT(hash) DO NOTHING`,
+		args: [hash, sizeBytes, bytes, Math.floor(Date.now() / 1000)]
+	});
+}
+
+export async function linkVersionChunks(
+	env: Record<string, string | undefined>,
+	versionRowId: string,
+	hashes: string[]
+): Promise<void> {
+	const db = getClient(env);
+	if (!db) throw new Error('missing database');
+	await ensureSchema(db);
+	let ord = 0;
+	for (const hash of hashes) {
+		await db.execute({
+			sql: `INSERT INTO manifest_chunks (chunk_hash, version_id, ord)
+			      VALUES (?, ?, ?)
+			      ON CONFLICT(chunk_hash, version_id) DO NOTHING`,
+			args: [hash, versionRowId, ord++]
+		});
+	}
+}
+
+export async function getVersionBytes(
+	env: Record<string, string | undefined>,
+	versionRowId: string
+): Promise<Uint8Array | null> {
+	const db = getClient(env);
+	if (!db) return null;
+	await ensureSchema(db);
+	const rs = await db.execute({
+		sql: `SELECT c.bytes AS bytes FROM manifest_chunks mc
+		      JOIN chunks c ON c.hash = mc.chunk_hash
+		      WHERE mc.version_id = ? ORDER BY mc.ord ASC`,
+		args: [versionRowId]
+	});
+	if (rs.rows.length === 0) return null;
+	const parts: Uint8Array[] = rs.rows.map((r) => {
+		const b = r['bytes'] as Uint8Array | ArrayBuffer;
+		return b instanceof Uint8Array ? b : new Uint8Array(b);
+	});
+	const total = parts.reduce((n, p) => n + p.length, 0);
+	const out = new Uint8Array(total);
+	let off = 0;
+	for (const p of parts) {
+		out.set(p, off);
+		off += p.length;
+	}
+	return out;
+}
+
+export async function findOrphanChunks(
+	env: Record<string, string | undefined>,
+	beforeUnix: number,
+	limit: number
+): Promise<string[]> {
+	const db = getClient(env);
+	if (!db) return [];
+	await ensureSchema(db);
+	const rs = await db.execute({
+		sql: `SELECT c.hash AS hash FROM chunks c
+		      WHERE c.first_seen_at < ?
+		      AND NOT EXISTS (
+		        SELECT 1 FROM manifest_chunks mc
+		        JOIN package_versions v ON v.id = mc.version_id
+		        WHERE mc.chunk_hash = c.hash AND v.status IN ('live', 'yanked'))
+		      LIMIT ?`,
+		args: [beforeUnix, Math.max(1, Math.min(1000, limit))]
+	});
+	return rs.rows.map((r) => String(r['hash']));
+}
+
+export async function reverifyChunks(
+	env: Record<string, string | undefined>,
+	hashes: string[]
+): Promise<Set<string>> {
+	const db = getClient(env);
+	if (!db || hashes.length === 0) return new Set();
+	await ensureSchema(db);
+	const live = new Set<string>();
+	for (const batch of chunked(hashes, 50)) {
+		const marks = batch.map(() => '?').join(',');
+		const rs = await db.execute({
+			sql: `SELECT mc.chunk_hash AS hash FROM manifest_chunks mc
+			      JOIN package_versions v ON v.id = mc.version_id
+			      WHERE mc.chunk_hash IN (${marks}) AND v.status IN ('live', 'yanked')
+			      GROUP BY mc.chunk_hash`,
+			args: [...batch]
+		});
+		for (const r of rs.rows) live.add(String(r['hash']));
+	}
+	return live;
+}
+
+function chunked<T>(xs: T[], n: number): T[][] {
+	const out: T[][] = [];
+	for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
+	return out;
+}
+
+export async function deleteChunks(
+	env: Record<string, string | undefined>,
+	hashes: string[]
+): Promise<number> {
+	const db = getClient(env);
+	if (!db || hashes.length === 0) return 0;
+	await ensureSchema(db);
+	let deleted = 0;
+	for (const batch of chunked(hashes, 50)) {
+		const marks = batch.map(() => '?').join(',');
+		const res = await db.execute({
+			sql: `DELETE FROM chunks WHERE hash IN (${marks})`,
+			args: [...batch]
+		});
+		deleted += res.rowsAffected ?? 0;
+	}
+	await db.execute({
+		sql: `INSERT INTO audit_log (action, full_name, details_json, created_at)
+		      VALUES ('gc-sweep', '', ?, ?)`,
+		args: [JSON.stringify({ deleted: hashes }), Math.floor(Date.now() / 1000)]
+	});
+	return deleted;
+}
+
+export interface ResolveNode {
+	full: string;
+	version: string;
+	path: string;
+	integrity: string;
+	engineRange: string;
+	deps: string[];
+	yanked: boolean;
+}
+
+export interface HaveEntry {
+	full: string;
+	version: string;
+	integrity: string;
+}
+
+export async function resolveGraph(
+	env: Record<string, string | undefined>,
+	requirements: Record<string, string>,
+	have: HaveEntry[]
+): Promise<{ resolved: Record<string, string>; levels: ResolveNode[][] }> {
+	const held = new Map(have.map((h) => [`${h.full}@${h.version}`, h.integrity]));
+	const memo = new Map<string, ResolveNode>();
+	const visiting: string[] = [];
+	const resolved: Record<string, string> = {};
+
+	const visit = async (full: string, range: string): Promise<string> => {
+		if (resolved[full]) {
+			if (!satisfiesRange(resolved[full], range)) {
+				throw new Error(`conflicting ranges for ${full}: ${resolved[full]} does not satisfy ${range}`);
+			}
+			return resolved[full];
+		}
+		const versions = await listLiveVersions(env, full);
+		const pick = maxSatisfying(versions, range);
+		if (!pick) {
+			throw new Error(
+				versions.length === 0
+					? `package ${full} does not exist`
+					: `no version of ${full} satisfies ${range} (have ${versions.slice(0, 5).join(', ')})`
+			);
+		}
+		resolved[full] = pick;
+		const id = `${full}@${pick}`;
+		if (memo.has(id)) return pick;
+		if (visiting.includes(id)) {
+			throw new Error(`dependency cycle: ${[...visiting, id].join(' -> ')}`);
+		}
+		visiting.push(id);
+		try {
+			const found = await getVersionRow(env, full, pick);
+			if (!found) throw new Error(`package ${id} does not exist`);
+			const { row } = found;
+			const key = `${full}@${pick}`;
+			if (held.get(key) === row.tarballSha256 && row.tarballSha256 !== '') {
+				visiting.pop();
+				return pick;
+			}
+			let deps: Record<string, string> = {};
+			try {
+				const manifest = JSON.parse(row.manifestJson) as Record<string, unknown>;
+				if (manifest['deps'] && typeof manifest['deps'] === 'object') {
+					deps = manifest['deps'] as Record<string, string>;
+				}
+			} catch {
+				deps = {};
+			}
+			const depIds: string[] = [];
+			for (const [name, depRange] of Object.entries(deps)) {
+				const depVersion = await visit(name, String(depRange));
+				depIds.push(`${name}@${depVersion}`);
+			}
+			memo.set(id, {
+				full,
+				version: pick,
+				path: `${full}/${pick}/download`,
+				integrity: row.tarballSha256,
+				engineRange: row.engineRange,
+				deps: depIds.map((d) => d.split('@').slice(0, -1).join('@')),
+				yanked: row.status === 'yanked'
+			});
+		} finally {
+			visiting.pop();
+		}
+		return pick;
+	};
+
+	for (const [full, range] of Object.entries(requirements)) {
+		if (!parsePackageName(full)) throw new Error(`invalid package name: ${full}`);
+	}
+	for (const [full, range] of Object.entries(requirements)) {
+		await visit(full, String(range));
+	}
+	const nodes = [...memo.values()];
+	const order = levelize(nodes.map((n) => ({ id: `${n.full}@${n.version}`, deps: n.deps.map((d) => {
+		const v = resolved[d];
+		return v ? `${d}@${v}` : d;
+	}) })));
+	const byId = new Map(nodes.map((n) => [`${n.full}@${n.version}`, n]));
+	return { resolved, levels: order.map((ids) => ids.map((id) => byId.get(id)!)) };
 }
 
 export interface BenchmarkRun {
