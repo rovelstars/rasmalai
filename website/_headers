@@ -8,3 +8,15 @@
 # stylesheets on every reload and flash unstyled content.
 /*.woff2
   Cache-Control: public, max-age=31536000, immutable
+
+# Deploy-versioned docs data (static/data/<sha>/*.json, pointer at
+# static/data/version.json — see scripts/version-data.mjs). The sha tracks
+# the bytes, so versioned payloads cache immutably for a year with no
+# purge step: a deploy goes live through the pointer. version.json is the
+# only short-lived docs-data URL (60s browser, 60s edge). The two patterns
+# never overlap: version.json sits directly under /data/, payloads one
+# level deeper.
+/data/*/*.json
+  Cache-Control: public, max-age=31536000, immutable
+/data/version.json
+  Cache-Control: public, max-age=60, s-maxage=60

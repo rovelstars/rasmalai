@@ -2,16 +2,19 @@
 	import { Play, RotateCcw, Zap } from 'lucide-svelte';
 	import AnsiDemo from '$lib/components/AnsiDemo.svelte';
 	import AuraCode from '$lib/components/AuraCode.svelte';
+	import { fetchDataFile } from '$lib/docs/data-url';
 	import { onMount } from 'svelte';
 
+	// Legacy unversioned fallback; resolution prefers the deploy-versioned
+	// copy via /data/version.json (see data-url.ts).
 	export const demosUrl = '/data/cli-demos.json';
 
 	let checkOutput = $state<string | null>(null);
 
 	onMount(async () => {
 		try {
-			const res = await fetch(demosUrl);
-			if (res.ok) checkOutput = (await res.json()).check ?? null;
+			const res = await fetchDataFile(fetch, 'cli-demos.json');
+			if (res) checkOutput = (await res.json()).check ?? null;
 		} catch {
 			checkOutput = null;
 		}

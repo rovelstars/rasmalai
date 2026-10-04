@@ -2,10 +2,13 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { searchEntries, type SearchEntry, type ScoredEntry } from '$lib/docs/search';
+	import { fetchDataFile } from '$lib/docs/data-url';
 
 	// search-index.json is generated at build time (prebuild) into
-	// static/data and served same-origin, so no build carries a snapshot.
-	// Point a deploy somewhere else by editing this export.
+	// static/data and served same-origin. This export is the legacy
+	// unversioned fallback; resolution prefers the deploy-versioned copy
+	// via /data/version.json (see data-url.ts), so no build carries a
+	// snapshot. Point a deploy somewhere else by editing the fallback here.
 	export const searchIndexUrl = '/data/search-index.json';
 
 	interface Badge {
@@ -92,8 +95,8 @@
 	onMount(() => {
 		(async () => {
 			try {
-				const res = await fetch(searchIndexUrl);
-				if (!res.ok) {
+				const res = await fetchDataFile(fetch, 'search-index.json');
+				if (!res) {
 					indexMissing = true;
 					return;
 				}
