@@ -1,8 +1,11 @@
 import type { DocModule } from '$lib/docs/api';
+import { fetchDataFile } from '$lib/docs/data-url';
 
 // api.json is generated at build time (prebuild) into static/data and
-// served same-origin, so no build carries a snapshot from the repo.
-// Point a deploy somewhere else by editing this export.
+// served same-origin. This export is the legacy unversioned fallback;
+// resolution prefers the deploy-versioned copy via /data/version.json
+// (see data-url.ts), so no build carries a snapshot from the repo.
+// Point a deploy somewhere else by editing the fallback here.
 export const apiUrl = '/data/api.json';
 
 interface ApiSnapshot {
@@ -16,8 +19,8 @@ export function ensureApi(fetchFn: typeof fetch = fetch): Promise<ApiSnapshot | 
 	if (cached) return Promise.resolve(cached);
 	inflight ??= (async () => {
 		try {
-			const res = await fetchFn(apiUrl);
-			if (!res.ok) return null;
+			const res = await fetchDataFile(fetchFn, 'api.json');
+			if (!res) return null;
 			const data = (await res.json()) as ApiSnapshot;
 			if (!data || !Array.isArray(data.modules)) return null;
 			cached = data;

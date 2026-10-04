@@ -3,11 +3,24 @@ import type { Handle } from '@sveltejs/kit';
 // Edge cache for registry-backed responses (Cloudflare Cache API —
 // built-in, no binding, no dashboard rule). Turso is single-region, so
 // every origin read is a transatlantic round-trip; this keeps repeat
-// views global and instant. TTLs mirror the Cache-Control the routes
-// already emit. POST/PUT/DELETE and preview tokens bypass.
+// views global and instant.
+//
+// No purge credentials exist, so lifetimes follow row mutability instead:
+// versioned rows are write-once (a publish inserts a new row; only the
+// yank status can flip, which the route headers already bound to a day),
+// while the latest-pointer (unpinned package pages, catalog listing)
+// moves on every publish and stays short at 5 minutes. First match wins,
+// so the pinned-version rule precedes the /packages/ prefix. POST/PUT/
+// DELETE and preview tokens bypass (no match).
+//
+// No stale-while-revalidate: the Cache API has no SWR primitive, and
+// background revalidation would need waitUntil, which is not available in
+// every runtime this handle runs in (prerender, dev). Tiered TTLs give
+// the same shape: immutable rows cache long, pointers revalidate fast.
 const TTL: Array<[RegExp, number]> = [
-	[/^\/api\/packages(\?|$)/, 300],
-	[/^\/packages\//, 300]
+	[/^\/packages\/.+\/\d+\.\d+\.\d+($|\/)/, 86400],
+	[/^\/packages\//, 300],
+	[/^\/api\/packages(\?|$)/, 300]
 ];
 
 function ttlFor(path: string): number | null {

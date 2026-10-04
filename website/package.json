@@ -15,7 +15,7 @@
 		"build:docs": "node scripts/build-docs.mjs",
 		"check:content": "node scripts/check-content.mjs",
 		"db:seed": "tsx scripts/seed-turso.ts",
-		"prebuild": "node scripts/build-docs.mjs || true; node scripts/build-cli-demos.mjs || true; node scripts/build-search-index.mjs; node scripts/sync-benchmarks.mjs || true; node scripts/build-og.mjs || true",
+		"prebuild": "node scripts/build-docs.mjs || true; node scripts/build-cli-demos.mjs || true; node scripts/build-search-index.mjs; node scripts/sync-benchmarks.mjs || true; node scripts/build-og.mjs || true; node scripts/version-data.mjs",
 		"postbuild": "node scripts/inline-critical.mjs"
 	},
 	"devDependencies": {

@@ -71,10 +71,15 @@ content-hashed assets (`/_app/immutable/*`, fonts) a year of edge cache; HTML
 and data revalidate every deploy.
 
 Docs data flow: `prebuild` regenerates `api.json`, `search-index.json`,
-and `cli-demos.json` from the current tree into gitignored
-`static/data/` before every build, so each deploy serves data generated
-from its own tree at same-origin `/data/*` — no branch, no snapshot on
-main, no cross-origin fetch. Until the generators run (cargo unavailable),
-pages render a "No API data yet" empty state and search reports that the
-index is unavailable — the build still passes. Refresh local data with
-`npm run build:docs` (needs cargo) and keep working offline.
+and `cli-demos.json` from the current tree into
+`static/data/` before every build, then `scripts/version-data.mjs` copies
+them under `static/data/<sha>/` (content hash) and writes a
+`static/data/version.json` pointer, so each deploy serves immutable
+per-deploy payloads at same-origin `/data/<sha>/*` — no branch, no
+snapshot on main, no cross-origin fetch, no purge step. Clients resolve
+payload URLs through `version.json` (60s cache) and fall back to
+unversioned `/data/*` when the pointer is missing. Until the generators
+run (cargo unavailable), pages render a "No API data yet" empty state and
+search reports that the index is unavailable — the build still passes.
+Refresh local data with `npm run build:docs` (needs cargo) and keep
+working offline.
