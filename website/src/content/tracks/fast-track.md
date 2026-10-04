@@ -19,10 +19,10 @@ end. Raw pointers and C-ABI calls live in `unsafe {}` only.
 
 ## Builds: two engines
 
-Dev loop runs the Cranelift JIT: a cold dev build lands in 35-60 ms on
-the current baseline (`benches/data/benchmarks.json`, 2026-09-29), a
-hot-reload swap turns around in about 7 ms, and `rnx check` answers with no
-codegen at all. Release
+Dev loop runs unoptimized LLVM codegen: a cold dev build lands in
+35-60 ms on the current baseline (`benches/data/benchmarks.json`,
+2026-09-29), a hot-reload swap turns around in about 7 ms, and `rnx
+check` answers with no codegen at all. Release
 runs LLVM `-O3` over per-function sections, then links with section garbage
 collection into a stripped ~356 KB binary. Both modes are measured on the
 proving-ground chart, as `rnx run` and `rnx build sim.rnx --release`:

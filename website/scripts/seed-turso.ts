@@ -2,42 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@libsql/client/web';
-
-const BASE_SCHEMA = `
-CREATE TABLE IF NOT EXISTS scopes (
-    name TEXT PRIMARY KEY,
-    owner TEXT NOT NULL,
-    reserved INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS packages (
-    id TEXT PRIMARY KEY,
-    scope TEXT NOT NULL DEFAULT '',
-    name TEXT NOT NULL,
-    description TEXT NOT NULL,
-    author TEXT NOT NULL,
-    repository TEXT,
-    license TEXT DEFAULT 'MIT',
-    downloads INTEGER DEFAULT 0,
-    stars INTEGER DEFAULT 0,
-    tags TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE(scope, name)
-);
-
-CREATE TABLE IF NOT EXISTS package_versions (
-    id TEXT PRIMARY KEY,
-    package_id TEXT NOT NULL REFERENCES packages(id),
-    version TEXT NOT NULL,
-    readme_markdown TEXT NOT NULL,
-    doc_json TEXT NOT NULL,
-    checksum TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    UNIQUE(package_id, version)
-);
-`;
+import { BASE_SCHEMA } from '../src/lib/server/db.js';
 
 function loadDotEnv(root: string): void {
 	const envFile = join(root, '.env');

@@ -171,8 +171,9 @@ try {
 
 ## Builds
 
-`cargo check` warms up; `rnx check` finishes. The dev loop runs through
-Cranelift: a cold dev build lands in 35-60 ms on the current baseline
+`cargo check` warms up; `rnx check` finishes. The dev loop runs
+unoptimized LLVM codegen: a cold dev build lands in 35-60 ms on the
+current baseline
 (`benches/data/benchmarks.json`, 2026-09-29, seven workloads), a hot-reload
 swap turns around in about 7 ms, and `rnx check` typechecks with no codegen
 at all. Release costs no extra build time and buys the optimized binary; the
