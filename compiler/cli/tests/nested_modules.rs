@@ -47,7 +47,7 @@ fn nested_package_submodule_runs() {
     std::fs::create_dir_all(app.join("src")).unwrap();
     write_config(
         &lib,
-        "export default {\n    project: {\n        name: \"dep\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n",
+        "export default {\n    project: {\n        name: \"dep\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}",
     );
     write_config(
         &app,

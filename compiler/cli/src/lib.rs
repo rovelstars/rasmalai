@@ -711,7 +711,7 @@ pub fn render_package_docs(
     out_dir: &std::path::Path,
     include_private: bool,
 ) -> Result<(), diagnostics::Diagnostic> {
-    let entry = cfg.entry_path(dir);
+    let entry = cfg.main_path(dir);
     let graph = frontend::modules::ModuleGraph::build(&entry)?;
     let mut inputs = Vec::new();
     for f in &graph.files {
@@ -773,7 +773,7 @@ pub fn collect_package_docs(
     cfg: &frontend::project::ProjectConfig,
     include_private: bool,
 ) -> Result<Vec<frontend::doc::DocModuleDoc>, diagnostics::Diagnostic> {
-    let entry = cfg.entry_path(dir);
+    let entry = cfg.main_path(dir);
     let graph = frontend::modules::ModuleGraph::build(&entry)?;
     let mut docs = Vec::new();
     for f in &graph.files {
@@ -1225,9 +1225,13 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
             name: name.to_string(),
             version: "0.1.0".to_string(),
             description: String::new(),
-            edition: "2026".to_string(),
             engine: String::new(),
-            entry: frontend::project::DEFAULT_ENTRY.to_string(),
+            entries: frontend::project::Entries {
+                main: frontend::project::DEFAULT_ENTRY.to_string(),
+                lib: None,
+                docs: None,
+                bins: std::collections::BTreeMap::new(),
+            },
             registry: None,
             registries: std::collections::BTreeMap::new(),
             dependencies: std::collections::BTreeMap::new(),
@@ -1301,7 +1305,7 @@ pub fn resolve_scope_target(
             Diagnostic::new(Code::E108, format!("unknown workspace member `{name}`"))
         })?;
         let (member_root, cfg) = resolve_member(&ws_root, name)?;
-        let entry = cfg.entry_path(&member_root).to_string_lossy().into_owned();
+        let entry = cfg.main_path(&member_root).to_string_lossy().into_owned();
         return Ok(ScopeTarget {
             scope_root: Some(ws_root),
             entry,
@@ -1314,7 +1318,7 @@ pub fn resolve_scope_target(
         let cfg = manifest.project.ok_or_else(|| {
             Diagnostic::new(Code::E108, format!("{}: missing [project] section", scope_root.display()))
         })?;
-        let entry = cfg.entry_path(&scope_root).to_string_lossy().into_owned();
+        let entry = cfg.main_path(&scope_root).to_string_lossy().into_owned();
         return Ok(ScopeTarget {
             scope_root: Some(scope_root),
             entry,
@@ -1325,7 +1329,7 @@ pub fn resolve_scope_target(
     if nearest != scope_root {
         let cfg =
             frontend::project::ProjectConfig::load_from_dir(&nearest)?.ok_or_else(no_manifest)?;
-        let entry = cfg.entry_path(&nearest).to_string_lossy().into_owned();
+        let entry = cfg.main_path(&nearest).to_string_lossy().into_owned();
         return Ok(ScopeTarget {
             scope_root: Some(scope_root),
             entry,
@@ -1334,7 +1338,7 @@ pub fn resolve_scope_target(
     }
     match manifest.project {
         Some(cfg) => {
-            let entry = cfg.entry_path(&scope_root).to_string_lossy().into_owned();
+            let entry = cfg.main_path(&scope_root).to_string_lossy().into_owned();
             Ok(ScopeTarget {
                 scope_root: Some(scope_root),
                 entry,
@@ -1544,7 +1548,7 @@ pub fn load_test_program_cfg(
                 format!("{}: missing [project] section", pkg_root.display()),
             )]
         })?;
-    let entry = config.entry_path(pkg_root);
+    let entry = config.main_path(pkg_root);
     let extra = discover_test_files(pkg_root).map_err(|e| vec![e])?;
     let graph = frontend::modules::ModuleGraph::build_collecting_extra(&entry, &extra)?;
     let module = match graph.resolve() {
@@ -1638,7 +1642,7 @@ pub fn load_bench_program_cfg(
                 format!("{}: missing [project] section", pkg_root.display()),
             )]
         })?;
-    let entry = config.entry_path(pkg_root);
+    let entry = config.main_path(pkg_root);
     let extra = discover_test_files(pkg_root).map_err(|e| vec![e])?;
     let graph = frontend::modules::ModuleGraph::build_collecting_extra(&entry, &extra)?;
     let module = match graph.resolve() {

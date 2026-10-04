@@ -273,7 +273,7 @@ fn config_value_completions(
         ("project", "version") => {
             items.push(item("\"0.1.0\"", "SemVer major.minor.patch"));
         }
-        ("project", "entry") => {
+        ("entries", "main") => {
             if let Some(root) = root {
                 let mut found = Vec::new();
                 collect_rnx_files(root, root, &mut found, 3);
@@ -281,12 +281,12 @@ fn config_value_completions(
                 for rel in found.iter().take(20) {
                     items.push(item(
                         &format!("\"{rel}\""),
-                        "entry file relative to the project root",
+                        "main entry file relative to the project root",
                     ));
                 }
             }
             if items.is_empty() {
-                items.push(item("\"src/main.rnx\"", "default entry file"));
+                items.push(item("\"src/main.rnx\"", "default main entry file"));
             }
         }
         ("dependencies", _) => {

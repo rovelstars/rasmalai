@@ -1756,7 +1756,16 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
         None => workspace_sibling(&proj_root, &pkg)?.ok_or_else(unknown)?,
     };
     let target = match sub {
-        None => dep_cfg.entry_path(&dep_root),
+        None => {
+            let main = dep_cfg.main_path(&dep_root);
+            if main.is_file() {
+                main
+            } else if let Some(lib) = dep_cfg.lib_path(&dep_root) {
+                lib
+            } else {
+                main
+            }
+        }
         Some(s) => {
             if !valid_subpath(&s) {
                 return Err(Diagnostic::new(

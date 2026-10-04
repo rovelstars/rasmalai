@@ -21,7 +21,7 @@ fn bare_remote(dir: &std::path::Path) -> String {
     std::fs::create_dir_all(work.join("src")).unwrap();
     std::fs::write(
         work.join("Project.config"),
-        "export default {\n    project: {\n        name: \"glib\",\n        version: \"0.1.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n",
+        "export default {\n    project: {\n        name: \"glib\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}",
     )
     .unwrap();
     std::fs::write(

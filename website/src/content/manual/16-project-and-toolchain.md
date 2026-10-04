@@ -18,16 +18,17 @@ cd hello
 
 ## Project.config
 
-The manifest is an `.rnx` module exporting a default object. It declares package identity, the entry file, and dependencies. `project` requires `name` and `version`; `entry` defaults to `src/main.rnx`; `edition` defaults to `2026`; `engine` states the minimum toolchain requirement.
+The manifest is an `.rnx` module exporting a default object. It declares package identity, entry points, and dependencies. `project` requires `name` and `version`; `engine` states the minimum toolchain requirement. An optional top-level `entries` object names the files — `main` defaults to `src/main.rnx`, `lib` names the library file, `docs` the guides folder, and `bins` maps tool names to files. The old `entry` and `edition` keys are rejected outright; there is no compatibility alias.
 
 ```rnx
 export default {
     project: {
         name: "colony",
         version: "0.4.0",
-        edition: "2026",
-        engine: ">=0.4.0",
-        entry: "src/main.rnx"
+        engine: ">=0.4.0"
+    },
+    entries: {
+        main: "src/main.rnx"
     },
     registry: {
         url: "https://registry.rnx.dev",

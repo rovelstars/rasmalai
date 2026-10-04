@@ -510,13 +510,13 @@ mod tests {
         std::fs::create_dir_all(dir.join("app").join("src")).unwrap();
         std::fs::write(
             dir.join("dep").join("Project.config"),
-            "export default {\n    project: {\n        name: \"dep\",\n        version: \"0.2.0\",\n        entry: \"src/lib.rnx\"\n    }\n}\n",
+            "export default {\n    project: {\n        name: \"dep\",\n        version: \"0.2.0\"\n    },\n    entries: { main: \"src/lib.rnx\" }\n}",
         )
         .unwrap();
         std::fs::write(dir.join("dep").join("src").join("lib.rnx"), "fn f(): Int { return 1; }\n").unwrap();
         std::fs::write(
             dir.join("app").join("Project.config"),
-            "export default {\n    project: {\n        name: \"app\",\n        version: \"0.1.0\",\n        entry: \"src/main.rnx\"\n    },\n    dependencies: {\n        dep: { path: \"../dep\" }\n    }\n}\n",
+            "export default {\n    project: {\n        name: \"app\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/main.rnx\" },\n    dependencies: {\n        dep: { path: \"../dep\" }\n    }\n}\n",
         )
         .unwrap();
         std::fs::write(dir.join("app").join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
