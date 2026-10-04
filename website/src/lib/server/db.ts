@@ -117,6 +117,33 @@ CREATE TABLE IF NOT EXISTS manifest_chunks (
     PRIMARY KEY (chunk_hash, version_id)
 );
 CREATE INDEX IF NOT EXISTS idx_mc_version ON manifest_chunks(version_id);
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    password_params TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    disclaimer_ack INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS orgs (
+    id INTEGER PRIMARY KEY,
+    scope TEXT NOT NULL UNIQUE,
+    owner_user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at INTEGER NOT NULL
+);
 `;
 
 const SCOPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -148,7 +175,7 @@ export function packageId(scope: string, name: string): string {
 let client: Client | null = null;
 let schemaReady = false;
 
-function getClient(env: Record<string, string | undefined>): Client | null {
+export function getClient(env: Record<string, string | undefined>): Client | null {
 	if (client) return client;
 	const url = env['TURSO_DATABASE_URL'];
 	const token = env['TURSO_AUTH_TOKEN'];
@@ -161,7 +188,7 @@ function getClient(env: Record<string, string | undefined>): Client | null {
 	}
 }
 
-async function ensureSchema(db: Client): Promise<void> {
+export async function ensureSchema(db: Client): Promise<void> {
 	// Isolates persist across requests: migrate once, then skip the
 	// half-dozen setup round-trips on every call (Turso is single-region,
 	// each statement is a transatlantic HTTPS request for most visitors).

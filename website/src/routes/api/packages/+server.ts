@@ -18,6 +18,7 @@ import {
 } from '$lib/server/db';
 import { specHeaders } from '$lib/server/registry';
 import { chunkTarball, sha256Hex } from '$lib/server/chunks';
+import { sessionUser, readSessionCookie, userScopes } from '$lib/server/auth';
 
 const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 const MAX_GUIDES_BYTES = 400 * 1024;
@@ -55,8 +56,27 @@ export async function POST({ request, platform }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const auth = request.headers.get('Authorization') ?? '';
 	const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-	if (!checkPublishToken(env, token)) {
-		return unauthorized('invalid publisher token');
+	const orgTokenOk = checkPublishToken(env, token);
+	if (!orgTokenOk) {
+		const user = await sessionUser(env, readSessionCookie(request.headers.get('Cookie')));
+		if (!user) {
+			return unauthorized('invalid publisher token');
+		}
+		const scopes = await userScopes(env, user.id);
+		const rawNameEarly = request.headers.get('X-RNX-Package-Name') ?? '';
+		const parsedEarly = parsePackageName(rawNameEarly);
+		if (!parsedEarly) {
+			return json(
+				{ success: false, error: 'invalid package name (expected name or @scope/name)' },
+				{ status: 400, headers: specHeaders() }
+			);
+		}
+		if (parsedEarly.scope && !scopes.includes(parsedEarly.scope)) {
+			return json(
+				{ success: false, error: `scope @${parsedEarly.scope} is not yours` },
+				{ status: 403, headers: specHeaders() }
+			);
+		}
 	}
 
 	const rawName = request.headers.get('X-RNX-Package-Name') ?? '';
