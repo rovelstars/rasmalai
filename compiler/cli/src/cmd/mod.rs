@@ -53,6 +53,7 @@ mod add;
 mod audit;
 mod bench;
 mod build;
+mod cache;
 mod check;
 mod completions;
 mod dev;
@@ -78,6 +79,7 @@ use self::add::run_add;
 use self::audit::run_audit;
 use self::bench::run_bench;
 use self::build::run_build;
+use self::cache::{run_cache, run_clean};
 use self::check::run_check;
 use self::completions::run_completions;
 use self::dev::run_dev;
@@ -247,6 +249,12 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
             }
             cli::args::Command::Mcp => {
                 run_mcp();
+            }
+            cli::args::Command::Cache { action } => {
+                run_cache(action);
+            }
+            cli::args::Command::Clean { package } => {
+                run_clean(package);
             }
     }
 }

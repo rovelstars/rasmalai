@@ -332,6 +332,17 @@ pub enum Command {
         #[arg(long)]
         nocapture: bool,
     },
+    /// Inspect and prune the build cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
+    /// Remove project build outputs and the project cache
+    Clean {
+        /// Package selection
+        #[arg(short = 'p', long = "package")]
+        package: Option<String>,
+    },
     /// Generate shell completion scripts
     Completions {
         /// Target shell
@@ -340,4 +351,17 @@ pub enum Command {
     },
     /// Serve a Model Context Protocol (stdio) server exposing the toolchain
     Mcp,
+}
+
+/// Build cache management
+#[derive(Subcommand, Debug, Clone)]
+pub enum CacheAction {
+    /// Prune least-recently-used global cache entries over the byte cap
+    Prune {
+        /// Keep at most this many bytes (default 2 GiB)
+        #[arg(long)]
+        max_bytes: Option<u64>,
+    },
+    /// Show global and project cache usage
+    Status,
 }

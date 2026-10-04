@@ -1250,6 +1250,8 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
     );
     std::fs::write(root.join(frontend::project::DEFAULT_ENTRY), main)
         .map_err(|e| format!("cannot write src/main.rnx: {e}"))?;
+    std::fs::write(root.join(".gitignore"), ".rnx-cache/\n")
+        .map_err(|e| format!("cannot write .gitignore: {e}"))?;
     Ok(root)
 }
 

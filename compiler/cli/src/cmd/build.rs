@@ -1,5 +1,54 @@
 use super::*;
 
+fn profile_name(release: bool) -> &'static str {
+    if release { "release" } else { "dev" }
+}
+
+fn build_key(
+    input: &str,
+    root: &std::path::Path,
+    release: bool,
+    opt_level: u8,
+    target_triple: Option<&str>,
+) -> String {
+    let entry_bytes = std::fs::read(input).unwrap_or_default();
+    let manifest_bytes = std::fs::read(root.join(frontend::project::MANIFEST_FILE)).unwrap_or_default();
+    let deplock_bytes = std::fs::read(root.join("Project.deplock")).unwrap_or_default();
+    let flags = format!("release={release} opt={opt_level} target={}", target_triple.unwrap_or("host"));
+    frontend::cache::fingerprint_hex(&[
+        entry_bytes.as_slice(),
+        manifest_bytes.as_slice(),
+        deplock_bytes.as_slice(),
+        flags.as_bytes(),
+    ])
+}
+
+fn default_out_path(input: &str, root: &std::path::Path, release: bool) -> std::path::PathBuf {
+    let project_name = frontend::project::load_manifest(root)
+        .ok()
+        .flatten()
+        .and_then(|m| m.project.map(|p| p.name));
+    let stem = project_name.unwrap_or_else(|| {
+        std::path::Path::new(input)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "a.out".to_string())
+    });
+    frontend::cache::project_cache_dir(root)
+        .join("build")
+        .join(profile_name(release))
+        .join(stem)
+}
+
+fn project_root_for(input: &str) -> std::path::PathBuf {
+    let anchor = std::path::Path::new(input)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    frontend::project::find_project_root(&anchor).unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    })
+}
 pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Option<std::path::PathBuf>, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, package: Option<String>, verbose: bool, quiet: bool) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
@@ -155,13 +204,27 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
                     std::process::exit(1);
                 }
             };
-            let out_path = out.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| {
-                let stem = std::path::Path::new(&input)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "a.out".to_string());
-                format!("./{stem}")
-            });
+            let (out_path, pending_stamp) = match out.as_ref() {
+                Some(p) => (p.display().to_string(), None),
+                None => {
+                    let root = project_root_for(&input);
+                    let path = default_out_path(&input, &root, release);
+                    if let Some(parent) = path.parent() {
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            eprintln!("error: cannot create {}: {e}", parent.display());
+                            std::process::exit(1);
+                        }
+                    }
+                    let key = build_key(&input, &root, release, opt_level, target_triple.as_deref());
+                    let stamp = path.with_file_name(".fingerprint");
+                    let fresh = std::fs::read_to_string(&stamp).map(|s| s.trim() == key).unwrap_or(false);
+                    if fresh && path.is_file() {
+                        println!("fresh {}", path.display());
+                        return;
+                    }
+                    (path.display().to_string(), Some((stamp, key)))
+                }
+            };
             let target = linker::host_triple();
             let link_start = std::time::Instant::now();
             let foreign_libs: Vec<linker::LinkInput> = built
@@ -201,6 +264,11 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
             if let Err(e) = link_result {
                 eprintln!("error: {e}");
                 std::process::exit(1);
+            }
+            if let Some((stamp, key)) = pending_stamp {
+                if let Err(e) = std::fs::write(&stamp, format!("{key}\n")) {
+                    eprintln!("warning: cannot write {}: {e}", stamp.display());
+                }
             }
             let link_ms = link_start.elapsed().as_secs_f64() * 1000.0;
             #[cfg(unix)]
