@@ -106,8 +106,8 @@ fn test_bare_build_native_binary() {
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let exe = root.join("main");
-    assert!(exe.is_file(), "bare build writes ./main into the project root");
+    let exe = root.join(".rnx-cache").join("build").join("dev").join("sample_project");
+    assert!(exe.is_file(), "bare build writes .rnx-cache/build/dev/sample_project");
     let run = std::process::Command::new(&exe).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Hello from sample_project!\n");
