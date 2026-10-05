@@ -56,14 +56,13 @@ jobs:
           python3 benches/harness/runner.py --out benches/data/benchmarks.json
 
       - name: Ingest benchmarks into Turso
-        continue-on-error: true
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
           SITE_URL: ${{ vars.SITE_URL }}
         run: |
           if [ -z "$PUBLISH_TOKEN" ] || [ -z "$SITE_URL" ]; then
-            echo "benchmarks: PUBLISH_TOKEN or SITE_URL unset, skipping API ingest (branch push still runs)"
-            exit 0
+            echo "benchmarks: PUBLISH_TOKEN or SITE_URL unset, cannot ingest" >&2
+            exit 1
           fi
           python3 - <<'EOF'
           import json, os, urllib.request
@@ -87,20 +86,3 @@ jobs:
               print('benchmarks: API ingest', res.status, res.read().decode()[:200])
           EOF
 
-      - name: Deploy benchmarks to orphan branch
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          rm -rf /tmp/bench-upload
-          mkdir -p /tmp/bench-upload
-          cd /tmp/bench-upload
-
-          git init -b benchmarks
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          cp "$GITHUB_WORKSPACE/benches/data/benchmarks.json" ./benchmarks.json
-
-          git add benchmarks.json
-          git commit -m "chore(bench): update benchmarks.json [skip ci]"
-          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" benchmarks

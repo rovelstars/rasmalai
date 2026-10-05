@@ -4,10 +4,10 @@ import {
 	getVersionRow,
 	getLatestVersion,
 	getVersionBytes,
+	getVersionFile,
 	getPackageOwner,
 	getDependents,
 	readFileIndex,
-	selectVersionFile,
 	yankVersion,
 	recordTombstone,
 	checkPublishToken,
@@ -17,7 +17,7 @@ import {
 import { safeEqual, sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 import { specHeaders, splitNameVersion } from '$lib/server/registry';
 import { sanitizeGuideHtml } from '$lib/server/sanitize';
-import { parseTarEntries } from '$lib/server/chunks';
+import { decodeFileView } from '$lib/server/chunks';
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
 	return { ...specHeaders(), ...extra };
@@ -185,7 +185,7 @@ export async function GET({ params, platform, setHeaders, url }) {
 	}
 
 	if (sub === 'tree' && rest.length === 2) {
-		const files = readFileIndex(row.manifestJson);
+		const files = readFileIndex(row.tarManifestJson);
 		if (!files) {
 			return json(
 				{ code: 'no-file-index', message: `package ${full}@${version} ships no file index` },
@@ -204,35 +204,29 @@ export async function GET({ params, platform, setHeaders, url }) {
 				{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
 			);
 		}
-		let bytes: Uint8Array | null;
+		let found: { bytes: Uint8Array; size: number } | null;
 		try {
-			bytes = await getVersionBytes(env, row.id);
+			found = await getVersionFile(env, row.id, filePath);
 		} catch {
 			return json(
 				{ code: 'integrity-failed', message: `stored content for ${full}@${version} failed its integrity check` },
 				{ status: 500, headers: headers() }
 			);
 		}
-		if (!bytes) return notFound(`no stored content for ${full}@${version}`);
-		const selected = selectVersionFile(parseTarEntries(bytes), filePath);
-		if (!selected.ok) {
-			if (selected.status === 404) {
-				return json(
-					{ code: 'not-found', message: `path ${filePath} not found in ${full}@${version}` },
-					{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
-				);
-			}
+		if (!found) return notFound(`path ${filePath} not found in ${full}@${version}`);
+		const decoded = decodeFileView(found.bytes);
+		if (!decoded.ok) {
 			const message =
-				selected.code === 'too-large'
+				decoded.code === 'too-large'
 					? `path ${filePath} exceeds the 256 KiB file view limit`
 					: `path ${filePath} is not UTF-8 text`;
 			return json(
-				{ code: selected.code, message },
+				{ code: decoded.code, message },
 				{ status: 415, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
 			);
 		}
 		setHeaders({ ...immutable, ...specHeaders() });
-		return json({ path: selected.path, size: selected.size, text: selected.text }, { headers: headers() });
+		return json({ path: filePath, size: found.size, text: decoded.text }, { headers: headers() });
 	}
 
 	if ((sub === 'yank' || sub === 'takedown') && rest.length === 2) {

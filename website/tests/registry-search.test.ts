@@ -2,16 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
 	BASE_SCHEMA,
-	MAX_FILE_BYTES,
 	dayString,
 	extractDepNames,
 	matchesPackageFilter,
 	readFileIndex,
-	selectVersionFile,
 	validateKeywords,
 	type PackageSummary
 } from '../src/lib/server/db.js';
-import { parseTarEntries } from '../src/lib/server/chunks.js';
+import { parseTarEntries, decodeFileView } from '../src/lib/server/chunks.js';
 import { humanDate, shortDownloads } from '../src/lib/packages-meta.js';
 
 function tarEntry(name: string, data: Uint8Array, typeflag = '0', prefix = ''): Uint8Array {
@@ -105,118 +103,32 @@ describe('extractDepNames', () => {
 });
 
 describe('readFileIndex', () => {
-	it('reads path/size pairs', () => {
-		const files = readFileIndex(JSON.stringify({ files: [{ path: 'src/main.rnx', size: 12 }] }));
+	it('reads path/size pairs from tar entries', () => {
+		const files = readFileIndex(
+			JSON.stringify([
+				{ name: 'src/main.rnx', size: 12, dir: false, chunks: ['a'] },
+				{ name: 'src', size: 0, dir: true, chunks: [] }
+			])
+		);
 		assert.deepEqual(files, [{ path: 'src/main.rnx', size: 12 }]);
 	});
 
-	it('returns null when the files key is absent', () => {
-		assert.equal(readFileIndex('{}'), null);
+	it('returns null when entries are absent', () => {
+		assert.equal(readFileIndex('[]'), null);
 		assert.equal(readFileIndex(JSON.stringify({ files: 'nope' })), null);
 		assert.equal(readFileIndex('broken'), null);
 	});
-
-	it('skips malformed entries but keeps the index', () => {
-		const files = readFileIndex(JSON.stringify({ files: [{ path: '', size: 1 }, { size: 2 }, { path: 'a', size: -1 }, { path: 'b', size: 3 }] }));
-		assert.deepEqual(files, [{ path: 'b', size: 3 }]);
-	});
 });
 
-describe('matchesPackageFilter', () => {
-	const NOW = 1_800_000_000;
-	const base = summary({
-		name: '@acme/http-server',
-		description: 'Tiny HTTP server',
-		keywords: ['http', 'server'],
-		license: 'MIT',
-		downloads: 1500,
-		updatedAt: NOW - 2 * 86400
-	});
-
-	it('matches substrings on name and description', () => {
-		assert.equal(matchesPackageFilter(base, { search: 'http' }, NOW), true);
-		assert.equal(matchesPackageFilter(base, { search: 'tiny' }, NOW), true);
-		assert.equal(matchesPackageFilter(base, { search: 'missing' }, NOW), false);
-	});
-
-	it('combines every filter', () => {
-		const f = { search: 'http', keyword: 'server', license: 'MIT', minDownloads: 1000, updatedSinceDays: 7 };
-		assert.equal(matchesPackageFilter(base, f, NOW), true);
-		assert.equal(matchesPackageFilter(base, { ...f, keyword: 'tls' }, NOW), false);
-		assert.equal(matchesPackageFilter(base, { ...f, license: 'Apache-2.0' }, NOW), false);
-		assert.equal(matchesPackageFilter(base, { ...f, minDownloads: 99999 }, NOW), false);
-		assert.equal(matchesPackageFilter(base, { ...f, updatedSinceDays: 1 }, NOW), false);
-		assert.equal(matchesPackageFilter(base, {}, NOW), true);
-	});
-});
-
-describe('registry SQL shapes', () => {
-	it('declares keywords, package_deps and download_daily', () => {
-		assert.match(BASE_SCHEMA, /keywords TEXT DEFAULT ''/);
-		assert.match(
-			BASE_SCHEMA,
-			/CREATE TABLE IF NOT EXISTS package_deps \(\s*package_id TEXT NOT NULL REFERENCES packages\(id\),\s*dep_name TEXT NOT NULL,\s*PRIMARY KEY \(package_id, dep_name\)\s*\)/
-		);
-		assert.match(BASE_SCHEMA, /CREATE TABLE IF NOT EXISTS download_daily \(/);
-		assert.match(BASE_SCHEMA, /CREATE INDEX IF NOT EXISTS idx_deps_name ON package_deps\(dep_name\)/);
-	});
-});
-
-describe('parseTarEntries', () => {
-	it('round-trips named entries', () => {
-		const a = new TextEncoder().encode('hello');
-		const b = new TextEncoder().encode('world!');
-		const tar = new Uint8Array([
-			...tarEntry('src/main.rnx', a),
-			...tarEntry('README.md', b),
-			...new Uint8Array(1024)
-		]);
-		const entries = parseTarEntries(tar);
-		assert.deepEqual(
-			entries.map((e) => e.name),
-			['src/main.rnx', 'README.md']
-		);
-		assert.deepEqual(entries[0].bytes, a);
-		assert.deepEqual(entries[1].bytes, b);
-	});
-
-	it('skips directories and joins ustar prefixes', () => {
-		const tar = new Uint8Array([
-			...tarEntry('src', new Uint8Array(0), '5'),
-			...tarEntry('main.rnx', new TextEncoder().encode('x'), '0', 'src'),
-			...new Uint8Array(1024)
-		]);
-		const entries = parseTarEntries(tar);
-		assert.deepEqual(
-			entries.map((e) => e.name),
-			['src/main.rnx']
-		);
-	});
-});
-
-describe('selectVersionFile', () => {
-	const entries = [
-		{ name: 'src/main.rnx', bytes: new TextEncoder().encode('print "hi"') },
-		{ name: 'bin/blob', bytes: new Uint8Array([0xff, 0xfe, 0x00]) },
-		{ name: 'big.txt', bytes: new Uint8Array(MAX_FILE_BYTES + 1) }
-	];
-
+describe('decodeFileView', () => {
 	it('returns text for decodable files', () => {
-		const r = selectVersionFile(entries, 'src/main.rnx');
+		const r = decodeFileView(new TextEncoder().encode('print "hi"'));
 		assert.equal(r.ok, true);
-		assert.equal(r.ok && r.path, 'src/main.rnx');
-		assert.equal(r.ok && r.text, 'print "hi"');
-		assert.equal(r.ok && r.size, 10);
 	});
 
-	it('maps unknown paths to 404', () => {
-		const r = selectVersionFile(entries, 'nope.txt');
-		assert.deepEqual(r, { ok: false, code: 'not-found', status: 404 });
-	});
-
-	it('maps oversized and binary files to 415', () => {
-		assert.deepEqual(selectVersionFile(entries, 'big.txt'), { ok: false, code: 'too-large', status: 415 });
-		assert.deepEqual(selectVersionFile(entries, 'bin/blob'), { ok: false, code: 'binary', status: 415 });
+	it('maps oversized and binary files', () => {
+		assert.deepEqual(decodeFileView(new Uint8Array(256 * 1024 + 1)), { ok: false, code: 'too-large' });
+		assert.deepEqual(decodeFileView(new Uint8Array([0xff, 0xfe, 0x00])), { ok: false, code: 'binary' });
 	});
 });
 

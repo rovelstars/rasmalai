@@ -348,8 +348,8 @@ jobs:
           fi
           gh release upload "$tag" dist/*.tar.gz --clobber
 
-  seed-std:
-    name: seed stdlib docs to registry
+  publish-std:
+    name: publish stdlib packages to registry
     if: ${{ always() && needs.publish.result == 'success' }}
     needs: publish
     runs-on: ubuntu-24.04
@@ -368,16 +368,10 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: website/package-lock.json
 
-      - name: Install website deps
-        working-directory: website
-        run: npm ci --no-audit --no-fund
-
-      - name: Seed @std snapshots
+      - name: Publish @std packages
         working-directory: website
         env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: node scripts/seed-std.mjs
+          SITE_URL: ${{ vars.SITE_URL }}
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: node scripts/publish-std.mjs

@@ -11,6 +11,7 @@ import {
 	recentVersionCount,
 	putChunk,
 	linkVersionChunks,
+	storeTarManifest,
 	purgeUrls,
 	packagePointerUrls,
 	validateKeywords,
@@ -23,6 +24,7 @@ import {
 } from '$lib/server/db';
 import { specHeaders } from '$lib/server/registry';
 import { sanitizeGuideHtml } from '$lib/server/sanitize';
+import { marked } from 'marked';
 import { chunkTarball, sha256Hex } from '$lib/server/chunks';
 import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 
@@ -156,10 +158,13 @@ export async function POST({ request, platform, url }) {
 
 	const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 	const readme = str(meta['readme'], `# ${parsed.full}\n`);
-	const docJson = str(meta['docJson'], '{"modules":[]}');
+	// jsdoc snapshots are server-generated (docgen wasm at publish), never
+	// accepted from publishers: client-rendered API data is unverifiable.
+	const docJson = '{"modules":[]}';
 	const engineRange = str(meta['engineRange'], '');
-	const guides = Array.isArray(meta['guides']) ? (meta['guides'] as unknown[]) : [];
-	for (const g of guides) {
+	const guidesRaw = Array.isArray(meta['guides']) ? (meta['guides'] as unknown[]) : [];
+	const guides: Array<Record<string, string>> = [];
+	for (const g of guidesRaw) {
 		if (!g || typeof g !== 'object') {
 			return json({ success: false, error: 'invalid guide entry' }, { status: 400, headers: specHeaders() });
 		}
@@ -167,7 +172,12 @@ export async function POST({ request, platform, url }) {
 		if (typeof e['slug'] !== 'string' || typeof e['title'] !== 'string') {
 			return json({ success: false, error: 'guide needs slug and title' }, { status: 400, headers: specHeaders() });
 		}
-		if (typeof e['html'] === 'string') e['html'] = sanitizeGuideHtml(e['html']);
+		if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(e['slug'])) {
+			return json({ success: false, error: 'invalid guide slug' }, { status: 400, headers: specHeaders() });
+		}
+		const source = typeof e['source'] === 'string' ? e['source'] : '';
+		const html = sanitizeGuideHtml(String(marked.parse(source)));
+		guides.push({ slug: e['slug'], title: e['title'], html, source });
 	}
 	const guidesJson = JSON.stringify(guides);
 	let manifestJson = '{"deps":{}}';
@@ -257,14 +267,13 @@ export async function POST({ request, platform, url }) {
 			);
 		}
 		if (tarball) {
-			const units = await chunkTarball(tarball);
-			const stored = new Set<string>();
-			for (const u of units) {
-				if (stored.has(u.hash)) continue;
-				stored.add(u.hash);
+			const rowId = `ver_${packageId(parsed.scope, parsed.name)}_${version}`;
+			const chunked = await chunkTarball(tarball);
+			for (const u of chunked.units) {
 				await putChunk(env, u.hash, u.size, u.bytes);
 			}
-			await linkVersionChunks(env, `ver_${packageId(parsed.scope, parsed.name)}_${version}`, units.map((u) => u.hash));
+			await linkVersionChunks(env, rowId, chunked.units.map((u) => u.hash));
+			await storeTarManifest(env, rowId, chunked.entries);
 		}
 		await purgeUrls(env, packagePointerUrls(url.origin, parsed.full, version), { fullName: parsed.full });
 		return json({ success: true, url: `/packages/${parsed.full}`, version }, { status: 201, headers: specHeaders() });

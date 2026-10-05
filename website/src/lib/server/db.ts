@@ -1,6 +1,6 @@
 import { createClient, type Client } from '@libsql/client/web';
 import { maxSatisfying, parseSemver, levelize, satisfiesRange, selectLatestVersion } from './registry.js';
-import { sha256Hex } from './chunks.js';
+import { sha256Hex, rebuildTarball, type TarEntryRef } from './chunks.js';
 
 // Temporary ownership model (no account system yet): a single org owner.
 // `rovelstars` owns every scope published through the org token, and the
@@ -202,7 +202,6 @@ export function packageId(scope: string, name: string): string {
 export const KEYWORD_RE = /^[a-z0-9-]+$/;
 export const MAX_KEYWORDS = 12;
 export const MAX_KEYWORD_LEN = 64;
-export const MAX_FILE_BYTES = 256 * 1024;
 
 export function validateKeywords(v: unknown): string[] | null {
 	if (v === undefined) return [];
@@ -241,25 +240,25 @@ export interface FileIndexEntry {
 	size: number;
 }
 
-export function readFileIndex(manifestJson: string): FileIndexEntry[] | null {
-	let manifest: Record<string, unknown>;
+export function readFileIndex(tarManifestJson: string): FileIndexEntry[] | null {
+	let entries: unknown;
 	try {
-		manifest = JSON.parse(manifestJson) as Record<string, unknown>;
+		entries = JSON.parse(tarManifestJson);
 	} catch {
 		return null;
 	}
-	const files = manifest['files'];
-	if (!Array.isArray(files)) return null;
+	if (!Array.isArray(entries) || entries.length === 0) return null;
 	const out: FileIndexEntry[] = [];
-	for (const e of files) {
+	for (const e of entries) {
 		if (!e || typeof e !== 'object') continue;
 		const rec = e as Record<string, unknown>;
-		if (typeof rec['path'] !== 'string' || rec['path'].length === 0) continue;
+		if (rec['dir'] === true) continue;
+		if (typeof rec['name'] !== 'string' || rec['name'].length === 0) continue;
 		const size = Number(rec['size']);
 		if (!Number.isFinite(size) || size < 0) continue;
-		out.push({ path: rec['path'], size: Math.floor(size) });
+		out.push({ path: rec['name'], size: Math.floor(size) });
 	}
-	return out;
+	return out.length > 0 ? out : null;
 }
 
 export interface PackageFilter {
@@ -284,25 +283,6 @@ export function matchesPackageFilter(
 	if (f.minDownloads !== undefined && p.downloads < f.minDownloads) return false;
 	if (f.updatedSinceDays !== undefined && p.updatedAt < nowSec - f.updatedSinceDays * 86400) return false;
 	return true;
-}
-
-export type VersionFileResult =
-	| { ok: true; path: string; size: number; text: string }
-	| { ok: false; code: 'not-found' | 'too-large' | 'binary'; status: 404 | 415 };
-
-export function selectVersionFile(
-	entries: Array<{ name: string; bytes: Uint8Array }>,
-	path: string
-): VersionFileResult {
-	const hit = entries.find((e) => e.name === path);
-	if (!hit) return { ok: false, code: 'not-found', status: 404 };
-	if (hit.bytes.length > MAX_FILE_BYTES) return { ok: false, code: 'too-large', status: 415 };
-	try {
-		const text = new TextDecoder('utf-8', { fatal: true }).decode(hit.bytes);
-		return { ok: true, path, size: hit.bytes.length, text };
-	} catch {
-		return { ok: false, code: 'binary', status: 415 };
-	}
 }
 
 export function dayString(tsSec: number): string {
@@ -369,6 +349,7 @@ async function migrateSchema(db: Client): Promise<void> {
 		['manifest_json', "TEXT NOT NULL DEFAULT '{}'"],
 		['guides_json', "TEXT NOT NULL DEFAULT '[]'"],
 		['tarball_sha256', "TEXT NOT NULL DEFAULT ''"],
+		['tar_manifest_json', "TEXT NOT NULL DEFAULT '[]'"],
 		['request_id', "TEXT NOT NULL DEFAULT ''"]
 	];
 	for (const [col, ddl] of backfill) {
@@ -746,13 +727,14 @@ export interface VersionRow {
 	engineRange: string;
 	manifestJson: string;
 	guidesJson: string;
+	tarManifestJson: string;
 	requestId: string;
 	createdAt: number;
 }
 
 const VERSION_COLS = `v.id AS id, v.package_id AS package_id, v.version AS version,
 	v.readme_markdown AS readme_markdown, v.doc_json AS doc_json, v.checksum AS checksum,
-	v.tarball_sha256 AS tarball_sha256, v.engine_range AS engine_range,
+	v.tarball_sha256 AS tarball_sha256, v.tar_manifest_json AS tar_manifest_json, v.engine_range AS engine_range,
 	v.manifest_json AS manifest_json, v.guides_json AS guides_json, v.request_id AS request_id,
 	v.semver_major AS semver_major, v.semver_minor AS semver_minor, v.semver_patch AS semver_patch,
 	v.prerelease AS prerelease, v.status AS status, v.created_at AS created_at`;
@@ -764,6 +746,7 @@ function toVersionRow(r: Record<string, unknown>): VersionRow {
 		status: String(r['status'] ?? 'live'),
 		checksum: String(r['checksum'] ?? ''),
 		tarballSha256: String(r['tarball_sha256'] ?? ''),
+	tarManifestJson: String(r['tar_manifest_json'] ?? '[]'),
 		engineRange: String(r['engine_range'] ?? ''),
 		manifestJson: String(r['manifest_json'] ?? '{}'),
 		guidesJson: String(r['guides_json'] ?? '[]'),
@@ -1011,6 +994,51 @@ export async function linkVersionChunks(
 	);
 }
 
+export async function storeTarManifest(
+	env: Record<string, string | undefined>,
+	versionRowId: string,
+	entries: TarEntryRef[]
+): Promise<void> {
+	const db = getClient(env);
+	if (!db) throw new Error('missing database');
+	await ensureSchema(db);
+	await db.execute({
+		sql: 'UPDATE package_versions SET tar_manifest_json = ? WHERE id = ?',
+		args: [JSON.stringify(entries), versionRowId]
+	});
+}
+
+async function loadTarEntries(
+	db: NonNullable<ReturnType<typeof getClient>>,
+	versionRowId: string
+): Promise<{ expected: string; entries: TarEntryRef[]; byHash: Map<string, Uint8Array> } | null> {
+	const meta = await db.execute({
+		sql: 'SELECT tarball_sha256, tar_manifest_json FROM package_versions WHERE id = ?',
+		args: [versionRowId]
+	});
+	const row = meta.rows[0] as Record<string, unknown> | undefined;
+	if (!row) return null;
+	let entries: TarEntryRef[];
+	try {
+		entries = JSON.parse(String(row['tar_manifest_json'] ?? '[]')) as TarEntryRef[];
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(entries) || entries.length === 0) return null;
+	const rs = await db.execute({
+		sql: `SELECT c.hash AS hash, c.bytes AS bytes FROM manifest_chunks mc
+		      JOIN chunks c ON c.hash = mc.chunk_hash
+		      WHERE mc.version_id = ?`,
+		args: [versionRowId]
+	});
+	const byHash = new Map<string, Uint8Array>();
+	for (const r of rs.rows) {
+		const b = r['bytes'] as Uint8Array | ArrayBuffer;
+		byHash.set(String(r['hash']), b instanceof Uint8Array ? b : new Uint8Array(b));
+	}
+	return { expected: String(row['tarball_sha256'] ?? ''), entries, byHash };
+}
+
 export async function getVersionBytes(
 	env: Record<string, string | undefined>,
 	versionRowId: string
@@ -1018,33 +1046,42 @@ export async function getVersionBytes(
 	const db = getClient(env);
 	if (!db) return null;
 	await ensureSchema(db);
-	const meta = await db.execute({
-		sql: 'SELECT tarball_sha256 FROM package_versions WHERE id = ?',
-		args: [versionRowId]
-	});
-	const expected = String(meta.rows[0]?.['tarball_sha256'] ?? '');
-	const rs = await db.execute({
-		sql: `SELECT c.bytes AS bytes FROM manifest_chunks mc
-		      JOIN chunks c ON c.hash = mc.chunk_hash
-		      WHERE mc.version_id = ? ORDER BY mc.ord ASC`,
-		args: [versionRowId]
-	});
-	if (rs.rows.length === 0) return null;
-	const parts: Uint8Array[] = rs.rows.map((r) => {
-		const b = r['bytes'] as Uint8Array | ArrayBuffer;
-		return b instanceof Uint8Array ? b : new Uint8Array(b);
-	});
+	const loaded = await loadTarEntries(db, versionRowId);
+	if (!loaded) return null;
+	const out = rebuildTarball(loaded.entries, loaded.byHash);
+	if (loaded.expected && (await sha256Hex(out)) !== loaded.expected) {
+		throw new Error('assembled tarball failed integrity check');
+	}
+	return out;
+}
+
+export async function getVersionFile(
+	env: Record<string, string | undefined>,
+	versionRowId: string,
+	path: string
+): Promise<{ bytes: Uint8Array; size: number } | null> {
+	const db = getClient(env);
+	if (!db) return null;
+	await ensureSchema(db);
+	const loaded = await loadTarEntries(db, versionRowId);
+	if (!loaded) return null;
+	const entry = loaded.entries.find((e) => !e.dir && e.name === path);
+	if (!entry) return null;
+	const parts: Uint8Array[] = [];
+	for (const h of entry.chunks) {
+		const b = loaded.byHash.get(h);
+		if (!b) throw new Error(`missing chunk ${h}`);
+		parts.push(b);
+	}
 	const total = parts.reduce((n, p) => n + p.length, 0);
+	if (total !== entry.size) throw new Error(`size mismatch for ${path}`);
 	const out = new Uint8Array(total);
 	let off = 0;
 	for (const p of parts) {
 		out.set(p, off);
 		off += p.length;
 	}
-	if (expected && (await sha256Hex(out)) !== expected) {
-		throw new Error('assembled tarball failed integrity check');
-	}
-	return out;
+	return { bytes: out, size: entry.size };
 }
 
 export async function findOrphanChunks(

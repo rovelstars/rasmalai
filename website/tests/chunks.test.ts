@@ -1,13 +1,34 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chunkTarball, splitTarFiles, sha256Hex } from '../src/lib/server/chunks.js';
+import { chunkTarball, rebuildTarball, sha256Hex } from '../src/lib/server/chunks.js';
 
 function tarEntry(name: string, data: Uint8Array): Uint8Array {
 	const header = new Uint8Array(512);
 	header.set(new TextEncoder().encode(name.slice(0, 100)));
-	const size = data.length.toString(8).padStart(11, '0') + ' ';
-	header.set(new TextEncoder().encode(size), 124);
+	const oct = (off: number, len: number, value: number) => {
+		const digits = value.toString(8);
+		const pad = len - 1 - digits.length;
+		for (let i = 0; i < pad; i++) header[off + i] = 48;
+		for (let i = 0; i < digits.length; i++) header[off + pad + i] = digits.charCodeAt(i);
+		header[off + len - 1] = 0;
+	};
+	oct(100, 8, 0o644);
+	oct(108, 8, 0);
+	oct(116, 8, 0);
+	oct(124, 12, data.length);
+	oct(136, 12, 0);
+	for (let i = 148; i < 156; i++) header[i] = 32;
 	header[156] = 48;
+	header.set(new TextEncoder().encode('ustar\0'), 257);
+	header.set(new TextEncoder().encode('00'), 263);
+	header.set(new TextEncoder().encode('rnx'), 265);
+	header.set(new TextEncoder().encode('rnx'), 297);
+	let sum = 0;
+	for (let i = 0; i < 512; i++) sum += header[i];
+	const sumText = sum.toString(8).padStart(6, '0');
+	for (let i = 0; i < 6; i++) header[148 + i] = sumText.charCodeAt(i);
+	header[154] = 0;
+	header[155] = 32;
 	const blocks = Math.ceil(data.length / 512);
 	const out = new Uint8Array(512 + blocks * 512);
 	out.set(header);
@@ -15,33 +36,43 @@ function tarEntry(name: string, data: Uint8Array): Uint8Array {
 	return out;
 }
 
+const concat = (xs: Uint8Array[]): Uint8Array => {
+	const out = new Uint8Array(xs.reduce((n, x) => n + x.length, 0));
+	let off = 0;
+	for (const x of xs) {
+		out.set(x, off);
+		off += x.length;
+	}
+	return out;
+};
+
 describe('chunk store', () => {
-	it('keeps ordered units with repeats for identical files', async () => {
+	it('dedups identical files while keeping both entries', async () => {
 		const a = new TextEncoder().encode('hello world');
-		const tar = new Uint8Array([
-			...tarEntry('a.txt', a),
-			...tarEntry('b.txt', a),
-			...new Uint8Array(1024)
-		]);
-		assert.equal(splitTarFiles(tar).length, 2);
-		const units = await chunkTarball(tar);
-		assert.equal(units.length, 2);
+		const tar = concat([tarEntry('a.txt', a), tarEntry('b.txt', a), new Uint8Array(1024)]);
+		const { units, entries } = await chunkTarball(tar);
+		assert.equal(units.length, 1);
 		assert.equal(units[0].hash, await sha256Hex(a));
-		assert.equal(units[1].hash, units[0].hash);
+		assert.deepEqual(
+			entries.map((e) => [e.name, e.size]),
+			[
+				['a.txt', a.length],
+				['b.txt', a.length]
+			]
+		);
 	});
 
-	it('round-trips tar files through chunks to bytes', async () => {
+	it('round-trips tar bytes through chunks byte-identically', async () => {
 		const a = new TextEncoder().encode('hello world');
 		const big = new Uint8Array(200 * 1024);
 		for (let off = 0; off < big.length; off += 65536) {
 			crypto.getRandomValues(big.subarray(off, Math.min(off + 65536, big.length)));
 		}
-		const tar = new Uint8Array([...tarEntry('a.txt', a), ...tarEntry('big.bin', big), ...new Uint8Array(1024)]);
-		const files = splitTarFiles(tar);
-		const units = await chunkTarball(tar);
-		const joined = Buffer.concat(units.map((u) => Buffer.from(u.bytes)));
-		assert.equal(joined.length, files.reduce((n, f) => n + f.length, 0));
-		assert.deepEqual(joined, Buffer.concat(files.map((f) => Buffer.from(f))));
+		const tar = concat([tarEntry('a.txt', a), tarEntry('big.bin', big), new Uint8Array(1024)]);
+		const { units, entries } = await chunkTarball(tar);
+		const byHash = new Map(units.map((u) => [u.hash, u.bytes] as [string, Uint8Array]));
+		const rebuilt = rebuildTarball(entries, byHash);
+		assert.deepEqual(rebuilt, tar);
 	});
 
 	it('cdc-splits large files and keeps small ones whole', async () => {
@@ -49,8 +80,8 @@ describe('chunk store', () => {
 		for (let off = 0; off < big.length; off += 65536) {
 			crypto.getRandomValues(big.subarray(off, Math.min(off + 65536, big.length)));
 		}
-		const tar = new Uint8Array([...tarEntry('big.bin', big), ...new Uint8Array(1024)]);
-		const units = await chunkTarball(tar);
+		const tar = concat([tarEntry('big.bin', big), new Uint8Array(1024)]);
+		const { units } = await chunkTarball(tar);
 		assert.ok(units.length > 1);
 		const total = units.reduce((n, u) => n + u.size, 0);
 		assert.equal(total, big.length);
