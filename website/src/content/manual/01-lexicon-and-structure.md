@@ -28,6 +28,30 @@ fn quote(base: Float): Float {
 print(quote(2.0));
 ```
 
+### Documenting libraries with JSDoc
+
+Library developers document with `/** */` blocks and `//!` module lines — the same shapes above, plus `@tags` the tooling understands. A doc block attaches to the item that follows it (functions, interfaces, and their members); each leading `*` is stripped. `/**/` attaches to nothing, and `///` is a plain comment despite the familiar look.
+
+```rnx
+//! Pricing helpers for the order book.
+
+/**
+ * Scale a quote by demand pressure.
+ *
+ * @param base The unadjusted quote.
+ * @returns The scaled quote, always finite.
+ * @throws When pressure is negative.
+ *
+ * @example
+ * quote(2.0)
+ */
+fn quote(base: Float): Float {
+    return base;
+}
+```
+
+A line starting with `@` plus a letter opens a tag; `@param` takes the parameter name first, everything else after the tag name is prose (continuation lines join it). `@returns` (or `@return`), `@throws` (or `@error`), and `@example` render as labeled sections in `rnx doc`; any other `@tag` renders generically with its name. These docs feed the API reference: `rnx doc` embeds them per module, and published packages serve them from the registry for rendering and editor hovers.
+
 ## Whitespace and statements
 
 Statements terminate at newlines and `}` boundaries; no semicolon separator is required. A lone `;` is a valid empty statement and is permitted anywhere a statement is permitted, including as a loop body or between items.
