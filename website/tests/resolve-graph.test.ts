@@ -3,12 +3,9 @@ import assert from 'node:assert/strict';
 import { pruneHit, type HaveEntry, type ResolveNode } from '../src/lib/server/db.js';
 import { levelize } from '../src/lib/server/registry.js';
 
-// resolveGraph needs Turso: db.ts imports the @libsql/client web flavor,
-// which rejects file: URLs, so no temp-file DB works here. These tests pin
-// the pure pieces instead: the have-pruning predicate and the exact
-// levelize wiring resolveGraph uses (dep names mapped to full@version ids,
-// levels mapped back to nodes).
-
+// db.ts imports the @libsql/client web flavor, which rejects file: URLs, so
+// resolveGraph itself cannot run against a temp-file DB. These tests pin the
+// pure pieces instead: pruneHit, and the levelize wiring resolveGraph uses.
 function wireLevels(nodes: ResolveNode[], resolved: Record<string, string>): ResolveNode[][] {
 	const order = levelize(
 		nodes.map((n) => ({

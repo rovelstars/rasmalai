@@ -1,10 +1,6 @@
 import { argon2id } from 'hash-wasm';
 import { getClient, ensureSchema } from './db.js';
 
-// TEMPORARY accounts system: username+password with single-member orgs,
-// good enough for registry testing. MUST be replaced by Rovel Stars'
-// unified accounts system (shared identity, OAuth, teams). Do not grow
-// this file toward a real identity product.
 export const SESSION_COOKIE = 'rnx_session';
 const SESSION_DAYS = 30;
 const USERNAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;

@@ -51,7 +51,13 @@ export function sanitizeGuideHtml(html: string): string {
 			continue;
 		}
 		if (m[4] !== undefined) {
-			if (dropDepth === 0) out.push('<');
+			if (dropDepth > 0) continue;
+			// A '<' followed by a letter or '/' opens a tag for the browser even
+			// though this tokenizer found no closing '>', so a trailing
+			// '<img src=x onerror=alert(1)' becomes a live element once the
+			// surrounding markup supplies the '>'. Escape that case; a bare '<'
+			// in prose stays literal.
+			out.push(/[a-zA-Z/!?]/.test(s[re.lastIndex] ?? '') ? '&lt;' : '<');
 			continue;
 		}
 		const full = m[0];
