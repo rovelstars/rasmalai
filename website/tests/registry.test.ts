@@ -5,6 +5,7 @@ import {
 	compareSemver,
 	satisfiesRange,
 	maxSatisfying,
+	splitNameVersion,
 	selectLatestVersion,
 	isValidRange,
 	levelize
@@ -110,5 +111,16 @@ describe('levelize', () => {
 			{ id: 'a', deps: ['b'] },
 			{ id: 'b', deps: ['a'] }
 		]), /cycle/);
+	});
+});
+
+describe('splitNameVersion', () => {
+	it('splits name@version in one segment', () => {
+		assert.deepEqual(splitNameVersion('fs@0.1.0'), { name: 'fs', version: '0.1.0' });
+		assert.deepEqual(splitNameVersion('fs@1.2.3-rc.1'), { name: 'fs', version: '1.2.3-rc.1' });
+		assert.deepEqual(splitNameVersion('fs'), { name: 'fs', version: null });
+		assert.deepEqual(splitNameVersion('@std'), { name: '@std', version: null });
+		assert.deepEqual(splitNameVersion('fs@bar'), { name: 'fs@bar', version: null });
+		assert.deepEqual(splitNameVersion('a@b@c@2.0.0'), { name: 'a@b@c', version: '2.0.0' });
 	});
 });

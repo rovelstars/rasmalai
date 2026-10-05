@@ -6,6 +6,7 @@
 	import { renderMarkdown } from '$lib/docs/markdown';
 	import AuraCode from '$lib/components/AuraCode.svelte';
 	import { shortDownloads, humanDate } from '$lib/packages-meta';
+	import { importSnippet } from '$lib/docs/stdlib';
 
 	let { data } = $props();
 	let pkg = $derived(data.pkg);
@@ -57,7 +58,7 @@
 	function nav(next: { tab?: string; v?: string }) {
 		const t = next.tab ?? tab;
 		const v = next.v ?? activeVersion.version;
-		const base = v === pkg.latest ? `/packages/${pkg.name}` : `/packages/${pkg.name}/${v}`;
+		const base = v === pkg.latest ? `/packages/${pkg.name}` : `/packages/${pkg.name}@${v}`;
 		goto(`${base}?tab=${t}`, { keepFocus: true });
 	}
 
@@ -74,7 +75,7 @@
 	async function loadTree() {
 		if (tree !== null || treeError !== null) return;
 		try {
-			const res = await fetch(`/api/packages/${pkg.name}/${activeVersion.version}/tree`);
+			const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/tree`);
 			if (!res.ok) {
 				treeError = res.status === 404 ? 'No file listing for this version yet.' : 'Could not load the file listing.';
 				return;
@@ -93,7 +94,7 @@
 		fileLoading = true;
 		try {
 			const res = await fetch(
-				`/api/packages/${pkg.name}/${activeVersion.version}/file?path=${encodeURIComponent(path)}`
+				`/api/packages/${pkg.name}@${activeVersion.version}/file?path=${encodeURIComponent(path)}`
 			);
 			if (!res.ok) {
 				fileError = res.status === 404 ? 'File not found in this version.' : 'Could not load the file.';
@@ -131,7 +132,7 @@
 			return;
 		}
 		try {
-			const res = await fetch(`/api/packages/${pkg.name}/${activeVersion.version}/api`);
+			const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/api`);
 			if (!res.ok) {
 				manifestDeps = [];
 				return;
@@ -267,6 +268,17 @@
 			>
 			<span>by <span class="text-aura-text">@{pkg.author.replace(/^@/, '')}</span></span>
 		</p>
+		{#if pkg.name.startsWith('@std/')}
+			<p class="mt-2 text-sm text-aura-muted"><code class="font-mono text-[13px]">{importSnippet(pkg.name.slice('@std/'.length))}</code></p>
+		{/if}
+		{#if pkg.name === '@std/prelude'}
+			<p class="mt-2 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm">
+				<span class="font-mono text-[11px] uppercase tracking-wider text-emerald-400">implicit scope</span><br />
+				Symbols in <code class="font-mono text-[13px]">@std/prelude</code> are available in every Rasmalai
+				source file out-of-the-box without an explicit import. Explicit imports are supported for
+				disambiguation.
+			</p>
+		{/if}
 		<div class="mt-3 flex items-center gap-2">
 			<code class="tabular flex-1 overflow-x-auto rounded bg-aura-bg px-3 py-2 font-mono text-[13px] text-aura-cyan"
 				>rnx add {pkg.name}</code

@@ -7,10 +7,10 @@ describe('purge', () => {
 		const urls = packagePointerUrls('https://example.com', '@acme/a', '1.0.0');
 		assert.ok(urls.includes('https://example.com/api/packages'));
 		assert.ok(urls.includes('https://example.com/api/packages/@acme/a'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a/1.0.0'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a/1.0.0/download'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a/1.0.0/api'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a/1.0.0/guides'));
+		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0'));
+		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/download'));
+		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/api'));
+		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/guides'));
 	});
 
 	it('never throws and reports verification', async () => {

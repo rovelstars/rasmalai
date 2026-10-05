@@ -25,9 +25,9 @@ Retries are safe. Publish accepts an `X-RNX-Request-ID` idempotency key; repeati
 
 Yank is reversible-looking but one-way, and takedown is forever. Both keep the number burned per the rule above.
 
-`POST /api/packages/<name>/<version>/yank` flips a live version to `yanked`. The metadata still serves, now with `"status": "yanked"`. Pinned requirements keep resolving — yanked versions stay in the candidate set — but the latest pointer and the catalog skip them, so new floating ranges move past. Yanking a version that is not live fails with 409 (`version <v> is not live`).
+`POST /api/packages/<name>@<version>/yank` flips a live version to `yanked`. The metadata still serves, now with `"status": "yanked"`. Pinned requirements keep resolving — yanked versions stay in the candidate set — but the latest pointer and the catalog skip them, so new floating ranges move past. Yanking a version that is not live fails with 409 (`version <v> is not live`).
 
-`POST /api/packages/<name>/<version>/takedown` needs the admin token. It writes a tombstone row carrying the reason and every later read of that version answers 410 `{ code: "withdrawn", reason }` with a one-year immutable cache. The number never comes back.
+`POST /api/packages/<name>@<version>/takedown` needs the admin token. It writes a tombstone row carrying the reason and every later read of that version answers 410 `{ code: "withdrawn", reason }` with a one-year immutable cache. The number never comes back.
 
 Only the `@std/*` scope has a further carve-out, `DELETE /api/scopes/{scope}/{name}@{version}`, which needs the org admin plus a second approval. It has no CLI path.
 
@@ -45,10 +45,11 @@ The fixed paths are:
 |---|---|
 | `GET /api/packages` | catalog of package summaries |
 | `GET /api/packages/<name>` (or `@<scope>/<name>`) | 302 to the latest versioned URL, never content |
-| `GET .../<version>` | metadata: status, checksums, engine range, download/api/guides links |
-| `GET .../<version>/download` | the tarball bytes, immutable for a year |
+| `GET .../<name>@<version>` | pinned version; older `/<name>/<version>` path form 308-redirects here |
+| `GET .../<name>@<version>` | metadata: status, checksums, engine range, download/api/guides links |
+| `GET .../<name>@<version>/download` | the tarball bytes, immutable for a year |
 | `GET .../<version>/api` | the jsdoc snapshot JSON |
-| `GET .../<version>/guides[/<slug>]` | guide index or one guide, 404 when the package ships none |
+| `GET .../<name>@<version>/guides[/<slug>]` | guide index or one guide, 404 when the package ships none |
 
 Version metadata and tarballs cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410.
 
