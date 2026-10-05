@@ -403,7 +403,7 @@
 		<section class="mt-10" aria-labelledby="std-heading">
 			<h2 id="std-heading" class="text-lg font-bold tracking-tight">Standard library</h2>
 			<p class="mt-1 text-sm text-aura-muted">
-				Ships with the compiler — nothing to install. Full reference lives under
+				Embedded in the toolchain today — registry versions are on the way. Full reference lives under
 				<a href="/docs/@std/prelude/overview" class="text-aura-purple hover:underline">docs</a>.
 			</p>
 			<ul class="mt-3 flex flex-wrap gap-1.5">

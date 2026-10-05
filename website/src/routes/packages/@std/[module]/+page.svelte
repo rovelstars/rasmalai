@@ -102,7 +102,6 @@
 		{:else}
 			<p class="mt-3 text-sm text-aura-muted">{blurb}</p>
 		{/if}
-		<p class="mt-3 text-sm text-aura-muted">Ships with the compiler — nothing to install.</p>
 		<p class="tabular mt-3 font-mono text-[11px] text-aura-muted">
 			{counts ?? 'No API data yet'}
 		</p>
