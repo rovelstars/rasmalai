@@ -4,36 +4,42 @@ description: "What Rasmalai is, how to install the toolchain, and your first run
 icon: "Rocket"
 ---
 
-# Introduction: A Language That Frees On Time
+# Introduction
 
-Rasmalai is a systems language with one radical promise: **every value is freed at a point you can see in the source**. No garbage collector pausing your program, no borrow checker negotiating with you, no manual `free` to forget. A scope ends, its values drop — deterministically, on the same thread, with zero pause.
+If you are reading this, you probably want to learn how to write programs in rnx. Good — you have come to the right place. This guide will take you from an empty folder to working programs: variables and numbers, functions, collections, error handling, modules, and the toolchain itself, with runnable examples at every step.
 
-Everything else follows from that promise:
+Sounds good? Great. Let's get started.
 
-- **One static binary** (`rnx`) covers editing, running, testing, formatting, and shipping.
-- **Native 64-bit types everywhere** — `Int` is always 64 bits, `Float` is always IEEE-754 double. No platform surprises.
-- **Four backends, one semantics** — interpreter, Cranelift JIT, LLVM, and AOT binaries all run the same code the same way.
+## Before you begin
 
-## Install the toolchain
+Writing in rnx is fun and all, but there are a couple of prerequisites. To follow this guide, you should be comfortable with basic programming ideas already: variables, `if` statements, loops, and functions. You do not need to know Rust, C++, or TypeScript — this guide explains everything from scratch — but trying to learn your first language and a systems language at the same time will only slow you down. You will get stuck on simple issues, struggle with easy fixes, and end up frustrated. Not fun.
 
-Everything ships in one binary:
+If programming itself is still new to you, pick up the basics in Python or JavaScript first (MDN's JavaScript guide and [Eloquent JavaScript](https://eloquentjavascript.net/) are both free and good), then come back. rnx will still be here.
+
+One more thing worth knowing up front: rnx has one central promise. **Every value is freed at a point you can see in the source.** No garbage collector pausing your program, no borrow checker arguing with you, no manual `free` to forget. A scope ends, its values drop — deterministically, on the same thread. Everything in this guide follows from that.
+
+## Installing rnx
+
+Everything ships in one binary. Grab it with the installer for your OS:
 
 ```sh
 curl -fsSL https://rnx.dev/install.sh | sh
 ```
 
-The script detects your OS and CPU and places `rnx` in `~/.local/bin` (`%LOCALAPPDATA%\rnx\bin` on Windows). Confirm it:
+The script detects your OS and CPU and places `rnx` in `~/.local/bin` (`%LOCALAPPDATA%\rnx\bin` on Windows, where you would run `irm https://rnx.dev/install.ps1 | iex` in PowerShell instead). Now make sure it actually works:
 
 ```sh
 rnx --version
 ```
 
+You should see something like `rnx 0.1.0`. If the terminal says the command was not found, the installer directory is not on your `PATH` yet — open a fresh terminal (installers update `PATH` for new shells only) and try again. Still stuck? Jump to [Troubleshooting](/guide/11-troubleshooting-and-reinstall), which walks through reinstalling cleanly per OS.
+
 > [!TIP]
-> Not ready to install? Every code example in this guide has an **Open in Playground** button that runs it in your browser — no setup at all.
+> Not ready to install? Every example in this guide runs in the browser Playground — no setup at all. Installing is still worth it: the real toolchain adds files, packages, and tests.
 
 ## Your first program
 
-Scaffold a project and run it:
+With `rnx` on your `PATH`, scaffold a project and run it:
 
 ```sh
 rnx init hello
@@ -41,11 +47,22 @@ cd hello
 rnx run
 ```
 
+You will see:
+
+```text
+Initialized project `hello` in .../hello
+  manifest: Project.config
+  entries.main: src/main.rnx
+Next: cd hello && rnx run
+```
+
+and then, from `rnx run`:
+
 ```text
 Hello from hello!
 ```
 
-The scaffold created two things: a `Project.config` manifest and `src/main.rnx`. Open the source file:
+Congratulations — that is a real rnx program, compiled and executed. Open `src/main.rnx` and look at what you got:
 
 ```rnx
 fn Main(): Int {
@@ -54,53 +71,16 @@ fn Main(): Int {
 }
 ```
 
-The scaffold uses a named `Main` entry point and greets you with the project name. Top-level statements with no wrapper work too — that is the shape used for the rest of this page.
+Here is what just happened. `rnx init hello` created a folder with a `Project.config` manifest and an entry file at `src/main.rnx`. `fn Main(): Int` is the entry function: the program starts there, `print` writes to the terminal, and the returned `Int` becomes the process exit code (`0` means success). Try changing the message, run `rnx run` again, and watch your edit take effect. That loop — edit, run, see — is the whole development cycle for the next few chapters.
 
-Three ideas are packed in here, and they recur everywhere:
+## How this guide works
 
-- The entry file runs top-level statements directly — no `main` wrapper needed. A top-level `return <Int>` sets the process exit code (`0` means success); falling through returns `0`. An explicit `fn main(): Int` / `fn Main(): Int` still works when you want it.
-- `print()` writes its arguments separated by spaces, then a newline. It works identically on every backend, which is why this guide uses it instead of a debugger.
-- Blocks use curly braces and statements need no semicolons. If you have written Go, Rust, or TypeScript, your fingers already know the way.
+Each chapter follows the same rhythm: a short explanation, a complete program you can run, and then a breakdown of what the program did. callouts mark the traps:
 
-Try changing it — add a second line and run again:
+- `> [!NOTE]` — something that surprises most newcomers.
+- `> [!TIP]` — the easier way, once you know it exists.
+- `> [!WARNING]` — something that will bite you if you ignore it.
 
-```rnx
-let name = "ore";
-print("hello,", name);
-print("2 + 2 =", 2 + 2);
-```
+Chapters link forward and back, so if a snippet uses something unfamiliar, follow the link instead of guessing. And if an error message confuses you at any point, [Error Handling](/guide/07-error-handling) teaches you to read diagnostics, and [Troubleshooting](/guide/11-troubleshooting-and-reinstall) covers everything else.
 
-`rnx run` executes through the interpreter in milliseconds. When you want a real binary instead, `rnx build --release` compiles through LLVM and links a stripped native executable with the same output.
-
-> [!NOTE]
-> You will see `fn Main(): Int` (capital M) in some reference pages. Both spellings compile, and both are optional: top-level statements run as-is in files, in `rnx run`, and in the browser playground. Top-level `await` works there too.
-
-## Check without running
-
-`rnx check` parses and typechecks without generating code. It finishes in milliseconds, which makes it the command you will reach for most while editing:
-
-```sh
-rnx check
-```
-
-```text
-Checked hello (ok)
-```
-
-Now break something on purpose — delete a brace — and run `rnx check` again. The diagnostic names an error code, points at the exact column, and suggests a fix. Every error in Rasmalai looks like this, and the codes are documented in the [Language Manual](/manual/16-project-and-toolchain).
-
-## Where to go next
-
-This guide walks you from zero to productive in nine short chapters:
-
-1. **Basics and Types** — bindings, 64-bit numbers, strings, operators.
-2. **Control Flow** — branches, loops, `switch`, and `defer`.
-3. **Functions and Closures** — signatures, lambdas, and defaults.
-4. **Data Structures** — structs, classes, records, enums.
-5. **Collections** — arrays, maps, sets, and functional transforms.
-6. **Error Handling** — `null` and `T?`, `Result`, `throws`, `try`/`catch`.
-7. **Modules and Packages** — imports, the standard library, manifests.
-8. **AI Assistants & MCP** — connect agents and harnesses through `rnx mcp`.
-9. **Troubleshooting & Reinstall** — read diagnostics, fix breakage, reinstall cleanly.
-
-Coming from another language? Jump to your [Rosetta guide](/guide/rosetta/from-rust) for side-by-side translations. Want exact semantics instead of stories? The [Language Manual](/manual/02-numeric-model) is the normative reference.
+Ready? [Basics and Types](/guide/02-basics-and-types) is next: naming values and numbers that mean exactly what they say.

@@ -6,22 +6,21 @@ icon: "Monitor"
 
 # Editor Setup
 
-Every editor integration talks to the same server: `rnx lsp` over stdio. It typechecks the open files on every change and pushes back errors and lint warnings with their `E`/`L` codes. The fastest way to get it running is the setup command:
+Reading code in a plain text box gets old fast. Every editor integration talks to the same server — `rnx lsp` over stdio — which typechecks your open files on every change and pushes back errors and lint warnings with their `E`/`L` codes. The fastest way to get it running is the setup command:
 
 ```sh
 rnx setup vscode   # or: zed, helix, neovim
 ```
 
-`rnx` itself must be on `PATH` first — that is the one thing every editor needs. If it is not installed yet:
+`rnx` itself must be on `PATH` first — that is the one thing every editor needs. If it is not installed yet, go back to [Introduction](/guide/01-introduction) and install it, then confirm:
 
 ```sh
-curl -fsSL https://rnx.dev/install.sh | sh
 rnx --version
 ```
 
-Each `rnx setup <editor>` prints exactly what it changed and what to do next. Unknown names fail with the supported list, so `rnx setup emacs` tells you the four it knows. The rest of this page shows what the command does per editor, so you can also do it by hand.
+Each `rnx setup <editor>` prints exactly what it changed and what to do next. Unknown names fail with the supported list, so `rnx setup emacs` tells you the four it knows. The rest of this page shows what the command does per editor, so you can also do it by hand — or understand what the command did to your config.
 
-Check that the server answers before blaming the editor:
+Before blaming the editor, check that the server answers on its own. Typecheck a file straight from the terminal:
 
 ```rnx
 fn Main(): Int {
@@ -35,7 +34,7 @@ fn Main(): Int {
 rnx check main.rnx
 ```
 
-Exit code `0` with no output means the file is clean — the same result the editor should show as zero squiggles.
+Exit code `0` with no output means the file is clean — the same result the editor should show as zero squiggles. If the terminal disagrees with the editor, the problem is the wiring, not your code.
 
 ## <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/visualstudiocode.svg" alt="VS Code" width="20" height="20" class="harness-logo harness-inv" /> VS Code
 
@@ -168,8 +167,10 @@ Restart Neovim and open a `.rnx` file. The server roots itself at `Project.confi
 
 ## When it does not work
 
+Three causes cover nearly everything, so check them in order before reinstalling anything:
+
 - `rnx: command not found` in the editor log means `PATH` differs between your shell and the editor. Launch the editor from the shell once, or set an absolute binary path (VS Code's `rasmalai.serverPath`, Zed's `binary.path`).
 - Stale squiggles after an upgrade mean the editor kept an old server alive. Restart the editor so it respawns `rnx lsp` from the new binary.
 - To see the raw protocol, most clients have a trace setting — VS Code exposes it as `rasmalai.trace.server`. Server-side log lines go to stderr, never to the protocol stream.
 
-From here, the [AI Assistants](/guide/10-ai-assistants) page wires the same toolchain into agents through `rnx mcp`.
+If none of that helps, the problem is probably not the editor at all — work through [Troubleshooting](/guide/11-troubleshooting-and-reinstall). From here, the [AI Assistants](/guide/10-ai-assistants) page wires the same toolchain into agents through `rnx mcp`.

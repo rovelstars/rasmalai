@@ -6,11 +6,11 @@ icon: "Hash"
 
 # Basics and Types
 
-Two topics, learned together: giving names to values, and numbers that mean exactly what they say. Nearly every beginner surprise lives here, so read this chapter even if the rest of the guide feels familiar.
+Two topics, learned together: giving names to values, and numbers that mean exactly what they say. Nearly every beginner surprise lives in this chapter, so read it even if the rest of the guide feels familiar.
 
-## Bindings with let and const
+## Naming values with let and const
 
-`let` declares a mutable binding, `const` an immutable one. Names must be declared before use — there are no implicit globals, so typos fail fast instead of becoming mystery state:
+`let` declares a binding you can reassign; `const` declares one you cannot. Names must be declared before use — there are no implicit globals, so a typo fails fast instead of becoming mystery state:
 
 ```rnx
 let score = 0;
@@ -19,7 +19,7 @@ const label = "score:";
 print(label, score);
 ```
 
-Type annotations are optional on bindings but always allowed. Put them where they document intent:
+That prints `score: 10`. Type annotations are optional on bindings but always allowed — put them where they document intent:
 
 ```rnx
 const maxRetries: Int = 3;
@@ -31,60 +31,48 @@ print("tried", attempt, "times");
 ```
 
 > [!NOTE]
-> `let` is mutable by default — the opposite of Rust. Reach for `const` when you mean immutable.
+> `let` is mutable by default — the opposite of Rust. Reach for `const` when you mean it: the compiler rejects any later assignment, which turns whole classes of accidents into compile errors.
+
+**Common mistake:** reassigning a `const`, or assigning a different type to a `let`. Bindings keep the type they are born with — `let a = 2; a = "hello";` does not compile. When you see a type error on assignment, check the first line, not the failing one.
 
 ## One integer type: Int
 
-`Int` is always 64 bits on every platform. There is no platform-dependent `int`, no `long` that changes size between operating systems, and no `u8`/`i32` family to juggle for everyday counting. The range is roughly +/-9.2e18 - if you outgrow that, you will know.
+`Int` is always a signed 64-bit whole number on every platform. There is no platform-dependent `int`, no `long` that changes size between operating systems, no `u8`/`i32` family to juggle for everyday counting. The range is roughly ±9.2e18 — if you outgrow that, you will know.
 
-Arithmetic wraps on overflow with two's-complement semantics. Division or remainder by zero is a runtime fatal — never undefined behavior, never a wrong answer served quietly:
-
-```rnx
-let big: Int = 9_000_000_000_000_000_000;
-print(big + 1);
-print(17 / 5, 17 % 5);
-print(0xFF, 0b1010);
-```
-
-Underscores group digits (`9_000`), `0x` writes hex, `0b` writes binary. The bitwise operators `&`, `|`, `^`, and unary `~` work on `Int`:
+Arithmetic wraps on overflow with two's-complement semantics. Division or remainder by zero is a runtime fatal — never undefined behavior, never a quietly wrong answer:
 
 ```rnx
-let flags = 0b1010;
-print(flags & 0b0010);
-print(flags | 0b0101);
+print(41 + 1);
+print(7 / 2);
+print(7 % 3);
 ```
 
-Shifts work on `Int` too: `<<` (left), `>>` (arithmetic right, sign-extending), `>>>` (logical right, zero-fill). All three bind tighter than comparisons but looser than `+`/`-`, and the shift amount masks to 6 bits (`x << 67` shifts by 3):
+That prints `42`, `3` (integer division truncates), and `1`. Convert a float with `Int(x)`, which truncates toward zero, and render a number with `toString()`:
 
 ```rnx
-print(1 << 3);
-print((-8) >> 2);
-print((-1) >>> 1);
+print(Int(2.9));
+print(Int(-2.9));
 ```
 
-Compound forms `<<=`, `>>=`, `>>>=` update in place.
+Both print as you would expect: `2` and `-2`.
+
+> [!WARNING]
+> `Int()` on a `String` is an error, not a parse. Convert explicitly before doing arithmetic on CLI arguments or parsed text — there is no silent string-to-number coercion anywhere in the language.
 
 ## Two float types, on purpose
 
-`Float` is strict IEEE-754 double precision: `0.1 + 0.2` behaves exactly as the standard says, on every backend. `FastFloat` is the same 64 bits with the optimizer allowed to reorder operations for speed. That freedom can change the last bit of a result, so the compiler refuses to mix the two without explicit consent:
+`Float` is an IEEE-754 double — the strict, predictable default. `FastFloat` is the same storage with relaxed optimization rules for hot numeric code. You opt in explicitly, and the two never mix in one expression:
 
 ```rnx
-let strict: Float = 0.5;
-let fast = strict.asFast();
-print(fast * 2.0.asFast());
-print(Int(3.9));
+let c: Float = 10.5 * 2.0 + 20.25;
+print(c);
+let scaled = c.asFast() * 2.0.asFast();
+print(scaled == 82.5.asFast(), scaled.asStrict());
 ```
 
-`.asFast()` and `.asStrict()` are zero-cost marker conversions — they change the type rules, not the bits. Converting between integers and floats uses `Int(x)` / `Float(x)`, which truncate toward zero. And one comfort: plain `Int` operands inside float arithmetic convert automatically:
+`asFast()` moves to relaxed mode, `asStrict()` comes back. If the compiler complains about mixing `Float` and `FastFloat` (error `E305`), name the conversion you mean instead of guessing — that explicitness is the whole point.
 
-```rnx
-let base = 3;
-let multiplier = 2.5;
-print(base * multiplier);
-```
-
-> [!TIP]
-> Default to `Float` everywhere. Convert to `FastFloat` with `.asFast()` at the boundary of hot numeric code, so the relaxed region is visible in review and everything else stays bit-exact.
+Handy extras on `Float`: `Float.nan()`, `Float.isNaN(x)`, `Float.fma(a, b, c)` for a fused multiply-add, and `toBits()` / `Float.fromBits(bits)` for bit-level round trips.
 
 ## Strings and interpolation
 
@@ -95,17 +83,14 @@ let name = "ore";
 let level = 7;
 print("player ${name} reached level ${level + 1}");
 print("sum {level + 1}");
-print("\{\"title\": \"meeting\"}");
 print("ab" + "cd");
 ```
 
-`+` with a `String` on either side concatenates, converting the other operand: `"5" + 1` is `"51"`, not `6`. Convert explicitly before doing arithmetic on CLI arguments or parsed text — `Int()` on a `String` is an error, not a parse.
-
-The full string toolkit (`contains`, `split`, `replace`, indexing) lives in [Collections](/guide/06-collections). For now, interpolation plus `print` covers most programs.
+`+` with a `String` on either side concatenates, converting the other operand: `"5" + 1` is `"51"`, not `6`. Useful measurements on strings: `length()` (characters, not bytes), `slice(start, end)`, `indexOf(needle)`, `trim()`, and `charCodeAt(index)`. The full toolkit (`contains`, `split`, `replace`, and friends) lives in [Collections](/guide/06-collections) — for now, interpolation plus `print` covers most programs.
 
 ## Truth values
 
-`Bool` has exactly two values, `true` and `false`, and conditions demand it — `if 1 { }` does not compile. Comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`) produce `Bool`, and `&&`, `||`, `!` combine them:
+`Bool` has exactly two values, `true` and `false`, and conditions demand it. Comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`) produce `Bool`, and `&&`, `||`, `!` combine them:
 
 ```rnx
 let hp = 30;
@@ -114,6 +99,8 @@ if hp > 0 && !shielded {
     print("vulnerable");
 }
 ```
+
+**Common mistake:** writing `if 1 { }` or `if name { }` out of habit from C or Python. rnx conditions take a `Bool` and nothing else — say what you mean (`if hp > 0`, `if name != ""`).
 
 ## Operators at a glance
 

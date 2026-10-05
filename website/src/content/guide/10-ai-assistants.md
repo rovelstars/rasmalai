@@ -6,7 +6,7 @@ icon: "Terminal"
 
 # AI Assistants & MCP
 
-`rnx mcp` serves the toolchain over the Model Context Protocol on stdio, so an AI agent can check, run, format, and explain Rasmalai code without shelling out. Ten tools: `check`, `run` (interpreter, 30s cap), `fmt`, `explain`, `version`, `rasmalai_lookup_symbol` (`@std/*` signature search), `inspect_package_capabilities` (package security audit), `eval_code` (persistent JIT session), `get_diagnostics` (structured JSON diagnostics), and `hot_reload` (needs an attached `rnx dev --mcp` watcher). Stdout carries protocol frames only; everything works on self-contained snippets.
+If you write code with an AI agent looking over your shoulder, you can give it the toolchain directly. `rnx mcp` serves the compiler over the Model Context Protocol on stdio, so an agent can check, run, format, and explain Rasmalai code without shelling out. Ten tools: `check`, `run` (interpreter, 30s cap), `fmt`, `explain`, `version`, `rasmalai_lookup_symbol` (`@std/*` signature search), `inspect_package_capabilities` (package security audit), `eval_code` (persistent JIT session), `get_diagnostics` (structured JSON diagnostics), and `hot_reload` (needs an attached `rnx dev --mcp` watcher). Stdout carries protocol frames only; everything works on self-contained snippets.
 
 Pick your harness below. Every entry follows the same trio — `rnx` on `PATH`, a server entry with `command`/`args`, and one command to verify — then a manual section covers anything else.
 
