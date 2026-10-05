@@ -59,7 +59,7 @@ export function localStdSnapshot(): { version: string; modules: Array<Record<str
 	return apiJson();
 }
 
-export function localStdPackage(full: string, want: string | null): { pkg: PackageDetail; doc: VersionDoc } | null {
+export function localStdPackage(full: string): { pkg: PackageDetail; doc: VersionDoc } | null {
 	if (!full.startsWith('@std/')) return null;
 	const snap = localStdSnapshot();
 	if (!snap) return null;
@@ -69,7 +69,6 @@ export function localStdPackage(full: string, want: string | null): { pkg: Packa
 	const docs = (mod['docs'] ?? {}) as Record<string, unknown>;
 	const description = String(docs['description'] ?? `${full} standard library module`).split('\n')[0];
 	const version = snap.version || cliVersion();
-	if (want && want !== version) return null;
 	const now = Math.floor(Date.now() / 1000);
 	return {
 		pkg: {

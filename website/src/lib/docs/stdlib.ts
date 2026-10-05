@@ -1,4 +1,5 @@
 import type { DocModule } from '$lib/docs/api';
+import { dev } from '$app/environment';
 import { fetchDataFile } from '$lib/docs/data-url';
 
 // api.json is generated at build time (prebuild) into static/data and
@@ -19,6 +20,22 @@ export function ensureApi(fetchFn: typeof fetch = fetch): Promise<ApiSnapshot | 
 	if (cached) return Promise.resolve(cached);
 	inflight ??= (async () => {
 		try {
+			if (dev) {
+				try {
+					const local = await fetchFn('/api/std-local');
+					if (local.ok) {
+						const data = (await local.json()) as ApiSnapshot;
+						if (data && Array.isArray(data.modules)) {
+							cached = data;
+							return cached;
+						}
+					}
+					console.warn(`rnx docs: local snapshot unusable (${local.status}), falling back to static api.json`);
+				} catch {
+					console.warn('rnx docs: /api/std-local unreachable, falling back to static api.json');
+					/* fall through to the static files */
+				}
+			}
 			const res = await fetchDataFile(fetchFn, 'api.json');
 			if (!res) return null;
 			const data = (await res.json()) as ApiSnapshot;
