@@ -209,12 +209,12 @@ pub fn run(source: &str) -> String {
         Ok(l) => l,
         Err(e) => return diag_hook(source, &e),
     };
-    lir::opt::optimize_lir(&mut lowered, 1, "Main");
     let entry = if lowered.functions.iter().any(|f| f.name == "Main") {
         "Main"
     } else {
         "main"
     };
+    lir::opt::optimize_lir(&mut lowered, 1, entry);
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(lowered));
     let mut machine = Machine::new(leaked);
     let mut out = String::new();
