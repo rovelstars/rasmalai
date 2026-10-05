@@ -48,7 +48,7 @@ describe('linkifyProseHtml', () => {
 
 	it('links exact TitleCase matches with no color change', () => {
 		const out = linkifyProseHtml('<p>Use Map for lookup.</p>', index);
-		assert.ok(out.includes('<a href="/docs/@std/collections/api#class-Map" class="symlink">Map</a>'));
+		assert.ok(out.includes('<a href="/docs/@std/collections/api#class-Map" class="doc-symlink">Map</a>'));
 	});
 
 	it('does not match partial words', () => {
@@ -82,7 +82,7 @@ describe('linkifyProseHtml', () => {
 	it('links type positions including generics', () => {
 		assert.equal(
 			linkifyTypeText('Map<K, V>', index),
-			'<a href="/docs/@std/collections/api#class-Map" class="symlink">Map</a>&lt;K, V&gt;'
+			'<a href="/docs/@std/collections/api#class-Map" class="doc-symlink">Map</a>&lt;K, V&gt;'
 		);
 		assert.equal(
 			linkifyTypeText('Array<String>', index),
@@ -90,5 +90,19 @@ describe('linkifyProseHtml', () => {
 		);
 		assert.equal(linkifyTypeText('Int', index), 'Int');
 		assert.equal(linkifyTypeText('HttpStatus', index).includes('>HttpStatus</a>'), true);
+	});
+
+	it('links plurals to the singular export', () => {
+		assert.ok(
+			linkifyProseHtml('<p>Promises settle.</p>', buildSymbolIndex([{
+				name: 'sync',
+				docs: { description: '', tags: [] },
+				functions: [],
+				classes: [{ name: 'Promise', docs: { description: '', tags: [] }, init: null, fields: [], methods: [] }],
+				enums: [],
+				constants: []
+			}])).includes('>Promises</a>')
+		);
+		assert.ok(linkifyTypeText('Maps', index).includes('>Maps</a>'));
 	});
 });

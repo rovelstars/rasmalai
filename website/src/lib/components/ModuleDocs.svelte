@@ -167,12 +167,4 @@ import { stdApiModules } from '$lib/docs/stdlib';
 	</ul>
 {/if}
 
-<style>
-	:global(a.symlink) {
-		color: inherit;
-		text-decoration: none;
-	}
-	:global(a.symlink:hover) {
-		text-decoration: underline;
-	}
-</style>
+

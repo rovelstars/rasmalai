@@ -31,7 +31,7 @@
 	<pre
 		class="overflow-x-auto p-4 font-mono text-[13px] leading-relaxed"><code>{#each spans as s}{#if s.href}<a
 					href={s.href}
-					class="{s.cls} underline decoration-dotted underline-offset-2 hover:text-aura-cyan">{s.text}</a
+					class="{s.cls} doc-symlink">{s.text}</a
 				>{:else}<span
 					class={s.cls}>{s.text}</span
 				>{/if}{/each}</code></pre>
