@@ -7,9 +7,11 @@ fn profile_name(release: bool) -> &'static str {
 fn build_key(
     input: &str,
     root: &std::path::Path,
+    entry: &str,
     release: bool,
     opt_level: u8,
     target_triple: Option<&str>,
+    debug: bool,
 ) -> String {
     // Path-dep manifests are hashed by bytes; path-dep *contents* are not hashed.
     let manifest = frontend::project::load_manifest(root)
@@ -40,10 +42,14 @@ fn build_key(
             }
         }
     }
+    owned.push(entry.as_bytes().to_vec());
+    let host = linker::host_triple().0;
     owned.extend(frontend::cache::toolchain_parts(
         release,
         opt_level,
         target_triple,
+        &host,
+        debug,
         env!("CARGO_PKG_VERSION"),
         &frontend::checksum::Sha256::hexdigest(runtime::archive::BYTES),
     ));
@@ -277,7 +283,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                             std::process::exit(1);
                         }
                     }
-                    let key = build_key(&input, &root, release, opt_level, target_triple.as_deref());
+                    let key = build_key(&input, &root, &entry, release, opt_level, target_triple.as_deref(), debug);
                     let stamp = match path.file_name().map(|s| s.to_string_lossy().into_owned()) {
                         Some(stem) => path.with_file_name(format!("{stem}.fingerprint")),
                         None => path.with_file_name(".fingerprint"),

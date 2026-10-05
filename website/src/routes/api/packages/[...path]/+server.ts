@@ -11,8 +11,9 @@ import {
 	purgeUrls,
 	packagePointerUrls
 } from '$lib/server/db';
-import { safeEqual, sessionUser, readSessionCookie, userScopes } from '$lib/server/auth';
+import { safeEqual, sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 import { specHeaders } from '$lib/server/registry';
+import { sanitizeGuideHtml } from '$lib/server/sanitize';
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
 	return { ...specHeaders(), ...extra };
@@ -161,7 +162,7 @@ export async function GET({ params, platform, setHeaders, url }) {
 		if (!entry) return notFound(`guide ${slug} not found in ${full}@${version}`);
 		const format = url.searchParams.get('format') ?? 'html';
 		setHeaders({ ...immutable, ...specHeaders() });
-		if (format === 'source') return json({ slug, format, source: entry.source }, { headers: headers() });
+		if (format === 'source') return json({ slug, format, source: sanitizeGuideHtml(entry.source) }, { headers: headers() });
 		return json({ slug, format: 'html', html: entry.html }, { headers: headers() });
 	}
 
@@ -190,34 +191,39 @@ export async function POST({ params, request, platform, url }) {
 	const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
 
 	if (action === 'yank') {
-		// Org token stays valid as operator break-glass; otherwise the
-		// caller needs a session whose scope (or unscoped owner) matches.
-		if (!checkPublishToken(env, token)) {
-			const user = await sessionUser(env, readSessionCookie(request.headers.get('Cookie')));
+		const tokenOk = checkPublishToken(env, token);
+		let user: { id: number; username: string; isAdmin: boolean } | null = null;
+		if (!tokenOk) {
+			user = await sessionUser(env, readSessionCookie(request.headers.get('Cookie')));
 			if (!user) {
 				return json({ code: 'unauthorized', message: 'invalid publisher token' }, { status: 401, headers: headers() });
 			}
-			const name = parsePackageName(full);
-			if (name && name.scope) {
-				const scopes = await userScopes(env, user.id);
-				if (!scopes.includes(name.scope)) {
-					return json({ code: 'forbidden', message: `scope @${name.scope} is not yours` }, { status: 403, headers: headers() });
-				}
-			} else {
-				const owner = await getPackageOwner(env, name?.scope ?? '', name?.name ?? '');
-				if (owner !== user.username) {
-					return json({ code: 'forbidden', message: `package ${full} is owned by someone else` }, { status: 403, headers: headers() });
-				}
+			if (!checkBrowserOrigin(request, url)) {
+				return json({ code: 'bad-origin', message: 'bad origin' }, { status: 403, headers: headers() });
 			}
 		}
 		const found = await getVersionRow(env, full, version);
 		if (!found) return notFound(`package ${full}@${version} does not exist`);
 		if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
+		if (!tokenOk) {
+			const name = parsePackageName(full);
+			if (name && name.scope) {
+				const scopes = await userScopes(env, user!.id);
+				if (!scopes.includes(name.scope)) {
+					return json({ code: 'forbidden', message: `scope @${name.scope} is not yours` }, { status: 403, headers: headers() });
+				}
+			} else {
+				const owner = await getPackageOwner(env, name?.scope ?? '', name?.name ?? '');
+				if (owner !== user!.username) {
+					return json({ code: 'forbidden', message: `package ${full} is owned by someone else` }, { status: 403, headers: headers() });
+				}
+			}
+		}
 		const ok = await yankVersion(env, full, version);
 		if (!ok) {
 			return json({ code: 'conflict', message: `version ${version} is not live` }, { status: 409, headers: headers() });
 		}
-		await purgeUrls(env, packagePointerUrls(url.origin, full, version));
+		await purgeUrls(env, packagePointerUrls(url.origin, full, version), { fullName: full });
 		return json({ success: true, version, status: 'yanked' }, { headers: headers() });
 	}
 
@@ -235,6 +241,9 @@ export async function POST({ params, request, platform, url }) {
 		reason = '';
 	}
 	await recordTombstone(env, full, version, reason);
-	await purgeUrls(env, packagePointerUrls(url.origin, full, version));
+	await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
+		fullName: full,
+		prefixes: [`${url.origin}/api/packages/${full}/${version}`]
+	});
 	return json({ success: true, version, status: 'tombstoned' }, { headers: headers() });
 }

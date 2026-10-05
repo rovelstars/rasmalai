@@ -1,9 +1,9 @@
 import { json } from '@sveltejs/kit';
-import { transferScope } from '$lib/server/db';
+import { transferScope, purgeUrls } from '$lib/server/db';
 import { safeEqual } from '$lib/server/auth';
 import { specHeaders } from '$lib/server/registry';
 
-export async function POST({ params, request, platform }) {
+export async function POST({ params, request, platform, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const auth = request.headers.get('Authorization') ?? '';
 	const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
@@ -28,6 +28,10 @@ export async function POST({ params, request, platform }) {
 	}
 	try {
 		await transferScope(env, scope, newOwner, force);
+		await purgeUrls(env, [`${url.origin}/api/packages`], {
+			fullName: `@${scope}`,
+			prefixes: [`${url.origin}/api/packages/@${scope}/`]
+		});
 		return json({ success: true, scope, newOwner }, { headers: specHeaders() });
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);

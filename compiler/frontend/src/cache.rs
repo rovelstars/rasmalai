@@ -75,22 +75,37 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
+pub fn stdlib_sources_digest() -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    for name in stdlib::MODULES {
+        let src = stdlib::source(name).unwrap_or("");
+        hasher.update(&(name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update(&(src.len() as u64).to_le_bytes());
+        hasher.update(src.as_bytes());
+    }
+    hasher.finalize().to_vec()
+}
+
 pub fn toolchain_parts(
     release: bool,
     opt_level: u8,
     target_triple: Option<&str>,
+    host_triple: &str,
+    debug: bool,
     rnx_version: &str,
     runtime_hash: &str,
 ) -> Vec<Vec<u8>> {
     vec![
         format!(
-            "release={release} opt={opt_level} target={}",
-            target_triple.unwrap_or("host")
+            "release={release} opt={opt_level} debug={debug} target={}",
+            target_triple.unwrap_or(host_triple)
         )
         .into_bytes(),
         rnx_version.as_bytes().to_vec(),
         LLVM_VERSION.as_bytes().to_vec(),
         format!("rt-{runtime_hash}").into_bytes(),
+        stdlib_sources_digest(),
     ]
 }
 
@@ -220,16 +235,55 @@ mod tests {
 
     #[test]
     fn toolchain_parts_track_profile_and_toolchain() {
-        let base = toolchain_parts(false, 1, None, "0.1.0", "rt");
-        assert_eq!(base, toolchain_parts(false, 1, None, "0.1.0", "rt"));
-        assert_ne!(base, toolchain_parts(true, 1, None, "0.1.0", "rt"));
-        assert_ne!(base, toolchain_parts(false, 0, None, "0.1.0", "rt"));
+        let base = toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt");
+        assert_eq!(
+            base,
+            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt")
+        );
         assert_ne!(
             base,
-            toolchain_parts(false, 1, Some("aarch64-unknown-linux-gnu"), "0.1.0", "rt")
+            toolchain_parts(true, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt")
         );
-        assert_ne!(base, toolchain_parts(false, 1, None, "0.1.1", "rt"));
-        assert_ne!(base, toolchain_parts(false, 1, None, "0.1.0", "other"));
+        assert_ne!(
+            base,
+            toolchain_parts(false, 0, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt")
+        );
+        assert_ne!(
+            base,
+            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", true, "0.1.0", "rt")
+        );
+        assert_ne!(
+            base,
+            toolchain_parts(false, 1, None, "aarch64-unknown-linux-gnu", false, "0.1.0", "rt")
+        );
+        assert_ne!(
+            base,
+            toolchain_parts(
+                false,
+                1,
+                Some("aarch64-unknown-linux-gnu"),
+                "x86_64-unknown-linux-gnu",
+                false,
+                "0.1.0",
+                "rt"
+            )
+        );
+        assert_ne!(
+            base,
+            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.1", "rt")
+        );
+        assert_ne!(
+            base,
+            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "other")
+        );
+        assert_eq!(base.last().cloned().unwrap_or_default(), stdlib_sources_digest());
+    }
+
+    #[test]
+    fn stdlib_sources_digest_is_stable() {
+        let first = stdlib_sources_digest();
+        assert_eq!(first.len(), 32);
+        assert_eq!(stdlib_sources_digest(), first);
     }
 
     #[test]

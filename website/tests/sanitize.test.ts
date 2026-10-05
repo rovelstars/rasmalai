@@ -46,4 +46,26 @@ describe('guide sanitizer', () => {
 		assert.equal(sanitizeGuideHtml('<div><span>text</span></div>'), 'text');
 		assert.equal(sanitizeGuideHtml('<iframe src="https://x"></iframe>after'), 'after');
 	});
+
+	it('emits a stray < literally', () => {
+		assert.equal(sanitizeGuideHtml('a < b'), 'a < b');
+		assert.equal(sanitizeGuideHtml('a < b and <c>'), 'a < b and ');
+		assert.equal(sanitizeGuideHtml('<p>a < b</p>'), '<p>a < b</p>');
+	});
+
+	it('requires // after http:/https:', () => {
+		assert.equal(sanitizeGuideHtml('<a href="https:evil.com">x</a>'), '<a>x</a>');
+		assert.equal(sanitizeGuideHtml('<a href="http:evil.com">x</a>'), '<a>x</a>');
+		assert.equal(sanitizeGuideHtml('<a href="https://example.com">x</a>'), '<a href="https://example.com">x</a>');
+	});
+
+	it('allows same-origin #anchor and /path hrefs', () => {
+		assert.equal(sanitizeGuideHtml('<a href="#toc">x</a>'), '<a href="#toc">x</a>');
+		assert.equal(sanitizeGuideHtml('<a href="/packages/foo">x</a>'), '<a href="/packages/foo">x</a>');
+	});
+
+	it('keeps table sections and h5/h6', () => {
+		const html = '<table><caption>c</caption><thead><tr><th>h</th></tr></thead><tbody><tr><td>c</td></tr></tbody><tfoot><tr><td>f</td></tr></tfoot></table><h5>a</h5><h6>b</h6>';
+		assert.equal(sanitizeGuideHtml(html), html);
+	});
 });

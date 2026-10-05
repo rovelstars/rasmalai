@@ -8,7 +8,7 @@ import { getClient, ensureSchema } from './db.js';
 export const SESSION_COOKIE = 'rnx_session';
 const SESSION_DAYS = 30;
 const USERNAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const RESERVED_USERNAMES = ['admin', 'root', 'system', 'rnx', 'std'];
+const RESERVED_USERNAMES = ['admin', 'root', 'system', 'rnx', 'std', 'org'];
 
 export interface AuthUser {
 	id: number;
@@ -178,6 +178,19 @@ export async function login(
 			salt: String(r['password_salt']),
 			params: String(r['password_params'])
 		});
+	} else {
+		const salt = new Uint8Array(16);
+		crypto.getRandomValues(salt);
+		await argon2id({
+			password,
+			secret: pepper,
+			salt,
+			iterations: ARGON_PARAMS.iterations,
+			memorySize: ARGON_PARAMS.memorySize,
+			parallelism: ARGON_PARAMS.parallelism,
+			hashLength: 32,
+			outputType: 'hex'
+		});
 	}
 	if (!r || !ok) throw new Error('invalid username or password');
 	const bytes = new Uint8Array(32);
@@ -240,13 +253,52 @@ export function clientIp(headers: Headers): string {
 	return 'unknown';
 }
 
+export function checkBrowserOrigin(request: Request, url: URL): boolean {
+	const origin = request.headers.get('Origin');
+	if (origin && origin.trim()) {
+		try {
+			return new URL(origin).origin === url.origin;
+		} catch {
+			return false;
+		}
+	}
+	const referer = request.headers.get('Referer');
+	if (referer && referer.trim()) {
+		try {
+			return new URL(referer).origin === url.origin;
+		} catch {
+			return false;
+		}
+	}
+	return false;
+}
+
 const AUTH_WINDOW_SECONDS = 15 * 60;
-const AUTH_MAX_FAILURES = 5;
+export const AUTH_MAX_ATTEMPTS = 5;
 const AUTH_PRUNE_SECONDS = 60 * 60;
+
+export function authBlockedForCount(count: number): boolean {
+	return count > AUTH_MAX_ATTEMPTS;
+}
+
+export async function authFailureCount(
+	env: Record<string, string | undefined>,
+	username: string
+): Promise<number> {
+	const db = getClient(env);
+	if (!db) return 0;
+	await ensureSchema(db);
+	const now = Math.floor(Date.now() / 1000);
+	const rs = await db.execute({
+		sql: 'SELECT COALESCE(SUM(attempts), 0) AS n FROM auth_attempts WHERE username = ? AND window_start > ?',
+		args: [username, now - AUTH_WINDOW_SECONDS]
+	});
+	return Number(rs.rows[0]?.['n'] ?? 0);
+}
 
 export async function isAuthBlocked(
 	env: Record<string, string | undefined>,
-	ip: string,
+	_ip: string,
 	username: string
 ): Promise<boolean> {
 	const db = getClient(env);
@@ -257,14 +309,7 @@ export async function isAuthBlocked(
 		sql: 'DELETE FROM auth_attempts WHERE window_start < ?',
 		args: [now - AUTH_PRUNE_SECONDS]
 	});
-	const rs = await db.execute({
-		sql: 'SELECT attempts, window_start FROM auth_attempts WHERE ip = ? AND username = ?',
-		args: [ip, username]
-	});
-	const row = rs.rows[0] as Record<string, unknown> | undefined;
-	if (!row) return false;
-	if (now - Number(row['window_start']) > AUTH_WINDOW_SECONDS) return false;
-	return Number(row['attempts']) > AUTH_MAX_FAILURES;
+	return authBlockedForCount(await authFailureCount(env, username));
 }
 
 export async function auth_attempts(
@@ -283,18 +328,25 @@ export async function auth_attempts(
 	});
 	if (ok) {
 		await db.execute({
-			sql: 'DELETE FROM auth_attempts WHERE ip = ? AND username = ?',
-			args: [ip, username]
+			sql: 'DELETE FROM auth_attempts WHERE username = ?',
+			args: [username]
 		});
 		return true;
 	}
-	await db.execute({
-		sql: `INSERT INTO auth_attempts (ip, username, attempts, window_start)
-		      VALUES (?, ?, 1, ?)
-		      ON CONFLICT(ip, username) DO UPDATE SET
-		        attempts = CASE WHEN window_start < ? THEN 1 ELSE attempts + 1 END,
-		        window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END`,
-		args: [ip, username, now, now - AUTH_WINDOW_SECONDS, now - AUTH_WINDOW_SECONDS, now]
-	});
-	return !(await isAuthBlocked(env, ip, username));
+	const applied = await db.batch([
+		{
+			sql: `INSERT INTO auth_attempts (ip, username, attempts, window_start)
+			      VALUES (?, ?, 1, ?)
+			      ON CONFLICT(ip, username) DO UPDATE SET
+			        attempts = CASE WHEN window_start < ? THEN 1 ELSE attempts + 1 END,
+			        window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END`,
+			args: [ip, username, now, now - AUTH_WINDOW_SECONDS, now - AUTH_WINDOW_SECONDS, now]
+		},
+		{
+			sql: 'SELECT COALESCE(SUM(attempts), 0) AS n FROM auth_attempts WHERE username = ? AND window_start > ?',
+			args: [username, now - AUTH_WINDOW_SECONDS]
+		}
+	]);
+	const count = Number(applied[1]?.rows[0]?.['n'] ?? 0);
+	return !authBlockedForCount(count);
 }

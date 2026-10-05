@@ -1,7 +1,7 @@
 const ALLOWED = new Set([
 	'p', 'br', 'b', 'i', 'em', 'strong', 'code', 'pre',
-	'ul', 'ol', 'li', 'a', 'h1', 'h2', 'h3', 'h4',
-	'blockquote', 'hr', 'table', 'tr', 'td', 'th', 'img'
+	'ul', 'ol', 'li', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+	'blockquote', 'hr', 'table', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'caption', 'img'
 ]);
 
 const VOID = new Set(['br', 'hr', 'img']);
@@ -10,7 +10,9 @@ const DROP_WITH_CONTENT = new Set(['script', 'style', 'iframe', 'object', 'embed
 
 function cleanUrl(value: string): string | null {
 	const v = value.trim().replace(/[\u0000-\u0020]+/g, '');
-	if (/^(https?:|mailto:)/i.test(v)) return value.trim();
+	if (/^https?:\/\//i.test(v)) return value.trim();
+	if (/^mailto:/i.test(v)) return value.trim();
+	if (v.startsWith('#') || v.startsWith('/')) return value.trim();
 	return null;
 }
 
@@ -40,12 +42,16 @@ function cleanAttrs(tag: string, raw: string): string {
 export function sanitizeGuideHtml(html: string): string {
 	let s = html.replace(/<!--[\s\S]*?-->/g, '');
 	const out: string[] = [];
-	const re = /<\/?([a-zA-Z0-9]+)((?:"[^"]*"|'[^']*'|[^>"'])*)>|([^<]+)/g;
+	const re = /<\/?([a-zA-Z0-9]+)((?:"[^"]*"|'[^']*'|[^>"'])*)>|([^<]+)|(<)/g;
 	let m: RegExpExecArray | null;
 	let dropDepth = 0;
 	while ((m = re.exec(s)) !== null) {
 		if (m[3] !== undefined) {
 			if (dropDepth === 0) out.push(m[3]);
+			continue;
+		}
+		if (m[4] !== undefined) {
+			if (dropDepth === 0) out.push('<');
 			continue;
 		}
 		const full = m[0];

@@ -56,12 +56,18 @@ describe('ranges', () => {
 	});
 
 	it('validates the documented range grammar', () => {
-		for (const r of ['*', 'latest', '', '1.2.3', '1.2.3-rc.1', '^1.0.0', '~0.2.0', '>=1.2.3', '>= 1.2.3']) {
+		for (const r of ['*', 'latest', '', '1.2.3', '1.2.3-rc.1', '^1.0.0', '~0.2.0', '>=1.2.3', '>= 1.2.3', '^ 1.0.0', '~ 1.2.0']) {
 			assert.equal(isValidRange(r), true, r);
 		}
-		for (const r of ['foo', '^', '~', '>=', '1.2', 'v1.2.3', '^foo', '>=bar', '<1.2.3', '1.2.3 || 2.0.0', '*.*']) {
+		for (const r of ['foo', '^', '~', '>=', '1.2', 'v1.2.3', '^foo', '>=bar', '<1.2.3', '1.2.3 || 2.0.0', '*.*', '^  ', '~  ']) {
 			assert.equal(isValidRange(r), false, r);
 		}
+	});
+
+	it('trims whitespace after ^ and ~', () => {
+		assert.equal(satisfiesRange('1.4.3', '^ 1.0.0'), true);
+		assert.equal(satisfiesRange('1.2.9', '~ 1.2.0'), true);
+		assert.equal(satisfiesRange('1.3.0', '~ 1.2.0'), false);
 	});
 
 	it('copies npm prerelease exclusion', () => {
