@@ -5,6 +5,7 @@
 	import { GitBranch, Diamond, Star, Download } from 'lucide-svelte';
 	import ModuleDocs from '$lib/components/ModuleDocs.svelte';
 	import { renderMarkdown } from '$lib/docs/markdown';
+	import { buildSymbolIndex, linkifyProseHtml } from '$lib/docs/symbollinks';
 	import type { DocModule } from '$lib/docs/api';
 
 	let { data } = $props();
@@ -46,8 +47,7 @@
 		Option: 'enum'
 	};
 
-	let typeLinks = $derived.by(() => {
-		const map = new Map<string, string>();
+	let typeLinks = $derived.by(() => {		const map = new Map<string, string>();
 		for (const m of docModules) {
 			for (const c of m.classes ?? []) {
 				if (!map.has(c.name)) map.set(c.name, `#pkg-class-${c.name}`);
@@ -64,6 +64,20 @@
 		}
 		return map;
 	});
+
+	let pkgIndex = $derived(buildSymbolIndex(docModules, (m, a) => `#pkg-${a}`));
+
+	function pkgHref(_moduleName: string, anchor: string): string {
+		return `#pkg-${anchor}`;
+	}
+
+	function linkedModuleDocs(description: string): string {
+		try {
+			return linkifyProseHtml(renderMarkdown(description).html, pkgIndex);
+		} catch {
+			return description;
+		}
+	}
 
 	function fmtDownloads(n: number): string {
 		return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
@@ -138,6 +152,13 @@
 			>
 		</div>
 		<p class="mt-2 text-sm text-aura-muted">{pkg.description}</p>
+		<p class="mt-2 font-mono text-xs text-aura-muted">
+			by <span class="text-aura-text">@{pkg.author}</span>
+			{#if pkg.repository}
+				<span aria-hidden="true"> - </span>
+				<a href={pkg.repository} rel="external" class="text-aura-cyan hover:underline">repository</a>
+			{/if}
+		</p>
 		<div class="mt-3 flex items-center gap-2">
 			<code class="tabular flex-1 overflow-x-auto rounded bg-aura-bg px-3 py-2 font-mono text-[13px] text-aura-cyan"
 				>rnx add {pkg.name}</code
@@ -178,8 +199,8 @@
 					{#each docModules as m}
 						<p class="flex items-center gap-1.5 font-mono text-sm tracking-wide text-aura-purple"><Diamond size={12} />package api</p>
 						<h1>{pkg.name} - {m.name}</h1>
-						{#if m.docs.description}<div class="doc-prose">{@html renderMarkdown(m.docs.description).html}</div>{/if}
-						<ModuleDocs mod={m} idPrefix="pkg-" typeLinks={typeLinks} />
+						{#if m.docs.description}<div class="doc-prose">{@html linkedModuleDocs(m.docs.description)}</div>{/if}
+						<ModuleDocs mod={m} idPrefix="pkg-" typeLinks={typeLinks} allMods={docModules} symbolHref={pkgHref} />
 					{/each}
 					{#if docModules.length === 0}
 						<p class="text-sm text-aura-muted">No API reference for this version.</p>

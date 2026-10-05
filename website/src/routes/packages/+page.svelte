@@ -97,7 +97,7 @@
 </svelte:head>
 
 <main class="mx-auto max-w-7xl px-4 pb-16">
-	<div class="flex flex-wrap items-end justify-between gap-4 pt-8">
+	<div class="flex flex-wrap items-end justify-between gap-4 pt-6">
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Packages</h1>
 			<p class="mt-2 max-w-[65ch] text-aura-muted">
@@ -113,7 +113,7 @@
 		</button>
 	</div>
 
-	<div class="mt-6 flex flex-wrap items-center gap-2">
+	<div class="mt-6 flex flex-wrap items-center gap-2" role="search">
 		<input
 			bind:value={query}
 			placeholder="search name, description, tags..."
@@ -129,22 +129,23 @@
 			<option value="updated">Recently updated</option>
 			<option value="alpha">Alphabetical</option>
 		</select>
-	</div>
-	<div class="mt-3 flex flex-wrap gap-1.5" role="group" aria-label="Filter by tag">
-		{#each ALL_TAGS as t}
-			<button
-				onclick={() => (activeTag = activeTag === t ? null : t)}
-				class="press rounded-full border px-2.5 py-0.5 font-mono text-xs {activeTag === t
-					? 'border-aura-borderHover bg-aura-surfaceElevated text-aura-purple'
-					: 'border-aura-border text-aura-muted hover:text-aura-text'}"
-				aria-pressed={activeTag === t}
-			>
-				{t}
-			</button>
-		{/each}
+		<span class="hidden h-5 w-px bg-aura-border sm:inline-block" aria-hidden="true"></span>
+		<div class="flex flex-wrap gap-1.5" role="group" aria-label="Filter by tag">
+			{#each ALL_TAGS as t}
+				<button
+					onclick={() => (activeTag = activeTag === t ? null : t)}
+					class="press rounded-full border px-2.5 py-0.5 font-mono text-xs {activeTag === t
+						? 'border-aura-borderHover bg-aura-surfaceElevated text-aura-purple'
+						: 'border-aura-border text-aura-muted hover:text-aura-text'}"
+					aria-pressed={activeTag === t}
+				>
+					{t}
+				</button>
+			{/each}
+		</div>
 	</div>
 
-	<ul class="mt-6 space-y-3">
+	<ul class="mt-5 space-y-2.5">
 		{#if stdVisible.length > 0}
 			<li>
 				<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">
@@ -180,21 +181,21 @@
 									{copiedImport === m.name ? 'copied' : 'copy'}
 								</button>
 							</div>
-							<p class="tabular mt-2 font-mono text-[11px] text-aura-muted">
+							<p class="tabular mt-2 min-h-4 font-mono text-[11px] text-aura-muted" aria-live="polite">
 								{#if apiState === 'ready'}
 									{symbolCount(m.name)} symbols - <a
 										href="/docs/@std/{m.name}/overview"
 										class="inline-flex items-center gap-1 text-aura-purple hover:underline"
 										>docs<ArrowRight size={12} /></a
 									>
-								{:else if apiState === 'loading'}
-									loading symbols...
-								{:else}
+								{:else if apiState === 'missing'}
 									No API data yet - <a
 										href="/docs/@std/{m.name}/overview"
 										class="inline-flex items-center gap-1 text-aura-purple hover:underline"
 										>docs<ArrowRight size={12} /></a
 									>
+								{:else}
+									<span class="inline-block h-3 w-28 animate-pulse rounded bg-aura-surfaceElevated align-middle"></span>
 								{/if}
 							</p>
 						</div>

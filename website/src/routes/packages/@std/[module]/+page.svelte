@@ -4,7 +4,8 @@
 	import { browser } from '$app/environment';
 	import { BookOpen } from 'lucide-svelte';
 	import { STDLIB_ICONS } from '$lib/docs/nav';
-	import { STD_LICENSE, importSnippet } from '$lib/docs/stdlib';
+	import { STD_LICENSE, firstParagraph, importSnippet } from '$lib/docs/stdlib';
+	import { renderMarkdown } from '$lib/docs/markdown';
 
 	let { data } = $props();
 	let copied = $state(false);
@@ -16,15 +17,25 @@
 	let pinned = $derived(version === data.engine);
 
 	let Icon = $derived(STDLIB_ICONS[data.meta.name]);
-	let symbols = $derived(
-		data.mod
-			? [
-					...data.mod.classes.map((c) => ({ kind: 'class', name: c.name })),
-					...data.mod.enums.map((e) => ({ kind: 'enum', name: e.name })),
-					...data.mod.functions.map((f) => ({ kind: 'fn', name: f.name }))
-				]
-			: []
-	);
+	let blurb = $derived(firstParagraph(data.mod) ?? data.meta.tagline);
+	let blurbHtml = $derived.by(() => {
+		try {
+			return renderMarkdown(firstParagraph(data.mod) ?? data.meta.tagline).html;
+		} catch {
+			return null;
+		}
+	});
+	let plainBlurb = $derived(blurb.replace(/[`*_]/g, ''));
+	let counts = $derived.by(() => {
+		if (!data.mod) return null;
+		const parts = [
+			`${data.mod.classes.length} classes`,
+			`${data.mod.functions.length} functions`,
+			`${data.mod.enums.length} enums`
+		];
+		if (data.mod.constants.length > 0) parts.push(`${data.mod.constants.length} constants`);
+		return parts.join(', ');
+	});
 
 	async function copyImport() {
 		try {
@@ -46,12 +57,12 @@
 
 <svelte:head>
 	<title>@std/{data.meta.name} — Packages</title>
-	<meta name="description" content={data.meta.tagline} />
+	<meta name="description" content={plainBlurb} />
 	{@html `<script type="application/ld+json">${JSON.stringify({
 		'@context': 'https://schema.org',
 		'@type': 'SoftwareApplication',
 		name: `@std/${data.meta.name}`,
-		description: data.meta.tagline,
+		description: plainBlurb,
 		url: `https://rnx.dev/packages/@std/${data.meta.name}`,
 		applicationCategory: 'DeveloperApplication',
 		operatingSystem: 'Linux, macOS, Windows',
@@ -87,8 +98,8 @@
 			<span class="rounded border border-aura-border px-1.5 py-0.5 font-mono text-[11px] text-aura-muted"
 				>{STD_LICENSE}</span
 			>
-		<span class="tabular ml-auto font-mono text-xs text-aura-muted">engine >= {data.engine}</span>
-	</div>
+			<span class="tabular ml-auto font-mono text-xs text-aura-muted">engine >= {data.engine}</span>
+		</div>
 		{#if data.meta.name === 'prelude'}
 			<p class="mt-3 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm">
 				<span class="font-mono text-[11px] uppercase tracking-wider text-emerald-400">implicit scope</span><br />
@@ -103,7 +114,11 @@
 				compiler — the documented snapshot below tracks engine v{data.engine}.
 			</p>
 		{/if}
-		<p class="mt-2 text-sm text-aura-muted">{data.meta.tagline}</p>
+		{#if blurbHtml}
+			<div class="doc-prose mt-3 text-sm text-aura-muted">{@html blurbHtml}</div>
+		{:else}
+			<p class="mt-3 text-sm text-aura-muted">{blurb}</p>
+		{/if}
 		<div class="mt-3 flex items-center gap-2">
 			<code class="tabular min-w-0 flex-1 overflow-x-auto rounded bg-aura-bg px-3 py-2 font-mono text-[13px] text-aura-cyan"
 				>{importSnippet(data.meta.name)}</code
@@ -115,7 +130,10 @@
 				{copied ? 'copied' : 'copy'}
 			</button>
 		</div>
-		<div class="mt-4">
+		<p class="tabular mt-3 font-mono text-[11px] text-aura-muted">
+			{counts ?? 'No API data yet'}
+		</p>
+		<div class="mt-3">
 			<a
 				href="/docs/@std/{data.meta.name}/overview"
 				class="press inline-flex items-center gap-2 rounded-md bg-aura-purple px-4 py-2 text-sm font-semibold text-[#15141b]"
@@ -125,49 +143,15 @@
 		</div>
 	</div>
 
-	<div class="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
-		<div class="panel min-w-0 p-5">
-			<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">overview</p>
-			<p class="mt-2 text-sm leading-relaxed">{data.meta.whenToUse}</p>
-			<p class="mt-4 font-mono text-[11px] uppercase tracking-wider text-aura-muted">capabilities</p>
-			<ul class="mt-2 flex flex-wrap gap-1.5">
-				{#each data.meta.capabilities as cap}
-					<li class="rounded-full border border-aura-border px-2.5 py-0.5 font-mono text-xs text-aura-muted">
-						{cap}
-					</li>
-				{/each}
-			</ul>
-			<p class="mt-4 font-mono text-[11px] uppercase tracking-wider text-aura-muted">
-				{#if data.noApi}No API data yet{:else}symbols - {symbols.length}{/if}
-			</p>
-			<ul class="mt-2 space-y-1 font-mono text-[13px]">
-				{#each symbols as s}
-					<li>
-						<span class="text-aura-pink">{s.kind}</span>
-						<span class="text-aura-muted"> - </span>
-						<a
-							href="/docs/@std/{data.meta.name}/api#{s.kind === 'fn' ? 'fn' : s.kind}-{s.name}"
-							class="text-aura-cyan hover:underline">{s.name}</a
-						>
-					</li>
-				{/each}
-			</ul>
+	<div class="mt-4 grid gap-4 md:grid-cols-2">
+		<div class="panel p-4">
+			<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">engine</p>
+			<p class="mt-1 font-mono text-[13px]">rasmalai >= {data.engine}</p>
+			<p class="mt-1 text-[13px] text-aura-muted">Ships inside the compiler. Nothing to install.</p>
 		</div>
-
-		<aside class="space-y-4 text-sm">
-			<div class="panel p-4">
-				<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">engine</p>
-				<p class="mt-1 font-mono text-[13px]">rasmalai >= {data.engine}</p>
-				<p class="mt-1 text-[13px] text-aura-muted">Ships inside the compiler. Nothing to install.</p>
-			</div>
-			<div class="panel p-4">
-				<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">dependencies</p>
-				<p class="mt-1 text-aura-muted">None. Foundation modules only.</p>
-			</div>
-			<div class="panel p-4">
-				<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">license</p>
-				<p class="mt-1">{STD_LICENSE} - Rasmalai contributors</p>
-			</div>
-		</aside>
+		<div class="panel p-4">
+			<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">license</p>
+			<p class="mt-1 text-sm">{STD_LICENSE} - Rasmalai contributors</p>
+		</div>
 	</div>
 </main>
