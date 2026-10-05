@@ -360,10 +360,10 @@ html.light .ans-text {
 		@apply text-3xl font-bold tracking-tight;
 	}
 	.doc-prose h2.doc-h {
-		@apply mt-8 scroll-mt-24 text-xl font-bold tracking-tight;
+		@apply mt-8 flex scroll-mt-24 flex-wrap items-center gap-x-2 text-xl font-bold tracking-tight;
 	}
 	.doc-prose h3.doc-h {
-		@apply mt-6 scroll-mt-24 text-base font-semibold;
+		@apply mt-6 flex scroll-mt-24 flex-wrap items-center gap-x-2 text-base font-semibold;
 	}
 	.doc-prose p {
 		@apply mt-3 max-w-[72ch] text-[15px];
@@ -432,7 +432,7 @@ html.light .ans-text {
 		@apply overflow-x-clip;
 	}
 	.doc-anchor {
-		@apply ml-1 text-aura-muted opacity-0 no-underline hover:underline;
+		@apply inline-flex items-center text-aura-muted opacity-0 no-underline hover:underline;
 	}
 	.doc-h:hover .doc-anchor {
 		@apply opacity-100;
@@ -468,7 +468,7 @@ html.light .ans-text {
 		@apply rounded border border-aura-border px-2 py-0.5 font-mono text-[11px] text-aura-muted hover:border-aura-borderHover hover:text-aura-text;
 	}
 	.doc-copy-sec {
-		@apply ml-2 inline-flex min-h-0 items-center rounded border border-aura-border px-2 py-0.5 align-middle font-mono text-[11px] font-normal text-aura-muted hover:border-aura-borderHover hover:text-aura-text;
+		@apply ml-auto inline-flex min-h-0 items-center rounded border border-aura-border px-2 py-0.5 align-middle font-mono text-[11px] font-normal text-aura-muted hover:border-aura-borderHover hover:text-aura-text;
 	}
 	.doc-play {
 		@apply rounded border border-aura-border px-2 py-0.5 font-mono text-[11px] text-aura-green hover:border-aura-green hover:text-aura-green;

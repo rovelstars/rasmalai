@@ -1,27 +1,43 @@
-// Mirrors the keyword table in compiler/frontend/src/token.rs. true/false/null are
-// lexed as keywords too, but they are painted as literals further down in the regex.
+// Oracles: keyword() in compiler/frontend/src/token.rs, is_type_name in compiler/frontend/src/highlight.rs.
 const KEYWORDS = new Set([
-	'fn', 'let', 'const', 'static', 'new', 'return', 'defer', 'import', 'pub',
-	'public', 'private', 'unsafe', 'comptime', 'native', 'if', 'else', 'for',
-	'while', 'in', 'break', 'continue', 'switch', 'case', 'default', 'throw',
-	'throws', 'try', 'catch', 'finally', 'guard', 'do', 'fallthrough', 'pass',
-	'is', 'from', 'as', 'export', 'async', 'await', 'class', 'struct', 'record',
-	'trait', 'interface', 'extension', 'enum', 'init', 'deinit', 'onReload',
-	'extends', 'with', 'this', 'super'
+	'true', 'false', 'null', 'this', 'super', 'class', 'struct', 'record',
+	'trait', 'interface', 'extension', 'enum', 'fn', 'init', 'new', 'deinit',
+	'onReload', 'extends', 'with', 'let', 'const', 'static', 'if', 'else',
+	'for', 'while', 'in', 'return', 'break', 'continue', 'try', 'catch',
+	'finally', 'throw', 'throws', 'defer', 'guard', 'switch', 'case', 'default',
+	'do', 'fallthrough', 'is', 'import', 'export', 'from', 'as', 'pub',
+	'public', 'private', 'unsafe', 'comptime', 'native', 'async', 'await', 'pass'
 ]);
 
-// Mirrors is_type_name in compiler/frontend/src/highlight.rs. `Option` is absent:
-// no stdlib module declares it and compiler/frontend/tests/prelude.rs asserts it
-// must stay removed.
 const TYPES = new Set([
 	'Int', 'Float', 'FastFloat', 'Bool', 'Void', 'String', 'Any', 'Array',
-	'Map', 'Set', 'GenRef', 'Vec4f', 'Vec4i', 'Vec2', 'Result'
+	'Map', 'Set', 'GenRef', 'Vec4f', 'Vec4i', 'Vec2', 'Option', 'Result'
 ]);
 
 export interface AuraSpan {
 	text: string;
 	cls: string;
 	href?: string;
+}
+
+const DOC_CLASS = 'text-aura-green';
+const DOC_TAG_CLASS = 'text-aura-cyan';
+const DOC_TAG_RE = /@(param|returns?|throws|error|example|see|since|deprecated)\b/g;
+
+function pushDocSpan(spans: AuraSpan[], text: string): void {
+	DOC_TAG_RE.lastIndex = 0;
+	let last = 0;
+	let m: RegExpExecArray | null;
+	while ((m = DOC_TAG_RE.exec(text)) !== null) {
+		if (m.index > last) {
+			spans.push({ text: text.slice(last, m.index), cls: DOC_CLASS });
+		}
+		spans.push({ text: m[0], cls: DOC_TAG_CLASS });
+		last = m.index + m[0].length;
+	}
+	if (last < text.length) {
+		spans.push({ text: text.slice(last), cls: DOC_CLASS });
+	}
 }
 
 const RUST_KEYWORDS = new Set(
@@ -117,7 +133,7 @@ export function highlightCode(src: string, lang: string): AuraSpan[] | null {
 export function highlightAura(src: string, links?: Map<string, string>): AuraSpan[] {
 	const spans: AuraSpan[] = [];
 	const re =
-		/(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*"|\b\d[\d_]*(?:\.\d+)?\b|\btrue\b|\bfalse\b|\bnull\b)|([A-Za-z_][A-Za-z0-9_]*)/g;
+		/(\/\*\*(?!\/)[\s\S]*?\*\/|\/\/![^\n]*)|(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*"|\b\d[\d_]*(?:\.\d+)?\b|\btrue\b|\bfalse\b|\bnull\b)|([A-Za-z_][A-Za-z0-9_]*)/g;
 	let last = 0;
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(src)) !== null) {
@@ -125,15 +141,17 @@ export function highlightAura(src: string, links?: Map<string, string>): AuraSpa
 			spans.push({ text: src.slice(last, m.index), cls: 'text-aura-muted' });
 		}
 		if (m[1] !== undefined) {
-			spans.push({ text: m[1], cls: 'text-aura-muted italic' });
+			pushDocSpan(spans, m[1]);
 		} else if (m[2] !== undefined) {
-			spans.push({ text: m[2], cls: 'text-aura-orange' });
-		} else if (KEYWORDS.has(m[3])) {
-			spans.push({ text: m[3], cls: 'text-aura-purple' });
-		} else if (TYPES.has(m[3])) {
-			spans.push({ text: m[3], cls: 'text-aura-pink', href: links?.get(m[3]) });
+			spans.push({ text: m[2], cls: 'text-aura-muted italic' });
+		} else if (m[3] !== undefined) {
+			spans.push({ text: m[3], cls: 'text-aura-orange' });
+		} else if (KEYWORDS.has(m[4])) {
+			spans.push({ text: m[4], cls: 'text-aura-purple' });
+		} else if (TYPES.has(m[4])) {
+			spans.push({ text: m[4], cls: 'text-aura-pink', href: links?.get(m[4]) });
 		} else {
-			spans.push({ text: m[3], cls: 'text-aura-text' });
+			spans.push({ text: m[4], cls: 'text-aura-text' });
 		}
 		last = m.index + m[0].length;
 	}
