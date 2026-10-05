@@ -207,8 +207,9 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             let v = cx.builder.build_load(cx.context.i64_type(), at, "").map_err(err)?.into_int_value();
             store(cx, *dst, v.into())?;
         }
-        Instr::GetField { dst, obj, field , ..} => {
+        Instr::GetField { dst, obj, field, span , ..} => {
             let base = load(cx, *obj)?;
+            trap_if_null(cx, *span, "field of null", base)?;
             let at = byte_ptr(cx, base, field_offset(*field))?;
             let v = cx.builder.build_load(cx.context.i64_type(), at, "").map_err(err)?.into_int_value();
             store(cx, *dst, v.into())?;
@@ -221,7 +222,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                 own(cx, *dst);
             }
         }
-        Instr::SetField { obj, field, value , ..} => {
+        Instr::SetField { obj, field, value, span , ..} => {
             let (ci, fty) = match cx.ftypes.get(*obj as usize) {
                 Some(LirType::Obj(name)) => match lir.class_index.get(name) {
                     Some(ci) => match lir.classes[*ci].fields.get(*field) {
@@ -234,6 +235,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             };
             let _ = ci;
             let base = load(cx, *obj)?;
+            trap_if_null(cx, *span, "field-set on null", base)?;
             let at = byte_ptr(cx, base, field_offset(*field))?;
             let v = load(cx, *value)?;
             if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
@@ -289,7 +291,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                 cx.builder.build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "").map_err(err)?;
             }
         }
-        Instr::GetFieldByName { dst, obj, field , ..} => {
+        Instr::GetFieldByName { dst, obj, field, span , ..} => {
             let off = match cx.ftypes.get(*obj as usize) {
                 Some(LirType::Obj(name)) => match lir.class_index.get(name) {
                     Some(ci) => match lir.classes[*ci].field_index.get(field) {
@@ -301,6 +303,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                 _ => return Err(Diagnostic::new(Code::E108, "llvm subset: field of non-object")),
             };
             let base = load(cx, *obj)?;
+            trap_if_null(cx, *span, "field of null", base)?;
             let at = byte_ptr(cx, base, off)?;
             let v = cx.builder.build_load(cx.context.i64_type(), at, "").map_err(err)?.into_int_value();
             store(cx, *dst, v.into())?;
@@ -309,7 +312,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                 own(cx, *dst);
             }
         }
-        Instr::SetFieldByName { obj, field, value , ..} => {
+        Instr::SetFieldByName { obj, field, value, span , ..} => {
             let (fi, fty) = match cx.ftypes.get(*obj as usize) {
                 Some(LirType::Obj(name)) => match lir.class_index.get(name) {
                     Some(ci) => match lir.classes[*ci].field_index.get(field) {
@@ -322,6 +325,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             };
             let off = field_offset(fi);
             let base = load(cx, *obj)?;
+            trap_if_null(cx, *span, "field-set on null", base)?;
             let at = byte_ptr(cx, base, off)?;
             let v = load(cx, *value)?;
             if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
@@ -608,13 +612,14 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                 array_release_old(cx, lir, *arr, old)?;
             }
         }
-        Instr::ArrayLen { dst, arr , ..} => {
+        Instr::ArrayLen { dst, arr, span , ..} => {
             match cx.ftypes.get(*arr as usize) {
                 Some(LirType::Array(_)) | Some(LirType::Any) => {
-                    inline_array_len(cx, *arr, *dst)?;
+                    inline_array_len(cx, *span, *arr, *dst)?;
                 }
                 _ => {
                     let a = load(cx, *arr)?;
+                    trap_if_null(cx, *span, "len of null", a)?;
                     let ap = as_ptr(cx, a)?;
                     let site = cx.builder.build_call(cx.array_len, &[ap.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {

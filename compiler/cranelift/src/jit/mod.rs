@@ -213,6 +213,7 @@ struct RtIds {
     closure_set: FuncId,
     closure_release: FuncId,
     panic_str: FuncId,
+    fatal_span: FuncId,
     spawn_closure: FuncId,
     join_val: FuncId,
     join_err: FuncId,
@@ -534,6 +535,10 @@ impl Jit {
                 }
             }
         };
+        if let Some((msg, start, end)) = runtime::native::take_fatal() {
+            let span = diagnostics::Span { start, end };
+            return Err(Diagnostic::new(Code::E108, format!("fatal: {msg}")).with_span(span));
+        }
         if let Some(msg) = runtime::native::take_uncaught_message() {
             return Err(Diagnostic::new(Code::E108, format!("uncaught error: {msg}")));
         }
@@ -575,4 +580,157 @@ fn array_capturable(inner: &LirType) -> bool {
 
 pub fn native_flags() -> settings::Flags {
     settings::Flags::new(settings::builder())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PrebuiltStatus {
+    Used { symbols: usize },
+    Fallback(&'static str),
+}
+
+const PREBUILT_FALLBACK: &str =
+    "prebuilt stdlib missing or stale; stdlib JIT-compiles inline";
+
+fn count_prebuilt_symbols(
+    lir: &LirModule,
+    loaded: &runtime::stdlib_cache::LoadedStdlib,
+) -> usize {
+    lir.functions
+        .iter()
+        .filter(|f| loaded.symbol(&f.name).is_some())
+        .count()
+}
+
+pub fn prebuilt_stdlib_status_in(
+    lir: &LirModule,
+    cache_root: &std::path::Path,
+) -> PrebuiltStatus {
+    match runtime::stdlib_cache::open_cached_stdlib_in(cache_root) {
+        None => PrebuiltStatus::Fallback(PREBUILT_FALLBACK),
+        Some(loaded) => PrebuiltStatus::Used {
+            symbols: count_prebuilt_symbols(lir, &loaded),
+        },
+    }
+}
+
+pub fn try_register_prebuilt_stdlib_in(
+    builder: &mut JITBuilder,
+    lir: &LirModule,
+    cache_root: &std::path::Path,
+) -> PrebuiltStatus {
+    match runtime::stdlib_cache::open_cached_stdlib_in(cache_root) {
+        None => PrebuiltStatus::Fallback(PREBUILT_FALLBACK),
+        Some(loaded) => {
+            let mut symbols = 0;
+            for f in &lir.functions {
+                if let Some(addr) = loaded.symbol(&f.name) {
+                    builder.symbol(&f.name, addr);
+                    symbols += 1;
+                }
+            }
+            PrebuiltStatus::Used { symbols }
+        }
+    }
+}
+
+pub fn try_register_prebuilt_stdlib(builder: &mut JITBuilder, lir: &LirModule) -> PrebuiltStatus {
+    try_register_prebuilt_stdlib_in(builder, lir, &frontend::cache::global_cache_dir())
+}
+#[cfg(test)]
+mod prebuilt_tests {
+    use super::*;
+
+    fn lowered(src: &str) -> LirModule {
+        let mut module = frontend::modules::ModuleGraph::from_source(src).unwrap();
+        assert!(frontend::desugar::desugar(&mut module).is_empty());
+        lir::lower::lower(&module).unwrap()
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "rnx-cl-prebuilt-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cc_driver() -> Option<String> {
+        ["cc", "gcc", "clang"].into_iter().find(|name| {
+            std::env::var_os("PATH").map_or(false, |paths| {
+                std::env::split_paths(&paths).any(|d| d.join(name).is_file())
+            })
+        }).map(|s| s.to_string())
+    }
+
+    #[test]
+    fn missing_artifact_falls_back_to_inline() {
+        let lir = lowered("fn Fib(n: Int): Int { if n < 2 { return n; } return Fib(n - 1) + Fib(n - 2); }");
+        let root = scratch("missing");
+        let mut builder = JITBuilder::with_flags(
+            &[("enable_nan_canonicalization", "false")],
+            default_libcall_names(),
+        )
+        .unwrap();
+        assert_eq!(
+            try_register_prebuilt_stdlib_in(&mut builder, &lir, &root),
+            PrebuiltStatus::Fallback(PREBUILT_FALLBACK)
+        );
+        assert_eq!(
+            prebuilt_stdlib_status_in(&lir, &root),
+            PrebuiltStatus::Fallback(PREBUILT_FALLBACK)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fresh_artifact_registers_symbols() {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let Some(driver) = cc_driver() else {
+            return;
+        };
+        let lir = lowered("fn probe_fn(): Int { return 1; }");
+        assert!(lir.functions.iter().any(|f| f.name == "probe_fn"));
+        let root = scratch("fresh");
+        let dir = runtime::stdlib_cache::artifact_dir_in(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("probe.c");
+        std::fs::write(&src, "int probe_fn(void) { return 1; }\n").unwrap();
+        let out = dir.join(runtime::stdlib_cache::LIB_FILENAME);
+        let status = std::process::Command::new(&driver)
+            .args(["-shared", "-fPIC", "-o"])
+            .arg(&out)
+            .arg(&src)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        runtime::stdlib_cache::mark_cached_in(&root).unwrap();
+        assert_eq!(prebuilt_stdlib_status_in(&lir, &root), PrebuiltStatus::Used { symbols: 1 });
+        let mut builder = JITBuilder::with_flags(
+            &[("enable_nan_canonicalization", "false")],
+            default_libcall_names(),
+        )
+        .unwrap();
+        assert_eq!(
+            try_register_prebuilt_stdlib_in(&mut builder, &lir, &root),
+            PrebuiltStatus::Used { symbols: 1 }
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dev_pipeline_is_strict_subset_of_release() {
+        assert!(runtime::lir_pipeline::dev_is_strict_subset_of_release());
+        let dev = runtime::lir_pipeline::dev_passes();
+        let release = runtime::lir_pipeline::release_passes();
+        assert!(dev.iter().all(|p| release.contains(p)));
+        assert!(dev.len() < release.len());
+    }
 }

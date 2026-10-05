@@ -11,6 +11,7 @@ pub(super) use std::collections::{BTreeMap, BTreeSet};
 
 mod lower_fn;
 mod instr;
+pub mod stdlib_prebuilt;
 
 use self::instr::{FnCx, lower_instr};
 use self::lower_fn::{build_module, check_supported};
@@ -220,6 +221,7 @@ impl<'ctx> Jit<'ctx> {
             ("rnx_thread_pool_parallel_closure", runtime::native::rnx_thread_pool_parallel_closure as *const () as usize),
             ("rnx_closure_register", runtime::native::rnx_closure_register as *const () as usize),
             ("rnx_panic_str", runtime::native::rnx_panic_str as *const () as usize),
+            ("rnx_fatal_span", runtime::native::rnx_fatal_span as *const () as usize),
             ("rnx_release_array", runtime::native::rnx_release_array as *const () as usize),
             ("rnx_thread_spawn", runtime::native::rnx_thread_spawn as *const () as usize),
             ("rnx_thread_join", runtime::native::rnx_thread_join as *const () as usize),
@@ -572,6 +574,10 @@ impl<'ctx> Jit<'ctx> {
                 }
                 _ => return Err(Diagnostic::new(Code::E108, "llvm jit arity > 2 pending")),
             };
+            if let Some((msg, start, end)) = runtime::native::take_fatal() {
+                let span = diagnostics::Span { start, end };
+                return Err(Diagnostic::new(Code::E108, format!("fatal: {msg}")).with_span(span));
+            }
             if let Some(msg) = runtime::native::take_uncaught_message() {
                 return Err(Diagnostic::new(Code::E108, format!("uncaught error: {msg}")));
             }
@@ -752,6 +758,27 @@ pub fn emit_object_with_debug(
                 .map_err(err)?;
             let take_fn = module.get_function("rnx_error_take").expect("declared");
             let report_fn = module.get_function("rnx_report_uncaught").expect("declared");
+            let fatal_fn = module.get_function("rnx_report_fatal").expect("declared");
+            let fatal_site = wb.build_call(fatal_fn, &[], "fatalrep").map_err(err)?;
+            let fatal_code = match fatal_site.try_as_basic_value() {
+                ValueKind::Basic(x) => x.into_int_value(),
+                ValueKind::Instruction(_) => {
+                    return Err(Diagnostic::new(Code::E108, "build: fatal report returned void"));
+                }
+            };
+            let has_fatal = wb.build_int_compare(
+                inkwell::IntPredicate::NE,
+                fatal_code,
+                i32t.const_zero(),
+                "hasfatal",
+            ).map_err(err)?;
+            let fatal_bb = context.append_basic_block(main_fn, "fatal");
+            let nofatal_bb = context.append_basic_block(main_fn, "nofatal");
+            wb.build_conditional_branch(has_fatal, fatal_bb, nofatal_bb).map_err(err)?;
+            wb.position_at_end(fatal_bb);
+            let one = i32t.const_int(1, false);
+            wb.build_return(Some(&one)).map_err(err)?;
+            wb.position_at_end(nofatal_bb);
             let take_site = wb.build_call(take_fn, &[], "errtake").map_err(err)?;
             let pending = match take_site.try_as_basic_value() {
                 ValueKind::Basic(x) => x.into_int_value(),
@@ -1722,9 +1749,10 @@ fn cur_blocks<'x>(
     ))
 }
 
-fn inline_array_len(cx: &FnCx, arr: Local, dst: Local) -> Result<(), Diagnostic> {
+fn inline_array_len(cx: &FnCx, span: diagnostics::Span, arr: Local, dst: Local) -> Result<(), Diagnostic> {
     let i64t = cx.context.i64_type();
     let a = load(cx, arr)?;
+    trap_if_null(cx, span, "len of null", a)?;
     let ap = as_ptr(cx, a)?;
     let raw = array_len_value(cx, ap)?;
     let isnull = cx.builder.build_is_null(ap, "").map_err(err)?;
@@ -1733,6 +1761,37 @@ fn inline_array_len(cx: &FnCx, arr: Local, dst: Local) -> Result<(), Diagnostic>
         .build_select(isnull, i64t.const_zero(), raw, "")
         .map_err(err)?;
     store(cx, dst, len)
+}
+
+fn trap_if_null(cx: &FnCx, span: diagnostics::Span, msg: &str, recv: IntValue) -> Result<(), Diagnostic> {
+    let i64t = cx.context.i64_type();
+    let zero = i64t.const_zero();
+    let is_null = cx.builder.build_int_compare(IntPredicate::EQ, recv, zero, "nullrecv").map_err(err)?;
+    let fv = cx.builder.get_insert_block().and_then(|b| b.get_parent()).ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: no insert function"))?;
+    let trap_bb = cx.context.append_basic_block(fv, "null_recv");
+    let cont_bb = cx.context.append_basic_block(fv, "recv_ok");
+    cx.builder.build_conditional_branch(is_null, trap_bb, cont_bb).map_err(err)?;
+    cx.builder.position_at_end(trap_bb);
+    let m = str_addr(cx, msg)?;
+    let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
+    let p = cx.builder.build_int_to_ptr(m, ptr_t, "").map_err(err)?;
+    let s = i64t.const_int(span.start as u64, false);
+    let e = i64t.const_int(span.end as u64, false);
+    cx.builder.build_call(cx.fatal_span, &[p.into(), s.into(), e.into()], "").map_err(err)?;
+    if cx.ret_slots <= 1 {
+        cx.builder.build_return(Some(&zero)).map_err(err)?;
+    } else {
+        let fields: Vec<inkwell::types::BasicTypeEnum> =
+            (0..cx.ret_slots).map(|_| cx.context.i64_type().into()).collect();
+        let st = cx.context.struct_type(&fields, false);
+        let mut agg = st.get_undef();
+        for i in 0..cx.ret_slots {
+            agg = cx.builder.build_insert_value(agg, zero, i as u32, "errz").map_err(err)?.into_struct_value();
+        }
+        cx.builder.build_return(Some(&agg)).map_err(err)?;
+    }
+    cx.builder.position_at_end(cont_bb);
+    Ok(())
 }
 
 fn inline_array_get<'x>(

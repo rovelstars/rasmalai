@@ -2544,6 +2544,7 @@ pub unsafe extern "C" fn rnx_obj_class(ptr: *const u8) -> u64 {
 
 thread_local! {
     static PENDING_ERROR: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PENDING_FATAL: std::cell::Cell<Option<(String, u32, u32)>> = const { std::cell::Cell::new(None) };
 }
 
 #[inline]
@@ -2559,6 +2560,36 @@ pub unsafe extern "C" fn rnx_error_set(payload: u64) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rnx_error_take() -> u64 {
     PENDING_ERROR.with(|c| c.replace(0))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rnx_fatal_span(msg: *const u8, start: u64, end: u64) {
+    if msg.is_null() {
+        return;
+    }
+    let text = native_str(msg);
+    PENDING_FATAL.with(|c| {
+        let cur = c.take();
+        match cur {
+            Some(held) => c.set(Some(held)),
+            None => c.set(Some((text, start as u32, end as u32))),
+        }
+    });
+}
+
+pub fn take_fatal() -> Option<(String, u32, u32)> {
+    PENDING_FATAL.with(|c| c.take())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rnx_report_fatal() -> i32 {
+    match take_fatal() {
+        None => 0,
+        Some((msg, _, _)) => {
+            eprintln!("fatal: {msg}");
+            1
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

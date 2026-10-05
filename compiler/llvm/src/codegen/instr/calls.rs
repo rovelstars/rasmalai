@@ -484,6 +484,7 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                 }
                 if n == "__rnx_string_len" {
                     let raw = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", raw)?;
                     let ptr = as_ptr(cx, raw)?;
                     let site = cx.builder.build_call(cx.string_len, &[ptr.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {
@@ -499,7 +500,9 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     return Ok(());
                 }
                 if n == "__rnx_string_slice" {
-                    let a = as_ptr(cx, load(cx, args[0])?)?;
+                    let r0 = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r0)?;
+                    let a = as_ptr(cx, r0)?;
                     let b = load(cx, args[1])?;
                     let c = load(cx, args[2])?;
                     let site = cx.builder.build_call(cx.string_slice, &[a.into(), b.into(), c.into()], "").map_err(err)?;
@@ -518,8 +521,12 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     return Ok(());
                 }
                 if n == "__rnx_string_index_of" {
-                    let a = as_ptr(cx, load(cx, args[0])?)?;
-                    let b = as_ptr(cx, load(cx, args[1])?)?;
+                    let r0 = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r0)?;
+                    let r1 = load(cx, args[1])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r1)?;
+                    let a = as_ptr(cx, r0)?;
+                    let b = as_ptr(cx, r1)?;
                     let site = cx.builder.build_call(cx.string_index_of, &[a.into(), b.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {
                         ValueKind::Basic(v) => {
@@ -534,8 +541,12 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     return Ok(());
                 }
                 if n == "__rnx_string_index_of_from" {
-                    let a = as_ptr(cx, load(cx, args[0])?)?;
-                    let b = as_ptr(cx, load(cx, args[1])?)?;
+                    let r0 = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r0)?;
+                    let r1 = load(cx, args[1])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r1)?;
+                    let a = as_ptr(cx, r0)?;
+                    let b = as_ptr(cx, r1)?;
                     let c = load(cx, args[2])?;
                     let site = cx.builder.build_call(cx.string_index_of_from, &[a.into(), b.into(), c.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {
@@ -552,6 +563,7 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                 }
                 if n == "__rnx_string_trim" {
                     let raw = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", raw)?;
                     let ptr = as_ptr(cx, raw)?;
                     let site = cx.builder.build_call(cx.string_trim, &[ptr.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {
@@ -569,8 +581,12 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     return Ok(());
                 }
                 if n == "__rnx_string_concat" {
-                    let a = as_ptr(cx, load(cx, args[0])?)?;
-                    let b = as_ptr(cx, load(cx, args[1])?)?;
+                    let r0 = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r0)?;
+                    let r1 = load(cx, args[1])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r1)?;
+                    let a = as_ptr(cx, r0)?;
+                    let b = as_ptr(cx, r1)?;
                     let site = cx.builder.build_call(cx.concat, &[a.into(), b.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {
                         ValueKind::Basic(v) => {
@@ -587,8 +603,12 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     return Ok(());
                 }
                 if n == "__rnx_string_split" {
-                    let a = as_ptr(cx, load(cx, args[0])?)?;
-                    let b = as_ptr(cx, load(cx, args[1])?)?;
+                    let r0 = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r0)?;
+                    let r1 = load(cx, args[1])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r1)?;
+                    let a = as_ptr(cx, r0)?;
+                    let b = as_ptr(cx, r1)?;
                     let site = cx.builder.build_call(cx.string_split, &[a.into(), b.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {
                         ValueKind::Basic(v) => {
@@ -629,7 +649,9 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     return Ok(());
                 }
                 if n == "__rnx_string_char_code_at" {
-                    let a = as_ptr(cx, load(cx, args[0])?)?;
+                    let r0 = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r0)?;
+                    let a = as_ptr(cx, r0)?;
                     let b = load(cx, args[1])?;
                     let site = cx.builder.build_call(cx.string_char_code_at, &[a.into(), b.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {
@@ -662,7 +684,9 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     return Ok(());
                 }
                 if n == "__rnx_array_pop" {
-                    let a = as_ptr(cx, load(cx, args[0])?)?;
+                    let r0 = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r0)?;
+                    let a = as_ptr(cx, r0)?;
                     let b = load(cx, args[1])?;
                     let site = cx.builder.build_call(cx.array_pop_fn, &[a.into(), b.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {
@@ -684,7 +708,9 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     return Ok(());
                 }
                 if n == "__rnx_array_len" {
-                    let a = as_ptr(cx, load(cx, args[0])?)?;
+                    let r0 = load(cx, args[0])?;
+                    trap_if_null(cx, *span, "got null or a value of the wrong type", r0)?;
+                    let a = as_ptr(cx, r0)?;
                     let site = cx.builder.build_call(cx.array_len, &[a.into()], "").map_err(err)?;
                     match site.try_as_basic_value() {
                         ValueKind::Basic(v) => {
@@ -837,6 +863,10 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     return Ok(());
                 }
                 if n == "__rnx_array_slice" {
+                    if let Some(first) = args.first() {
+                        let r0 = load(cx, *first)?;
+                        trap_if_null(cx, *span, "got null or a value of the wrong type", r0)?;
+                    }
                     let mut argv: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::new();
                     for a in args {
                         argv.push(load(cx, *a)?.into());

@@ -433,3 +433,31 @@ fn jit_is_class_check_no_host_abort() {
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 1);
 }
+
+#[test]
+fn jit_div_zero_reports_fatal_with_span() {
+    let lir = jit_of("fn Half(x: Int): Int { return x / 0 } fn Main(): Int { return Half(3) }");
+    let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
+    let e = jit.call("Main", &[]).unwrap_err();
+    assert!(e.message.contains("division by zero"), "{}", e.message);
+    let span = e.span.expect("fatal must carry source span");
+    assert!(span.start < span.end, "{span:?}");
+}
+
+#[test]
+fn jit_int_div_mod_match_interpreter() {
+    let lir = jit_of(
+        "fn Q(a: Int, b: Int): Int { return a / b }
+         fn R(a: Int, b: Int): Int { return a % b }
+         fn MinNeg1Div(): Int { let m = -9223372036854775807 - 1; return m / -1 }
+         fn MinNeg1Mod(): Int { let m = -9223372036854775807 - 1; return m % -1 }
+         fn Main(): Int { return 0 }",
+    );
+    let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(jit.call("Q", &[7, 3]).unwrap(), 2);
+    assert_eq!(jit.call("R", &[7, 3]).unwrap(), 1);
+    assert_eq!(jit.call("Q", &[-7, 3]).unwrap(), -2);
+    assert_eq!(jit.call("R", &[-7, 3]).unwrap(), -1);
+    assert_eq!(jit.call("MinNeg1Div", &[]).unwrap(), i64::MIN);
+    assert_eq!(jit.call("MinNeg1Mod", &[]).unwrap(), 0);
+}

@@ -202,9 +202,11 @@ impl FnLower<'_> {
     }
 
     pub(super) fn lower_get_field(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
-        let Instr::GetField { dst, obj, field , ..} = ins else {
+        let Instr::GetField { dst, obj, field, span , ..} = ins else {
             return Err("unreachable".to_string());
         };
+                let recv = self.val(b, *obj);
+                self.trap_if_null(b, *span, "field of null", recv)?;
                 let (ptr, off) = self.indexed_field(b, *obj, *field)?;
                 let v = b.ins().load(types::I64, MemFlagsData::trusted(), ptr, off as i32);
                 self.set(b, *dst, v);
@@ -225,9 +227,11 @@ impl FnLower<'_> {
     }
 
     pub(super) fn lower_set_field(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
-        let Instr::SetField { obj, field, value , ..} = ins else {
+        let Instr::SetField { obj, field, value, span , ..} = ins else {
             return Err("unreachable".to_string());
         };
+                let recv = self.val(b, *obj);
+                self.trap_if_null(b, *span, "field-set on null", recv)?;
                 let (ptr, off) = self.indexed_field(b, *obj, *field)?;
                 let v = self.val(b, *value);
                 if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
@@ -277,9 +281,11 @@ impl FnLower<'_> {
     }
 
     pub(super) fn lower_get_field_by_name(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
-        let Instr::GetFieldByName { dst, obj, field , ..} = ins else {
+        let Instr::GetFieldByName { dst, obj, field, span , ..} = ins else {
             return Err("unreachable".to_string());
         };
+                let recv = self.val(b, *obj);
+                self.trap_if_null(b, *span, "field of null", recv)?;
                 let (ptr, off) = self.field_addr(b, *obj, field)?;
                 let v = b.ins().load(types::I64, MemFlagsData::trusted(), ptr, off as i32);
                 self.set(b, *dst, v);
@@ -300,9 +306,11 @@ impl FnLower<'_> {
     }
 
     pub(super) fn lower_set_field_by_name(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
-        let Instr::SetFieldByName { obj, field, value , ..} = ins else {
+        let Instr::SetFieldByName { obj, field, value, span , ..} = ins else {
             return Err("unreachable".to_string());
         };
+                let recv = self.val(b, *obj);
+                self.trap_if_null(b, *span, "field-set on null", recv)?;
                 let (ptr, off) = self.field_addr(b, *obj, field)?;
                 let v = self.val(b, *value);
                 if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
@@ -636,9 +644,11 @@ impl FnLower<'_> {
     }
 
     pub(super) fn lower_array_len(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
-        let Instr::ArrayLen { dst, arr , ..} = ins else {
+        let Instr::ArrayLen { dst, arr, span , ..} = ins else {
             return Err("unreachable".to_string());
         };
+                let recv = self.val(b, *arr);
+                self.trap_if_null(b, *span, "len of null", recv)?;
                 let callee = self.module.declare_func_in_func(self.array_len, &mut b.func);
                 let a = self.val(b, *arr);
                 let inst = b.ins().call(callee, &[a]);

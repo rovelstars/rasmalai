@@ -186,6 +186,7 @@ pub(super) struct FnLower<'a> {
     pub(super) closure_set: FuncId,
     pub(super) closure_release: FuncId,
     pub(super) panic_str: FuncId,
+    pub(super) fatal_span: FuncId,
     pub(super) spawn_closure: FuncId,
     pub(super) join_val: FuncId,
     pub(super) join_err: FuncId,
