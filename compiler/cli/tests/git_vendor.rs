@@ -78,7 +78,7 @@ fn test_git_dep_fetch_and_run() {
     let (code, text) = rnx(&["fetch"], &app);
     assert_eq!(code, 0, "{text}");
     assert!(text.contains("Fetched glib (v0.1.0)"), "{text}");
-    let cached = app.join(".rnx").join("cache").join("git").join("glib-v0.1.0");
+    let cached = app.join(".rnx-cache").join("cache").join("git").join("glib-v0.1.0");
     assert!(cached.join("Project.config").is_file(), "{}", cached.display());
     assert!(cached.join("src").join("lib.rnx").is_file());
     let (code, text) = rnx(&["run"], &app);
@@ -100,7 +100,7 @@ fn test_rnx_vendor_offline() {
     assert!(!app.join("vendor").join("glib").join(".git").exists());
     let _ = std::fs::remove_dir_all(dir.join("remote.git"));
     let _ = std::fs::remove_dir_all(dir.join("remote"));
-    let _ = std::fs::remove_dir_all(app.join(".rnx"));
+    let _ = std::fs::remove_dir_all(app.join(".rnx-cache"));
     let (code, text) = rnx(&["run"], &app);
     assert_eq!(code, 0, "{text}");
     assert!(text.contains(EXPECTED), "{text}");

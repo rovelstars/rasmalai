@@ -171,7 +171,9 @@ export fn renderConfig(pkgName: String, pkgVersion: String, nativeLib: String): 
     s = s + "    project: \{\n";
     s = s + "        name: \"" + pkgName + "\",\n";
     s = s + "        version: \"" + pkgVersion + "\",\n";
-    s = s + "        entry: \"src/lib.rnx\"\n";
+    s = s + "    },\n";
+    s = s + "    entries: \{\n";
+    s = s + "        main: \"src/lib.rnx\"\n";
     s = s + "    },\n";
     s = s + "    dependencies: \{\n";
     s = s + "        " + nativeLib + ": \{\n";

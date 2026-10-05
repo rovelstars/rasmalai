@@ -79,7 +79,7 @@ fn dep_dirs(root: &Path, config: &ProjectConfig) -> Vec<DepDir> {
 }
 
 fn git_cache_dir(root: &Path, name: &str) -> Option<PathBuf> {
-    let cache = root.join(".rnx").join("cache").join("git");
+    let cache = root.join(".rnx-cache").join("cache").join("git");
     let entries = std::fs::read_dir(&cache).ok()?;
     let prefix = format!("{name}-");
     let mut hits: Vec<PathBuf> = entries

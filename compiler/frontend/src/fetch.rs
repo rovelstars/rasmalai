@@ -107,13 +107,13 @@ pub fn resolve_git_dep(
             Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", vendor.display()))
         });
     }
-    let dir = fetch_git_dependency(name, git_url, rev, &anchor.join(".rnx").join("cache").join("git"))?;
+    let dir = fetch_git_dependency(name, git_url, rev, &anchor.join(".rnx-cache").join("cache").join("git"))?;
     std::fs::canonicalize(&dir)
         .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", dir.display())))
 }
 
 fn excluded_dir(name: &str) -> bool {
-    matches!(name, ".git" | "target" | "tests" | ".rnx")
+    matches!(name, ".git" | "target" | "tests" | ".rnx-cache")
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<(), Diagnostic> {
