@@ -120,7 +120,7 @@
 		<div class="panel p-4">
 			<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">engine</p>
 			<p class="mt-1 font-mono text-[13px]">rasmalai >= {data.engine}</p>
-			<p class="mt-1 text-[13px] text-aura-muted">Ships inside the compiler. Nothing to install.</p>
+			<p class="mt-1 text-[13px] text-aura-muted">Standard library module. Embedded in the toolchain today; registry-published versions are on the way.</p>
 		</div>
 		<div class="panel p-4">
 			<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">license</p>
