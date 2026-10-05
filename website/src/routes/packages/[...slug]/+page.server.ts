@@ -28,7 +28,7 @@ export async function load({ platform, params, url, setHeaders }) {
 		redirect(308, `/packages/${full}/${legacy}${tab ? `?tab=${tab}` : ''}`);
 	}
 	if (dev && full.startsWith('@std/')) {
-		const local = localStdPackage(full, want);
+		const local = localStdPackage(full);
 		if (!local) error(404, 'package not found');
 		setHeaders({ 'Cache-Control': 'no-store' });
 		return { pkg: local.pkg, active: local.doc };
