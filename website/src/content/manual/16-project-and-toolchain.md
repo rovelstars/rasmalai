@@ -68,6 +68,35 @@ export default {
 
 Version requirements follow SemVer 2.0: `^1.2.0` permits compatible minor and patch changes; `~1.2.0` permits patch-level changes only; a bare version pins exactly; ranges combine comparators. A git dependency pins exactly one of `rev`, `tag`, or `branch` (`rev` holding a branch name is rejected). A `path` entry is a local checkout; git checkouts cache under `.rnx/cache/git/`; a `vendor/<pkg>/` directory wins over the network. The token never lives in the manifest: `token_env` names the environment variable, and `ca_cert` pins a corporate root CA.
 
+| Requirement | Matches | Skips |
+|---|---|---|
+| `^1.2.0` | `>=1.2.0`, same major | `2.0.0`, prereleases |
+| `^0.2.3` | `>=0.2.3`, same minor | `0.3.0` |
+| `^0.0.3` | exactly `0.0.3` | anything else |
+| `~1.2.0` | `>=1.2.0`, same major and minor | `1.3.0` |
+| `1.2.3` (bare) | exactly `1.2.3` | anything else |
+| `*` / `latest` | any stable version | prereleases |
+
+```rnx
+export default {
+    project: { name: "colony", version: "0.4.0" },
+    dependencies: {
+        sqlite3: "^3.45.0"
+    }
+}
+```
+
+## Capability tiers
+
+| Tier | Meaning | Examples |
+|---|---|---|
+| `pure` | no external reach | arithmetic, data layout |
+| `delegated` | acts only on caller-provided values | `fs:delegated`, `net:delegated` |
+| `ambient` | reaches named external resources | `fs:read:/data`, `net:http:example.com` |
+| `hazard` | spawns processes, touches raw memory, or calls foreign code | `sys:exec:*`, `unsafe:ffi`, `unsafe:raw_memory` |
+
+Adding a dependency whose surface reaches the ambient or hazard tiers requires explicit approval through `rnx add --accept-caps <list>` or `--accept-all-caps`.
+
 Unknown packages fail as `E108`; circular package dependencies fail as `E107`, which is reserved exclusively for external package graphs and is never emitted for intra-project file imports. Unrecognized manifest sections or fields warn as `W201` and are ignored.
 
 ## Entry and exit codes

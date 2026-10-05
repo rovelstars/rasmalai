@@ -83,6 +83,38 @@ let { id, ...meta } = user;
 print(id, meta.name);
 ```
 
+## Value-type reference
+
+| Type | Construction | Methods | Copy | `init` |
+|---|---|---|---|---|
+| `struct` | positional call `Vec3(1.0, 2.0, 3.0)` | yes, in body | by value | optional, runs at construction |
+| `record` | positional call `Point(1.0, 2.0)` | no | by value, zero ARC overhead | no |
+| anonymous record | inline `{ id: 1 }` | no | by value | no |
+
+Field visibility: fields default to package visibility; `private` restricts a field to its enclosing scope, and reading one from outside is an `E203` error.
+
+```rnx
+struct Named {
+    let label: String;
+    private let serial: Int;
+}
+
+let n = Named("tag", 7);
+assert(n.label == "tag", "visible");
+```
+
+Generic structs take type parameters in angle brackets; parameters erase to `Any` in field slots, so one declaration serves every element type with a single shared layout. Records and anonymous records destructure by field name with `: alias` renames; a `...rest` binding collects unnamed fields.
+
+```rnx
+struct Box<T> {
+    let value: T;
+}
+
+let bi = Box(42);
+let bs = Box("hi");
+assert(bi.value == 42 && bs.value == "hi", "erased generics");
+```
+
 ## Summary
 
 - `struct`: fields, methods, free memberwise construction, `init`/`deinit` lifecycle, generic parameters erased to `Any`.

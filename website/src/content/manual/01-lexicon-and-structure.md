@@ -110,6 +110,44 @@ assert("hello".length() == 5, "len");
 assert("foo bar".replace("bar", "baz") == "foo baz", "replace");
 ```
 
+## String method reference
+
+Signatures, with edge behavior stated exactly:
+
+| Method | Signature | Returns | Edge cases |
+|---|---|---|---|
+| `length` | `length(): Int` (or `.length` property) | character count | empty string gives `0` |
+| `slice` | `slice(start: Int, end: Int): String` | substring over character offsets | out-of-range bounds clamp; results are covered in [Bindings and Scope](/manual/03-bindings-and-scope) |
+| `indexOf` | `indexOf(needle: String): Int` | first offset, or `-1` | `-1` when absent or when the receiver is empty |
+| `trim` | `trim(): String` | whitespace stripped from both ends | empty or all-whitespace input gives `""` |
+| `concat` | `concat(other: String): String` | joined copy | same as `+`; neither side is modified |
+| `charCodeAt` | `charCodeAt(i: Int): Int` | scalar value at offset `i` | out-of-range access aborts |
+
+```rnx
+assert("hello".indexOf("z") == -1, "absent");
+assert("  ".trim() == "", "blank");
+assert("ab".concat("cd") == "abcd", "concat");
+assert("hello".length == 5, "property");
+```
+
+Interpolation evaluates any `{expr}` or `${expr}` inline, including non-strings (numbers and booleans render as text). A literal brace is `\{`. An unterminated string literal is an `E108` error pointing at the opening quote.
+
+```rnx
+let n = 7;
+print("n={n} next=${n + 1} literal \{n}");
+```
+
+## Minor keywords
+
+Four reserved words name behavior specified elsewhere rather than here:
+
+| Keyword | Meaning | Specified in |
+|---|---|---|
+| `pass` | explicit no-op statement for otherwise empty cases | [Control Flow](/manual/04-control-flow), [Concurrency and Threads](/manual/14-concurrency-and-threads) |
+| `comptime` | marks compile-time evaluation position | reserved; no general compile-time execution beyond manifest `switch` over `target` (see [Packages and Registries](/manual/18-packages-and-registries)) |
+| `native` | declares a foreign C-ABI signature (`from native "lib"`) | [Hardware and FFI](/manual/13-hardware-and-ffi) |
+| `onReload` | hot-reload hook for `rnx dev` | [Project and Toolchain](/manual/16-project-and-toolchain) |
+
 ## Truth values
 
 `Bool` has exactly two values, `true` and `false`. Conditions in `if`, `while`, and `assert` require `Bool`; `if 1 { }` does not compile.

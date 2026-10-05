@@ -224,6 +224,52 @@ test fn adds_up() {
 }
 ```
 
+## async and await
+
+`async fn` names cooperative work; `await` suspends until it settles. This is the one place the language suspends rather than blocks — compare `Thread.spawn` plus `join()`, which blocks the calling thread (see [Concurrency and Threads](/manual/14-concurrency-and-threads)).
+
+| Item | Signature | Meaning |
+|---|---|---|
+| `async fn` | `async fn name(params): T { ... }` | returns `Promise<T>`; body runs cooperatively |
+| `await` | `await expr: Promise<T>: T` | parks at 0% CPU until settled, resumes with the value; rejection propagates |
+| `.wait()` | `promise.wait(): Result<T, String>` | blocking bridge for synchronous callers |
+| `Promise.resolve(v)` | `Promise.resolve<T>(v: T): Promise<T>` | already-settled promise |
+
+```rnx
+async fn compute(): Int {
+    return 41 + 1;
+}
+
+let result = await compute();
+assert(result == 42, "await value");
+```
+
+Rules: `await` outside an `async fn` is an `E109` error, except at the top level of the entry file where it just works. Direct `.poll()` calls are an `E111` error — the polling model is retired. `Main` itself may be `async`; the compiler uses the resolved value as the exit code. From synchronous code, bridge with `.wait().unwrap()` instead of `await`.
+
+```rnx
+async fn fetch(): Int {
+    return 7;
+}
+
+fn Main(): Int {
+    let v = fetch().wait().unwrap();
+    assert(v == 7, "bridge");
+    return 0;
+}
+```
+
+## Call and failure reference
+
+| Call shape | Meaning | Error when wrong |
+|---|---|---|
+| `f(a, b)` | positional arguments, left to right | arity or type mismatch: `E108` with the parameter named |
+| `f(x, name: v)` | named arguments after positionals | unknown or duplicate name: `E108` |
+| `f<T>(v)` | explicit type argument | inference conflict names the parameter: `E108` |
+| `throws` caller outside `try` | propagation requires `try` or own `throws` | checker rejects: `E108` |
+| bare `throw;` outside `catch` | rethrow current error | legal only directly inside `catch`: `E108` otherwise |
+| postfix `?` on non-`Result` | early-return through `Result` only | `E108` |
+| `?` inside non-`Result` function | enclosing function must return `Result` | `E108` |
+
 ## Summary
 
 - `fn name(params): Ret` with block bodies and `return`; `(params) => body` lambdas capturing by value.

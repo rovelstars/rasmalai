@@ -29,6 +29,50 @@ print(++n, n--, n);
 
 The operand must be a valid assignment target — a variable, a field (`obj.count++`), an index (`buf[i] += step`), or a dereferenced pointer (`(*p)++` inside `unsafe`). Mutating a `const` binding or incrementing a non-target such as `(a + b)` is an `E108` error. Compound index and member targets evaluate their base and index exactly once, so `items[next()]++` calls `next()` a single time.
 
+## Assignment operator reference
+
+| Operator | Effect on `x` | Yields | Valid targets |
+|---|---|---|---|
+| `x += v` | `x = x + v` | new value | variable, field, index, `*p` |
+| `x -= v` | `x = x - v` | new value | variable, field, index, `*p` |
+| `x *= v` | `x = x * v` | new value | variable, field, index, `*p` |
+| `x /= v` | `x = x / v` | new value | variable, field, index, `*p` |
+| `x %= v` | `x = x % v` | new value | variable, field, index, `*p` |
+| `x <<= n` | `x = x << n` | new value | variable, field, index, `*p` |
+| `x >>= n` | `x = x >> n` | new value | variable, field, index, `*p` |
+| `x >>>= n` | `x = x >>> n` | new value | variable, field, index, `*p` |
+| `++x` | `x = x + 1` | new value | variable, field, index, `*p` |
+| `x++` | `x = x + 1` | old value | variable, field, index, `*p` |
+| `--x` | `x = x - 1` | new value | variable, field, index, `*p` |
+| `x--` | `x = x - 1` | old value | variable, field, index, `*p` |
+
+```rnx
+let n = 10;
+assert(n++ == 10 && n == 11, "postfix yields old");
+assert(++n == 12 && n == 12, "prefix yields new");
+assert(n-- == 12 && n == 11, "postfix dec");
+n += 4;
+assert(n == 15, "compound");
+```
+
+`++`/`--` step `Float` operands by `1.0`. Applying any of these to a `const` binding or to a non-target expression is an `E108` error.
+
+## const initializer reference
+
+Top-level shared values are `const`: immutable, visible in every function body, restricted to constant initializers.
+
+| Allowed initializer | Example | Forbidden | Error |
+|---|---|---|---|
+| `Int`, `Float`, `Bool` literals | `const n = 3;` | function calls | `E108` |
+| plain-text `String` literals | `const p = "notes.txt";` | interpolation | `E108` |
+| earlier `const` names | `const q = p;` | `let` bindings | `E303` in function bodies |
+
+```rnx
+const base = 3;
+const doubled = 6;
+assert(doubled == base * 2, "const compose");
+```
+
 Names resolve lexically, top to bottom: a name must be declared before use. Reference to a name with no visible declaration is an `E303` error pointing at the exact column. There are no implicit globals; a misspelled assignment target fails instead of creating state.
 
 Top-level statements run inside the implicit entrypoint, so a top-level `let` is local to it: a named `fn` cannot read it, and the compiler says so with an `E303` that names sharing as the fix. A value shared across functions is a `const` — immutable, visible in every function body, and restricted to constant initializers (`Int`, `Float`, `Bool`, and plain-text `String` literals, optionally composed from earlier consts):

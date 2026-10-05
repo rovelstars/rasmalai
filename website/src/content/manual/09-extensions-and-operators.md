@@ -80,6 +80,64 @@ An `extension` block attaches methods to an existing type — a primitive, a col
 
 This is also how the standard library grows foundation types: `Array`'s `map`/`filter`/`find`/`reduce`/`join` and `String`'s `split`/`replace`/`contains` are all extension methods in `@std/prelude`.
 
+```rnx
+struct Vec2 {
+    let x: Float;
+    let y: Float;
+}
+
+extension Vec2 {
+    fn doubled(): Vec2 {
+        return Vec2(this.x * 2.0, this.y * 2.0);
+    }
+}
+
+let v = Vec2(1.0, 2.0).doubled();
+assert(v.x == 2.0 && v.y == 4.0, "extension call");
+```
+
+When an extension method and an intrinsic share a name, the intrinsic wins — extensions never shadow compiler-provided core methods.
+
+## Operator hook reference
+
+Every hook below is verified against the lowering pass. The full set is exactly these seven:
+
+| Hook | Signature shape | Example |
+|---|---|---|
+| `op_add` | `fn op_add(other: Self): Self` | `a + b` |
+| `op_sub` | `fn op_sub(other: Self): Self` | `a - b` |
+| `op_mul` | `fn op_mul(other: Self): Self` | `a * b` |
+| `op_div` | `fn op_div(other: Self): Self` | `a / b` |
+| `op_neg` | `fn op_neg(): Self` | `-a` |
+| `op_index` | `fn op_index(index: Int): T` | `a[i]` |
+| `op_index_set` | `fn op_index_set(index: Int, value: T)` | `a[i] = v` |
+
+```rnx
+struct Vec2 {
+    let x: Float;
+    let y: Float;
+}
+
+extension Vec2 {
+    fn op_add(other: Vec2): Vec2 {
+        return Vec2(this.x + other.x, this.y + other.y);
+    }
+    fn op_sub(other: Vec2): Vec2 {
+        return Vec2(this.x - other.x, this.y - other.y);
+    }
+    fn op_neg(): Vec2 {
+        return Vec2(-this.x, -this.y);
+    }
+}
+
+let d = Vec2(3.0, 4.0) - Vec2(1.0, 1.0);
+assert(d.x == 2.0 && d.y == 3.0, "op_sub");
+let n = -Vec2(1.0, -2.0);
+assert(n.x == -1.0 && n.y == 2.0, "op_neg");
+```
+
+Using an operator on a type without its hook is an `E108` error naming the operator and the type. Primitives keep hardware instructions; only non-primitive operands desugar.
+
 ## Traits describe capabilities
 
 A `trait` declares a method set that classes adopt with `with`, letting generic code depend on behavior rather than concrete types. Small interfaces, adopted explicitly, composed freely.

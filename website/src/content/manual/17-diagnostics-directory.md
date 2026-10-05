@@ -69,6 +69,76 @@ if x > 0 {
 }
 ```
 
+Each remaining code, with its trigger:
+
+```rnx
+let data = await Promise.resolve(42);
+print(data);
+```
+
+Top-level `await` is legal only in the entry file. The same `await` inside an imported module is `E112`, and `await` inside a synchronous function body is `E109` — move it into an `async fn`.
+
+```rnx
+async fn compute(): Int {
+    return 41 + 1;
+}
+
+let result = await compute();
+print(result);
+```
+
+```rnx
+fn tag(n: Int): String {
+    switch n {
+        case 1: return "one";
+        case 2: fallthrough;
+        case 3: return "two-or-three";
+        default: return "other";
+    }
+}
+```
+
+Each `case` auto-breaks; crossing into the next case needs the explicit `fallthrough;`. An empty case with neither a body nor `fallthrough;` is `E108`. A C-style `for (init; cond; step)` header is `E110` — use `for x in range` or `while`. A direct `.poll()` call is `E111` — use `await` or `promise.wait()` instead.
+
+```rnx
+let total = nosuchvar + 1;
+print(total);
+```
+
+Reference to a name with no visible declaration fails as `E303` pointing at the exact column (lowercase-led value names; `PascalCase` names are type references that single-file checks leave alone). A `return` value of the wrong type fails as `E304` with `expected`/`got` labels. An intra-procedural ARC cycle without escape fails as `E302` — restructure so the value escapes, or route the back-edge through `GenRef`.
+
+## Cycle, manifest, and lint triggers
+
+```rnx
+class Ticker {
+    let cb: fn(): Int;
+    init() {
+        this.cb = fn decay(this) { return 1; }
+    }
+}
+```
+
+Without `fn decay(this)`, a self-capturing closure warns as `W104`. A mutual strong pair `A<->B` warns as `W108` (convert one side to `GenRef`); an `#[Allow(CyclicReference)]` field never cleared warns as `W109` (clear it in `deinit` or a `clear*`/`close*`/`reset*` method). An unrecognized manifest section or field warns as `W201` and is ignored.
+
+| Lint | Trigger | Silence |
+|---|---|---|
+| `L001` | `let`/`const` never read | `_` prefix |
+| `L002` | parameter never used | `_` prefix; empty trait methods exempt |
+| `L003` | statements after `return`, `throw`, `break`, `continue` | remove them |
+| `L004` | `pub` item without `/** */` docs | document it |
+| `L005` | empty `{}` in `if`, `while`, `defer`, `try`, or `unsafe` | remove the block or add `pass` |
+
+## Security code triggers
+
+| Code | Trigger | Fix |
+|---|---|---|
+| `S101` | deduced capabilities exceed the `Project.deplock` ledger | approve the capability and re-lock, or remove the use |
+| `S102` | capability outside the `[permissions]` ceiling | narrow the code or deliberately widen the ceiling |
+| `S201` | delegated argument modified before reaching a sink | pass it through untouched or request the ambient grant |
+| `S301` | dependency code targeting `Project.config`, `Project.deplock`, `.git`, or cache dirs | never target those paths; the abort is the enforcement |
+| `S401` | unapproved child process execution | add a covering `sys:exec:<name>` grant with explicit approval |
+| `S501` | capability analysis timeout | split the package into smaller modules; never skip the scan |
+
 ## Boundary codes (E201-E204)
 
 | Code | Severity | Cause | Resolution |

@@ -115,6 +115,38 @@ print(total);
 
 When the last handle releases, `deinit` runs first, then object fields release recursively. Locals drop at scope end under the same rules as every other value: copies move the single share, field loads retain, field stores retain the new value and release the old one. Cyclical shapes require handles, not strong fields; see [Cycles and Handles](/manual/12-cycles-and-handles).
 
+## Construction and inheritance reference
+
+| Rule | Shape | Error when broken |
+|---|---|---|
+| construction uses `new` | `new Meter(20)` | direct call `Meter(20)`: `E204` |
+| one parent only | `class Child extends Base` | base a struct, enum, or interface: `E108`; cycles rejected |
+| child `init` runs parent first | `super(x);` with base arguments | omitted `super(...)` with parameterized base: `E108` |
+| no-arg base gets implicit `super()` | child omits the call | — |
+| `super` only in method or `init` of a child | `super.method()` reaches parent | `super` elsewhere: `E108` |
+| overrides match signatures | same name, same shape | mismatched signature: `E108` |
+| fields are never redefined | child adds new names only | redefined field name: `E108` |
+| `private` stays home | visible in defining class only | access outside: `E203` |
+| static has no receiver | `Clock.virtual(0)` on the type | `this` in static: `E108`; bare sibling name: `E303` |
+
+```rnx
+class Base {
+    let x: Int;
+    init(x: Int) { this.x = x; }
+    fn get(): Int { return this.x; }
+}
+
+class Child extends Base {
+    let y: Int;
+    init(x: Int, y: Int) { super(x); this.y = y; }
+    fn get(): Int { return this.x + this.y; }
+}
+
+let c = new Child(20, 22);
+assert(c.get() == 42, "override");
+assert((c is Base) && (c is Child), "ancestors match");
+```
+
 ## Summary
 
 - `class`: heap identity under ARC, `new` construction.

@@ -52,6 +52,20 @@ The fixed paths are:
 
 Version metadata and tarballs cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410.
 
+## Status code reference
+
+| Status | Meaning | Body |
+|---|---|---|
+| `200` / `201` | version is live | metadata or tarball bytes |
+| `302` | name without version | redirect to the latest versioned URL, never content |
+| `400` | bad input | `invalid package name`, `bad-range` |
+| `403` | not the owner | `package <name> is owned by someone else`, `scope @<scope> is not yours` |
+| `404` | missing name, version, or guide | JSON error |
+| `409` | version reuse or bad yank | `version <v> already published (versions are immutable)`, `version <v> is not live` |
+| `410` | tombstoned version | `{ code: "withdrawn", reason }`, cached immutably for a year |
+
+Every response carries an `rnx-registry-spec: 1` header. A client meeting a spec it does not support is a hard error naming both numbers, and calls needing a capability the server lacks fail closed naming it.
+
 ## Resolving a dependency graph
 
 `POST /api/resolve` takes one request with a `requirements` map and a `have` list of already-fetched versions:
