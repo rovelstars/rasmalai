@@ -81,6 +81,11 @@ class AtomicInt {
     * code in the program uses; a number reused by a different primitive
     * names a different object.
     * @returns handle to the cell.
+    * @example
+    * import { AtomicInt } from "@std/sync";
+    *
+    * let a = AtomicInt.byId(101);
+    * print(a.get());
     */
     static byId(id: Int): AtomicInt {
         return new AtomicInt(id);
@@ -105,6 +110,12 @@ class AtomicInt {
     * Store a new value, replacing whatever was there.
     * @param val value to store. Written in full, so a reader never sees a
     * half-updated value.
+    * @example
+    * import { AtomicInt } from "@std/sync";
+    *
+    * let a = AtomicInt.byId(102);
+    * a.set(41);
+    * print(a.get());
     */
     set(val: Int) {
         __rnx_sync_atomic_set(this.id, val);
@@ -205,6 +216,12 @@ class Channel {
     * code in the program uses; a number reused by a different primitive
     * names a different object.
     * @returns handle to the queue.
+    * @example
+    * import { Channel } from "@std/sync";
+    *
+    * let jobs = Channel.byId(103);
+    * jobs.send(7);
+    * print(jobs.len());
     */
     static byId(id: Int): Channel {
         return new Channel(id);
@@ -282,6 +299,13 @@ class Channel {
     * @returns number of waiting messages. Advisory only: another thread may
     * enqueue or dequeue right after the read, so do not build a decision on
     * it that `tryRecv` has to undo.
+    * @example
+    * import { Channel } from "@std/sync";
+    *
+    * let jobs = Channel.byId(103);
+    * jobs.send(7);
+    * jobs.send(8);
+    * print(jobs.len());
     */
     len(): Int {
         return __rnx_sync_channel_len(this.id);
@@ -294,6 +318,13 @@ class Channel {
     * later `send` on the same handle works again, so this releases
     * buffered values without unregistering the queue. A thread parked in
     * `recv` is not woken.
+    *  @example
+    *  import { Channel } from "@std/sync";
+    *
+    *  let jobs = Channel.byId(103);
+    *  jobs.send(7);
+    *  jobs.close();
+    *  print(jobs.len());
     */
     close(): Void {
         __rnx_sync_channel_drop(this.id);
@@ -338,6 +369,12 @@ class Mutex {
     * code in the program uses; a number reused by a different primitive
     * names a different object.
     * @returns handle to the mutex.
+    * @example
+    * import { Mutex } from "@std/sync";
+    *
+    * let m = Mutex.byId(104);
+    * m.lock();
+    * m.unlock();
     */
     static byId(id: Int): Mutex {
         return new Mutex(id);
@@ -368,6 +405,14 @@ class Mutex {
     *
     * Aborts the program when the lock is not held, so pair every `lock`
     * with exactly one `unlock`.
+    *  @example
+    *  import { Mutex } from "@std/sync";
+    *
+    *  let m = Mutex.byId(104);
+    *  m.lock();
+    *  m.unlock();
+    *  print(m.tryLock());
+    *  m.unlock();
     */
     unlock(): Void {
         __rnx_mutex_unlock(this.id);
@@ -439,6 +484,12 @@ class RwLock {
     * code in the program uses; a number reused by a different primitive
     * names a different object.
     * @returns handle to the rwlock.
+    * @example
+    * import { RwLock } from "@std/sync";
+    *
+    * let r = RwLock.byId(105);
+    * r.readLock();
+    * r.readUnlock();
     */
     static byId(id: Int): RwLock {
         return new RwLock(id);
@@ -450,6 +501,12 @@ class RwLock {
     *
     * Any number of readers hold the lock at the same time, so readers never
     * wait for each other. Must be released with one `readUnlock`.
+    *  @example
+    *  import { RwLock } from "@std/sync";
+    *
+    *  let r = RwLock.byId(105);
+    *  r.readLock();
+    *  r.readUnlock();
     */
     readLock(): Void {
         __rnx_rwlock_read_lock(this.id);
@@ -460,6 +517,14 @@ class RwLock {
     *
     * Wakes a waiting writer once the last reader is out. Aborts the program
     * when no read access is held.
+    *  @example
+    *  import { RwLock } from "@std/sync";
+    *
+    *  let r = RwLock.byId(105);
+    *  r.readLock();
+    *  r.readUnlock();
+    *  r.writeLock();
+    *  r.writeUnlock();
     */
     readUnlock(): Void {
         __rnx_rwlock_read_unlock(this.id);
@@ -471,6 +536,12 @@ class RwLock {
     *
     * Parks the calling thread for as long as any reader is active. Must be
     * released with one `writeUnlock`.
+    *  @example
+    *  import { RwLock } from "@std/sync";
+    *
+    *  let r = RwLock.byId(105);
+    *  r.writeLock();
+    *  r.writeUnlock();
     */
     writeLock(): Void {
         __rnx_rwlock_write_lock(this.id);
@@ -480,6 +551,14 @@ class RwLock {
     * Release exclusive write access and wake everyone waiting on the lock.
     *
     * Aborts the program when write access is not held.
+    *  @example
+    *  import { RwLock } from "@std/sync";
+    *
+    *  let r = RwLock.byId(105);
+    *  r.writeLock();
+    *  r.writeUnlock();
+    *  print(r.tryWriteLock());
+    *  r.writeUnlock();
     */
     writeUnlock(): Void {
         __rnx_rwlock_write_unlock(this.id);
@@ -567,6 +646,11 @@ class Condvar {
     * code in the program uses; a number reused by a different primitive
     * names a different object.
     * @returns handle to the condvar.
+    * @example
+    * import { Condvar } from "@std/sync";
+    *
+    * let c = Condvar.byId(106);
+    * c.notifyOne();
     */
     static byId(id: Int): Condvar {
         return new Condvar(id);
@@ -626,6 +710,14 @@ class Condvar {
     * Does nothing when no thread is waiting, so a notify sent too early is
     * lost. The woken thread holds its mutex again by the time `wait`
     * returns.
+    *  @example
+    *  import { Condvar, Mutex } from "@std/sync";
+    *
+    *  let m = Mutex.byId(107);
+    *  let c = Condvar.byId(107);
+    *  m.lock();
+    *  c.notifyOne();
+    *  m.unlock();
     */
     notifyOne(): Void {
         __rnx_condvar_notify_one(this.id);
@@ -792,6 +884,9 @@ class Thread {
     *
     * @param id slot id returned by a previous spawn.
     * @returns handle to the thread.
+    *
+    *  Not callable from Rasmalai source: the compiler claims every `Thread.<name>` call,
+    *  so there is no runnable example. Hold the handle `Thread.spawn` returns instead.
     */
     static byId(id: Int): Thread {
         return new Thread(id);

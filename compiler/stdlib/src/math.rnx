@@ -48,6 +48,10 @@ class Math {
     * A full turn in radians: 2 * PI(). Hand a phase in [0.0, TAU()) to sin or
     * cos rather than normalizing it yourself.
     * @returns 6.283185307179586.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.TAU());
     */
     static TAU(): Float {
         return 6.283185307179586;
@@ -55,6 +59,10 @@ class Math {
     /**
     * Base of the natural logarithm. log(Math.E()) is exactly 1.0.
     * @returns 2.718281828459045.
+    * @example
+    * import { Math } from "@std/math";
+    *
+    * print(Math.E());
     */
     static E(): Float {
         return 2.718281828459045;

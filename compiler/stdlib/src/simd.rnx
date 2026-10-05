@@ -77,6 +77,10 @@ class Vec4f {
     /**
     * Lane 2.
     * @returns the z lane, widened from 32-bit float to `Float`.
+    * @example
+    * import { Vec4f } from "@std/simd";
+    *
+    * print(new Vec4f(1.0, 2.0, 3.0, 4.0).z() == 3.0);
     */
     z(): Float {
         return this.z();
@@ -85,6 +89,10 @@ class Vec4f {
     /**
     * Lane 3.
     * @returns the w lane, widened from 32-bit float to `Float`.
+    * @example
+    * import { Vec4f } from "@std/simd";
+    *
+    * print(new Vec4f(1.0, 2.0, 3.0, 4.0).w() == 4.0);
     */
     w(): Float {
         return this.w();
@@ -215,6 +223,10 @@ class Vec4i {
     * Lane 0.
     * @returns the x lane as an `Int`; a negative lane widens per backend, see
     * get().
+    * @example
+    * import { Vec4i } from "@std/simd";
+    *
+    * print(new Vec4i(1, 2, 3, 4).x() == 1);
     */
     x(): Int {
         return this.x();
@@ -224,6 +236,10 @@ class Vec4i {
     * Lane 1.
     * @returns the y lane as an `Int`; a negative lane widens per backend, see
     * get().
+    * @example
+    * import { Vec4i } from "@std/simd";
+    *
+    * print(new Vec4i(1, 2, 3, 4).y() == 2);
     */
     y(): Int {
         return this.y();
@@ -233,6 +249,10 @@ class Vec4i {
     * Lane 2.
     * @returns the z lane as an `Int`; a negative lane widens per backend, see
     * get().
+    * @example
+    * import { Vec4i } from "@std/simd";
+    *
+    * print(new Vec4i(1, 2, 3, 4).z() == 3);
     */
     z(): Int {
         return this.z();
@@ -242,6 +262,10 @@ class Vec4i {
     * Lane 3.
     * @returns the w lane as an `Int`; a negative lane widens per backend, see
     * get().
+    * @example
+    * import { Vec4i } from "@std/simd";
+    *
+    * print(new Vec4i(1, 2, 3, 4).w() == 4);
     */
     w(): Int {
         return this.w();

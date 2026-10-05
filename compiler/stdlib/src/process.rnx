@@ -212,6 +212,13 @@ class ChildProcess {
     *
     * Same short-write caveat as `writeStdin`. The buffer is converted
     * for the call, so no byte buffer is left for you to manage.
+    *  @example
+    *  import { Process } from "@std/process";
+    *
+    *  let child = Process.spawn("cat", []);
+    *  print(child.writeStdinText("hi"));
+    *  child.closeStdin();
+    *  print(child.readStdoutText());
     */
     fn writeStdinText(text: String): Int {
         return this.writeStdin(ByteBuffer.fromString(text));
@@ -223,6 +230,13 @@ class ChildProcess {
     * Safe to call more than once. Programs reading stdin to EOF, such
     * as `cat` or a filter, finish after this. Call it before `wait()`
     * or the child may wait for input that never arrives.
+    *  @example
+    *  import { Process } from "@std/process";
+    *
+    *  let child = Process.spawn("cat", []);
+    *  child.closeStdin();
+    *  print(child.readStdoutText());
+    *  print(child.wait());
     */
     fn closeStdin() {
         __rnx_process_close_stdin(this.handle);
@@ -263,6 +277,14 @@ class ChildProcess {
     * The stderr twin of `readStdout`. Reading both streams needs two
     * buffers and careful ordering: a child that fills one pipe blocks
     * until it is drained. `Process.run()` does the interleaving for you.
+    *  @example
+    *  import { Process } from "@std/process";
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let child = Process.spawn("echo", ["hi"]);
+    *  let buf = ByteBuffer.allocate(16);
+    *  print(child.readStderr(buf));
+    *  print(child.wait());
     */
     fn readStderr(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Int {
         return __rnx_process_read_stderr(this.handle, buf.handle, offset, len);
@@ -276,6 +298,12 @@ class ChildProcess {
     * long as the child keeps stdout open. Returns whatever was read so
     * far when the stream reports an error. Empty string when stdout was
     * not piped.
+    *  @example
+    *  import { Process } from "@std/process";
+    *
+    *  let child = Process.spawn("echo", ["hi"]);
+    *  print(child.readStdoutText());
+    *  print(child.wait());
     */
     fn readStdoutText(): String {
         let out = "";
@@ -295,6 +323,12 @@ class ChildProcess {
     * @returns stderr text.
     *
     * Same draining behavior as `readStdoutText`, on stderr.
+    *  @example
+    *  import { Process } from "@std/process";
+    *
+    *  let child = Process.spawn("sh", ["-c", "echo bad 1>&2"]);
+    *  print(child.readStderrText());
+    *  print(child.wait());
     */
     fn readStderrText(): String {
         let out = "";
@@ -338,6 +372,11 @@ class ChildProcess {
     * Also closes stdin first, so a child blocked on input gets EOF.
     * Calling it twice returns the same code. Capture anything you need
     * from the pipes before waiting: the pipes close on the way out.
+    *  @example
+    *  import { Process } from "@std/process";
+    *
+    *  let child = Process.spawn("echo", ["hi"]);
+    *  print(child.wait());
     */
     fn wait(): Int {
         return __rnx_process_wait(this.handle);
@@ -408,6 +447,11 @@ class Process {
     * This process sees the change immediately. Children spawned
     * afterwards do not inherit it: spawn clears the environment and
     * forwards `PATH` plus the table passed in `SpawnOptions.env`.
+    *  @example
+    *  import { Process } from "@std/process";
+    *
+    *  Process.setEnv("DEMO", "on");
+    *  print(Process.env("DEMO"));
     */
     static setEnv(key: String, value: String) {
         Env.set(key, value);
@@ -418,6 +462,12 @@ class Process {
     * @param key variable name.
     *
     * Removing a variable that was never set does nothing.
+    *  @example
+    *  import { Process } from "@std/process";
+    *
+    *  Process.setEnv("DEMO_GONE", "on");
+    *  Process.removeEnv("DEMO_GONE");
+    *  print(Process.env("DEMO_GONE"));
     */
     static removeEnv(key: String) {
         __rnx_process_remove_env(key);
@@ -487,6 +537,10 @@ class Process {
     * @returns pid, always positive.
     *
     * The id of the running program, not of any child.
+    *  @example
+    *  import { Process } from "@std/process";
+    *
+    *  print(Process.pid() > 0);
     */
     static pid(): Int {
         return __rnx_process_pid();
@@ -498,6 +552,9 @@ class Process {
     *
     * Nothing after this line runs, and buffered handles are not flushed
     * by any runtime teardown.
+    *
+    *  Never returns, so there is no runnable example: any program reaching
+    *  exit(0) leaves with the given code and runs nothing after the call.
     */
     static exit(code: Int = 0) {
         Env.exit(code);
@@ -622,6 +679,13 @@ class Process {
     * A key mapped to null becomes `KEY=` with an empty value. Used by
     * `spawn()` and `run()`; call it directly only to inspect what a
     * table would produce.
+    *  @example
+    *  import { Process } from "@std/process";
+    *  import { Map } from "@std/collections";
+    *
+    *  let env = new Map<String, String>();
+    *  env.set("A", "1");
+    *  print(Process.flattenEnv(env).join(","));
     */
     static flattenEnv(env: Map<String, String>): Array<String> {
         let pairs: Array<String> = [];
@@ -642,6 +706,11 @@ class Process {
     *
     * This is the translation layer for `SpawnOptions`. Rarely needed
     * directly.
+    *  @example
+    *  import { Process, Stdio } from "@std/process";
+    *
+    *  print(Process.stdioMode(Stdio.Piped));
+    *  print(Process.stdioMode(Stdio.Null));
     */
     static stdioMode(s: Stdio): Int {
         if s == Stdio.Piped {

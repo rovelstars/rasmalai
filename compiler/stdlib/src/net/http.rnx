@@ -77,6 +77,11 @@ fn statusCode(statusLine: String): Int {
 *
 * @param code status code from `statusCode`.
 * @returns true for codes 200..299.
+* @example
+* import { isSuccess } from "@std/net/http";
+*
+* print(isSuccess(200));
+* print(isSuccess(404));
 */
 fn isSuccess(code: Int): Bool {
     return code >= 200 && code < 300;

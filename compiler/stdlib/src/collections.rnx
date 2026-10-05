@@ -177,6 +177,13 @@ class Map<K, V> with Iterable<K> {
     * Number of live entries. Overwriting a key does not change it, and a
     * deleted key stops counting right away.
     * @returns entry count; 0 for an empty map.
+    * @example
+    * import { Map } from "@std/collections";
+    *
+    * let m = new Map<String, Int>();
+    * m.set("a", 1);
+    * m.set("b", 2);
+    * print(m.len());
     */
     len(): Int {
         return __rnx_gmap_len(this.handle);
@@ -345,6 +352,13 @@ class Set<T> with Iterable<T> {
     /**
     * Number of distinct members.
     * @returns member count; 0 for an empty set.
+    * @example
+    * import { Set } from "@std/collections";
+    *
+    * let s = new Set<String>();
+    * s.add("iron");
+    * s.add("coal");
+    * print(s.len());
     */
     len(): Int {
         return this.inner.len();
