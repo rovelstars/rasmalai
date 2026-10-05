@@ -3,12 +3,10 @@
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
 	import { BookOpen } from 'lucide-svelte';
-	import { STDLIB_ICONS } from '$lib/docs/nav';
-	import { STD_LICENSE, importSnippet } from '$lib/docs/stdlib';
+	import { STD_LICENSE } from '$lib/docs/stdlib';
 	import { renderMarkdown } from '$lib/docs/markdown';
 
 	let { data } = $props();
-	let copied = $state(false);
 
 	let version = $derived.by(() => {
 		if (!browser) return data.engine;
@@ -16,7 +14,6 @@
 	});
 	let pinned = $derived(version === data.engine);
 
-	let Icon = $derived(STDLIB_ICONS[data.meta.name]);
 	let blurb = $derived(data.mod?.docs.description ?? data.meta.tagline);
 	let blurbHtml = $derived.by(() => {
 		try {
@@ -36,16 +33,6 @@
 		if (data.mod.constants.length > 0) parts.push(`${data.mod.constants.length} constants`);
 		return parts.join(', ');
 	});
-
-	async function copyImport() {
-		try {
-			await navigator.clipboard.writeText(importSnippet(data.meta.name));
-			copied = true;
-			setTimeout(() => (copied = false), 1500);
-		} catch {
-			copied = false;
-		}
-	}
 
 	function pickVersion(v: string) {
 		if (!browser) return;
@@ -79,11 +66,7 @@
 
 	<div class="panel mt-4 p-5">
 		<div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-			{#if Icon}<Icon size={22} strokeWidth={1.75} class="shrink-0 text-aura-orange" />{/if}
 			<span class="font-mono text-lg font-bold">@std/{data.meta.name}</span>
-			<span class="rounded bg-aura-surfaceElevated px-1.5 py-0.5 font-mono text-[11px] text-aura-green"
-				>standard library</span
-			>
 			<select
 				value={version}
 				onchange={(e) => pickVersion((e.target as HTMLSelectElement).value)}
@@ -119,17 +102,7 @@
 		{:else}
 			<p class="mt-3 text-sm text-aura-muted">{blurb}</p>
 		{/if}
-		<div class="mt-3 flex items-center gap-2">
-			<code class="tabular min-w-0 flex-1 overflow-x-auto rounded bg-aura-bg px-3 py-2 font-mono text-[13px] text-aura-cyan"
-				>{importSnippet(data.meta.name)}</code
-			>
-			<button
-				onclick={copyImport}
-				class="press shrink-0 rounded border border-aura-border px-3 py-2 font-mono text-xs text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
-			>
-				{copied ? 'copied' : 'copy'}
-			</button>
-		</div>
+		<p class="mt-3 text-sm text-aura-muted">Ships with the compiler — nothing to install.</p>
 		<p class="tabular mt-3 font-mono text-[11px] text-aura-muted">
 			{counts ?? 'No API data yet'}
 		</p>
