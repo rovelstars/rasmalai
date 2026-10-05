@@ -1761,9 +1761,26 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
             if main.is_file() {
                 main
             } else if let Some(lib) = dep_cfg.lib_path(&dep_root) {
-                lib
+                if lib.is_file() {
+                    lib
+                } else {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        format!(
+                            "package `{pkg}` entries.main `{}` not found and lib fallback `{}` not found",
+                            dep_cfg.entries.main,
+                            dep_cfg.entries.lib.as_deref().unwrap_or(""),
+                        ),
+                    ));
+                }
             } else {
-                main
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "package `{pkg}` entries.main `{}` not found with no lib fallback",
+                        dep_cfg.entries.main,
+                    ),
+                ));
             }
         }
         Some(s) => {

@@ -1037,12 +1037,25 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
                     _ => DEFAULT_ENTRY.to_string(),
                 };
                 if !root.join(&main).is_file() {
-                    out.push(ManifestIssue {
-                        line: 0,
-                        error: false,
-                        code: Code::W201,
-                        message: format!("entries.main `{main}` does not exist"),
-                    });
+                    let lib_ok = matches!(
+                        entries_val.and_then(|e| obj_get(e, "lib")),
+                        Some(ConfigValue::String(l)) if root.join(l).is_file()
+                    );
+                    if lib_ok {
+                        out.push(ManifestIssue {
+                            line: 0,
+                            error: false,
+                            code: Code::W201,
+                            message: format!("entries.main `{main}` does not exist"),
+                        });
+                    } else {
+                        out.push(ManifestIssue {
+                            line: 0,
+                            error: true,
+                            code: Code::E108,
+                            message: format!("entries.main `{main}` does not exist"),
+                        });
+                    }
                 }
                 if let Some(ConfigValue::Object(items)) =
                     entries_val.and_then(|e| obj_get(e, "bins"))
