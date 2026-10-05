@@ -4,6 +4,51 @@ export interface ChunkUnit {
 	bytes: Uint8Array;
 }
 
+export interface TarEntry {
+	name: string;
+	bytes: Uint8Array;
+}
+
+export function parseTarEntries(tar: Uint8Array): TarEntry[] {
+	const entries: TarEntry[] = [];
+	const dec = new TextDecoder();
+	let off = 0;
+	let longName: string | null = null;
+	while (off + 512 <= tar.length) {
+		const header = tar.subarray(off, off + 512);
+		let empty = true;
+		for (let i = 0; i < 512; i++) {
+			if (header[i] !== 0) {
+				empty = false;
+				break;
+			}
+		}
+		if (empty) break;
+		const rawName = dec.decode(header.subarray(0, 100)).replace(/\0.*$/, '');
+		const prefix = dec.decode(header.subarray(345, 500)).replace(/\0.*$/, '');
+		const sizeField = String.fromCharCode(...header.subarray(124, 136))
+			.replace(/\0/g, '')
+			.trim();
+		const size = parseInt(sizeField, 8);
+		if (!Number.isFinite(size) || size < 0) break;
+		const typeflag = header[156];
+		off += 512;
+		if (off + size > tar.length) break;
+		const data = tar.slice(off, off + size);
+		off += Math.ceil(size / 512) * 512;
+		if (typeflag === 76) {
+			longName = dec.decode(data).replace(/\0.*$/, '');
+			continue;
+		}
+		if (typeflag !== 0 && typeflag !== 48) continue;
+		const name = longName ?? (prefix ? `${prefix}/${rawName}` : rawName);
+		longName = null;
+		if (!name) continue;
+		entries.push({ name, bytes: data });
+	}
+	return entries;
+}
+
 export const LARGE_FILE_BYTES = 128 * 1024;
 const CDC_MIN = 16 * 1024;
 const CDC_MAX = 256 * 1024;

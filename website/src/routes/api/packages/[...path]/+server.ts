@@ -5,6 +5,9 @@ import {
 	getLatestVersion,
 	getVersionBytes,
 	getPackageOwner,
+	getDependents,
+	readFileIndex,
+	selectVersionFile,
 	yankVersion,
 	recordTombstone,
 	checkPublishToken,
@@ -14,6 +17,7 @@ import {
 import { safeEqual, sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 import { specHeaders } from '$lib/server/registry';
 import { sanitizeGuideHtml } from '$lib/server/sanitize';
+import { parseTarEntries } from '$lib/server/chunks';
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
 	return { ...specHeaders(), ...extra };
@@ -85,6 +89,16 @@ export async function GET({ params, platform, setHeaders, url }) {
 				...specHeaders()
 			}
 		});
+	}
+
+	if (rest.length === 1 && rest[0] === 'dependents') {
+		const parsedName = parsePackageName(full);
+		if (!parsedName) return notFound('invalid package path');
+		const owner = await getPackageOwner(env, parsedName.scope, parsedName.name);
+		if (owner === null) return notFound(`package ${full} does not exist`);
+		const names = await getDependents(env, full);
+		setHeaders({ 'Cache-Control': 'public, max-age=300, s-maxage=300', ...specHeaders() });
+		return json({ dependents: names.map((name) => ({ name })) }, { headers: headers() });
 	}
 
 	const [version, sub, slug] = rest;
@@ -164,6 +178,57 @@ export async function GET({ params, platform, setHeaders, url }) {
 		setHeaders({ ...immutable, ...specHeaders() });
 		if (format === 'source') return json({ slug, format, source: sanitizeGuideHtml(entry.source) }, { headers: headers() });
 		return json({ slug, format: 'html', html: entry.html }, { headers: headers() });
+	}
+
+	if (sub === 'tree' && rest.length === 2) {
+		const files = readFileIndex(row.manifestJson);
+		if (!files) {
+			return json(
+				{ code: 'no-file-index', message: `package ${full}@${version} ships no file index` },
+				{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
+			);
+		}
+		setHeaders({ ...immutable, ...specHeaders() });
+		return json({ files }, { headers: headers() });
+	}
+
+	if (sub === 'file' && rest.length === 2) {
+		const filePath = url.searchParams.get('path') ?? '';
+		if (!filePath) {
+			return json(
+				{ code: 'not-found', message: `missing ?path= for ${full}@${version}` },
+				{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
+			);
+		}
+		let bytes: Uint8Array | null;
+		try {
+			bytes = await getVersionBytes(env, row.id);
+		} catch {
+			return json(
+				{ code: 'integrity-failed', message: `stored content for ${full}@${version} failed its integrity check` },
+				{ status: 500, headers: headers() }
+			);
+		}
+		if (!bytes) return notFound(`no stored content for ${full}@${version}`);
+		const selected = selectVersionFile(parseTarEntries(bytes), filePath);
+		if (!selected.ok) {
+			if (selected.status === 404) {
+				return json(
+					{ code: 'not-found', message: `path ${filePath} not found in ${full}@${version}` },
+					{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
+				);
+			}
+			const message =
+				selected.code === 'too-large'
+					? `path ${filePath} exceeds the 256 KiB file view limit`
+					: `path ${filePath} is not UTF-8 text`;
+			return json(
+				{ code: selected.code, message },
+				{ status: 415, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
+			);
+		}
+		setHeaders({ ...immutable, ...specHeaders() });
+		return json({ path: selected.path, size: selected.size, text: selected.text }, { headers: headers() });
 	}
 
 	if ((sub === 'yank' || sub === 'takedown') && rest.length === 2) {
