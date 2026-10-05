@@ -115,6 +115,20 @@ fn test_lint_fix_renames_unused() {
 }
 
 #[test]
+fn test_run_and_test_default_to_cranelift_backend() {
+    let dir = std::env::temp_dir();
+    let (_, stdout, stderr) = run(&["run", "--help"], &dir);
+    let text = stdout + &stderr;
+    assert!(text.contains("default: cranelift"), "{text}");
+    let (_, stdout, stderr) = run(&["test", "--help"], &dir);
+    let text = stdout + &stderr;
+    assert!(text.contains("default: cranelift"), "{text}");
+    let (_, stdout, stderr) = run(&["bench", "--help"], &dir);
+    let text = stdout + &stderr;
+    assert!(text.contains("default: llvm"), "{text}");
+}
+
+#[test]
 fn test_build_output_flag_rejected() {
     let root = proj(
         "output-flag",

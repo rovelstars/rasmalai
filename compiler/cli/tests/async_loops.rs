@@ -25,7 +25,7 @@ fn run_backend(dir: &PathBuf, src: &str, backend: Option<&str>) -> std::process:
 }
 
 fn expect_backends(tag: &str, src: &str, want: &str) {
-    for backend in [None, Some("cranelift"), Some("llvm")] {
+    for backend in [Some("interpreter"), Some("cranelift"), Some("llvm")] {
         let dir = fresh_dir(&format!("{tag}-{}", backend.unwrap_or("interp")));
         let out = run_backend(&dir, src, backend);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -147,7 +147,7 @@ fn await_promise_result_inline_unwrap_or() {
     // rebind, so this locks the interpreter path from the worker-err
     // fallback regression.
     let dir = fresh_dir("await-result");
-    let out = run_backend(&dir, AWAIT_RESULT_INLINE, None);
+    let out = run_backend(&dir, AWAIT_RESULT_INLINE, Some("interpreter"));
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "await-result interp failed: {stderr}");

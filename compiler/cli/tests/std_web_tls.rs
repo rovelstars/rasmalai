@@ -148,7 +148,7 @@ print(r.text());
 
 #[test]
 fn fetch_https_round_trip_against_local_ca() {
-    for backend in [None, Some("cranelift"), Some("llvm")] {
+    for backend in [Some("interpreter"), Some("cranelift"), Some("llvm")] {
         let tag = format!("ok-{}", backend.unwrap_or("interp"));
         let fix = TlsFixture::new(&tag, 1);
         let out = fix.run_rnx(FETCH_SECURE, backend);

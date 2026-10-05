@@ -19,7 +19,8 @@ end. Raw pointers and C-ABI calls live in `unsafe {}` only.
 
 ## Builds: two engines
 
-Dev loop runs unoptimized LLVM codegen: a cold dev build lands in
+Dev loop runs on the Cranelift JIT: `rnx run` executes with no AOT
+step, a cold `rnx build` dev profile lands in
 35-60 ms on the current baseline (`benches/data/benchmarks.json`,
 2026-09-29), a hot-reload swap turns around in about 7 ms, and `rnx
 check` answers with no codegen at all. Release
@@ -28,7 +29,7 @@ collection into a stripped ~356 KB binary. Both modes are measured on the
 proving-ground chart, as `rnx run` and `rnx build sim.rnx --release`:
 
 ```sh
-rnx run sim.rnx          # interpreter / JIT dev loop
+rnx run sim.rnx          # Cranelift JIT dev loop
 rnx build sim.rnx --release  # LLVM -O3 AOT binary
 ```
 

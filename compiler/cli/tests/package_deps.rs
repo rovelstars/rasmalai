@@ -10,6 +10,8 @@ fn package_bare_run_interpreter() {
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx)
         .arg("run")
+        .arg("--backend")
+        .arg("interpreter")
         .current_dir(app_dir())
         .output()
         .unwrap();
