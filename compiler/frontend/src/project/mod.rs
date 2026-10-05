@@ -53,6 +53,7 @@ pub struct ProjectConfig {
     pub registries: BTreeMap<String, RegistryConfig>,
     pub dependencies: BTreeMap<String, DependencySpec>,
     pub permissions: Option<Vec<String>>,
+    pub keywords: Vec<String>,
 }
 
 impl ProjectConfig {
@@ -364,6 +365,27 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
     }
 }
 
+const MAX_KEYWORDS: usize = 12;
+const MAX_KEYWORD_LEN: usize = 24;
+
+fn check_keyword(word: &str) -> Result<(), String> {
+    if word.is_empty() {
+        return Err("keyword must not be empty".to_string());
+    }
+    if word.len() > MAX_KEYWORD_LEN {
+        return Err(format!("keyword `{word}` exceeds {MAX_KEYWORD_LEN} characters"));
+    }
+    if !word
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(format!(
+            "keyword `{word}` must use lowercase letters, digits, and hyphens only"
+        ));
+    }
+    Ok(())
+}
+
 fn parse_members(val: &ConfigValue) -> Result<Vec<String>, String> {
     match val {
         ConfigValue::Array(items) => {
@@ -514,6 +536,29 @@ fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<Workspace
                 },
                 None => None,
             };
+            let keywords = match obj_get(top, "keywords") {
+                Some(ConfigValue::Array(items)) => {
+                    let mut words = Vec::new();
+                    for item in items {
+                        match item {
+                            ConfigValue::String(s) => {
+                                check_keyword(s).map_err(|m| format!("field `keywords`: {m}"))?;
+                                words.push(s.clone());
+                            }
+                            _ => return Err("field `keywords` must be strings".to_string()),
+                        }
+                    }
+                    if words.len() > MAX_KEYWORDS {
+                        return Err(format!(
+                            "field `keywords` holds {} entries, at most {MAX_KEYWORDS} allowed",
+                            words.len()
+                        ));
+                    }
+                    words
+                }
+                Some(_) => return Err("field `keywords` must be an array".to_string()),
+                None => Vec::new(),
+            };
             let registry = match obj_get(top, "registry") {
                 Some(r) => Some(parse_registry_table(r)?),
                 None => None,
@@ -542,6 +587,7 @@ fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<Workspace
                 registries,
                 dependencies,
                 permissions,
+                keywords,
             })
         }
         None => None,
@@ -578,7 +624,7 @@ const ENTRIES_KEYS: &[&str] = &["main", "lib", "docs", "bins"];
 const REGISTRY_KEYS: &[&str] = &["url", "token_env", "ca_cert"];
 const WORKSPACE_KEYS: &[&str] = &["members"];
 const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system"];
-const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "registry", "registries", "workspace"];
+const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace"];
 
 fn span_line(text: &str, offset: u32) -> usize {
     let off = (offset as usize).min(text.len());
@@ -683,6 +729,16 @@ pub fn manifest_to_rnx(manifest: &Manifest) -> String {
                     out.push_str(", ");
                 }
                 out.push_str(&crate::deplock::rnx_string(c));
+            }
+            out.push_str("],\n");
+        }
+        if !p.keywords.is_empty() {
+            out.push_str("    keywords: [");
+            for (i, k) in p.keywords.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&crate::deplock::rnx_string(k));
             }
             out.push_str("],\n");
         }
@@ -832,7 +888,7 @@ fn dep_to_rnx(spec: &DependencySpec) -> String {
 }
 
 pub fn manifest_sections() -> &'static [&'static str] {
-    &["project", "entries", "registry", "dependencies", "workspace", "permissions", "registries"]
+    &["project", "entries", "registry", "dependencies", "workspace", "permissions", "keywords", "registries"]
 }
 
 pub fn manifest_keys(section: &str) -> &'static [&'static str] {
@@ -852,6 +908,7 @@ pub fn manifest_section_doc(section: &str) -> Option<&'static str> {
         "dependencies" => Some("Semver (`\"^1.2.0\"`), path (`\"libs/x\"` or `{ path = \"...\" }`), git (`{ git = \"<url>\", rev/tag/branch = \"...\" }`), tarball (`{ version = \"...\", url = \"...\", checksum = \"...\" }`), or native (`{ native = \"z\", system = true }`)."),
         "workspace" => Some("Monorepo members: `members = [\"alpha\", \"beta\"]` or globs like `[\"crates/*\"]`."),
         "permissions" => Some("Security ceiling: an array of capability strings the package and its dependencies may use."),
+        "keywords" => Some("Search keywords: an array of up to 12 lowercase/digit/hyphen tags, 24 characters each, mirroring npm keywords."),
         "registries" => Some("Scoped registry overrides keyed by scope, e.g. `registries: { \"@acme\": { url = \"...\" } }`."),
         _ if section.starts_with("registries.") => Some("Scoped registry override for `@scope/*`: same fields as `[registry]` plus optional `ca_cert`."),
         _ => None,
@@ -1213,6 +1270,49 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
             message: "field `dependencies` must be an object".to_string(),
         });
     }
+    if let Some(kw) = obj_get(top, "keywords") {
+        match kw {
+            ConfigValue::Array(items) => {
+                for item in items {
+                    match item {
+                        ConfigValue::String(s) => {
+                            if let Err(msg) = check_keyword(s) {
+                                out.push(ManifestIssue {
+                                    line: 0,
+                                    error: true,
+                                    code: Code::E108,
+                                    message: format!("field `keywords`: {msg}"),
+                                });
+                            }
+                        }
+                        _ => out.push(ManifestIssue {
+                            line: 0,
+                            error: true,
+                            code: Code::E108,
+                            message: "field `keywords` must be strings".to_string(),
+                        }),
+                    }
+                }
+                if items.len() > MAX_KEYWORDS {
+                    out.push(ManifestIssue {
+                        line: 0,
+                        error: true,
+                        code: Code::E108,
+                        message: format!(
+                            "field `keywords` holds {} entries, at most {MAX_KEYWORDS} allowed",
+                            items.len()
+                        ),
+                    });
+                }
+            }
+            _ => out.push(ManifestIssue {
+                line: 0,
+                error: true,
+                code: Code::E108,
+                message: "field `keywords` must be an array".to_string(),
+            }),
+        }
+    }
     if let Some(w) = obj_get(top, "workspace") {
         let obj = match w {
             ConfigValue::Object(_) => w,
@@ -1461,6 +1561,7 @@ mod tests {
         assert!(c.entries.bins.is_empty());
         assert!(c.dependencies.is_empty());
         assert_eq!(c.permissions, None);
+        assert!(c.keywords.is_empty());
     }
 
     #[test]
@@ -1634,5 +1735,91 @@ mod tests {
         let (first, second) = (again.0.unwrap(), m.0.unwrap());
         assert_eq!(first.entries, second.entries);
         assert_eq!(first.dependencies, second.dependencies);
+    }
+
+    #[test]
+    fn keywords_parse_and_round_trip() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 keywords: [\"http\", \"cli-2\", \"json5\"]\n\
+             }\n",
+        );
+        assert_eq!(c.keywords, vec!["http".to_string(), "cli-2".to_string(), "json5".to_string()]);
+        let m = parse_manifest(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 keywords: [\"http\", \"cli-2\"]\n\
+             }\n",
+        )
+        .unwrap();
+        let out = manifest_to_rnx(&Manifest { project: m.0.clone(), workspace: m.1.clone() });
+        assert!(out.contains("keywords:"), "{out}");
+        let again = parse_manifest(&out).unwrap().0.unwrap();
+        assert_eq!(again.keywords, vec!["http".to_string(), "cli-2".to_string()]);
+    }
+
+    #[test]
+    fn keywords_default_to_empty() {
+        let c = parse("export default {\n    project: { name: \"demo\", version: \"0.1.0\" }\n}\n");
+        assert!(c.keywords.is_empty());
+    }
+
+    #[test]
+    fn keywords_reject_bad_shapes() {
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    keywords: [\"ok\", \"Bad\"]\n}\n",
+                "lowercase",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    keywords: [\"has space\"]\n}\n",
+                "lowercase",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    keywords: [\"under_score\"]\n}\n",
+                "lowercase",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    keywords: [\"\"]\n}\n",
+                "must not be empty",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    keywords: [\"aaaaaaaaaaaaaaaaaaaaaaaaa\"]\n}\n",
+                "exceeds 24",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    keywords: [\"ok\", 7]\n}\n",
+                "must be strings",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    keywords: \"http\"\n}\n",
+                "must be an array",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
+            let issues = validate_manifest_text(text, None);
+            assert!(
+                issues.iter().any(|i| i.error && i.code == Code::E108),
+                "{issues:?} for {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn keywords_reject_too_many() {
+        let words: Vec<String> = (0..13).map(|i| format!("kw-{i}")).collect();
+        let list = words.iter().map(|w| format!("\"{w}\"")).collect::<Vec<_>>().join(", ");
+        let text = format!(
+            "export default {{\n    project: {{ name: \"demo\", version: \"0.1.0\" }},\n    keywords: [{list}]\n}}\n"
+        );
+        let e = parse_config(&text).unwrap_err();
+        assert!(e.contains("at most 12"), "{e}");
+        let issues = validate_manifest_text(&text, None);
+        assert!(
+            issues.iter().any(|i| i.error && i.code == Code::E108 && i.message.contains("at most 12")),
+            "{issues:?}"
+        );
     }
 }

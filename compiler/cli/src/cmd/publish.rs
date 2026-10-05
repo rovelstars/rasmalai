@@ -48,15 +48,24 @@ pub(super) fn run_publish(tarball: Option<std::path::PathBuf>, registry: String,
                         eprintln!("error: cannot read {}: {e}", tar.display());
                         std::process::exit(1);
                     });
-                    let version = targets
+                    let (_, dir, cfg) = targets
                         .packages
                         .iter()
                         .find(|(n, _, _)| n == name)
-                        .map(|(_, _, c)| c.version.clone())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| {
+                            eprintln!("error: pack produced no manifest");
+                            std::process::exit(1);
+                        });
                     let checksum = frontend::checksum::Sha256::hexdigest(&bytes);
+                    let meta = match cli::publish::package_meta(dir, cfg, checksum) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            println!("{e}");
+                            std::process::exit(1);
+                        }
+                    };
                     let _ = std::fs::remove_dir_all(&tmp);
-                    (bytes, cli::publish::PackageMeta { name: name.clone(), version, checksum })
+                    (bytes, meta)
                 }
             };
             match cli::publish::post_package(&registry, &token, &bytes, &meta) {

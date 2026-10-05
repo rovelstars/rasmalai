@@ -1,9 +1,61 @@
 use diagnostics::{Code, Diagnostic};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishFile {
+    pub path: String,
+    pub size: u64,
+}
+
 pub struct PackageMeta {
     pub name: String,
     pub version: String,
     pub checksum: String,
+    pub description: String,
+    pub keywords: Vec<String>,
+    pub readme: String,
+    pub files: Vec<PublishFile>,
+}
+
+// metaVersion marks the X-RNX-Meta shape: 1 means keywords, readme, and
+// files are present alongside the description.
+const PUBLISH_META_VERSION: u32 = 1;
+
+pub fn package_meta(
+    package_dir: &std::path::Path,
+    cfg: &frontend::project::ProjectConfig,
+    checksum: String,
+) -> Result<PackageMeta, Diagnostic> {
+    let manifest =
+        frontend::project::Manifest { project: Some(cfg.clone()), workspace: None };
+    let files = frontend::pack::package_file_list(package_dir, &manifest)?
+        .into_iter()
+        .map(|f| PublishFile { path: f.path, size: f.size })
+        .collect();
+    Ok(PackageMeta {
+        name: cfg.name.clone(),
+        version: cfg.version.clone(),
+        checksum,
+        description: cfg.description.clone(),
+        keywords: cfg.keywords.clone(),
+        readme: frontend::pack::package_readme_text(package_dir, &cfg.name),
+        files,
+    })
+}
+
+pub fn meta_json(meta: &PackageMeta) -> String {
+    let files: Vec<serde_json::Value> = meta
+        .files
+        .iter()
+        .map(|f| serde_json::json!({"path": f.path, "size": f.size}))
+        .collect();
+    serde_json::json!({
+        "metaVersion": PUBLISH_META_VERSION,
+        "description": meta.description,
+        "keywords": meta.keywords,
+        "readme": meta.readme,
+        "files": files,
+    })
+    .to_string()
 }
 
 pub fn read_tarball_meta(tarball: &std::path::Path, cwd: &std::path::Path) -> Result<(Vec<u8>, PackageMeta), Diagnostic> {
@@ -11,11 +63,11 @@ pub fn read_tarball_meta(tarball: &std::path::Path, cwd: &std::path::Path) -> Re
         Diagnostic::new(Code::E108, format!("cannot read {}: {e}", tarball.display()))
     })?;
     let targets = crate::resolve_pack_targets(cwd, None)?;
-    let (name, _, cfg) = targets.packages.first().ok_or_else(|| {
+    let (_, dir, cfg) = targets.packages.first().ok_or_else(|| {
         Diagnostic::new(Code::E108, "no package found; run `rnx publish` inside a project".to_string())
     })?;
     let checksum = frontend::checksum::Sha256::hexdigest(&bytes);
-    Ok((bytes, PackageMeta { name: name.clone(), version: cfg.version.clone(), checksum }))
+    Ok((bytes, package_meta(dir, cfg, checksum)?))
 }
 
 pub enum PublishOutcome {
@@ -42,6 +94,7 @@ pub fn post_package(
         .header("X-RNX-Package-Name", &meta.name)
         .header("X-RNX-Package-Version", &meta.version)
         .header("X-RNX-Checksum", &meta.checksum)
+        .header("X-RNX-Meta", &meta_json(meta))
         .send(bytes);
     match res {
         Ok(mut response) => {
@@ -189,5 +242,72 @@ mod tests {
         assert_eq!(bytes, PLAIN);
         let request = String::from_utf8_lossy(&seen.recv().unwrap()).into_owned();
         assert!(request.contains("gzip"), "{request}");
+    }
+
+    fn fixture_project(tag: &str, readme: Option<&str>) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("rnx-meta-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\",\n        description: \"Probe package\"\n    },\n    keywords: [\"http\", \"cli-2\"]\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        if let Some(text) = readme {
+            std::fs::write(dir.join("README.md"), text).unwrap();
+        }
+        dir
+    }
+
+    fn fixture_cfg(dir: &std::path::Path) -> frontend::project::ProjectConfig {
+        frontend::project::ProjectConfig::load_from_dir(dir).unwrap().expect("manifest")
+    }
+
+    #[test]
+    fn meta_carries_readme_keywords_and_files() {
+        let dir = fixture_project("full", Some("# probe\n\nUsage notes.\n"));
+        let cfg = fixture_cfg(&dir);
+        let meta = package_meta(&dir, &cfg, "abc".to_string()).unwrap();
+        assert_eq!(meta.name, "probe");
+        assert_eq!(meta.version, "1.2.3");
+        assert_eq!(meta.description, "Probe package");
+        assert_eq!(meta.keywords, vec!["http".to_string(), "cli-2".to_string()]);
+        assert_eq!(meta.readme, "# probe\n\nUsage notes.\n");
+        let paths: Vec<&str> = meta.files.iter().map(|f| f.path.as_str()).collect();
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths, sorted);
+        assert!(paths.contains(&"src/main.rnx"));
+        assert!(paths.contains(&"Project.config"));
+        assert!(paths.contains(&"README.md"));
+        for f in &meta.files {
+            assert!(!f.path.contains('\\'), "{}", f.path);
+        }
+        let json = meta_json(&meta);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["metaVersion"], 1);
+        assert_eq!(parsed["readme"], "# probe\n\nUsage notes.\n");
+        assert_eq!(parsed["keywords"], serde_json::json!(["http", "cli-2"]));
+        assert_eq!(parsed["description"], "Probe package");
+        let file_paths: Vec<&str> = parsed["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["path"].as_str().unwrap())
+            .collect();
+        assert!(file_paths.contains(&"src/main.rnx"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn meta_readme_falls_back_to_default_heading() {
+        let dir = fixture_project("bare", None);
+        let cfg = fixture_cfg(&dir);
+        let meta = package_meta(&dir, &cfg, "abc".to_string()).unwrap();
+        assert_eq!(meta.readme, "# probe\n");
+        let json = meta_json(&meta);
+        assert!(json.contains("# probe\\n"), "{json}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
