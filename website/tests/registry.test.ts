@@ -40,9 +40,29 @@ describe('ranges', () => {
 		assert.equal(satisfiesRange('9.9.9', '*'), true);
 	});
 
+	it('excludes prereleases unless the range names one (npm rule)', () => {
+		assert.equal(satisfiesRange('2.0.0-rc.1', '^2.0.0'), false);
+		assert.equal(satisfiesRange('2.0.0-rc.1', '*'), false);
+		assert.equal(satisfiesRange('2.0.0-rc.1', 'latest'), false);
+		assert.equal(satisfiesRange('2.0.0-rc.1', '2.0.0-rc.1'), true);
+		assert.equal(satisfiesRange('2.0.0-rc.2', '^2.0.0-rc.1'), true);
+		assert.equal(maxSatisfying(['1.0.0', '2.0.0-rc.1', '1.5.0'], '^1.0.0'), '1.5.0');
+	});
+
 	it('picks the max satisfying version', () => {
 		assert.equal(maxSatisfying(['1.0.0', '1.4.3', '2.0.0'], '^1.0.0'), '1.4.3');
 		assert.equal(maxSatisfying(['1.0.0'], '^2.0.0'), null);
+	});
+
+	it('copies npm prerelease exclusion', () => {
+		assert.equal(satisfiesRange('1.5.0-rc.1', '^1.0.0'), false);
+		assert.equal(satisfiesRange('1.5.0-rc.1', '*'), false);
+		assert.equal(satisfiesRange('1.5.0-rc.1', 'latest'), false);
+		assert.equal(satisfiesRange('2.0.0-rc.2', '^2.0.0-rc.1'), true);
+		assert.equal(satisfiesRange('2.0.1-rc.1', '^2.0.0-rc.1'), false);
+		assert.equal(satisfiesRange('1.5.0-rc.1', '1.5.0-rc.1'), true);
+		assert.equal(maxSatisfying(['1.4.3', '2.0.0-rc.1'], '*'), '1.4.3');
+		assert.equal(maxSatisfying(['2.0.0-rc.1'], '*'), null);
 	});
 });
 
