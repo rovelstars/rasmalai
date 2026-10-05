@@ -18,9 +18,11 @@ export interface PackageSummary {
 	downloads: number;
 	stars: number;
 	tags: string[];
+	keywords: string[];
 	updatedAt: number;
 	latest: string;
 	versionCount: number;
+	dependents: number;
 }
 
 export interface VersionMeta {
@@ -62,6 +64,7 @@ CREATE TABLE IF NOT EXISTS packages (
     downloads INTEGER DEFAULT 0,
     stars INTEGER DEFAULT 0,
     tags TEXT NOT NULL,
+    keywords TEXT DEFAULT '',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE(scope, name)
@@ -119,6 +122,20 @@ CREATE TABLE IF NOT EXISTS manifest_chunks (
     PRIMARY KEY (version_id, ord)
 );
 CREATE INDEX IF NOT EXISTS idx_mc_hash ON manifest_chunks(chunk_hash);
+
+CREATE TABLE IF NOT EXISTS package_deps (
+    package_id TEXT NOT NULL REFERENCES packages(id),
+    dep_name TEXT NOT NULL,
+    PRIMARY KEY (package_id, dep_name)
+);
+CREATE INDEX IF NOT EXISTS idx_deps_name ON package_deps(dep_name);
+
+CREATE TABLE IF NOT EXISTS download_daily (
+    package_id TEXT NOT NULL REFERENCES packages(id),
+    day TEXT NOT NULL,
+    downloads INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (package_id, day)
+);
 
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -180,6 +197,116 @@ export function parsePackageName(full: string): ParsedName | null {
 
 export function packageId(scope: string, name: string): string {
 	return scope ? `pkg_@${scope}/${name}` : `pkg_${name}`;
+}
+
+export const KEYWORD_RE = /^[a-z0-9-]+$/;
+export const MAX_KEYWORDS = 12;
+export const MAX_KEYWORD_LEN = 64;
+export const MAX_FILE_BYTES = 256 * 1024;
+
+export function validateKeywords(v: unknown): string[] | null {
+	if (v === undefined) return [];
+	if (!Array.isArray(v) || v.length > MAX_KEYWORDS) return null;
+	const out: string[] = [];
+	for (const k of v) {
+		if (typeof k !== 'string' || k.length === 0 || k.length > MAX_KEYWORD_LEN) return null;
+		if (!KEYWORD_RE.test(k)) return null;
+		if (!out.includes(k)) out.push(k);
+	}
+	return out;
+}
+
+const NON_REGISTRY_VALUE_RE = /^(?:\.|\/|file:|path:|git[+:]|https?:|native:|url:)|:\/\//i;
+
+export function extractDepNames(manifestJson: string): string[] {
+	let manifest: Record<string, unknown>;
+	try {
+		manifest = JSON.parse(manifestJson) as Record<string, unknown>;
+	} catch {
+		return [];
+	}
+	const deps = manifest['deps'];
+	if (!deps || typeof deps !== 'object' || Array.isArray(deps)) return [];
+	const out: string[] = [];
+	for (const [key, value] of Object.entries(deps as Record<string, unknown>)) {
+		if (!parsePackageName(key)) continue;
+		if (typeof value === 'string' && NON_REGISTRY_VALUE_RE.test(value)) continue;
+		if (!out.includes(key)) out.push(key);
+	}
+	return out.sort();
+}
+
+export interface FileIndexEntry {
+	path: string;
+	size: number;
+}
+
+export function readFileIndex(manifestJson: string): FileIndexEntry[] | null {
+	let manifest: Record<string, unknown>;
+	try {
+		manifest = JSON.parse(manifestJson) as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+	const files = manifest['files'];
+	if (!Array.isArray(files)) return null;
+	const out: FileIndexEntry[] = [];
+	for (const e of files) {
+		if (!e || typeof e !== 'object') continue;
+		const rec = e as Record<string, unknown>;
+		if (typeof rec['path'] !== 'string' || rec['path'].length === 0) continue;
+		const size = Number(rec['size']);
+		if (!Number.isFinite(size) || size < 0) continue;
+		out.push({ path: rec['path'], size: Math.floor(size) });
+	}
+	return out;
+}
+
+export interface PackageFilter {
+	search?: string;
+	keyword?: string;
+	license?: string;
+	minDownloads?: number;
+	updatedSinceDays?: number;
+}
+
+export function matchesPackageFilter(
+	p: PackageSummary,
+	f: PackageFilter,
+	nowSec: number = Math.floor(Date.now() / 1000)
+): boolean {
+	if (f.search) {
+		const q = f.search.toLowerCase();
+		if (!p.name.toLowerCase().includes(q) && !p.description.toLowerCase().includes(q)) return false;
+	}
+	if (f.keyword && !p.keywords.includes(f.keyword)) return false;
+	if (f.license && p.license !== f.license) return false;
+	if (f.minDownloads !== undefined && p.downloads < f.minDownloads) return false;
+	if (f.updatedSinceDays !== undefined && p.updatedAt < nowSec - f.updatedSinceDays * 86400) return false;
+	return true;
+}
+
+export type VersionFileResult =
+	| { ok: true; path: string; size: number; text: string }
+	| { ok: false; code: 'not-found' | 'too-large' | 'binary'; status: 404 | 415 };
+
+export function selectVersionFile(
+	entries: Array<{ name: string; bytes: Uint8Array }>,
+	path: string
+): VersionFileResult {
+	const hit = entries.find((e) => e.name === path);
+	if (!hit) return { ok: false, code: 'not-found', status: 404 };
+	if (hit.bytes.length > MAX_FILE_BYTES) return { ok: false, code: 'too-large', status: 415 };
+	try {
+		const text = new TextDecoder('utf-8', { fatal: true }).decode(hit.bytes);
+		return { ok: true, path, size: hit.bytes.length, text };
+	} catch {
+		return { ok: false, code: 'binary', status: 415 };
+	}
+}
+
+export function dayString(tsSec: number): string {
+	return new Date(tsSec * 1000).toISOString().slice(0, 10);
 }
 
 let client: Client | null = null;
@@ -257,6 +384,9 @@ async function migrateSchema(db: Client): Promise<void> {
 	if (!names.has('owner')) {
 		await db.execute("ALTER TABLE packages ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
 	}
+	if (!names.has('keywords')) {
+		await db.execute("ALTER TABLE packages ADD COLUMN keywords TEXT DEFAULT ''");
+	}
 	await db.execute("UPDATE packages SET owner = 'org' WHERE owner = ''");
 	const mdef = await db.execute("SELECT sql FROM sqlite_master WHERE name = 'manifest_chunks'");
 	if (String(mdef.rows[0]?.['sql'] ?? '').includes('PRIMARY KEY (chunk_hash, version_id)')) {
@@ -298,7 +428,8 @@ export function checkPublishToken(
 function toSummary(
 	r: Record<string, unknown>,
 	latest: string,
-	versionCount: number
+	versionCount: number,
+	dependents: number = 0
 ): PackageSummary {
 	const scope = String(r['scope'] ?? '');
 	const name = String(r['name']);
@@ -314,18 +445,25 @@ function toSummary(
 			.split(',')
 			.map((t) => t.trim())
 			.filter(Boolean),
+		keywords: String(r['keywords'] ?? '')
+			.split(',')
+			.map((t) => t.trim())
+			.filter(Boolean),
 		updatedAt: Number(r['updated_at'] ?? 0),
 		latest,
-		versionCount
+		versionCount,
+		dependents
 	};
 }
 
 export async function listPackages(
-	env: Record<string, string | undefined>
+	env: Record<string, string | undefined>,
+	filters: PackageFilter = {}
 ): Promise<PackageSummary[]> {
 	const db = getClient(env);
 	if (!db) return [];
 	await ensureSchema(db);
+	const now = Math.floor(Date.now() / 1000);
 	const rs = await db.execute('SELECT * FROM packages ORDER BY updated_at DESC');
 	const vs = await db.execute('SELECT package_id, version, status FROM package_versions');
 	const byPkg = new Map<string, Array<{ version: string; status: string }>>();
@@ -335,15 +473,40 @@ export async function listPackages(
 		list.push({ version: String(v['version']), status: String(v['status'] ?? 'live') });
 		byPkg.set(id, list);
 	}
-	return rs.rows.map((r) => {
-		const id = String((r as Record<string, unknown>)['id']);
+	let sums = new Map<string, number>();
+	try {
+		const ds = await db.execute({
+			sql: 'SELECT package_id, SUM(downloads) AS n FROM download_daily WHERE day >= ? GROUP BY package_id',
+			args: [dayString(now - 30 * 86400)]
+		});
+		for (const r of ds.rows) sums.set(String(r['package_id']), Number(r['n'] ?? 0));
+	} catch {
+		sums = new Map();
+	}
+	let depCounts = new Map<string, number>();
+	try {
+		const dc = await db.execute('SELECT dep_name, COUNT(*) AS n FROM package_deps GROUP BY dep_name');
+		for (const r of dc.rows) depCounts.set(String(r['dep_name']), Number(r['n'] ?? 0));
+	} catch {
+		depCounts = new Map();
+	}
+	const out: PackageSummary[] = [];
+	for (const r of rs.rows) {
+		const rec = r as Record<string, unknown>;
+		const id = String(rec['id']);
 		const versions = byPkg.get(id) ?? [];
-		return toSummary(
-			r as Record<string, unknown>,
+		const summary = toSummary(
+			rec,
 			selectLatestVersion(versions) ?? '',
-			versions.length
+			versions.length,
+			0
 		);
-	});
+		summary.downloads = sums.get(id) ?? 0;
+		summary.dependents = depCounts.get(summary.name) ?? 0;
+		if (!matchesPackageFilter(summary, filters, now)) continue;
+		out.push(summary);
+	}
+	return out;
 }
 
 export async function getPackageOwner(
@@ -360,6 +523,27 @@ export async function getPackageOwner(
 	});
 	const row = rs.rows[0] as Record<string, unknown> | undefined;
 	return row ? String(row['owner'] ?? '') : null;
+}
+
+export async function getDependents(
+	env: Record<string, string | undefined>,
+	full: string
+): Promise<string[]> {
+	const parsed = parsePackageName(full);
+	const db = getClient(env);
+	if (!parsed || !db) return [];
+	await ensureSchema(db);
+	const rs = await db.execute({
+		sql: `SELECT p.scope AS scope, p.name AS name FROM package_deps d
+		      JOIN packages p ON p.id = d.package_id
+		      WHERE d.dep_name = ? ORDER BY p.scope ASC, p.name ASC`,
+		args: [parsed.full]
+	});
+	return rs.rows.map((r) => {
+		const scope = String(r['scope'] ?? '');
+		const name = String(r['name']);
+		return scope ? `@${scope}/${name}` : name;
+	});
 }
 
 export async function getPackage(
@@ -387,8 +571,17 @@ export async function getPackage(
 		createdAt: Number(v['created_at'])
 	}));
 	if (versions.length === 0) return null;
+	const depRs = await db.execute({
+		sql: 'SELECT COUNT(*) AS n FROM package_deps WHERE dep_name = ?',
+		args: [parsed.scope ? `@${parsed.scope}/${parsed.name}` : parsed.name]
+	});
 	return {
-		...toSummary(row, selectLatestVersion(versions) ?? versions[0].version, versions.length),
+		...toSummary(
+			row,
+			selectLatestVersion(versions) ?? versions[0].version,
+			versions.length,
+			Number(depRs.rows[0]?.['n'] ?? 0)
+		),
 		dependencies: [],
 		createdAt: Number(row['created_at'] ?? 0),
 		versions
@@ -426,6 +619,7 @@ export interface PublishPayload {
 	author: string;
 	license: string;
 	tags: string[];
+	keywords?: string[];
 	readme: string;
 	docJson: string;
 	checksum: string;
@@ -465,8 +659,14 @@ export async function publishPackage(
 	await ensureSchema(db);
 	const id = packageId(parsed.scope, parsed.name);
 	const auditJson = JSON.stringify({ checksum: p.checksum });
+	const keywords = (p.keywords ?? []).join(',');
+	// Dependents reflect ever-depending packages (npm shows all): rows are
+	// derived from manifests at publish time and are never deleted on
+	// yank or tombstone, so no counter can desync under retries.
+	const depNames = extractDepNames(p.manifestJson ?? '{}');
 	// changes() reads the version insert directly above, so the audit row
-	// lands only when this publish actually minted the version.
+	// lands only when this publish actually minted the version. The dep
+	// inserts trail the audit row to keep that reading intact.
 	const applied = await db.batch([
 		{
 			sql: `INSERT INTO scopes (name, owner, reserved, created_at) VALUES (?, ?, ?, ?)
@@ -474,10 +674,10 @@ export async function publishPackage(
 			args: [parsed.scope, ORG_OWNER, RESERVED_SCOPES.includes(parsed.scope) ? 1 : 0, now]
 		},
 		{
-			sql: `INSERT INTO packages (id, scope, name, owner, description, author, repository, license, downloads, stars, tags, created_at, updated_at)
-			      VALUES (?, ?, ?, ?, ?, ?, '', ?, 0, 0, ?, ?, ?)
-			      ON CONFLICT(scope, name) DO UPDATE SET description = excluded.description, updated_at = excluded.updated_at`,
-			args: [id, parsed.scope, parsed.name, p.owner ?? '', p.description, p.author, p.license, p.tags.join(','), now, now]
+			sql: `INSERT INTO packages (id, scope, name, owner, description, author, repository, license, downloads, stars, tags, keywords, created_at, updated_at)
+			      VALUES (?, ?, ?, ?, ?, ?, '', ?, 0, 0, ?, ?, ?, ?)
+			      ON CONFLICT(scope, name) DO UPDATE SET description = excluded.description, keywords = excluded.keywords, updated_at = excluded.updated_at`,
+			args: [id, parsed.scope, parsed.name, p.owner ?? '', p.description, p.author, p.license, p.tags.join(','), keywords, now, now]
 		},
 		{
 			sql: `INSERT INTO package_versions (id, package_id, version, readme_markdown, doc_json, checksum, status, created_at,
@@ -508,7 +708,12 @@ export async function publishPackage(
 			sql: `INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
 			      SELECT 'publish', ?, ?, ?, ?, ? WHERE changes() > 0`,
 			args: [parsed.full, p.version, auditJson, p.requestId ?? '', now]
-		}
+		},
+		...depNames.map((dep) => ({
+			sql: `INSERT INTO package_deps (package_id, dep_name) VALUES (?, ?)
+			      ON CONFLICT(package_id, dep_name) DO NOTHING`,
+			args: [id, dep]
+		}))
 	]);
 	const created = ((applied[2]?.rowsAffected ?? 0) > 0);
 	return { name: parsed.full, version: p.version, created };
@@ -545,9 +750,12 @@ export interface VersionRow {
 	createdAt: number;
 }
 
-const VERSION_COLS = `id, package_id, version, readme_markdown, doc_json, checksum,
-	tarball_sha256, engine_range, manifest_json, guides_json, request_id,
-	semver_major, semver_minor, semver_patch, prerelease, status, created_at`;
+const VERSION_COLS = `v.id AS id, v.package_id AS package_id, v.version AS version,
+	v.readme_markdown AS readme_markdown, v.doc_json AS doc_json, v.checksum AS checksum,
+	v.tarball_sha256 AS tarball_sha256, v.engine_range AS engine_range,
+	v.manifest_json AS manifest_json, v.guides_json AS guides_json, v.request_id AS request_id,
+	v.semver_major AS semver_major, v.semver_minor AS semver_minor, v.semver_patch AS semver_patch,
+	v.prerelease AS prerelease, v.status AS status, v.created_at AS created_at`;
 
 function toVersionRow(r: Record<string, unknown>): VersionRow {
 	return {
@@ -725,6 +933,14 @@ export async function transferScope(
 		});
 		stmts.push({
 			sql: 'UPDATE tombstones SET package_id = ? WHERE package_id = ?',
+			args: [r.newId, r.oldId]
+		});
+		stmts.push({
+			sql: 'UPDATE package_deps SET package_id = ? WHERE package_id = ?',
+			args: [r.newId, r.oldId]
+		});
+		stmts.push({
+			sql: 'UPDATE download_daily SET package_id = ? WHERE package_id = ?',
 			args: [r.newId, r.oldId]
 		});
 	}

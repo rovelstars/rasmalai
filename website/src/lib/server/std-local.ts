@@ -80,9 +80,11 @@ export function localStdPackage(full: string): { pkg: PackageDetail; doc: Versio
 			downloads: 0,
 			stars: 0,
 			tags: ['stdlib'],
+			keywords: ['stdlib'],
 			updatedAt: now,
 			latest: version,
 			versionCount: 1,
+			dependents: 0,
 			dependencies: [],
 			createdAt: now,
 			versions: [{ version, checksum: '', status: 'live', createdAt: now }]

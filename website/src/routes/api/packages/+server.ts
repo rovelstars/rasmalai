@@ -13,11 +13,13 @@ import {
 	linkVersionChunks,
 	purgeUrls,
 	packagePointerUrls,
+	validateKeywords,
 	MAX_DOC_JSON_BYTES,
 	MAX_README_BYTES,
 	MAX_VERSIONS_PER_WEEK,
 	MAX_TARBALL_BYTES,
-	type PublishPayload
+	type PublishPayload,
+	type PackageFilter
 } from '$lib/server/db';
 import { specHeaders } from '$lib/server/registry';
 import { sanitizeGuideHtml } from '$lib/server/sanitize';
@@ -33,11 +35,27 @@ function unauthorized(message: string) {
 }
 
 // Public catalog for search and listings. Metadata only, never doc payloads.
-export async function GET({ platform, setHeaders }) {
+export async function GET({ platform, setHeaders, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
+	const num = (v: string | null): number | undefined => {
+		if (v === null || v.trim() === '') return undefined;
+		const n = Number(v);
+		return Number.isFinite(n) && n >= 0 ? n : undefined;
+	};
+	const filters: PackageFilter = {};
+	const search = url.searchParams.get('search');
+	const keyword = url.searchParams.get('keyword');
+	const license = url.searchParams.get('license');
+	if (search && search.trim() !== '') filters.search = search;
+	if (keyword && keyword.trim() !== '') filters.keyword = keyword;
+	if (license && license !== '') filters.license = license;
+	const minDownloads = num(url.searchParams.get('minDownloads'));
+	if (minDownloads !== undefined) filters.minDownloads = Math.floor(minDownloads);
+	const updatedSince = num(url.searchParams.get('updatedSince'));
+	if (updatedSince !== undefined) filters.updatedSinceDays = updatedSince;
 	let packages: Awaited<ReturnType<typeof listPackages>> = [];
 	try {
-		packages = await listPackages(env);
+		packages = await listPackages(env, filters);
 	} catch {
 		packages = [];
 	}
@@ -49,7 +67,10 @@ export async function GET({ platform, setHeaders }) {
 				description: p.description,
 				latest: p.latest,
 				versionCount: p.versionCount,
-				updatedAt: p.updatedAt
+				updatedAt: p.updatedAt,
+				keywords: p.keywords,
+				downloads: p.downloads,
+				dependents: p.dependents
 			}))
 		},
 		{ headers: specHeaders() }
@@ -199,6 +220,13 @@ export async function POST({ request, platform, url }) {
 			return json({ success: false, error: 'checksum does not match tarball bytes' }, { status: 400, headers: specHeaders() });
 		}
 	}
+	const keywords = validateKeywords(meta['keywords'] ?? []);
+	if (!keywords) {
+		return json(
+			{ success: false, error: 'invalid keywords (lowercase letters, digits and hyphens, max 12)' },
+			{ status: 400, headers: specHeaders() }
+		);
+	}
 	const payload: PublishPayload = {
 		name: parsed.full,
 		version,
@@ -208,6 +236,7 @@ export async function POST({ request, platform, url }) {
 		tags: Array.isArray(meta['tags'])
 			? (meta['tags'] as unknown[]).filter((t): t is string => typeof t === 'string')
 			: [],
+		keywords,
 		readme,
 		docJson,
 		checksum: tarballSha256 || checksum,
