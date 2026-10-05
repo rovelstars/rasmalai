@@ -35,17 +35,15 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
     assert_eq!(llvm::codegen::execute(leaked, "Main").unwrap(), want, "llvm {tag}");
 
-    let bin_path = dir.join("arc_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), want as i32, "aot {tag} exit");
     assert_eq!(String::from_utf8(run.stdout).unwrap(), want_text, "aot {tag} stdout");
     let _ = std::fs::remove_dir_all(&dir);
@@ -178,16 +176,14 @@ fn std_io_pretty_piped_no_escapes() {
     std::fs::write(&dir.join("pretty.rnx"), pretty_src()).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
 
-    let bin_path = dir.join("pretty_bin");
     let build = Command::new(rnx)
         .arg("build")
         .arg(dir.join("pretty.rnx"))
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let mut child = Command::new(&bin_path)
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let mut child = Command::new(&bin)
         .env("NO_COLOR", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -202,16 +198,14 @@ fn std_io_pretty_piped_no_escapes() {
     let first = stdout.lines().next().unwrap_or("");
     assert_eq!(first, "hi 42 true", "scalars identical, got {first:?}");
 
-    let err_bin = dir.join("err_bin");
     let build = Command::new(rnx)
         .arg("build")
         .arg(&main)
-        .arg("-o")
-        .arg(&err_bin)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let out = Command::new(&err_bin).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let out = Command::new(&bin).output().unwrap();
     assert_eq!(out.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "");
     let stderr = String::from_utf8(out.stderr).unwrap();
@@ -239,18 +233,16 @@ fn std_io_pretty_tty_color() {
     let main = dir.join("main.rnx");
     std::fs::write(&main, color_src()).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let bin_path = dir.join("color_bin");
     let build = Command::new(rnx)
         .arg("build")
         .arg(&main)
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
 
     let script = Command::new("script")
-        .args(["-qec", bin_path.to_str().unwrap(), "/dev/null"])
+        .args(["-qec", &bin, "/dev/null"])
         .stdin(Stdio::null())
         .env_remove("NO_COLOR")
         .env("TERM", "xterm")
@@ -271,7 +263,7 @@ fn std_io_pretty_tty_color() {
     assert!(stdout.contains('\x1b'), "ESC bytes on a TTY, got {stdout:?}");
 
     let out = Command::new("script")
-        .args(["-qec", bin_path.to_str().unwrap(), "/dev/null"])
+        .args(["-qec", &bin, "/dev/null"])
         .stdin(Stdio::null())
         .env("NO_COLOR", "1")
         .env("TERM", "xterm")

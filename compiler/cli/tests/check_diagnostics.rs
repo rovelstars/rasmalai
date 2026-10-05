@@ -41,8 +41,6 @@ fn run_build(dir: &Path) -> std::process::Output {
         .env("NO_COLOR", "1")
         .current_dir(dir)
         .arg("src/main.rnx")
-        .arg("-o")
-        .arg(dir.join("out_bin"))
         .output()
         .unwrap()
 }

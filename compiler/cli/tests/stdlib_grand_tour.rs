@@ -32,20 +32,18 @@ fn grand_tour_interpreter_and_native_binary() {
     let dir = std::env::temp_dir().join(format!("rnx-grand-tour-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let out_path = dir.join("grand_tour");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(fixture())
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let meta = std::fs::metadata(&out_path).unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let meta = std::fs::metadata(&bin).unwrap();
     assert!(meta.len() < 1_000_000, "dev binary links the runtime dynamically, not the archive");
     std::fs::create_dir_all("target")
         .unwrap_or_else(|e| panic!("recreate target dir for grand tour io: {e}"));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), EXPECTED);
     let _ = std::fs::remove_dir_all(&dir);

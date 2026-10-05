@@ -23,16 +23,14 @@ fn package_bare_build_native_binary() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("mp_bin");
     let build = std::process::Command::new(rnx)
         .arg("build")
-        .arg("-o")
-        .arg(&out_path)
         .current_dir(app_dir())
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), EXPECTED);
     let _ = std::fs::remove_dir_all(&dir);

@@ -36,17 +36,15 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
     assert_eq!(llvm::codegen::execute(leaked, "Main").unwrap(), want, "llvm {tag}");
 
-    let bin_path = dir.join("arc_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), want as i32, "aot {tag} exit");
     let suffix = if want_out.is_empty() { "" } else { "\n" };
     assert_eq!(
@@ -141,17 +139,15 @@ fn std_io_basics_all_backends() {
     assert_eq!(jit.call("Main", &[]).unwrap(), 0, "cranelift iobasics");
     assert_eq!(llvm::codegen::execute(leaked, "Main").unwrap(), 0, "llvm iobasics");
 
-    let bin_path = dir.join("arc_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0, "aot iobasics exit");
     assert_eq!(String::from_utf8(run.stdout).unwrap(), want, "aot iobasics stdout");
     let _ = std::fs::remove_dir_all(&dir);
@@ -214,7 +210,7 @@ fn Main(): Int {
     .to_string()
 }
 
-fn run_piped_capture(tag: &str, prog: &PathBuf, input: &[u8]) -> (i32, String, String) {
+fn run_piped_capture(tag: &str, prog: &str, input: &[u8]) -> (i32, String, String) {
     let mut child = Command::new(prog)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -260,10 +256,10 @@ fn std_io_piped_stdin_stdout() {
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "done\npiped-ok\n", "run stdout");
     assert_eq!(String::from_utf8(out.stderr).unwrap(), "edone\n", "run stderr");
 
-    let bin_path = dir.join("io_piped_bin");
-    let build = Command::new(rnx).arg("build").arg(&main).arg("-o").arg(&bin_path).output().unwrap();
+    let build = Command::new(rnx).arg("build").arg(&main).output().unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let (code, stdout, stderr) = run_piped_capture("aot", &bin_path, input);
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let (code, stdout, stderr) = run_piped_capture("aot", &bin, input);
     assert_eq!(code, 0, "aot exit, stderr was {stderr}");
     assert_eq!(stdout, "done\npiped-ok\n", "aot stdout");
     assert_eq!(stderr, "edone\n", "aot stderr");

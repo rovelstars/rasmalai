@@ -106,17 +106,15 @@ fn test_cross_backend_stack_alloc() {
     let mut jit = cranelift::jit::Jit::compile(&for_jit).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
     assert_eq!(llvm::codegen::execute(&for_jit, "Main").unwrap(), 42);
-    let bin_path = path.parent().unwrap().join("escape_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(&path)
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "escape success: 42\n");
     let _ = std::fs::remove_dir_all(path.parent().unwrap());

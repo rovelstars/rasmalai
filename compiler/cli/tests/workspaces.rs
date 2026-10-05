@@ -70,13 +70,12 @@ fn test_workspace_build_package_flag() {
         .arg("build")
         .arg("-p")
         .arg("player")
-        .arg("-o")
-        .arg("target/player_bin")
         .current_dir(&ws)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(ws.join("target").join("player_bin"))
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin)
         .output()
         .unwrap();
     assert_eq!(run.status.code().unwrap(), 42);

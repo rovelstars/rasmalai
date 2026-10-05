@@ -75,16 +75,16 @@ fn build_and_run(release: bool, tag: &str) -> (i32, String) {
     std::fs::create_dir_all(&dir).unwrap();
     let src_path = dir.join("test_binary.rnx");
     std::fs::write(&src_path, BINARY_SRC).unwrap();
-    let out_path = dir.join("test_binary");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let mut cmd = std::process::Command::new(rnx);
-    cmd.arg("build").arg(&src_path).arg("-o").arg(&out_path);
+    cmd.arg("build").arg(&src_path);
     if release {
         cmd.arg("--release");
     }
     let build = cmd.output().unwrap();
     assert!(build.status.success(), "build failed: {}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     let code = run.status.code().unwrap();
     let stdout = String::from_utf8(run.stdout).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -127,16 +127,14 @@ fn build_multi_file_module_binary() {
     let dir = write_mod_tree("ok");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let main = dir.join("src").join("main.rnx");
-    let out = dir.join("multi_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(&main)
-        .arg("-o")
-        .arg(&out)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Module import success: 42\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -222,16 +220,14 @@ fn build_mutual_imports_binary() {
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("mutual_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(src.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Mutual import success: MainScene 42\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -269,16 +265,14 @@ fn write_nway_tree(tag: &str) -> std::path::PathBuf {
 fn build_nway_cyclic_imports_binary() {
     let dir = write_nway_tree("ok");
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("cyclic_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("src").join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "N-way cyclic import success: 42\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -357,16 +351,14 @@ fn build_enum_native_binary() {
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("enumtest");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Enum native binary success: 42\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -383,16 +375,14 @@ fn build_thread_native_binary() {
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("threadtest");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Thread execution success: 1000\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -409,16 +399,14 @@ fn build_async_native_binary() {
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("asynctest");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Async promise success: 42\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -435,16 +423,14 @@ fn build_async_main_native_binary() {
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("asynctest");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Top-level async main success: 42\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -459,16 +445,14 @@ fn build_std_time_native_binary() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_TIME_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("time_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "@std/time verification success: 1500000\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -510,16 +494,14 @@ fn build_std_random_native_binary() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_RANDOM_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("random_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     let stdout = String::from_utf8(run.stdout).unwrap();
     assert!(stdout.starts_with("@std/random verification success:"), "{stdout}");
@@ -552,16 +534,14 @@ fn build_std_fs_native_binary() {
     let target = dir.join("tmp_io_test.txt");
     std::fs::write(dir.join("main.rnx"), std_fs_src(&target.to_string_lossy())).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("io_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(
         String::from_utf8(run.stdout).unwrap(),
@@ -594,16 +574,14 @@ fn build_std_env_native_binary() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_ENV_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("env_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).arg("extra").output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).arg("extra").output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(
         String::from_utf8(run.stdout).unwrap(),
@@ -635,16 +613,14 @@ fn build_std_math_native_binary() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_MATH_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("math_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(
         String::from_utf8(run.stdout).unwrap(),
@@ -676,16 +652,14 @@ fn build_std_collections_native_binary() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_COLLECTIONS_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("col_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(
         String::from_utf8(run.stdout).unwrap(),
@@ -717,16 +691,14 @@ fn build_std_sync_native_binary() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_SYNC_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let out_path = dir.join("sync_test");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&out_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(
         String::from_utf8(run.stdout).unwrap(),

@@ -70,16 +70,14 @@ fn argv_forwards_identically_on_all_backends() {
         }
         prior = Some((code, full));
     }
-    let bin = dir.join("argsbin");
     let build = Command::new(rnx())
         .arg("build")
         .arg(&file)
-        .arg("-o")
-        .arg(&bin)
         .arg("-q")
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let mut cmd = Command::new(&bin);
     for a in USER_ARGS {
         cmd.arg(a);
@@ -108,16 +106,14 @@ fn process_exit_flushes_stdout_on_all_backends() {
             "{backend}: prior output must survive Process.exit"
         );
     }
-    let bin = dir.join("exitbin");
     let build = Command::new(rnx())
         .arg("build")
         .arg(&file)
-        .arg("-o")
-        .arg(&bin)
         .arg("-q")
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let out = Command::new(&bin).output().unwrap();
     assert_eq!(out.status.code(), Some(3), "aot: exit code");
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "before exit\n", "aot: prior output");
@@ -140,8 +136,6 @@ fn permissions_ceiling_enforced_without_lockfile() {
     assert!(!text.contains("(ok)"), "no success line on failure, got:\n{text}");
     let build = Command::new(rnx())
         .arg("build")
-        .arg("-o")
-        .arg("t3bin")
         .arg("-q")
         .current_dir(&dir)
         .output()

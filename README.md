@@ -93,7 +93,7 @@ rnx run path/to/main.rnx
 Compile a native binary ahead of time (LLVM, release mode):
 
 ```bash
-rnx build path/to/main.rnx -o ./myapp
+rnx build path/to/main.rnx
 ```
 
 Program arguments go after `--`:

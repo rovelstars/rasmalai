@@ -28,13 +28,10 @@ fn readelf_sections(path: &std::path::Path) -> String {
 #[test]
 fn test_time_passes_output() {
     let (dir, src) = write_src("time");
-    let out_path = dir.join("diag_test");
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--time-passes")
         .arg(&src)
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -50,14 +47,11 @@ fn test_time_passes_output() {
 fn test_perfetto_trace_json_validity() {
     let (dir, src) = write_src("trace");
     let trace_path = dir.join("trace.json");
-    let out_path = dir.join("trace_test");
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--trace")
         .arg(&trace_path)
         .arg(&src)
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -147,34 +141,30 @@ fn test_perf_map_generation() {
 #[test]
 fn test_dwarf_debug_symbols_present() {
     let (dir, src) = write_src("dwarf");
-    let obj_path = dir.join("debug_app.o");
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--emit-obj")
         .arg("-g")
         .arg(&src)
-        .arg("-o")
-        .arg(&obj_path)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let sections = readelf_sections(&obj_path);
+    let obj_bin = String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let sections = readelf_sections(std::path::Path::new(&obj_bin));
     assert!(sections.contains(".debug_info"), "no .debug_info:\n{sections}");
     assert!(sections.contains(".debug_line"), "no .debug_line:\n{sections}");
-    let app_path = dir.join("debug_app");
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("-g")
         .arg(&src)
-        .arg("-o")
-        .arg(&app_path)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let sections = readelf_sections(&app_path);
+    let app_bin = String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let sections = readelf_sections(std::path::Path::new(&app_bin));
     assert!(sections.contains(".debug_info"), "no .debug_info:\n{sections}");
     assert!(sections.contains(".debug_line"), "no .debug_line:\n{sections}");
-    let run = std::process::Command::new(&app_path).output().unwrap();
+    let run = std::process::Command::new(&app_bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 55);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -182,32 +172,28 @@ fn test_dwarf_debug_symbols_present() {
 #[test]
 fn test_release_omits_debug_info() {
     let (dir, src) = write_src("release");
-    let obj_path = dir.join("release_app.o");
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--emit-obj")
         .arg("--release")
         .arg("-g")
         .arg(&src)
-        .arg("-o")
-        .arg(&obj_path)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let sections = readelf_sections(&obj_path);
+    let obj_bin = String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let sections = readelf_sections(std::path::Path::new(&obj_bin));
     assert!(!sections.contains(".debug_info"), "leaked .debug_info:\n{sections}");
     assert!(!sections.contains(".debug_line"), "leaked .debug_line:\n{sections}");
-    let app_path = dir.join("release_app");
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--release")
         .arg(&src)
-        .arg("-o")
-        .arg(&app_path)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let sections = readelf_sections(&app_path);
+    let app_bin = String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let sections = readelf_sections(std::path::Path::new(&app_bin));
     assert!(!sections.contains(".debug_info"), "leaked .debug_info:\n{sections}");
     assert!(!sections.contains(".debug_line"), "leaked .debug_line:\n{sections}");
     let _ = std::fs::remove_dir_all(&dir);

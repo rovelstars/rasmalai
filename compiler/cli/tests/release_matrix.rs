@@ -109,12 +109,11 @@ fn test_matrix_pack_unpack_run() {
 #[test]
 fn test_matrix_release_build() {
     let dir = write_matrix("release");
-    let app = dir.join("target").join("matrix_app");
-    std::fs::create_dir_all(app.parent().unwrap()).unwrap();
     let main = dir.join("src").join("main.rnx");
-    let out = run_rnx(&dir, &["build", "--release", "-o", app.to_str().unwrap(), main.to_str().unwrap()]);
+    let out = run_rnx(&dir, &["build", "--release", main.to_str().unwrap()]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(app.is_file(), "binary missing");
+    let app = String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    assert!(std::path::Path::new(&app).is_file(), "binary missing");
     let sections = std::process::Command::new("readelf")
         .arg("-S")
         .arg(&app)
@@ -136,37 +135,36 @@ fn test_matrix_static_lib_c_link() {
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("calc.rnx");
     std::fs::write(&src, LIB_SRC).unwrap();
-    let lib = dir.join("libcalc.a");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg("--lib")
         .arg(&src)
-        .arg("-o")
-        .arg(&lib)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    assert!(lib.is_file(), "archive missing");
-    let header = lib.with_extension("h");
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let libdir = std::path::Path::new(&bin).parent().unwrap().to_path_buf();
+    assert!(std::path::Path::new(&bin).is_file(), "archive missing");
+    let header = std::path::Path::new(&bin).with_extension("h");
     assert!(header.is_file(), "header missing");
     let text = std::fs::read_to_string(&header).unwrap();
     assert!(text.contains("int64_t add(int64_t a, int64_t b);"), "add:\n{text}");
-    std::fs::write(dir.join("main.c"), HOST_C).unwrap();
-    std::fs::write(dir.join("libcalc.h"), std::fs::read(&header).unwrap()).unwrap();
+    std::fs::write(libdir.join("main.c"), HOST_C).unwrap();
+    std::fs::write(libdir.join("libcalc.h"), std::fs::read(&header).unwrap()).unwrap();
     let cc = std::process::Command::new("cc")
-        .arg(dir.join("main.c"))
-        .arg(format!("-L{}", dir.display()))
+        .arg(libdir.join("main.c"))
+        .arg(format!("-L{}", libdir.display()))
         .arg("-lcalc")
         .arg("-lpthread")
         .arg("-ldl")
         .arg("-lm")
         .arg("-o")
-        .arg(dir.join("host_app"))
+        .arg(libdir.join("host_app"))
         .output()
         .unwrap();
     assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
-    let run = std::process::Command::new(dir.join("host_app")).output().unwrap();
+    let run = std::process::Command::new(libdir.join("host_app")).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "host ok\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -175,8 +173,6 @@ fn test_matrix_static_lib_c_link() {
 #[test]
 fn test_matrix_cross_compile_aarch64() {
     let dir = write_matrix("cross");
-    let obj = dir.join("target").join("matrix_arm.o");
-    std::fs::create_dir_all(obj.parent().unwrap()).unwrap();
     let out = run_rnx(
         &dir,
         &[
@@ -184,13 +180,12 @@ fn test_matrix_cross_compile_aarch64() {
             "--emit-obj",
             "--target",
             "aarch64-unknown-linux-gnu",
-            "-o",
-            obj.to_str().unwrap(),
             dir.join("src").join("main.rnx").to_str().unwrap(),
         ],
     );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(obj.is_file(), "object missing");
+    let obj = String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    assert!(std::path::Path::new(&obj).is_file(), "object missing");
     let bytes = std::fs::read(&obj).unwrap();
     assert!(bytes.len() > 20, "object too small");
     assert_eq!(&bytes[0..4], b"\x7fELF", "not an ELF object");

@@ -137,7 +137,6 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
             cli::args::Command::Build {
                 path,
                 entry,
-                out,
                 release,
                 lib,
                 emit_obj,
@@ -150,7 +149,7 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 debug,
                 package,
             } => {
-                run_build(path, entry, out, release, lib, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, package, verbose, quiet);
+                run_build(path, entry, release, lib, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, package, verbose, quiet);
             }
             cli::args::Command::Init { name } => {
                 run_init(name);

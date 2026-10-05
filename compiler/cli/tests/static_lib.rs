@@ -12,19 +12,19 @@ fn write_src(src: &str, tag: &str) -> (PathBuf, PathBuf) {
     (dir, main)
 }
 
-fn build_lib(main: &std::path::Path, out: &std::path::Path) -> std::process::Output {
+fn build_lib(main: &std::path::Path) -> std::process::Output {
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    std::process::Command::new(rnx).arg("build").arg(main).arg("--lib").arg("-o").arg(out).output().unwrap()
+    std::process::Command::new(rnx).arg("build").arg(main).arg("--lib").output().unwrap()
 }
 
 #[test]
 fn test_static_library_and_header_generation() {
     let (dir, main) = write_src(CALC_SRC, "gen");
-    let out = dir.join("target").join("test_lib").join("libcalc.a");
-    let build = build_lib(&main, &out);
+    let build = build_lib(&main);
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    assert!(out.is_file(), "archive missing");
-    let header = out.with_extension("h");
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    assert!(std::path::Path::new(&bin).is_file(), "archive missing");
+    let header = std::path::Path::new(&bin).with_extension("h");
     assert!(header.is_file(), "header missing");
     let text = std::fs::read_to_string(&header).unwrap();
     assert!(text.contains("#ifndef RNX_CALC_H"), "guard:\n{text}");
@@ -40,12 +40,12 @@ const HOST_C: &str = "#include <stdio.h>\n#include \"libcalc.h\"\nint main(void)
 #[test]
 fn test_host_c_program_linking() {
     let (dir, main) = write_src(CALC_SRC, "host");
-    let libdir = dir.join("target").join("test_lib");
-    let out = libdir.join("libcalc.a");
-    let build = build_lib(&main, &out);
+    let build = build_lib(&main);
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let libdir = std::path::Path::new(&bin).parent().unwrap().to_path_buf();
     std::fs::write(libdir.join("main.c"), HOST_C).unwrap();
-    std::fs::write(libdir.join("libcalc.h"), std::fs::read(out.with_extension("h")).unwrap()).unwrap();
+    std::fs::write(libdir.join("libcalc.h"), std::fs::read(std::path::Path::new(&bin).with_extension("h")).unwrap()).unwrap();
     let cc = std::process::Command::new("cc")
         .arg(libdir.join("main.c"))
         .arg(format!("-L{}", libdir.display()))
@@ -67,17 +67,17 @@ fn test_host_c_program_linking() {
 #[test]
 fn test_private_functions_not_exported() {
     let (dir, main) = write_src(CALC_SRC, "nm");
-    let out = dir.join("target").join("test_lib").join("libcalc.a");
-    let build = build_lib(&main, &out);
+    let build = build_lib(&main);
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let nm = std::process::Command::new("nm").arg(&out).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let nm = std::process::Command::new("nm").arg(&bin).output().unwrap();
     assert!(nm.status.success());
     let text = String::from_utf8_lossy(&nm.stdout);
     let ours: Vec<&str> = text.lines().filter(|l| l.contains("add") || l.contains("isPositive") || l.contains("helper")).collect();
     assert!(ours.iter().any(|l| l.contains(" T add")), "add global:\n{}", ours.join("\n"));
     assert!(ours.iter().any(|l| l.contains(" T isPositive")), "isPositive global:\n{}", ours.join("\n"));
     assert!(!ours.iter().any(|l| l.contains(" T helper")), "helper leaked:\n{}", ours.join("\n"));
-    let header = std::fs::read_to_string(out.with_extension("h")).unwrap();
+    let header = std::fs::read_to_string(std::path::Path::new(&bin).with_extension("h")).unwrap();
     assert!(!header.contains("helper"), "helper in header");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -87,8 +87,7 @@ const BAD_SRC: &str = "class Box {\n    let v: Int;\n    init(v: Int) {\n       
 #[test]
 fn test_invalid_pub_signature_rejected() {
     let (dir, main) = write_src(BAD_SRC, "bad");
-    let out = dir.join("target").join("test_lib").join("libcalc.a");
-    let build = build_lib(&main, &out);
+    let build = build_lib(&main);
     assert!(!build.status.success(), "class param accepted");
     let err = String::from_utf8_lossy(&build.stdout).into_owned()
         + &String::from_utf8_lossy(&build.stderr).into_owned();

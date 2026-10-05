@@ -73,7 +73,7 @@ fn passing_build_with_matching_lock() {
     let check = run_headless(&["check"], &app);
     assert_eq!(check.status.code(), Some(0), "{}", combined(&check));
     let build = run_headless(
-        &["build", "-o", "app_bin", "-q"],
+        &["build", "-q"],
         &app,
     );
     assert_eq!(build.status.code(), Some(0), "{}", combined(&build));
@@ -103,7 +103,7 @@ fn s101_rejects_unapproved_capability() {
         &dir.join("dep/src/lib.rnx"),
         "fn loadData(path: String): Int {\n    File.open(path, FileMode.Read);\n    File.open(\"/tmp/cache.lock\", FileMode.Read);\n    return 0;\n}\n",
     );
-    let build = run_headless(&["build", "-o", "app_bin", "-q"], &app);
+    let build = run_headless(&["build", "-q"], &app);
     assert_eq!(build.status.code(), Some(1), "{}", combined(&build));
     let text = combined(&build);
     assert!(text.contains("S101"), "{text}");

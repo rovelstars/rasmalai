@@ -36,17 +36,15 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
     assert_eq!(llvm::codegen::execute(leaked, "Main").unwrap(), want, "llvm {tag}");
 
-    let bin_path = dir.join("castidx_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     match run.status.code() {
         Some(code) => assert_eq!(code, want as i32, "aot {tag} exit"),
         None => panic!("aot {tag} killed by signal: {run:?}"),
@@ -87,8 +85,6 @@ fn test_untyped_array_element_call_reports_true_span() {
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(&main)
-        .arg("-o")
-        .arg(dir.join("any_bin"))
         .env("NO_COLOR", "1")
         .output()
         .unwrap();
