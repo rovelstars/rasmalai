@@ -1245,28 +1245,34 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
         config,
     )
     .map_err(|e| format!("cannot write Project.config: {e}"))?;
+    // Gitignore first so a failure surfaces before src/main.rnx exists; init is not atomic.
+    ensure_gitignore_entry(&root.join(".gitignore"))
+        .map_err(|e| format!("cannot write .gitignore: {e}"))?;
     let main = format!(
         "fn Main(): Int {{\n    print(\"Hello from {name}!\");\n    return 0;\n}}\n"
     );
     std::fs::write(root.join(frontend::project::DEFAULT_ENTRY), main)
         .map_err(|e| format!("cannot write src/main.rnx: {e}"))?;
-    ensure_gitignore_entry(&root.join(".gitignore"))
-        .map_err(|e| format!("cannot write .gitignore: {e}"))?;
     Ok(root)
 }
 
 fn ensure_gitignore_entry(path: &std::path::Path) -> std::io::Result<()> {
-    const LINE: &str = ".rnx-cache/";
     match std::fs::read_to_string(path) {
         Ok(existing) => {
-            if existing.lines().any(|line| line.trim() == LINE) {
+            let present = existing.lines().any(|line| {
+                let line = line.strip_suffix('\r').unwrap_or(line);
+                line == ".rnx-cache/" || line == "/.rnx-cache/"
+            });
+            if present {
                 return Ok(());
             }
+            let eol = if existing.contains("\r\n") { "\r\n" } else { "\n" };
             let mut out = existing;
             if !out.is_empty() && !out.ends_with('\n') {
-                out.push('\n');
+                out.push_str(eol);
             }
-            out.push_str(".rnx-cache/\n");
+            out.push_str(".rnx-cache/");
+            out.push_str(eol);
             std::fs::write(path, out)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -2177,6 +2183,50 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "target/\n.rnx-cache/\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gitignore_anchored_entry_left_untouched() {
+        let dir = scratch("anchored");
+        let path = dir.join(".gitignore");
+        std::fs::write(&path, "target/\n/.rnx-cache/\n").unwrap();
+        ensure_gitignore_entry(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "target/\n/.rnx-cache/\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gitignore_crlf_uses_crlf() {
+        let dir = scratch("crlf");
+        let path = dir.join(".gitignore");
+        std::fs::write(&path, "target/\r\n*.log\r\n").unwrap();
+        ensure_gitignore_entry(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "target/\r\n*.log\r\n.rnx-cache/\r\n"
+        );
+        ensure_gitignore_entry(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "target/\r\n*.log\r\n.rnx-cache/\r\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gitignore_indented_entry_is_not_present() {
+        let dir = scratch("indented");
+        let path = dir.join(".gitignore");
+        std::fs::write(&path, "target/\n .rnx-cache/\n").unwrap();
+        ensure_gitignore_entry(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "target/\n .rnx-cache/\n.rnx-cache/\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

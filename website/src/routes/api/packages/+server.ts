@@ -22,7 +22,7 @@ import {
 import { specHeaders } from '$lib/server/registry';
 import { sanitizeGuideHtml } from '$lib/server/sanitize';
 import { chunkTarball, sha256Hex } from '$lib/server/chunks';
-import { sessionUser, readSessionCookie, userScopes } from '$lib/server/auth';
+import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 
 const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 const MAX_GUIDES_BYTES = 400 * 1024;
@@ -61,6 +61,9 @@ export async function POST({ request, platform, url }) {
 		const user = await sessionUser(env, readSessionCookie(request.headers.get('Cookie')));
 		if (!user) {
 			return unauthorized('invalid publisher token');
+		}
+		if (!checkBrowserOrigin(request, url)) {
+			return json({ success: false, error: 'bad origin', code: 'bad-origin' }, { status: 403, headers: specHeaders() });
 		}
 		actorOwner = user.username;
 		const scopes = await userScopes(env, user.id);
@@ -139,7 +142,6 @@ export async function POST({ request, platform, url }) {
 			return json({ success: false, error: 'guide needs slug and title' }, { status: 400, headers: specHeaders() });
 		}
 		if (typeof e['html'] === 'string') e['html'] = sanitizeGuideHtml(e['html']);
-		if (typeof e['source'] === 'string') e['source'] = sanitizeGuideHtml(e['source']);
 	}
 	const guidesJson = JSON.stringify(guides);
 	let manifestJson = '{"deps":{}}';
@@ -230,7 +232,7 @@ export async function POST({ request, platform, url }) {
 			}
 			await linkVersionChunks(env, `ver_${packageId(parsed.scope, parsed.name)}_${version}`, units.map((u) => u.hash));
 		}
-		await purgeUrls(env, packagePointerUrls(url.origin, parsed.full, version));
+		await purgeUrls(env, packagePointerUrls(url.origin, parsed.full, version), { fullName: parsed.full });
 		return json({ success: true, url: `/packages/${parsed.full}`, version }, { status: 201, headers: specHeaders() });
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);

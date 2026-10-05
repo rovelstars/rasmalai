@@ -900,43 +900,74 @@ export async function deleteChunks(
 // Posts to the purge-cache API when credentials exist, otherwise records
 // the would-purge URLs in audit_log. Never throws: a purge failure must
 // not fail the mutation that triggered it.
+export interface PurgeResult {
+	ok: boolean;
+	verified: boolean;
+}
+
 export async function purgeUrls(
 	env: Record<string, string | undefined>,
-	urls: string[]
-): Promise<void> {
-	if (urls.length === 0) return;
+	urls: string[],
+	options?: { fullName?: string; prefixes?: string[] }
+): Promise<PurgeResult> {
+	if (urls.length === 0 && !(options?.prefixes?.length)) return { ok: true, verified: false };
 	const zone = env['CF_ZONE_ID'];
 	const token = env['CF_PURGE_TOKEN'];
 	if (zone && token) {
+		const body: Record<string, string[]> = { files: urls };
+		if (options?.prefixes?.length) body['prefixes'] = options.prefixes;
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zone}/purge_cache`, {
+					method: 'POST',
+					headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+					body: JSON.stringify(body),
+					signal: AbortSignal.timeout(10000)
+				});
+				const data = (await res.json().catch(() => null)) as { success?: boolean } | null;
+				if (res.ok && data?.success === true) return { ok: true, verified: true };
+			} catch {
+				/* retry below; origin stays authoritative */
+			}
+		}
 		try {
-			await fetch(`https://api.cloudflare.com/client/v4/zones/${zone}/purge_cache`, {
-				method: 'POST',
-				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-				body: JSON.stringify({ files: urls })
+			const db = getClient(env);
+			if (!db) return { ok: false, verified: false };
+			await ensureSchema(db);
+			await db.execute({
+				sql: `INSERT INTO audit_log (action, full_name, details_json, created_at)
+				      VALUES ('purge-failed', ?, ?, ?)`,
+				args: [options?.fullName ?? '', JSON.stringify({ urls, prefixes: options?.prefixes ?? [] }), Math.floor(Date.now() / 1000)]
 			});
 		} catch {
-			/* edge purge is best-effort; origin stays authoritative */
+			/* audit fallback is best-effort too */
 		}
-		return;
+		return { ok: false, verified: false };
 	}
 	try {
 		const db = getClient(env);
-		if (!db) return;
+		if (!db) return { ok: false, verified: false };
 		await ensureSchema(db);
 		await db.execute({
 			sql: `INSERT INTO audit_log (action, full_name, details_json, created_at)
-			      VALUES ('purge-skipped', '', ?, ?)`,
-			args: [JSON.stringify({ urls }), Math.floor(Date.now() / 1000)]
+			      VALUES ('purge-skipped', ?, ?, ?)`,
+			args: [options?.fullName ?? '', JSON.stringify({ urls, prefixes: options?.prefixes ?? [] }), Math.floor(Date.now() / 1000)]
 		});
+		return { ok: true, verified: false };
 	} catch {
-		/* audit fallback is best-effort too */
+		return { ok: false, verified: false };
 	}
 }
 
 export function packagePointerUrls(origin: string, full: string, version?: string): string[] {
 	const base = origin.replace(/\/$/, '');
 	const urls = [`${base}/api/packages`, `${base}/api/packages/${full}`];
-	if (version) urls.push(`${base}/api/packages/${full}/${version}`);
+	if (version) {
+		urls.push(`${base}/api/packages/${full}/${version}`);
+		urls.push(`${base}/api/packages/${full}/${version}/download`);
+		urls.push(`${base}/api/packages/${full}/${version}/api`);
+		urls.push(`${base}/api/packages/${full}/${version}/guides`);
+	}
 	return urls;
 }
 

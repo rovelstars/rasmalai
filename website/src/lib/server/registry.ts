@@ -19,7 +19,7 @@ const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 export function isValidRange(range: string): boolean {
 	const r = range.trim();
 	if (r === '' || r === '*' || r === 'latest') return true;
-	if (r.startsWith('^') || r.startsWith('~')) return parseSemver(r.slice(1)) !== null;
+	if (r.startsWith('^') || r.startsWith('~')) return parseSemver(r.slice(1).trim()) !== null;
 	if (r.startsWith('>=')) return parseSemver(r.slice(2).trim()) !== null;
 	return parseSemver(r) !== null;
 }
@@ -70,7 +70,7 @@ export function satisfiesRange(version: string, range: string): boolean {
 	if (r === '' || r === '*' || r === 'latest') return v.prerelease === '';
 	if (v.prerelease !== '' && !rangeAdmitsPrerelease(r, v)) return false;
 	if (r.startsWith('^')) {
-		const base = parseSemver(r.slice(1));
+		const base = parseSemver(r.slice(1).trim());
 		if (!base) return false;
 		if (compareSemver(v, base) < 0) return false;
 		if (base.major > 0) return v.major === base.major;
@@ -78,7 +78,7 @@ export function satisfiesRange(version: string, range: string): boolean {
 		return v.major === 0 && v.minor === 0 && v.patch === base.patch;
 	}
 	if (r.startsWith('~')) {
-		const base = parseSemver(r.slice(1));
+		const base = parseSemver(r.slice(1).trim());
 		if (!base) return false;
 		if (compareSemver(v, base) < 0) return false;
 		return v.major === base.major && v.minor === base.minor;
@@ -93,7 +93,7 @@ export function satisfiesRange(version: string, range: string): boolean {
 
 function rangeAdmitsPrerelease(range: string, v: Semver): boolean {
 	let base: Semver | null = null;
-	if (range.startsWith('^') || range.startsWith('~')) base = parseSemver(range.slice(1));
+	if (range.startsWith('^') || range.startsWith('~')) base = parseSemver(range.slice(1).trim());
 	else if (range.startsWith('>=')) base = parseSemver(range.slice(2).trim());
 	else if (range === '' || range === '*' || range === 'latest') return false;
 	else base = parseSemver(range);
