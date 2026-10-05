@@ -35,7 +35,12 @@ function unauthorized(message: string) {
 // Public catalog for search and listings. Metadata only, never doc payloads.
 export async function GET({ platform, setHeaders }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
-	const packages = await listPackages(env);
+	let packages: Awaited<ReturnType<typeof listPackages>> = [];
+	try {
+		packages = await listPackages(env);
+	} catch {
+		packages = [];
+	}
 	setHeaders({ 'Cache-Control': 'public, max-age=3600, s-maxage=3600', ...specHeaders() });
 	return json(
 		{
