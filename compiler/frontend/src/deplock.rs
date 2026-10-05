@@ -35,6 +35,30 @@ struct PkgNode {
     dir: PathBuf,
 }
 
+fn lock_have(lock: Option<&ProjectDepLock>) -> Vec<crate::fetch::HaveEntry> {
+    let Some(lock) = lock else {
+        return Vec::new();
+    };
+    let mut wanted: BTreeSet<(String, String)> = BTreeSet::new();
+    for p in &lock.packages {
+        if let Some(rest) = p.source.strip_prefix("registry:") {
+            if let Some((full, version)) = rest.rsplit_once('@') {
+                if !full.is_empty() && !version.is_empty() {
+                    wanted.insert((full.to_string(), version.to_string()));
+                }
+            }
+        }
+    }
+    crate::fetch::scan_cache_have()
+        .into_iter()
+        .filter(|h| wanted.contains(&(h.full.clone(), h.version.clone())))
+        .collect()
+}
+
+fn existing_have(root: &Path) -> Vec<crate::fetch::HaveEntry> {
+    lock_have(ProjectDepLock::load(root).ok().flatten().as_ref())
+}
+
 fn rel_parts(path: &Path) -> Option<Vec<String>> {
     let mut parts = Vec::new();
     for c in path.components() {
@@ -83,6 +107,7 @@ fn collect_into(
     root: &Path,
     config: &ProjectConfig,
     is_root: bool,
+    have: &[crate::fetch::HaveEntry],
 ) -> Result<(), Diagnostic> {
     let mut stack: Vec<(PathBuf, ProjectConfig, bool, Option<String>)> =
         vec![(root.to_path_buf(), config.clone(), is_root, None)];
@@ -142,10 +167,16 @@ fn collect_into(
                     (dep_root, dep_cfg, Some(format!("git:{git}#{rev}")))
                 }
                 crate::project::DependencySpec::Semver { version } => {
-                    return Err(Diagnostic::new(
-                        Code::E108,
-                        format!("cannot resolve package `{dep_name}`: version `{version}` needs a registry fetch (not implemented yet)"),
-                    ));
+                    let (dep_root, dep_cfg, resolved) =
+                        crate::fetch::resolve_registry_package(
+                            dep_name,
+                            version,
+                            cfg.registry.as_ref(),
+                            &cfg.registries,
+                            None,
+                            have,
+                        )?;
+                    (dep_root, dep_cfg, Some(format!("registry:{dep_name}@{resolved}")))
                 }
                 crate::project::DependencySpec::Url { url, .. } => {
                     return Err(Diagnostic::new(
@@ -176,19 +207,24 @@ fn collect_into(
     Ok(())
 }
 
-fn collect_graph(root: &Path, config: &ProjectConfig) -> Result<Vec<PkgNode>, Diagnostic> {
+fn collect_graph(
+    root: &Path,
+    config: &ProjectConfig,
+    have: &[crate::fetch::HaveEntry],
+) -> Result<Vec<PkgNode>, Diagnostic> {
     let mut nodes: BTreeMap<String, PkgNode> = BTreeMap::new();
-    collect_into(&mut nodes, root, root, config, true)?;
+    collect_into(&mut nodes, root, root, config, true, have)?;
     Ok(nodes.into_values().collect())
 }
 
 fn collect_workspace_graph(
     ws_root: &Path,
     members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
+    have: &[crate::fetch::HaveEntry],
 ) -> Result<Vec<PkgNode>, Diagnostic> {
     let mut nodes: BTreeMap<String, PkgNode> = BTreeMap::new();
     for (root, cfg) in members.values() {
-        collect_into(&mut nodes, ws_root, root, cfg, false)?;
+        collect_into(&mut nodes, ws_root, root, cfg, false, have)?;
     }
     Ok(nodes.into_values().collect())
 }
@@ -313,14 +349,16 @@ fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnos
 
 impl ProjectDepLock {
     pub fn resolve(root: &Path, config: &ProjectConfig) -> Result<ProjectDepLock, Diagnostic> {
-        nodes_to_lock(collect_graph(root, config)?)
+        let have = existing_have(root);
+        nodes_to_lock(collect_graph(root, config, &have)?)
     }
 
     pub fn resolve_workspace(
         ws_root: &Path,
         members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
     ) -> Result<ProjectDepLock, Diagnostic> {
-        nodes_to_lock(collect_workspace_graph(ws_root, members)?)
+        let have = existing_have(ws_root);
+        nodes_to_lock(collect_workspace_graph(ws_root, members, &have)?)
     }
 
     pub fn load(root: &Path) -> Result<Option<ProjectDepLock>, Diagnostic> {
@@ -488,7 +526,8 @@ pub fn rnx_string(s: &str) -> String {
     out
 }
 pub fn verify_lock(root: &Path, config: &ProjectConfig, lock: &ProjectDepLock) -> Result<(), Diagnostic> {
-    check_nodes(collect_graph(root, config)?, lock)
+    let have = lock_have(Some(lock));
+    check_nodes(collect_graph(root, config, &have)?, lock)
 }
 
 pub fn verify_workspace_lock(
@@ -496,7 +535,8 @@ pub fn verify_workspace_lock(
     members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
     lock: &ProjectDepLock,
 ) -> Result<(), Diagnostic> {
-    check_nodes(collect_workspace_graph(ws_root, members)?, lock)
+    let have = lock_have(Some(lock));
+    check_nodes(collect_workspace_graph(ws_root, members, &have)?, lock)
 }
 
 #[cfg(test)]
@@ -542,6 +582,45 @@ mod tests {
         let parsed = ProjectDepLock::parse(&text).unwrap();
         assert_eq!(parsed, lock);
         verify_lock(&root, &cfg, &parsed).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn semver_dep_locks_from_registry() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("deplock-reg");
+        let (gz, sha) = crate::fetch::testkit::fixture_tarball("@acme/widget", "1.2.0");
+        let node = crate::fetch::testkit::node_json("@acme/widget", "1.2.0", &sha, false);
+        let server = crate::fetch::testkit::MockRegistry::start(
+            crate::fetch::testkit::MockConfig {
+                version_spec: 1,
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node]),
+                download_status: 200,
+                download_body: gz,
+                download_error: String::new(),
+            },
+        );
+        let dir = std::env::temp_dir().join(format!("rnx-lock-reg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"app\",\n        version: \"0.1.0\"\n    }},\n    dependencies: {{\n        \"@acme/widget\": {{ version: \"^1.0.0\" }}\n    }},\n    registry: {{ url: \"{}\" }}\n}}\n",
+                server.base
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        let cfg = crate::project::ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = ProjectDepLock::resolve(&root, &cfg).unwrap();
+        assert_eq!(lock.packages.len(), 2);
+        let widget = lock.packages.iter().find(|p| p.name == "@acme/widget").unwrap();
+        assert_eq!(widget.version, "1.2.0");
+        assert_eq!(widget.source, "registry:@acme/widget@1.2.0");
+        assert_eq!(widget.checksum.len(), 64);
+        verify_lock(&root, &cfg, &lock).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

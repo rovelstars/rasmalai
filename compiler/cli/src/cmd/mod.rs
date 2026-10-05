@@ -59,7 +59,7 @@ mod completions;
 mod dev;
 mod doc;
 mod explain;
-mod fetch;
+pub(super) mod fetch;
 mod fmt;
 mod init;
 mod lint;

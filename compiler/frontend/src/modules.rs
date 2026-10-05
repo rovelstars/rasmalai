@@ -1736,10 +1736,19 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
             (dep_root, dep_cfg)
         }
         Some(crate::project::DependencySpec::Semver { version }) => {
-            return Err(Diagnostic::new(
-                Code::E108,
-                format!("cannot resolve package `{pkg}`: version `{version}` needs a registry fetch (not implemented yet)"),
-            ));
+            let scope_root =
+                project::find_workspace_root(&proj_root).unwrap_or_else(|| proj_root.clone());
+            let pinned = locked_registry_version(&scope_root, &pkg);
+            let have = crate::fetch::scan_cache_have();
+            let (dep_root, dep_cfg, _) = crate::fetch::resolve_registry_package(
+                &pkg,
+                version,
+                cfg.registry.as_ref(),
+                &cfg.registries,
+                pinned,
+                &have,
+            )?;
+            (dep_root, dep_cfg)
         }
         Some(crate::project::DependencySpec::Url { url, .. }) => {
             return Err(Diagnostic::new(
@@ -1819,6 +1828,18 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
         return Err(Diagnostic::new(Code::E108, format!("cannot resolve module `{source}`")));
     }
     Ok((target, Some(dep_root)))
+}
+
+fn locked_registry_version(scope_root: &Path, pkg: &str) -> Option<String> {
+    let lock = crate::deplock::ProjectDepLock::load(scope_root).ok()??;
+    let entry = lock.packages.iter().find(|p| p.name == pkg)?;
+    let rest = entry.source.strip_prefix("registry:")?;
+    let (full, version) = rest.rsplit_once('@')?;
+    if full == pkg && !version.is_empty() {
+        Some(version.to_string())
+    } else {
+        None
+    }
 }
 
 fn workspace_sibling(
@@ -2502,5 +2523,77 @@ impl Rewriter<'_> {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fetch::testkit;
+
+    fn registry_app(tag: &str, registry_url: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rnx-modreg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"app\",\n        version: \"0.1.0\"\n    }},\n    dependencies: {{\n        \"@acme/widget\": {{ version: \"^1.0.0\" }}\n    }},\n    registry: {{ url: \"{registry_url}\" }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src").join("main.rnx"),
+            "import { hello } from \"@acme/widget\";\nfn Main(): Int { return hello(); }\n",
+        )
+        .unwrap();
+        root
+    }
+
+    fn start_widget_server() -> testkit::MockRegistry {
+        let (gz, sha) = testkit::fixture_tarball("@acme/widget", "1.2.0");
+        let node = testkit::node_json("@acme/widget", "1.2.0", &sha, false);
+        testkit::MockRegistry::start(testkit::MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: testkit::resolve_json_static(&[node]),
+            download_status: 200,
+            download_body: gz,
+            download_error: String::new(),
+        })
+    }
+
+    #[test]
+    fn semver_import_resolves_through_registry() {
+        let (_guard, _cache) = testkit::isolate_cache("modreg");
+        let server = start_widget_server();
+        let root = registry_app("live", &server.base);
+        let entry = root.join("src").join("main.rnx");
+        let graph = ModuleGraph::build(&entry).unwrap();
+        assert!(graph.files.iter().any(|f| f.path.ends_with("src/main.rnx")));
+        let merged = graph.resolve().unwrap();
+        assert!(!merged.decls.is_empty());
+        let bodies = server.resolve_bodies();
+        assert!(!bodies.is_empty());
+        assert_eq!(testkit::requirement(&bodies[0], "@acme/widget"), "^1.0.0");
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn locked_registry_version_pins_the_request() {
+        let (_guard, _cache) = testkit::isolate_cache("modpin");
+        let server = start_widget_server();
+        let root = registry_app("pinned", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let mut lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        lock.write(&root).unwrap();
+        let entry = root.join("src").join("main.rnx");
+        ModuleGraph::build(&entry).unwrap();
+        let bodies = server.resolve_bodies();
+        assert!(bodies.len() >= 2);
+        let last = bodies.last().unwrap();
+        assert_eq!(testkit::requirement(last, "@acme/widget"), "1.2.0");
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 }

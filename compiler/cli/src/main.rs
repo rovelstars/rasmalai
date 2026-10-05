@@ -32,5 +32,6 @@ fn main() {
             }
         }
     };
+    cmd::fetch::install_registry_transport();
     cmd::dispatch(command, verbose, quiet, no_color);
 }
