@@ -275,15 +275,23 @@ async function migrateSchema(db: Client): Promise<void> {
 	}
 }
 
-// Publish auth: exact match against the configured org token. When no
-// token is configured (local dev / preview) only `preview-` tokens pass,
-// so production misconfiguration fails closed instead of open.
+let previewTokenWarned = false;
+
+// Publish auth: exact match against the configured org token. When PUBLISH_TOKEN
+// is unset this accepts any self-minted `preview-...` string, so mutation is
+// open to anyone who can reach the endpoint. That fail-open is deliberate for
+// local dev and is a hole in any deployment that forgets the var, which is why
+// the fallback warns instead of staying silent.
 export function checkPublishToken(
 	env: Record<string, string | undefined>,
 	provided: string
 ): boolean {
 	const configured = env['PUBLISH_TOKEN'];
 	if (configured) return provided === configured && provided.length > 0;
+	if (!previewTokenWarned) {
+		previewTokenWarned = true;
+		console.warn('PUBLISH_TOKEN is unset: any preview- token can publish. Set PUBLISH_TOKEN outside local dev.');
+	}
 	return provided.startsWith('preview-') && provided.length > 8;
 }
 
@@ -896,10 +904,7 @@ export async function deleteChunks(
 	return deleted;
 }
 
-// Purge pointer URLs from the Cloudflare edge cache after a mutation.
-// Posts to the purge-cache API when credentials exist, otherwise records
-// the would-purge URLs in audit_log. Never throws: a purge failure must
-// not fail the mutation that triggered it.
+// Never throws: a purge failure must not fail the mutation that triggered it.
 export interface PurgeResult {
 	ok: boolean;
 	verified: boolean;
@@ -927,7 +932,7 @@ export async function purgeUrls(
 				const data = (await res.json().catch(() => null)) as { success?: boolean } | null;
 				if (res.ok && data?.success === true) return { ok: true, verified: true };
 			} catch {
-				/* retry below; origin stays authoritative */
+				// retried on the next attempt; the origin stays authoritative
 			}
 		}
 		try {
@@ -940,7 +945,7 @@ export async function purgeUrls(
 				args: [options?.fullName ?? '', JSON.stringify({ urls, prefixes: options?.prefixes ?? [] }), Math.floor(Date.now() / 1000)]
 			});
 		} catch {
-			/* audit fallback is best-effort too */
+			// audit write is best-effort too
 		}
 		return { ok: false, verified: false };
 	}
