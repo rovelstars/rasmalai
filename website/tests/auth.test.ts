@@ -6,7 +6,8 @@ import {
 	verifyPassword,
 	readSessionCookie,
 	sessionCookie,
-	clearSessionCookie
+	clearSessionCookie,
+	requirePepper
 } from '../src/lib/server/auth.js';
 
 describe('auth', () => {
@@ -24,10 +25,19 @@ describe('auth', () => {
 	});
 
 	it('round-trips session cookies', () => {
-		const set = sessionCookie('abc', 100);
-		assert.match(set, /HttpOnly/);
-		assert.match(set, /SameSite=Lax/);
-		assert.equal(readSessionCookie(`other=1; ${set.split(';')[0]}`), 'abc');
-		assert.match(clearSessionCookie(), /Max-Age=0/);
+		const secure = sessionCookie('abc', 100, true);
+		assert.match(secure, /HttpOnly/);
+		assert.match(secure, /Secure/);
+		assert.match(secure, /SameSite=Lax/);
+		assert.equal(readSessionCookie(`other=1; ${secure.split(';')[0]}`), 'abc');
+		assert.match(clearSessionCookie(true), /Max-Age=0/);
+		assert.doesNotMatch(sessionCookie('abc', 100, false), /Secure/);
+	});
+
+	it('rejects bad salts closed and gates the pepper', async () => {
+		assert.equal(await verifyPassword('x', 'pepper', { hash: '00', salt: 'not hex!!', params: '{}' }), false);
+		assert.throws(() => requirePepper({}), /SESSION_PEPPER/);
+		assert.equal(requirePepper({ RNX_ALLOW_NO_PEPPER: '1' }), '');
+		assert.equal(requirePepper({ SESSION_PEPPER: 'p' }), 'p');
 	});
 });

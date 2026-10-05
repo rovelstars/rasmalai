@@ -20,6 +20,11 @@ export async function POST({ request, url, platform }) {
 		return err('bad-request', 'missing requirements map', 400);
 	}
 	const requirements = reqs as Record<string, string>;
+	for (const [name, range] of Object.entries(requirements)) {
+		if (typeof range !== 'string') {
+			return err('bad-request', `requirement for ${name} must be a version range string`, 400);
+		}
+	}
 	const have: HaveEntry[] = Array.isArray(body['have'])
 		? (body['have'] as unknown[]).flatMap((h) => {
 				if (h && typeof h === 'object') {
@@ -44,6 +49,6 @@ export async function POST({ request, url, platform }) {
 			return err('unsatisfiable', msg, 422);
 		}
 		if (msg.includes('invalid package name')) return err('bad-request', msg, 400);
-		return err('resolve-failed', msg, 500);
+		return err('resolve-failed', 'resolution failed', 500);
 	}
 }

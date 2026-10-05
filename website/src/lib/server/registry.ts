@@ -91,6 +91,21 @@ export function maxSatisfying(versions: string[], range: string): string | null 
 	return best ? best.raw : null;
 }
 
+export function selectLatestVersion(versions: Array<{ version: string; status: string }>): string | null {
+	const live: Semver[] = [];
+	for (const v of versions) {
+		if (v.status !== 'live') continue;
+		const s = parseSemver(v.version);
+		if (s) live.push(s);
+	}
+	if (live.length === 0) return null;
+	const stable = live.filter((s) => s.prerelease === '');
+	const pool = stable.length > 0 ? stable : live;
+	let best = pool[0];
+	for (const s of pool) if (compareSemver(s, best) > 0) best = s;
+	return best.raw;
+}
+
 export interface DepNode {
 	id: string;
 	deps: string[];

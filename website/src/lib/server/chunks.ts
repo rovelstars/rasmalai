@@ -73,13 +73,9 @@ export function splitTarFiles(tar: Uint8Array): Uint8Array[] {
 }
 
 export async function chunkTarball(tar: Uint8Array): Promise<ChunkUnit[]> {
-	const seen = new Set<string>();
 	const units: ChunkUnit[] = [];
 	const push = async (bytes: Uint8Array) => {
-		const hash = await sha256Hex(bytes);
-		if (seen.has(hash)) return;
-		seen.add(hash);
-		units.push({ hash, size: bytes.length, bytes });
+		units.push({ hash: await sha256Hex(bytes), size: bytes.length, bytes });
 	};
 	const files = splitTarFiles(tar);
 	if (files.length === 0) {

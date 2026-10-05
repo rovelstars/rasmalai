@@ -16,7 +16,7 @@ function tarEntry(name: string, data: Uint8Array): Uint8Array {
 }
 
 describe('chunk store', () => {
-	it('splits tar files then dedups identical units', async () => {
+	it('keeps ordered units with repeats for identical files', async () => {
 		const a = new TextEncoder().encode('hello world');
 		const tar = new Uint8Array([
 			...tarEntry('a.txt', a),
@@ -25,8 +25,23 @@ describe('chunk store', () => {
 		]);
 		assert.equal(splitTarFiles(tar).length, 2);
 		const units = await chunkTarball(tar);
-		assert.equal(units.length, 1);
+		assert.equal(units.length, 2);
 		assert.equal(units[0].hash, await sha256Hex(a));
+		assert.equal(units[1].hash, units[0].hash);
+	});
+
+	it('round-trips tar files through chunks to bytes', async () => {
+		const a = new TextEncoder().encode('hello world');
+		const big = new Uint8Array(200 * 1024);
+		for (let off = 0; off < big.length; off += 65536) {
+			crypto.getRandomValues(big.subarray(off, Math.min(off + 65536, big.length)));
+		}
+		const tar = new Uint8Array([...tarEntry('a.txt', a), ...tarEntry('big.bin', big), ...new Uint8Array(1024)]);
+		const files = splitTarFiles(tar);
+		const units = await chunkTarball(tar);
+		const joined = Buffer.concat(units.map((u) => Buffer.from(u.bytes)));
+		assert.equal(joined.length, files.reduce((n, f) => n + f.length, 0));
+		assert.deepEqual(joined, Buffer.concat(files.map((f) => Buffer.from(f))));
 	});
 
 	it('cdc-splits large files and keeps small ones whole', async () => {
