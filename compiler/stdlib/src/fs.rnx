@@ -54,6 +54,12 @@ enum CopyMode {
 * Create one directory, failing when the parent is missing.
 * @param path directory to create.
 * @returns Ok(true) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.removeAll("doc-demo-one");
+* print(fs.mkdir("doc-demo-one").isOk());
+* print(fs.remove("doc-demo-one").unwrapOr(false));
 */
 fn mkdir(path: String): Result<Bool, String> {
     let e = __rnx_fs_mkdir_err(path, 0);
@@ -67,6 +73,11 @@ fn mkdir(path: String): Result<Bool, String> {
 * Create a directory and every missing parent.
 * @param path directory to create.
 * @returns Ok(true) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.mkdirAll("doc-demo/a/b").isOk());
+* print(fs.removeAll("doc-demo").unwrapOr(false));
 */
 fn mkdirAll(path: String): Result<Bool, String> {
     let e = __rnx_fs_mkdir_err(path, 1);
@@ -81,6 +92,12 @@ fn mkdirAll(path: String): Result<Bool, String> {
 * @param path file or empty directory to remove.
 * @returns Ok(true) when something was removed, Ok(false) when the
 * path was already missing, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-gone.txt", "bye", .Overwrite);
+* print(fs.remove("doc-demo-gone.txt").unwrapOr(false));
+* print(fs.remove("doc-demo-gone.txt").unwrapOr(false));
 */
 fn remove(path: String): Result<Bool, String> {
     let ok = __rnx_fs_remove(path);
@@ -98,6 +115,12 @@ fn remove(path: String): Result<Bool, String> {
 * @param path file or directory to remove with all its content.
 * @returns Ok(true) when something was removed, Ok(false) when the
 * path was already missing, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.mkdirAll("doc-demo-tree/a").isOk());
+* print(fs.removeAll("doc-demo-tree").unwrapOr(false));
+* print(fs.exists("doc-demo-tree"));
 */
 fn removeAll(path: String): Result<Bool, String> {
     let ok = __rnx_fs_remove_all(path);
@@ -117,6 +140,12 @@ fn removeAll(path: String): Result<Bool, String> {
 * @param mode `.Overwrite` replaces the destination, `.SkipExisting`
 * keeps it and reports success without copying.
 * @returns Ok(true) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-src.txt", "hi", .Overwrite);
+* print(fs.copy("doc-demo-src.txt", "doc-demo-dst.txt", .Overwrite).isOk());
+* print(fs.readText("doc-demo-dst.txt").unwrapOr(""));
 */
 fn copy(src: String, dst: String, mode: CopyMode): Result<Bool, String> {
     let m = 0;
@@ -135,6 +164,12 @@ fn copy(src: String, dst: String, mode: CopyMode): Result<Bool, String> {
 * @param from source path.
 * @param to destination path.
 * @returns Ok(true) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-mv-src.txt", "hi", .Overwrite);
+* print(fs.move("doc-demo-mv-src.txt", "doc-demo-mv-dst.txt").isOk());
+* print(fs.exists("doc-demo-mv-src.txt"));
 */
 fn move(src: String, dst: String): Result<Bool, String> {
     let e = __rnx_fs_move_err(src, dst);
@@ -149,6 +184,12 @@ fn move(src: String, dst: String): Result<Bool, String> {
 * @param from source path.
 * @param to destination path.
 * @returns Ok(true) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-rn-src.txt", "hi", .Overwrite);
+* print(fs.rename("doc-demo-rn-src.txt", "doc-demo-rn-dst.txt").isOk());
+* print(fs.exists("doc-demo-rn-dst.txt"));
 */
 fn rename(src: String, dst: String): Result<Bool, String> {
     let e = __rnx_fs_rename_err(src, dst);
@@ -163,6 +204,12 @@ fn rename(src: String, dst: String): Result<Bool, String> {
 * @param path file to resize.
 * @param len new length in bytes, never negative.
 * @returns Ok(true) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-trunc.txt", "hello world", .Overwrite);
+* print(fs.truncate("doc-demo-trunc.txt", 5).isOk());
+* print(fs.readText("doc-demo-trunc.txt").unwrapOr(""));
 */
 fn truncate(path: String, len: Int): Result<Bool, String> {
     let e = __rnx_fs_truncate_err(path, len);
@@ -177,6 +224,11 @@ fn truncate(path: String, len: Int): Result<Bool, String> {
 * @param path file to change.
 * @param mode permission bits.
 * @returns Ok(true) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-mode.txt", "hi", .Overwrite);
+* print(fs.chmod("doc-demo-mode.txt", 420).isOk());
 */
 fn chmod(path: String, mode: Int): Result<Bool, String> {
     let e = __rnx_fs_chmod_err(path, mode);
@@ -191,6 +243,12 @@ fn chmod(path: String, mode: Int): Result<Bool, String> {
 * @param target stored path the link points at.
 * @param link symlink to create.
 * @returns Ok(true) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-real.txt", "data", .Overwrite);
+* print(fs.symlink("doc-demo-real.txt", "doc-demo-link.txt").isOk());
+* print(fs.readLink("doc-demo-link.txt").unwrapOr(""));
 */
 fn symlink(target: String, link: String): Result<Bool, String> {
     let e = __rnx_fs_symlink_err(target, link);
@@ -204,6 +262,11 @@ fn symlink(target: String, link: String): Result<Bool, String> {
 * Flush file content to durable storage.
 * @param path file to sync.
 * @returns Ok(true) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-sync.txt", "hi", .Overwrite);
+* print(fs.fsync("doc-demo-sync.txt").isOk());
 */
 fn fsync(path: String): Result<Bool, String> {
     let e = __rnx_fs_fsync_err(path);
@@ -217,6 +280,11 @@ fn fsync(path: String): Result<Bool, String> {
 * Read a whole file as text.
 * @param path file to read.
 * @returns Ok(content) on success, Err(message) when missing.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-read.txt", "hello", .Overwrite);
+* print(fs.readText("doc-demo-read.txt").unwrapOr(""));
 */
 fn readText(path: String): Result<String, String> {
     let e = __rnx_fs_read_text_err(path);
@@ -234,6 +302,11 @@ fn readText(path: String): Result<String, String> {
 * keeps existing content past the write, `.Overwrite` truncates,
 * `.Append` writes at the end.
 * @returns Ok(bytes written) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.writeText("doc-demo-write.txt", "hello", .Overwrite).unwrapOr(0));
+* print(fs.readText("doc-demo-write.txt").unwrapOr(""));
 */
 fn writeText(path: String, text: String, mode: WriteMode): Result<Int, String> {
     let m = 2;
@@ -261,6 +334,11 @@ fn writeText(path: String, text: String, mode: WriteMode): Result<Int, String> {
 * Read a whole file as bytes.
 * @param path file to read.
 * @returns Ok(buffer) on success, Err(message) when missing.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-bytes.bin", "abc", .Overwrite);
+* print(fs.readBytes("doc-demo-bytes.bin").unwrap().length());
 */
 fn readBytes(path: String): Result<ByteBuffer, String> {
     let e = __rnx_fs_read_bytes_err(path);
@@ -278,6 +356,12 @@ fn readBytes(path: String): Result<ByteBuffer, String> {
 * keeps existing content past the write, `.Overwrite` truncates,
 * `.Append` writes at the end.
 * @returns Ok(bytes written) on success, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+* import { ByteBuffer } from "@std/bytes";
+*
+* let buf = ByteBuffer.fromArray([1, 2, 3]);
+* print(fs.writeBytes("doc-demo-out.bin", buf, .Overwrite).unwrapOr(0));
 */
 fn writeBytes(path: String, buf: ByteBuffer, mode: WriteMode): Result<Int, String> {
     let m = 2;
@@ -343,6 +427,14 @@ class Mmap {
     * inside `unsafe` blocks. The map must outlive every pointer made
     * from it, and the address must be forgotten before `close()`.
     * @returns address of byte 0, or 0 when the map is closed.
+    * @example
+    * import fs, { Mmap } from "@std/fs";
+    *
+    * let m: Mmap = fs.mmapAnon(8).unwrap();
+    * unsafe {
+    *     print(m.address() != 0);
+    * }
+    * m.close();
     */
     unsafe fn address(): Int {
         if ! this.isOpen {
@@ -354,6 +446,12 @@ class Mmap {
     /**
     * Mapped length in bytes, as fixed when the map was built.
     * @returns byte count covered by the map.
+    * @example
+    * import fs from "@std/fs";
+    *
+    * let m = fs.mmapAnon(4096).unwrap();
+    * print(m.len() == 4096);
+    * m.close();
     */
     len(): Int {
         return this.length;
@@ -363,6 +461,13 @@ class Mmap {
     * Write dirty pages back to the file. No-op when closed, and a
     * no-op for read-only and anonymous maps, which have nothing to
     * write back.
+    * @example
+    * import fs from "@std/fs";
+    *
+    * let m = fs.mmapAnon(4096).unwrap();
+    * m.flush();
+    * print(m.len());
+    * m.close();
     */
     flush() {
         if this.isOpen {
@@ -373,6 +478,12 @@ class Mmap {
     /**
     * Unmap the region and mark isOpen false. Closing twice is safe.
     * Every address from `address()` must be forgotten first.
+    * @example
+    * import fs from "@std/fs";
+    *
+    * let m = fs.mmapAnon(4096).unwrap();
+    * m.close();
+    * print(m.isOpen);
     */
     close() {
         if this.isOpen {
@@ -397,6 +508,13 @@ class Mmap {
 * @param path file to map.
 * @param mode `.Read` for a read-only view, `.ReadWrite` for writes.
 * @returns Ok(map) on success, Err(message) otherwise.
+* @example
+* import fs, { Mmap } from "@std/fs";
+*
+* fs.writeText("doc-demo-map.txt", "hello", .Overwrite);
+* unsafe {
+*     print(fs.mmap("doc-demo-map.txt", .Read).unwrap().len());
+* }
 */
 unsafe fn mmap(path: String, mode: OpenMode): Result<Mmap, String> {
     let m = 3;
@@ -418,6 +536,12 @@ unsafe fn mmap(path: String, mode: OpenMode): Result<Mmap, String> {
 * Map anonymous zeroed pages, backed by nothing on disk.
 * @param len byte count to map, must be positive.
 * @returns Ok(map) covering len zeroed bytes, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* let m = fs.mmapAnon(4096).unwrap();
+* print(m.len());
+* m.close();
 */
 fn mmapAnon(len: Int): Result<Mmap, String> {
     let h = __rnx_fs_mmap_anon(len);
@@ -464,6 +588,12 @@ class FileStat {
 * Metadata for a path.
 * @param path file or directory to inspect.
 * @returns Ok(stat) on success, Err(message) when the path is missing.
+* @example
+* import fs, { FileStat } from "@std/fs";
+*
+* fs.writeText("doc-demo-stat.txt", "hello", .Overwrite);
+* let st: FileStat = fs.stat("doc-demo-stat.txt").unwrap();
+* print(st.size);
 */
 fn stat(path: String): Result<FileStat, String> {
     let e = __rnx_fs_stat_err(path);
@@ -478,6 +608,12 @@ fn stat(path: String): Result<FileStat, String> {
 * True when a path exists, false for anything missing.
 * @param path path to probe.
 * @returns true when the path exists.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-probe.txt", "hi", .Overwrite);
+* print(fs.exists("doc-demo-probe.txt"));
+* print(fs.exists("doc-demo-missing.txt"));
 */
 fn exists(path: String): Bool {
     return __rnx_fs_exists(path);
@@ -487,6 +623,12 @@ fn exists(path: String): Bool {
 * True when a path is a regular file.
 * @param path path to probe.
 * @returns true for a regular file, false for missing paths and links.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-probe.txt", "hi", .Overwrite);
+* print(fs.isFile("doc-demo-probe.txt"));
+* print(fs.isFile("doc-demo-missing.txt"));
 */
 fn isFile(path: String): Bool {
     return __rnx_fs_is_file(path);
@@ -496,6 +638,12 @@ fn isFile(path: String): Bool {
 * True when a path is a directory.
 * @param path path to probe.
 * @returns true for a directory, false otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.mkdirAll("doc-demo-dir").isOk());
+* print(fs.isDir("doc-demo-dir"));
+* print(fs.isDir("doc-demo-missing"));
 */
 fn isDir(path: String): Bool {
     return __rnx_fs_is_dir(path);
@@ -505,6 +653,13 @@ fn isDir(path: String): Bool {
 * Entry names inside a directory, sorted for deterministic builds.
 * @param path directory to list.
 * @returns Ok(names) sorted lexicographically, Err(message) when unreadable.
+* @example
+* import fs from "@std/fs";
+*
+* fs.mkdirAll("doc-demo-ls");
+* fs.writeText("doc-demo-ls/a.txt", "a", .Overwrite);
+* let names: Array<String> = fs.readDir("doc-demo-ls").unwrap();
+* print(names.join(","));
 */
 fn readDir(path: String): Result<Array<String>, String> {
     let e = __rnx_fs_read_dir_err(path);
@@ -520,6 +675,12 @@ fn readDir(path: String): Result<Array<String>, String> {
 * depth of directories. A pattern with no match gives an empty array.
 * @param pattern glob such as `src/*.rnx`.
 * @returns Ok(paths) sorted lexicographically, Err(message) on misuse.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-g1.txt", "a", .Overwrite);
+* let hits: Array<String> = fs.glob("doc-demo-g*.txt").unwrap();
+* print(hits.length() > 0);
 */
 fn glob(pattern: String): Result<Array<String>, String> {
     let e = __rnx_fs_glob_err(pattern);
@@ -533,6 +694,12 @@ fn glob(pattern: String): Result<Array<String>, String> {
 * Target stored in a symlink.
 * @param path symlink to read.
 * @returns Ok(target) with the stored path, Err(message) otherwise.
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-rl-real.txt", "data", .Overwrite);
+* fs.symlink("doc-demo-rl-real.txt", "doc-demo-rl-link.txt");
+* print(fs.readLink("doc-demo-rl-link.txt").unwrapOr(""));
 */
 fn readLink(path: String): Result<String, String> {
     let e = __rnx_fs_read_link_err(path);
@@ -549,6 +716,11 @@ fn readLink(path: String): Result<String, String> {
 * stay clear of hand-picked `@std/sync` ids.
 * @param path file whose lock slot to compute.
 * @returns stable non-negative registry id for the path.
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.fileLockId("a.txt") == fs.fileLockId("a.txt"));
+* print(fs.fileLockId("a.txt") >= 700000000);
 */
 fn fileLockId(path: String): Int {
     let h = 0;
@@ -586,6 +758,11 @@ class File {
     * @param path file to open.
     * @param mode `.Read`, `.Write`, `.Append`, or `.ReadWrite`.
     * @returns handle whose isOpen is false when the OS refused the open.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let missing = File.open("doc-demo-missing.txt", .Read);
+    * print(missing.isOpen);
     */
     static open(path: String, mode: OpenMode): File {
         let modeInt = 0;
@@ -612,6 +789,12 @@ class File {
     * @param mode `.CreateNew` fails when the file exists, `.Create` keeps
     * existing content, `.Overwrite` truncates, `.Append` writes at the end.
     * @returns handle whose isOpen is false when the OS refused the create.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let f = File.create("doc-demo-new.txt", .Overwrite);
+    * print(f.isOpen);
+    * f.close();
     */
     static create(path: String, mode: WriteMode): File {
         let modeInt = 1;
@@ -642,6 +825,11 @@ class File {
     * The handle never owns the descriptor: `close()` detaches from it
     * while descriptors 0, 1, and 2 stay usable, and a second `close()`
     * is a no-op. No path guard applies since descriptors are not paths.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let out = File.fromHandle(1, "stdout", .Write);
+    * print(out.isOpen);
     */
     static fromHandle(fd: Int, label: String, mode: OpenMode): File {
         let readable = 0;
@@ -673,6 +861,13 @@ class File {
     * Read the whole remaining content as text, from the cursor to the end.
     * @returns Ok(content), Err(message) when the handle is closed or
     * not open for reading (a write-only handle answers Err, never traps).
+    * @example
+    * import fs, { File } from "@std/fs";
+    *
+    * fs.writeText("doc-demo-fread.txt", "hello", .Overwrite);
+    * let f = File.open("doc-demo-fread.txt", .Read);
+    * print(f.readText().unwrapOr(""));
+    * f.close();
     */
     readText(): Result<String, String> {
         if ! this.isOpen {
@@ -689,6 +884,12 @@ class File {
     * Write text at the cursor.
     * @param text content to write.
     * @returns Ok(bytes written), Err(message) when the handle is closed.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let f = File.create("doc-demo-fwrite.txt", .Overwrite);
+    * print(f.writeText("0123456789").unwrapOr(0));
+    * f.close();
     */
     writeText(text: String): Result<Int, String> {
         if ! this.isOpen {
@@ -707,6 +908,15 @@ class File {
     * @param offset first buffer byte to fill, defaults to 0.
     * @param len bytes to read, defaults to the rest of the buffer (-1).
     * @returns Ok(bytes read, 0 on EOF), Err(message) when closed.
+    * @example
+    * import fs, { File } from "@std/fs";
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * fs.writeText("doc-demo-fbytes.bin", "abc", .Overwrite);
+    * let f = File.open("doc-demo-fbytes.bin", .Read);
+    * let buf = ByteBuffer.allocate(3);
+    * print(f.readBytes(buf).unwrapOr(0));
+    * f.close();
     */
     readBytes(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Result<Int, String> {
         if ! this.isOpen {
@@ -725,6 +935,13 @@ class File {
     * @param offset first buffer byte to write, defaults to 0.
     * @param len bytes to write, defaults to the rest of the buffer (-1).
     * @returns Ok(bytes written), Err(message) when the handle is closed.
+    * @example
+    * import { File } from "@std/fs";
+    * import { ByteBuffer } from "@std/bytes";
+    *
+    * let f = File.create("doc-demo-fwb.bin", .Overwrite);
+    * print(f.writeBytes(ByteBuffer.fromArray([1, 2, 3])).unwrapOr(0));
+    * f.close();
     */
     writeBytes(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Result<Int, String> {
         if ! this.isOpen {
@@ -741,6 +958,14 @@ class File {
     * Move the cursor to an absolute byte position.
     * @param pos byte offset from the start of the file, never negative.
     * @returns Ok(pos) after repositioning, Err(message) otherwise.
+    * @example
+    * import fs, { File } from "@std/fs";
+    *
+    * fs.writeText("doc-demo-seek.txt", "0123456789", .Overwrite);
+    * let f = File.open("doc-demo-seek.txt", .Read);
+    * print(f.seek(4).unwrapOr(0));
+    * print(f.tell());
+    * f.close();
     */
     seek(pos: Int): Result<Int, String> {
         if ! this.isOpen {
@@ -758,6 +983,13 @@ class File {
     /**
     * Current cursor position in bytes, or -1 when the handle is closed.
     * @returns byte offset from the start of the file.
+    * @example
+    * import fs, { File } from "@std/fs";
+    *
+    * fs.writeText("doc-demo-tell.txt", "0123456789", .Overwrite);
+    * let f = File.open("doc-demo-tell.txt", .Read);
+    * print(f.tell());
+    * f.close();
     */
     tell(): Int {
         if ! this.isOpen {
@@ -769,6 +1001,13 @@ class File {
     /**
     * File length in bytes, flushed before measuring.
     * @returns Ok(length), Err(message) when closed or stat fails.
+    * @example
+    * import fs, { File } from "@std/fs";
+    *
+    * fs.writeText("doc-demo-flen.txt", "0123456789", .Overwrite);
+    * let f = File.open("doc-demo-flen.txt", .Read);
+    * print(f.len().unwrapOr(0));
+    * f.close();
     */
     len(): Result<Int, String> {
         if ! this.isOpen {
@@ -785,6 +1024,13 @@ class File {
 
     /**
     * Flush buffered writes to the OS. No-op when closed.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let f = File.create("doc-demo-flush.txt", .Overwrite);
+    * f.writeText("hi");
+    * f.flush();
+    * f.close();
     */
     flush() {
         if this.isOpen {
@@ -795,6 +1041,13 @@ class File {
     /**
     * Flush buffered writes and force the OS to durable storage.
     * @returns Ok(true) once durable, Err(message) otherwise.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let f = File.create("doc-demo-durable.txt", .Overwrite);
+    * f.writeText("hi");
+    * print(f.sync().isOk());
+    * f.close();
     */
     sync(): Result<Bool, String> {
         if ! this.isOpen {
@@ -812,6 +1065,13 @@ class File {
     * Resize the file, padding with zeros when growing.
     * @param n new length in bytes, never negative.
     * @returns Ok(true) after resizing, Err(message) otherwise.
+    * @example
+    * import fs, { File } from "@std/fs";
+    *
+    * fs.writeText("doc-demo-ftrunc.txt", "hello world", .Overwrite);
+    * let f = File.open("doc-demo-ftrunc.txt", .ReadWrite);
+    * print(f.truncate(5).isOk());
+    * f.close();
     */
     truncate(n: Int): Result<Bool, String> {
         if ! this.isOpen {
@@ -831,6 +1091,13 @@ class File {
     * it is not reentrant, so the holding thread must not lock twice.
     * Ids hash the path into a shared range, so unrelated paths can
     * rarely share an id and over-serialize; never rely on it for safety.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let f = File.create("doc-demo-locked.txt", .Overwrite);
+    * f.lockSync();
+    * f.unlockSync();
+    * f.close();
     */
     lockSync() {
         Mutex.byId(fileLockId(this.path)).lock();
@@ -840,6 +1107,13 @@ class File {
     * Take the advisory lock for this path only when it is free.
     * @returns true when this call took the lock, false when another
     * handle holds it. Unlock only when this returns true.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let f = File.create("doc-demo-trylock.txt", .Overwrite);
+    * print(f.tryLockSync());
+    * f.unlockSync();
+    * f.close();
     */
     tryLockSync(): Bool {
         return Mutex.byId(fileLockId(this.path)).tryLock();
@@ -847,6 +1121,15 @@ class File {
 
     /**
     * Release the advisory lock taken by `lockSync` or `tryLockSync`.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let f = File.create("doc-demo-unlock.txt", .Overwrite);
+    * f.lockSync();
+    * f.unlockSync();
+    * print(f.tryLockSync());
+    * f.unlockSync();
+    * f.close();
     */
     unlockSync() {
         Mutex.byId(fileLockId(this.path)).unlock();
@@ -854,6 +1137,12 @@ class File {
 
     /**
     * Release the handle and mark isOpen false. Closing twice is safe.
+    * @example
+    * import { File } from "@std/fs";
+    *
+    * let f = File.create("doc-demo-close.txt", .Overwrite);
+    * f.close();
+    * print(f.isOpen);
     */
     close() {
         if this.isOpen {
@@ -873,6 +1162,11 @@ class Path {
     * @param a parent segment, may be empty.
     * @param b child segment, may be empty.
     * @returns a + "/" + b, or whichever side is non-empty.
+    * @example
+    * import { Path } from "@std/fs";
+    *
+    * print(Path.join("doc-demo", "a.txt"));
+    * print(Path.join("", "a.txt"));
     */
     static join(a: String, b: String): String {
         if a == "" {
@@ -889,6 +1183,11 @@ class Path {
     * @param p path to inspect.
     * @returns parent directory, "/" for a top-level absolute path, "."
     * when the path holds no separator.
+    * @example
+    * import { Path } from "@std/fs";
+    *
+    * print(Path.dir("a/b.txt"));
+    * print(Path.dir("solo.txt"));
     */
     static dir(p: String): String {
         let n = p.length();
@@ -917,6 +1216,11 @@ class Path {
     * Final segment of a path, with trailing slashes ignored.
     * @param p path to inspect.
     * @returns file or directory name, "/" for the root, "" for empty input.
+    * @example
+    * import { Path } from "@std/fs";
+    *
+    * print(Path.base("a/b.txt"));
+    * print(Path.base("/"));
     */
     static base(p: String): String {
         let end = p.length();
@@ -945,6 +1249,11 @@ class Path {
     * @param p path to inspect.
     * @returns suffix from the last dot in the final segment (".txt"),
     * or "" when the name has no dot past its first character.
+    * @example
+    * import { Path } from "@std/fs";
+    *
+    * print(Path.ext("a/b.txt"));
+    * print(Path.ext("a/README"));
     */
     static ext(p: String): String {
         let end = p.length();
@@ -977,6 +1286,11 @@ class Path {
     * True for absolute paths starting with "/".
     * @param p path to inspect.
     * @returns true when p names from the filesystem root.
+    * @example
+    * import { Path } from "@std/fs";
+    *
+    * print(Path.isAbs("/tmp"));
+    * print(Path.isAbs("rel"));
     */
     static isAbs(p: String): Bool {
         if p.length() == 0 {
@@ -989,6 +1303,11 @@ class Path {
     * True when a path exists on the filesystem.
     * @param p path to probe.
     * @returns true for any existing file, directory, or live link.
+    * @example
+    * import { Path } from "@std/fs";
+    *
+    * print(Path.exists("."));
+    * print(Path.exists("doc-demo-missing.txt"));
     */
     static exists(p: String): Bool {
         return __rnx_fs_exists(p);
@@ -998,6 +1317,10 @@ class Path {
     * True when a path is a regular file.
     * @param p path to probe.
     * @returns true for a regular file, false for missing paths and links.
+    * @example
+    * import { Path } from "@std/fs";
+    *
+    * print(Path.isFile("doc-demo-missing.txt"));
     */
     static isFile(p: String): Bool {
         return __rnx_fs_is_file(p);
@@ -1007,6 +1330,11 @@ class Path {
     * True when a path is a directory.
     * @param p path to probe.
     * @returns true for a directory, false otherwise.
+    * @example
+    * import { Path } from "@std/fs";
+    *
+    * print(Path.isDir("."));
+    * print(Path.isDir("doc-demo-missing.txt"));
     */
     static isDir(p: String): Bool {
         return __rnx_fs_is_dir(p);
@@ -1163,6 +1491,10 @@ class FsMoveReq {
 * Worker count the fs pool was sized with, 0 when never sized.
 * Internal: `fsWorkers` fills it on first use, `setWorkers` sets it.
 * @returns live pool size, or 0 before the first async call.
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.fsPoolSize() >= 0);
 */
 fn fsPoolSize(): Int {
     return AtomicInt.byId(710000002).get();
@@ -1172,6 +1504,11 @@ fn fsPoolSize(): Int {
 * Worker count for the next pool ensure. The first call measures the
 * machine with `__rnx_os_cpu_count` and clamps into 1..8.
 * @returns worker count between 1 and 8.
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.fsWorkers() >= 1);
+* print(fs.fsWorkers() <= 8);
 */
 fn fsWorkers(): Int {
     let n = AtomicInt.byId(710000002).get();
@@ -1196,6 +1533,10 @@ fn fsWorkers(): Int {
 * queued never runs and its promise never settles.
 * @param n desired worker count, clamped into 1..8.
 * @returns the clamped count the pool was sized with.
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.setWorkers(2));
 */
 fn setWorkers(n: Int): Int {
     let c = n;
@@ -1214,6 +1555,10 @@ fn setWorkers(n: Int): Int {
 * Map a stored write mode back onto `WriteMode`.
 * @param m 0 CreateNew, 1 Create, 2 Overwrite, anything else Append.
 * @returns the matching mode.
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.fsWriteModeOf(2));
 */
 fn fsWriteModeOf(m: Int): WriteMode {
     if m == 0 {
@@ -1232,6 +1577,11 @@ fn fsWriteModeOf(m: Int): WriteMode {
 * Read a whole file as text on the fs pool.
 * @param path file to read.
 * @returns pending promise settling with Ok(content) or Err(message).
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-async.txt", "hi", .Overwrite);
+* print(fs.readTextAsync("doc-demo-async.txt").wait().unwrapOr(""));
 */
 fn readTextAsync(path: String): Promise<Result<String, String>> {
     let wr = Promise.withResolvers<Result<String, String>>();
@@ -1257,6 +1607,11 @@ fn readTextAsync(path: String): Promise<Result<String, String>> {
 * Read a whole file as bytes on the fs pool.
 * @param path file to read.
 * @returns pending promise settling with Ok(buffer) or Err(message).
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-async.bin", "abc", .Overwrite);
+* print(fs.readBytesAsync("doc-demo-async.bin").wait().unwrap().length());
 */
 fn readBytesAsync(path: String): Promise<Result<ByteBuffer, String>> {
     let wr = Promise.withResolvers<Result<ByteBuffer, String>>();
@@ -1286,6 +1641,10 @@ fn readBytesAsync(path: String): Promise<Result<ByteBuffer, String>> {
 * existing content past the write, `.Overwrite` truncates,
 * `.Append` writes at the end.
 * @returns pending promise settling with Ok(bytes written) or Err(message).
+* @example
+* import fs from "@std/fs";
+*
+* print(fs.writeTextAsync("doc-demo-async-w.txt", "wval", .Overwrite).wait().unwrapOr(0));
 */
 fn writeTextAsync(path: String, text: String, mode: WriteMode): Promise<Result<Int, String>> {
     let m = 2;
@@ -1327,6 +1686,12 @@ fn writeTextAsync(path: String, text: String, mode: WriteMode): Promise<Result<I
 * existing content past the write, `.Overwrite` truncates,
 * `.Append` writes at the end.
 * @returns pending promise settling with Ok(bytes written) or Err(message).
+* @example
+* import fs from "@std/fs";
+* import { ByteBuffer } from "@std/bytes";
+*
+* let buf = ByteBuffer.fromArray([1, 2, 3]);
+* print(fs.writeBytesAsync("doc-demo-async-wb.bin", buf, .Overwrite).wait().unwrapOr(0));
 */
 fn writeBytesAsync(path: String, buf: ByteBuffer, mode: WriteMode): Promise<Result<Int, String>> {
     let m = 2;
@@ -1370,6 +1735,12 @@ fn writeBytesAsync(path: String, buf: ByteBuffer, mode: WriteMode): Promise<Resu
 * Metadata for a path on the fs pool.
 * @param path file or directory to inspect.
 * @returns pending promise settling with Ok(stat) or Err(message).
+* @example
+* import fs, { FileStat } from "@std/fs";
+*
+* fs.writeText("doc-demo-astat.txt", "hello", .Overwrite);
+* let st: FileStat = fs.statAsync("doc-demo-astat.txt").wait().unwrap();
+* print(st.size);
 */
 fn statAsync(path: String): Promise<Result<FileStat, String>> {
     let wr = Promise.withResolvers<Result<FileStat, String>>();
@@ -1396,6 +1767,11 @@ fn statAsync(path: String): Promise<Result<FileStat, String>> {
 * deterministic builds.
 * @param path directory to list.
 * @returns pending promise settling with Ok(names) or Err(message).
+* @example
+* import fs from "@std/fs";
+*
+* let names: Array<String> = fs.readDirAsync(".").wait().unwrap();
+* print(names.length());
 */
 fn readDirAsync(path: String): Promise<Result<Array<String>, String>> {
     let wr = Promise.withResolvers<Result<Array<String>, String>>();
@@ -1423,6 +1799,11 @@ fn readDirAsync(path: String): Promise<Result<Array<String>, String>> {
 * depth of directories.
 * @param pattern glob such as `src/*.rnx`.
 * @returns pending promise settling with Ok(paths) or Err(message).
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-ag1.txt", "a", .Overwrite);
+* print(fs.globAsync("doc-demo-ag*.txt").wait().isOk());
 */
 fn globAsync(pattern: String): Promise<Result<Array<String>, String>> {
     let wr = Promise.withResolvers<Result<Array<String>, String>>();
@@ -1451,6 +1832,11 @@ fn globAsync(pattern: String): Promise<Result<Array<String>, String>> {
 * @param mode `.Overwrite` replaces the destination, `.SkipExisting`
 * keeps it and reports success without copying.
 * @returns pending promise settling with Ok(true) or Err(message).
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-ac-src.txt", "hi", .Overwrite);
+* print(fs.copyAsync("doc-demo-ac-src.txt", "doc-demo-ac-dst.txt", .Overwrite).wait().isOk());
 */
 fn copyAsync(src: String, dst: String, mode: CopyMode): Promise<Result<Bool, String>> {
     let m = 0;
@@ -1488,6 +1874,11 @@ fn copyAsync(src: String, dst: String, mode: CopyMode): Promise<Result<Bool, Str
 * @param from source path.
 * @param to destination path.
 * @returns pending promise settling with Ok(true) or Err(message).
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-am-src.txt", "hi", .Overwrite);
+* print(fs.moveAsync("doc-demo-am-src.txt", "doc-demo-am-dst.txt").wait().isOk());
 */
 fn moveAsync(src: String, dst: String): Promise<Result<Bool, String>> {
     let wr = Promise.withResolvers<Result<Bool, String>>();
@@ -1515,6 +1906,11 @@ fn moveAsync(src: String, dst: String): Promise<Result<Bool, String>> {
 * @param from source path.
 * @param to destination path.
 * @returns pending promise settling with Ok(true) or Err(message).
+* @example
+* import fs from "@std/fs";
+*
+* fs.writeText("doc-demo-an-src.txt", "hi", .Overwrite);
+* print(fs.renameAsync("doc-demo-an-src.txt", "doc-demo-an-dst.txt").wait().isOk());
 */
 fn renameAsync(src: String, dst: String): Promise<Result<Bool, String>> {
     let wr = Promise.withResolvers<Result<Bool, String>>();

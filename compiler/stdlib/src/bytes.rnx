@@ -142,6 +142,10 @@ class ByteBuffer {
     * always equals `capacity()`.
     *
     * @returns number of bytes in the buffer.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  print(ByteBuffer.allocate(4).length());
     */
     fn length(): Int {
         return __rnx_bytes_len(this.handle);
@@ -154,6 +158,10 @@ class ByteBuffer {
     * to check a raw pointer from `address()` against.
     *
     * @returns number of allocated bytes.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  print(ByteBuffer.allocate(4).capacity());
     */
     fn capacity(): Int {
         return __rnx_bytes_cap(this.handle);
@@ -264,6 +272,10 @@ class ByteBuffer {
     * @param offset byte to read; outside 0..length() stops the program
     * with `byte buffer out of bounds`.
     * @returns the byte widened to a 64-bit `Int`, 0 through 255.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  print(ByteBuffer.fromArray([10, 200]).readUInt8(1));
     */
     fn readUInt8(offset: Int): Int {
         return __rnx_bytes_read_u8(this.handle, offset);
@@ -301,6 +313,12 @@ class ByteBuffer {
     *
     * Identical to `writeInt8`. Pick the reader that matches how the byte
     * should be interpreted.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(1);
+    *  b.writeUInt8(0, 300);
+    *  print(b.readUInt8(0));
     */
     fn writeUInt8(offset: Int, val: Int): Void {
         __rnx_bytes_write_u8(this.handle, offset, val);
@@ -314,6 +332,12 @@ class ByteBuffer {
     * `byte buffer out of bounds`.
     * @returns the two bytes read low byte first, widened to a 64-bit
     * `Int` and sign-extended from 16 bits.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(2);
+    *  b.writeInt16LE(0, 0x1234);
+    *  print(b.readInt16LE(0));
     */
     fn readInt16LE(offset: Int): Int {
         return __rnx_bytes_read_i16le(this.handle, offset);
@@ -327,6 +351,12 @@ class ByteBuffer {
     * `byte buffer out of bounds`.
     * @returns the two bytes read high byte first, widened to a 64-bit
     * `Int` and sign-extended from 16 bits.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(2);
+    *  b.writeInt16BE(0, 0x1234);
+    *  print(b.readInt16BE(0));
     */
     fn readInt16BE(offset: Int): Int {
         return __rnx_bytes_read_i16be(this.handle, offset);
@@ -340,6 +370,12 @@ class ByteBuffer {
     * `byte buffer out of bounds`.
     * @returns the two bytes read low byte first, widened to a 64-bit
     * `Int`, 0 through 65535.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(2);
+    *  b.writeUInt16LE(0, 70000);
+    *  print(b.readUInt16LE(0));
     */
     fn readUInt16LE(offset: Int): Int {
         return __rnx_bytes_read_u16le(this.handle, offset);
@@ -375,6 +411,12 @@ class ByteBuffer {
     * @param val source value; only the low 16 bits are kept.
     *
     * Identical to `writeUInt16LE`.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(2);
+    *  b.writeInt16LE(0, 0x1234);
+    *  print(b.readInt16LE(0), b.readUInt8(0));
     */
     fn writeInt16LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u16le(this.handle, offset, val);
@@ -388,6 +430,12 @@ class ByteBuffer {
     * @param val source value; only the low 16 bits are kept.
     *
     * Identical to `writeUInt16BE`.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(2);
+    *  b.writeInt16BE(0, 0x1234);
+    *  print(b.readInt16BE(0), b.readUInt8(0));
     */
     fn writeInt16BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u16be(this.handle, offset, val);
@@ -402,6 +450,12 @@ class ByteBuffer {
     * stores 4464.
     *
     * Identical to `writeInt16LE`.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(2);
+    *  b.writeUInt16LE(0, 70000);
+    *  print(b.readUInt16LE(0));
     */
     fn writeUInt16LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u16le(this.handle, offset, val);
@@ -415,6 +469,12 @@ class ByteBuffer {
     * @param val source value; only the low 16 bits are kept.
     *
     * Identical to `writeInt16BE`.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(2);
+    *  b.writeUInt16BE(0, 0x1234);
+    *  print(b.readUInt16BE(0), b.readUInt8(0));
     */
     fn writeUInt16BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u16be(this.handle, offset, val);
@@ -428,6 +488,12 @@ class ByteBuffer {
     * `byte buffer out of bounds`.
     * @returns the four bytes read low byte first, widened to a 64-bit
     * `Int` and sign-extended from 32 bits.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeInt32LE(0, 0x12345678);
+    *  print(b.readInt32LE(0));
     */
     fn readInt32LE(offset: Int): Int {
         return __rnx_bytes_read_i32le(this.handle, offset);
@@ -441,6 +507,12 @@ class ByteBuffer {
     * `byte buffer out of bounds`.
     * @returns the four bytes read high byte first, widened to a 64-bit
     * `Int` and sign-extended from 32 bits.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeInt32BE(0, 0x12345678);
+    *  print(b.readInt32BE(0));
     */
     fn readInt32BE(offset: Int): Int {
         return __rnx_bytes_read_i32be(this.handle, offset);
@@ -476,6 +548,12 @@ class ByteBuffer {
     * `byte buffer out of bounds`.
     * @returns the four bytes read high byte first, widened to a 64-bit
     * `Int`, 0 through 4294967295.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeUInt32BE(0, 0x12345678);
+    *  print(b.readUInt32BE(0));
     */
     fn readUInt32BE(offset: Int): Int {
         return __rnx_bytes_read_u32be(this.handle, offset);
@@ -489,6 +567,12 @@ class ByteBuffer {
     * @param val source value; only the low 32 bits are kept.
     *
     * Identical to `writeUInt32LE`.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeInt32LE(0, 0x12345678);
+    *  print(b.readInt32LE(0), b.readUInt8(0));
     */
     fn writeInt32LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u32le(this.handle, offset, val);
@@ -502,6 +586,12 @@ class ByteBuffer {
     * @param val source value; only the low 32 bits are kept.
     *
     * Identical to `writeUInt32BE`.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeInt32BE(0, 0x12345678);
+    *  print(b.readInt32BE(0), b.readUInt8(0));
     */
     fn writeInt32BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u32be(this.handle, offset, val);
@@ -516,6 +606,12 @@ class ByteBuffer {
     * above 4294967295 wraps into the low 32 bits.
     *
     * Identical to `writeInt32LE`.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeUInt32LE(0, 0x12345678);
+    *  print(b.readUInt32LE(0));
     */
     fn writeUInt32LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u32le(this.handle, offset, val);
@@ -529,6 +625,12 @@ class ByteBuffer {
     * @param val source value; only the low 32 bits are kept.
     *
     * Identical to `writeInt32BE`.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeUInt32BE(0, 0x12345678);
+    *  print(b.readUInt32BE(0));
     */
     fn writeUInt32BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u32be(this.handle, offset, val);
@@ -565,6 +667,12 @@ class ByteBuffer {
     * `byte buffer out of bounds`.
     * @returns the eight bytes read high byte first, widened to a 64-bit
     * `Int`.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(8);
+    *  b.writeInt64BE(0, 123456789);
+    *  print(b.readInt64BE(0));
     */
     fn readInt64BE(offset: Int): Int {
         return __rnx_bytes_read_i64be(this.handle, offset);
@@ -576,6 +684,12 @@ class ByteBuffer {
     * @param offset first of the eight bytes; the lane has to fit inside
     * the buffer or the program stops with `byte buffer out of bounds`.
     * @param val source value; all 64 bits are kept.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(8);
+    *  b.writeInt64LE(0, 123456789);
+    *  print(b.readInt64LE(0));
     */
     fn writeInt64LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u64le(this.handle, offset, val);
@@ -587,6 +701,12 @@ class ByteBuffer {
     * @param offset first of the eight bytes; the lane has to fit inside
     * the buffer or the program stops with `byte buffer out of bounds`.
     * @param val source value; all 64 bits are kept.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(8);
+    *  b.writeInt64BE(0, 123456789);
+    *  print(b.readInt64BE(0), b.readUInt8(0));
     */
     fn writeInt64BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u64be(this.handle, offset, val);
@@ -619,6 +739,12 @@ class ByteBuffer {
     * `byte buffer out of bounds`.
     * @returns the four bytes as a 32-bit float, widened to 64 bits, so
     * the value keeps about 7 decimal digits.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeFloat32BE(0, 1.5);
+    *  print(b.readFloat32BE(0));
     */
     fn readFloat32BE(offset: Int): Float {
         return __rnx_bytes_read_f32be(this.handle, offset);
@@ -634,6 +760,12 @@ class ByteBuffer {
     * range becomes infinity.
     *
     * Identical to `writeFloat32BE` except for the byte order.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeFloat32LE(0, 1.5);
+    *  print(b.readFloat32LE(0));
     */
     fn writeFloat32LE(offset: Int, val: Float): Void {
         __rnx_bytes_write_f32le(this.handle, offset, val);
@@ -646,6 +778,12 @@ class ByteBuffer {
     * buffer or the program stops with `byte buffer out of bounds`.
     * @param val source value; narrowed to a 32-bit float, so 0.1 comes
     * back from a read as 0.10000000149011612.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(4);
+    *  b.writeFloat32BE(0, 1.5);
+    *  print(b.readFloat32BE(0), b.readUInt8(0));
     */
     fn writeFloat32BE(offset: Int, val: Float): Void {
         __rnx_bytes_write_f32be(this.handle, offset, val);
@@ -658,6 +796,12 @@ class ByteBuffer {
     * the buffer, so an offset above `length() - 8` stops the program with
     * `byte buffer out of bounds`.
     * @returns the eight bytes as a 64-bit float, with no precision lost.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(8);
+    *  b.writeFloat64LE(0, 0.1);
+    *  print(b.readFloat64LE(0));
     */
     fn readFloat64LE(offset: Int): Float {
         return __rnx_bytes_read_f64le(this.handle, offset);
@@ -692,6 +836,12 @@ class ByteBuffer {
     * the buffer or the program stops with `byte buffer out of bounds`.
     * @param val source value; all 64 bits are kept, so a round trip
     * through the buffer is exact.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(8);
+    *  b.writeFloat64LE(0, 0.1);
+    *  print(b.readFloat64LE(0));
     */
     fn writeFloat64LE(offset: Int, val: Float): Void {
         __rnx_bytes_write_f64le(this.handle, offset, val);
@@ -704,6 +854,12 @@ class ByteBuffer {
     * the buffer or the program stops with `byte buffer out of bounds`.
     * @param val source value; all 64 bits are kept, so a round trip
     * through the buffer is exact.
+    *  @example
+    *  import { ByteBuffer } from "@std/bytes";
+    *
+    *  let b = ByteBuffer.allocate(8);
+    *  b.writeFloat64BE(0, 0.1);
+    *  print(b.readFloat64BE(0));
     */
     fn writeFloat64BE(offset: Int, val: Float): Void {
         __rnx_bytes_write_f64be(this.handle, offset, val);

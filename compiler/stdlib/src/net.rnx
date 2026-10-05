@@ -105,6 +105,13 @@ class TcpStream {
     * created, or the kernel reports a connection error, and with
     * `connect refused: ...` when the socket reports an error that landed
     * after the reactor already accepted the connection.
+    *  @example
+    *  import { TcpStream, TcpListener } from "@std/net";
+    *
+    *  let listener = TcpListener.bind("127.0.0.1", 0);
+    *  let stream = await TcpStream.connect("127.0.0.1", listener.port());
+    *  stream.close();
+    *  listener.close();
     */
     static connect(host: String, port: Int): Promise<TcpStream> {
         let h = __rnx_net_connect_start(host, port);
@@ -138,6 +145,14 @@ class TcpStream {
     * @returns promise for the bytes read, each 0..255, or an empty array
     * at end of stream. It rejects with `recv failed: ...` on a socket
     * error, and with an empty detail after `close()`.
+    *  @example
+    *  import { TcpStream, TcpListener } from "@std/net";
+    *
+    *  let listener = TcpListener.bind("127.0.0.1", 0);
+    *  let client = await TcpStream.connect("127.0.0.1", listener.port());
+    *  let server = await listener.accept();
+    *  print(await client.write([104, 105]));
+    *  print(await server.read(2));
     */
     fn read(max_bytes: Int): Promise<Array<Int>> {
         let h = this.handle;
@@ -166,6 +181,14 @@ class TcpStream {
     * @returns promise for the number of bytes sent, which on success is
     * always `bytes.length()`. It rejects with `send failed: ...` on a
     * socket error, and with an empty detail after `close()`.
+    *  @example
+    *  import { TcpStream, TcpListener } from "@std/net";
+    *
+    *  let listener = TcpListener.bind("127.0.0.1", 0);
+    *  let client = await TcpStream.connect("127.0.0.1", listener.port());
+    *  let server = await listener.accept();
+    *  print(await client.write([104, 105]));
+    *  print(await server.read(2));
     */
     fn write(bytes: Array<Int>): Promise<Int> {
         let h = this.handle;
@@ -207,6 +230,13 @@ class TcpStream {
     * operation that names it, so a thread blocked in `read()` or `write()`
     * rejects instead of waiting forever. Later operations on the stream
     * reject too, and closing twice does nothing.
+    *  @example
+    *  import { TcpStream, TcpListener } from "@std/net";
+    *
+    *  let listener = TcpListener.bind("127.0.0.1", 0);
+    *  let stream = await TcpStream.connect("127.0.0.1", listener.port());
+    *  stream.close();
+    *  listener.close();
     */
     fn close() {
         __rnx_net_close(this.handle);
@@ -265,6 +295,12 @@ class TcpListener {
     * @throws `TcpListener.bind failed: ...` when the address cannot be
     * resolved, the port is out of range, or the OS refuses the bind. The
     * thrown value is the message string itself.
+    *  @example
+    *  import { TcpListener } from "@std/net";
+    *
+    *  let listener = TcpListener.bind("127.0.0.1", 0);
+    *  print(listener.port() > 0);
+    *  listener.close();
     */
     static bind(host: String, port: Int): TcpListener {
         let h = __rnx_net_listener_bind(host, port);
@@ -288,6 +324,13 @@ class TcpListener {
     * reader and one writer rule as any other stream. It rejects with
     * `accept failed: ...` when the listener is closed while the call waits,
     * and when the OS refuses the connection.
+    *  @example
+    *  import { TcpStream, TcpListener } from "@std/net";
+    *
+    *  let listener = TcpListener.bind("127.0.0.1", 0);
+    *  let client = await TcpStream.connect("127.0.0.1", listener.port());
+    *  let server = await listener.accept();
+    *  print(server.handleOf() >= 0);
     */
     fn accept(): Promise<TcpStream> {
         let h = this.handle;
@@ -314,6 +357,12 @@ class TcpListener {
     *
     * @returns bound port, or -1 when the listener is closed or the handle
     * is not one.
+    *  @example
+    *  import { TcpListener } from "@std/net";
+    *
+    *  let listener = TcpListener.bind("127.0.0.1", 0);
+    *  print(listener.port());
+    *  listener.close();
     */
     fn port(): Int {
         return __rnx_net_listener_port(this.handle);
@@ -325,6 +374,11 @@ class TcpListener {
     * A parked `accept()` rejects. Connections that were already accepted are
     * untouched: each one is its own stream with its own handle, and closing
     * the listener does not close them.
+    *  @example
+    *  import { TcpListener } from "@std/net";
+    *
+    *  let listener = TcpListener.bind("127.0.0.1", 0);
+    *  listener.close();
     */
     fn close() {
         __rnx_net_listener_close(this.handle);
@@ -392,6 +446,13 @@ class TlsStream {
     * DNS name nor an IP literal, and with `tls handshake failed: ...` when
     * the peer closes during the handshake, the protocols do not meet, or
     * the certificate does not verify against the root set.
+    *  @example
+    *  import { TcpStream, TlsStream } from "@std/net";
+    *
+    *  let stream = await TcpStream.connect("example.com", 443);
+    *  let tls = await TlsStream.connect(stream, "example.com");
+    *  print(await tls.write([104, 105]));
+    *  tls.close();
     */
     static connect(stream: TcpStream, domain: String): Promise<TlsStream> {
         let t = __rnx_tls_connect_start(stream.handleOf(), domain);
@@ -429,6 +490,13 @@ class TlsStream {
     * @returns promise for the plaintext bytes read, each 0..255, or an
     * empty array at end of stream. It rejects with `tls recv failed: ...`
     * on a session error, and with an empty detail after `close()`.
+    *  @example
+    *  import { TcpStream, TlsStream } from "@std/net";
+    *
+    *  let stream = await TcpStream.connect("example.com", 443);
+    *  let tls = await TlsStream.connect(stream, "example.com");
+    *  print(await tls.write([104, 105]));
+    *  print(await tls.read(64));
     */
     fn read(max_bytes: Int): Promise<Array<Int>> {
         let h = this.handle;
@@ -457,6 +525,13 @@ class TlsStream {
     * @returns promise for the number of bytes sent, which on success is
     * always `bytes.length()`. It rejects with `tls send failed: ...` on a
     * session error, and with an empty detail after `close()`.
+    *  @example
+    *  import { TcpStream, TlsStream } from "@std/net";
+    *
+    *  let stream = await TcpStream.connect("example.com", 443);
+    *  let tls = await TlsStream.connect(stream, "example.com");
+    *  print(await tls.write([104, 105]));
+    *  tls.close();
     */
     fn write(bytes: Array<Int>): Promise<Int> {
         let h = this.handle;
@@ -495,6 +570,12 @@ class TlsStream {
     * shutdown as best effort, not as a guarantee. Parked operations on this
     * session reject, later ones reject as well, and closing twice does
     * nothing.
+    *  @example
+    *  import { TcpStream, TlsStream } from "@std/net";
+    *
+    *  let stream = await TcpStream.connect("example.com", 443);
+    *  let tls = await TlsStream.connect(stream, "example.com");
+    *  tls.close();
     */
     fn close() {
         __rnx_tls_close(this.handle);

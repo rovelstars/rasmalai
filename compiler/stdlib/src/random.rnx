@@ -30,6 +30,12 @@ class Rng {
     /**
     * Next raw word of the stream, advancing internal state.
     * @returns signed 64-bit draw.
+    * @example
+    * import { Rng } from "@std/random";
+    *
+    * let a = Rng.seeded(7);
+    * let b = Rng.seeded(7);
+    * print(a.next() == b.next());
     */
     next(): Int {
         return __rnx_prng_next(this.state);
@@ -58,6 +64,11 @@ class Rng {
     /**
     * Fair coin flip.
     * @returns true on even draws, false on odd draws.
+    * @example
+    * import { Rng } from "@std/random";
+    *
+    * let r = Rng.seeded(3);
+    * print(r.bool(), r.bool(), r.bool());
     */
     bool(): Bool {
         return(this.next() % 2) == 0;
@@ -71,6 +82,11 @@ class CryptoRng {
     /**
     * One cryptographic random word from the OS.
     * @returns unsigned 64-bit value as Int.
+    * @example
+    * import { CryptoRng } from "@std/random";
+    *
+    * print(CryptoRng.int());
+    * print(CryptoRng.int());
     */
     static int(): Int {
         return __rnx_crypto_random_u64();

@@ -195,6 +195,10 @@ pub interface Iterator<T> {
     /**
     * Take the next item.
     * @returns the next item, or `null` once the sequence is spent.
+    * @example
+    * let it: Iterator<Int> = new ArrayIter<Int>([10]);
+    * print(it.next() ?? 0);
+    * print(it.next() == null);
     */
     fn next(): T?;
 }
@@ -220,6 +224,13 @@ pub interface Iterable<T> {
     /**
     * Open a fresh iterator over the items.
     * @returns an iterator sitting before the first item.
+    * @example
+    * class Pair with Iterable<Int> {
+    *     fn iterator(): Iterator<Int> {
+    *         return new ArrayIter<Int>([1, 2]);
+    *     }
+    * }
+    * print(new Pair().iterator().next() ?? 0);
     */
     fn iterator(): Iterator<T>;
 }
@@ -251,6 +262,11 @@ pub class ArrayIter<T> with Iterator<T> {
     /**
     * Take the next element and step the cursor on.
     * @returns the element at the cursor, or `null` past the end.
+    * @example
+    * let it = new ArrayIter<Int>([10, 20]);
+    * print(it.next() ?? 0);
+    * print(it.next() ?? 0);
+    * print(it.next() == null);
     */
     fn next(): T? {
         if this.i >= this.arr.length() {
@@ -602,6 +618,10 @@ pub class PromiseWithResolvers<T> {
     * Fulfill the promise with `val`. Ignored once the promise has
     * settled; the first settlement wins.
     * @param val payload for the fulfillment.
+    * @example
+    * let wr = Promise.withResolvers<Int>();
+    * wr.resolve(7);
+    * print(wr.promise.wait().unwrapOr(0));
     */
     fn resolve(val: T): Void {
         this.promise.fulfill(val);
@@ -611,6 +631,10 @@ pub class PromiseWithResolvers<T> {
     * Reject the promise with `reason`. Ignored once the promise has
     * settled; the first settlement wins.
     * @param reason message carried by the rejection.
+    * @example
+    * let wr = Promise.withResolvers<Int>();
+    * wr.reject("boom");
+    * print(wr.promise.wait().unwrapOr(0));
     */
     fn reject(reason: String): Void {
         this.promise.rejectWith(reason);
@@ -671,6 +695,8 @@ pub class Promise<T> {
     * Take the next id from the shared counter. Internal: every promise
     * needs its own mutex and condvar id.
     * @returns a fresh registry id.
+    * @example
+    * print(Promise.freshId() != Promise.freshId());
     */
     static freshId(): Int {
         return __rnx_sync_atomic_fetch_add(90001, 1);
@@ -680,6 +706,8 @@ pub class Promise<T> {
     * A promise that is already fulfilled.
     * @param val payload carried by the promise.
     * @returns a fulfilled promise; handlers attached later run at once.
+    * @example
+    * print(Promise.resolve(41).wait().unwrapOr(0));
     */
     static resolve<T>(val: T): Promise<T> {
         return new Promise<T>(1, val, "", Promise.freshId());
@@ -690,6 +718,8 @@ pub class Promise<T> {
     * @param reason message the rejection carries.
     * @returns a rejected promise; `wait()` gives back `Result.Err`
     * holding the same message.
+    * @example
+    * print(Promise.reject<Int>("boom").wait().unwrapOr(0));
     */
     static reject<T>(reason: String): Promise<T> {
         let p: Promise<T> = new Promise<T>(0, null, "", Promise.freshId());
@@ -718,6 +748,9 @@ pub class Promise<T> {
     * user code should reach for `await` or `wait()` instead.
     * @param p promise to wait on.
     * @returns `Ok(val)` on fulfillment, `Err(reason)` on rejection.
+    * @example
+    * let p: Promise<Any> = Promise.resolve<Any>(2);
+    * print(Promise.waitAny(p).unwrapOr(0));
     */
     static waitAny(p: Promise<Any>): Result<Any, String> {
         return p.wait();
@@ -728,6 +761,10 @@ pub class Promise<T> {
     * still pending, so the first settlement wins. Queued handlers run
     * after the guard is released, never while holding it.
     * @param val payload for the fulfillment.
+    * @example
+    * let wr = Promise.withResolvers<Int>();
+    * wr.promise.fulfill(9);
+    * print(wr.promise.wait().unwrapOr(0));
     */
     fn fulfill(val: T): Void {
         __rnx_mutex_lock(this._syncId);
@@ -753,6 +790,10 @@ pub class Promise<T> {
     * still pending, so the first settlement wins. Queued handlers run
     * after the guard is released, never while holding it.
     * @param reason message for the rejection.
+    * @example
+    * let wr = Promise.withResolvers<Int>();
+    * wr.promise.rejectWith("boom");
+    * print(wr.promise.wait().unwrapOr(0));
     */
     fn rejectWith(reason: String): Void {
         __rnx_mutex_lock(this._syncId);
@@ -913,6 +954,9 @@ pub class Promise<T> {
     * Internal: one of these rejects `out` and settles the combinator.
     *  @param out promise the first rejection rejects.
     *  @returns a continuation taking the reason.
+     *  @example
+     *  let ps: Array<Promise<Int>> = [Promise.resolve(1), Promise.reject<Int>("boom")];
+     *  print(Promise.all<Int>(ps).wait().isErr());
      */
     static allRej<U>(out: Promise<Array<U>>): fn(String): Void {
         return (e: String): Void => {
@@ -930,6 +974,10 @@ pub class Promise<T> {
     *  @param n how many inputs there are.
     *  @param idx this input's index.
     *  @returns a continuation taking the payload.
+     *  @example
+     *  let ps: Array<Promise<Int>> = [Promise.resolve(1), Promise.resolve(2)];
+     *  let got: Result<Array<Int>, String> = Promise.all<Int>(ps).wait();
+     *  print(got.unwrap().join(","));
      */
     static allSlot<U>(slots: Array<U>, out: Promise<Array<U>>, counterId: Int, n: Int, idx: Int): fn(U): Void {
         return (v: U): Void => {
@@ -985,6 +1033,9 @@ pub class Promise<T> {
     * has any effect.
     *  @param out promise the winner fulfills.
     *  @returns a continuation taking the payload.
+     *  @example
+     *  let ps: Array<Promise<Int>> = [Promise.resolve(1), Promise.resolve(2)];
+     *  print(Promise.race<Int>(ps).wait().unwrapOr(0));
      */
     static raceFwd<U>(out: Promise<U>): fn(U): Void {
         return (v: U): Void => {
@@ -998,6 +1049,9 @@ pub class Promise<T> {
     * has any effect.
     *  @param out promise the first rejection rejects.
     *  @returns a continuation taking the reason.
+     *  @example
+     *  let ps: Array<Promise<Int>> = [Promise.reject<Int>("boom")];
+     *  print(Promise.race<Int>(ps).wait().isErr());
      */
     static raceRej<U>(out: Promise<U>): fn(String): Void {
         return (e: String): Void => {
@@ -1039,6 +1093,10 @@ pub class Promise<T> {
     *  @param idx this input's index.
     *  @param ok true for the fulfillment continuation.
     *  @returns a continuation taking the payload.
+     *  @example
+     *  let ps: Array<Promise<Int>> = [Promise.resolve(5), Promise.reject<Int>("bad")];
+     *  let all: Result<Array<PromiseResult<Int>>, String> = Promise.allSettled<Int>(ps).wait();
+     *  print(all.unwrap()[0].status);
      */
     static settledSlot<U>(slots: Array<PromiseResult<U>>, out: Promise<Array<PromiseResult<U>>>, counterId: Int, n: Int, idx: Int, ok: Bool): fn(U): Void {
         return (v: U): Void => {
@@ -1069,6 +1127,10 @@ pub class Promise<T> {
     *  @param n how many inputs there are.
     *  @param idx this input's index.
     *  @returns a continuation taking the reason.
+     *  @example
+     *  let ps: Array<Promise<Int>> = [Promise.resolve(5), Promise.reject<Int>("bad")];
+     *  let all: Result<Array<PromiseResult<Int>>, String> = Promise.allSettled<Int>(ps).wait();
+     *  print(all.unwrap()[1].reason);
      */
     static settledRej<U>(slots: Array<PromiseResult<U>>, out: Promise<Array<PromiseResult<U>>>, counterId: Int, n: Int, idx: Int): fn(String): Void {
         return (e: String): Void => {
@@ -1124,6 +1186,9 @@ pub class Promise<T> {
     * has any effect.
     *  @param out promise the winner fulfills.
     *  @returns a continuation taking the payload.
+     *  @example
+     *  let mixed: Array<Promise<Int>> = [Promise.reject<Int>("no"), Promise.resolve(5)];
+     *  print(Promise.any<Int>(mixed).wait().unwrapOr(0));
      */
     static anyFwd<U>(out: Promise<U>): fn(U): Void {
         return (v: U): Void => {
@@ -1138,6 +1203,9 @@ pub class Promise<T> {
     *  @param out promise the aggregate rejection settles.
     *  @param counterId registry id of the remaining-count atomic.
     *  @returns a continuation taking the reason.
+     *  @example
+     *  let bad: Array<Promise<Int>> = [Promise.reject<Int>("no")];
+     *  print(Promise.any<Int>(bad).wait().isErr());
      */
     static anyRej<U>(out: Promise<U>, counterId: Int): fn(String): Void {
         return (e: String): Void => {
@@ -1211,6 +1279,8 @@ pub class RnxHost {
     /**
     * Read the working directory of the process.
     * @returns the path the process was started in.
+    * @example
+    * print(new RnxHost().cwd().len() > 0);
     */
     fn cwd(): String {
         return __rnx_env_cwd();
@@ -1220,6 +1290,9 @@ pub class RnxHost {
     * Stop the process now. Nothing after the call runs and the exit
     * status is the code given.
     * @param code exit status handed to the host.
+    *
+    * Never returns, so there is no runnable example: any program reaching
+    * exit(0) leaves with the given status and runs nothing after the call.
     */
     fn exit(code: Int) {
         __rnx_env_exit(code);

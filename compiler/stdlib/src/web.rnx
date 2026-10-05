@@ -2535,6 +2535,15 @@ fn findHeadersEnd(data: Array<Int>): Int {
 * @param buf buffer appended in place, so the caller keeps the bytes it
 * already had.
 * @returns count of bytes appended, 0 at end of stream.
+* @example
+* import { readMore } from "@std/web";
+* import { TcpStream, TcpListener } from "@std/net";
+* let listener = TcpListener.bind("127.0.0.1", 0);
+* let client = await TcpStream.connect("127.0.0.1", listener.port());
+* let server = await listener.accept();
+* print(await client.write([104, 105]));
+* let buf: Array<Int> = [];
+* print(await readMore(server, buf));
 */
 async fn readMore(s: TcpStream, buf: Array<Int>): Promise<Int> {
     let chunk: Array<Int> = await s.read(4096);
@@ -2554,6 +2563,14 @@ async fn readMore(s: TcpStream, buf: Array<Int>): Promise<Int> {
 * @param buf buffer appended in place.
 * @returns index just past the header block, or -1 when the stream ends
 * first.
+* @example
+* import { readHeaders, strBytes } from "@std/web";
+* import { TcpStream, TcpListener } from "@std/net";
+* let listener = TcpListener.bind("127.0.0.1", 0);
+* let client = await TcpStream.connect("127.0.0.1", listener.port());
+* let server = await listener.accept();
+* let buf = strBytes("HTTP/1.1 200 OK\u{D}\u{A}\u{D}\u{A}");
+* print(await readHeaders(server, buf));
 */
 async fn readHeaders(s: TcpStream, buf: Array<Int>): Promise<Int> {
     let end = findHeadersEnd(buf);
@@ -2578,6 +2595,15 @@ async fn readHeaders(s: TcpStream, buf: Array<Int>): Promise<Int> {
 * @param mode framing: 0 close-delimited, 1 Content-Length, 2 chunked.
 * @param want byte count for mode 1; ignored otherwise.
 * @returns body bytes, without the chunk headers in mode 2.
+* @example
+* import { readBodyInto, strBytes, readHeaders } from "@std/web";
+* import { TcpStream, TcpListener } from "@std/net";
+* let listener = TcpListener.bind("127.0.0.1", 0);
+* let client = await TcpStream.connect("127.0.0.1", listener.port());
+* let server = await listener.accept();
+* let buf = strBytes("HTTP/1.1 200 OK\u{D}\u{A}Content-Length: 2\u{D}\u{A}\u{D}\u{A}hi");
+* let hend = await readHeaders(server, buf);
+* print(await readBodyInto(server, buf, hend, 1, 2));
 */
 async fn readBodyInto(s: TcpStream, buf: Array<Int>, hend: Int, mode: Int, want: Int): Promise<Array<Int>> {
     let done = bodyDone(buf, hend, mode, want);
@@ -2808,6 +2834,11 @@ fn sliceBody(buf: Array<Int>, hend: Int, mode: Int, want: Int): Array<Int> {
 * https, "fetch: missing host" when the URL has no host, "fetch: bad port"
 * for a non-numeric or out-of-range port, plus connect, write, header,
 * and framing messages described on `fetchOverTcp()`.
+* @example
+* import { fetch } from "@std/web";
+*
+* let r = await fetch("http://example.com/", null);
+* print(r.status);
 */
 async fn fetch(url: String, options: RequestOptions = null): Promise<Response> {
     let method = "GET";
@@ -2833,6 +2864,11 @@ async fn fetch(url: String, options: RequestOptions = null): Promise<Response> {
 * @returns response promise.
 * @throws the scheme, host, and port messages listed on `fetch()`; every
 * other failure comes from the transport function.
+* @example
+* import { fetchInner, Headers } from "@std/web";
+*
+* let r = await fetchInner("http://example.com/", "GET", new Headers(), "");
+* print(r.status);
 */
 async fn fetchInner(url: String, method: String, extra: Headers, body: String): Promise<Response> {
     let u = new URL(url);
@@ -2901,6 +2937,12 @@ async fn fetchInner(url: String, method: String, extra: Headers, body: String): 
 * `Content-Length`, "fetch: bad chunked body" for malformed chunk
 * framing, and "fetch: truncated body" when fewer bytes arrive than
 * `Content-Length` promised. DNS and connect failures reject as well.
+* @example
+* import { fetchOverTcp } from "@std/web";
+*
+* let req = "GET / HTTP/1.1\u{D}\u{A}Host: example.com\u{D}\u{A}Connection: close\u{D}\u{A}\u{D}\u{A}";
+* let r = await fetchOverTcp("example.com", 80, req);
+* print(r.status);
 */
 async fn fetchOverTcp(host: String, port: Int, req: String): Promise<Response> {
     let stream: TcpStream = await TcpStream.connect(host, port);
@@ -2988,6 +3030,13 @@ async fn fetchOverTcp(host: String, port: Int, req: String): Promise<Response> {
 * @param s stream to read.
 * @param buf buffer appended in place.
 * @returns count of bytes appended, 0 at end of stream.
+* @example
+* import { readMoreTls } from "@std/web";
+* import { TcpStream, TlsStream } from "@std/net";
+* let stream = await TcpStream.connect("example.com", 443);
+* let tls = await TlsStream.connect(stream, "example.com");
+* let buf: Array<Int> = [];
+* print(await readMoreTls(tls, buf));
 */
 async fn readMoreTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
     let chunk: Array<Int> = await s.read(4096);
@@ -3006,6 +3055,13 @@ async fn readMoreTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
 * @param buf buffer appended in place.
 * @returns index just past the header block, or -1 when the stream ends
 * first.
+* @example
+* import { readHeadersTls, strBytes } from "@std/web";
+* import { TcpStream, TlsStream } from "@std/net";
+* let stream = await TcpStream.connect("example.com", 443);
+* let tls = await TlsStream.connect(stream, "example.com");
+* let buf = strBytes("HTTP/1.1 200 OK\u{D}\u{A}\u{D}\u{A}");
+* print(await readHeadersTls(tls, buf));
 */
 async fn readHeadersTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
     let end = findHeadersEnd(buf);
@@ -3030,6 +3086,14 @@ async fn readHeadersTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
 * @param mode framing: 0 close-delimited, 1 Content-Length, 2 chunked.
 * @param want byte count for mode 1; ignored otherwise.
 * @returns body bytes, without the chunk headers in mode 2.
+* @example
+* import { readBodyIntoTls, strBytes, readHeadersTls } from "@std/web";
+* import { TcpStream, TlsStream } from "@std/net";
+* let stream = await TcpStream.connect("example.com", 443);
+* let tls = await TlsStream.connect(stream, "example.com");
+* let buf = strBytes("HTTP/1.1 200 OK\u{D}\u{A}Content-Length: 2\u{D}\u{A}\u{D}\u{A}hi");
+* let hend = await readHeadersTls(tls, buf);
+* print(await readBodyIntoTls(tls, buf, hend, 1, 2));
 */
 async fn readBodyIntoTls(s: TlsStream, buf: Array<Int>, hend: Int, mode: Int, want: Int): Promise<Array<Int>> {
     let done = bodyDone(buf, hend, mode, want);
@@ -3056,6 +3120,12 @@ async fn readBodyIntoTls(s: TlsStream, buf: Array<Int>, hend: Int, mode: Int, wa
 * @throws the same message set as `fetchOverTcp()`, plus whatever the
 * TLS handshake reports: an untrusted certificate or a name mismatch
 * rejects before the request is written.
+* @example
+* import { fetchOverTls } from "@std/web";
+*
+* let req = "GET / HTTP/1.1\u{D}\u{A}Host: example.com\u{D}\u{A}Connection: close\u{D}\u{A}\u{D}\u{A}";
+* let r = await fetchOverTls("example.com", 443, req);
+* print(r.status);
 */
 async fn fetchOverTls(host: String, port: Int, req: String): Promise<Response> {
     let raw: TcpStream = await TcpStream.connect(host, port);
