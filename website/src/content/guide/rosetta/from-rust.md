@@ -130,4 +130,4 @@ try {
 | `Result<T, E>` plumbing | `throws` + `try`/`catch` |
 | `cargo check` warmup | `rnx check` in milliseconds |
 
-Keep your mental model of ownership. Lose the wait. Next: the [Guide](/guide/01-introduction) from the top, or the [Manual](/manual/11-memory-and-arc) for exact ARC semantics.
+Your ownership mental model transfers almost untouched — the annotations stay behind. Next: the [Guide](/guide/01-introduction) from the top, or the [Manual](/manual/11-memory-and-arc) for exact ARC semantics.

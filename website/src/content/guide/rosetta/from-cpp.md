@@ -48,7 +48,7 @@ print(c.x(), c.w());
 
 ## Bounds checked, then proven away
 
-Out-of-bounds indexing traps instead of reading your neighbor's secrets. Then Bounds Check Elimination hoists the proof out of hot loops, so the safety costs nothing at `-O3`:
+Out-of-bounds indexing traps instead of reading your neighbor's secrets. Then bounds check elimination hoists the proof out of hot loops, so the safety costs nothing under `--release`:
 
 ```cpp
 #include <cstdio>
@@ -76,7 +76,7 @@ print(sum, arr[2]);
 
 ## Allocation without malloc/free
 
-Heap arrays are refcounted values with destructors the compiler writes. There is no `new` without `delete`, because there is no manual pairing at all:
+Heap arrays are refcounted values with destructors the compiler writes. Allocation and release always pair up automatically — there is no manual bookkeeping to forget:
 
 ```cpp
 #include <cstdio>
@@ -118,4 +118,4 @@ fn total(n: Int): Int {
 print(total(5));
 ```
 
-Keep the `-O3` and the pointer-free hot loop. Lose the undefined behavior. Next: the [Guide](/guide/01-introduction) from the top, or the [Manual](/manual/11-memory-and-arc) for exact memory semantics.
+The optimizer and the ABI stay; the undefined behavior goes. Next: the [Guide](/guide/01-introduction) from the top, or the [Manual](/manual/11-memory-and-arc) for exact memory semantics.

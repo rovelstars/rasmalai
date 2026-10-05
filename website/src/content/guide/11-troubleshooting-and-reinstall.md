@@ -6,7 +6,7 @@ icon: "Wrench"
 
 # Troubleshooting & Reinstall
 
-Something broke. Don't worry — most Rasmalai problems fall into three buckets, and you should work them in this order: a diagnostic you can read, a stale project, or a stale toolchain. Nine times out of ten you never reach step three.
+Most Rasmalai problems fall into three buckets, and you should work them in this order: a diagnostic you can read, a stale project, or a stale toolchain. Nine times out of ten you never reach step three.
 
 ## Read the diagnostic first
 
@@ -71,11 +71,18 @@ The [editor setup chapter](/guide/09-editor-setup) covers per-editor details.
 
 Reach for this when `rnx --version` itself fails, when the binary predates the error you are seeing, or when support asks you to rule out a corrupted install. The procedure is the same on every OS: remove the old install, then install fresh. Uninstallation is just step one of a reinstall — there is no separate ritual.
 
-First, confirm what you have:
+First, confirm what you have. On Linux and macOS:
 
 ```sh
 rnx --version
 which rnx
+```
+
+On Windows PowerShell:
+
+```powershell
+rnx --version
+Get-Command rnx
 ```
 
 ### Linux
@@ -100,7 +107,7 @@ curl -fsSL https://rnx.dev/install.sh | sh -s -- --prefix /usr/local
 
 ### macOS
 
-Same layout as Linux — `~/.local` is the conventional home for CLI tools outside the App Store, and `$XDG_BIN_HOME` is honored the same way. Rasmalai ships Apple Silicon builds only; Intel Macs run the toolchain under Rosetta or not at all.
+Same layout as Linux — `~/.local` is the conventional home for CLI tools outside the App Store, and `$XDG_BIN_HOME` is honored the same way. Rasmalai ships Apple Silicon builds only; on Intel Macs, run the toolchain under Rosetta 2.
 
 ```sh
 rm -rf ~/.local/bin/rnx ~/.local/bin/rnx.bin ~/.local/lib

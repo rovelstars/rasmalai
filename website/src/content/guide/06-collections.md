@@ -87,7 +87,7 @@ print(scores.keys().join(","));
 print(scores.len());
 ```
 
-That prints `7`, `0`, `ore,al`, and `2`. `keys()` and `values()` return arrays in insertion order, and `for (k, v) in m.items()` walks entries as pairs. A few key rules worth knowing now: keys must be `Int`, `Float`, `Bool`, `String`, or a heap object compared by identity — two class instances with equal fields are different keys. `Int` and `Float` never mix as keys, and `Array` or `null` keys abort.
+That prints `7`, `0`, `ore,al`, and `2`. `keys()` and `values()` return arrays in insertion order; `for k in m` walks the keys, and `m.get(k)` fetches each value. A few key rules worth knowing now: keys must be `Int`, `Float`, `Bool`, `String`, or a heap object compared by identity — two class instances with equal fields are different keys. `Int` and `Float` never mix as keys, and `Array` or `null` keys abort.
 
 ## Sets
 

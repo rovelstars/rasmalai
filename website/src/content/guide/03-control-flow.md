@@ -48,16 +48,15 @@ for x in [10, 20, 30] {
 print(total);
 ```
 
-That prints `60`. Need a range or a stride? Ranges are values too:
+That prints `60`. Need a sequence of numbers? Ranges are values too:
 
 ```rnx
 for i in 0..10 {
     print(i);
 }
-for i in (0..10).stride(2) {
-    print(i);
-}
 ```
+
+That prints `0` through `9`. Need a stride? Step it with `while`, covered in the next section.
 
 **Common mistake:** writing `for (let i = 0; i < 3; i += 1) { }` out of habit. The compiler rejects it and suggests `for x in range` or `while` — take the suggestion. If you need the index alongside the element, iterate a range and index in:
 
@@ -68,7 +67,7 @@ for i in 0..names.length() {
 }
 ```
 
-Destructuring works when the elements are pairs — `for (k, v) in m.items()` walks a map entry by entry (see [Collections](/guide/06-collections)).
+Destructuring works when the elements are pairs — `for (k, v) in [["a", 1], ["b", 2]]` pulls each inner array apart by index. A map walks its keys instead: `for k in m` visits keys in insertion order, and `m.get(k)` fetches each value (see [Collections](/guide/06-collections)).
 
 ## while for everything else
 

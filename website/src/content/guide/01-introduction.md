@@ -6,15 +6,11 @@ icon: "Rocket"
 
 # Introduction
 
-If you are reading this, you probably want to learn how to write programs in rnx. Good — you have come to the right place. This guide will take you from an empty folder to working programs: variables and numbers, functions, collections, error handling, modules, and the toolchain itself, with runnable examples at every step.
-
-Sounds good? Great. Let's get started.
+This guide takes you from an empty folder to working programs: variables and numbers, functions, collections, error handling, modules, and the toolchain itself, with runnable examples at every step.
 
 ## Before you begin
 
-Writing in rnx is fun and all, but there are a couple of prerequisites. To follow this guide, you should be comfortable with basic programming ideas already: variables, `if` statements, loops, and functions. You do not need to know Rust, C++, or TypeScript — this guide explains everything from scratch — but trying to learn your first language and a systems language at the same time will only slow you down. You will get stuck on simple issues, struggle with easy fixes, and end up frustrated. Not fun.
-
-If programming itself is still new to you, pick up the basics in Python or JavaScript first (MDN's JavaScript guide and [Eloquent JavaScript](https://eloquentjavascript.net/) are both free and good), then come back. rnx will still be here.
+To follow this guide, you should be comfortable with basic programming ideas already: variables, `if` statements, loops, and functions. You do not need to know Rust, C++, or TypeScript — this guide explains everything from scratch. If this is your first language, you can still follow along, but expect a steeper climb: work every example by hand, and when something breaks, the [Troubleshooting](/guide/11-troubleshooting-and-reinstall) page covers the usual beginner traps.
 
 One more thing worth knowing up front: rnx has one central promise. **Every value is freed at a point you can see in the source.** No garbage collector pausing your program, no borrow checker arguing with you, no manual `free` to forget. A scope ends, its values drop — deterministically, on the same thread. Everything in this guide follows from that.
 

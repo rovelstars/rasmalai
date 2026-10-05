@@ -9,7 +9,7 @@ icon: "Sparkles"
 
 ## The implicit environment
 
-Every Rasmalai source file compiles inside an implicit environment: names resolve through local scopes first, then package globals and compiler builtins, then `@std/prelude`. No import is required for any of these names. Explicit declarations and imports always shadow prelude names with no error.
+Every rnx source file compiles inside an implicit environment: names resolve through local scopes first, then package globals and compiler builtins, then `@std/prelude`. No import is required for any of these names. Explicit declarations and imports always shadow prelude names with no error.
 
 ```rnx
 struct Map {

@@ -66,7 +66,7 @@ export default {
 
 ## SemVer comparators
 
-Version requirements follow SemVer 2.0: `^1.2.0` permits compatible minor and patch changes; `~1.2.0` permits patch-level changes only; a bare version pins exactly; ranges combine comparators. A git dependency pins exactly one of `rev`, `tag`, or `branch` (`rev` holding a branch name is rejected). A `path` entry is a local checkout; git checkouts cache under `.rnx/cache/git/`; a `vendor/<pkg>/` directory wins over the network. The token never lives in the manifest: `token_env` names the environment variable, and `ca_cert` pins a corporate root CA.
+Version requirements follow SemVer 2.0: `^1.2.0` permits compatible minor and patch changes; `~1.2.0` permits patch-level changes only; a bare version pins exactly; ranges combine comparators. A git dependency pins exactly one of `rev`, `tag`, or `branch` (`rev` holding a branch name is rejected). A `path` entry is a local checkout; git checkouts cache under `.rnx-cache/cache/git/`; a `vendor/<pkg>/` directory wins over the network. The token never lives in the manifest: `token_env` names the environment variable, and `ca_cert` pins a corporate root CA.
 
 | Requirement | Matches | Skips |
 |---|---|---|
@@ -117,7 +117,7 @@ Each file is its own namespace. Between files in one project, default and `publi
 import { add } from "./math";
 import { make_origin as origin } from "./shapes";
 import * from "./shapes";
-import math from "std/math";
+import math from "@std/math";
 import engine, { Config } from "./engine";
 import "./setup";
 ```

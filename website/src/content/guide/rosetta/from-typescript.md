@@ -76,4 +76,4 @@ No bundler split-chunks, no runtime flags, no container layer for the interprete
 rnx build --release
 ```
 
-One stripped native binary, zero dependencies. Keep the modules and the iteration speed. Lose the runtime. Next: the [Guide](/guide/01-introduction) from the top, or [Modules and Packages](/guide/08-modules-and-packages) for the manifest and registry.
+One stripped native binary, zero dependencies. Next: the [Guide](/guide/01-introduction) from the top, or [Modules and Packages](/guide/08-modules-and-packages) for the manifest and registry.
