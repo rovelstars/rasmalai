@@ -1101,8 +1101,9 @@ export async function deleteChunks(
 	hashes: string[]
 ): Promise<number> {
 	// Deletion here is final past the 30d grace window. If accidental
-	// loss ever matters, the upgrade path is quarantine-then-delete
-	// (see 15_REGISTRY.md section 8) - not a backup system.
+	// loss ever matters, the upgrade path is quarantine-then-delete:
+	// move orphans to a quarantine prefix with a second grace window
+	// before hard delete - not a backup system.
 	const db = getClient(env);
 	if (!db || hashes.length === 0) return 0;
 	await ensureSchema(db);

@@ -33,7 +33,7 @@ fn test_zero_external_dependencies_in_core() {
     //   streaming @std/json parser (Visitor traits only; same author and
     //   lockfile entry as serde_json, no new supply-chain surface).
     // - frontend/sha2: plan-mandated SHA-256 content fingerprints for the
-    //   build cache (14_PLAN section 9; pure Rust, no build scripts).
+    //   build cache (pure Rust, no build scripts).
     let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2")];
     for krate in ["frontend", "lir", "runtime", "diagnostics", "stdlib"] {
         let path = root.join(krate).join("Cargo.toml");
