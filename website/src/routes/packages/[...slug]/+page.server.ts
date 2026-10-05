@@ -26,17 +26,14 @@ export async function load({ platform, params, url, setHeaders }) {
 		full = `${segs[0]}/${nv.name}`;
 		want = nv.version;
 		if (!want && segs.length > 2 && VERSION_RE.test(segs[2])) {
-			want = segs[2];
-			const tab = url.searchParams.get('tab');
-			redirect(308, `/packages/${full}@${want}${tab ? `?tab=${tab}` : ''}`);
+			error(404, 'package not found');
 		}
 	} else if (segs.length > 0) {
 		const nv = splitNameVersion(segs[0]);
 		full = nv.name;
 		want = nv.version;
 		if (!want && segs.length > 1 && VERSION_RE.test(segs[1])) {
-			want = segs[1];
-			redirect(308, `/packages/${full}@${want}`);
+			error(404, 'package not found');
 		}
 	} else {
 		error(404, 'package not found');

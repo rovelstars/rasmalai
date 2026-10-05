@@ -72,8 +72,12 @@
 		}
 	}
 
+	let treeKey: string | null = null;
+	let treeInflight = false;
 	async function loadTree() {
-		if (tree !== null || treeError !== null) return;
+		const key = `${pkg.name}@${activeVersion.version}`;
+		if (key === treeKey || treeInflight) return;
+		treeInflight = true;
 		try {
 			const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/tree`);
 			if (!res.ok) {
@@ -84,6 +88,9 @@
 			tree = Array.isArray(body.files) ? body.files : [];
 		} catch {
 			treeError = 'Could not load the file listing.';
+		} finally {
+			treeKey = key;
+			treeInflight = false;
 		}
 	}
 
@@ -110,8 +117,10 @@
 		}
 	}
 
+	let dependentsInflight = false;
 	async function loadDependents() {
-		if (dependents !== null || dependentsError !== null) return;
+		if (dependents !== null || dependentsError !== null || dependentsInflight) return;
+		dependentsInflight = true;
 		try {
 			const res = await fetch(`/api/packages/${pkg.name}/dependents`);
 			if (!res.ok) {
@@ -122,13 +131,21 @@
 			dependents = Array.isArray(body.dependents) ? body.dependents.map((d) => d.name) : [];
 		} catch {
 			dependentsError = 'Could not load dependents.';
+		} finally {
+			dependentsInflight = false;
 		}
 	}
 
+	let manifestKey: string | null = null;
+	let manifestInflight = false;
 	async function loadManifest() {
-		if (manifestDeps !== null) return;
+		const key = `${pkg.name}@${activeVersion.version}`;
+		if (key === manifestKey || manifestInflight) return;
+		manifestInflight = true;
 		if (pkg.dependencies.length > 0) {
 			manifestDeps = pkg.dependencies.map((d) => ({ name: d, range: '' }));
+			manifestKey = key;
+			manifestInflight = false;
 			return;
 		}
 		try {
@@ -151,6 +168,9 @@
 			if (typeof home === 'string' && home) homepage = home;
 		} catch {
 			manifestDeps = [];
+		} finally {
+			manifestKey = key;
+			manifestInflight = false;
 		}
 	}
 
@@ -167,16 +187,7 @@
 		if (tab === 'dependencies') loadManifest();
 	});
 
-	$effect(() => {
-		tree = null;
-		treeError = null;
-		openFile = null;
-		fileText = null;
-		manifestDeps = null;
-		homepage = null;
-		if (browser && tab === 'code') loadTree();
-		if (browser && tab === 'dependencies') loadManifest();
-	});
+
 
 	function toggleDir(dir: string) {
 		openDirs = openDirs.includes(dir) ? openDirs.filter((d) => d !== dir) : [...openDirs, dir];

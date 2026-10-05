@@ -1257,7 +1257,7 @@ export async function resolveGraph(
 				memo.set(id, {
 					full,
 					version: pick,
-					path: `${full}/${pick}/download`,
+					path: `${full}@${pick}/download`,
 					integrity: row.tarballSha256,
 					engineRange: row.engineRange,
 					deps: [],
@@ -1283,7 +1283,7 @@ export async function resolveGraph(
 			memo.set(id, {
 				full,
 				version: pick,
-				path: `${full}/${pick}/download`,
+				path: `${full}@${pick}/download`,
 				integrity: row.tarballSha256,
 				engineRange: row.engineRange,
 				deps: depIds.map((d) => d.split('@').slice(0, -1).join('@')),
