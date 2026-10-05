@@ -19,7 +19,7 @@ linker = { path = "../linker" }
 cranelift = { path = "../cranelift" }
 clap = { version = "4.5", features = ["derive", "suggestions", "color", "env"] }
 clap_complete = "4.5"
-ureq = { version = "3.4.2", features = ["rustls"] }
+ureq = { version = "3.4.2", features = ["rustls", "brotli"] }
 rmcp = { version = "3.4.0", features = ["server", "transport-io", "macros", "schemars"] }
 tokio = { version = "1.53.1", features = ["rt", "macros", "io-util", "io-std"] }
 serde = { version = "1.0.229", features = ["derive"] }

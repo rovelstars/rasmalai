@@ -4,9 +4,6 @@ use std::path::{Path, PathBuf};
 pub const PROJECT_CACHE_DIR: &str = ".rnx-cache";
 pub const DEFAULT_RETENTION_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-// Must track llvm/Cargo.toml (inkwell llvm22-1 today); a stale value reuses wrong artifacts.
-pub const LLVM_VERSION: &str = "llvm22";
-
 pub fn global_cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("RNX_CACHE_HOME") {
         if !dir.is_empty() {
@@ -95,6 +92,7 @@ pub fn toolchain_parts(
     debug: bool,
     rnx_version: &str,
     runtime_hash: &str,
+    llvm_version: &str,
 ) -> Vec<Vec<u8>> {
     vec![
         format!(
@@ -103,7 +101,7 @@ pub fn toolchain_parts(
         )
         .into_bytes(),
         rnx_version.as_bytes().to_vec(),
-        LLVM_VERSION.as_bytes().to_vec(),
+        llvm_version.as_bytes().to_vec(),
         format!("rt-{runtime_hash}").into_bytes(),
         stdlib_sources_digest(),
     ]
@@ -117,7 +115,12 @@ fn collect_rnx(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_rnx(&path, out);
+            let skip = path
+                .file_name()
+                .is_some_and(|n| n == "target" || n == ".git" || n == ".rnx-cache");
+            if !skip {
+                collect_rnx(&path, out);
+            }
         } else if path.extension().is_some_and(|e| e == "rnx") {
             out.push(path);
         }
@@ -235,26 +238,26 @@ mod tests {
 
     #[test]
     fn toolchain_parts_track_profile_and_toolchain() {
-        let base = toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt");
+        let base = toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt", "llvm22");
         assert_eq!(
             base,
-            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt")
+            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt", "llvm22")
         );
         assert_ne!(
             base,
-            toolchain_parts(true, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt")
+            toolchain_parts(true, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt", "llvm22")
         );
         assert_ne!(
             base,
-            toolchain_parts(false, 0, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt")
+            toolchain_parts(false, 0, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt", "llvm22")
         );
         assert_ne!(
             base,
-            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", true, "0.1.0", "rt")
+            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", true, "0.1.0", "rt", "llvm22")
         );
         assert_ne!(
             base,
-            toolchain_parts(false, 1, None, "aarch64-unknown-linux-gnu", false, "0.1.0", "rt")
+            toolchain_parts(false, 1, None, "aarch64-unknown-linux-gnu", false, "0.1.0", "rt", "llvm22")
         );
         assert_ne!(
             base,
@@ -265,16 +268,21 @@ mod tests {
                 "x86_64-unknown-linux-gnu",
                 false,
                 "0.1.0",
-                "rt"
+                "rt",
+                "llvm22"
             )
         );
         assert_ne!(
             base,
-            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.1", "rt")
+            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.1", "rt", "llvm22")
         );
         assert_ne!(
             base,
-            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "other")
+            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "other", "llvm22")
+        );
+        assert_ne!(
+            base,
+            toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt", "llvm23")
         );
         assert_eq!(base.last().cloned().unwrap_or_default(), stdlib_sources_digest());
     }
@@ -300,6 +308,22 @@ mod tests {
         assert_eq!(hash_src_tree(&dir), first);
         std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 1; }\n").unwrap();
         assert_ne!(hash_src_tree(&dir), first);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn src_tree_hash_skips_build_dirs() {
+        let dir = std::env::temp_dir().join(format!("rnx-src-skip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        let first = hash_src_tree(&dir);
+        for skipped in ["target", ".git", ".rnx-cache"] {
+            let nested = dir.join("src").join(skipped);
+            std::fs::create_dir_all(&nested).unwrap();
+            std::fs::write(nested.join("junk.rnx"), "fn Junk(): Int { return 9; }\n").unwrap();
+        }
+        assert_eq!(hash_src_tree(&dir), first);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
