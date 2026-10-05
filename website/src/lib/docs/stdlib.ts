@@ -297,12 +297,6 @@ export function stdApiModules(): DocModule[] | null {
 	return cached?.modules ?? null;
 }
 
-export function firstParagraph(mod: DocModule | null): string | null {
-	const text = mod?.docs.description.trim();
-	if (!text) return null;
-	return text.split(/\n\s*\n/)[0].trim() || null;
-}
-
 export function importSnippet(name: string): string {
 	if (name === 'prelude') return '// @std/prelude is implicit: no import required';
 	return `import { ${stdMeta(name).primaryExport} } from "@std/${name}";`;

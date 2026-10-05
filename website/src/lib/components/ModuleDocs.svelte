@@ -3,7 +3,7 @@
 	import AuraCode from '$lib/components/AuraCode.svelte';
 	import type { DocModule, JsDoc } from '$lib/docs/api';
 	import { renderMarkdown } from '$lib/docs/markdown';
-import { buildSymbolIndex, linkifyProseHtml } from '$lib/docs/symbollinks';
+import { buildSymbolIndex, linkifyProseHtml, linkifyTypeText } from '$lib/docs/symbollinks';
 import { stdApiModules } from '$lib/docs/stdlib';
 	import { encodeSnippet } from '$lib/playground/share';
 
@@ -18,6 +18,8 @@ import { stdApiModules } from '$lib/docs/stdlib';
 	let symbolIndex = $derived(
 		buildSymbolIndex(allMods ?? stdApiModules() ?? [mod], symbolHref ?? undefined)
 	);
+
+	let resolvedTypeLinks = $derived(typeLinks ?? symbolIndex);
 
 	function md(text: string, exclude?: string): string {
 		try {
@@ -62,13 +64,13 @@ import { stdApiModules } from '$lib/docs/stdlib';
 				<h3 class="mt-4 font-mono text-xs uppercase tracking-wider text-aura-muted">fields</h3>
 				<ul class="mt-1 space-y-1 font-mono text-[13px]">
 					{#each c.fields as f}
-						<li><span class="text-aura-text">{f.name}</span><span class="text-aura-pink">: {f.ty}</span></li>
+						<li><span class="text-aura-text">{f.name}</span><span class="text-aura-pink">: <!-- eslint-disable-next-line svelte/no-at-html-tags -->{@html linkifyTypeText(f.ty, symbolIndex)}</span></li>
 					{/each}
 				</ul>
 			{/if}
 			{#each c.methods as m}
 				<div class="mt-4 border-t border-aura-border pt-3">
-					<AuraCode source={m.sig} links={typeLinks} />
+					<AuraCode source={m.sig} links={resolvedTypeLinks} />
 					{#if m.docs.description}<div class="mt-2 text-sm [&>p]:m-0">{@html md(m.docs.description, m.name)}</div>{/if}
 					{#each paramsOf(m.docs) as p}
 						<p class="mt-1 font-mono text-[13px]">
@@ -126,7 +128,7 @@ import { stdApiModules } from '$lib/docs/stdlib';
 	{#each mod.functions as f}
 		<section id="{idPrefix}fn-{f.name}" class="panel mt-4 scroll-mt-24 overflow-hidden">
 			<div class="p-4">
-				<AuraCode source={f.sig} links={typeLinks} />
+				<AuraCode source={f.sig} links={resolvedTypeLinks} />
 				{#if f.docs.description}<div class="mt-2 text-sm [&>p]:m-0">{@html md(f.docs.description, f.name)}</div>{/if}
 				{#each paramsOf(f.docs) as p}
 					<p class="mt-1 font-mono text-[13px]">

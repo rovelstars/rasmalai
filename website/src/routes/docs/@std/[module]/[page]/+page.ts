@@ -4,7 +4,6 @@ import {
 	STD_MODULES,
 	ensureApi,
 	stdApiModule,
-	stdMeta,
 	importSnippet,
 	quickstartFor
 } from '$lib/docs/stdlib';
@@ -21,25 +20,12 @@ export function entries() {
 }
 
 function overviewMarkdown(module: string, mod: DocModule): string {
-	const meta = stdMeta(module);
 	const lines = [
 		`# @std/${module} overview`,
 		'',
 		mod.docs.description,
 		'',
-		'## When to use it',
-		'',
-		meta.whenToUse,
-		'',
-		'## Capabilities',
-		'',
-		...meta.capabilities.map((c) => `- ${c}`),
-		'',
-		'## Symbols',
-		'',
-		...mod.classes.map((c) => `- class **${c.name}** — ${(c.docs.description.split('\n')[0] ?? '').trim()}`),
-		...mod.enums.map((e) => `- enum **${e.name}**`),
-		...mod.functions.map((f) => `- fn **${f.name}()**`)
+		'Continue with [Getting Started](getting-started) or jump to the [API Reference](api).'
 	];
 	return lines.join('\n');
 }

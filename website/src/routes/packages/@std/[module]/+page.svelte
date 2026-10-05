@@ -4,7 +4,7 @@
 	import { browser } from '$app/environment';
 	import { BookOpen } from 'lucide-svelte';
 	import { STDLIB_ICONS } from '$lib/docs/nav';
-	import { STD_LICENSE, firstParagraph, importSnippet } from '$lib/docs/stdlib';
+	import { STD_LICENSE, importSnippet } from '$lib/docs/stdlib';
 	import { renderMarkdown } from '$lib/docs/markdown';
 
 	let { data } = $props();
@@ -17,10 +17,10 @@
 	let pinned = $derived(version === data.engine);
 
 	let Icon = $derived(STDLIB_ICONS[data.meta.name]);
-	let blurb = $derived(firstParagraph(data.mod) ?? data.meta.tagline);
+	let blurb = $derived(data.mod?.docs.description ?? data.meta.tagline);
 	let blurbHtml = $derived.by(() => {
 		try {
-			return renderMarkdown(firstParagraph(data.mod) ?? data.meta.tagline).html;
+			return renderMarkdown(data.mod?.docs.description ?? data.meta.tagline).html;
 		} catch {
 			return null;
 		}

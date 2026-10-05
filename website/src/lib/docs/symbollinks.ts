@@ -44,6 +44,18 @@ function splitHtml(html: string): { tag: boolean; text: string }[] {
 	return parts.filter((p) => p.length > 0).map((p) => ({ tag: p.startsWith('<'), text: p }));
 }
 
+function escHtmlText(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+export function linkifyTypeText(ty: string, index: Map<string, string>): string {
+	const names = [...index.keys()].filter((n) => /^[A-Z]/.test(n));
+	if (names.length === 0) return escHtmlText(ty);
+	names.sort((a, b) => b.length - a.length);
+	const re = new RegExp(`(?<![A-Za-z0-9_])(${names.map(escReg).join('|')})(?![A-Za-z0-9_])`, 'g');
+	return escHtmlText(ty).replace(re, (m) => `<a href="${index.get(m)}" class="symlink">${m}</a>`);
+}
+
 function isOpenTag(token: string, name: string): boolean {
 	return new RegExp(`^<${name}[\\s>]`, 'i').test(token);
 }
