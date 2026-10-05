@@ -1,9 +1,11 @@
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const PROJECT_CACHE_DIR: &str = ".rnx-cache";
 pub const DEFAULT_RETENTION_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+// Must track llvm/Cargo.toml (inkwell llvm22-1 today); a stale value reuses wrong artifacts.
+pub const LLVM_VERSION: &str = "llvm22";
 
 pub fn global_cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("RNX_CACHE_HOME") {
@@ -73,95 +75,61 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-pub fn stdlib_sources() -> Vec<(&'static str, &'static str)> {
-    stdlib::MODULES
-        .iter()
-        .filter_map(|name| stdlib::source(name).map(|src| (*name, src)))
-        .collect()
-}
-
-pub fn stdlib_fingerprint(
+pub fn toolchain_parts(
+    release: bool,
+    opt_level: u8,
+    target_triple: Option<&str>,
     rnx_version: &str,
-    llvm_version: &str,
-    opt_profile: &str,
-    target_triple: &str,
     runtime_hash: &str,
-) -> String {
-    let mut owned: Vec<String> = Vec::new();
-    for (name, src) in stdlib_sources() {
-        owned.push(name.to_string());
-        owned.push(src.to_string());
-    }
-    owned.push(rnx_version.to_string());
-    owned.push(llvm_version.to_string());
-    owned.push(opt_profile.to_string());
-    owned.push(target_triple.to_string());
-    owned.push(runtime_hash.to_string());
-    let parts: Vec<&[u8]> = owned.iter().map(|s| s.as_bytes()).collect();
-    fingerprint_hex(&parts)
+) -> Vec<Vec<u8>> {
+    vec![
+        format!(
+            "release={release} opt={opt_level} target={}",
+            target_triple.unwrap_or("host")
+        )
+        .into_bytes(),
+        rnx_version.as_bytes().to_vec(),
+        LLVM_VERSION.as_bytes().to_vec(),
+        format!("rt-{runtime_hash}").into_bytes(),
+    ]
 }
 
-pub fn dep_fingerprint(
-    tarball_bytes: &[u8],
-    version: &str,
-    pinned_commit: &str,
-    transitive: &BTreeMap<String, String>,
-    toolchain: &[&str],
-) -> String {
-    let mut parts: Vec<&[u8]> = vec![tarball_bytes, version.as_bytes(), pinned_commit.as_bytes()];
-    let mut keys: Vec<&String> = transitive.keys().collect();
-    keys.sort();
-    let mut owned: Vec<String> = Vec::new();
-    for k in keys {
-        owned.push(k.clone());
-        owned.push(transitive[k].clone());
+fn collect_rnx(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rnx(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rnx") {
+            out.push(path);
+        }
     }
-    for s in &owned {
-        parts.push(s.as_bytes());
-    }
-    for t in toolchain {
-        parts.push(t.as_bytes());
-    }
-    fingerprint_hex(&parts)
 }
 
-pub fn user_fingerprint(
-    local_bytes: &[u8],
-    direct_deps: &BTreeMap<String, String>,
-    profile_flags: &str,
-    toolchain: &[&str],
-) -> String {
-    let mut parts: Vec<&[u8]> = vec![local_bytes, profile_flags.as_bytes()];
-    let mut keys: Vec<&String> = direct_deps.keys().collect();
-    keys.sort();
-    let mut owned: Vec<String> = Vec::new();
-    for k in keys {
-        owned.push(k.clone());
-        owned.push(direct_deps[k].clone());
+pub fn hash_src_tree(root: &Path) -> Vec<u8> {
+    let mut found = Vec::new();
+    collect_rnx(&root.join("src"), &mut found);
+    let mut rels: Vec<(String, Vec<u8>)> = Vec::new();
+    for path in found {
+        let rel = match path.strip_prefix(root) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        rels.push((rel, std::fs::read(&path).unwrap_or_default()));
     }
-    for s in &owned {
-        parts.push(s.as_bytes());
+    rels.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hasher = Sha256::new();
+    for (rel, bytes) in &rels {
+        let rel_bytes = rel.as_bytes();
+        hasher.update(&(rel_bytes.len() as u64).to_le_bytes());
+        hasher.update(rel_bytes);
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
     }
-    for t in toolchain {
-        parts.push(t.as_bytes());
-    }
-    fingerprint_hex(&parts)
-}
-
-fn artifact_path(dir: &Path, key: &str) -> PathBuf {
-    dir.join(format!("{key}.bin"))
-}
-
-pub fn store_artifact(dir: &Path, key: &str, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{key}.tmp"));
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, artifact_path(dir, key))?;
-    Ok(())
-}
-
-pub fn load_artifact(dir: &Path, key: &str) -> Option<Vec<u8>> {
-    std::fs::read(artifact_path(dir, key)).ok()
+    hasher.finalize().to_vec()
 }
 
 pub fn cache_usage_bytes(dir: &Path) -> u64 {
@@ -251,39 +219,50 @@ mod tests {
     }
 
     #[test]
-    fn dep_fingerprint_ignores_map_order() {
-        let mut m1 = BTreeMap::new();
-        m1.insert("b".to_string(), "2".to_string());
-        m1.insert("a".to_string(), "1".to_string());
-        let mut m2 = BTreeMap::new();
-        m2.insert("a".to_string(), "1".to_string());
-        m2.insert("b".to_string(), "2".to_string());
-        assert_eq!(
-            dep_fingerprint(b"tar", "1.0.0", "", &m1, &["llvm22"]),
-            dep_fingerprint(b"tar", "1.0.0", "", &m2, &["llvm22"])
+    fn toolchain_parts_track_profile_and_toolchain() {
+        let base = toolchain_parts(false, 1, None, "0.1.0", "rt");
+        assert_eq!(base, toolchain_parts(false, 1, None, "0.1.0", "rt"));
+        assert_ne!(base, toolchain_parts(true, 1, None, "0.1.0", "rt"));
+        assert_ne!(base, toolchain_parts(false, 0, None, "0.1.0", "rt"));
+        assert_ne!(
+            base,
+            toolchain_parts(false, 1, Some("aarch64-unknown-linux-gnu"), "0.1.0", "rt")
         );
+        assert_ne!(base, toolchain_parts(false, 1, None, "0.1.1", "rt"));
+        assert_ne!(base, toolchain_parts(false, 1, None, "0.1.0", "other"));
     }
 
     #[test]
-    fn store_load_prune_roundtrip() {
+    fn src_tree_hash_covers_sources_only() {
+        let dir = std::env::temp_dir().join(format!("rnx-src-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        let first = hash_src_tree(&dir);
+        assert_eq!(first.len(), 32);
+        assert_eq!(hash_src_tree(&dir), first);
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+        std::fs::write(dir.join("src").join("notes.txt"), "ignored").unwrap();
+        assert_eq!(hash_src_tree(&dir), first);
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 1; }\n").unwrap();
+        assert_ne!(hash_src_tree(&dir), first);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_and_clean_roundtrip() {
         let dir = std::env::temp_dir().join(format!("rnx-cache-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        store_artifact(&dir, "aaa", b"hello").unwrap();
-        store_artifact(&dir, "bbb", b"world!").unwrap();
-        assert_eq!(load_artifact(&dir, "aaa").unwrap(), b"hello");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("aaa.bin"), b"hello world").unwrap();
         assert_eq!(cache_usage_bytes(&dir), 11);
-        let freed = prune_lru(&dir, 6).unwrap();
-        assert_eq!(freed, 6);
-        assert_eq!(cache_usage_bytes(&dir), 5);
-        let cleaned = clean_dir(&dir).unwrap();
-        assert_eq!(cleaned, 5);
+        assert_eq!(prune_lru(&dir, 100).unwrap(), 0);
+        assert_eq!(cache_usage_bytes(&dir), 11);
+        assert_eq!(prune_lru(&dir, 6).unwrap(), 11);
+        assert_eq!(cache_usage_bytes(&dir), 0);
+        std::fs::write(dir.join("ccc.bin"), b"hello").unwrap();
+        assert_eq!(clean_dir(&dir).unwrap(), 5);
+        assert_eq!(cache_usage_bytes(&dir), 0);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn stdlib_fingerprint_covers_embedded_sources() {
-        let f = stdlib_fingerprint("0.1.0", "llvm22", "dev", "x86_64-linux", "rt");
-        assert_eq!(f.len(), 64);
-        assert_ne!(f, stdlib_fingerprint("0.1.1", "llvm22", "dev", "x86_64-linux", "rt"));
     }
 }

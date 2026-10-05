@@ -35,7 +35,7 @@ sibling sits high and fast, and that gap is the language's own dev/rel
 tradeoff.
 
 `build_ms` is 0 with `artifact: false` only when a toolchain genuinely has
-nothing to time; both the runner and `website/scripts/sync-benchmarks.mjs`
+nothing to time; both the runner and the website benchmark ingest API
 reject a zero build time on a row that claims to produce an artifact.
 
 ## Unified suite layout

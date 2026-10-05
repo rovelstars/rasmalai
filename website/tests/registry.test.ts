@@ -6,6 +6,7 @@ import {
 	satisfiesRange,
 	maxSatisfying,
 	selectLatestVersion,
+	isValidRange,
 	levelize
 } from '../src/lib/server/registry.js';
 import { buildTransferAuditEntries } from '../src/lib/server/db.js';
@@ -52,6 +53,15 @@ describe('ranges', () => {
 	it('picks the max satisfying version', () => {
 		assert.equal(maxSatisfying(['1.0.0', '1.4.3', '2.0.0'], '^1.0.0'), '1.4.3');
 		assert.equal(maxSatisfying(['1.0.0'], '^2.0.0'), null);
+	});
+
+	it('validates the documented range grammar', () => {
+		for (const r of ['*', 'latest', '', '1.2.3', '1.2.3-rc.1', '^1.0.0', '~0.2.0', '>=1.2.3', '>= 1.2.3']) {
+			assert.equal(isValidRange(r), true, r);
+		}
+		for (const r of ['foo', '^', '~', '>=', '1.2', 'v1.2.3', '^foo', '>=bar', '<1.2.3', '1.2.3 || 2.0.0', '*.*']) {
+			assert.equal(isValidRange(r), false, r);
+		}
 	});
 
 	it('copies npm prerelease exclusion', () => {

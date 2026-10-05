@@ -1250,9 +1250,30 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
     );
     std::fs::write(root.join(frontend::project::DEFAULT_ENTRY), main)
         .map_err(|e| format!("cannot write src/main.rnx: {e}"))?;
-    std::fs::write(root.join(".gitignore"), ".rnx-cache/\n")
+    ensure_gitignore_entry(&root.join(".gitignore"))
         .map_err(|e| format!("cannot write .gitignore: {e}"))?;
     Ok(root)
+}
+
+fn ensure_gitignore_entry(path: &std::path::Path) -> std::io::Result<()> {
+    const LINE: &str = ".rnx-cache/";
+    match std::fs::read_to_string(path) {
+        Ok(existing) => {
+            if existing.lines().any(|line| line.trim() == LINE) {
+                return Ok(());
+            }
+            let mut out = existing;
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(".rnx-cache/\n");
+            std::fs::write(path, out)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(path, ".rnx-cache/\n")
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub struct ScopeTarget {
@@ -2106,4 +2127,57 @@ pub fn apply_locked_spawn_gate(scope_root: Option<&std::path::Path>) {
     }
     let csv = allowed.join(",");
     runtime::native::rnx_set_spawn_allowlist(csv.as_ptr(), csv.len());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rnx-gitignore-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn gitignore_missing_file_is_created() {
+        let dir = scratch("missing");
+        let path = dir.join(".gitignore");
+        ensure_gitignore_entry(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), ".rnx-cache/\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gitignore_existing_content_survives() {
+        let dir = scratch("append");
+        let path = dir.join(".gitignore");
+        std::fs::write(&path, "target/\n*.log").unwrap();
+        ensure_gitignore_entry(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "target/\n*.log\n.rnx-cache/\n"
+        );
+        ensure_gitignore_entry(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "target/\n*.log\n.rnx-cache/\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gitignore_existing_entry_left_untouched() {
+        let dir = scratch("untouched");
+        let path = dir.join(".gitignore");
+        std::fs::write(&path, "target/\n.rnx-cache/\n").unwrap();
+        ensure_gitignore_entry(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "target/\n.rnx-cache/\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -4,24 +4,6 @@ fn profile_name(release: bool) -> &'static str {
     if release { "release" } else { "dev" }
 }
 
-fn src_rnx_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            src_rnx_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rnx") {
-            out.push(path);
-        }
-    }
-}
-
-// Must track llvm/Cargo.toml (inkwell llvm22-1 today); a stale value reuses wrong artifacts.
-const LLVM_VERSION: &str = "llvm22";
-
 fn build_key(
     input: &str,
     root: &std::path::Path,
@@ -38,15 +20,7 @@ fn build_key(
     owned.push(std::fs::read(input).unwrap_or_default());
     owned.push(std::fs::read(root.join(frontend::project::MANIFEST_FILE)).unwrap_or_default());
     owned.push(std::fs::read(root.join("Project.deplock")).unwrap_or_default());
-    let mut srcs = Vec::new();
-    src_rnx_files(&root.join("src"), &mut srcs);
-    srcs.sort();
-    for path in &srcs {
-        if let Ok(rel) = path.strip_prefix(root) {
-            owned.push(rel.to_string_lossy().replace('\\', "/").into_bytes());
-        }
-        owned.push(std::fs::read(path).unwrap_or_default());
-    }
+    owned.push(frontend::cache::hash_src_tree(root));
     if let Some(cfg) = &manifest {
         for (name, target) in &cfg.entries.bins {
             owned.push(name.as_bytes().to_vec());
@@ -66,22 +40,13 @@ fn build_key(
             }
         }
     }
-    owned.push(
-        format!(
-            "release={release} opt={opt_level} target={}",
-            target_triple.unwrap_or("host")
-        )
-        .into_bytes(),
-    );
-    owned.push(env!("CARGO_PKG_VERSION").as_bytes().to_vec());
-    owned.push(LLVM_VERSION.as_bytes().to_vec());
-    owned.push(
-        format!(
-            "rt-{}",
-            frontend::checksum::Sha256::hexdigest(runtime::archive::BYTES)
-        )
-        .into_bytes(),
-    );
+    owned.extend(frontend::cache::toolchain_parts(
+        release,
+        opt_level,
+        target_triple,
+        env!("CARGO_PKG_VERSION"),
+        &frontend::checksum::Sha256::hexdigest(runtime::archive::BYTES),
+    ));
     let parts: Vec<&[u8]> = owned.iter().map(|b| b.as_slice()).collect();
     frontend::cache::fingerprint_hex(&parts)
 }

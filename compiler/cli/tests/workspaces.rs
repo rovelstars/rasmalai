@@ -138,3 +138,51 @@ fn test_bare_run_from_workspace_root_needs_package_flag() {
     assert!(text.contains("specify -p <package>"), "{text}");
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+#[test]
+fn test_clean_package_flag_scopes_to_member() {
+    let base = std::env::temp_dir().join(format!("rnx-ws-clean-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(
+        base.join("Project.config"),
+        "export default {\n    workspace: {\n        members: [\"alpha\", \"beta\"]\n    }\n}\n",
+    )
+    .unwrap();
+    for member in ["alpha", "beta"] {
+        let dir = base.join(member);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join(".rnx-cache")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            format!("export default {{\n    project: {{\n        name: \"{member}\",\n        version: \"0.1.0\"\n    }}\n}}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src").join("main.rnx"),
+            "fn Main(): Int {\n    return 0;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join(".rnx-cache").join("stale.bin"), "stale").unwrap();
+    }
+    let rnx = env!("CARGO_BIN_EXE_rnx");
+    let clean = std::process::Command::new(rnx)
+        .arg("clean")
+        .arg("-p")
+        .arg("alpha")
+        .current_dir(&base)
+        .output()
+        .unwrap();
+    assert!(clean.status.success(), "{}", String::from_utf8_lossy(&clean.stderr));
+    let stdout = String::from_utf8(clean.stdout).unwrap();
+    assert!(stdout.contains("alpha"), "{stdout}");
+    assert!(
+        !base.join("alpha").join(".rnx-cache").join("stale.bin").exists(),
+        "alpha cache must be cleaned"
+    );
+    assert!(
+        base.join("beta").join(".rnx-cache").join("stale.bin").is_file(),
+        "beta cache must survive clean -p alpha"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}

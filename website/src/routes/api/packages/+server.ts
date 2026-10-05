@@ -11,6 +11,8 @@ import {
 	recentVersionCount,
 	putChunk,
 	linkVersionChunks,
+	purgeUrls,
+	packagePointerUrls,
 	MAX_DOC_JSON_BYTES,
 	MAX_README_BYTES,
 	MAX_VERSIONS_PER_WEEK,
@@ -18,6 +20,7 @@ import {
 	type PublishPayload
 } from '$lib/server/db';
 import { specHeaders } from '$lib/server/registry';
+import { sanitizeGuideHtml } from '$lib/server/sanitize';
 import { chunkTarball, sha256Hex } from '$lib/server/chunks';
 import { sessionUser, readSessionCookie, userScopes } from '$lib/server/auth';
 
@@ -30,11 +33,10 @@ function unauthorized(message: string) {
 }
 
 // Public catalog for search and listings. Metadata only, never doc payloads.
-// Short edge cache: the index moves on every publish.
 export async function GET({ platform, setHeaders }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const packages = await listPackages(env);
-	setHeaders({ 'Cache-Control': 'public, max-age=60, s-maxage=60', ...specHeaders() });
+	setHeaders({ 'Cache-Control': 'public, max-age=3600, s-maxage=3600', ...specHeaders() });
 	return json(
 		{
 			packages: packages.map((p) => ({
@@ -49,11 +51,7 @@ export async function GET({ platform, setHeaders }) {
 	);
 }
 
-function badScript(s: string): boolean {
-	return /<script[\s>]/i.test(s);
-}
-
-export async function POST({ request, platform }) {
+export async function POST({ request, platform, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const auth = request.headers.get('Authorization') ?? '';
 	const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
@@ -140,11 +138,8 @@ export async function POST({ request, platform }) {
 		if (typeof e['slug'] !== 'string' || typeof e['title'] !== 'string') {
 			return json({ success: false, error: 'guide needs slug and title' }, { status: 400, headers: specHeaders() });
 		}
-		const html = typeof e['html'] === 'string' ? e['html'] : '';
-		const source = typeof e['source'] === 'string' ? e['source'] : '';
-		if (badScript(html) || badScript(source)) {
-			return json({ success: false, error: 'guide content must be pre-sanitized (no script tags)' }, { status: 400, headers: specHeaders() });
-		}
+		if (typeof e['html'] === 'string') e['html'] = sanitizeGuideHtml(e['html']);
+		if (typeof e['source'] === 'string') e['source'] = sanitizeGuideHtml(e['source']);
 	}
 	const guidesJson = JSON.stringify(guides);
 	let manifestJson = '{"deps":{}}';
@@ -235,6 +230,7 @@ export async function POST({ request, platform }) {
 			}
 			await linkVersionChunks(env, `ver_${packageId(parsed.scope, parsed.name)}_${version}`, units.map((u) => u.hash));
 		}
+		await purgeUrls(env, packagePointerUrls(url.origin, parsed.full, version));
 		return json({ success: true, url: `/packages/${parsed.full}`, version }, { status: 201, headers: specHeaders() });
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);

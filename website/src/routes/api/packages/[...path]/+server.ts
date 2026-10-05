@@ -4,11 +4,14 @@ import {
 	getVersionRow,
 	getLatestVersion,
 	getVersionBytes,
+	getPackageOwner,
 	yankVersion,
 	recordTombstone,
-	checkPublishToken
+	checkPublishToken,
+	purgeUrls,
+	packagePointerUrls
 } from '$lib/server/db';
-import { safeEqual } from '$lib/server/auth';
+import { safeEqual, sessionUser, readSessionCookie, userScopes } from '$lib/server/auth';
 import { specHeaders } from '$lib/server/registry';
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -144,6 +147,12 @@ export async function GET({ params, platform, setHeaders, url }) {
 
 	if (sub === 'guides') {
 		const guides = readGuides(row.guidesJson);
+		if (guides.length === 0) {
+			return json(
+				{ code: 'not-found', message: `package ${full}@${version} ships no guides` },
+				{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
+			);
+		}
 		if (!slug) {
 			setHeaders({ ...immutable, ...specHeaders() });
 			return json({ guides: guides.map((g) => ({ slug: g.slug, title: g.title })) }, { headers: headers() });
@@ -168,7 +177,7 @@ function adminToken(env: Record<string, string | undefined>, provided: string): 
 	return safeEqual(provided, configured);
 }
 
-export async function POST({ params, request, platform }) {
+export async function POST({ params, request, platform, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const parsed = parsePath(params.path ?? '');
 	if (!parsed) return notFound('invalid package path');
@@ -181,8 +190,25 @@ export async function POST({ params, request, platform }) {
 	const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
 
 	if (action === 'yank') {
+		// Org token stays valid as operator break-glass; otherwise the
+		// caller needs a session whose scope (or unscoped owner) matches.
 		if (!checkPublishToken(env, token)) {
-			return json({ code: 'unauthorized', message: 'invalid publisher token' }, { status: 401, headers: headers() });
+			const user = await sessionUser(env, readSessionCookie(request.headers.get('Cookie')));
+			if (!user) {
+				return json({ code: 'unauthorized', message: 'invalid publisher token' }, { status: 401, headers: headers() });
+			}
+			const name = parsePackageName(full);
+			if (name && name.scope) {
+				const scopes = await userScopes(env, user.id);
+				if (!scopes.includes(name.scope)) {
+					return json({ code: 'forbidden', message: `scope @${name.scope} is not yours` }, { status: 403, headers: headers() });
+				}
+			} else {
+				const owner = await getPackageOwner(env, name?.scope ?? '', name?.name ?? '');
+				if (owner !== user.username) {
+					return json({ code: 'forbidden', message: `package ${full} is owned by someone else` }, { status: 403, headers: headers() });
+				}
+			}
 		}
 		const found = await getVersionRow(env, full, version);
 		if (!found) return notFound(`package ${full}@${version} does not exist`);
@@ -191,6 +217,7 @@ export async function POST({ params, request, platform }) {
 		if (!ok) {
 			return json({ code: 'conflict', message: `version ${version} is not live` }, { status: 409, headers: headers() });
 		}
+		await purgeUrls(env, packagePointerUrls(url.origin, full, version));
 		return json({ success: true, version, status: 'yanked' }, { headers: headers() });
 	}
 
@@ -208,5 +235,6 @@ export async function POST({ params, request, platform }) {
 		reason = '';
 	}
 	await recordTombstone(env, full, version, reason);
+	await purgeUrls(env, packagePointerUrls(url.origin, full, version));
 	return json({ success: true, version, status: 'tombstoned' }, { headers: headers() });
 }
