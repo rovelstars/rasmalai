@@ -1609,9 +1609,11 @@ fn readTextAsync(path: String): Promise<Result<String, String>> {
 * @returns pending promise settling with Ok(buffer) or Err(message).
 * @example
 * import fs from "@std/fs";
+* import { ByteBuffer } from "@std/bytes";
 *
 * fs.writeText("doc-demo-async.bin", "abc", .Overwrite);
-* print(fs.readBytesAsync("doc-demo-async.bin").wait().unwrap().length());
+* let got = fs.readBytesAsync("doc-demo-async.bin").wait().unwrap().unwrapOr(ByteBuffer.allocate(0));
+* print(got.length());
 */
 fn readBytesAsync(path: String): Promise<Result<ByteBuffer, String>> {
     let wr = Promise.withResolvers<Result<ByteBuffer, String>>();
@@ -1739,7 +1741,7 @@ fn writeBytesAsync(path: String, buf: ByteBuffer, mode: WriteMode): Promise<Resu
 * import fs, { FileStat } from "@std/fs";
 *
 * fs.writeText("doc-demo-astat.txt", "hello", .Overwrite);
-* let st: FileStat = fs.statAsync("doc-demo-astat.txt").wait().unwrap();
+* let st: FileStat = fs.statAsync("doc-demo-astat.txt").wait().unwrap().unwrap();
 * print(st.size);
 */
 fn statAsync(path: String): Promise<Result<FileStat, String>> {
@@ -1770,8 +1772,8 @@ fn statAsync(path: String): Promise<Result<FileStat, String>> {
 * @example
 * import fs from "@std/fs";
 *
-* let names: Array<String> = fs.readDirAsync(".").wait().unwrap();
-* print(names.length());
+* let names: Array<String> = fs.readDirAsync(".").wait().unwrap().unwrapOr([]);
+* print(names.length() > 0);
 */
 fn readDirAsync(path: String): Promise<Result<Array<String>, String>> {
     let wr = Promise.withResolvers<Result<Array<String>, String>>();
