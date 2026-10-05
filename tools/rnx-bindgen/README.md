@@ -9,7 +9,7 @@ a Rasmalai package (`src/lib.rnx` + `src/types.rnx` + `Project.config`).
 
 ```
 tools/rnx-bindgen/
-  Project.config   # export default manifest, entry src/main.rnx
+  Project.config   # export default manifest, entries.main src/main.rnx
   src/main.rnx     # CLI arg parsing, orchestration
   src/clang.rnx    # clang subprocess via Process.run
   src/extract.rnx  # AST filter, struct/define extraction, C-to-RNX type map

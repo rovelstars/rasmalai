@@ -31,8 +31,8 @@ export default {
         main: "src/main.rnx"
     },
     registry: {
-        url: "https://registry.rnx.dev",
-        token_env: "RNX_REGISTRY_TOKEN"
+        url: "https://rnx.dev/api/packages",
+        token_env: "RNX_TOKEN"
     },
     dependencies: {
         sqlite3: "^3.45.0",
@@ -45,7 +45,7 @@ export default {
 }
 ```
 
-Manifests evaluate in a sandbox: top-level `const`, object and array spreads (`...deps`), ternaries, `switch` over the ambient `target` object (`target.os`, `target.arch`, `target.env`), and member access. Functions, loops, imports, and I/O are rejected with `E108`. A conditional native dependency looks like this:
+Manifests evaluate in a sandbox: top-level `const`, object and array spreads (`...deps`), ternaries, `switch` over the ambient `target` object (`target.os`, `target.arch`, `target.env`), and member access. Functions, loops, imports, and I/O are rejected with `E108`. The exact allowed-versus-forbidden list lives in [Packages and Registries](/manual/18-packages-and-registries). A conditional native dependency looks like this:
 
 ```rnx
 const libs = {
