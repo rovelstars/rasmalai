@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import { signup, login, sessionCookie, validateUsername } from '$lib/server/auth';
 import { specHeaders } from '$lib/server/registry';
 
-export async function POST({ request, platform }) {
+export async function POST({ request, platform, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	let body: Record<string, unknown>;
 	try {
@@ -20,9 +20,10 @@ export async function POST({ request, platform }) {
 	try {
 		const user = await signup(env, username, password, disclaimerAck);
 		const session = await login(env, username, password);
+		const secure = url.protocol === 'https:';
 		return json(
 			{ success: true, user: { username: user.username, scopes: [`@${username}`] } },
-			{ status: 201, headers: { 'Set-Cookie': sessionCookie(session.token, 30 * 86400), ...specHeaders() } }
+			{ status: 201, headers: { 'Set-Cookie': sessionCookie(session.token, 30 * 86400, secure), ...specHeaders() } }
 		);
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
@@ -32,6 +33,9 @@ export async function POST({ request, platform }) {
 		if (msg === 'username is taken') {
 			return json({ code: 'conflict', message: msg }, { status: 409, headers: specHeaders() });
 		}
-		return json({ code: 'signup-failed', message: msg }, { status: 500, headers: specHeaders() });
+		if (msg === 'SESSION_PEPPER is not configured') {
+			return json({ code: 'server-misconfigured', message: msg }, { status: 500, headers: specHeaders() });
+		}
+		return json({ code: 'signup-failed', message: 'signup failed' }, { status: 500, headers: specHeaders() });
 	}
 }

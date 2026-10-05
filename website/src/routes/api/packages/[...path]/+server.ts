@@ -8,6 +8,7 @@ import {
 	recordTombstone,
 	checkPublishToken
 } from '$lib/server/db';
+import { safeEqual } from '$lib/server/auth';
 import { specHeaders } from '$lib/server/registry';
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -38,6 +39,14 @@ function parsePath(path: string): { full: string; rest: string[] } | null {
 	return { full: segs[0], rest: segs.slice(1) };
 }
 
+function readWithdrawReason(manifestJson: string): string {
+	try {
+		return String((JSON.parse(manifestJson) as Record<string, unknown>)['withdrawReason'] ?? '');
+	} catch {
+		return '';
+	}
+}
+
 interface GuideEntry {
 	slug: string;
 	title: string;
@@ -64,21 +73,21 @@ export async function GET({ params, platform, setHeaders, url }) {
 	if (rest.length === 0) {
 		const latest = await getLatestVersion(env, full);
 		if (!latest) return notFound(`package ${full} does not exist`);
-		setHeaders({ 'Cache-Control': 'public, max-age=300, s-maxage=300', ...specHeaders() });
-		return json({ name: full, latest, url: `/api/packages/${full}/${latest}` }, { status: 302, headers: headers() });
+		return new Response(null, {
+			status: 302,
+			headers: {
+				Location: `/api/packages/${full}/${latest}`,
+				'Cache-Control': 'public, max-age=300, s-maxage=300',
+				...specHeaders()
+			}
+		});
 	}
 
 	const [version, sub, slug] = rest;
 	const found = await getVersionRow(env, full, version);
 	if (!found) return notFound(`package ${full}@${version} does not exist`);
 	if (found.withdrawn) {
-		let reason = '';
-		try {
-			reason = String((JSON.parse(found.row.manifestJson) as Record<string, unknown>)['withdrawReason'] ?? '');
-		} catch {
-			reason = '';
-		}
-		return withdrawn(version, reason);
+		return withdrawn(version, readWithdrawReason(found.row.manifestJson));
 	}
 	const { row } = found;
 	const immutable = { 'Cache-Control': 'public, max-age=31536000, immutable' };
@@ -104,7 +113,15 @@ export async function GET({ params, platform, setHeaders, url }) {
 	}
 
 	if (sub === 'download') {
-		const bytes = await getVersionBytes(env, row.id);
+		let bytes: Uint8Array | null;
+		try {
+			bytes = await getVersionBytes(env, row.id);
+		} catch {
+			return json(
+				{ code: 'integrity-failed', message: `stored content for ${full}@${version} failed its integrity check` },
+				{ status: 500, headers: headers() }
+			);
+		}
 		if (!bytes) return notFound(`no stored content for ${full}@${version}`);
 		return new Response(bytes as BodyInit, {
 			headers: {
@@ -148,7 +165,7 @@ export async function GET({ params, platform, setHeaders, url }) {
 function adminToken(env: Record<string, string | undefined>, provided: string): boolean {
 	const configured = env['ADMIN_TOKEN'];
 	if (!configured) return false;
-	return provided === configured && provided.length > 0;
+	return safeEqual(provided, configured);
 }
 
 export async function POST({ params, request, platform }) {
@@ -169,7 +186,7 @@ export async function POST({ params, request, platform }) {
 		}
 		const found = await getVersionRow(env, full, version);
 		if (!found) return notFound(`package ${full}@${version} does not exist`);
-		if (found.withdrawn) return withdrawn(version, '');
+		if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
 		const ok = await yankVersion(env, full, version);
 		if (!ok) {
 			return json({ code: 'conflict', message: `version ${version} is not live` }, { status: 409, headers: headers() });
@@ -182,7 +199,7 @@ export async function POST({ params, request, platform }) {
 	}
 	const found = await getVersionRow(env, full, version);
 	if (!found) return notFound(`package ${full}@${version} does not exist`);
-	if (found.withdrawn) return withdrawn(version, '');
+	if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
 	let reason = '';
 	try {
 		const body = (await request.json()) as Record<string, unknown>;

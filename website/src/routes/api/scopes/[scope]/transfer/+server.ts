@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { transferScope } from '$lib/server/db';
+import { safeEqual } from '$lib/server/auth';
 import { specHeaders } from '$lib/server/registry';
 
 export async function POST({ params, request, platform }) {
@@ -7,7 +8,7 @@ export async function POST({ params, request, platform }) {
 	const auth = request.headers.get('Authorization') ?? '';
 	const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
 	const configured = env['ADMIN_TOKEN'];
-	if (!configured || token !== configured) {
+	if (!configured || !safeEqual(token, configured)) {
 		return json({ code: 'unauthorized', message: 'invalid admin token' }, { status: 401, headers: specHeaders() });
 	}
 	const scope = params.scope ?? '';
@@ -33,6 +34,6 @@ export async function POST({ params, request, platform }) {
 		if (msg.includes('live versions')) {
 			return json({ code: 'conflict', message: msg }, { status: 409, headers: specHeaders() });
 		}
-		return json({ code: 'transfer-failed', message: msg }, { status: 500, headers: specHeaders() });
+		return json({ code: 'transfer-failed', message: 'transfer failed' }, { status: 500, headers: specHeaders() });
 	}
 }

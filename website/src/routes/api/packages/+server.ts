@@ -5,6 +5,7 @@ import {
 	checkPublishToken,
 	parsePackageName,
 	packageId,
+	getPackageOwner,
 	getVersionRow,
 	versionReuseBlocked,
 	recentVersionCount,
@@ -57,11 +58,13 @@ export async function POST({ request, platform }) {
 	const auth = request.headers.get('Authorization') ?? '';
 	const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
 	const orgTokenOk = checkPublishToken(env, token);
+	let actorOwner = 'org';
 	if (!orgTokenOk) {
 		const user = await sessionUser(env, readSessionCookie(request.headers.get('Cookie')));
 		if (!user) {
 			return unauthorized('invalid publisher token');
 		}
+		actorOwner = user.username;
 		const scopes = await userScopes(env, user.id);
 		const rawNameEarly = request.headers.get('X-RNX-Package-Name') ?? '';
 		const parsedEarly = parsePackageName(rawNameEarly);
@@ -174,7 +177,20 @@ export async function POST({ request, platform }) {
 		);
 	}
 
+	// First publish of a name claims owner; later session publishes need an
+	// owner match. The org token skips this check as operator break-glass.
+	const claimedOwner = await getPackageOwner(env, parsed.scope, parsed.name);
+	if (claimedOwner !== null && claimedOwner !== '' && !orgTokenOk && claimedOwner !== actorOwner) {
+		return json(
+			{ success: false, error: `package ${parsed.full} is owned by someone else` },
+			{ status: 403, headers: specHeaders() }
+		);
+	}
+
 	let tarballSha256 = typeof meta['tarballSha256'] === 'string' ? (meta['tarballSha256'] as string) : '';
+	if (!tarball && tarballSha256) {
+		return json({ success: false, error: 'tarballSha256 requires tarball bytes' }, { status: 400, headers: specHeaders() });
+	}
 	if (tarball) {
 		tarballSha256 = await sha256Hex(tarball);
 		if (checksum && checksum !== tarballSha256) {
@@ -197,7 +213,8 @@ export async function POST({ request, platform }) {
 		manifestJson,
 		guidesJson,
 		tarballSha256,
-		requestId
+		requestId,
+		owner: actorOwner
 	};
 
 	try {
@@ -210,13 +227,25 @@ export async function POST({ request, platform }) {
 		}
 		if (tarball) {
 			const units = await chunkTarball(tarball);
-			for (const u of units) await putChunk(env, u.hash, u.size, u.bytes);
+			const stored = new Set<string>();
+			for (const u of units) {
+				if (stored.has(u.hash)) continue;
+				stored.add(u.hash);
+				await putChunk(env, u.hash, u.size, u.bytes);
+			}
 			await linkVersionChunks(env, `ver_${packageId(parsed.scope, parsed.name)}_${version}`, units.map((u) => u.hash));
 		}
 		return json({ success: true, url: `/packages/${parsed.full}`, version }, { status: 201, headers: specHeaders() });
 	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		if (msg.includes('UNIQUE') || msg.includes('already published')) {
+			return json(
+				{ success: false, error: `version ${version} already published` },
+				{ status: 409, headers: specHeaders() }
+			);
+		}
 		return json(
-			{ success: false, error: e instanceof Error ? e.message : 'ingest failed' },
+			{ success: false, error: 'ingest failed' },
 			{ status: 500, headers: specHeaders() }
 		);
 	}

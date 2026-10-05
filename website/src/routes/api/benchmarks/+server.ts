@@ -17,8 +17,14 @@ export async function GET({ platform, setHeaders, url }) {
 	if (!run) return json({ snapshot: null, runs: [] });
 	const limit = Number(url.searchParams.get('history') ?? 0);
 	const runs = limit > 0 ? await listBenchmarkRuns(env, limit) : [];
+	let snapshot: unknown = null;
+	try {
+		snapshot = JSON.parse(run.snapshotJson);
+	} catch {
+		snapshot = null;
+	}
 	return json({
-		snapshot: JSON.parse(run.snapshotJson),
+		snapshot,
 		run: {
 			id: run.id,
 			githubRunId: run.githubRunId,
@@ -67,6 +73,6 @@ export async function POST({ request, platform }) {
 		if (msg.includes('UNIQUE') || msg.includes('unique')) {
 			return json({ success: false, error: 'run already ingested' }, { status: 409 });
 		}
-		return json({ success: false, error: msg }, { status: 500 });
+		return json({ success: false, error: 'ingest failed' }, { status: 500 });
 	}
 }

@@ -5,8 +5,10 @@ import {
 	compareSemver,
 	satisfiesRange,
 	maxSatisfying,
+	selectLatestVersion,
 	levelize
 } from '../src/lib/server/registry.js';
+import { buildTransferAuditEntries } from '../src/lib/server/db.js';
 
 describe('semver', () => {
 	it('parses strict versions', () => {
@@ -41,6 +43,19 @@ describe('ranges', () => {
 	it('picks the max satisfying version', () => {
 		assert.equal(maxSatisfying(['1.0.0', '1.4.3', '2.0.0'], '^1.0.0'), '1.4.3');
 		assert.equal(maxSatisfying(['1.0.0'], '^2.0.0'), null);
+	});
+});
+
+describe('transfer audit shape', () => {
+	it('covers old and new names per version', () => {
+		const rows = buildTransferAuditEntries('@old/pkg', '@new/pkg', ['1.0.0']);
+		assert.deepEqual(
+			rows.map((r) => [r.action, r.fullName, r.version]),
+			[
+				['transfer', '@old/pkg', '1.0.0'],
+				['transfer', '@new/pkg', '1.0.0']
+			]
+		);
 	});
 });
 

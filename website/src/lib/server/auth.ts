@@ -18,7 +18,7 @@ export function validateUsername(username: string): string | null {
 	return null;
 }
 
-function safeEqual(a: string, b: string): boolean {
+export function safeEqual(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
 	let diff = 0;
 	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
@@ -56,8 +56,18 @@ export async function hashPassword(password: string, pepper: string): Promise<Pa
 }
 
 export async function verifyPassword(password: string, pepper: string, row: PasswordRow): Promise<boolean> {
-	const params = JSON.parse(row.params) as { iterations: number; memorySize: number; parallelism: number };
-	const salt = new Uint8Array(row.salt.match(/../g)!.map((h) => parseInt(h, 16)));
+	let params: { iterations: number; memorySize: number; parallelism: number };
+	try {
+		params = JSON.parse(row.params) as { iterations: number; memorySize: number; parallelism: number };
+		if (!Number.isInteger(params.iterations) || !Number.isInteger(params.memorySize) || !Number.isInteger(params.parallelism)) {
+			return false;
+		}
+	} catch {
+		return false;
+	}
+	const groups = /^[0-9a-fA-F]+$/.test(row.salt) && row.salt.length % 2 === 0 ? row.salt.match(/../g) : null;
+	if (!groups || groups.length === 0) return false;
+	const salt = new Uint8Array(groups.map((h) => parseInt(h, 16)));
 	const hash = await argon2id({
 		password,
 		secret: pepper,
@@ -71,12 +81,12 @@ export async function verifyPassword(password: string, pepper: string, row: Pass
 	return safeEqual(hash, row.hash);
 }
 
-export function sessionCookie(token: string, maxAge: number): string {
-	return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+export function sessionCookie(token: string, maxAge: number, secure: boolean): string {
+	return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly;${secure ? ' Secure;' : ''} SameSite=Lax; Max-Age=${maxAge}`;
 }
 
-export function clearSessionCookie(): string {
-	return `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+export function clearSessionCookie(secure: boolean): string {
+	return `${SESSION_COOKIE}=; Path=/; HttpOnly;${secure ? ' Secure;' : ''} SameSite=Lax; Max-Age=0`;
 }
 
 export function readSessionCookie(header: string | null): string {
@@ -86,6 +96,14 @@ export function readSessionCookie(header: string | null): string {
 		if (k === SESSION_COOKIE) return v.join('=');
 	}
 	return '';
+}
+
+export function requirePepper(env: Record<string, string | undefined>): string {
+	const pepper = env['SESSION_PEPPER'] ?? '';
+	if (!pepper && env['RNX_ALLOW_NO_PEPPER'] !== '1') {
+		throw new Error('SESSION_PEPPER is not configured');
+	}
+	return pepper;
 }
 
 export async function signup(
@@ -101,26 +119,33 @@ export async function signup(
 	const db = getClient(env);
 	if (!db) throw new Error('missing database');
 	await ensureSchema(db);
-	const pepper = env['SESSION_PEPPER'] ?? '';
+	const pepper = requirePepper(env);
 	const row = await hashPassword(password, pepper);
 	const now = Math.floor(Date.now() / 1000);
 	try {
-		const res = await db.execute({
-			sql: `INSERT INTO users (username, password_hash, password_salt, password_params, disclaimer_ack, created_at)
-			      VALUES (?, ?, ?, ?, 1, ?)`,
-			args: [username, row.hash, row.salt, row.params, now]
+		// last_insert_rowid() resolves on the batch connection, so the org
+		// row always points at the user row from the statement above.
+		await db.batch([
+			{
+				sql: `INSERT INTO users (username, password_hash, password_salt, password_params, disclaimer_ack, created_at)
+				      VALUES (?, ?, ?, ?, 1, ?)`,
+				args: [username, row.hash, row.salt, row.params, now]
+			},
+			{
+				sql: `INSERT INTO orgs (scope, owner_user_id, created_at) VALUES (?, last_insert_rowid(), ?)`,
+				args: [username, now]
+			},
+			{
+				sql: `INSERT INTO scopes (name, owner, reserved, created_at) VALUES (?, ?, 0, ?)
+				      ON CONFLICT(name) DO NOTHING`,
+				args: [username, username, now]
+			}
+		]);
+		const idRs = await db.execute({
+			sql: 'SELECT id FROM users WHERE username = ?',
+			args: [username]
 		});
-		const userId = Number(res.lastInsertRowid);
-		await db.execute({
-			sql: `INSERT INTO orgs (scope, owner_user_id, created_at) VALUES (?, ?, ?)`,
-			args: [username, userId, now]
-		});
-		await db.execute({
-			sql: `INSERT INTO scopes (name, owner, reserved, created_at) VALUES (?, ?, 0, ?)
-			      ON CONFLICT(name) DO NOTHING`,
-			args: [username, username, now]
-		});
-		return { id: userId, username, isAdmin: false };
+		return { id: Number(idRs.rows[0]?.['id'] ?? 0), username, isAdmin: false };
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		if (msg.includes('UNIQUE')) throw new Error('username is taken');
@@ -141,7 +166,7 @@ export async function login(
 		args: [username]
 	});
 	const r = rs.rows[0] as Record<string, unknown> | undefined;
-	const pepper = env['SESSION_PEPPER'] ?? '';
+	const pepper = requirePepper(env);
 	let ok = false;
 	if (r) {
 		ok = await verifyPassword(password, pepper, {
