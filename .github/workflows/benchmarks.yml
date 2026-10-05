@@ -79,6 +79,7 @@ jobs:
               headers={
                   'Content-Type': 'application/json',
                   'Authorization': 'Bearer ' + os.environ['PUBLISH_TOKEN'],
+                  'User-Agent': 'rnx-benchmarks (+https://github.com/rovelstars/rasmalai)',
               },
               method='POST',
           )
