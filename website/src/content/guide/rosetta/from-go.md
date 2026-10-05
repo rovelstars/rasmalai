@@ -94,7 +94,7 @@ import { Vec4f } from "@std/simd";
 
 let a = new Vec4f(1.0, 2.0, 3.0, 4.0);
 let b = Vec4f.splat(2.0);
-let c = a + b;
+let c = a * b;
 print(c.get(3));
 ```
 
@@ -140,4 +140,4 @@ try {
 }
 ```
 
-Keep the flat, readable functions. Lose the collector and the error ceremony. Next: the [Guide](/guide/01-introduction) from the top, or the [Manual](/manual/14-concurrency-and-threads) for the threading rules.
+Your functions stay flat and readable without the `if err != nil` ceremony. Next: the [Guide](/guide/01-introduction) from the top, or the [Manual](/manual/14-concurrency-and-threads) for the threading rules.

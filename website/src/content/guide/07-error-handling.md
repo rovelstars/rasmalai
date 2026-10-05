@@ -6,7 +6,7 @@ icon: "TriangleAlert"
 
 # Error Handling
 
-There is no doubt you will hit failures while writing rnx: missing files, missed lookups, bad input. While failure values are good at telling you something went wrong, many people are stumped by the three different channels and when to use which. Don't worry — this chapter covers all of it: diagnosing failures, identifying where they come from, and handling them.
+Failures come in three shapes in rnx: missing files, missed lookups, bad input. The language answers with three channels, smallest first — absence, `Result`, and `throws` — and this chapter covers when to use which, how to diagnose each, and how to handle it.
 
 ## Kinds of failure
 

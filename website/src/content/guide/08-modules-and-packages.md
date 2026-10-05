@@ -38,7 +38,7 @@ Every file also sees `@std/prelude` without importing it: `Int`, `Float`, `Strin
 
 ## Entry files run; imported files declare
 
-Only the entry file — the `Project.config` entry, or the file handed to `rnx run` — executes loose top-level statements. That is where scripts live: no `main` wrapper needed for a quick task, top-level `await` for async work, and `return <Int>` for the exit code:
+Only the entry file — the `entries.main` file in `Project.config`, or the file handed to `rnx run` — executes loose top-level statements. That is where scripts live: no `main` wrapper needed for a quick task, top-level `await` for async work, and `return <Int>` for the exit code:
 
 ```rnx
 import { Map } from "@std/collections";
@@ -103,8 +103,10 @@ On a Linux box that prints something like `linux 16` followed by `0 true` — ex
 export default {
     project: {
         name: "colony",
-        version: "0.4.0",
-        entry: "src/main.rnx"
+        version: "0.4.0"
+    },
+    entries: {
+        main: "src/main.rnx"
     },
     dependencies: {
         sqlite3: "^3.45.0",
