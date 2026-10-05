@@ -290,6 +290,16 @@ pub(super) fn build_module<'ctx>(    context: &'ctx Context,
     );
     module.add_function("rnx_panic_str", void_t.fn_type(&[ptr_t.into()], false), None);
     module.add_function(
+        "rnx_fatal_span",
+        void_t.fn_type(&[ptr_t.into(), i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_report_fatal",
+        context.i32_type().fn_type(&[], false),
+        None,
+    );
+    module.add_function(
         "rnx_release_array",
         void_t.fn_type(&[ptr_t.into(), i64t.into(), ptr_t.into()], false),
         None,
@@ -996,6 +1006,11 @@ fn declare_strings<'a>(
     texts.insert(" ".to_string());
     texts.insert("\n".to_string());
     texts.insert("vector lane out of range".to_string());
+    texts.insert("division by zero".to_string());
+    texts.insert("got null or a value of the wrong type".to_string());
+    texts.insert("len of null".to_string());
+    texts.insert("field of null".to_string());
+    texts.insert("field-set on null".to_string());
     for f in &lir.functions {
         for b in &f.blocks {
             lir::instr::walk_instrs(&b.instrs, &mut |ins| {
@@ -1234,6 +1249,7 @@ fn lower_fn<'a>(
     let submit_closure = runtime_fn("rnx_thread_pool_submit_closure")?;
     let parallel_closure = runtime_fn("rnx_thread_pool_parallel_closure")?;
     let panic_str = runtime_fn("rnx_panic_str")?;
+    let fatal_span = runtime_fn("rnx_fatal_span")?;
     let release_array = runtime_fn("rnx_release_array")?;
     let thread_spawn = runtime_fn("rnx_thread_spawn")?;
     let thread_join = runtime_fn("rnx_thread_join")?;
@@ -1534,6 +1550,7 @@ fn lower_fn<'a>(
         submit_closure,
         parallel_closure,
         panic_str,
+        fatal_span,
         release_array,
         thread_spawn,
         thread_join,

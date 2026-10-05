@@ -106,7 +106,7 @@ impl FnLower<'_> {
     }
 
     pub(super) fn lower_arith(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
-        let Instr::Arith { op, kind, dst, lhs, rhs , ..} = ins else {
+        let Instr::Arith { op, kind, dst, lhs, rhs, span, ..} = ins else {
             return Err("unreachable".to_string());
         };
                 if matches!(kind, NumKind::Float(_)) {
@@ -128,12 +128,14 @@ impl FnLower<'_> {
                 }
                 let a = self.val(b, *lhs);
                 let c = self.val(b, *rhs);
+                if matches!(op, ArithOp::Div | ArithOp::Mod) {
+                    return self.lower_checked_div(b, *span, *op, *dst, a, c);
+                }
                 let v = match op {
                     ArithOp::Add => b.ins().iadd(a, c),
                     ArithOp::Sub => b.ins().isub(a, c),
                     ArithOp::Mul => b.ins().imul(a, c),
-                    ArithOp::Div => b.ins().sdiv(a, c),
-                    ArithOp::Mod => b.ins().srem(a, c),
+                    ArithOp::Div | ArithOp::Mod => return Err("unreachable".to_string()),
                     ArithOp::BitAnd => b.ins().band(a, c),
                     ArithOp::BitOr => b.ins().bor(a, c),
                     ArithOp::BitXor => b.ins().bxor(a, c),
@@ -148,6 +150,54 @@ impl FnLower<'_> {
                     }
                 };
                 self.set(b, *dst, v);
+        Ok(())
+    }
+
+    pub(super) fn lower_checked_div(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        span: diagnostics::Span,
+        op: ArithOp,
+        dst: Local,
+        a: cranelift_codegen::ir::Value,
+        c: cranelift_codegen::ir::Value,
+    ) -> Result<(), String> {
+        use cranelift_codegen::ir::condcodes::IntCC;
+        let is_zero = b.ins().icmp_imm_s(IntCC::Equal, c, 0);
+        let trap_bb = b.create_block();
+        let ok_bb = b.create_block();
+        b.ins().brif(is_zero, trap_bb, &[], ok_bb, &[]);
+        b.switch_to_block(trap_bb);
+        let callee = self.module.declare_func_in_func(self.fatal_span, &mut b.func);
+        let msg = self.str_addr(b, "division by zero")?;
+        let start = b.ins().iconst(types::I64, span.start as i64);
+        let end = b.ins().iconst(types::I64, span.end as i64);
+        b.ins().call(callee, &[msg, start, end]);
+        let mut rs = Vec::with_capacity(self.ret_slots);
+        for _ in 0..self.ret_slots {
+            rs.push(b.ins().iconst(types::I64, 0));
+        }
+        b.ins().return_(&rs);
+        b.switch_to_block(ok_bb);
+        b.seal_block(trap_bb);
+        b.seal_block(ok_bb);
+        let neg_one = b.ins().icmp_imm_s(IntCC::Equal, c, -1);
+        let is_min = b.ins().icmp_imm_s(IntCC::Equal, a, i64::MIN);
+        let ov = b.ins().band(neg_one, is_min);
+        let one = b.ins().iconst(types::I64, 1);
+        let den = b.ins().select(ov, one, c);
+        let v = match op {
+            ArithOp::Div => {
+                let q = b.ins().sdiv(a, den);
+                b.ins().select(ov, a, q)
+            }
+            _ => {
+                let r = b.ins().srem(a, den);
+                let z = b.ins().iconst(types::I64, 0);
+                b.ins().select(ov, z, r)
+            }
+        };
+        self.set(b, dst, v);
         Ok(())
     }
 

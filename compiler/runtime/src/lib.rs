@@ -1,6 +1,8 @@
 pub mod machine;
 pub mod native;
 pub use native::guard;
+pub mod lir_pipeline;
+pub mod stdlib_cache;
 pub mod threads;
 pub mod value;
 pub mod ichan;

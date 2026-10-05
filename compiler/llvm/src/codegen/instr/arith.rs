@@ -145,7 +145,56 @@ pub(super) fn lower_arith(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
             }
             store_f32(cx, *dst, acc)?;
         }
-        Instr::Arith { op, kind, dst, lhs, rhs , ..} => {
+        Instr::Arith { op, kind, dst, lhs, rhs, span, ..} => {
+            if matches!(op, ArithOp::Div | ArithOp::Mod) && !matches!(kind, NumKind::Float(_)) {
+                let a = load(cx, *lhs)?;
+                let b = load(cx, *rhs)?;
+                let i64t = cx.context.i64_type();
+                let zero = i64t.const_zero();
+                let is_zero = cx.builder.build_int_compare(IntPredicate::EQ, b, zero, "divz").map_err(err)?;
+                let fv = cx.builder.get_insert_block().and_then(|b| b.get_parent()).ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: no insert function"))?;
+                let trap_bb = cx.context.append_basic_block(fv, "div_zero");
+                let cont_bb = cx.context.append_basic_block(fv, "div_ok");
+                cx.builder.build_conditional_branch(is_zero, trap_bb, cont_bb).map_err(err)?;
+                cx.builder.position_at_end(trap_bb);
+                let msg = str_addr(cx, "division by zero")?;
+                let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
+                let p = cx.builder.build_int_to_ptr(msg, ptr_t, "").map_err(err)?;
+                let s = i64t.const_int(span.start as u64, false);
+                let e = i64t.const_int(span.end as u64, false);
+                cx.builder.build_call(cx.fatal_span, &[p.into(), s.into(), e.into()], "").map_err(err)?;
+                if cx.ret_slots <= 1 {
+                    cx.builder.build_return(Some(&zero)).map_err(err)?;
+                } else {
+                    let fields: Vec<inkwell::types::BasicTypeEnum> =
+                        (0..cx.ret_slots).map(|_| cx.context.i64_type().into()).collect();
+                    let st = cx.context.struct_type(&fields, false);
+                    let mut agg = st.get_undef();
+                    for i in 0..cx.ret_slots {
+                        agg = cx.builder.build_insert_value(agg, zero, i as u32, "errz").map_err(err)?.into_struct_value();
+                    }
+                    cx.builder.build_return(Some(&agg)).map_err(err)?;
+                }
+                cx.builder.position_at_end(cont_bb);
+                let neg1 = i64t.const_int(-1i64 as u64, false);
+                let is_neg1 = cx.builder.build_int_compare(IntPredicate::EQ, b, neg1, "neg1").map_err(err)?;
+                let is_min = cx.builder.build_int_compare(IntPredicate::EQ, a, i64t.const_int(i64::MIN as u64, false), "ismin").map_err(err)?;
+                let ov = cx.builder.build_and(is_neg1, is_min, "ov").map_err(err)?;
+                let one = i64t.const_int(1, false);
+                let den = cx.builder.build_select(ov, one, b, "den").map_err(err)?.into_int_value();
+                let sel = match op {
+                    ArithOp::Div => {
+                        let q = cx.builder.build_int_signed_div(a, den, "div").map_err(err)?;
+                        cx.builder.build_select(ov, a, q, "s").map_err(err)?
+                    }
+                    _ => {
+                        let r = cx.builder.build_int_signed_rem(a, den, "rem").map_err(err)?;
+                        cx.builder.build_select(ov, zero, r, "s").map_err(err)?
+                    }
+                };
+                store(cx, *dst, sel)?;
+                return Ok(());
+            }
             if let NumKind::Float(k) = kind {
                 let fast = *k == FloatKind::Fast;
                 let a = double_of(cx, *lhs)?;

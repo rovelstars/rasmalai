@@ -464,3 +464,33 @@ fn llvm_namespace_print() {
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn llvm_div_zero_reports_fatal_with_span() {
+    let context = Context::create();
+    let lir = lir_of("fn Half(x: Int): Int { return x / 0 } fn Main(): Int { return Half(3) }");
+    let jit = Jit::compile(&context, &lir, "divzero").unwrap_or_else(|e| panic!("{e}"));
+    let e = jit.call("Main", &[]).unwrap_err();
+    assert!(e.message.contains("division by zero"), "{}", e.message);
+    let span = e.span.expect("fatal must carry source span");
+    assert!(span.start < span.end, "{span:?}");
+}
+
+#[test]
+fn llvm_int_div_mod_match_interpreter() {
+    let context = Context::create();
+    let lir = lir_of(
+        "fn Q(a: Int, b: Int): Int { return a / b }
+         fn R(a: Int, b: Int): Int { return a % b }
+         fn MinNeg1Div(): Int { let m = -9223372036854775807 - 1; return m / -1 }
+         fn MinNeg1Mod(): Int { let m = -9223372036854775807 - 1; return m % -1 }
+         fn Main(): Int { return 0 }",
+    );
+    let jit = Jit::compile(&context, &lir, "divmod").unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(jit.call("Q", &[7, 3]).unwrap(), 2);
+    assert_eq!(jit.call("R", &[7, 3]).unwrap(), 1);
+    assert_eq!(jit.call("Q", &[-7, 3]).unwrap(), -2);
+    assert_eq!(jit.call("R", &[-7, 3]).unwrap(), -1);
+    assert_eq!(jit.call("MinNeg1Div", &[]).unwrap(), i64::MIN);
+    assert_eq!(jit.call("MinNeg1Mod", &[]).unwrap(), 0);
+}

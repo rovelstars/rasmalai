@@ -69,6 +69,7 @@ pub(super) struct FnCx<'ctx> {
     pub(super) submit_closure: FunctionValue<'ctx>,
     pub(super) parallel_closure: FunctionValue<'ctx>,
     pub(super) panic_str: FunctionValue<'ctx>,
+    pub(super) fatal_span: FunctionValue<'ctx>,
     pub(super) release_array: FunctionValue<'ctx>,
     pub(super) thread_spawn: FunctionValue<'ctx>,
     pub(super) thread_join: FunctionValue<'ctx>,

@@ -98,6 +98,7 @@ impl Jit {
         builder.symbol("rnx_thread_pool_submit_closure", runtime::native::rnx_thread_pool_submit_closure as *const u8);
         builder.symbol("rnx_thread_pool_parallel_closure", runtime::native::rnx_thread_pool_parallel_closure as *const u8);
         builder.symbol("rnx_panic_str", runtime::native::rnx_panic_str as *const u8);
+        builder.symbol("rnx_fatal_span", runtime::native::rnx_fatal_span as *const u8);
         builder.symbol("rnx_release_array", runtime::native::rnx_release_array as *const u8);
         builder.symbol("rnx_thread_spawn", runtime::native::rnx_thread_spawn as *const u8);
         builder.symbol("rnx_thread_join", runtime::native::rnx_thread_join as *const u8);
@@ -361,6 +362,12 @@ impl Jit {
             })?;
             builder.symbol(&f.symbol, addr);
         }
+        // Prebuilt release stdlib: dlopen the cached artifact when fresh and
+        // register its symbols through JITBuilder::symbol. Program functions
+        // declare Linkage::Local, so these registrations stay inert until a
+        // later change marks stdlib functions Import; a missing or stale
+        // artifact falls back to JIT-compiling stdlib inline as today.
+        let _ = super::try_register_prebuilt_stdlib(&mut builder, lir);
         let module = JITModule::new(builder);
         Ok(module)
     }
@@ -582,6 +589,13 @@ impl Jit {
         };
         let closure_release = decl_isig(&mut *module, "rnx_closure_release", &str1_sig)?;
         let panic_str = decl_isig(&mut *module, "rnx_panic_str", &str1_sig)?;
+        let fatal_span = {
+            let mut sig = Signature::new(CallConv::SystemV);
+            for _ in 0..3 {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            decl_isig(&mut *module, "rnx_fatal_span", &sig)?
+        };
         let spawn_closure = {
             let mut sig = Signature::new(CallConv::SystemV);
             sig.params.push(AbiParam::new(types::I64));
@@ -1550,6 +1564,7 @@ impl Jit {
             closure_set,
             closure_release,
             panic_str,
+            fatal_span,
             spawn_closure,
             join_val,
             join_err,
@@ -1857,6 +1872,11 @@ fn declare_statics(module: &mut JITModule, lir: &LirModule) -> Result<BTreeMap<S
     texts.insert(" ".to_string());
     texts.insert("\n".to_string());
     texts.insert("vector lane out of range".to_string());
+    texts.insert("division by zero".to_string());
+    texts.insert("got null or a value of the wrong type".to_string());
+    texts.insert("len of null".to_string());
+    texts.insert("field of null".to_string());
+    texts.insert("field-set on null".to_string());
     for f in &lir.functions {
         for b in &f.blocks {
             lir::instr::walk_instrs(&b.instrs, &mut |ins| {
@@ -2156,6 +2176,7 @@ pub(super) fn lower_fn(
         closure_set: rt.closure_set,
         closure_release: rt.closure_release,
         panic_str: rt.panic_str,
+        fatal_span: rt.fatal_span,
         spawn_closure: rt.spawn_closure,
         join_val: rt.join_val,
         join_err: rt.join_err,

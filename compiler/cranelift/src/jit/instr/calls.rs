@@ -1,6 +1,35 @@
 use super::*;
 
 impl FnLower<'_> {
+    pub(super) fn trap_if_null(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        span: diagnostics::Span,
+        msg: &str,
+        recv: cranelift_codegen::ir::Value,
+    ) -> Result<(), String> {
+        use cranelift_codegen::ir::condcodes::IntCC;
+        let is_null = b.ins().icmp_imm_s(IntCC::Equal, recv, 0);
+        let trap_bb = b.create_block();
+        let ok_bb = b.create_block();
+        b.ins().brif(is_null, trap_bb, &[], ok_bb, &[]);
+        b.switch_to_block(trap_bb);
+        let callee = self.module.declare_func_in_func(self.fatal_span, &mut b.func);
+        let m = self.str_addr(b, msg)?;
+        let start = b.ins().iconst(types::I64, span.start as i64);
+        let end = b.ins().iconst(types::I64, span.end as i64);
+        b.ins().call(callee, &[m, start, end]);
+        let mut rs = Vec::with_capacity(self.ret_slots);
+        for _ in 0..self.ret_slots {
+            rs.push(b.ins().iconst(types::I64, 0));
+        }
+        b.ins().return_(&rs);
+        b.switch_to_block(ok_bb);
+        b.seal_block(trap_bb);
+        b.seal_block(ok_bb);
+        Ok(())
+    }
+
     pub(super) fn lower_concat(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
         let Instr::Concat { dst, lhs, rhs , ..} = ins else {
             return Err("unreachable".to_string());
@@ -50,7 +79,7 @@ impl FnLower<'_> {
     }
 
     pub(super) fn lower_call(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
-        let Instr::Call { dsts, target, args, err, .. } = ins else {
+        let Instr::Call { dsts, target, args, err, span, .. } = ins else {
             return Err("unreachable".to_string());
         };
                 let dst = dsts.first();
@@ -356,6 +385,19 @@ impl FnLower<'_> {
                             "__rnx_bool_to_str" => self.bool_to_str,
                             _ => self.string_char_code_at,
                         };
+                        let recv_idxs: &[usize] = match n.as_str() {
+                            "__rnx_string_concat" | "__rnx_string_split" | "__rnx_string_index_of" => &[0, 1],
+                            "__rnx_string_index_of_from" => &[0, 1],
+                            "__rnx_string_len" | "__rnx_string_slice" | "__rnx_string_trim"
+                            | "__rnx_string_char_code_at" => &[0],
+                            _ => &[],
+                        };
+                        for i in recv_idxs {
+                            if let Some(a) = args.get(*i) {
+                                let recv = self.val(b, *a);
+                                self.trap_if_null(b, *span, "got null or a value of the wrong type", recv)?;
+                            }
+                        }
                         let owns = matches!(
                             n.as_str(),
                             "__rnx_string_slice"
@@ -432,6 +474,10 @@ impl FnLower<'_> {
                         return Ok(());
                     }
                     CallTarget::Builtin(n) if n == "__rnx_array_pop" => {
+                        if let Some(a) = args.first() {
+                            let recv = self.val(b, *a);
+                            self.trap_if_null(b, *span, "got null or a value of the wrong type", recv)?;
+                        }
                         let callee = self.module.declare_func_in_func(self.array_pop_fn, &mut b.func);
                         let argv: Vec<_> = args.iter().map(|a| self.val(b, *a)).collect();
                         let inst = b.ins().call(callee, &argv);
@@ -451,6 +497,10 @@ impl FnLower<'_> {
                         return Ok(());
                     }
                     CallTarget::Builtin(n) if n == "__rnx_array_len" => {
+                        if let Some(a) = args.first() {
+                            let recv = self.val(b, *a);
+                            self.trap_if_null(b, *span, "got null or a value of the wrong type", recv)?;
+                        }
                         let callee = self.module.declare_func_in_func(self.array_len, &mut b.func);
                         let argv: Vec<_> = args.iter().map(|a| self.val(b, *a)).collect();
                         let inst = b.ins().call(callee, &argv);
@@ -573,6 +623,10 @@ impl FnLower<'_> {
                         return Ok(());
                     }
                     CallTarget::Builtin(n) if n == "__rnx_array_slice" => {
+                        if let Some(a) = args.first() {
+                            let recv = self.val(b, *a);
+                            self.trap_if_null(b, *span, "got null or a value of the wrong type", recv)?;
+                        }
                         let callee = self.module.declare_func_in_func(self.array_slice, &mut b.func);
                         let argv: Vec<_> = args.iter().map(|a| self.val(b, *a)).collect();
                         let inst = b.ins().call(callee, &argv);
