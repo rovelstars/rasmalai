@@ -5,6 +5,7 @@ pub mod instr;
 pub mod licm;
 pub mod lower;
 pub mod opt;
+pub mod reach;
 pub mod sroa;
 pub mod tco;
 pub mod temp_sweep;
