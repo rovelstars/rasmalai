@@ -65,7 +65,7 @@ jobs:
             exit 1
           fi
           python3 - <<'EOF'
-          import json, os, urllib.request
+          import json, os, urllib.request, urllib.error
           with open('benches/data/benchmarks.json') as f:
               snapshot = json.load(f)
           body = json.dumps({
@@ -83,7 +83,11 @@ jobs:
               },
               method='POST',
           )
-          with urllib.request.urlopen(req, timeout=60) as res:
-              print('benchmarks: API ingest', res.status, res.read().decode()[:200])
+          try:
+              with urllib.request.urlopen(req, timeout=60) as res:
+                  print('benchmarks: API ingest', res.status, res.read().decode()[:200])
+          except urllib.error.HTTPError as e:
+              print('benchmarks: ingest failed', e.code, e.read().decode()[:500])
+              raise SystemExit(1)
           EOF
 
