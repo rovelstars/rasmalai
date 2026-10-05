@@ -1236,6 +1236,7 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
             registries: std::collections::BTreeMap::new(),
             dependencies: std::collections::BTreeMap::new(),
             permissions: None,
+            keywords: Vec::new(),
         }),
         workspace: None,
     };

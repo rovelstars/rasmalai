@@ -152,10 +152,16 @@ pub fn package_doc_json(package_dir: &Path, manifest: &Manifest) -> Result<Strin
     Ok(crate::doc::modules_to_json(&docs))
 }
 
-pub fn build_package_tar(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackedFile {
+    pub path: String,
+    pub size: u64,
+}
+
+fn collect_pack_names(
     package_dir: &Path,
     manifest: &Manifest,
-) -> Result<Vec<u8>, Diagnostic> {
+) -> Result<(Vec<String>, Vec<(String, Vec<u8>)>), Diagnostic> {
     validate_for_pack(package_dir, manifest)?;
     let project = manifest.project.as_ref().ok_or_else(|| {
         Diagnostic::new(Code::E108, "rnx pack needs a [project] manifest".to_string())
@@ -230,6 +236,43 @@ pub fn build_package_tar(
         names.push(rel.clone());
     }
     names.sort();
+    Ok((names, generated))
+}
+
+pub fn package_file_list(
+    package_dir: &Path,
+    manifest: &Manifest,
+) -> Result<Vec<PackedFile>, Diagnostic> {
+    let (names, generated) = collect_pack_names(package_dir, manifest)?;
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        if let Some((_, bytes)) = generated.iter().find(|(g, _)| g == &name) {
+            out.push(PackedFile { path: name, size: bytes.len() as u64 });
+        } else {
+            let size = std::fs::metadata(package_dir.join(&name))
+                .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {name}: {e}")))?
+                .len();
+            out.push(PackedFile { path: name, size });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+pub fn package_readme_text(package_dir: &Path, fallback_name: &str) -> String {
+    for name in ["README.md", "README"] {
+        if let Ok(text) = std::fs::read_to_string(package_dir.join(name)) {
+            return text;
+        }
+    }
+    format!("# {fallback_name}\n")
+}
+
+pub fn build_package_tar(
+    package_dir: &Path,
+    manifest: &Manifest,
+) -> Result<Vec<u8>, Diagnostic> {
+    let (names, generated) = collect_pack_names(package_dir, manifest)?;
     let mut dirs: BTreeSet<String> = BTreeSet::new();
     for n in &names {
         let mut prefix = String::new();
@@ -362,6 +405,68 @@ mod tests {
         assert!(!is_pack_version("1.2.3-"));
         assert!(!is_pack_version("1.2.3-***"));
         assert!(!is_pack_version("1.2.3-alpha_beta"));
+    }
+
+    fn fixture_dir(tag: &str, readme: Option<(&str, &str)>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rnx-pack-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        if let Some((name, text)) = readme {
+            std::fs::write(dir.join(name), text).unwrap();
+        }
+        dir
+    }
+
+    fn fixture_manifest(dir: &Path) -> Manifest {
+        let project =
+            crate::project::ProjectConfig::load_from_dir(dir).unwrap().expect("manifest");
+        Manifest { project: Some(project), workspace: None }
+    }
+
+    #[test]
+    fn file_list_matches_tar_contents() {
+        let dir = fixture_dir("files", Some(("README.md", "# probe\n")));
+        let manifest = fixture_manifest(&dir);
+        let files = package_file_list(&dir, &manifest).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec![".rnx/doc.json", "Project.config", "README.md", "src/main.rnx"]);
+        for f in &files {
+            assert!(!f.path.contains('\\'), "{}", f.path);
+            if f.path == "README.md" {
+                assert_eq!(f.size, "# probe\n".len() as u64);
+            }
+            if f.path == "src/main.rnx" {
+                assert_eq!(
+                    f.size,
+                    std::fs::metadata(dir.join(&f.path)).unwrap().len()
+                );
+            }
+        }
+        let tar = build_package_tar(&dir, &manifest).unwrap();
+        let text = String::from_utf8_lossy(&tar);
+        for f in &files {
+            assert!(text.contains(f.path.as_str()), "tar misses {}", f.path);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn readme_prefers_md_then_plain_then_default() {
+        let dir = fixture_dir("readme-md", Some(("README.md", "# md\n")));
+        assert_eq!(package_readme_text(&dir, "probe"), "# md\n");
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir = fixture_dir("readme-plain", Some(("README", "plain\n")));
+        assert_eq!(package_readme_text(&dir, "probe"), "plain\n");
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir = fixture_dir("readme-none", None);
+        assert_eq!(package_readme_text(&dir, "probe"), "# probe\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
