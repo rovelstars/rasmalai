@@ -4,6 +4,24 @@ fn profile_name(release: bool) -> &'static str {
     if release { "release" } else { "dev" }
 }
 
+fn src_rnx_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            src_rnx_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rnx") {
+            out.push(path);
+        }
+    }
+}
+
+// Must track llvm/Cargo.toml (inkwell llvm22-1 today); a stale value reuses wrong artifacts.
+const LLVM_VERSION: &str = "llvm22";
+
 fn build_key(
     input: &str,
     root: &std::path::Path,
@@ -11,29 +29,95 @@ fn build_key(
     opt_level: u8,
     target_triple: Option<&str>,
 ) -> String {
-    let entry_bytes = std::fs::read(input).unwrap_or_default();
-    let manifest_bytes = std::fs::read(root.join(frontend::project::MANIFEST_FILE)).unwrap_or_default();
-    let deplock_bytes = std::fs::read(root.join("Project.deplock")).unwrap_or_default();
-    let flags = format!("release={release} opt={opt_level} target={}", target_triple.unwrap_or("host"));
-    frontend::cache::fingerprint_hex(&[
-        entry_bytes.as_slice(),
-        manifest_bytes.as_slice(),
-        deplock_bytes.as_slice(),
-        flags.as_bytes(),
-    ])
+    // Path-dep manifests are hashed by bytes; path-dep *contents* are not hashed.
+    let manifest = frontend::project::load_manifest(root)
+        .ok()
+        .flatten()
+        .and_then(|m| m.project);
+    let mut owned: Vec<Vec<u8>> = Vec::new();
+    owned.push(std::fs::read(input).unwrap_or_default());
+    owned.push(std::fs::read(root.join(frontend::project::MANIFEST_FILE)).unwrap_or_default());
+    owned.push(std::fs::read(root.join("Project.deplock")).unwrap_or_default());
+    let mut srcs = Vec::new();
+    src_rnx_files(&root.join("src"), &mut srcs);
+    srcs.sort();
+    for path in &srcs {
+        if let Ok(rel) = path.strip_prefix(root) {
+            owned.push(rel.to_string_lossy().replace('\\', "/").into_bytes());
+        }
+        owned.push(std::fs::read(path).unwrap_or_default());
+    }
+    if let Some(cfg) = &manifest {
+        for (name, target) in &cfg.entries.bins {
+            owned.push(name.as_bytes().to_vec());
+            owned.push(std::fs::read(root.join(target)).unwrap_or_default());
+        }
+        if let Some(lib) = cfg.entries.lib.as_deref() {
+            owned.push(lib.as_bytes().to_vec());
+            owned.push(std::fs::read(root.join(lib)).unwrap_or_default());
+        }
+        for (name, spec) in &cfg.dependencies {
+            if let frontend::project::DependencySpec::Path { path } = spec {
+                owned.push(name.as_bytes().to_vec());
+                owned.push(
+                    std::fs::read(root.join(path).join(frontend::project::MANIFEST_FILE))
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+    owned.push(
+        format!(
+            "release={release} opt={opt_level} target={}",
+            target_triple.unwrap_or("host")
+        )
+        .into_bytes(),
+    );
+    owned.push(env!("CARGO_PKG_VERSION").as_bytes().to_vec());
+    owned.push(LLVM_VERSION.as_bytes().to_vec());
+    owned.push(
+        format!(
+            "rt-{}",
+            frontend::checksum::Sha256::hexdigest(runtime::archive::BYTES)
+        )
+        .into_bytes(),
+    );
+    let parts: Vec<&[u8]> = owned.iter().map(|b| b.as_slice()).collect();
+    frontend::cache::fingerprint_hex(&parts)
 }
 
-fn default_out_path(input: &str, root: &std::path::Path, release: bool) -> std::path::PathBuf {
-    let project_name = frontend::project::load_manifest(root)
+fn validate_project_name(root: &std::path::Path) {
+    let name = frontend::project::load_manifest(root)
         .ok()
         .flatten()
         .and_then(|m| m.project.map(|p| p.name));
-    let stem = project_name.unwrap_or_else(|| {
-        std::path::Path::new(input)
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "a.out".to_string())
-    });
+    if let Some(name) = name
+        && (name.is_empty() || name.contains("..") || name.contains('\\'))
+    {
+        println!(
+            "{}",
+            diagnostics::Diagnostic::new(
+                diagnostics::Code::E108,
+                format!("invalid project name `{name}` for build output"),
+            )
+        );
+        std::process::exit(1);
+    }
+}
+
+fn default_out_path(input: &str, root: &std::path::Path, release: bool) -> std::path::PathBuf {
+    let stem = frontend::project::load_manifest(root)
+        .ok()
+        .flatten()
+        .and_then(|m| m.project.map(|p| p.name))
+        .map(|n| cli::sanitize_lib_name(&n))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            std::path::Path::new(input)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "a.out".to_string())
+        });
     frontend::cache::project_cache_dir(root)
         .join("build")
         .join(profile_name(release))
@@ -79,6 +163,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 });
             let input = target.entry;
             let root = project_root_for(&input);
+            validate_project_name(&root);
             if verbose {
                 eprintln!("rnx: building {input} ({})", if release { "release" } else { "dev" });
             }
@@ -228,7 +313,10 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                         }
                     }
                     let key = build_key(&input, &root, release, opt_level, target_triple.as_deref());
-                    let stamp = path.with_file_name(".fingerprint");
+                    let stamp = match path.file_name().map(|s| s.to_string_lossy().into_owned()) {
+                        Some(stem) => path.with_file_name(format!("{stem}.fingerprint")),
+                        None => path.with_file_name(".fingerprint"),
+                    };
                     let fresh = std::fs::read_to_string(&stamp).map(|s| s.trim() == key).unwrap_or(false);
                     if fresh && path.is_file() {
                         println!("artifact: {} (fresh)", path.display());

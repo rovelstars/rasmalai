@@ -46,6 +46,8 @@ fn excluded(rel: &str) -> bool {
         || rel.starts_with(".git/")
         || rel == ".rnx"
         || rel.starts_with(".rnx/")
+        || rel == ".rnx-cache"
+        || rel.starts_with(".rnx-cache/")
         || rel == "tests"
         || rel.starts_with("tests/")
 }
@@ -70,14 +72,31 @@ pub fn package_stem(manifest: &Manifest) -> Result<String, Diagnostic> {
 }
 
 fn is_pack_name(name: &str) -> bool {
+    if name.starts_with('@') {
+        return crate::project::is_package_name(name);
+    }
     !name.is_empty()
         && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 fn is_pack_version(version: &str) -> bool {
-    let parts: Vec<&str> = version.split('.').collect();
-    parts.len() == 3
-        && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    let (core, pre) = match version.split_once('-') {
+        Some((c, p)) => (c, Some(p)),
+        None => (version, None),
+    };
+    let parts: Vec<&str> = core.split('.').collect();
+    if parts.len() != 3
+        || !parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return false;
+    }
+    match pre {
+        None => true,
+        Some(p) => {
+            !p.is_empty()
+                && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+        }
+    }
 }
 
 pub fn validate_for_pack(
@@ -158,6 +177,18 @@ pub fn build_package_tar(
     let entry = package_dir.join(&project.entries.main);
     if entry.is_file() {
         push_abs(&entry);
+    }
+    if let Some(lib) = project.entries.lib.as_deref() {
+        let path = package_dir.join(lib);
+        if path.is_file() {
+            push_abs(&path);
+        }
+    }
+    for target in project.entries.bins.values() {
+        let path = package_dir.join(target);
+        if path.is_file() {
+            push_abs(&path);
+        }
     }
     let src_dir = package_dir.join("src");
     if src_dir.is_dir() {
@@ -284,5 +315,53 @@ pub fn pack_package_gz(
         Diagnostic::new(Code::E108, format!("cannot write {}: {e}", sha_path.display()))
     })?;
     Ok((gz_path, sha_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scoped_names_follow_package_rules() {
+        assert!(is_pack_name("@acme/widget"));
+        assert!(is_pack_name("@a0/b-c9"));
+        assert!(!is_pack_name("@Acme/widget"));
+        assert!(!is_pack_name("@/widget"));
+        assert!(!is_pack_name("@acme/"));
+        assert!(!is_pack_name("@acme"));
+        assert!(!is_pack_name("@acme/widget/extra"));
+    }
+
+    #[test]
+    fn unscoped_names_keep_prior_rules() {
+        assert!(is_pack_name("widget"));
+        assert!(is_pack_name("my-pkg-2"));
+        assert!(!is_pack_name(""));
+        assert!(!is_pack_name("MyPkg"));
+        assert!(!is_pack_name("my_pkg"));
+        assert!(!is_pack_name("my pkg"));
+        assert!(!is_pack_name("my/pkg"));
+    }
+
+    #[test]
+    fn prerelease_versions_accepted() {
+        assert!(is_pack_version("1.2.3"));
+        assert!(is_pack_version("0.0.0"));
+        assert!(is_pack_version("1.2.3-alpha"));
+        assert!(is_pack_version("1.2.3-rc-1"));
+        assert!(is_pack_version("10.20.30-beta.1"));
+    }
+
+    #[test]
+    fn malformed_versions_rejected() {
+        assert!(!is_pack_version(""));
+        assert!(!is_pack_version("1.2"));
+        assert!(!is_pack_version("1.2.3.4"));
+        assert!(!is_pack_version("1.2.x"));
+        assert!(!is_pack_version("v1.2.3"));
+        assert!(!is_pack_version("1.2.3-"));
+        assert!(!is_pack_version("1.2.3-***"));
+        assert!(!is_pack_version("1.2.3-alpha_beta"));
+    }
 }
 

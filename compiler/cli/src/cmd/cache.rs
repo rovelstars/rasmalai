@@ -4,18 +4,35 @@ pub(super) fn run_cache(action: cli::args::CacheAction) {
     match action {
         cli::args::CacheAction::Prune { max_bytes } => {
             let cap = max_bytes.unwrap_or(cache::DEFAULT_RETENTION_BYTES);
-            let dir = cache::global_cache_dir();
-            match cache::prune_lru(&dir, cap) {
+            let global = cache::global_cache_dir();
+            match cache::prune_lru(&global, cap) {
                 Ok(freed) => {
                     println!(
                         "pruned {} bytes from {} (usage now {} bytes)",
                         freed,
-                        dir.display(),
-                        cache::cache_usage_bytes(&dir)
+                        global.display(),
+                        cache::cache_usage_bytes(&global)
                     );
                 }
                 Err(e) => {
-                    eprintln!("error: cannot prune {}: {e}", dir.display());
+                    eprintln!("error: cannot prune {}: {e}", global.display());
+                    std::process::exit(1);
+                }
+            }
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let root = frontend::project::find_project_root(&cwd).unwrap_or(cwd);
+            let project = cache::project_cache_dir(&root);
+            match cache::prune_lru(&project, cap) {
+                Ok(freed) => {
+                    println!(
+                        "pruned {} bytes from {} (usage now {} bytes)",
+                        freed,
+                        project.display(),
+                        cache::cache_usage_bytes(&project)
+                    );
+                }
+                Err(e) => {
+                    eprintln!("error: cannot prune {}: {e}", project.display());
                     std::process::exit(1);
                 }
             }
@@ -36,11 +53,18 @@ pub(super) fn run_clean(package: Option<String>) {
         eprintln!("error: cannot read working directory: {e}");
         std::process::exit(1);
     });
-    let root = if let Some(_pkg) = package.as_deref() {
-        match frontend::project::find_workspace_root(&cwd) {
+    let root = if let Some(pkg) = package.as_deref() {
+        let ws_root = match frontend::project::find_workspace_root_strict(&cwd) {
             Some(r) => r,
             None => {
                 eprintln!("error: no workspace found");
+                std::process::exit(1);
+            }
+        };
+        match cli::resolve_member(&ws_root, pkg) {
+            Ok((dir, _)) => dir,
+            Err(e) => {
+                println!("{e}");
                 std::process::exit(1);
             }
         }
