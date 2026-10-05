@@ -52,6 +52,33 @@ A `Pointer<T>` is a raw 64-bit address (`Int`/`Float`/`Byte`/`Bool` pointees; `B
 
 Taking `&local` yields an opaque token, not a readable address: dereferencing it fails cleanly at runtime, and native backends reject `&local` at compile time. For real memory, use `fromAddress`.
 
+## unsafe and pointer reference
+
+| Operation | Spelling | Outside `unsafe` |
+|---|---|---|
+| call an `unsafe fn` | `unsafe { Raw(21); }` | `E201` error |
+| take an address | `&x` | `E202` error |
+| pointer arithmetic | `ptr + n` (raw byte addition) | `E202` error |
+| load / store | `ptr.read()` / `ptr.write(v)` | `E202` error |
+| volatile access | `readVolatile` / `writeVolatile` | `E202` error; LLVM honors volatile, Cranelift and interpreter emit plain access |
+| deref sugar | `*ptr` / `*ptr = v` | `E202` error |
+| mint from memory | `Pointer.fromAddress<T>(addr)` | `E202` error |
+
+As an expression, `unsafe { ... }` runs the block and yields `null`, so it slots into statement position without affecting surrounding code. Keep `unsafe` blocks small: address-taking, pointer math, and foreign calls only.
+
+```rnx
+import { ByteBuffer } from "@std/bytes";
+
+let buf = ByteBuffer.allocate(8);
+buf.writeInt32BE(0, 42);
+unsafe {
+    let p = Pointer.fromAddress<Byte>(buf.address());
+    print(p.read());
+}
+```
+
+`buf` must outlive the pointer: the address borrows the buffer's memory, and using it after the buffer drops reads freed memory.
+
 ## Shipping C-compatible libraries
 
 The reverse direction — calling Rasmalai from C — is `rnx build --lib`. Top-level `export fn` items with C-compatible signatures (`Int`/`Float`/`Bool`/`Void`, `String` params converted from `const char*`) compile to C-ABI wrappers in a static archive bundled with the runtime, plus a `<basename>.h` header with `RNX_<PACKAGE>_H` guards. Any other type in an `export` signature fails with `E108`, keeping the boundary honest by construction. (`pub`/`public` still parse as deprecated aliases with `W204`.)
@@ -217,6 +244,45 @@ print(out.stdoutText().contains("hello"));
 ```
 
 For interactive children, `writeStdin`/`readStdout` move `ByteBuffer` contents, `tryWait` polls (`null` while running, the code after exit), `wait` reaps and returns the exit code, and `kill(signal)` defaults to `15` (SIGTERM). Dropping a child detaches it; spawned children require `wait()`.
+
+## Handle, path, and process reference
+
+Fallible handle operations answer `Result`; only `File.open`/`File.create` keep the `isOpen` sentinel for a refused open, and reads on a closed handle answer `Err`.
+
+| Call | Answers | Notes |
+|---|---|---|
+| `File.open(path, OpenMode.Read/Write/Append/ReadWrite)` | handle; `isOpen == false` when refused | buffered OS handle; opened files require `close()` |
+| `File.create(path, WriteMode.CreateNew/Create/Overwrite/Append)` | handle; `isOpen == false` when refused | opens for writing |
+| `readText` / `writeText` | `Result` | text path; shares the handle cursor |
+| `readBytes(buf, off, n)` / `writeBytes` | `Result` | binary path; zero-copy between OS handle and `ByteBuffer` |
+| `seek` / `tell` / `len` | `Result` | move, read, and measure the cursor |
+| `flush` / `sync` | `Result` | push to OS / force durable storage |
+| `lockSync` / `tryLockSync` / `unlockSync` | `Result` | advisory lock shared by every handle on the path |
+| `close()` | — | required; `mmap` `close()` unmaps the region |
+
+| Path query | Returns |
+|---|---|
+| `Path.exists(p)` / `Path.isFile(p)` / `Path.isDir(p)` | `Bool`, never fails |
+| `Path.join(a, b)` / `Path.dir(p)` / `Path.base(p)` | `String` |
+| `Path.ext(p)` / `Path.isAbs(p)` | `String` / `Bool` |
+
+The bare name is sync and blocks the caller; appending `Async` queues the same work on the process-wide fs pool and returns a `Promise` — await it, writing out the `Result` type, since `await` erases to `Any`. Every `Async` twin settles with the same `Result` its sync original returns.
+
+| Child call | Returns |
+|---|---|
+| `Process.spawn(cmd, args)` | `ChildProcess` with piped `stdin`/`stdout`/`stderr` |
+| `Process.run(cmd, args)` | `ProcessOutput`: `exitCode`, `stdoutText()`, `stderrText()` |
+| `tryWait()` | `null` while running, the code after exit |
+| `wait()` | exit code; reaps the child (required) |
+| `kill(signal = 15)` | signals; default is SIGTERM |
+
+```rnx
+import { Process } from "@std/process";
+
+let out = Process.run("echo", ["hello"]);
+assert(out.exitCode == 0, "exit code");
+assert(out.stdoutText().contains("hello"), "captured");
+```
 
 ## Summary
 

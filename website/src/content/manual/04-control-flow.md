@@ -117,6 +117,43 @@ let status = switch code {
 print(status);
 ```
 
+## Switch reference
+
+| Pattern | Matches | Example |
+|---|---|---|
+| literal | equality | `case 200:` |
+| range `a..=b` | inclusive bounds | `case 0..=10:` |
+| `is Type` | runtime type, narrows binding | `case is IoError:` |
+| enum variant | leading dot, binds payloads | `case .Circle(r):` |
+| guard `if` | narrows further, observes bindings | `case .Circle(r) if r > 0:` |
+| `default` | everything listed patterns miss | `default:` |
+
+Each case terminates implicitly. Crossing into the next case requires an explicit `fallthrough;`. An empty case with no body and no `fallthrough;` is an `E108` error naming the rule.
+
+```rnx
+fn tag(n: Int): String {
+    switch n {
+        case 1: return "one";
+        case 2: fallthrough;
+        case 3: return "two-or-three";
+        default: return "other";
+    }
+}
+assert(tag(1) == "one", "no fall");
+assert(tag(3) == "two-or-three", "fall target");
+```
+
+As an expression, every arm must yield one shared type, and the match must be exhaustive or carry `default`; mismatched arm types are an `E108` error. `pass` is the explicit no-op for arms that intentionally do nothing.
+
+```rnx
+let c = 404;
+let s = switch c {
+    case 200: "OK",
+    default: "other",
+};
+assert(s == "other", "expr default");
+```
+
 Enum matching has its own exhaustiveness rule; see [Enums and Matching](/manual/10-enums-and-matching).
 
 ## defer

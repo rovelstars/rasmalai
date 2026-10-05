@@ -70,11 +70,48 @@ User code never manages any of this — the invariant exists so you can trust th
 - **Arrays**: 40-byte header (object header plus length, capacity, data pointer). Elements drop recursively through per-type destructors.
 - **Enums**: 16-byte header plus tag and payload slots sized to the largest variant. Owned payloads drop through a synthesized per-enum destructor.
 
+| Value | Storage | Header | Freed |
+|---|---|---|---|
+| `Int`, `Float`, `Bool`, `Vec4f` | inline, no heap | none | with the stack frame, zero per-value cost |
+| string literal | immortal static object | 32 bytes | never |
+| built string | heap under ARC | 32 bytes | last release, on the releasing thread |
+| array | heap under ARC | 40 bytes | last release, elements drop recursively |
+| class instance | heap under ARC | 16 bytes | last release, `deinit` first then fields |
+| enum with payloads | heap under ARC | 16 bytes plus tag and slots | last release, payloads drop per variant |
+
 ## Nullable values
 
 `String?`, class, and array slots hold a raw pointer (`0x0` for `null`) at zero extra cost. Nullable scalars (`Int?`, `Bool?`, `Float?`) are stored boxed: a non-null value lives in a small heap box so the `0` word unambiguously means `null`. Boxing is inserted at typed boundaries (`let` annotations, parameters, returns, fields, call results); each box is released when its slot dies, so nullable scalar traffic shows no live-count growth.
 
+| Slot | `null` representation | Non-null representation | Cost |
+|---|---|---|---|
+| `String?`, class, array | `0x0` pointer | object pointer | zero extra |
+| `Int?`, `Bool?`, `Float?` | `0x0` word | small heap box | one box per slot, released with the slot |
+| `Any` holding `0` | reads as `null` in `== null` / `??` | — | erased; keep scalars typed |
+
+```rnx
+let name: String? = null;
+assert((name ?? "anon") == "anon", "null fallback");
+name = "Al";
+assert((name ?? "anon") == "Al", "present value");
+let port: Int? = null;
+assert((port ?? 8080) == 8080, "boxed fallback");
+port = 9000;
+assert((port ?? 8080) == 9000, "boxed present");
+```
+
 Limits: erased `Any` slots do not track nullability. A raw `0` smuggled through `Any` (for example a native call returning a bare word, or an `Any` holding integer `0`) reads as `null` in `== null` / `??` checks. Keep scalars typed through nullable flows instead of round-tripping them through `Any`. Arrays of nullable scalars erase element nullability the same way; `null` elements round-trip only through `Any`-element arrays or explicit sentinel values.
+
+## Borrow reference
+
+| Call shape | Retain traffic | Rule |
+|---|---|---|
+| non-escaping argument | none (borrow) | most calls emit no retain/release traffic |
+| escaping argument (stored, sent cross-thread) | retain on store, release on drop | field stores retain the new value and release the old one |
+| field load | retain | the loaded handle keeps the object alive |
+| `let b = a` share | retain (one bump) | last owner drops immediately, no queue |
+
+There is no background tracing thread and no pause: the last release frees on the spot, deterministically, on the thread that released it.
 
 ## Summary
 

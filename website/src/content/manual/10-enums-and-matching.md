@@ -133,6 +133,45 @@ fn Main(): Int {
 
 `for (a, b) in pairs` destructures each element: array elements by index, record and struct elements by field name. Anything else at runtime is a fatal error, and `for (a, b)` over a range is a compile error rather than a silent misread.
 
+## Enum reference
+
+Leading-dot inference applies in exactly these positions — everywhere else, qualify with the enum name:
+
+| Position | Example | Rule |
+|---|---|---|
+| variable annotation | `let r: Result<Int, String> = .Err("bad");` | annotation names the enum |
+| call argument | `paint(.Green)` | parameter type names the enum |
+| method argument | `canvas.setMode(.Red)` | receiver signature names the enum |
+| `static fn` argument | `Canvas.withColor(.Green)` | signature names the enum |
+| `init` argument | `new Canvas(.Blue)` | `init` parameter names the enum |
+| library enum argument | `File.create(p, .Overwrite)` | `OpenMode`/`WriteMode` parameter names the enum |
+
+Exhaustiveness rules:
+
+| Match shape | Needs `default`? | Rule |
+|---|---|---|
+| every variant, unguarded cases | no | checker proves it; adding a variant later fails compilation naming the missing case |
+| every variant, one case guarded | yes | a guard may reject, so the match is no longer proven |
+| subset of variants | yes | `default` catches the rest |
+| non-enum scrutinee (literals, ranges) | yes | always carry `default` |
+
+```rnx
+enum Shape { Circle(Float), Rect(Float, Float), Point }
+
+fn area(s: Shape): Float {
+    switch s {
+        case .Circle(r): return 3.14 * r * r;
+        case .Rect(w, h): return w * h;
+        case .Point: return 0.0;
+    }
+}
+
+assert(area(Shape.Circle(1.0)) > 3.0, "payload bind");
+assert(area(Shape.Point) == 0.0, "unit variant");
+```
+
+Payload arity is checked at construction: `Circle(1.0, 2.0)` against the one-payload variant fails immediately, and a name the enum does not declare fails as `error[E108]: unknown variant` naming both the variant and its enum. Query methods on `Result` (`isOk`, `isErr`, `unwrap`, `unwrapOr`) are specified in [Prelude and Intrinsics](/manual/01a-prelude-and-intrinsics).
+
 ## Summary
 
 - Enums declare shapes with payloads; construction mirrors declaration with dot qualification.

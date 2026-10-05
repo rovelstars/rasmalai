@@ -64,6 +64,41 @@ print(v is String);
 
 `case is Type:` arms apply the same narrowing inside `switch`; see [Control Flow](/manual/04-control-flow).
 
+## Adoption reference
+
+| Declaration | Adopts with | Checked at compile time |
+|---|---|---|
+| `trait` (methods with bodies) | `class B with Clickable` | always compiles; missing methods mix in from the trait |
+| one interface | `class U : Summarizable` | every signature implemented (in body, mixed in, or inherited) |
+| several interfaces | `class U : A, B` | every signature of every interface |
+| trait plus interface | `class U with T : I` | trait fills defaults, interface checks signatures |
+| `extends` plus traits | `class C extends Base with T` | one parent, any number of traits |
+
+```rnx
+trait Named {
+    fn label(): String { return "unnamed"; }
+}
+
+interface Summarizable {
+    fn summary(): String;
+}
+
+class User with Named : Summarizable {
+    let name: String;
+    init(name: String) { this.name = name; }
+    fn summary(): String { return this.name; }
+}
+
+let u = new User("Al");
+assert(u.label() == "unnamed", "trait default");
+let s: Summarizable = u;
+assert(s.summary() == "Al", "interface dispatch");
+assert(s is Summarizable, "membership");
+assert(typeOf(s) == "User", "concrete class");
+```
+
+Methods the class defines override trait defaults; trait `let` fields with defaults carry into each adopting class the same way. A class may adopt several traits and interfaces beside a single `extends` parent. Calls through an interface resolve the runtime class id to a direct static call per implementation — no vtables, identical on every backend.
+
 ## Summary
 
 - `trait` declares a method set with bodies; classes adopt with `with`, mixing in defaults they do not override.

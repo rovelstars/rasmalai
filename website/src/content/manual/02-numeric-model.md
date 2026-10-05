@@ -36,6 +36,53 @@ print(flags ^ 0b1111);
 print(~0 & 0xFF);
 ```
 
+## Operator precedence and conversion reference
+
+Arithmetic binds in this order, tightest first: unary (`-x`, `~x`), `*` `/` `%`, `+` `-`, shifts (`<<` `>>` `>>>`), bitwise `&`, `^`, `|`, comparisons, equality. Parentheses override. Mixing `Float` and `FastFloat` in one expression without an explicit conversion is an `E305` error; `Int` operands inside `Float` arithmetic convert implicitly.
+
+| Expression | Result | Rule |
+|---|---|---|
+| `17 / 5` | `3` | integer division truncates toward zero |
+| `17 % 5` | `2` | remainder keeps the dividend sign |
+| `Int(3.9)` | `3` | truncates toward zero |
+| `Int(-3.9)` | `-3` | truncates toward zero, not floor |
+| `Float(7) / 2.0` | `3.5` | `Int` converts implicitly |
+| `1 << 67` | `8` | shift amount masks to 6 bits (shifts by 3) |
+| `(-8) >> 2` | `-2` | arithmetic right shift sign-extends |
+| `(-1) >>> 1` | `9223372036854775807` | logical right shift zero-fills |
+
+```rnx
+assert(17 / 5 == 3 && 17 % 5 == 2, "divmod");
+assert(Int(3.9) == 3 && Int(-3.9) == -3, "trunc");
+assert((1 << 67) == 8, "mask");
+assert(((-8) >> 2) == -2, "arith shift");
+```
+
+Division or remainder by zero aborts with a fatal diagnostic on every backend — it never yields a value. Overflow wraps modulo 2^64 with no trap.
+
+## Math intrinsic reference
+
+`Math.sqrt`, `Math.sin`, `Math.floor`, `Math.log`, and related intrinsics take and return `Float`:
+
+| Call | Result | Edge input |
+|---|---|---|
+| `Math.sqrt(2.0)` | `1.414...` | negative input yields NaN |
+| `Math.floor(3.9)` | `3.0` | negative values round toward negative infinity |
+| `Math.log(0.0)` | negative infinity | negative input yields NaN |
+| `Float.nan()` | canonical `0x7FF8000000000000` | — |
+| `Float.isNaN(x)` | `Bool` | true only for NaN; `x != x` is also true for NaN |
+| `x.toBits()` / `Float.fromBits(b)` | `Int` / `Float` | exact bit round-trip |
+
+```rnx
+import { Math } from "@std/math";
+
+assert(Float.isNaN(Math.sqrt(-1.0)), "sqrt neg");
+assert(Float.isNaN(Math.log(-1.0)), "log neg");
+assert(Math.floor(-3.2) == -4.0, "floor neg");
+let bits = 1.5.toBits();
+assert(Float.fromBits(bits) == 1.5, "bits round-trip");
+```
+
 Shifts work on `Int`: `<<` (left), `>>` (arithmetic right, sign-extending), `>>>` (logical right, zero-fill). They bind tighter than comparisons but looser than `+`/`-`, and the shift amount masks to 6 bits (`1 << 67` shifts by 3). Compound forms `<<=`, `>>=`, `>>>=` update in place:
 
 ```rnx

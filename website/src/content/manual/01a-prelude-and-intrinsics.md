@@ -122,6 +122,72 @@ assert(numbers.reversed()[0] == 50, "reversed");
 
 `find` returns the first match as `T?` (`null` when nothing matches); `findIndex` returns the index or `-1`; `some`/`every` short-circuit (`some` is `false` and `every` is `true` on empty arrays); `reduce<U>` folds left with an independent accumulator type; `join` stringifies with a separator; `reversed` returns a reversed copy.
 
+## Array method reference
+
+| Method | Signature | Empty-array result | Short-circuit |
+|---|---|---|---|
+| `find` | `find(pred: fn(T): Bool): T?` | `null` | stops at first match |
+| `findIndex` | `findIndex(pred: fn(T): Bool): Int` | `-1` | stops at first match |
+| `some` | `some(pred: fn(T): Bool): Bool` | `false` | stops at first `true` |
+| `every` | `every(pred: fn(T): Bool): Bool` | `true` | stops at first `false` |
+| `reduce<U>` | `reduce<U>(initial: U, f: fn(U, T): U): U` | `initial` | never; visits all |
+| `join` | `join(separator: String = ""): String` | `""` | never; visits all |
+| `reversed` | `reversed(): Array<T>` | `[]` | n/a (copy) |
+
+```rnx
+let empty: Array<Int> = [];
+assert(empty.find((n) => n > 0) == null, "find empty");
+assert(empty.findIndex((n) => n > 0) == -1, "findIndex empty");
+assert(empty.some((n) => true) == false, "some empty");
+assert(empty.every((n) => false) == true, "every empty");
+assert(empty.reduce(9, (acc, n) => acc + n) == 9, "reduce empty");
+assert(empty.join(",") == "", "join empty");
+assert([3, 1].reversed()[0] == 1, "reversed");
+assert([1, 2, 3].join() == "123", "join default");
+```
+
+The predicate runs once per element in index order. `reduce<U>` takes an independent accumulator type `U`, so the accumulator need not match the element type.
+
+```rnx
+let words = ["a", "bb"];
+assert(words.reduce(0, (acc, w) => acc + w.length()) == 3, "fold types");
+```
+
+## Result method reference
+
+| Method | Signature | `Ok(v)` | `Err(e)` |
+|---|---|---|---|
+| `isOk` | `isOk(): Bool` | `true` | `false` |
+| `isErr` | `isErr(): Bool` | `false` | `true` |
+| `unwrap` | `unwrap(): T` | `v` | aborts with a fatal diagnostic |
+| `unwrapOr` | `unwrapOr(fallback: T): T` | `v` | `fallback` |
+
+```rnx
+let ok: Result<Int, String> = Result.Ok(42);
+assert(ok.isOk() && !ok.isErr(), "ok flags");
+assert(ok.unwrap() == 42, "unwrap ok");
+assert(ok.unwrapOr(-1) == 42, "unwrapOr ok");
+let bad: Result<Int, String> = Result.Err("down");
+assert(bad.isErr() && !bad.isOk(), "err flags");
+assert(bad.unwrapOr(-1) == -1, "unwrapOr err");
+```
+
+## Intrinsic reference
+
+| Intrinsic | Signature | Failure mode |
+|---|---|---|
+| `print(...values)` | any count, any types | never fails; joins with spaces plus trailing newline |
+| `assert(cond, msg)` | `assert(Bool, String)` | aborts with file and line when `cond` is `false` |
+| `typeOf(value)` | any value | never fails; returns the runtime type tag or class identifier |
+| `PanicIf!(cond, msg)` | `PanicIf!(Bool, String)` | aborts when `cond` is `true` |
+
+```rnx
+print("one", 2, false);
+PanicIf!(1 + 1 == 3, "math broke");
+print(typeOf(42));
+print(typeOf("s"));
+```
+
 ## String extensions
 
 Core methods (`length()`, `slice`, `indexOf`, `trim`, `concat`, `charCodeAt`) are specified in [Lexicon and Structure](/manual/01-lexicon-and-structure). Search and transform helpers arrive via the prelude with no import:

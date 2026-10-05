@@ -83,6 +83,62 @@ fn Main(): Int {
 
 `Channel.close` releases anything still queued, and the channel retains sent heap values, transferring the reference to the receiver. Every primitive has a generated reference page under [its module docs](/docs/@std/sync/overview).
 
+## Sharing primitive reference
+
+All sharing primitives construct `byId` so separate threads open the same cell. The id is the rendezvous, the registry owns the cell, and dropping your handle never drops the shared state out from under another holder.
+
+| Primitive | Construction | Key calls |
+|---|---|---|
+| `AtomicInt` | `AtomicInt.byId(id)` | `set(v)`, `get()`, `fetchAdd(n)` |
+| `Channel` | `Channel.byId(id)` | `send(v)` (`Int`, `Float`, `String`, `Array`, or any object), `recv(): Any` (cast before use), `close()` |
+| `Mutex` | `Mutex.byId(id)` | `lock()`, `unlock()`, `tryLock()` |
+| `RwLock` | `RwLock.byId(id)` | shared read or exclusive write locks |
+| `Condvar` | `Condvar.byId(id)` | `wait` (with its mutex held), `notifyOne()`, `notifyAll()` |
+| `Barrier` | `Barrier.byId(id, count)` (`count` above zero; zero or negative fails immediately) | `wait()` parks every party until the last arrives, returns true for exactly one leader, resets for the next round |
+
+```rnx
+import { AtomicInt } from "@std/sync";
+
+let c = AtomicInt.byId(7);
+c.set(0);
+assert(c.fetchAdd(5) == 0, "previous value");
+assert(c.get() == 5, "updated");
+```
+
+## Thread and pool reference
+
+| Call | Signature | Returns |
+|---|---|---|
+| `Thread.spawn(task)` | zero-arg non-throwing function or closure | handle |
+| `handle.join()` | blocks until the worker finishes | `Result`: `Ok` with the worker value, `Err` with a message on failure |
+| `ThreadPool.new(workers)` | pool size | pool (no import needed; compiler-recognized) |
+| `ThreadPool.byId(id, workers)` | named pool | shared pool |
+| `pool.submit(task)` | zero-arg function or closure | task handle |
+| `pool.submitArg(task, arg)` | one-`Int`-arg function or closure plus its argument | task handle |
+| `pool.parallelFor(start, end, chunk, worker)` | chunked index range plus worker | blocks until done |
+| `task.join()` | blocks exactly once per handle | that task's `Result` |
+| `pool.shutdown()` | lifecycle end | — |
+
+Worker results are `Int`/`Bool`/`Float`/`String`; anything else is an `E108` at spawn. Await each handle once. Spawn every handle first and join afterwards — spawning inside the loop and joining immediately serializes the workers, and a multi-party barrier with one live worker per iteration deadlocks with no diagnostic.
+
+```rnx
+import { Thread } from "@std/sync";
+
+let handles: Array<Thread> = [];
+let i = 0;
+while i < 4 {
+    handles.push(Thread.spawn((): Int => 1));
+    i = i + 1;
+}
+let sum = 0;
+for t in handles {
+    sum = sum + t.join().unwrap();
+}
+assert(sum == 4, "all workers");
+```
+
+`task.join()` is a method on pool and thread handles that blocks for that handle's `Result`. It is unrelated to the `await` keyword, which suspends an `async fn` until a `Promise<T>` settles; calling `await` on a handle is an `E108` error. Cooperative `async`/`await` over `Promise<T>` is specified in [Functions and Closures](/manual/05-functions-and-closures).
+
 ## Pools for data parallelism
 
 `ThreadPool` is compiler-recognized like `Thread` — no import needed. `new(workers)` creates a pool (or `byId(id, workers)` for a named one), `submit(task)` queues a zero-arg function or closure and returns a task handle, `submitArg(task, arg)` queues a one-`Int`-arg function or closure, and `parallelFor(start, end, chunk, worker)` runs a worker over every index in chunks and blocks until done, with `join` and `shutdown` for lifecycle control. `task.join()` blocks exactly once per handle and returns that task's `Result`:

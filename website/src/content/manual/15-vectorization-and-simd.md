@@ -67,6 +67,38 @@ readouts convert with `Int(...)`. The process entry point still returns
 `Int` — vectors travel through helpers, and lanes cross the final
 boundary.
 
+## Vector reference
+
+| Call | Signature | Edge behavior |
+|---|---|---|
+| `new Vec4f(a, b, c, d)` | four `Float` lanes | — |
+| `Vec4f.splat(v)` | one `Float` broadcast to all four | — |
+| `new Vec4i(a, b, c, d)` | four `Int` lanes | — |
+| `Vec4i.splat(v)` | one `Int` broadcast | — |
+| `+ - * /` (float lanes) | lane-wise | IEEE-754 per lane |
+| `+ - * /` (integer lanes) | lane-wise, wrapping | `/` traps on zero divisors like scalar division |
+| `x()` / `y()` / `z()` / `w()` | lane readout | — |
+| `get(i)` | indexed readout | out-of-range lanes trap |
+| `dot(other)` | pairwise products summed | scalar `Float` |
+| `min(other)` / `max(other)` | per-lane extrema | scalar or vector per overload |
+| `sqrt()` | per-lane root | negative lanes yield NaN per IEEE-754 |
+
+```rnx
+import { Vec4f } from "@std/simd";
+
+let a = new Vec4f(1.0, 2.0, 3.0, 4.0);
+assert(a.x() == 1.0 && a.y() == 2.0, "named lanes");
+assert(a.z() == 3.0 && a.w() == 4.0, "named lanes");
+assert(a.get(0) == 1.0 && a.get(3) == 4.0, "indexed");
+let b = Vec4f.splat(10.0);
+let c = a + b;
+assert(c.get(0) == 11.0 && c.get(3) == 14.0, "lane add");
+let d = a * Vec4f.splat(2.0);
+assert(d.get(2) == 6.0, "lane mul");
+assert(a.dot(Vec4f.splat(1.0)) == 10.0, "dot");
+assert(Int(a.get(0)) == 1, "lane to Int");
+```
+
 ## Summary
 
 - `Vec4f`/`Vec4i`: construct, `splat`, lane operators, `x/y/z/w/get`.
