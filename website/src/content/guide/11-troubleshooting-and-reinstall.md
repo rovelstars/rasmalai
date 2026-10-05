@@ -6,11 +6,11 @@ icon: "Wrench"
 
 # Troubleshooting & Reinstall
 
-Most Rasmalai problems fall into three buckets: a diagnostic you can read, a stale project, or a stale toolchain. Work them in that order — nine times out of ten you never reach step three.
+Something broke. Don't worry — most Rasmalai problems fall into three buckets, and you should work them in this order: a diagnostic you can read, a stale project, or a stale toolchain. Nine times out of ten you never reach step three.
 
 ## Read the diagnostic first
 
-Every error carries a code. `rnx check` shows it with a span pointing at the exact column:
+Every compiler error carries a code. Run the checker on your project to see it with a span pointing at the exact column:
 
 ```sh
 rnx check
@@ -32,18 +32,16 @@ rnx -v check
 
 Verbose mode prints each pass as it runs, which tells you whether the failure is in parsing, typechecking, or code generation.
 
-A healthy program to compare against:
+A healthy program to compare against — if this checks clean but your project does not, the problem is in your project, not the toolchain:
 
 ```rnx
 let total = [10, 20, 30].reduce(0, (acc, n) => acc + n);
 assert(total == 60, "sum");
 ```
 
-If the snippet above checks clean but your project does not, the problem is in your project, not the toolchain. Keep reading.
-
 ## Fix the project before the toolchain
 
-Three commands resolve most project-level breakage:
+Three commands resolve most project-level breakage. Run them in this order:
 
 ```sh
 rnx fmt
@@ -53,7 +51,7 @@ rnx test
 
 `rnx fmt` normalizes layout so you stop chasing whitespace ghosts. `rnx check` revalidates in milliseconds. `rnx test` reruns the suite so you know the fix did not move the failure elsewhere.
 
-Dependency trouble has its own shape: a `fetch` that worked yesterday fails today, or a type from a git dependency suddenly mismatches. Dependencies resolve into `Project.deplock`; when the lockfile disagrees with the manifests, re-resolve from scratch:
+**Dependencies went stale.** A `fetch` that worked yesterday fails today, or a type from a git dependency suddenly mismatches. Dependencies resolve into `Project.deplock`; when the lockfile disagrees with the manifests, re-resolve from scratch:
 
 ```sh
 rm Project.deplock
@@ -61,7 +59,7 @@ rnx fetch
 rnx check
 ```
 
-Editor acting up — stale squiggles, completions from another era — is almost always the language server holding onto a closed project. Restart it through the setup command rather than reinstalling anything:
+**The editor disagrees with the terminal.** Stale squiggles, completions from another era — the language server is almost always holding onto a closed project. Restart it through the setup command rather than reinstalling anything:
 
 ```sh
 rnx setup
@@ -94,7 +92,7 @@ Then reinstall:
 curl -fsSL https://rnx.dev/install.sh | sh
 ```
 
-The installer honors `$XDG_BIN_HOME` when it is set, otherwise it uses `~/.local` — the default user prefix from the XDG base directory spec. To put it elsewhere:
+The installer honors `$XDG_BIN_HOME` when it is set, otherwise it uses `~/.local`. To put it elsewhere:
 
 ```sh
 curl -fsSL https://rnx.dev/install.sh | sh -s -- --prefix /usr/local

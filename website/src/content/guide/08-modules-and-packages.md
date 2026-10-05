@@ -6,7 +6,7 @@ icon: "Library"
 
 # Modules and Packages
 
-Real programs outgrow one file. Rasmalai keeps growth boring on purpose: one namespace per file, imports that say exactly what they take, and a manifest that fits on an index card.
+Real programs outgrow one file. rnx keeps growth boring on purpose: one namespace per file, imports that say exactly what they take, and a manifest that fits on an index card.
 
 ## One file, one namespace
 
@@ -22,9 +22,7 @@ AtomicInt.byId(1).set(scores.len());
 print(scores.get("ore"));
 ```
 
-Relative imports (`./math`, `./shapes`) wire up multi-file projects; two files can each define a helper with the same name without colliding. There is no `::` in the language — paths, variants, and generics all use `.` and `<>`.
-
-Imports are per file: if `liba.rnx` names something it never imported, it fails — even when the entry file imports it. Dependencies travel with the file that declares them, never with the program around them.
+That prints `7`. Relative imports (`./math`, `./shapes`) wire up multi-file projects, and two files can each define a helper with the same name without colliding — names live in their file's namespace. Imports are per file: if `lib.rnx` names something it never imported, it fails, even when the entry file imports it. Dependencies travel with the file that declares them, never with the program around them.
 
 An imported namespace is also a value. Passing it to `print` lists its exports, read-only:
 
@@ -34,17 +32,13 @@ import io from "@std/io";
 print(io);
 ```
 
-```text
-[Module io] { ColorLevel: [Enum: ColorLevel], clear: [Function: clear], write: [Function: write], ... }
-```
+That prints the module listing (`[Module io] { clear: ..., write: ..., ... }` — the exact set grows with the stdlib). Assigning to a namespace field is an error — namespaces are snapshots, not objects.
 
-Assigning to a namespace field is an error — namespaces are snapshots, not objects.
-
-Every file also sees `@std/prelude` without importing it: `Int`, `Float`, `String`, `Bool`, `Array`, `Map`, `Set` resolve from there, and only the ones you use reach the binary.
+Every file also sees `@std/prelude` without importing it: `Int`, `Float`, `String`, `Bool`, `Array`, `print`, `assert` resolve from there, and only the ones you use reach the binary.
 
 ## Entry files run; imported files declare
 
-Only the entry file — the `Project.config` entry, or the file handed to `rnx run` — executes loose top-level statements. That is where scripts live: no `main` wrapper, top-level `await` for async work, and `return <Int>` for the exit code:
+Only the entry file — the `Project.config` entry, or the file handed to `rnx run` — executes loose top-level statements. That is where scripts live: no `main` wrapper needed for a quick task, top-level `await` for async work, and `return <Int>` for the exit code:
 
 ```rnx
 import { Map } from "@std/collections";
@@ -58,7 +52,9 @@ if total == 0 {
 }
 ```
 
-Every file pulled in through `import` is declarative-only: classes, structs, enums, functions, and constants. A loose `print`, `let`, or `await` there fails with `E112` — move it into a function and call it from the entry file. An explicit `fn main()`/`fn Main()` in the entry still works exactly as before.
+That prints `entries: 1`. Every file pulled in through `import` is declarative-only: classes, structs, enums, functions, and constants. A loose `print` or `let` there fails with `E112` — move it into a function and call it from the entry file. An explicit `fn main()`/`fn Main()` in the entry still works exactly as before.
+
+**Common mistake:** putting script logic in an imported helper file and wondering why nothing runs — or worse, getting `E112` and deleting the code. Imported files declare; only the entry executes. Move the statements into a function, import it, call it.
 
 ## The standard library is embedded
 
@@ -96,6 +92,8 @@ print(OS.platform(), OS.cpuCount());
 let out = Process.run("echo", ["hello"]);
 print(out.exitCode, out.stdoutText().contains("hello"));
 ```
+
+On a Linux box that prints something like `linux 16` followed by `0 true` — exit code zero, and yes, the output contained "hello".
 
 ## The project manifest
 
@@ -138,10 +136,12 @@ rnx test
 ```
 
 ```text
-tests: 1 passed, 0 failed
+  ✓ adds_up 0.02 ms
+
+tests: 1 passed, 0 failed in 0.14 ms
 ```
 
-`assert` takes a `Bool` and a message. A failing assertion marks that test failed, but the rest of the suite keeps running.
+`assert` takes a `Bool` and a message. A failing assertion marks that test failed, but the rest of the suite keeps running. Write the test next to the function while the behavior is fresh in your head — coming back to add tests later rarely happens.
 
 ## Where to go from here
 
