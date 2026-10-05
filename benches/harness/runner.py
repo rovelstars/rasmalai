@@ -287,7 +287,7 @@ def build_argv(tc, lang, mode, bench, src_path, workdir):
         return ["node", "--check", src_path], False
     if lang == "rnx":
         flags = ["--release"] if mode == "rel" else []
-        return [tc.rnx, "build"] + flags + [src_path, "-o", artifact_path(workdir, lang, mode)], True
+        return [tc.rnx, "build"] + flags + [src_path], True
     if lang == "c":
         # Strict IEEE-754 everywhere: -ffp-contract=off on every float
         # bench (mandelbrot, nbody, spectral). Without it clang fuses
@@ -440,6 +440,21 @@ def main():
                         failures.append(f"{bid}/{tag}: {err}")
                         print(f"  {tag}: BUILD FAIL")
                         continue
+                    if lang == "rnx":
+                        # rnx chooses its own output path under .rnx-cache and
+                        # prints `artifact: <path>`; stage a copy at the path
+                        # run_argv expects (the rebuild is a fresh-cache hit).
+                        rc2, out2, _ = run_simple(cfg, REPO)
+                        real = None
+                        for line in out2.splitlines():
+                            line = line.strip()
+                            if line.startswith("artifact: "):
+                                real = line[len("artifact: "):].removesuffix(" (fresh)").strip()
+                        if rc2 != 0 or not real or not os.path.isfile(real):
+                            failures.append(f"{bid}/{tag}: artifact resolve failed")
+                            print(f"  {tag}: BUILD FAIL")
+                            continue
+                        shutil.copy(real, artifact_path(workdir, lang, mode))
                 argv = run_argv(tc, lang, mode, src, workdir)
                 walls, peaks = [], []
                 out = ""
