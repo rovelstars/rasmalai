@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { DocModule } from '../src/lib/docs/api.ts';
-import { anchorFor, buildSymbolIndex, linkifyProseHtml } from '../src/lib/docs/symbollinks.ts';
+import { anchorFor, buildSymbolIndex, linkifyProseHtml, linkifyTypeText } from '../src/lib/docs/symbollinks.ts';
 
 function mod(name: string): DocModule {
 	return {
@@ -77,5 +77,18 @@ describe('linkifyProseHtml', () => {
 		const html = '<p>Nothing to link here.</p>';
 		assert.equal(linkifyProseHtml(html, index), html);
 		assert.equal(linkifyProseHtml(html, new Map()), html);
+	});
+
+	it('links type positions including generics', () => {
+		assert.equal(
+			linkifyTypeText('Map<K, V>', index),
+			'<a href="/docs/@std/collections/api#class-Map" class="symlink">Map</a>&lt;K, V&gt;'
+		);
+		assert.equal(
+			linkifyTypeText('Array<String>', index),
+			'Array&lt;String&gt;'
+		);
+		assert.equal(linkifyTypeText('Int', index), 'Int');
+		assert.equal(linkifyTypeText('HttpStatus', index).includes('>HttpStatus</a>'), true);
 	});
 });
