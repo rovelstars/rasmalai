@@ -13,7 +13,16 @@ export interface Semver {
 	raw: string;
 }
 
+// Supported range grammar: `*` | `latest` | `X.Y.Z` | `^X.Y.Z` | `~X.Y.Z` | `>=X.Y.Z`.
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
+
+export function isValidRange(range: string): boolean {
+	const r = range.trim();
+	if (r === '' || r === '*' || r === 'latest') return true;
+	if (r.startsWith('^') || r.startsWith('~')) return parseSemver(r.slice(1)) !== null;
+	if (r.startsWith('>=')) return parseSemver(r.slice(2).trim()) !== null;
+	return parseSemver(r) !== null;
+}
 
 export function parseSemver(v: string): Semver | null {
 	const m = SEMVER_RE.exec(v);

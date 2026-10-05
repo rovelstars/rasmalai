@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { signup, login, sessionCookie, validateUsername } from '$lib/server/auth';
+import { signup, login, sessionCookie, validateUsername, clientIp, isAuthBlocked, auth_attempts } from '$lib/server/auth';
 import { specHeaders } from '$lib/server/registry';
 
 export async function POST({ request, platform, url }) {
@@ -17,15 +17,24 @@ export async function POST({ request, platform, url }) {
 	if (problem) {
 		return json({ code: 'bad-request', message: `invalid username: ${problem}` }, { status: 400, headers: specHeaders() });
 	}
+	const ip = clientIp(request.headers);
+	if (await isAuthBlocked(env, ip, username)) {
+		return json({ code: 'rate-limited', message: 'too many failed attempts, try again later' }, { status: 429, headers: specHeaders() });
+	}
 	try {
 		const user = await signup(env, username, password, disclaimerAck);
 		const session = await login(env, username, password);
+		await auth_attempts(env, ip, username, true);
 		const secure = url.protocol === 'https:';
 		return json(
 			{ success: true, user: { username: user.username, scopes: [`@${username}`] } },
 			{ status: 201, headers: { 'Set-Cookie': sessionCookie(session.token, 30 * 86400, secure), ...specHeaders() } }
 		);
 	} catch (e) {
+		const allowed = await auth_attempts(env, ip, username, false);
+		if (!allowed) {
+			return json({ code: 'rate-limited', message: 'too many failed attempts, try again later' }, { status: 429, headers: specHeaders() });
+		}
 		const msg = e instanceof Error ? e.message : String(e);
 		if (msg.startsWith('invalid username') || msg.startsWith('password must') || msg.startsWith('testing-phase')) {
 			return json({ code: 'bad-request', message: msg }, { status: 400, headers: specHeaders() });

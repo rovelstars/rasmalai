@@ -231,3 +231,70 @@ export async function userScopes(env: Record<string, string | undefined>, userId
 	});
 	return rs.rows.map((r) => String(r['scope']));
 }
+
+export function clientIp(headers: Headers): string {
+	const cf = headers.get('CF-Connecting-IP');
+	if (cf && cf.trim()) return cf.trim();
+	const fwd = headers.get('X-Forwarded-For');
+	if (fwd && fwd.trim()) return fwd.split(',')[0].trim() || 'unknown';
+	return 'unknown';
+}
+
+const AUTH_WINDOW_SECONDS = 15 * 60;
+const AUTH_MAX_FAILURES = 5;
+const AUTH_PRUNE_SECONDS = 60 * 60;
+
+export async function isAuthBlocked(
+	env: Record<string, string | undefined>,
+	ip: string,
+	username: string
+): Promise<boolean> {
+	const db = getClient(env);
+	if (!db) return false;
+	await ensureSchema(db);
+	const now = Math.floor(Date.now() / 1000);
+	await db.execute({
+		sql: 'DELETE FROM auth_attempts WHERE window_start < ?',
+		args: [now - AUTH_PRUNE_SECONDS]
+	});
+	const rs = await db.execute({
+		sql: 'SELECT attempts, window_start FROM auth_attempts WHERE ip = ? AND username = ?',
+		args: [ip, username]
+	});
+	const row = rs.rows[0] as Record<string, unknown> | undefined;
+	if (!row) return false;
+	if (now - Number(row['window_start']) > AUTH_WINDOW_SECONDS) return false;
+	return Number(row['attempts']) > AUTH_MAX_FAILURES;
+}
+
+export async function auth_attempts(
+	env: Record<string, string | undefined>,
+	ip: string,
+	username: string,
+	ok: boolean
+): Promise<boolean> {
+	const db = getClient(env);
+	if (!db) return true;
+	await ensureSchema(db);
+	const now = Math.floor(Date.now() / 1000);
+	await db.execute({
+		sql: 'DELETE FROM auth_attempts WHERE window_start < ?',
+		args: [now - AUTH_PRUNE_SECONDS]
+	});
+	if (ok) {
+		await db.execute({
+			sql: 'DELETE FROM auth_attempts WHERE ip = ? AND username = ?',
+			args: [ip, username]
+		});
+		return true;
+	}
+	await db.execute({
+		sql: `INSERT INTO auth_attempts (ip, username, attempts, window_start)
+		      VALUES (?, ?, 1, ?)
+		      ON CONFLICT(ip, username) DO UPDATE SET
+		        attempts = CASE WHEN window_start < ? THEN 1 ELSE attempts + 1 END,
+		        window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END`,
+		args: [ip, username, now, now - AUTH_WINDOW_SECONDS, now - AUTH_WINDOW_SECONDS, now]
+	});
+	return !(await isAuthBlocked(env, ip, username));
+}

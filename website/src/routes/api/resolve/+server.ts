@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { resolveGraph, type HaveEntry } from '$lib/server/db';
-import { specHeaders } from '$lib/server/registry';
+import { specHeaders, isValidRange } from '$lib/server/registry';
 
 function err(code: string, message: string, status: number) {
 	return json({ code, message }, { status, headers: specHeaders() });
@@ -23,6 +23,9 @@ export async function POST({ request, url, platform }) {
 	for (const [name, range] of Object.entries(requirements)) {
 		if (typeof range !== 'string') {
 			return err('bad-request', `requirement for ${name} must be a version range string`, 400);
+		}
+		if (!isValidRange(range)) {
+			return err('bad-range', `requirement for ${name} is not a valid range (*, latest, X.Y.Z, ^, ~, >=)`, 400);
 		}
 	}
 	const have: HaveEntry[] = Array.isArray(body['have'])

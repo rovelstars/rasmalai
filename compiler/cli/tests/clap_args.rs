@@ -115,6 +115,18 @@ fn test_lint_fix_renames_unused() {
 }
 
 #[test]
+fn test_build_output_flag_rejected() {
+    let root = proj(
+        "output-flag",
+        &[("src/main.rnx", "fn Main(): Int {\n    return 0;\n}\n")],
+    );
+    let (code, _, stderr) = run(&["build", "-o", "foo"], &root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(code, 2, "build -o must fail, got: {stderr}");
+    assert!(stderr.contains("unexpected argument"), "{stderr}");
+}
+
+#[test]
 fn test_quiet_suppresses_ok_line() {
     let root = proj(
         "quiet",

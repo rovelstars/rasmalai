@@ -96,12 +96,13 @@ fn test_pack_extract_and_run() {
 #[test]
 fn test_excluded_paths_not_in_tar() {
     let dir = write_project("exc", "calc");
-    for d in [".git/refs", "target/foo", ".rnx/cache", "tests"] {
+    for d in [".git/refs", "target/foo", ".rnx/cache", ".rnx-cache/build", "tests"] {
         std::fs::create_dir_all(dir.join(d)).unwrap();
     }
     std::fs::write(dir.join(".git").join("HEAD"), "ref\n").unwrap();
     std::fs::write(dir.join("target").join("foo").join("x.o"), "obj").unwrap();
     std::fs::write(dir.join(".rnx").join("cache").join("y"), "cache").unwrap();
+    std::fs::write(dir.join(".rnx-cache").join("build").join("stale.o"), "obj").unwrap();
     std::fs::write(dir.join("tests").join("t.rnx"), MAIN_SRC).unwrap();
     let out = run_pack(&dir, &[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -118,6 +119,8 @@ fn test_excluded_paths_not_in_tar() {
                 || line.starts_with("target/")
                 || line == ".rnx"
                 || line.starts_with(".rnx/")
+                || line == ".rnx-cache"
+                || line.starts_with(".rnx-cache/")
                 || line == "tests"
                 || line.starts_with("tests/"));
         assert!(!bad, "excluded entry packed: {line}");

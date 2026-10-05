@@ -7,7 +7,8 @@ import {
 	readSessionCookie,
 	sessionCookie,
 	clearSessionCookie,
-	requirePepper
+	requirePepper,
+	clientIp
 } from '../src/lib/server/auth.js';
 
 describe('auth', () => {
@@ -39,5 +40,11 @@ describe('auth', () => {
 		assert.throws(() => requirePepper({}), /SESSION_PEPPER/);
 		assert.equal(requirePepper({ RNX_ALLOW_NO_PEPPER: '1' }), '');
 		assert.equal(requirePepper({ SESSION_PEPPER: 'p' }), 'p');
+	});
+
+	it('prefers CF-Connecting-IP for client IP', () => {
+		assert.equal(clientIp(new Headers({ 'CF-Connecting-IP': '1.2.3.4' })), '1.2.3.4');
+		assert.equal(clientIp(new Headers({ 'X-Forwarded-For': '5.6.7.8, 9.9.9.9' })), '5.6.7.8');
+		assert.equal(clientIp(new Headers({})), 'unknown');
 	});
 });

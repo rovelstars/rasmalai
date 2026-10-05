@@ -146,6 +146,14 @@ CREATE TABLE IF NOT EXISTS orgs (
     owner_user_id INTEGER NOT NULL REFERENCES users(id),
     created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS auth_attempts (
+    ip TEXT NOT NULL,
+    username TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    window_start INTEGER NOT NULL,
+    PRIMARY KEY (ip, username)
+);
 `;
 
 const SCOPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -888,6 +896,50 @@ export async function deleteChunks(
 	return deleted;
 }
 
+// Purge pointer URLs from the Cloudflare edge cache after a mutation.
+// Posts to the purge-cache API when credentials exist, otherwise records
+// the would-purge URLs in audit_log. Never throws: a purge failure must
+// not fail the mutation that triggered it.
+export async function purgeUrls(
+	env: Record<string, string | undefined>,
+	urls: string[]
+): Promise<void> {
+	if (urls.length === 0) return;
+	const zone = env['CF_ZONE_ID'];
+	const token = env['CF_PURGE_TOKEN'];
+	if (zone && token) {
+		try {
+			await fetch(`https://api.cloudflare.com/client/v4/zones/${zone}/purge_cache`, {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ files: urls })
+			});
+		} catch {
+			/* edge purge is best-effort; origin stays authoritative */
+		}
+		return;
+	}
+	try {
+		const db = getClient(env);
+		if (!db) return;
+		await ensureSchema(db);
+		await db.execute({
+			sql: `INSERT INTO audit_log (action, full_name, details_json, created_at)
+			      VALUES ('purge-skipped', '', ?, ?)`,
+			args: [JSON.stringify({ urls }), Math.floor(Date.now() / 1000)]
+		});
+	} catch {
+		/* audit fallback is best-effort too */
+	}
+}
+
+export function packagePointerUrls(origin: string, full: string, version?: string): string[] {
+	const base = origin.replace(/\/$/, '');
+	const urls = [`${base}/api/packages`, `${base}/api/packages/${full}`];
+	if (version) urls.push(`${base}/api/packages/${full}/${version}`);
+	return urls;
+}
+
 export interface ResolveNode {
 	full: string;
 	version: string;
@@ -904,12 +956,16 @@ export interface HaveEntry {
 	integrity: string;
 }
 
+export function pruneHit(have: HaveEntry[], full: string, version: string, sha: string): boolean {
+	if (!sha) return false;
+	return have.some((h) => h.full === full && h.version === version && h.integrity === sha);
+}
+
 export async function resolveGraph(
 	env: Record<string, string | undefined>,
 	requirements: Record<string, string>,
 	have: HaveEntry[]
 ): Promise<{ resolved: Record<string, string>; levels: ResolveNode[][] }> {
-	const held = new Map(have.map((h) => [`${h.full}@${h.version}`, h.integrity]));
 	const memo = new Map<string, ResolveNode>();
 	const visiting: string[] = [];
 	const resolved: Record<string, string> = {};
@@ -941,8 +997,7 @@ export async function resolveGraph(
 			const found = await getVersionRow(env, full, pick);
 			if (!found) throw new Error(`package ${id} does not exist`);
 			const { row } = found;
-			const key = `${full}@${pick}`;
-			if (held.get(key) === row.tarballSha256 && row.tarballSha256 !== '') {
+			if (pruneHit(have, full, pick, row.tarballSha256)) {
 				memo.set(id, {
 					full,
 					version: pick,
