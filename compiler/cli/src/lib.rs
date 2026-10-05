@@ -954,6 +954,10 @@ fn uncaught_payload(e: &diagnostics::Diagnostic) -> Option<&str> {
     e.message.strip_prefix("uncaught error: ")
 }
 
+fn fatal_payload(e: &diagnostics::Diagnostic) -> Option<&str> {
+    e.message.strip_prefix("fatal: ")
+}
+
 pub fn run_files_cfg(
     path: &str,
     entry: &str,
@@ -1074,10 +1078,17 @@ pub fn run_files_cfg(
                         span: None,
                         func: None,
                     },
-                    None => RunOutcome::Fatal {
-                        message: e.message.clone(),
-                        span: None,
-                        func: None,
+                    None => match fatal_payload(&e) {
+                        Some(message) => RunOutcome::Fatal {
+                            message: message.to_string(),
+                            span: e.span,
+                            func: None,
+                        },
+                        None => RunOutcome::Fatal {
+                            message: e.message.clone(),
+                            span: None,
+                            func: None,
+                        },
                     },
                 },
             };
@@ -1107,7 +1118,14 @@ pub fn run_files_cfg(
                             span: None,
                             func: None,
                         },
-                        None => RunOutcome::Compile(vec![e]),
+                        None => match fatal_payload(&e) {
+                            Some(message) => RunOutcome::Fatal {
+                                message: message.to_string(),
+                                span: e.span,
+                                func: None,
+                            },
+                            None => RunOutcome::Compile(vec![e]),
+                        },
                     },
                 }
             } else {
@@ -1119,7 +1137,14 @@ pub fn run_files_cfg(
                             span: None,
                             func: None,
                         },
-                        None => RunOutcome::Compile(vec![e]),
+                        None => match fatal_payload(&e) {
+                            Some(message) => RunOutcome::Fatal {
+                                message: message.to_string(),
+                                span: e.span,
+                                func: None,
+                            },
+                            None => RunOutcome::Compile(vec![e]),
+                        },
                     },
                 }
             };
