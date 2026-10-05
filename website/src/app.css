@@ -434,6 +434,13 @@ html.light .ans-text {
 	.doc-anchor {
 		@apply inline-flex items-center text-aura-muted opacity-0 no-underline hover:underline;
 	}
+	.doc-symlink {
+		color: inherit;
+		text-decoration: none;
+	}
+	.doc-symlink:hover {
+		text-decoration: underline;
+	}
 	.doc-h:hover .doc-anchor {
 		@apply opacity-100;
 	}

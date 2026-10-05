@@ -39,6 +39,30 @@ function escReg(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function matchNames(
+	index: Map<string, string>,
+	exclude?: Set<string>
+): { re: RegExp | null; hrefOf: (m: string) => string | undefined } {
+	const names = [...index.keys()].filter((n) => /^[A-Z]/.test(n) && !(exclude && exclude.has(n)));
+	if (names.length === 0) return { re: null, hrefOf: () => undefined };
+	const pluralOf = new Map<string, string>();
+	for (const n of names) {
+		if (!n.endsWith('s') && !index.has(n + 's')) pluralOf.set(n + 's', n);
+	}
+	const alts = [...names, ...pluralOf.keys()];
+	alts.sort((a, b) => b.length - a.length);
+	const re = new RegExp(`(?<![A-Za-z0-9_])(${alts.map(escReg).join('|')})(?![A-Za-z0-9_])`, 'g');
+	return {
+		re,
+		hrefOf: (m: string) => {
+			const exact = index.get(m);
+			if (exact) return exact;
+			const singular = pluralOf.get(m);
+			return singular ? index.get(singular) : undefined;
+		}
+	};
+}
+
 function splitHtml(html: string): { tag: boolean; text: string }[] {
 	const parts = html.split(/(<[^>]*>)/g);
 	return parts.filter((p) => p.length > 0).map((p) => ({ tag: p.startsWith('<'), text: p }));
@@ -49,11 +73,9 @@ function escHtmlText(s: string): string {
 }
 
 export function linkifyTypeText(ty: string, index: Map<string, string>): string {
-	const names = [...index.keys()].filter((n) => /^[A-Z]/.test(n));
-	if (names.length === 0) return escHtmlText(ty);
-	names.sort((a, b) => b.length - a.length);
-	const re = new RegExp(`(?<![A-Za-z0-9_])(${names.map(escReg).join('|')})(?![A-Za-z0-9_])`, 'g');
-	return escHtmlText(ty).replace(re, (m) => `<a href="${index.get(m)}" class="symlink">${m}</a>`);
+	const { re, hrefOf } = matchNames(index);
+	if (!re) return escHtmlText(ty);
+	return escHtmlText(ty).replace(re, (m) => `<a href="${hrefOf(m)}" class="doc-symlink">${m}</a>`);
 }
 
 function isOpenTag(token: string, name: string): boolean {
@@ -69,10 +91,8 @@ export function linkifyProseHtml(
 	index: Map<string, string>,
 	exclude?: Set<string>
 ): string {
-	const names = [...index.keys()].filter((n) => /^[A-Z]/.test(n) && !(exclude && exclude.has(n)));
-	if (names.length === 0) return html;
-	names.sort((a, b) => b.length - a.length);
-	const re = new RegExp(`(?<![A-Za-z0-9_])(${names.map(escReg).join('|')})(?![A-Za-z0-9_])`, 'g');
+	const { re, hrefOf } = matchNames(index, exclude);
+	if (!re) return html;
 	let codeDepth = 0;
 	let out = '';
 	for (const part of splitHtml(html)) {
@@ -86,7 +106,7 @@ export function linkifyProseHtml(
 			out += part.text;
 			continue;
 		}
-		out += part.text.replace(re, (m) => `<a href="${index.get(m)}" class="symlink">${m}</a>`);
+		out += part.text.replace(re, (m) => `<a href="${hrefOf(m)}" class="doc-symlink">${m}</a>`);
 	}
 	return out;
 }
