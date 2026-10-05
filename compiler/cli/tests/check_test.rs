@@ -150,13 +150,10 @@ fn test_check_latency_comparison() {
         .unwrap();
     let check_elapsed = check_start.elapsed();
     assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
-    let out_path = dir.join("speedapp");
     let build_start = Instant::now();
     let build = Command::new(rnx())
         .arg("build")
         .arg(&name)
-        .arg("-o")
-        .arg(&out_path)
         .output()
         .unwrap();
     let build_elapsed = build_start.elapsed();

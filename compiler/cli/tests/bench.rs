@@ -77,18 +77,17 @@ fn test_bench_stripped_in_regular_build() {
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg("--release")
-        .arg("-o")
-        .arg(dir.join("app"))
         .current_dir(&dir)
         .arg("src/main.rnx")
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let nm = std::process::Command::new("nm").arg(dir.join("app")).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let nm = std::process::Command::new("nm").arg(&bin).output().unwrap();
     let text = String::from_utf8_lossy(&nm.stdout).into_owned()
         + &String::from_utf8_lossy(&nm.stderr).into_owned();
     assert!(!text.contains("__rnx_bench_"), "bench symbol leaked:\n{text}");
-    let run = std::process::Command::new(dir.join("app")).output().unwrap();
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }

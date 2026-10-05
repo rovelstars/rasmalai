@@ -61,18 +61,16 @@ fn llvm_failing_assert_exits_1_on_stderr() {
 #[test]
 fn aot_failing_assert_exits_1_on_stderr() {
     let main = write_case("aot-fail", FAIL_SRC);
-    let bin_path = main.parent().unwrap().join("assert_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = Command::new(rnx)
         .arg("build")
         .arg(&main)
-        .arg("-o")
-        .arg(&bin_path)
         .arg("-q")
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code(), Some(1), "exit code");
     assert!(run.stdout.is_empty(), "stdout stays clean");
     let stderr = String::from_utf8_lossy(&run.stderr);

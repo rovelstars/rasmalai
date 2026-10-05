@@ -98,16 +98,14 @@ fn loop_ternary_release_llvm() {
 fn loop_ternary_release_aot() {
     let main = fresh_src("aot");
     let dir = main.parent().unwrap().to_path_buf();
-    let bin_path = dir.join("looptern_bin");
     let build = Command::new(rnx())
         .arg("build")
         .arg(&main)
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0, "aot exit: {}", String::from_utf8_lossy(&run.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }

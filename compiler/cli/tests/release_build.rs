@@ -9,29 +9,27 @@ fn write_src(src: &str, tag: &str) -> (PathBuf, PathBuf) {
     (dir.clone(), main)
 }
 
-fn build_release(main: &std::path::Path, out: &std::path::Path) {
+fn build_release(main: &std::path::Path) -> String {
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(main)
         .arg("--release")
-        .arg("-o")
-        .arg(out)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path")
 }
 
-fn build_debug(main: &std::path::Path, out: &std::path::Path) {
+fn build_debug(main: &std::path::Path) -> String {
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(main)
-        .arg("-o")
-        .arg(out)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path")
 }
 
 fn sha256(path: &std::path::Path) -> String {
@@ -45,9 +43,8 @@ const EXEC_SRC: &str = "import { AtomicInt } from \"@std/sync\";\n\nfn Main(): I
 #[test]
 fn test_release_build_execution() {
     let (dir, main) = write_src(EXEC_SRC, "exec");
-    let out = dir.join("app_release");
-    build_release(&main, &out);
-    let run = std::process::Command::new(&out).output().unwrap();
+    let bin = build_release(&main);
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "release: 42\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -64,10 +61,8 @@ fn ldd_needed(path: &std::path::Path) -> String {
 #[test]
 fn test_dev_dynamic_release_static() {
     let (dir, main) = write_src(MINI_SRC, "size");
-    let dbg = dir.join("app_debug");
-    let rel = dir.join("app_release");
-    build_debug(&main, &dbg);
-    build_release(&main, &rel);
+    let dbg = build_debug(&main);
+    let rel = build_release(&main);
     let dbg_size = std::fs::metadata(&dbg).unwrap().len();
     let rel_size = std::fs::metadata(&rel).unwrap().len();
     assert!(
@@ -75,11 +70,11 @@ fn test_dev_dynamic_release_static() {
         "dynamic dev {dbg_size} should be smaller than static release {rel_size}"
     );
     assert!(
-        ldd_needed(&dbg).contains("libruntime_native.so"),
+        ldd_needed(std::path::Path::new(&dbg)).contains("libruntime_native.so"),
         "dev binary must dynamically link libruntime_native"
     );
     assert!(
-        !ldd_needed(&rel).contains("libruntime_native"),
+        !ldd_needed(std::path::Path::new(&rel)).contains("libruntime_native"),
         "release binary must stay fully static"
     );
     let run = std::process::Command::new(&rel).output().unwrap();
@@ -94,8 +89,11 @@ fn test_bit_identical_reproducibility() {
     let (dir, main) = write_src(EXEC_SRC, "repro");
     let a = dir.join("app_a");
     let b = dir.join("app_b");
-    build_release(&main, &a);
-    build_release(&main, &b);
+    let first = build_release(&main);
+    std::fs::copy(&first, &a).unwrap();
+    std::fs::remove_file(&first).unwrap();
+    let second = build_release(&main);
+    std::fs::copy(&second, &b).unwrap();
     let ha = sha256(&a);
     let hb = sha256(&b);
     assert_eq!(ha, hb, "release digests differ");
@@ -108,9 +106,8 @@ const MATRIX_SRC: &str = "import { AtomicInt, Mutex } from \"@std/sync\";\nimpor
 #[test]
 fn test_release_runtime_matrix() {
     let (dir, main) = write_src(MATRIX_SRC, "matrix");
-    let out = dir.join("app_release");
-    build_release(&main, &out);
-    let run = std::process::Command::new(&out).output().unwrap();
+    let bin = build_release(&main);
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "release matrix: 40 8\n");
     let _ = std::fs::remove_dir_all(&dir);

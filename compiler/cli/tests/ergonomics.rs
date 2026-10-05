@@ -48,16 +48,14 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         assert_eq!(got, want, "{backend} {tag} stdout");
     }
 
-    let bin_path = dir.join("ergo_bin");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(dir.join("main.rnx"))
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0, "aot {tag} exit");
     assert_eq!(String::from_utf8(run.stdout).unwrap(), want, "aot {tag} stdout");
     let _ = std::fs::remove_dir_all(&dir);
@@ -74,8 +72,6 @@ fn check_fails_with(src: &str, want: &[&str], tag: &str) {
         .env("NO_COLOR", "1")
         .current_dir(&dir)
         .arg("src/main.rnx")
-        .arg("-o")
-        .arg(dir.join("should_not_exist_bin"))
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1), "expected failure");

@@ -42,12 +42,9 @@ fn string_ordering_is_lexicographic_on_all_backends() {
             "{backend}"
         );
     }
-    let bin = dir.join("t_ord");
     let build = std::process::Command::new(rnx())
         .arg("build")
         .arg(&main)
-        .arg("-o")
-        .arg(&bin)
         .output()
         .unwrap();
     assert!(
@@ -55,6 +52,7 @@ fn string_ordering_is_lexicographic_on_all_backends() {
         "{}",
         String::from_utf8_lossy(&build.stderr)
     );
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let run = std::process::Command::new(&bin).output().unwrap();
     assert!(run.status.success());
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "ord-ok\n");

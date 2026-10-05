@@ -89,17 +89,15 @@ fn test_bce_cross_backend_execution() {
     std::fs::create_dir_all(&dir).unwrap();
     let src_path = dir.join("acc.rnx");
     std::fs::write(&src_path, &src).unwrap();
-    let bin_path = dir.join("bce_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(&src_path)
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "bce success: 4950\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -164,17 +162,15 @@ fn test_bce_short_array_still_traps() {
         let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
         assert!(stderr.contains("index out of bounds"), "{backend}: {stderr}");
     }
-    let bin_path = dir.join("short_bin");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg("--release")
         .arg(&src_path)
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert!(!run.status.success(), "aot read past the end without trapping");
     let _ = std::fs::remove_dir_all(&dir);
 }

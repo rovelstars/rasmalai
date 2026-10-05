@@ -55,7 +55,7 @@ static archive plus a `<basename>.h` header. No binding generator, no
 wrapper crate, no build script:
 
 ```sh
-rnx build physics.rnx --lib -o libphysics.a
+rnx build physics.rnx --lib
 ```
 
 Integers, floats, bools, and `String` (as `const char*`) cross the boundary.

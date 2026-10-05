@@ -52,9 +52,6 @@ pub enum Command {
         /// Entry function name
         #[arg(long, default_value = "Main")]
         entry: String,
-        /// Output binary path
-        #[arg(short = 'o')]
-        out: Option<PathBuf>,
         /// Build with optimizations enabled
         #[arg(long)]
         release: bool,

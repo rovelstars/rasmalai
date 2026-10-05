@@ -232,17 +232,15 @@ fn test_cross_backend_inlining_run() {
     std::fs::create_dir_all(&dir).unwrap();
     let src_path = dir.join("inline.rnx");
     std::fs::write(&src_path, INLINE_WORKLOAD).unwrap();
-    let bin_path = dir.join("inline_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(&src_path)
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "inline success: 7 42\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -323,17 +321,15 @@ fn test_cross_backend_compilation_and_execution() {
     std::fs::create_dir_all(&dir).unwrap();
     let src_path = dir.join("dead.rnx");
     std::fs::write(&src_path, DEAD_ELIM_WORKLOAD).unwrap();
-    let bin_path = dir.join("dead_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(&src_path)
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "dead elim success: 42\n");
     let _ = std::fs::remove_dir_all(&dir);

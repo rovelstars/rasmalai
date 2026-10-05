@@ -52,16 +52,16 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     assert_eq!(llvm::codegen::execute(leaked, "Main").unwrap(), want, "llvm {tag}");
 
     for release in [false, true] {
-        let bin_path = dir.join(if release { "arrayabi_rel" } else { "arrayabi_bin" });
         let rnx = env!("CARGO_BIN_EXE_rnx");
         let mut cmd = std::process::Command::new(rnx);
-        cmd.arg("build").arg(dir.join("main.rnx")).arg("-o").arg(&bin_path);
+        cmd.arg("build").arg(dir.join("main.rnx"));
         if release {
             cmd.arg("--release");
         }
         let build = cmd.output().unwrap();
         assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-        let run = std::process::Command::new(&bin_path).output().unwrap();
+        let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+        let run = std::process::Command::new(&bin).output().unwrap();
         assert_eq!(run.status.code().unwrap(), want as i32, "aot {tag} exit");
         let suffix = if want_out.is_empty() { "" } else { "\n" };
         assert_eq!(

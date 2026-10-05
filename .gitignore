@@ -1,6 +1,8 @@
 # Build artifacts
 target/
 **/target/
+.rnx-cache/
+**/.rnx-cache/
 *.coredump
 core*
 *.profraw

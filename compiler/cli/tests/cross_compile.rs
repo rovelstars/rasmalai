@@ -32,49 +32,42 @@ fn sha256(path: &std::path::Path) -> String {
 #[test]
 fn test_emit_obj_x86_64() {
     let (dir, main) = write_src(MINI_SRC, "x86");
-    let out = dir.join("target").join("test_x86.o");
     let build = build(&[
         main.to_str().unwrap(),
         "--emit-obj",
         "--target",
         "x86_64-unknown-linux-gnu",
-        "-o",
-        out.to_str().unwrap(),
     ]);
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    assert!(out.is_file(), "object missing");
-    assert_eq!(machine_of(&out), 62, "expected EM_X86_64");
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    assert!(std::path::Path::new(&bin).is_file(), "object missing");
+    assert_eq!(machine_of(std::path::Path::new(&bin)), 62, "expected EM_X86_64");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_emit_obj_aarch64() {
     let (dir, main) = write_src(MINI_SRC, "arm");
-    let out = dir.join("target").join("test_arm.o");
     let build = build(&[
         main.to_str().unwrap(),
         "--emit-obj",
         "--target",
         "aarch64-unknown-linux-gnu",
-        "-o",
-        out.to_str().unwrap(),
     ]);
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    assert!(out.is_file(), "object missing");
-    assert_eq!(machine_of(&out), 183, "expected EM_AARCH64");
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    assert!(std::path::Path::new(&bin).is_file(), "object missing");
+    assert_eq!(machine_of(std::path::Path::new(&bin)), 183, "expected EM_AARCH64");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_unsupported_target_rejected() {
     let (dir, main) = write_src(MINI_SRC, "bad");
-    let out = dir.join("target").join("test_riscv.o");
     let build = build(&[
         main.to_str().unwrap(),
         "--target",
         "riscv64gc-unknown-linux-gnu",
-        "-o",
-        out.to_str().unwrap(),
     ]);
     assert!(!build.status.success(), "unsupported target accepted");
     let err = String::from_utf8_lossy(&build.stdout).into_owned()
@@ -88,16 +81,17 @@ fn test_cross_target_determinism() {
     let (dir, main) = write_src(MINI_SRC, "det");
     let a = dir.join("target").join("a.o");
     let b = dir.join("target").join("b.o");
-    for out in [&a, &b] {
+    for dst in [&a, &b] {
         let build = build(&[
             main.to_str().unwrap(),
             "--emit-obj",
             "--target",
             "aarch64-unknown-linux-gnu",
-            "-o",
-            out.to_str().unwrap(),
         ]);
         assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+        let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+        std::fs::copy(&bin, dst).unwrap();
+        std::fs::remove_file(&bin).unwrap();
     }
     assert_eq!(sha256(&a), sha256(&b), "cross digests differ");
     assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());

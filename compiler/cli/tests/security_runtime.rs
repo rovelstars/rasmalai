@@ -144,16 +144,14 @@ fn s301_direct_write_rejected_aot() {
             "{FILE_PRELUDE}fn Main(): Int {{\n    let f = File.open(\"Project.deplock\", OpenMode.Write);\n    f.writeText(\"hacked\");\n    return 0;\n}}\n"
         ),
     );
-    let bin = dir.join("s301_bin");
     let build = Command::new(rnx())
         .arg("build")
         .arg(&main)
-        .arg("-o")
-        .arg(&bin)
         .arg("-q")
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", combined(&build));
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let run = Command::new(&bin)
         .current_dir(&dir)
         .output()

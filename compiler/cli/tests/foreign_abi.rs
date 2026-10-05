@@ -44,9 +44,9 @@ fn run_ok(main: &std::path::Path, backend: &str) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-fn build(main: &std::path::Path, out: &std::path::Path, release: bool) {
+fn build(main: &std::path::Path, release: bool) -> String {
     let mut cmd = std::process::Command::new(rnx());
-    cmd.arg("build").arg(main).arg("-o").arg(out);
+    cmd.arg("build").arg(main);
     if release {
         cmd.arg("--release");
     }
@@ -56,6 +56,7 @@ fn build(main: &std::path::Path, out: &std::path::Path, release: bool) {
         "{}",
         String::from_utf8_lossy(&build.stderr)
     );
+    String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path")
 }
 
 #[test]
@@ -65,9 +66,8 @@ fn byte_store_writes_one_byte_on_all_backends() {
         assert_eq!(run_ok(&main, backend), "byte-ok\n", "{backend}");
     }
     for release in [false, true] {
-        let out = dir.join(if release { "t_br" } else { "t_b" });
-        build(&main, &out, release);
-        let run = std::process::Command::new(&out).output().unwrap();
+        let bin = build(&main, release);
+        let run = std::process::Command::new(&bin).output().unwrap();
         assert!(run.status.success());
         assert_eq!(String::from_utf8(run.stdout).unwrap(), "byte-ok\n");
     }
@@ -85,9 +85,8 @@ fn libc_strlen_puts_on_all_backends() {
         );
     }
     for release in [false, true] {
-        let out = dir.join(if release { "t_cr" } else { "t_c" });
-        build(&main, &out, release);
-        let run = std::process::Command::new(&out).output().unwrap();
+        let bin = build(&main, release);
+        let run = std::process::Command::new(&bin).output().unwrap();
         assert!(run.status.success());
         assert_eq!(
             String::from_utf8(run.stdout).unwrap(),
@@ -105,15 +104,14 @@ fn zlib_compress_bound_links_libz() {
         let bound: i64 = stdout.trim().parse().expect("bound");
         assert!(bound > 100, "{backend}: {bound}");
     }
-    let out = dir.join("t_z");
-    build(&main, &out, false);
-    let run = std::process::Command::new(&out).output().unwrap();
+    let bin = build(&main, false);
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert!(run.status.success());
     let bound: i64 = String::from_utf8(run.stdout).unwrap().trim().parse().expect("bound");
     assert!(bound > 100, "{bound}");
     #[cfg(unix)]
     {
-        let ldd = std::process::Command::new("ldd").arg(&out).output().unwrap();
+        let ldd = std::process::Command::new("ldd").arg(&bin).output().unwrap();
         let text = String::from_utf8_lossy(&ldd.stdout).into_owned();
         assert!(text.contains("libz.so"), "libz linked:\n{text}");
     }

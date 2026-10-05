@@ -40,16 +40,36 @@ fn default_out_path(input: &str, root: &std::path::Path, release: bool) -> std::
         .join(stem)
 }
 
+fn profile_artifact(root: &std::path::Path, release: bool, filename: &str) -> std::path::PathBuf {
+    let dir = frontend::cache::project_cache_dir(root)
+        .join("build")
+        .join(profile_name(release));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("error: cannot create {}: {e}", dir.display());
+        std::process::exit(1);
+    }
+    dir.join(filename)
+}
+
 fn project_root_for(input: &str) -> std::path::PathBuf {
     let anchor = std::path::Path::new(input)
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    frontend::project::find_project_root(&anchor).unwrap_or_else(|| {
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    })
+    match frontend::project::find_project_root(&anchor) {
+        Some(root) => root,
+        None => {
+            if anchor.is_absolute() {
+                anchor
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(anchor))
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            }
+        }
+    }
 }
-pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Option<std::path::PathBuf>, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, package: Option<String>, verbose: bool, quiet: bool) {
+pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, package: Option<String>, verbose: bool, quiet: bool) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let target = cli::resolve_scope_target(path.as_deref(), package.as_deref())
@@ -58,6 +78,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
                     std::process::exit(1);
                 });
             let input = target.entry;
+            let root = project_root_for(&input);
             if verbose {
                 eprintln!("rnx: building {input} ({})", if release { "release" } else { "dev" });
             }
@@ -121,21 +142,20 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
                     }
                 };
                 if emit_obj {
-                    let obj_path = out.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| format!("./lib{}.o", built.package));
+                    let obj_path = profile_artifact(&root, release, &format!("lib{}.o", built.package));
                     if let Err(e) = std::fs::write(&obj_path, &built.object) {
-                        eprintln!("error: write {obj_path}: {e}");
+                        eprintln!("error: write {}: {e}", obj_path.display());
                         std::process::exit(1);
                     }
-                    let header_path =
-                        std::path::Path::new(&obj_path).with_extension("h");
+                    let header_path = obj_path.with_extension("h");
                     if let Err(e) = std::fs::write(&header_path, &built.header) {
                         eprintln!("error: header {}: {e}", header_path.display());
                         std::process::exit(1);
                     }
-                    println!("built {obj_path}");
+                    println!("artifact: {}", obj_path.display());
                     return;
                 }
-                let out_path = out.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| format!("./lib{}.a", built.package));
+                let out_path = profile_artifact(&root, release, &format!("lib{}.a", built.package));
                 if let Err(e) = linker::bundle_static_library(
                     &built.object,
                     &runtime::archive::BYTES,
@@ -149,7 +169,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
                     eprintln!("error: header {}: {e}", header_path.display());
                     std::process::exit(1);
                 }
-                println!("built {out_path}");
+                println!("artifact: {}", out_path.display());
                 return;
             }
             if emit_obj && !lib {
@@ -175,17 +195,12 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
                         std::process::exit(1);
                     }
                 };
-                let obj_path = out
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| {
-                        format!("./{}.o", cli::package_name_for(&input))
-                    });
+                let obj_path = profile_artifact(&root, release, &format!("{}.o", cli::package_name_for(&input)));
                 if let Err(e) = std::fs::write(&obj_path, &bytes) {
-                    eprintln!("error: write {obj_path}: {e}");
+                    eprintln!("error: write {}: {e}", obj_path.display());
                     std::process::exit(1);
                 }
-                println!("built {obj_path}");
+                println!("artifact: {}", obj_path.display());
                 return;
             }
             let wall = std::time::Instant::now();
@@ -204,10 +219,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
                     std::process::exit(1);
                 }
             };
-            let (out_path, pending_stamp) = match out.as_ref() {
-                Some(p) => (p.display().to_string(), None),
-                None => {
-                    let root = project_root_for(&input);
+            let (out_path, pending_stamp) = {
                     let path = default_out_path(&input, &root, release);
                     if let Some(parent) = path.parent() {
                         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -219,11 +231,10 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
                     let stamp = path.with_file_name(".fingerprint");
                     let fresh = std::fs::read_to_string(&stamp).map(|s| s.trim() == key).unwrap_or(false);
                     if fresh && path.is_file() {
-                        println!("fresh {}", path.display());
+                        println!("artifact: {} (fresh)", path.display());
                         return;
                     }
                     (path.display().to_string(), Some((stamp, key)))
-                }
             };
             let target = linker::host_triple();
             let link_start = std::time::Instant::now();
@@ -307,7 +318,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
                 target_triple.as_deref().unwrap_or(target.0.as_str())
             );
             if quiet {
-                println!("{out_path}");
+                println!("artifact: {out_path}");
             } else {
                 print!(
                     "{}",
@@ -321,5 +332,6 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, out: Op
                         cli::telemetry::peak_mb(),
                     )
                 );
+                println!("artifact: {out_path}");
             }
 }

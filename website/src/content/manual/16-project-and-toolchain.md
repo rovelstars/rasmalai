@@ -199,7 +199,7 @@ print(quote(2.0));
 | `rnx dev` | watch sources, hot-swap function bodies without restart | `[path]`, `--entry F`, `--no-rerun`, `--mcp` |
 | `rnx repl` | interactive JIT shell | none |
 | `rnx run` | execute program | `--entry F`, `--backend <interpreter\|cranelift\|llvm>`, `-p`, `--locked`, `-O`, `-- <args>` |
-| `rnx build` | link native binary | `-o`, `--release`, `--lib`, `--emit-obj`, `--target`, `--entry F`, `-p`, `--locked`, `-O`, `-g/--debug` |
+| `rnx build` | link native binary into `.rnx-cache/build/{dev,release}/<name>` | `--release`, `--lib`, `--emit-obj`, `--target`, `--entry F`, `-p`, `--locked`, `-O`, `-g/--debug` |
 | `rnx test` | run `test fn` blocks | `[filter]`, `-p`, `--backend`, `-O`, `--exact` |
 | `rnx bench` | time `bench` blocks | `--filter`, `-p`, `--backend`, `--release/--no-release` |
 | `rnx doc` | docs to `target/doc` (HTML or `--json`) | `-p`, `--open`, `--no-deps`, `--all`/`--private`, `--json`, `--stdlib`, `--out-dir` |

@@ -112,17 +112,15 @@ fn test_cross_backend_licm_execution() {
     std::fs::create_dir_all(&dir).unwrap();
     let src_path = dir.join("nested.rnx");
     std::fs::write(&src_path, NESTED_SRC).unwrap();
-    let bin_path = dir.join("licm_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(&src_path)
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "licm success: 42\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -203,17 +201,15 @@ fn test_cross_backend_zero_trip_loop_keeps_initial() {
     std::fs::create_dir_all(&dir).unwrap();
     let src_path = dir.join("zerotrip.rnx");
     std::fs::write(&src_path, ZERO_TRIP_SRC).unwrap();
-    let bin_path = dir.join("zerotrip_bin");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(&src_path)
-        .arg("-o")
-        .arg(&bin_path)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let run = std::process::Command::new(&bin_path).output().unwrap();
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "5\ntrue\nkeep\n7\n");
     let _ = std::fs::remove_dir_all(&dir);

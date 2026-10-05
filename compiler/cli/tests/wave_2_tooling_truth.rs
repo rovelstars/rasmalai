@@ -98,15 +98,13 @@ fn uncaught_throw_renders_identically() {
         let out = run_backend(&file, backend);
         assert_uncaught_shape(&out, backend);
     }
-    let bin = dir.join("throw_bin");
     let build = Command::new(rnx())
         .arg("build")
         .arg(&file)
-        .arg("-o")
-        .arg(&bin)
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let out = Command::new(&bin).output().unwrap();
     assert_uncaught_shape(&out, "aot");
     let _ = std::fs::remove_dir_all(&dir);
