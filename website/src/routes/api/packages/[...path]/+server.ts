@@ -15,7 +15,7 @@ import {
 	packagePointerUrls
 } from '$lib/server/db';
 import { safeEqual, sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
-import { specHeaders } from '$lib/server/registry';
+import { specHeaders, VERSION_RE, splitNameVersion } from '$lib/server/registry';
 import { sanitizeGuideHtml } from '$lib/server/sanitize';
 import { parseTarEntries } from '$lib/server/chunks';
 
@@ -34,17 +34,28 @@ function withdrawn(version: string, reason: string) {
 	);
 }
 
-function parsePath(path: string): { full: string; rest: string[] } | null {
+function parsePath(path: string): { full: string; rest: string[]; legacy: string | null } | null {
 	const segs = path.split('/').filter(Boolean);
 	if (segs.length === 0) return null;
-	if (segs[0].startsWith('@')) {
-		if (segs.length < 2) return null;
-		const full = `${segs[0]}/${segs[1]}`;
-		if (!parsePackageName(full)) return null;
-		return { full, rest: segs.slice(2) };
+	const scoped = segs[0].startsWith('@');
+	if (scoped && segs.length < 2) return null;
+	const scopeSeg = scoped ? segs[0] : '';
+	const nameSeg = scoped ? segs[1] : segs[0];
+	const tail = scoped ? segs.slice(2) : segs.slice(1);
+	const nv = splitNameVersion(nameSeg);
+	const full = scopeSeg ? `${scopeSeg}/${nv.name}` : nv.name;
+	if (!parsePackageName(full)) return null;
+	if (nv.version) {
+		return { full, rest: [nv.version, ...tail], legacy: null };
 	}
-	if (!parsePackageName(segs[0])) return null;
-	return { full: segs[0], rest: segs.slice(1) };
+	if (tail.length > 0 && VERSION_RE.test(tail[0])) {
+		const version = tail[0];
+		const rest = tail.slice(1);
+		const prefix = scopeSeg ? `${scopeSeg}/${nameSeg}@${version}` : `${nameSeg}@${version}`;
+		const suffix = rest.length > 0 ? `/${rest.join('/')}` : '';
+		return { full, rest: [version, ...rest], legacy: `/api/packages/${prefix}${suffix}` };
+	}
+	return { full, rest: tail, legacy: null };
 }
 
 function readWithdrawReason(manifestJson: string): string {
@@ -76,7 +87,10 @@ export async function GET({ params, platform, setHeaders, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const parsed = parsePath(params.path ?? '');
 	if (!parsed) return notFound('invalid package path');
-	const { full, rest } = parsed;
+	const { full, rest, legacy } = parsed;
+	if (legacy) {
+		return new Response(null, { status: 308, headers: { Location: legacy + url.search, ...specHeaders() } });
+	}
 
 	if (rest.length === 0) {
 		const latest = await getLatestVersion(env, full);
@@ -247,7 +261,10 @@ export async function POST({ params, request, platform, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const parsed = parsePath(params.path ?? '');
 	if (!parsed) return notFound('invalid package path');
-	const { full, rest } = parsed;
+	const { full, rest, legacy } = parsed;
+	if (legacy) {
+		return new Response(null, { status: 308, headers: { Location: legacy + url.search, ...specHeaders() } });
+	}
 	const [version, action] = rest;
 	if (!version || (action !== 'yank' && action !== 'takedown') || rest.length !== 2) {
 		return notFound('unknown mutation');

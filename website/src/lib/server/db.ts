@@ -1188,10 +1188,10 @@ export function packagePointerUrls(origin: string, full: string, version?: strin
 	const base = origin.replace(/\/$/, '');
 	const urls = [`${base}/api/packages`, `${base}/api/packages/${full}`];
 	if (version) {
-		urls.push(`${base}/api/packages/${full}/${version}`);
-		urls.push(`${base}/api/packages/${full}/${version}/download`);
-		urls.push(`${base}/api/packages/${full}/${version}/api`);
-		urls.push(`${base}/api/packages/${full}/${version}/guides`);
+		urls.push(`${base}/api/packages/${full}@${version}`);
+		urls.push(`${base}/api/packages/${full}@${version}/download`);
+		urls.push(`${base}/api/packages/${full}@${version}/api`);
+		urls.push(`${base}/api/packages/${full}@${version}/guides`);
 	}
 	return urls;
 }

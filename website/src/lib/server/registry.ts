@@ -16,6 +16,16 @@ export interface Semver {
 // Supported range grammar: `*` | `latest` | `X.Y.Z` | `^X.Y.Z` | `~X.Y.Z` | `>=X.Y.Z`.
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 
+export const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
+export function splitNameVersion(seg: string): { name: string; version: string | null } {
+	const at = seg.lastIndexOf('@');
+	if (at <= 0) return { name: seg, version: null };
+	const version = seg.slice(at + 1);
+	if (!VERSION_RE.test(version)) return { name: seg, version: null };
+	return { name: seg.slice(0, at), version };
+}
+
 export function isValidRange(range: string): boolean {
 	const r = range.trim();
 	if (r === '' || r === '*' || r === 'latest') return true;

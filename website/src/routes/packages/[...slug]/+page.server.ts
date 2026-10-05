@@ -1,14 +1,15 @@
 import { error, redirect } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { getPackage, getVersionDoc } from '$lib/server/db';
+import { splitNameVersion } from '$lib/server/registry';
 import { localStdPackage } from '$lib/server/std-local';
 
 // Registry-backed: every package and version resolves at request time,
 // so new publishes go live without a site rebuild or a prerender pass.
 //
-// URLs are path-versioned: /packages/@std/fs serves latest,
-// /packages/@std/fs/0.1.0 pins a version. The legacy ?v= form redirects
-// to the path form.
+// URLs are versioned with @: /packages/@std/fs serves latest,
+// /packages/@std/fs@0.1.0 pins a version. Older path-versioned URLs
+// (/packages/@std/fs/0.1.0) and the legacy ?v= form redirect here.
 export const prerender = false;
 
 const VERSION_RE = /^\d+\.\d+\.\d+$/;
@@ -17,15 +18,32 @@ export async function load({ platform, params, url, setHeaders }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const legacy = url.searchParams.get('v');
 	const segs = params.slug.split('/').filter(Boolean);
-	let full = segs.join('/');
+	let full = '';
 	let want: string | null = null;
-	if (segs.length > 1 && VERSION_RE.test(segs[segs.length - 1])) {
-		want = segs.pop() as string;
-		full = segs.join('/');
+	if (segs[0]?.startsWith('@')) {
+		if (segs.length < 2) error(404, 'package not found');
+		const nv = splitNameVersion(segs[1]);
+		full = `${segs[0]}/${nv.name}`;
+		want = nv.version;
+		if (!want && segs.length > 2 && VERSION_RE.test(segs[2])) {
+			want = segs[2];
+			const tab = url.searchParams.get('tab');
+			redirect(308, `/packages/${full}@${want}${tab ? `?tab=${tab}` : ''}`);
+		}
+	} else if (segs.length > 0) {
+		const nv = splitNameVersion(segs[0]);
+		full = nv.name;
+		want = nv.version;
+		if (!want && segs.length > 1 && VERSION_RE.test(segs[1])) {
+			want = segs[1];
+			redirect(308, `/packages/${full}@${want}`);
+		}
+	} else {
+		error(404, 'package not found');
 	}
 	if (legacy) {
 		const tab = url.searchParams.get('tab');
-		redirect(308, `/packages/${full}/${legacy}${tab ? `?tab=${tab}` : ''}`);
+		redirect(308, `/packages/${full}@${legacy}${tab ? `?tab=${tab}` : ''}`);
 	}
 	if (dev && full.startsWith('@std/')) {
 		const local = localStdPackage(full);
