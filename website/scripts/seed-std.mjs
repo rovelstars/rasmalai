@@ -49,10 +49,15 @@ async function main() {
 	}
 	const outDir = join(root, '.std-doc');
 	mkdirSync(outDir, { recursive: true });
-	execFileSync('cargo', ['run', '-q', '-p', 'cli', '--', 'doc', '--json', '--stdlib', '--out-dir', outDir], {
-		cwd: repo,
-		stdio: 'inherit'
-	});
+	const rnxBin = process.env['RNX_BIN'];
+	if (rnxBin) {
+		execFileSync(rnxBin, ['doc', '--json', '--stdlib', '--out-dir', outDir], { stdio: 'inherit' });
+	} else {
+		execFileSync('cargo', ['run', '-q', '-p', 'cli', '--', 'doc', '--json', '--stdlib', '--out-dir', outDir], {
+			cwd: repo,
+			stdio: 'inherit'
+		});
+	}
 	const api = JSON.parse(readFileSync(join(outDir, 'api.json'), 'utf8'));
 	const modules = api.modules ?? [];
 	if (modules.length === 0) {

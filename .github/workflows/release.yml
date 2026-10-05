@@ -347,3 +347,37 @@ jobs:
             gh release create "$tag" --title "$tag" --notes "rnx $tag" --draft=false
           fi
           gh release upload "$tag" dist/*.tar.gz --clobber
+
+  seed-std:
+    name: seed stdlib docs to registry
+    if: ${{ always() && needs.publish.result == 'success' }}
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-dev
+          save-if: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install website deps
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: Seed @std snapshots
+        working-directory: website
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: node scripts/seed-std.mjs
