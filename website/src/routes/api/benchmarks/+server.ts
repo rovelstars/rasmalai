@@ -69,10 +69,12 @@ export async function POST({ request, platform }) {
 		const run = await insertBenchmarkRun(env, githubRunId, commitSha, snapshotJson);
 		return json({ success: true, id: run.id }, { status: 201 });
 	} catch (e) {
-		const msg = e instanceof Error ? e.message : String(e);
-		if (msg.includes('UNIQUE') || msg.includes('unique')) {
+		const kind = e instanceof Error ? e.constructor.name : typeof e;
+		const detail = e instanceof Error ? e.message : String(e);
+		const msg = detail.includes('UNIQUE') || detail.includes('unique') ? null : detail;
+		if (!msg) {
 			return json({ success: false, error: 'run already ingested' }, { status: 409 });
 		}
-		return json({ success: false, error: 'ingest failed' }, { status: 500 });
+		return json({ success: false, error: `ingest failed [${kind}]: ${detail}` }, { status: 500 });
 	}
 }
