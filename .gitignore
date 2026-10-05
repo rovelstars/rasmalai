@@ -42,3 +42,7 @@ website/src/lib/wasm/wasm_playground_bg.wasm.d.ts
 .vscode/
 *.swp
 .DS_Store
+
+# Doc-example side effects (api_examples snippets write demo files)
+/compiler/wasm_playground/doc-demo-*
+benches/harness/__pycache__/
