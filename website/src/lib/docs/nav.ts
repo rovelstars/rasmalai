@@ -30,7 +30,8 @@ import {
 	Binary,
 	Monitor,
 	Link,
-	Sparkles
+	Sparkles,
+	Package
 } from 'lucide-svelte';
 
 import { buildChapters } from './chapters';
@@ -66,7 +67,8 @@ const CHAPTER_ICONS = {
 	Binary,
 	Monitor,
 	Link,
-	Sparkles
+	Sparkles,
+	Package
 };
 
 export interface GuideMeta {

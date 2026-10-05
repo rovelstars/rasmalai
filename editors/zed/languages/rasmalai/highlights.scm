@@ -28,11 +28,14 @@
   "struct"
   "record"
   "trait"
+  "interface"
+  "extension"
   "enum"
   "with"
   "extends"
   "native"
   "export"
+  "new"
 ] @keyword
 
 [
@@ -47,6 +50,8 @@
   "return"
   "break"
   "continue"
+  "pass"
+  "fallthrough"
 ] @keyword.control
 
 [
@@ -61,6 +66,7 @@
   "guard"
   "do"
   "is"
+  "unsafe"
 ] @keyword.control
 
 "as" @keyword.control
@@ -78,6 +84,9 @@
 (primitive_type) @type.builtin
 (simd_type) @type.builtin
 (generic_type) @type
+(path_type) @type
+(fn_type) @type
+(tuple_type) @type
 
 (function_declaration
   name: (identifier) @function)
@@ -125,6 +134,9 @@
 (trait_declaration
   name: (identifier) @type)
 
+(interface_declaration
+  name: (identifier) @type)
+
 (enum_declaration
   name: (identifier) @type)
 
@@ -141,3 +153,4 @@
   name: (identifier) @variable)
 
 (this_expression) @variable.builtin
+(super_expression) @variable.builtin
