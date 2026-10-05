@@ -71,7 +71,7 @@ for (const name of modules) {
 	writeFileSync(join(dir, 'README.md'), `# ${full}\n\n${moduleBlurb(name)}\n`);
 	writeFileSync(
 		join(dir, 'Project.config'),
-		`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}"\n    },\n    entries: { main: "src/lib.rnx" }\n}\n`
+		`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))}\n    },\n    entries: { main: "src/lib.rnx" }\n}\n`
 	);
 	const outDir = join(dir, 'dist');
 	mkdirSync(outDir, { recursive: true });
