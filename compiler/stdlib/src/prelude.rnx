@@ -749,8 +749,8 @@ pub class Promise<T> {
     * @param p promise to wait on.
     * @returns `Ok(val)` on fulfillment, `Err(reason)` on rejection.
     * @example
-    * let p: Promise<Any> = Promise.resolve<Any>(2);
-    * print(Promise.waitAny(p).unwrapOr(0));
+    * let p = Promise.resolve(2);
+    * print(Promise.waitAny(p as Promise<Any>).unwrapOr(0));
     */
     static waitAny(p: Promise<Any>): Result<Any, String> {
         return p.wait();
@@ -976,8 +976,8 @@ pub class Promise<T> {
     *  @returns a continuation taking the payload.
      *  @example
      *  let ps: Array<Promise<Int>> = [Promise.resolve(1), Promise.resolve(2)];
-     *  let got: Result<Array<Int>, String> = Promise.all<Int>(ps).wait();
-     *  print(got.unwrap().join(","));
+     *  let got: Array<Int> = Promise.all<Int>(ps).wait().unwrap();
+     *  print(got.join(","));
      */
     static allSlot<U>(slots: Array<U>, out: Promise<Array<U>>, counterId: Int, n: Int, idx: Int): fn(U): Void {
         return (v: U): Void => {
