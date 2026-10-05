@@ -113,8 +113,8 @@ pub enum Command {
         /// Optimization level (0 or 1)
         #[arg(short = 'O', long = "opt-level", default_value = "1")]
         opt_level: String,
-        /// Execution backend
-        #[arg(long, default_value = "interpreter")]
+        /// Execution backend: cranelift (default), interpreter, or llvm
+        #[arg(long, default_value = "cranelift")]
         backend: String,
         /// Print per-pass compile timings to stderr
         #[arg(long)]
@@ -287,7 +287,7 @@ pub enum Command {
         /// Run only benchmarks matching this substring
         #[arg(long)]
         filter: Option<String>,
-        /// Execution backend
+        /// Execution backend: llvm (default), interpreter, or cranelift
         #[arg(long, default_value = "llvm")]
         backend: String,
         /// Build with optimizations enabled
@@ -319,8 +319,8 @@ pub enum Command {
         /// Optimization level (0 or 1)
         #[arg(short = 'O', long = "opt-level", default_value = "1")]
         opt_level: String,
-        /// Execution backend
-        #[arg(long, default_value = "interpreter")]
+        /// Execution backend: cranelift (default), interpreter, or llvm
+        #[arg(long, default_value = "cranelift")]
         backend: String,
         /// Match the filter against the full test name instead of by substring
         #[arg(long)]

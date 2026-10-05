@@ -175,7 +175,7 @@ Any deduced capability outside `allowed` — counting the package's own code plu
 
 ## Testing and benchmarking
 
-A `test fn` takes no parameters and returns nothing. The runner discovers every one in `src/**/*.rnx` and `tests/**/*.rnx`, times each, and reports one line apiece. `assert` takes a `Bool` condition and a `String` message; on false it prints the message and marks that test failed without aborting it. `test fn` blocks are stripped from normal `run`/`build` pipelines. Filter by substring, pass `--exact` for full names, and select `--backend cranelift` or `llvm` to exercise JIT or AOT codegen. Output captures per test; `--nocapture` streams live.
+A `test fn` takes no parameters and returns nothing. The runner discovers every one in `src/**/*.rnx` and `tests/**/*.rnx`, times each, and reports one line apiece. `assert` takes a `Bool` condition and a `String` message; on false it prints the message and marks that test failed without aborting it. `test fn` blocks are stripped from normal `run`/`build` pipelines. Tests run on the Cranelift JIT by default; pass `--backend interpreter` or `--backend llvm` to exercise the interpreter or AOT codegen. Filter by substring, pass `--exact` for full names. Output captures per test; `--nocapture` streams live.
 
 ```rnx
 test fn adds_up() {
@@ -227,10 +227,10 @@ print(quote(2.0));
 | `rnx check` | rapid lexer/parser/module/typecheck, no codegen | `[paths...]`, `-p`, `--json` |
 | `rnx dev` | watch sources, hot-swap function bodies without restart | `[path]`, `--entry F`, `--no-rerun`, `--mcp` |
 | `rnx repl` | interactive JIT shell | none |
-| `rnx run` | execute program | `--entry F`, `--backend <interpreter\|cranelift\|llvm>`, `-p`, `--locked`, `-O`, `-- <args>` |
+| `rnx run` | execute program (Cranelift JIT by default) | `--entry F`, `--backend <interpreter\|cranelift\|llvm>`, `-p`, `--locked`, `-O`, `-- <args>` |
 | `rnx build` | link native binary into `.rnx-cache/build/{dev,release}/<name>` | `--release`, `--lib`, `--emit-obj`, `--target`, `--entry F`, `-p`, `--locked`, `-O`, `-g/--debug` |
-| `rnx test` | run `test fn` blocks | `[filter]`, `-p`, `--backend`, `-O`, `--exact` |
-| `rnx bench` | time `bench` blocks | `--filter`, `-p`, `--backend`, `--release/--no-release` |
+| `rnx test` | run `test fn` blocks (Cranelift JIT by default) | `[filter]`, `-p`, `--backend`, `-O`, `--exact` |
+| `rnx bench` | time `bench` blocks (LLVM release by default) | `--filter`, `-p`, `--backend`, `--release/--no-release` |
 | `rnx doc` | docs to `target/doc` (HTML or `--json`) | `-p`, `--open`, `--no-deps`, `--all`/`--private`, `--json`, `--stdlib`, `--out-dir` |
 | `rnx lint` | static checks over sources | `[paths...]`, `-p`, `--sarif`, `--json`, `--deny-warnings`, `--fix` |
 | `rnx fmt` | format `.rnx` sources | `[paths...]`, `--check`, `--diff` |

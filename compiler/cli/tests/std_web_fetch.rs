@@ -25,7 +25,7 @@ fn run_backend(dir: &PathBuf, src: &str, backend: Option<&str>) -> std::process:
 }
 
 fn expect_backends(tag: &str, src: &str, want: &str) {
-    for backend in [None, Some("cranelift"), Some("llvm")] {
+    for backend in [Some("interpreter"), Some("cranelift"), Some("llvm")] {
         let dir = fresh_dir(&format!("{tag}-{}", backend.unwrap_or("interp")));
         let out = run_backend(&dir, src, backend);
         let stdout = String::from_utf8_lossy(&out.stdout);

@@ -465,7 +465,7 @@ fn run_std_time_interpreter() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_TIME_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let run = std::process::Command::new(rnx).arg("run").arg(dir.join("main.rnx")).output().unwrap();
+    let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     assert!(String::from_utf8(run.stdout).unwrap().contains("@std/time verification success: 1500000"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -515,7 +515,7 @@ fn run_std_random_interpreter() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_RANDOM_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let run = std::process::Command::new(rnx).arg("run").arg(dir.join("main.rnx")).output().unwrap();
+    let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     let stdout = String::from_utf8(run.stdout).unwrap();
     assert!(stdout.starts_with("@std/random verification success:"), "{stdout}");
@@ -558,7 +558,7 @@ fn run_std_fs_interpreter() {
     let target = dir.join("tmp_io_test.txt");
     std::fs::write(dir.join("main.rnx"), std_fs_src(&target.to_string_lossy())).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let run = std::process::Command::new(rnx).arg("run").arg(dir.join("main.rnx")).output().unwrap();
+    let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     let stdout = String::from_utf8(run.stdout).unwrap();
     assert!(stdout.contains("@std/fs verification success: Rasmalai IO 42"), "{stdout}");
@@ -597,7 +597,7 @@ fn run_std_env_interpreter() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_ENV_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let run = std::process::Command::new(rnx).arg("run").arg(dir.join("main.rnx")).output().unwrap();
+    let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     let stdout = String::from_utf8(run.stdout).unwrap();
     assert!(stdout.contains("@std/env verification success: 42_VALUE"), "{stdout}");
@@ -636,7 +636,7 @@ fn run_std_math_interpreter() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_MATH_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let run = std::process::Command::new(rnx).arg("run").arg(dir.join("main.rnx")).output().unwrap();
+    let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     let stdout = String::from_utf8(run.stdout).unwrap();
     assert!(stdout.contains("@std/math verification success: 42"), "{stdout}");
@@ -675,7 +675,7 @@ fn run_std_collections_interpreter() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_COLLECTIONS_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let run = std::process::Command::new(rnx).arg("run").arg(dir.join("main.rnx")).output().unwrap();
+    let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     let stdout = String::from_utf8(run.stdout).unwrap();
     assert!(stdout.contains("@std/collections verification success: 42"), "{stdout}");
@@ -714,7 +714,7 @@ fn run_std_sync_interpreter() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.rnx"), STD_SYNC_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
-    let run = std::process::Command::new(rnx).arg("run").arg(dir.join("main.rnx")).output().unwrap();
+    let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     let stdout = String::from_utf8(run.stdout).unwrap();
     assert!(stdout.contains("@std/sync verification success: 42"), "{stdout}");

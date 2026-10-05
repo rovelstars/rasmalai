@@ -100,6 +100,8 @@ fn test_barrier_zero_and_negative_rejected() {
         let rnx = env!("CARGO_BIN_EXE_rnx");
         let out = std::process::Command::new(rnx)
             .arg("run")
+            .arg("--backend")
+            .arg("interpreter")
             .arg(&main)
             .output()
             .unwrap();

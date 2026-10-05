@@ -64,7 +64,7 @@ fn result_lines(stdout: &str) -> BTreeMap<String, Vec<String>> {
 
 fn check_bench(bench: &str) {
     let mut reference: Option<BTreeMap<String, Vec<String>>> = None;
-    for backend in [None, Some("cranelift"), Some("llvm")] {
+    for backend in [Some("interpreter"), Some("cranelift"), Some("llvm")] {
         let out = run_bench(bench, backend);
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
