@@ -13,7 +13,9 @@ fn build_key(
     target_triple: Option<&str>,
     debug: bool,
 ) -> String {
-    // Path-dep manifests are hashed by bytes; path-dep *contents* are not hashed.
+    // Path-dep manifests and path-dep src trees (src/**/*.rnx, skipping
+    // target/, .git/, .rnx-cache/) feed the fingerprint. Files outside a
+    // path dep's src/ tree or without the .rnx extension are still ignored.
     let manifest = frontend::project::load_manifest(root)
         .ok()
         .flatten()
@@ -35,10 +37,12 @@ fn build_key(
         for (name, spec) in &cfg.dependencies {
             if let frontend::project::DependencySpec::Path { path } = spec {
                 owned.push(name.as_bytes().to_vec());
+                let dep_root = root.join(path);
                 owned.push(
-                    std::fs::read(root.join(path).join(frontend::project::MANIFEST_FILE))
+                    std::fs::read(dep_root.join(frontend::project::MANIFEST_FILE))
                         .unwrap_or_default(),
                 );
+                owned.push(frontend::cache::hash_src_tree(&dep_root));
             }
         }
     }
@@ -52,9 +56,23 @@ fn build_key(
         debug,
         env!("CARGO_PKG_VERSION"),
         &frontend::checksum::Sha256::hexdigest(runtime::archive::BYTES),
+        llvm::LLVM_VERSION,
     ));
     let parts: Vec<&[u8]> = owned.iter().map(|b| b.as_slice()).collect();
     frontend::cache::fingerprint_hex(&parts)
+}
+
+fn project_name_invalid(name: &str) -> bool {
+    if name.is_empty() || name.contains("..") || name.contains('\\') {
+        return true;
+    }
+    if name.chars().any(|c| c.is_control()) {
+        return true;
+    }
+    if name.starts_with('@') {
+        return !frontend::project::is_package_name(name);
+    }
+    name.contains('/')
 }
 
 fn validate_project_name(root: &std::path::Path) {
@@ -63,7 +81,7 @@ fn validate_project_name(root: &std::path::Path) {
         .flatten()
         .and_then(|m| m.project.map(|p| p.name));
     if let Some(name) = name
-        && (name.is_empty() || name.contains("..") || name.contains('\\'))
+        && project_name_invalid(&name)
     {
         println!(
             "{}",
@@ -393,4 +411,60 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 );
                 println!("artifact: {out_path}");
             }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_name_gate() {
+        assert!(project_name_invalid(""));
+        assert!(project_name_invalid(".."));
+        assert!(project_name_invalid("a..b"));
+        assert!(project_name_invalid("a/b"));
+        assert!(project_name_invalid("/lead"));
+        assert!(project_name_invalid("a\\b"));
+        assert!(project_name_invalid("a\x07b"));
+        assert!(project_name_invalid("a\nb"));
+        assert!(project_name_invalid("@lonely"));
+        assert!(project_name_invalid("@/noname"));
+        assert!(!project_name_invalid("app"));
+        assert!(!project_name_invalid("sample_project"));
+        assert!(!project_name_invalid("my-app"));
+        assert!(!project_name_invalid("@acme/widget"));
+    }
+
+    fn write_manifest(dir: &std::path::Path, name: &str, deps: &str) {
+        let text = format!(
+            "export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.1.0\"\n    }}{deps}}}\n"
+        );
+        std::fs::write(dir.join("Project.config"), text).unwrap();
+    }
+
+    #[test]
+    fn build_key_tracks_path_dep_sources() {
+        let root = std::env::temp_dir().join(format!("rnx-build-key-pathdep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dep = root.join("libs").join("mydep");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(dep.join("src")).unwrap();
+        write_manifest(
+            &root,
+            "app",
+            ",\n    dependencies: {\n        mydep: { path: \"libs/mydep\" }\n    }\n",
+        );
+        write_manifest(&dep, "mydep", "");
+        let main = root.join("src").join("main.rnx");
+        std::fs::write(&main, "fn Main(): Int {\n    return 0;\n}\n").unwrap();
+        let dep_src = dep.join("src").join("lib.rnx");
+        std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 1;\n}\n").unwrap();
+        let input = main.to_string_lossy().into_owned();
+        let key_before = build_key(&input, &root, "Main", false, 1, None, false);
+        assert_eq!(key_before, build_key(&input, &root, "Main", false, 1, None, false));
+        std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 2;\n}\n").unwrap();
+        let key_after = build_key(&input, &root, "Main", false, 1, None, false);
+        assert_ne!(key_before, key_after);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
