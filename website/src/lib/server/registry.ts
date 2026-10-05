@@ -58,7 +58,8 @@ export function satisfiesRange(version: string, range: string): boolean {
 	const v = parseSemver(version);
 	if (!v) return false;
 	const r = range.trim();
-	if (r === '' || r === '*' || r === 'latest') return true;
+	if (r === '' || r === '*' || r === 'latest') return v.prerelease === '';
+	if (v.prerelease !== '' && !rangeAdmitsPrerelease(r, v)) return false;
 	if (r.startsWith('^')) {
 		const base = parseSemver(r.slice(1));
 		if (!base) return false;
@@ -79,6 +80,16 @@ export function satisfiesRange(version: string, range: string): boolean {
 	}
 	const exact = parseSemver(r);
 	return !!exact && compareSemver(v, exact) === 0;
+}
+
+function rangeAdmitsPrerelease(range: string, v: Semver): boolean {
+	let base: Semver | null = null;
+	if (range.startsWith('^') || range.startsWith('~')) base = parseSemver(range.slice(1));
+	else if (range.startsWith('>=')) base = parseSemver(range.slice(2).trim());
+	else if (range === '' || range === '*' || range === 'latest') return false;
+	else base = parseSemver(range);
+	if (!base || base.prerelease === '') return false;
+	return base.major === v.major && base.minor === v.minor && base.patch === v.patch;
 }
 
 export function maxSatisfying(versions: string[], range: string): string | null {
