@@ -3,13 +3,26 @@
 	import AuraCode from '$lib/components/AuraCode.svelte';
 	import type { DocModule, JsDoc } from '$lib/docs/api';
 	import { renderMarkdown } from '$lib/docs/markdown';
+import { buildSymbolIndex, linkifyProseHtml } from '$lib/docs/symbollinks';
+import { stdApiModules } from '$lib/docs/stdlib';
 	import { encodeSnippet } from '$lib/playground/share';
 
-	let { mod, idPrefix = '', typeLinks }: { mod: DocModule; idPrefix?: string; typeLinks?: Map<string, string> } = $props();
+	let { mod, idPrefix = '', typeLinks, allMods = null, symbolHref = null }: {
+		mod: DocModule;
+		idPrefix?: string;
+		typeLinks?: Map<string, string>;
+		allMods?: DocModule[] | null;
+		symbolHref?: ((moduleName: string, anchor: string) => string) | null;
+	} = $props();
 
-	function md(text: string): string {
+	let symbolIndex = $derived(
+		buildSymbolIndex(allMods ?? stdApiModules() ?? [mod], symbolHref ?? undefined)
+	);
+
+	function md(text: string, exclude?: string): string {
 		try {
-			return renderMarkdown(text).html;
+			const html = renderMarkdown(text).html;
+			return linkifyProseHtml(html, symbolIndex, exclude ? new Set([exclude]) : undefined);
 		} catch {
 			return text;
 		}
@@ -41,7 +54,7 @@
 			>
 		</div>
 		<div class="p-4">
-			{#if c.docs.description}<div class="text-sm [&>p]:m-0">{@html md(c.docs.description)}</div>{/if}
+			{#if c.docs.description}<div class="text-sm [&>p]:m-0">{@html md(c.docs.description, c.name)}</div>{/if}
 			{#if c.init}
 				<p class="mt-2 font-mono text-[13px] text-aura-muted">{c.init}</p>
 			{/if}
@@ -56,7 +69,7 @@
 			{#each c.methods as m}
 				<div class="mt-4 border-t border-aura-border pt-3">
 					<AuraCode source={m.sig} links={typeLinks} />
-					{#if m.docs.description}<div class="mt-2 text-sm [&>p]:m-0">{@html md(m.docs.description)}</div>{/if}
+					{#if m.docs.description}<div class="mt-2 text-sm [&>p]:m-0">{@html md(m.docs.description, m.name)}</div>{/if}
 					{#each paramsOf(m.docs) as p}
 						<p class="mt-1 font-mono text-[13px]">
 							<span class="text-aura-cyan">{p.name}</span>
@@ -114,7 +127,7 @@
 		<section id="{idPrefix}fn-{f.name}" class="panel mt-4 scroll-mt-24 overflow-hidden">
 			<div class="p-4">
 				<AuraCode source={f.sig} links={typeLinks} />
-				{#if f.docs.description}<div class="mt-2 text-sm [&>p]:m-0">{@html md(f.docs.description)}</div>{/if}
+				{#if f.docs.description}<div class="mt-2 text-sm [&>p]:m-0">{@html md(f.docs.description, f.name)}</div>{/if}
 				{#each paramsOf(f.docs) as p}
 					<p class="mt-1 font-mono text-[13px]">
 						<span class="text-aura-cyan">{p.name}</span>
@@ -151,3 +164,13 @@
 		{/each}
 	</ul>
 {/if}
+
+<style>
+	:global(a.symlink) {
+		color: inherit;
+		text-decoration: none;
+	}
+	:global(a.symlink:hover) {
+		text-decoration: underline;
+	}
+</style>
