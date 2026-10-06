@@ -1701,7 +1701,32 @@ fn extract_download(bytes: &[u8], full: &str, dest: &Path) -> Result<(), Diagnos
     Ok(())
 }
 
-fn ensure_node(base: &str, download_base: &str, node: &ResolveNode) -> Result<PathBuf, Diagnostic> {
+fn origin_of(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let host = rest.split('/').next().unwrap_or(rest);
+            format!("{scheme}://{host}")
+        }
+        None => url.to_string(),
+    }
+}
+
+fn api_base_for(response_base: &str, request_base: &str) -> String {
+    let b = response_base.trim();
+    if b.is_empty() {
+        return format!("{}/api/packages", request_base.trim_end_matches('/'));
+    }
+    if let Some(path) = b.strip_prefix('/') {
+        return format!(
+            "{}/{}",
+            origin_of(request_base).trim_end_matches('/'),
+            path.trim_matches('/')
+        );
+    }
+    b.trim_end_matches('/').to_string()
+}
+
+fn ensure_node(base: &str, api_base: &str, node: &ResolveNode) -> Result<PathBuf, Diagnostic> {
     let dir = cached_package_dir(base, &node.full, &node.version);
     if dir.join(crate::project::MANIFEST_FILE).is_file()
         && cached_integrity(&dir).as_deref() == Some(node.integrity.as_str())
@@ -1714,7 +1739,7 @@ fn ensure_node(base: &str, download_base: &str, node: &ResolveNode) -> Result<Pa
     warn_if_yanked(node);
     let manifest_url = format!(
         "{}/{}",
-        download_base.trim_end_matches('/'),
+        api_base.trim_end_matches('/'),
         node.path.trim_start_matches('/')
     );
     let chunk_base = manifest_url
@@ -1799,11 +1824,7 @@ pub fn ensure_registry_requirements(
     for (base, reqs) in &by_base {
         discover(base)?;
         let response = resolve_requirements(base, reqs, have)?;
-        let download_base = if response.base.trim().is_empty() {
-            format!("{}/api/packages", base.trim_end_matches('/'))
-        } else {
-            response.base.trim_end_matches('/').to_string()
-        };
+        let api_base = api_base_for(&response.base, base);
         let mut nodes: BTreeMap<(String, String), &ResolveNode> = BTreeMap::new();
         for level in &response.levels {
             for node in level {
@@ -1811,7 +1832,7 @@ pub fn ensure_registry_requirements(
             }
         }
         for ((full, _), node) in &nodes {
-            let dir = ensure_node(base, &download_base, node)?;
+            let dir = ensure_node(base, &api_base, node)?;
             out.insert(
                 full.clone(),
                 FetchedPackage { name: full.clone(), version: node.version.clone(), dir },
@@ -1911,9 +1932,9 @@ pub(crate) mod testkit {
         pub version_spec: u32,
         pub resolve_status: u16,
         pub resolve_body: String,
-        pub download_status: u16,
-        pub download_body: Vec<u8>,
-        pub download_error: String,
+        pub manifest_status: u16,
+        pub fallback_tarball: Vec<u8>,
+        pub manifest_error: String,
         pub manifest_override: Option<String>,
         pub chunk_override: Option<Vec<(String, Vec<u8>)>>,
     }
@@ -2095,18 +2116,18 @@ pub(crate) mod testkit {
                             with_spec,
                         );
                     } else if method == "GET" && path.ends_with("/chunks") {
-                        if config.download_status == 200 {
+                        if config.manifest_status == 200 {
                             let body = match &config.manifest_override {
                                 Some(m) => m.clone(),
-                                None => fallback_manifest(&config.download_body),
+                                None => fallback_manifest(&config.fallback_tarball),
                             };
                             respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
                         } else {
                             respond(
                                 &mut stream,
-                                config.download_status,
+                                config.manifest_status,
                                 "application/json",
-                                config.download_error.as_bytes(),
+                                config.manifest_error.as_bytes(),
                                 with_spec,
                             );
                         }
@@ -2121,10 +2142,10 @@ pub(crate) mod testkit {
                                 }
                             }
                         }
-                        if hit.is_none() && !config.download_body.is_empty() {
-                            let digest = Sha256::hexdigest(&config.download_body);
+                        if hit.is_none() && !config.fallback_tarball.is_empty() {
+                            let digest = Sha256::hexdigest(&config.fallback_tarball);
                             if digest == hash {
-                                hit = Some(config.download_body.clone());
+                                hit = Some(config.fallback_tarball.clone());
                             }
                         }
                         match hit {
@@ -2359,16 +2380,16 @@ mod tests {
         version_spec: u32,
         nodes: &[String],
         tarball: Vec<u8>,
-        download_status: u16,
-        download_error: &str,
+        manifest_status: u16,
+        manifest_error: &str,
     ) -> MockRegistry {
         MockRegistry::start(MockConfig {
             version_spec,
             resolve_status: 200,
             resolve_body: resolve_json_static(nodes),
-            download_status,
-            download_body: tarball,
-            download_error: download_error.to_string(),
+            manifest_status,
+            fallback_tarball: tarball,
+            manifest_error: manifest_error.to_string(),
             manifest_override: None,
             chunk_override: None,
         })
@@ -2429,6 +2450,28 @@ mod tests {
     }
 
     #[test]
+    fn api_base_prefers_omitted_and_relative() {
+        assert_eq!(
+            api_base_for("", "https://r.example.com"),
+            "https://r.example.com/api/packages"
+        );
+        assert_eq!(
+            api_base_for("   ", "https://r.example.com/"),
+            "https://r.example.com/api/packages"
+        );
+        assert_eq!(
+            api_base_for("/api/v1/custom", "https://r.example.com/api/packages"),
+            "https://r.example.com/api/v1/custom"
+        );
+        assert_eq!(
+            api_base_for("https://mirror.example.net/x", "https://r.example.com"),
+            "https://mirror.example.net/x"
+        );
+        assert_eq!(origin_of("https://r.example.com/a/b"), "https://r.example.com");
+        assert_eq!(origin_of("http://127.0.0.1:9/x"), "http://127.0.0.1:9");
+    }
+
+    #[test]
     fn chunks_transport_reconstructs_split_tar() {
         let (_guard, _dir) = isolate_cache("splittar");
         let mut buf = Vec::new();
@@ -2459,9 +2502,9 @@ mod tests {
             version_spec: 1,
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
-            download_status: 200,
-            download_body: Vec::new(),
-            download_error: String::new(),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
             manifest_override: Some(manifest),
             chunk_override: Some(bodies),
         });
@@ -2547,7 +2590,7 @@ mod tests {
     }
 
     #[test]
-    fn download_404_maps_to_does_not_exist() {
+    fn manifest_404_maps_to_does_not_exist() {
         let (_guard, _dir) = isolate_cache("notfound");
         let server = start_ok(
             1,
@@ -2569,7 +2612,7 @@ mod tests {
     }
 
     #[test]
-    fn download_410_maps_to_withdrawn() {
+    fn manifest_410_maps_to_withdrawn() {
         let (_guard, _dir) = isolate_cache("withdrawn");
         let server = start_ok(
             1,

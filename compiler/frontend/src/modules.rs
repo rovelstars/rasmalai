@@ -1582,6 +1582,16 @@ fn std_submodule(path: &Path) -> String {
 
 fn read_source(path: &Path) -> Result<String, Diagnostic> {
     if is_virtual(path) {
+        if let Some(real) = STD_OVERLAY
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(path)
+            .cloned()
+        {
+            return std::fs::read_to_string(&real).map_err(|e| {
+                Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", real.display()))
+            });
+        }
         let rest = std_submodule(path);
         let name = format!("@std/{rest}");
         return stdlib::source(&rest)
@@ -1652,12 +1662,17 @@ fn resolve_import(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>
 /// CLI-pinned version, integrity-checked cache, embedded sysroot as offline
 /// fallback. No URL imports exist in user code; all fetching here is
 /// toolchain-initiated.
+///
+/// The resolved path is ALWAYS the virtual `@std/<rest>` path, so module
+/// keys and merged output are identical online and offline. A registry hit
+/// only swaps the *bytes* behind it via the overlay read by `read_source`.
 fn resolve_std_with_registries(
     source: &str,
     rest: &str,
     default: Option<&RegistryConfig>,
     overrides: &BTreeMap<String, RegistryConfig>,
 ) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
+    let virtual_path = PathBuf::from(format!("{STD_SCOPE}{rest}"));
     let (pkg, sub) = match rest.split_once('/') {
         Some((top, s)) => (format!("@std/{top}"), Some(s)),
         None => (format!("@std/{rest}"), None),
@@ -1671,16 +1686,41 @@ fn resolve_std_with_registries(
             .ok()
     });
     if let Some((dep_root, dep_cfg)) = attempt {
-        return resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source)
-            .map(|target| (target, Some(dep_root)));
+        if let Ok(target) = resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source) {
+            set_std_overlay(&virtual_path, &target);
+            return Ok((virtual_path, None));
+        }
     }
+    clear_std_overlay(&virtual_path);
     if stdlib::source(rest).is_none() {
         return Err(Diagnostic::new(
             Code::E108,
             format!("unknown standard library module `{source}`"),
         ));
     }
-    Ok((PathBuf::from(format!("{STD_SCOPE}{rest}")), None))
+    Ok((virtual_path, None))
+}
+
+static STD_OVERLAY: std::sync::Mutex<BTreeMap<PathBuf, PathBuf>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn set_std_overlay(virtual_path: &Path, real_path: &Path) {
+    let mut overlay = STD_OVERLAY.lock().unwrap_or_else(|e| e.into_inner());
+    overlay.insert(virtual_path.to_path_buf(), real_path.to_path_buf());
+}
+
+fn clear_std_overlay(virtual_path: &Path) {
+    let mut overlay = STD_OVERLAY.lock().unwrap_or_else(|e| e.into_inner());
+    overlay.remove(virtual_path);
+}
+
+#[cfg(test)]
+fn std_overlay_get(virtual_path: &Path) -> Option<PathBuf> {
+    STD_OVERLAY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(virtual_path)
+        .cloned()
 }
 
 fn cached_std_package(base: &str, pkg: &str, pin: &str) -> Option<(PathBuf, ProjectConfig)> {
@@ -2612,9 +2652,9 @@ mod tests {
             version_spec: 1,
             resolve_status: 200,
             resolve_body: testkit::resolve_json_static(&[node]),
-            download_status: 200,
-            download_body: gz,
-            download_error: String::new(),
+            manifest_status: 200,
+            fallback_tarball: gz,
+            manifest_error: String::new(),
             manifest_override: None,
             chunk_override: None,
         })
@@ -2671,9 +2711,9 @@ mod tests {
             version_spec: 1,
             resolve_status: 200,
             resolve_body: testkit::resolve_json_static(&[node]),
-            download_status: 200,
-            download_body: gz,
-            download_error: String::new(),
+            manifest_status: 200,
+            fallback_tarball: gz,
+            manifest_error: String::new(),
             manifest_override: None,
             chunk_override: None,
         })
@@ -2685,8 +2725,10 @@ mod tests {
         let server = start_std_server();
         let (target, dep) =
             resolve_std_with_registries("@std/fs", "fs", None, &std_overrides(&server.base)).unwrap();
-        assert!(dep.is_some());
-        assert!(target.ends_with("src/main.rnx"));
+        assert_eq!(target, PathBuf::from("@std/fs"));
+        assert!(dep.is_none());
+        let overlaid = std_overlay_get(&PathBuf::from("@std/fs")).unwrap();
+        assert!(overlaid.ends_with("src/main.rnx"));
         let bodies = server.resolve_bodies();
         assert!(!bodies.is_empty());
         assert_eq!(
@@ -2716,6 +2758,7 @@ mod tests {
             resolve_std_with_registries("@std/fs", "fs", None, &dead_overrides()).unwrap();
         assert_eq!(target, PathBuf::from("@std/fs"));
         assert!(dep.is_none());
+        assert_eq!(std_overlay_get(&PathBuf::from("@std/fs")), None);
     }
 
     #[test]
@@ -2723,5 +2766,15 @@ mod tests {
         let (_guard, _cache) = testkit::isolate_cache("stdbad");
         let err = resolve_std_with_registries("@std/nope", "nope", None, &dead_overrides()).unwrap_err();
         assert!(err.message.contains("unknown standard library module"));
+        assert_eq!(std_overlay_get(&PathBuf::from("@std/nope")), None);
+    }
+
+    #[test]
+    fn std_overlay_serves_registry_bytes() {
+        let (_guard, _cache) = testkit::isolate_cache("stdread");
+        let server = start_std_server();
+        resolve_std_with_registries("@std/fs", "fs", None, &std_overrides(&server.base)).unwrap();
+        let src = read_source(&PathBuf::from("@std/fs")).unwrap();
+        assert!(src.contains("export fn hello"));
     }
 }
