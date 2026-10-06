@@ -5,6 +5,8 @@
 	import { onMount } from 'svelte';
 	import { renderMarkdown } from '$lib/docs/markdown';
 	import AuraCode from '$lib/components/AuraCode.svelte';
+	import ModuleDocs from '$lib/components/ModuleDocs.svelte';
+	import type { DocModule } from '$lib/docs/api';
 	import { shortDownloads, humanDate } from '$lib/packages-meta';
 	import { importSnippet } from '$lib/docs/stdlib';
 
@@ -12,14 +14,63 @@
 	let pkg = $derived(data.pkg);
 	let activeVersion = $derived(data.active);
 
-	type TabId = 'readme' | 'code' | 'dependencies' | 'dependents' | 'versions';
-	const TABS: TabId[] = ['readme', 'code', 'dependencies', 'dependents', 'versions'];
+	interface StoredGuide {
+		slug: string;
+		title: string;
+		html: string;
+	}
+
+	let guides = $derived.by((): StoredGuide[] => {
+		try {
+			const v = JSON.parse(activeVersion.guides ?? '[]') as unknown;
+			if (!Array.isArray(v)) return [];
+			return v.filter(
+				(g): g is StoredGuide =>
+					!!g && typeof (g as StoredGuide).slug === 'string' && typeof (g as StoredGuide).title === 'string'
+			);
+		} catch {
+			return [];
+		}
+	});
+
+	function normalizeModule(m: DocModule): DocModule {
+		return {
+			name: m.name,
+			docs: m.docs ?? { description: '', tags: [] },
+			functions: Array.isArray(m.functions) ? m.functions : [],
+			classes: Array.isArray(m.classes) ? m.classes : [],
+			enums: Array.isArray(m.enums) ? m.enums : [],
+			constants: Array.isArray((m as DocModule).constants) ? m.constants : []
+		};
+	}
+
+	let apiMods = $derived.by((): DocModule[] => {
+		try {
+			const v = JSON.parse(activeVersion.docJson ?? '{}') as { modules?: unknown };
+			if (!v || !Array.isArray(v.modules)) return [];
+			return (v.modules as DocModule[])
+				.filter((m) => m && typeof m.name === 'string')
+				.map(normalizeModule);
+		} catch {
+			return [];
+		}
+	});
+
+	let openGuide = $state<string | null>(null);
+	let selectedGuide = $derived(guides.find((g) => g.slug === openGuide) ?? guides[0] ?? null);
+
+	type TabId = 'readme' | 'code' | 'guides' | 'api' | 'dependencies' | 'dependents' | 'versions';
+	const TABS: TabId[] = ['readme', 'code', 'guides', 'api', 'dependencies', 'dependents', 'versions'];
 
 	let tab = $derived.by((): TabId => {
-		if (!browser) return 'readme';
-		const t = page.url.searchParams.get('tab');
-		if (t === 'code' || t === 'dependencies' || t === 'dependents' || t === 'versions') return t;
-		return 'readme';
+		let t: TabId = 'readme';
+		if (browser) {
+			const q = page.url.searchParams.get('tab');
+			if (q === 'code' || q === 'guides' || q === 'api' || q === 'dependencies' || q === 'dependents' || q === 'versions') t = q;
+		}
+		if (t === 'guides' && guides.length === 0) return 'readme';
+		if (t === 'api' && apiMods.length === 0) return 'readme';
+		return t;
 	});
 
 	let copied = $state(false);
@@ -149,7 +200,7 @@
 			return;
 		}
 		try {
-			const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/api`);
+			const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/manifest`);
 			if (!res.ok) {
 				manifestDeps = [];
 				return;
@@ -305,6 +356,7 @@
 
 	<div class="mt-4 flex gap-1 overflow-x-auto border-b border-aura-border" role="tablist" aria-label="Package views">
 		{#each TABS as t}
+			{#if (t !== 'guides' || guides.length > 0) && (t !== 'api' || apiMods.length > 0)}
 			<button
 				role="tab"
 				aria-selected={tab === t}
@@ -315,6 +367,7 @@
 			>
 				{t}
 			</button>
+			{/if}
 		{/each}
 	</div>
 
@@ -392,6 +445,39 @@
 						</div>
 					</div>
 				{/if}
+			{:else if tab === 'guides'}
+				{#if guides.length === 0}
+					<p class="panel p-6 text-center text-sm text-aura-muted">This version ships no guides.</p>
+				{:else}
+					<div class="flex flex-wrap gap-2" role="tablist" aria-label="Guides">
+						{#each guides as g}
+							<button
+								role="tab"
+								aria-selected={selectedGuide?.slug === g.slug}
+								onclick={() => (openGuide = g.slug)}
+								class="press rounded border px-3 py-1.5 font-mono text-[13px] {selectedGuide?.slug === g.slug
+									? 'border-aura-purple text-aura-text'
+									: 'border-aura-border text-aura-muted hover:border-aura-borderHover hover:text-aura-text'}"
+							>
+								{g.title}
+							</button>
+						{/each}
+					</div>
+					{#if selectedGuide}
+						<article class="doc-prose mt-4">
+							{@html selectedGuide.html}
+						</article>
+					{/if}
+				{/if}
+			{:else if tab === 'api'}
+				{#if apiMods.length === 0}
+					<p class="panel p-6 text-center text-sm text-aura-muted">No API reference published for this version yet.</p>
+				{:else}
+					{#each apiMods as m (m.name)}
+						<h2 class="mt-6 font-mono text-sm font-bold text-aura-text first:mt-0">{m.name}</h2>
+						<ModuleDocs mod={m} allMods={apiMods} idPrefix="{m.name}-" />
+					{/each}
+				{/if}
 			{:else if tab === 'dependencies'}
 				{#if manifestDeps === null}
 					<p class="panel p-6 text-center font-mono text-xs text-aura-muted" aria-live="polite">Loading dependencies…</p>
@@ -468,9 +554,16 @@
 				<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">links</p>
 				<ul class="mt-1 space-y-1 font-mono text-[13px]">
 					{#if pkg.name.startsWith('@std/')}
-					<li><a href="/docs/@std/{pkg.name.slice('@std/'.length)}/overview" class="break-all text-aura-cyan hover:underline">guides</a></li>
-					<li><a href="/docs/@std/{pkg.name.slice('@std/'.length)}/api" class="break-all text-aura-cyan hover:underline">api reference</a></li>
-				{/if}
+						<li><a href="/docs/@std/{pkg.name.slice('@std/'.length)}/overview" class="break-all text-aura-cyan hover:underline">guides</a></li>
+						<li><a href="/docs/@std/{pkg.name.slice('@std/'.length)}/api" class="break-all text-aura-cyan hover:underline">api reference</a></li>
+					{:else}
+						{#if guides.length > 0}
+							<li><button onclick={() => nav({ tab: 'guides' })} class="break-all text-aura-cyan hover:underline">guides</button></li>
+						{/if}
+						{#if apiMods.length > 0}
+							<li><button onclick={() => nav({ tab: 'api' })} class="break-all text-aura-cyan hover:underline">api reference</button></li>
+						{/if}
+					{/if}
 				{#if pkg.repository}
 						<li><a href={pkg.repository} rel="external" class="break-all text-aura-cyan hover:underline">repository</a></li>
 					{/if}

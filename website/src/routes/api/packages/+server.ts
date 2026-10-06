@@ -23,8 +23,7 @@ import {
 	type PackageFilter
 } from '$lib/server/db';
 import { specHeaders } from '$lib/server/registry';
-import { sanitizeGuideHtml } from '$lib/server/sanitize';
-import { marked } from 'marked';
+import { normalizeGuideEntry } from '$lib/server/guides';
 import { chunkTarball, sha256Hex } from '$lib/server/chunks';
 import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 
@@ -163,21 +162,13 @@ export async function POST({ request, platform, url }) {
 	const docJson = '{"modules":[]}';
 	const engineRange = str(meta['engineRange'], '');
 	const guidesRaw = Array.isArray(meta['guides']) ? (meta['guides'] as unknown[]) : [];
-	const guides: Array<Record<string, string>> = [];
+	const guides: Array<Record<string, string | null>> = [];
 	for (const g of guidesRaw) {
-		if (!g || typeof g !== 'object') {
-			return json({ success: false, error: 'invalid guide entry' }, { status: 400, headers: specHeaders() });
+		const parsed = normalizeGuideEntry(g);
+		if (!parsed.ok) {
+			return json({ success: false, error: parsed.error }, { status: 400, headers: specHeaders() });
 		}
-		const e = g as Record<string, unknown>;
-		if (typeof e['slug'] !== 'string' || typeof e['title'] !== 'string') {
-			return json({ success: false, error: 'guide needs slug and title' }, { status: 400, headers: specHeaders() });
-		}
-		if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(e['slug'])) {
-			return json({ success: false, error: 'invalid guide slug' }, { status: 400, headers: specHeaders() });
-		}
-		const source = typeof e['source'] === 'string' ? e['source'] : '';
-		const html = sanitizeGuideHtml(String(marked.parse(source)));
-		guides.push({ slug: e['slug'], title: e['title'], html, source });
+		guides.push({ ...parsed.entry });
 	}
 	const guidesJson = JSON.stringify(guides);
 	let manifestJson = '{"deps":{}}';
