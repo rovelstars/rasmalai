@@ -467,7 +467,11 @@
 			<div class="panel p-4">
 				<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">links</p>
 				<ul class="mt-1 space-y-1 font-mono text-[13px]">
-					{#if pkg.repository}
+					{#if pkg.name.startsWith('@std/')}
+					<li><a href="/docs/@std/{pkg.name.slice('@std/'.length)}/overview" class="break-all text-aura-cyan hover:underline">guides</a></li>
+					<li><a href="/docs/@std/{pkg.name.slice('@std/'.length)}/api" class="break-all text-aura-cyan hover:underline">api reference</a></li>
+				{/if}
+				{#if pkg.repository}
 						<li><a href={pkg.repository} rel="external" class="break-all text-aura-cyan hover:underline">repository</a></li>
 					{/if}
 					{#if homepage}
