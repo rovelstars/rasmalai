@@ -6,7 +6,7 @@ import {
 	STDLIB
 } from '$lib/docs/nav';
 
-const BASE = 'https://rnx.dev';
+const BASE = 'https://rasmalai.rovelstars.com';
 
 const STATIC_PAGES = ['/', '/guide', '/manual', '/packages', '/playground', '/license', '/discord'];
 

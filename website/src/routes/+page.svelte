@@ -14,7 +14,7 @@
 	import { reveal } from '$lib/motion/reveal';
 
 	let copied = $state(false);
-	let host = $state('rnx.dev');
+	let host = $state('rasmalai.rovelstars.com');
 	let protocol = $state('https:');
 	type OsKind = 'unix' | 'windows';
 	let os = $state<OsKind>('unix');

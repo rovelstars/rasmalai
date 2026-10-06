@@ -256,7 +256,7 @@ pub enum Command {
         /// Path to a pre-built .tar.gz archive (otherwise packs the current project)
         tarball: Option<PathBuf>,
         /// Registry endpoint URL
-        #[arg(long, default_value = "https://rnx.dev/api/packages")]
+        #[arg(long, default_value = "https://rasmalai.rovelstars.com/api/packages")]
         registry: String,
         /// Publisher authentication token (or RNX_TOKEN)
         #[arg(long, env = "RNX_TOKEN")]

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Rasmalai installer: curl -fsSL https://rnx.dev/install.sh | sh
+# Rasmalai installer: curl -fsSL https://rasmalai.rovelstars.com/install.sh | sh
 # POSIX sh. Needs curl or wget, plus tar.
 # Env knobs: RNX_VERSION (default: latest), RNX_PREFIX (default: see below),
 #            DRY_RUN=1 (detect and print only, no download/install).

@@ -100,10 +100,10 @@ Every resolve error response carries a `requestId` (a UUID v4) alongside `code` 
 
 ```sh
 rnx pack --gzip
-rnx publish ./colony-0.4.0.tar.gz --registry https://rnx.dev/api/packages --token <token>
+rnx publish ./colony-0.4.0.tar.gz --registry https://rasmalai.rovelstars.com/api/packages --token <token>
 ```
 
-Omit the tarball and `rnx publish` packs the current project into a temporary directory first. `--registry` defaults to `https://rnx.dev/api/packages` and `--token` falls back to the `RNX_TOKEN` environment variable. Without either, the command stops with `E501` and the hint `pass --token <token> or set RNX_TOKEN in your environment`.
+Omit the tarball and `rnx publish` packs the current project into a temporary directory first. `--registry` defaults to `https://rasmalai.rovelstars.com/api/packages` and `--token` falls back to the `RNX_TOKEN` environment variable. Without either, the command stops with `E501` and the hint `pass --token <token> or set RNX_TOKEN in your environment`.
 
 The CLI posts the raw bytes with exactly these headers:
 
@@ -125,7 +125,7 @@ A manifest can name its own registry and per-scope overrides:
 export default {
     project: { name: "colony", version: "0.4.0" },
     registry: {
-        url: "https://rnx.dev/api/packages",
+        url: "https://rasmalai.rovelstars.com/api/packages",
         token_env: "RNX_TOKEN"
     },
     registries: {

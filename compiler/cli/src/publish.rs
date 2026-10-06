@@ -264,7 +264,7 @@ fn package_url(registry: &str, name: &str, body: &str) -> String {
     if let Some(root) = registry.split("/api/").next() {
         return format!("{root}/packages/{name}");
     }
-    format!("https://rnx.dev/packages/{name}")
+    format!("https://rasmalai.rovelstars.com/packages/{name}")
 }
 
 fn extract_json_string(body: &str, key: &str) -> Option<String> {
