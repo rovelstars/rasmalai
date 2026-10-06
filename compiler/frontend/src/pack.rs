@@ -273,8 +273,22 @@ pub fn build_package_tar(
     manifest: &Manifest,
 ) -> Result<Vec<u8>, Diagnostic> {
     let (names, generated) = collect_pack_names(package_dir, manifest)?;
-    let mut dirs: BTreeSet<String> = BTreeSet::new();
+    let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(names.len());
     for n in &names {
+        if let Some((_, bytes)) = generated.iter().find(|(g, _)| g == n) {
+            files.push((n.clone(), bytes.clone()));
+        } else {
+            let content = std::fs::read(package_dir.join(n))
+                .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {n}: {e}")))?;
+            files.push((n.clone(), content));
+        }
+    }
+    assemble_tar(&names, &files)
+}
+
+fn assemble_tar(names: &[String], files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, Diagnostic> {
+    let mut dirs: BTreeSet<String> = BTreeSet::new();
+    for n in names {
         let mut prefix = String::new();
         for part in n.split('/').take(n.split('/').count() - 1) {
             if !prefix.is_empty() {
@@ -288,7 +302,7 @@ pub fn build_package_tar(
     for d in &dirs {
         ordered.push((format!("{d}/"), true));
     }
-    for n in &names {
+    for n in names {
         ordered.push((n.clone(), false));
     }
     ordered.sort();
@@ -298,18 +312,48 @@ pub fn build_package_tar(
         for (rel, is_dir) in &ordered {
             if *is_dir {
                 tar.add_dir(rel)?;
-            } else if let Some((_, bytes)) = generated.iter().find(|(g, _)| g == rel) {
+            } else if let Some((_, bytes)) = files.iter().find(|(g, _)| g == rel) {
                 tar.add_file(rel, bytes)?;
             } else {
-                let content = std::fs::read(package_dir.join(rel)).map_err(|e| {
-                    Diagnostic::new(Code::E108, format!("cannot read {rel}: {e}"))
-                })?;
-                tar.add_file(rel, &content)?;
+                return Err(Diagnostic::new(Code::E108, format!("cannot read {rel}: missing entry")));
             }
         }
         tar.finish()?;
     }
     Ok(buf)
+}
+
+#[derive(Debug)]
+pub struct MinifiedTar {
+    pub tar: Vec<u8>,
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+pub fn build_minified_package_tar(
+    package_dir: &Path,
+    manifest: &Manifest,
+) -> Result<MinifiedTar, Diagnostic> {
+    let (names, generated) = collect_pack_names(package_dir, manifest)?;
+    let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(names.len());
+    for n in &names {
+        if let Some((_, bytes)) = generated.iter().find(|(g, _)| g == n) {
+            files.push((n.clone(), bytes.clone()));
+        } else if crate::minify::is_minified_rel(n) {
+            let raw = std::fs::read(package_dir.join(n))
+                .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {n}: {e}")))?;
+            let text = String::from_utf8(raw).map_err(|_| {
+                Diagnostic::new(Code::E108, format!("cannot minify {n}: not valid UTF-8"))
+            })?;
+            let min = crate::minify::verify_and_minify(n, &text)?;
+            files.push((n.clone(), min.into_bytes()));
+        } else {
+            let content = std::fs::read(package_dir.join(n))
+                .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {n}: {e}")))?;
+            files.push((n.clone(), content));
+        }
+    }
+    let tar = assemble_tar(&names, &files)?;
+    Ok(MinifiedTar { tar, files })
 }
 
 pub fn pack_package(
@@ -333,6 +377,36 @@ pub fn pack_package(
         Diagnostic::new(Code::E108, format!("cannot write {}: {e}", sha_path.display()))
     })?;
     Ok((tar_path, sha_path))
+}
+
+pub fn pack_package_gz_minified(
+    package_dir: &Path,
+    manifest: &Manifest,
+    out_dir: &Path,
+) -> Result<(PathBuf, PathBuf, Vec<(String, u64)>), Diagnostic> {
+    use crate::gzip;
+    let stem = package_stem(manifest)?;
+    let built = build_minified_package_tar(package_dir, manifest)?;
+    let gz = gzip::compress_gzip(&built.tar);
+    std::fs::create_dir_all(out_dir).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot write {}: {e}", out_dir.display()))
+    })?;
+    let gz_path = out_dir.join(format!("{stem}.tar.gz"));
+    std::fs::write(&gz_path, &gz).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot write {}: {e}", gz_path.display()))
+    })?;
+    let digest = checksum::Sha256::hexdigest(&gz);
+    let sha_path = out_dir.join(format!("{stem}.tar.gz.sha256"));
+    let line = format!("{digest}  {stem}.tar.gz\n");
+    std::fs::write(&sha_path, line).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot write {}: {e}", sha_path.display()))
+    })?;
+    let sizes = built
+        .files
+        .iter()
+        .map(|(n, b)| (n.clone(), b.len() as u64))
+        .collect();
+    Ok((gz_path, sha_path, sizes))
 }
 
 pub fn pack_package_gz(
@@ -457,8 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn readme_prefers_md_then_plain_then_default() {
-        let dir = fixture_dir("readme-md", Some(("README.md", "# md\n")));
+    fn readme_prefers_md_then_plain_then_default() {        let dir = fixture_dir("readme-md", Some(("README.md", "# md\n")));
         assert_eq!(package_readme_text(&dir, "probe"), "# md\n");
         let _ = std::fs::remove_dir_all(&dir);
         let dir = fixture_dir("readme-plain", Some(("README", "plain\n")));
@@ -466,6 +539,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let dir = fixture_dir("readme-none", None);
         assert_eq!(package_readme_text(&dir, "probe"), "# probe\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn minified_tar_minifies_rnx_but_not_config() {
+        let dir = fixture_dir("min", Some(("README.md", "# probe\n")));
+        std::fs::write(
+            dir.join("src").join("main.rnx"),
+            "// plain comment\n/** Doc for Main. */\nfn Main(): Int {\n    // inside\n    return 0;\n}\n",
+        )
+        .unwrap();
+        let manifest = fixture_manifest(&dir);
+        let formatted_config = std::fs::read_to_string(dir.join("Project.config")).unwrap();
+        assert_eq!(
+            formatted_config,
+            crate::project::format_manifest_text(&formatted_config).unwrap()
+        );
+        let built = build_minified_package_tar(&dir, &manifest).unwrap();
+        let by_name = |name: &str| {
+            built.files.iter().find(|(n, _)| n == name).unwrap().1.clone()
+        };
+        let main = String::from_utf8(by_name("src/main.rnx")).unwrap();
+        assert_eq!(main, "fn Main():Int{return 0;}");
+        assert!(!main.contains("comment"), "{main}");
+        assert!(!main.contains("Doc for Main"), "{main}");
+        let config = by_name("Project.config");
+        assert_eq!(config, formatted_config.as_bytes());
+        assert!(config.windows(2).any(|w| w == b"\n "), "config lost formatting");
+        let plain = build_package_tar(&dir, &manifest).unwrap();
+        assert!(String::from_utf8_lossy(&plain).contains("// plain comment"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn minified_tar_refuses_unformatted_rnx() {
+        let dir = fixture_dir("minfmt", None);
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main():Int{return 0;}\n").unwrap();
+        let manifest = fixture_manifest(&dir);
+        let err = build_minified_package_tar(&dir, &manifest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("src/main.rnx"), "{}", err.message);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
