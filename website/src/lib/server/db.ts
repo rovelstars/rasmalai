@@ -1,6 +1,8 @@
 import { createClient, type Client } from '@libsql/client/web';
 import { maxSatisfying, parseSemver, levelize, satisfiesRange, selectLatestVersion } from './registry.js';
 import { sha256Hex, rebuildTarball, type TarEntryRef } from './chunks.js';
+import { r2Bucket, r2PutIfMissing, r2Get, type R2BucketLike } from './r2.js';
+import { freshQuotaState, shouldSample, effectiveUsage, quotaBudgetBytes, quotaGuardEnabled } from './quota.js';
 
 // Temporary ownership model (no account system yet): a single org owner.
 // `rovelstars` owns every scope published through the org token, and the
@@ -972,12 +974,56 @@ export async function putChunk(
 	const db = getClient(env);
 	if (!db) throw new Error('missing database');
 	await ensureSchema(db);
+	const bucket = r2Bucket(env);
+	if (bucket) {
+		await db.execute({
+			sql: `INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
+			      VALUES (?, ?, x'', ?)
+			      ON CONFLICT(hash) DO NOTHING`,
+			args: [hash, sizeBytes, Math.floor(Date.now() / 1000)]
+		});
+		await r2PutIfMissing(bucket, hash, bytes);
+		return;
+	}
 	await db.execute({
 		sql: `INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
 		      VALUES (?, ?, ?, ?)
 		      ON CONFLICT(hash) DO NOTHING`,
 		args: [hash, sizeBytes, bytes, Math.floor(Date.now() / 1000)]
 	});
+}
+
+let quotaState = freshQuotaState();
+
+export function resetQuotaState(): void {
+	quotaState = freshQuotaState();
+}
+
+export async function storedChunkBytes(
+	env: Record<string, string | undefined>
+): Promise<number> {
+	const db = getClient(env);
+	if (!db) return 0;
+	await ensureSchema(db);
+	const rs = await db.execute('SELECT COALESCE(SUM(size_bytes), 0) AS n FROM chunks');
+	return Number(rs.rows[0]?.['n'] ?? 0);
+}
+
+export async function enforceStorageQuota(
+	env: Record<string, string | undefined>,
+	incomingBytes: number
+): Promise<void> {
+	if (!quotaGuardEnabled(env)) return;
+	const budget = quotaBudgetBytes(env);
+	if (shouldSample(quotaState, budget, Math.random())) {
+		quotaState.sampled = await storedChunkBytes(env);
+		quotaState.localBytes = 0;
+	}
+	const projected = effectiveUsage(quotaState, budget) + incomingBytes / budget;
+	if (projected >= 1) {
+		throw new Error('quota-exceeded: R2 storage budget reached');
+	}
+	quotaState.localBytes += incomingBytes;
 }
 
 export async function linkVersionChunks(
@@ -1014,7 +1060,8 @@ export async function storeTarManifest(
 
 async function loadTarEntries(
 	db: NonNullable<ReturnType<typeof getClient>>,
-	versionRowId: string
+	versionRowId: string,
+	env: Record<string, string | undefined>
 ): Promise<{ expected: string; entries: TarEntryRef[]; byHash: Map<string, Uint8Array> } | null> {
 	const meta = await db.execute({
 		sql: 'SELECT tarball_sha256, tar_manifest_json FROM package_versions WHERE id = ?',
@@ -1036,9 +1083,28 @@ async function loadTarEntries(
 		args: [versionRowId]
 	});
 	const byHash = new Map<string, Uint8Array>();
+	const missing: string[] = [];
 	for (const r of rs.rows) {
-		const b = r['bytes'] as Uint8Array | ArrayBuffer;
-		byHash.set(String(r['hash']), b instanceof Uint8Array ? b : new Uint8Array(b));
+		const raw = r['bytes'] as Uint8Array | ArrayBuffer;
+		const b = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+		if (b.length > 0) {
+			byHash.set(String(r['hash']), b);
+		} else {
+			missing.push(String(r['hash']));
+		}
+	}
+	if (missing.length > 0) {
+		const bucket = r2Bucket(env);
+		if (!bucket) throw new Error('chunk bytes unavailable: row is R2-backed but no bucket is bound');
+		const got = await Promise.all(
+			missing.map(async (h) => {
+				const bytes = await r2Get(bucket, h);
+				if (!bytes) throw new Error(`missing chunk ${h}`);
+				if ((await sha256Hex(bytes)) !== h) throw new Error(`chunk ${h} failed integrity check`);
+				return [h, bytes] as const;
+			})
+		);
+		for (const [h, bytes] of got) byHash.set(h, bytes);
 	}
 	return { expected: String(row['tarball_sha256'] ?? ''), entries, byHash };
 }
@@ -1050,7 +1116,7 @@ export async function getVersionBytes(
 	const db = getClient(env);
 	if (!db) return null;
 	await ensureSchema(db);
-	const loaded = await loadTarEntries(db, versionRowId);
+	const loaded = await loadTarEntries(db, versionRowId, env);
 	if (!loaded) return null;
 	const out = rebuildTarball(loaded.entries, loaded.byHash);
 	if (loaded.expected && (await sha256Hex(out)) !== loaded.expected) {
@@ -1067,7 +1133,7 @@ export async function getVersionFile(
 	const db = getClient(env);
 	if (!db) return null;
 	await ensureSchema(db);
-	const loaded = await loadTarEntries(db, versionRowId);
+	const loaded = await loadTarEntries(db, versionRowId, env);
 	if (!loaded) return null;
 	const entry = loaded.entries.find((e) => !e.dir && e.name === path);
 	if (!entry) return null;

@@ -12,6 +12,7 @@ import {
 	putChunk,
 	linkVersionChunks,
 	storeTarManifest,
+	enforceStorageQuota,
 	purgeUrls,
 	packagePointerUrls,
 	validateKeywords,
@@ -258,6 +259,14 @@ export async function POST({ request, platform, url }) {
 			);
 		}
 		if (tarball) {
+			try {
+				await enforceStorageQuota(env, tarball.byteLength);
+			} catch (e) {
+				if (e instanceof Error && e.message.startsWith('quota-exceeded')) {
+					return json({ success: false, error: 'storage quota exceeded' }, { status: 507, headers: specHeaders() });
+				}
+				throw e;
+			}
 			const rowId = `ver_${packageId(parsed.scope, parsed.name)}_${version}`;
 			const chunked = await chunkTarball(tarball);
 			for (const u of chunked.units) {
