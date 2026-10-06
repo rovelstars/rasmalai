@@ -11,10 +11,13 @@
 	import { page } from '$app/state';
 	import Navbar from '$lib/components/Navbar.svelte';
 	import { enhanceDocCode } from '$lib/docs/enhance';
+	import { ogImageFor } from '$lib/docs/og';
+	import ogManifest from '../../static/og/manifest.json';
 
 	let { children } = $props();
 
-	const canonical = $derived(`https://rnx.dev${page.url.pathname}`);
+	const canonical = $derived(`https://rasmalai.rovelstars.com${page.url.pathname}`);
+	const ogImage = $derived(`https://rasmalai.rovelstars.com${ogImageFor(page.url.pathname, ogManifest)}`);
 	const ogUrl = $derived.by(() => {
 		if (!page.url.pathname.startsWith('/packages/')) return canonical;
 		const segs = page.url.pathname.split('/').filter(Boolean).slice(1);
@@ -58,7 +61,7 @@
 		content="A systems language with deterministic memory reclamation, Cranelift dev builds, and zero-codegen semantic checks."
 	/>
 	<meta property="og:url" content={ogUrl} />
-	<meta property="og:image" content="https://rasmalai.rovelstars.com/og-banner.png" />
+	<meta property="og:image" content={ogImage} />
 	<meta property="og:image:width" content="1200" />
 	<meta property="og:image:height" content="630" />
 	<meta property="og:image:alt" content="Rasmalai — memory safety without the negotiations." />
@@ -68,7 +71,7 @@
 		name="twitter:description"
 		content="A systems language with deterministic memory reclamation, Cranelift dev builds, and zero-codegen semantic checks."
 	/>
-	<meta name="twitter:image" content="https://rasmalai.rovelstars.com/og-banner.png" />
+	<meta name="twitter:image" content={ogImage} />
 	<meta name="theme-color" content="#14131a" />
 </svelte:head>
 
