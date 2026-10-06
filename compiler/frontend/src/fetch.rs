@@ -719,16 +719,56 @@ fn std_request(
     read_http_response(&mut stream)
 }
 
+fn retryable_status(status: u16) -> bool {
+    matches!(status, 429 | 502 | 503 | 504)
+}
+
 fn http_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
-    transport()
-        .get(url)
-        .map_err(|e| Diagnostic::new(Code::E108, format!("{what} failed: {}", e.message)))
+    let mut attempt = 0u32;
+    loop {
+        match transport().get(url) {
+            Ok(reply) => {
+                if retryable_status(reply.status) && attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
+                    attempt += 1;
+                    continue;
+                }
+                return Ok(reply);
+            }
+            Err(e) => {
+                if attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
+                    attempt += 1;
+                    continue;
+                }
+                return Err(Diagnostic::new(Code::E108, format!("{what} failed: {}", e.message)));
+            }
+        }
+    }
 }
 
 fn http_post_json(url: &str, body: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
-    transport()
-        .post_json(url, body)
-        .map_err(|e| Diagnostic::new(Code::E108, format!("{what} failed: {}", e.message)))
+    let mut attempt = 0u32;
+    loop {
+        match transport().post_json(url, body) {
+            Ok(reply) => {
+                if retryable_status(reply.status) && attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
+                    attempt += 1;
+                    continue;
+                }
+                return Ok(reply);
+            }
+            Err(e) => {
+                if attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
+                    attempt += 1;
+                    continue;
+                }
+                return Err(Diagnostic::new(Code::E108, format!("{what} failed: {}", e.message)));
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1097,6 +1137,10 @@ fn resolve_request_body(
     }
     out.push_str("]}");
     out
+}
+
+pub fn resolve_retry_delay_ms(attempt: u32) -> u64 {
+    150 * 2u64.saturating_pow(attempt.min(4))
 }
 
 pub fn resolve_requirements(
@@ -2447,6 +2491,40 @@ mod tests {
         );
         assert!(out[1024..].iter().all(|b| *b == 0));
         assert_eq!(&out[512..517], b"hello");
+    }
+
+    #[test]
+    fn resolve_retry_backoff_is_capped() {
+        assert_eq!(resolve_retry_delay_ms(0), 150);
+        assert_eq!(resolve_retry_delay_ms(1), 300);
+        assert_eq!(resolve_retry_delay_ms(2), 600);
+        assert_eq!(resolve_retry_delay_ms(9), 2400);
+        assert_eq!(resolve_retry_delay_ms(u32::MAX), 2400);
+    }
+
+    #[test]
+    fn resolve_503_retries_before_failing() {
+        let (_guard, _dir) = isolate_cache("retry503");
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 503,
+            resolve_body: "store unavailable".to_string(),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
+        });
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "9.9.9"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(err.message.contains("503"), "{}", err.message);
+        assert_eq!(server.resolve_bodies().len(), 4);
     }
 
     #[test]

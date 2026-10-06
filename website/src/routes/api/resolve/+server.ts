@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { resolveGraph, type HaveEntry } from '$lib/server/db';
-import { specHeaders, isValidRange } from '$lib/server/registry';
+import { specHeaders, isValidRange, isTransientStoreError } from '$lib/server/registry';
 import { newRequestId } from '$lib/server/requestId';
 
 function err(code: string, message: string, status: number, requestId: string) {
@@ -57,6 +57,9 @@ export async function POST({ request, url, platform }) {
 			return err('unsatisfiable', msg, 422, requestId);
 		}
 		if (msg.includes('invalid package name')) return err('bad-request', msg, 400, requestId);
+		if (isTransientStoreError(msg)) {
+			return err('unavailable', 'resolution store unavailable, retry', 503, requestId);
+		}
 		return err('resolve-failed', 'resolution failed', 500, requestId);
 	}
 }
