@@ -490,11 +490,6 @@ import { importSnippet } from '$lib/docs/stdlib';
 							{:else if fileText === null || isBinary(openFile)}
 								<div class="p-6 text-center text-sm text-aura-muted">
 									<p class="font-mono text-xs">{openFile} — {fmtSize(fileSize)} of binary data.</p>
-									<a
-										href="/api/packages/{pkg.name}@{activeVersion.version}/download"
-										class="mt-3 inline-block rounded border border-aura-border px-3 py-1.5 font-mono text-xs text-aura-cyan hover:border-aura-borderHover"
-										download>download tarball</a
-									>
 								</div>
 							{:else}
 								<p class="border-b border-aura-border px-4 py-2 font-mono text-xs text-aura-muted">{openFile}</p>

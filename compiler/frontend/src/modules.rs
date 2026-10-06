@@ -2615,6 +2615,8 @@ mod tests {
             download_status: 200,
             download_body: gz,
             download_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
         })
     }
 
@@ -2672,6 +2674,8 @@ mod tests {
             download_status: 200,
             download_body: gz,
             download_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
         })
     }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Publishes every @std/* module as a full registry package (tarball +
-// metadata), so /download, jsdoc, and the code browser work for stdlib.
+// metadata), so chunks-fetch, jsdoc, and the code browser work for stdlib.
 // Idempotent: already-published versions come back 409 and are skipped.
 // Re-run after every release; new versions publish, old ones skip.
 //

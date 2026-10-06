@@ -598,6 +598,8 @@ mod tests {
                 download_status: 200,
                 download_body: gz,
                 download_error: String::new(),
+                manifest_override: None,
+                chunk_override: None,
             },
         );
         let dir = std::env::temp_dir().join(format!("rnx-lock-reg-{}", std::process::id()));

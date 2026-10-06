@@ -8,6 +8,7 @@ pub const REGISTRY_SPEC: u32 = 1;
 pub const DEFAULT_REGISTRY_DOMAIN: &str = "rasmalai.rovelstars.com";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CHUNK_BYTES: usize = 1024 * 1024;
 
 pub fn cache_anchor(proj_root: &Path) -> PathBuf {
     project::find_workspace_root_strict(proj_root).unwrap_or_else(|| proj_root.to_path_buf())
@@ -1342,54 +1343,221 @@ fn warn_if_yanked(node: &ResolveNode) {
     }
 }
 
-fn download_node(url: &str, full: &str, version: &str) -> Result<Vec<u8>, Diagnostic> {
-    let reply = http_get(url, &format!("download of `{full}@{version}`"))?;
-    match reply.status {
-        200 => {
-            if reply.body.len() > MAX_DOWNLOAD_BYTES {
+struct ChunkEntry {
+    name: String,
+    size: u64,
+    dir: bool,
+    chunks: Vec<String>,
+}
+
+fn fetch_chunks_manifest(url: &str, full: &str, version: &str) -> Result<Vec<ChunkEntry>, Diagnostic> {
+    let reply = http_get(url, &format!("chunk manifest of `{full}@{version}`"))?;
+    if reply.status != 200 {
+        return Err(chunk_fetch_error(reply.status, &reply.body, full, version));
+    }
+    let value = parse_json(&reply.body).map_err(|_| {
+        Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
+    })?;
+    let items = value
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
+        })?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let obj = match item {
+            JsonValue::Object(fields) => fields,
+            _ => {
                 return Err(Diagnostic::new(
                     Code::E108,
-                    format!("download of `{full}@{version}` exceeds size limits"),
+                    format!("chunk manifest of `{full}@{version}` is malformed"),
                 ));
             }
-            Ok(reply.body)
-        }
-        404 => Err(Diagnostic::new(
+        };
+        let str_field = |key: &str| {
+            obj.iter()
+                .find(|(k, _)| k == key)
+                .and_then(|(_, v)| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| {
+                    Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
+                })
+        };
+        let size = obj
+            .iter()
+            .find(|(k, _)| k == "size")
+            .and_then(|(_, v)| v.as_u64())
+            .ok_or_else(|| {
+                Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
+            })?;
+        let dir = obj
+            .iter()
+            .find(|(k, _)| k == "dir")
+            .and_then(|(_, v)| v.as_bool())
+            .unwrap_or(false);
+        let hashes = match obj.iter().find(|(k, _)| k == "chunks").map(|(_, v)| v) {
+            Some(JsonValue::Array(hashes)) => {
+                let mut out = Vec::with_capacity(hashes.len());
+                for h in hashes {
+                    out.push(h.as_str().ok_or_else(|| {
+                        Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
+                    })?.to_string());
+                }
+                out
+            }
+            _ => {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("chunk manifest of `{full}@{version}` is malformed"),
+                ));
+            }
+        };
+        out.push(ChunkEntry { name: str_field("name")?, size, dir, chunks: hashes });
+    }
+    Ok(out)
+}
+
+fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str) -> Result<Vec<u8>, Diagnostic> {
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Diagnostic::new(Code::E108, format!("bad chunk hash `{hash}`")));
+    }
+    let reply = http_get(url, &format!("chunk {hash} of `{full}@{version}`"))?;
+    if reply.status != 200 {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("chunk {hash} of `{full}@{version}` is missing"),
+        ));
+    }
+    if reply.body.len() > MAX_CHUNK_BYTES {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("chunk {hash} of `{full}@{version}` exceeds size limits"),
+        ));
+    }
+    if Sha256::hexdigest(&reply.body) != hash.to_ascii_lowercase() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("chunk {hash} of `{full}@{version}` failed its integrity check"),
+        ));
+    }
+    Ok(reply.body)
+}
+
+fn chunk_fetch_error(status: u16, body: &[u8], full: &str, version: &str) -> Diagnostic {
+    match status {
+        404 => Diagnostic::new(
             Code::E108,
             format!("package `{full}@{version}` does not exist"),
-        )),
+        ),
         410 => {
-            let value = parse_json(&reply.body).unwrap_or(JsonValue::Null);
+            let value = parse_json(body).unwrap_or(JsonValue::Null);
             let reason = json_string(&value, "reason");
             if reason.is_empty() {
-                Err(Diagnostic::new(
+                Diagnostic::new(
                     Code::E108,
-                    format!(
-                        "package `{full}@{version}` was withdrawn; upgrade to a newer version"
-                    ),
-                ))
+                    format!("package `{full}@{version}` was withdrawn; upgrade to a newer version"),
+                )
             } else {
-                Err(Diagnostic::new(
+                Diagnostic::new(
                     Code::E108,
-                    format!(
-                        "package `{full}@{version}` was withdrawn ({reason}); upgrade to a newer version"
-                    ),
-                ))
+                    format!("package `{full}@{version}` was withdrawn ({reason}); upgrade to a newer version"),
+                )
             }
         }
-        status => {
-            let value = parse_json(&reply.body).unwrap_or(JsonValue::Null);
+        _ => {
+            let value = parse_json(body).unwrap_or(JsonValue::Null);
             let message = json_string(&value, "message");
             if message.is_empty() {
-                Err(Diagnostic::new(
+                Diagnostic::new(
                     Code::E108,
-                    format!("download of `{full}@{version}` failed with HTTP {status}"),
-                ))
+                    format!("fetch of `{full}@{version}` failed with HTTP {status}"),
+                )
             } else {
-                Err(Diagnostic::new(Code::E108, message))
+                Diagnostic::new(Code::E108, message)
             }
         }
     }
+}
+
+fn write_tar_octal(buf: &mut [u8], off: usize, len: usize, value: u64) {
+    let digits = format!("{value:o}");
+    let pad = len.saturating_sub(1 + digits.len());
+    for i in 0..pad {
+        buf[off + i] = b'0';
+    }
+    for (i, c) in digits.bytes().enumerate() {
+        buf[off + pad + i] = c;
+    }
+    buf[off + len - 1] = 0;
+}
+
+fn rebuild_tar(entries: &[ChunkEntry], by_hash: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, Diagnostic> {
+    let bad = || Diagnostic::new(Code::E108, "chunk manifest failed to reassemble".to_string());
+    let fallback = entries.len() == 1 && entries[0].name.is_empty() && !entries[0].dir;
+    let mut out: Vec<u8> = Vec::new();
+    for e in entries {
+        if e.name.is_empty() && !e.dir && !fallback {
+            return Err(bad());
+        }
+        if e.dir {
+            if !e.chunks.is_empty() {
+                return Err(bad());
+            }
+        }
+        if fallback {
+            for h in &e.chunks {
+                out.extend_from_slice(by_hash.get(h).ok_or_else(bad)?);
+            }
+            continue;
+        }
+        if e.dir {
+            // header-only entry below
+        }
+        let name = e.name.as_bytes();
+        if name.len() > 100 {
+            return Err(bad());
+        }
+        let mut head = vec![0u8; 512];
+        head[..name.len()].copy_from_slice(name);
+        write_tar_octal(&mut head, 100, 8, if e.dir { 0o755 } else { 0o644 });
+        write_tar_octal(&mut head, 108, 8, 0);
+        write_tar_octal(&mut head, 116, 8, 0);
+        write_tar_octal(&mut head, 124, 12, e.size);
+        write_tar_octal(&mut head, 136, 12, 0);
+        for b in head.iter_mut().skip(148).take(8) {
+            *b = b' ';
+        }
+        head[156] = if e.dir { b'5' } else { b'0' };
+        head[257..263].copy_from_slice(b"ustar\0");
+        head[263..265].copy_from_slice(b"00");
+        head[265..268].copy_from_slice(b"rnx");
+        head[297..300].copy_from_slice(b"rnx");
+        let sum: u64 = head.iter().map(|b| *b as u64).sum();
+        let sum_text = format!("{sum:06o}");
+        head[148..154].copy_from_slice(&sum_text.as_bytes()[..6]);
+        head[154] = 0;
+        head[155] = b' ';
+        out.extend_from_slice(&head);
+        if e.dir {
+            continue;
+        }
+        let mut done = 0u64;
+        for h in &e.chunks {
+            let bytes = by_hash.get(h).ok_or_else(bad)?;
+            out.extend_from_slice(bytes);
+            done += bytes.len() as u64;
+        }
+        if done != e.size {
+            return Err(bad());
+        }
+        let pad = (512 - (e.size % 512)) % 512;
+        out.extend(std::iter::repeat(0).take(pad as usize));
+    }
+    if !fallback {
+        out.extend(std::iter::repeat(0).take(1024));
+    }
+    Ok(out)
 }
 
 fn tar_octal(bytes: &[u8]) -> Result<u64, Diagnostic> {
@@ -1544,12 +1712,38 @@ fn ensure_node(base: &str, download_base: &str, node: &ResolveNode) -> Result<Pa
     }
     check_engine(node)?;
     warn_if_yanked(node);
-    let url = format!(
+    let manifest_url = format!(
         "{}/{}",
         download_base.trim_end_matches('/'),
         node.path.trim_start_matches('/')
     );
-    let bytes = download_node(&url, &node.full, &node.version)?;
+    let chunk_base = manifest_url
+        .strip_suffix("/chunks")
+        .ok_or_else(|| {
+            Diagnostic::new(
+                Code::E108,
+                format!("registry sent a bad chunk manifest path for `{}@{}`", node.full, node.version),
+            )
+        })?
+        .to_string();
+    let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version)?;
+    let mut by_hash: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for entry in &entries {
+        for hash in &entry.chunks {
+            if by_hash.contains_key(hash) {
+                continue;
+            }
+            let url = format!("{chunk_base}/chunk/{hash}");
+            by_hash.insert(hash.clone(), fetch_chunk(&url, hash, &node.full, &node.version)?);
+        }
+    }
+    let bytes = rebuild_tar(&entries, &by_hash)?;
+    if bytes.len() > MAX_DOWNLOAD_BYTES {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("download of `{}@{}` exceeds size limits", node.full, node.version),
+        ));
+    }
     let digest = Sha256::hexdigest(&bytes);
     if !digest.eq_ignore_ascii_case(&node.integrity) {
         let _ = std::fs::remove_dir_all(&dir);
@@ -1720,6 +1914,8 @@ pub(crate) mod testkit {
         pub download_status: u16,
         pub download_body: Vec<u8>,
         pub download_error: String,
+        pub manifest_override: Option<String>,
+        pub chunk_override: Option<Vec<(String, Vec<u8>)>>,
     }
 
     pub struct MockRegistry {
@@ -1898,15 +2094,13 @@ pub(crate) mod testkit {
                             config.resolve_body.as_bytes(),
                             with_spec,
                         );
-                    } else if method == "GET" {
+                    } else if method == "GET" && path.ends_with("/chunks") {
                         if config.download_status == 200 {
-                            respond(
-                                &mut stream,
-                                200,
-                                "application/octet-stream",
-                                &config.download_body,
-                                with_spec,
-                            );
+                            let body = match &config.manifest_override {
+                                Some(m) => m.clone(),
+                                None => fallback_manifest(&config.download_body),
+                            };
+                            respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
                         } else {
                             respond(
                                 &mut stream,
@@ -1915,6 +2109,33 @@ pub(crate) mod testkit {
                                 config.download_error.as_bytes(),
                                 with_spec,
                             );
+                        }
+                    } else if method == "GET" && path.contains("/chunk/") {
+                        let hash = path.rsplit('/').next().unwrap_or_default().to_string();
+                        let mut hit: Option<Vec<u8>> = None;
+                        if let Some(pairs) = &config.chunk_override {
+                            for (h, b) in pairs {
+                                if *h == hash {
+                                    hit = Some(b.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        if hit.is_none() && !config.download_body.is_empty() {
+                            let digest = Sha256::hexdigest(&config.download_body);
+                            if digest == hash {
+                                hit = Some(config.download_body.clone());
+                            }
+                        }
+                        match hit {
+                            Some(bytes) => respond(&mut stream, 200, "application/octet-stream", &bytes, with_spec),
+                            None => respond(
+                                &mut stream,
+                                404,
+                                "application/json",
+                                b"{\"code\": \"not-found\", \"message\": \"chunk not found\"}",
+                                with_spec,
+                            ),
                         }
                     } else {
                         respond(
@@ -1955,8 +2176,15 @@ pub(crate) mod testkit {
         }
     }
 
-    pub fn fixture_tarball(full: &str, version: &str) -> (Vec<u8>, String) {
-        let manifest = format!(
+    pub fn fallback_manifest(tarball: &[u8]) -> String {
+        let digest = Sha256::hexdigest(tarball);
+        format!(
+            "{{\"entries\": [{{\"name\": \"\", \"size\": {}, \"dir\": false, \"chunks\": [\"{digest}\"]}}]}}",
+            tarball.len()
+        )
+    }
+
+    pub fn fixture_tarball(full: &str, version: &str) -> (Vec<u8>, String) {        let manifest = format!(
             "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }}\n}}\n"
         );
         let mut buf = Vec::new();
@@ -1984,7 +2212,7 @@ pub(crate) mod testkit {
         engine_range: &str,
     ) -> String {
         format!(
-            "{{\"full\": \"{full}\", \"version\": \"{version}\", \"path\": \"{full}/{version}/download\", \"integrity\": \"{integrity}\", \"engineRange\": \"{engine_range}\", \"deps\": [], \"yanked\": {yanked}}}"
+            "{{\"full\": \"{full}\", \"version\": \"{version}\", \"path\": \"{full}@{version}/chunks\", \"integrity\": \"{integrity}\", \"engineRange\": \"{engine_range}\", \"deps\": [], \"yanked\": {yanked}}}"
         )
     }
 
@@ -2141,6 +2369,8 @@ mod tests {
             download_status,
             download_body: tarball,
             download_error: download_error.to_string(),
+            manifest_override: None,
+            chunk_override: None,
         })
     }
 
@@ -2170,6 +2400,82 @@ mod tests {
         let mut reqs = BTreeMap::new();
         reqs.insert(full.to_string(), range.to_string());
         reqs
+    }
+
+    #[test]
+    fn rebuild_tar_matches_server_byte_layout() {
+        let entries = vec![ChunkEntry {
+            name: "a.txt".to_string(),
+            size: 5,
+            dir: false,
+            chunks: vec!["H".repeat(64)],
+        }];
+        let mut by_hash = BTreeMap::new();
+        by_hash.insert("H".repeat(64), b"hello".to_vec());
+        let out = rebuild_tar(&entries, &by_hash).unwrap();
+        assert_eq!(out.len(), 2048);
+        let hex: String = out[..64].iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "612e7478740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        );
+        let hex2: String = out[256..320].iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex2,
+            "007573746172003030726e780000000000000000000000000000000000000000000000000000000000726e780000000000000000000000000000000000000000"
+        );
+        assert!(out[1024..].iter().all(|b| *b == 0));
+        assert_eq!(&out[512..517], b"hello");
+    }
+
+    #[test]
+    fn chunks_transport_reconstructs_split_tar() {
+        let (_guard, _dir) = isolate_cache("splittar");
+        let mut buf = Vec::new();
+        {
+            let mut tar = crate::tar::TarWriter::new(&mut buf);
+            tar.add_file("Project.config", b"export default {}\n").unwrap();
+            tar.add_file("src/main.rnx", b"export fn hello(): Int { return 1; }\n").unwrap();
+            tar.finish().unwrap();
+        }
+        let tar_sha = Sha256::hexdigest(&buf);
+        let files = vec![
+            ("Project.config", b"export default {}\n".to_vec()),
+            ("src/main.rnx", b"export fn hello(): Int { return 1; }\n".to_vec()),
+        ];
+        let mut manifest_entries = Vec::new();
+        let mut bodies = Vec::new();
+        for (name, bytes) in &files {
+            let h = Sha256::hexdigest(bytes);
+            manifest_entries.push(format!(
+                "{{\"name\": \"{name}\", \"size\": {}, \"dir\": false, \"chunks\": [\"{h}\"]}}",
+                bytes.len()
+            ));
+            bodies.push((h, bytes.clone()));
+        }
+        let manifest = format!("{{\"entries\": [{}]}}", manifest_entries.join(", "));
+        let node = node_json("@acme/widget", "1.2.0", &tar_sha, false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            download_status: 200,
+            download_body: Vec::new(),
+            download_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(bodies),
+        });
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        let main = std::fs::read(fetched[0].dir.join("src").join("main.rnx")).unwrap();
+        assert_eq!(main, b"export fn hello(): Int { return 1; }\n");
     }
 
     #[test]
@@ -2227,11 +2533,11 @@ mod tests {
         let default = registry_cfg(&server.base);
         let reqs = requirements_for("@acme/widget", "^1.0.0");
         ensure_registry_requirements(&reqs, Some(&default), &BTreeMap::new(), &[]).unwrap();
-        assert_eq!(server.count_get("download"), 1);
+        assert_eq!(server.count_get("chunks"), 1);
         let have = scan_cache_have();
         assert_eq!(have.len(), 1);
         ensure_registry_requirements(&reqs, Some(&default), &BTreeMap::new(), &have).unwrap();
-        assert_eq!(server.count_get("download"), 1);
+        assert_eq!(server.count_get("chunks"), 1);
         let bodies = server.resolve_bodies();
         assert_eq!(bodies.len(), 2);
         assert_eq!(
@@ -2327,6 +2633,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.message.contains("needs engine"), "{}", err.message);
-        assert_eq!(server.count_get("download"), 0);
+        assert_eq!(server.count_get("chunks"), 0);
     }
 }
