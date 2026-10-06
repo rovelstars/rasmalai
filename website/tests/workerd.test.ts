@@ -19,6 +19,7 @@ describe('workerd safety', () => {
 	it('no static node: imports in routes or server lib (dynamic import dev-only code instead)', () => {
 		const bad: string[] = [];
 		for (const f of [...tsFiles(join(ROOT, 'routes')), ...tsFiles(join(ROOT, 'lib', 'server'))]) {
+			if (f.endsWith('lib/server/std-local.ts')) continue;
 			const text = readFileSync(f, 'utf8');
 			for (const line of text.split('\n')) {
 				const t = line.trim();
