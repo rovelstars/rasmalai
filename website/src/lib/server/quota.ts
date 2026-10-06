@@ -1,13 +1,12 @@
-// Cost guard, not a feature. R2 bills real money and the registry writes
+// Cost guard, and it stays. R2 bills real money and the registry writes
 // bytes on other people's behalf, so every upload passes this check first.
+// Donations may cover the bill someday, but no funding lasts forever, so
+// this file is permanent: set QUOTA_GUARD=off to disable it while funding
+// is stable, and flip it back on whenever costs need watching again.
 // Sampling is pity-style: a flat 0.1% base rate that ramps quadratically
 // once usage passes 75% of budget and goes certain at 99%. No polling, no
 // metadata tables — the usage number comes from SUM(size_bytes) over the
 // chunk mapping we already keep, plus bytes written since the last sample.
-//
-// This stays until donations cover the bill. Then set QUOTA_GUARD=off and
-// delete this file along with the enforceStorageQuota call in the publish
-// route. The pity math below is covered by tests so the removal is clean.
 const BASE_RATE = 0.001;
 const SOFT_PITY = 0.75;
 const HARD_PITY = 0.99;
