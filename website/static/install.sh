@@ -140,6 +140,12 @@ fi
 INSTALLED_VERSION="$("$BIN" --version 2>/dev/null | cut -d' ' -f2)"
 [ -z "$INSTALLED_VERSION" ] && INSTALLED_VERSION="$VERSION"
 
+if "$BIN" fetch-std >/dev/null 2>&1; then
+  echo "stdlib cache: seeded"
+else
+  echo "warning: stdlib cache seeding failed (offline install? run \`rnx fetch-std\` later)" >&2
+fi
+
 PROFILE_HINT=""
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
