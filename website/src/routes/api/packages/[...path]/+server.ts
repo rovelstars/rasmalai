@@ -5,6 +5,7 @@ import {
 	getLatestVersion,
 	getVersionBytes,
 	getVersionFile,
+	getChunkBytes,
 	getPackageOwner,
 	getDependents,
 	readFileIndex,
@@ -128,6 +129,7 @@ export async function GET({ params, platform, setHeaders, url }) {
 					download: `/api/packages/${full}@${version}/download`,
 					api: `/api/packages/${full}@${version}/api`,
 					manifest: `/api/packages/${full}@${version}/manifest`,
+					chunks: `/api/packages/${full}@${version}/chunks`,
 					guides: `/api/packages/${full}@${version}/guides`
 				}
 			},
@@ -192,6 +194,45 @@ export async function GET({ params, platform, setHeaders, url }) {
 		setHeaders({ ...immutable, ...specHeaders() });
 		if (format === 'source') return json({ slug, format, source: sanitizeGuideHtml(entry.source) }, { headers: headers() });
 		return json({ slug, format: 'html', html: entry.html }, { headers: headers() });
+	}
+
+	if (sub === 'chunks' && rest.length === 2) {
+		let entries: unknown = null;
+		try {
+			entries = JSON.parse(row.tarManifestJson) as unknown;
+		} catch {
+			entries = null;
+		}
+		if (!Array.isArray(entries)) {
+			return json(
+				{ code: 'no-file-index', message: `package ${full}@${version} ships no file index` },
+				{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
+			);
+		}
+		setHeaders({ ...immutable, ...specHeaders() });
+		return json({ entries }, { headers: headers() });
+	}
+
+	if (sub === 'chunk' && rest.length === 3) {
+		if (!slug || !/^[0-9a-f]{64}$/.test(slug)) return notFound('invalid chunk hash');
+		let bytes: Uint8Array | null;
+		try {
+			bytes = await getChunkBytes(env, slug);
+		} catch {
+			return json(
+				{ code: 'integrity-failed', message: `chunk ${slug} failed its integrity check` },
+				{ status: 500, headers: headers() }
+			);
+		}
+		if (!bytes) return notFound(`chunk ${slug} not found`);
+		return new Response(bytes as BodyInit, {
+			headers: {
+				'Content-Type': 'application/octet-stream',
+				'Content-Length': String(bytes.length),
+				...immutable,
+				...specHeaders()
+			}
+		});
 	}
 
 	if (sub === 'tree' && rest.length === 2) {

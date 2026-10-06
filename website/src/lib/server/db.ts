@@ -999,6 +999,31 @@ export function resetQuotaState(): void {
 	quotaState = freshQuotaState();
 }
 
+export async function getChunkBytes(
+	env: Record<string, string | undefined>,
+	hash: string
+): Promise<Uint8Array | null> {
+	if (!/^[0-9a-f]{64}$/.test(hash)) return null;
+	const db = getClient(env);
+	if (!db) return null;
+	await ensureSchema(db);
+	const rs = await db.execute({
+		sql: 'SELECT bytes FROM chunks WHERE hash = ?',
+		args: [hash]
+	});
+	const row = rs.rows[0] as Record<string, unknown> | undefined;
+	if (!row) return null;
+	const raw = row['bytes'] as Uint8Array | ArrayBuffer;
+	const inline = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+	if (inline.length > 0) return inline;
+	const bucket = r2Bucket(env);
+	if (!bucket) return null;
+	const bytes = await r2Get(bucket, hash);
+	if (!bytes) return null;
+	if ((await sha256Hex(bytes)) !== hash) throw new Error(`chunk ${hash} failed integrity check`);
+	return bytes;
+}
+
 export async function storedChunkBytes(
 	env: Record<string, string | undefined>
 ): Promise<number> {

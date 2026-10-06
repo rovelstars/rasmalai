@@ -8,7 +8,8 @@
 	import ModuleDocs from '$lib/components/ModuleDocs.svelte';
 	import type { DocModule } from '$lib/docs/api';
 	import { shortDownloads, humanDate } from '$lib/packages-meta';
-	import { importSnippet } from '$lib/docs/stdlib';
+	import { untar, gunzip, isGzip } from '$lib/docs/untar';
+import { importSnippet } from '$lib/docs/stdlib';
 
 	let { data } = $props();
 	let pkg = $derived(data.pkg);
@@ -125,18 +126,63 @@
 
 	let treeKey: string | null = null;
 	let treeInflight = false;
+	interface ChunkEntry {
+		name: string;
+		size: number;
+		dir: boolean;
+		chunks: string[];
+	}
+	let manifestEntries = $state<ChunkEntry[] | null>(null);
+	let untarred = $state<Array<{ path: string; size: number; bytes: Uint8Array }> | null>(null);
+	const chunkCache = new Map<string, Uint8Array>();
+
+	async function fetchChunk(hash: string): Promise<Uint8Array> {
+		const hit = chunkCache.get(hash);
+		if (hit) return hit;
+		const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/chunk/${hash}`);
+		if (!res.ok) throw new Error(`chunk ${hash.slice(0, 12)} failed to load`);
+		const bytes = new Uint8Array(await res.arrayBuffer());
+		chunkCache.set(hash, bytes);
+		return bytes;
+	}
+
+	async function assembleChunks(hashes: string[]): Promise<Uint8Array> {
+		const parts = await Promise.all(hashes.map(fetchChunk));
+		const total = parts.reduce((n, p) => n + p.length, 0);
+		const out = new Uint8Array(total);
+		let off = 0;
+		for (const p of parts) {
+			out.set(p, off);
+			off += p.length;
+		}
+		return out;
+	}
+
 	async function loadTree() {
 		const key = `${pkg.name}@${activeVersion.version}`;
 		if (key === treeKey || treeInflight) return;
 		treeInflight = true;
+		manifestEntries = null;
+		untarred = null;
 		try {
-			const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/tree`);
+			const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/chunks`);
 			if (!res.ok) {
 				treeError = res.status === 404 ? 'No file listing for this version yet.' : 'Could not load the file listing.';
 				return;
 			}
-			const body = (await res.json()) as { files?: Array<{ path: string; size: number }> };
-			tree = Array.isArray(body.files) ? body.files : [];
+			const body = (await res.json()) as { entries?: unknown };
+			manifestEntries = Array.isArray(body.entries)
+				? (body.entries as ChunkEntry[]).filter((e) => e && typeof e.name === 'string')
+				: [];
+			const fallback = manifestEntries.length === 1 && manifestEntries[0].name === '' && !manifestEntries[0].dir;
+			if (fallback) {
+				const blob = await assembleChunks(manifestEntries[0].chunks);
+				const raw = isGzip(blob) ? await gunzip(blob) : blob;
+				untarred = untar(raw).map((f) => ({ path: f.path, size: f.size, bytes: f.bytes }));
+				tree = untarred.map((f) => ({ path: f.path, size: f.size }));
+			} else {
+				tree = manifestEntries.filter((e) => !e.dir).map((e) => ({ path: e.name, size: e.size }));
+			}
 		} catch {
 			treeError = 'Could not load the file listing.';
 		} finally {
@@ -151,16 +197,28 @@
 		fileError = null;
 		fileLoading = true;
 		try {
-			const res = await fetch(
-				`/api/packages/${pkg.name}@${activeVersion.version}/file?path=${encodeURIComponent(path)}`
-			);
-			if (!res.ok) {
-				fileError = res.status === 404 ? 'File not found in this version.' : 'Could not load the file.';
+			let bytes: Uint8Array | null = null;
+			const local = untarred?.find((f) => f.path === path) ?? null;
+			if (local) {
+				bytes = local.bytes;
+			} else {
+				const entry = manifestEntries?.find((e) => !e.dir && e.name === path) ?? null;
+				if (!entry) {
+					fileError = 'File not found in this version.';
+					return;
+				}
+				bytes = await assembleChunks(entry.chunks);
+			}
+			fileSize = bytes.length;
+			if (isBinary(path) || bytes.length > 256 * 1024) {
+				fileText = null;
 				return;
 			}
-			const body = (await res.json()) as { text?: unknown; size?: unknown };
-			fileSize = typeof body.size === 'number' ? body.size : 0;
-			fileText = typeof body.text === 'string' ? body.text : null;
+			try {
+				fileText = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+			} catch {
+				fileText = null;
+			}
 		} catch {
 			fileError = 'Could not load the file.';
 		} finally {
@@ -433,9 +491,9 @@
 								<div class="p-6 text-center text-sm text-aura-muted">
 									<p class="font-mono text-xs">{openFile} — {fmtSize(fileSize)} of binary data.</p>
 									<a
-										href="/api/packages/{pkg.name}/{activeVersion.version}/file?path={encodeURIComponent(openFile)}"
+										href="/api/packages/{pkg.name}@{activeVersion.version}/download"
 										class="mt-3 inline-block rounded border border-aura-border px-3 py-1.5 font-mono text-xs text-aura-cyan hover:border-aura-borderHover"
-										download>download</a
+										download>download tarball</a
 									>
 								</div>
 							{:else}
