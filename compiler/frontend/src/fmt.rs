@@ -74,7 +74,24 @@ fn tokenize(src: &str) -> Result<Vec<Ft>, String> {
             }
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
                 let s = i;
+                // Match the lexer: `/** ... */` (but not `/**/`) is a doc
+                // comment that ends at the first `*/`, so a `/*` sequence
+                // inside doc prose (e.g. a `src/*.rnx` glob) must not nest.
+                let doc = bytes.get(i + 2) == Some(&b'*') && bytes.get(i + 3) != Some(&b'/');
                 i += 2;
+                if doc {
+                    while i + 1 < bytes.len()
+                        && !(bytes[i] == b'*' && bytes[i + 1] == b'/')
+                    {
+                        i += 1;
+                    }
+                    if i + 1 >= bytes.len() {
+                        return Err(format!("unterminated block comment at byte {s}"));
+                    }
+                    i += 2;
+                    push(Fk::Block, slice(s, i), 0);
+                    continue;
+                }
                 let mut depth = 1usize;
                 while i < bytes.len() && depth > 0 {
                     if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {

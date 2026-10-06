@@ -32,15 +32,25 @@ pub(super) fn run_publish(tarball: Option<std::path::PathBuf>, registry: String,
                             std::process::exit(1);
                         }
                     };
+                    for (_, dir, cfg) in &targets.packages {
+                        let manifest = frontend::project::Manifest {
+                            project: Some(cfg.clone()),
+                            workspace: None,
+                        };
+                        if let Err(e) = cli::publish::gate_formatted(dir, &manifest) {
+                            println!("{e}");
+                            std::process::exit(1);
+                        }
+                    }
                     let tmp = std::env::temp_dir().join(format!("rnx-publish-{}", std::process::id()));
-                    let packed = match cli::pack_targets(&targets, &tmp, true) {
+                    let packed = match cli::pack_targets_minified(&targets, &tmp) {
                         Ok(done) => done,
                         Err(e) => {
                             println!("{e}");
                             std::process::exit(1);
                         }
                     };
-                    let (name, tar) = packed.first().unwrap_or_else(|| {
+                    let (name, tar, sizes) = packed.first().unwrap_or_else(|| {
                         eprintln!("error: pack produced no archive");
                         std::process::exit(1);
                     });
@@ -56,8 +66,19 @@ pub(super) fn run_publish(tarball: Option<std::path::PathBuf>, registry: String,
                             eprintln!("error: pack produced no manifest");
                             std::process::exit(1);
                         });
+                    let manifest = frontend::project::Manifest {
+                        project: Some(cfg.clone()),
+                        workspace: None,
+                    };
+                    let docs = match cli::publish::package_docs(dir, &manifest) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            println!("{e}");
+                            std::process::exit(1);
+                        }
+                    };
                     let checksum = frontend::checksum::Sha256::hexdigest(&bytes);
-                    let meta = match cli::publish::package_meta(dir, cfg, checksum) {
+                    let meta = match cli::publish::package_meta_minified(dir, cfg, checksum, docs, sizes) {
                         Ok(m) => m,
                         Err(e) => {
                             println!("{e}");

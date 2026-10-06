@@ -895,6 +895,21 @@ pub fn pack_targets(
     Ok(done)
 }
 
+pub fn pack_targets_minified(
+    targets: &PackTargets,
+    out_dir: &std::path::Path,
+) -> Result<Vec<(String, std::path::PathBuf, Vec<(String, u64)>)>, diagnostics::Diagnostic> {
+    let mut done = Vec::new();
+    for (name, dir, cfg) in &targets.packages {
+        let manifest =
+            frontend::project::Manifest { project: Some(cfg.clone()), workspace: None };
+        let (gz, _, sizes) = frontend::pack::pack_package_gz_minified(dir, &manifest, out_dir)?;
+        done.push((name.clone(), gz, sizes));
+    }
+    done.sort();
+    Ok(done)
+}
+
 pub fn check_files(path: &str) -> CheckReport {
     match frontend::check::check_package(std::path::Path::new(path)) {
         Ok(warnings) => CheckReport {
