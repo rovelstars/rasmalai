@@ -2,7 +2,6 @@ import { error, redirect } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { getPackage, getVersionDoc } from '$lib/server/db';
 import { splitNameVersion } from '$lib/server/registry';
-import { localStdPackage } from '$lib/server/std-local';
 
 // Registry-backed: every package and version resolves at request time,
 // so new publishes go live without a site rebuild or a prerender pass.
@@ -43,6 +42,7 @@ export async function load({ platform, params, url, setHeaders }) {
 		redirect(308, `/packages/${full}@${legacy}${tab ? `?tab=${tab}` : ''}`);
 	}
 	if (dev && full.startsWith('@std/')) {
+		const { localStdPackage } = await import('$lib/server/std-local');
 		const local = localStdPackage(full);
 		if (!local) error(404, 'package not found');
 		setHeaders({ 'Cache-Control': 'no-store' });
