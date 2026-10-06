@@ -231,6 +231,7 @@ function writeOctal(buf: Uint8Array, off: number, len: number, value: number): v
 export function rebuildTarball(entries: TarEntryRef[], byHash: Map<string, Uint8Array>): Uint8Array {
 	const parts: Uint8Array[] = [];
 	const enc = new TextEncoder();
+	const fallback = entries.length === 1 && entries[0].name === '' && !entries[0].dir;
 	for (const e of entries) {
 		if (e.name === '' && !e.dir) {
 			for (const h of e.chunks) {
@@ -274,7 +275,7 @@ export function rebuildTarball(entries: TarEntryRef[], byHash: Map<string, Uint8
 			if (pad > 0) parts.push(new Uint8Array(pad));
 		}
 	}
-	parts.push(new Uint8Array(1024));
+	parts.push(new Uint8Array(fallback ? 0 : 1024));
 	const total = parts.reduce((n, p) => n + p.length, 0);
 	const out = new Uint8Array(total);
 	let off = 0;
