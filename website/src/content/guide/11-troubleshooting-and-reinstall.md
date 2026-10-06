@@ -96,13 +96,13 @@ rm -rf ~/.local/bin/rnx ~/.local/bin/rnx.bin ~/.local/bin/rnx.exe ~/.local/lib
 Then reinstall:
 
 ```sh
-curl -fsSL https://rnx.dev/install.sh | sh
+curl -fsSL https://rasmalai.rovelstars.com/install.sh | sh
 ```
 
 The installer honors `$XDG_BIN_HOME` when it is set, otherwise it uses `~/.local`. To put it elsewhere:
 
 ```sh
-curl -fsSL https://rnx.dev/install.sh | sh -s -- --prefix /usr/local
+curl -fsSL https://rasmalai.rovelstars.com/install.sh | sh -s -- --prefix /usr/local
 ```
 
 ### macOS
@@ -111,7 +111,7 @@ Same layout as Linux — `~/.local` is the conventional home for CLI tools outsi
 
 ```sh
 rm -rf ~/.local/bin/rnx ~/.local/bin/rnx.bin ~/.local/lib
-curl -fsSL https://rnx.dev/install.sh | sh
+curl -fsSL https://rasmalai.rovelstars.com/install.sh | sh
 ```
 
 ### Windows
@@ -125,14 +125,14 @@ Remove-Item $env:LOCALAPPDATA\rnx -Recurse -Force
 Then open Settings → System → About → Advanced system settings → Environment Variables, edit the user `Path`, and delete the `...\rnx\bin` entry. Then reinstall in a fresh terminal:
 
 ```powershell
-irm https://rnx.dev/install.ps1 | iex
+irm https://rasmalai.rovelstars.com/install.ps1 | iex
 ```
 
 If you installed under Git Bash or MSYS2 instead, remove the Unix-side prefix and rerun the shell installer:
 
 ```sh
 rm -rf ~/.local/bin/rnx* ~/.local/lib
-curl -fsSL https://rnx.dev/install.sh | sh
+curl -fsSL https://rasmalai.rovelstars.com/install.sh | sh
 ```
 
 After any reinstall, verify in a new terminal (new, so `PATH` changes take effect):

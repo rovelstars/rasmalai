@@ -31,7 +31,7 @@
 		'@type': 'TechArticle',
 		headline: `@std/${data.module} - ${titles[data.page] ?? data.page}`,
 		description: stdMeta(data.module).tagline,
-		url: `https://rnx.dev/docs/@std/${data.module}/${data.page}`,
+		url: `https://rasmalai.rovelstars.com/docs/@std/${data.module}/${data.page}`,
 		inLanguage: 'en',
 		author: { '@type': 'Organization', name: 'Rasmalai' }
 	})}<\/script>`}

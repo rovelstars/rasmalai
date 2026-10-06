@@ -31,7 +31,7 @@ export default {
         main: "src/main.rnx"
     },
     registry: {
-        url: "https://rnx.dev/api/packages",
+        url: "https://rasmalai.rovelstars.com/api/packages",
         token_env: "RNX_TOKEN"
     },
     dependencies: {

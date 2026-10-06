@@ -13,7 +13,7 @@ export function withHost(html: string): string {
 	if (!browser) return html;
 	const esc = (c: string) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 	const pattern = new RegExp(
-		[...'https://rnx.dev'].map((c) => `${esc(c)}(?:<[^>]*>)*`).join(''),
+		[...'https://rasmalai.rovelstars.com'].map((c) => `${esc(c)}(?:<[^>]*>)*`).join(''),
 		'g'
 	);
 	return html.replace(pattern, `${window.location.protocol}//${window.location.host}`);

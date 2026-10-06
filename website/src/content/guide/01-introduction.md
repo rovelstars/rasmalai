@@ -19,10 +19,10 @@ One more thing worth knowing up front: rnx has one central promise. **Every valu
 Everything ships in one binary. Grab it with the installer for your OS:
 
 ```sh
-curl -fsSL https://rnx.dev/install.sh | sh
+curl -fsSL https://rasmalai.rovelstars.com/install.sh | sh
 ```
 
-The script detects your OS and CPU and places `rnx` in `~/.local/bin` (`%LOCALAPPDATA%\rnx\bin` on Windows, where you would run `irm https://rnx.dev/install.ps1 | iex` in PowerShell instead). Now make sure it actually works:
+The script detects your OS and CPU and places `rnx` in `~/.local/bin` (`%LOCALAPPDATA%\rnx\bin` on Windows, where you would run `irm https://rasmalai.rovelstars.com/install.ps1 | iex` in PowerShell instead). Now make sure it actually works:
 
 ```sh
 rnx --version

@@ -1,4 +1,4 @@
-# Rasmalai installer for Windows: irm https://rnx.dev/install.ps1 | iex
+# Rasmalai installer for Windows: irm https://rasmalai.rovelstars.com/install.ps1 | iex
 # Needs PowerShell 5.1+ and tar.exe (ships with Windows 10 1803 and later).
 # Knobs: -Version (default: latest), -InstallDir (default: %LOCALAPPDATA%\rnx).
 # To remove later: delete $InstallDir and drop its bin/ from the user PATH

@@ -24,7 +24,7 @@
 		'@type': 'TechArticle',
 		headline: data.title,
 		description: data.description,
-		url: `https://rnx.dev/manual/${data.slug}`,
+		url: `https://rasmalai.rovelstars.com/manual/${data.slug}`,
 		inLanguage: 'en',
 		author: { '@type': 'Organization', name: 'Rasmalai' }
 	})}<\/script>`}
