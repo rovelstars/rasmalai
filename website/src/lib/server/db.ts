@@ -45,11 +45,18 @@ export interface PackageDetail extends PackageSummary {
 	versions: VersionMeta[];
 }
 
+export interface VersionCapability {
+	domain: string;
+	arg: string;
+	reason: string | null;
+}
+
 export interface VersionDoc {
 	version: string;
 	readme: string;
 	docJson: string;
 	guides: string;
+	permissions: VersionCapability[];
 }
 
 export const BASE_SCHEMA = `
@@ -69,6 +76,7 @@ CREATE TABLE IF NOT EXISTS packages (
     author TEXT NOT NULL,
     repository TEXT,
     license TEXT DEFAULT 'MIT',
+    license_id INTEGER REFERENCES licenses(id),
     downloads INTEGER DEFAULT 0,
     stars INTEGER DEFAULT 0,
     tags TEXT NOT NULL,
@@ -178,6 +186,25 @@ CREATE TABLE IF NOT EXISTS auth_attempts (
     attempts INTEGER NOT NULL DEFAULT 0,
     window_start INTEGER NOT NULL,
     PRIMARY KEY (ip, username)
+);
+
+CREATE TABLE IF NOT EXISTS capability_domains (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS version_capabilities (
+    version_id TEXT NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+    domain_id INTEGER NOT NULL REFERENCES capability_domains(id),
+    arg TEXT NOT NULL DEFAULT '',
+    reason TEXT,
+    PRIMARY KEY (version_id, domain_id, arg)
+);
+CREATE INDEX IF NOT EXISTS idx_vc_domain ON version_capabilities(domain_id);
+
+CREATE TABLE IF NOT EXISTS licenses (
+    id INTEGER PRIMARY KEY,
+    spdx TEXT NOT NULL UNIQUE
 );
 `;
 
@@ -366,7 +393,18 @@ async function migrateSchema(db: Client): Promise<void> {
 	if (!names.has('keywords')) {
 		await db.execute("ALTER TABLE packages ADD COLUMN keywords TEXT DEFAULT ''");
 	}
+	if (!names.has('license_id')) {
+		await db.execute('ALTER TABLE packages ADD COLUMN license_id INTEGER REFERENCES licenses(id)');
+	}
 	await db.execute("UPDATE packages SET owner = 'org' WHERE owner = ''");
+	// License normalization: keep the TEXT column during transition, but
+	// point every row at its licenses FK entry.
+	await db.execute(
+		'INSERT INTO licenses (spdx) SELECT DISTINCT license FROM packages WHERE license IS NOT NULL ON CONFLICT(spdx) DO NOTHING'
+	);
+	await db.execute(
+		'UPDATE packages SET license_id = (SELECT id FROM licenses WHERE spdx = packages.license) WHERE license_id IS NULL'
+	);
 	const mdef = await db.execute("SELECT sql FROM sqlite_master WHERE name = 'manifest_chunks'");
 	if (String(mdef.rows[0]?.['sql'] ?? '').includes('PRIMARY KEY (chunk_hash, version_id)')) {
 		await db.execute('ALTER TABLE manifest_chunks RENAME TO manifest_chunks_legacy');
@@ -617,28 +655,36 @@ export async function getVersionDoc(
 	const parsed = parsePackageName(full);
 	const db = await getDdb(env);
 	if (!parsed || !db) return null;
-	const row = await db
-		.select({
-			readme: s.packageVersions.readmeMarkdown,
-			docJson: s.packageVersions.docJson,
-			guides: s.packageVersions.guidesJson
-		})
-		.from(s.packageVersions)
-		.innerJoin(s.packages, eq(s.packages.id, s.packageVersions.packageId))
-		.where(
-			and(
-				eq(s.packages.scope, parsed.scope),
-				eq(s.packages.name, parsed.name),
-				eq(s.packageVersions.version, version)
-			)
-		)
-		.get();
-	if (!row) return null;
+	// One query: the version payload plus its declared permissions, if any.
+	const rows = await db.all<{
+		readme: string;
+		docJson: string;
+		guides: string;
+		domain: string | null;
+		arg: string | null;
+		reason: string | null;
+	}>(sql`SELECT v.readme_markdown AS readme, v.doc_json AS docJson, v.guides_json AS guides,
+		d.name AS domain, c.arg AS arg, c.reason AS reason
+		FROM package_versions v
+		JOIN packages p ON p.id = v.package_id
+		LEFT JOIN version_capabilities c ON c.version_id = v.id
+		LEFT JOIN capability_domains d ON d.id = c.domain_id
+		WHERE p.scope = ${parsed.scope} AND p.name = ${parsed.name} AND v.version = ${version}
+		ORDER BY d.name, c.arg`);
+	if (rows.length === 0) return null;
+	const first = rows[0];
+	const permissions: VersionCapability[] = [];
+	for (const r of rows) {
+		if (r.domain !== null) {
+			permissions.push({ domain: r.domain, arg: r.arg ?? '', reason: r.reason ?? null });
+		}
+	}
 	return {
 		version,
-		readme: row.readme,
-		docJson: row.docJson,
-		guides: row.guides ?? '[]'
+		readme: first.readme,
+		docJson: first.docJson,
+		guides: first.guides ?? '[]',
+		permissions
 	};
 }
 
@@ -659,6 +705,7 @@ export interface PublishPayload {
 	tarballSha256?: string;
 	requestId?: string;
 	owner?: string;
+	capabilities?: Array<{ domain: string; arg: string; reason: string | null }>;
 }
 
 export interface PublishResult {
@@ -693,6 +740,37 @@ export async function publishPackage(
 	// derived from manifests at publish time and are never deleted on
 	// yank or tombstone, so no counter can desync under retries.
 	const depNames = extractDepNames(p.manifestJson ?? '{}');
+	const capabilities = p.capabilities ?? [];
+	// Capability domains are static reference rows: ensure them first so the
+	// version insert and its capability rows can land in one batch below.
+	const domainIds = new Map<string, number>();
+	if (capabilities.length > 0) {
+		const names = [...new Set(capabilities.map((c) => c.domain))].sort();
+		await db.batch(
+			names.map((name) =>
+				db.insert(s.capabilityDomains).values({ name }).onConflictDoNothing()
+			) as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]
+		);
+		const drows = await db
+			.select({ id: s.capabilityDomains.id, name: s.capabilityDomains.name })
+			.from(s.capabilityDomains)
+			.where(inArray(s.capabilityDomains.name, names));
+		for (const r of drows) domainIds.set(r.name, r.id);
+	}
+	let licenseId: number | null = null;
+	if (p.license) {
+		await db
+			.insert(s.licenses)
+			.values({ spdx: p.license })
+			.onConflictDoNothing();
+		const lrow = await db
+			.select({ id: s.licenses.id })
+			.from(s.licenses)
+			.where(eq(s.licenses.spdx, p.license))
+			.get();
+		licenseId = lrow?.id ?? null;
+	}
+	const versionId = `ver_${id}_${p.version}`;
 	// changes() reads the version insert directly above, so the audit row
 	// lands only when this publish actually minted the version. The dep
 	// inserts trail the audit row to keep that reading intact.
@@ -717,6 +795,7 @@ export async function publishPackage(
 				author: p.author,
 				repository: '',
 				license: p.license,
+				licenseId,
 				downloads: 0,
 				stars: 0,
 				tags: p.tags.join(','),
@@ -735,7 +814,7 @@ export async function publishPackage(
 		db
 			.insert(s.packageVersions)
 			.values({
-				id: `ver_${id}_${p.version}`,
+				id: versionId,
 				packageId: id,
 				version: p.version,
 				readmeMarkdown: p.readme,
@@ -762,6 +841,17 @@ export async function publishPackage(
 			db
 				.insert(s.packageDeps)
 				.values({ packageId: id, depName: dep })
+				.onConflictDoNothing()
+		),
+		...capabilities.map((c) =>
+			db
+				.insert(s.versionCapabilities)
+				.values({
+					versionId,
+					domainId: domainIds.get(c.domain) ?? -1,
+					arg: c.arg,
+					reason: c.reason
+				})
 				.onConflictDoNothing()
 		)
 	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);

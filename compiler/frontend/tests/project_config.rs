@@ -20,7 +20,7 @@ fn eval_err(src: &str) -> diagnostics::Diagnostic {
     eval_module(&module, linux()).expect_err("expected eval error")
 }
 
-const BASIC: &str = "export default {\n    project: {\n        name: \"my_app\",\n        version: \"0.1.0\",\n        description: \"High-performance app with native FFI\"\n    },\n    entries: { main: \"src/main.rnx\" },\n    dependencies: {\n        utils: { path: \"../utils\" },\n        algo: { git: \"https://github.com/example/algo\", branch: \"main\" }\n    },\n    permissions: [\"native:zlib\", \"native:gui\"]\n}\n";
+const BASIC: &str = "export default {\n    project: {\n        name: \"my_app\",\n        version: \"0.1.0\",\n        description: \"High-performance app with native FFI\"\n    },\n    entries: { main: \"src/main.rnx\" },\n    dependencies: {\n        utils: { path: \"../utils\" },\n        algo: { git: \"https://github.com/example/algo\", branch: \"main\" }\n    },\n    permissions: [{ perm: \"fs:read:/data\", reason: \"seed\" }, \"term:write\"]\n}\n";
 
 fn load(src: &str) -> project::ProjectConfig {
     let dir = std::env::temp_dir().join(format!("rnx-pcfg-{}-{}", std::process::id(), src.len()));
@@ -48,7 +48,16 @@ fn basic_manifest_evaluates() {
             rev: "main".to_string()
         }
     );
-    assert_eq!(c.permissions, Some(vec!["native:zlib".to_string(), "native:gui".to_string()]));
+    assert_eq!(
+        c.permissions,
+        Some(vec![
+            project::PermissionDecl {
+                perm: "fs:read:/data".to_string(),
+                reason: Some("seed".to_string())
+            },
+            project::PermissionDecl { perm: "term:write".to_string(), reason: None }
+        ])
+    );
 }
 
 #[test]

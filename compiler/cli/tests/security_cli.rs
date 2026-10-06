@@ -214,7 +214,10 @@ fn permissions_section_parses() {
         frontend::project::ProjectConfig::load_from_dir(&dir).unwrap().unwrap();
     assert_eq!(
         config.permissions,
-        Some(vec!["fs:delegated".to_string()])
+        Some(vec![frontend::project::PermissionDecl {
+            perm: "fs:delegated".to_string(),
+            reason: None
+        }])
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

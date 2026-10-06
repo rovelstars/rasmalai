@@ -99,7 +99,7 @@ Every project carries a `Project.config` manifest written as an `.rnx` module ex
 - `entries` (optional): `main` defaults to `src/main.rnx`; `lib` names the library file, `docs` the guides folder, `bins` extra tool shims.\n\
 - `dependencies`: one entry per dependency; only one source kind per entry.\n\
 - `registry` (optional): registry endpoints for published packages.\n\
-- `permissions` (optional): array of capability strings forming the security ceiling.\n\
+- `permissions` (optional): capability strings or `{ perm, reason }` tables forming the security ceiling.\n\
 - `workspace` (optional): `{ members: [...] }` monorepo member list.\n\n\
 ## Dependency sources\n\n\
 - SemVer requirement as a bare string: `\"^1.2.0\"` (compatible), `\"~1.2.0\"` (patch-level), \

@@ -16,6 +16,7 @@ export const packages = sqliteTable('packages', {
 	author: text('author').notNull(),
 	repository: text('repository'),
 	license: text('license').notNull().default('MIT'),
+	licenseId: integer('license_id'),
 	downloads: integer('downloads').notNull().default(0),
 	stars: integer('stars').notNull().default(0),
 	tags: text('tags').notNull(),
@@ -110,8 +111,7 @@ export const downloadDaily = sqliteTable(
 	(t) => [primaryKey({ columns: [t.packageId, t.day] })]
 );
 
-export const users = sqliteTable('users', {
-	id: integer('id').primaryKey(),
+export const users = sqliteTable('users', {	id: integer('id').primaryKey(),
 	username: text('username').notNull().unique(),
 	passwordHash: text('password_hash').notNull(),
 	passwordSalt: text('password_salt').notNull(),
@@ -146,3 +146,24 @@ export const authAttempts = sqliteTable(
 	},
 	(t) => [primaryKey({ columns: [t.ip, t.username] })]
 );
+
+export const capabilityDomains = sqliteTable('capability_domains', {
+	id: integer('id').primaryKey(),
+	name: text('name').notNull().unique()
+});
+
+export const versionCapabilities = sqliteTable(
+	'version_capabilities',
+	{
+		versionId: text('version_id').notNull(),
+		domainId: integer('domain_id').notNull(),
+		arg: text('arg').notNull().default(''),
+		reason: text('reason')
+	},
+	(t) => [primaryKey({ columns: [t.versionId, t.domainId, t.arg] })]
+);
+
+export const licenses = sqliteTable('licenses', {
+	id: integer('id').primaryKey(),
+	spdx: text('spdx').notNull().unique()
+});

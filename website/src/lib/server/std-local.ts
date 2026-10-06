@@ -93,7 +93,8 @@ export function localStdPackage(full: string): { pkg: PackageDetail; doc: Versio
 			version,
 			readme: `# ${full}\n\nStandard library module, version ${version}.\n`,
 			docJson: JSON.stringify({ modules: [mod] }),
-			guides: '[]'
+			guides: '[]',
+			permissions: []
 		}
 	};
 }

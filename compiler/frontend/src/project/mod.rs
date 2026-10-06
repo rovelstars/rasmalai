@@ -42,6 +42,12 @@ impl Default for Entries {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionDecl {
+    pub perm: String,
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
     pub name: String,
@@ -52,7 +58,7 @@ pub struct ProjectConfig {
     pub registry: Option<RegistryConfig>,
     pub registries: BTreeMap<String, RegistryConfig>,
     pub dependencies: BTreeMap<String, DependencySpec>,
-    pub permissions: Option<Vec<String>>,
+    pub permissions: Option<Vec<PermissionDecl>>,
     pub keywords: Vec<String>,
 }
 
@@ -368,6 +374,47 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
 const MAX_KEYWORDS: usize = 12;
 const MAX_KEYWORD_LEN: usize = 24;
 
+fn check_permission_perm(s: &str) -> Result<(), String> {
+    use std::str::FromStr;
+    crate::capabilities::Capability::from_str(s)
+        .map(|_| ())
+        .map_err(|e| format!("invalid permission `{s}`: {e}"))
+}
+
+fn parse_permission_item(item: &ConfigValue) -> Result<PermissionDecl, String> {
+    match item {
+        ConfigValue::String(s) => {
+            check_permission_perm(s)?;
+            Ok(PermissionDecl { perm: s.clone(), reason: None })
+        }
+        ConfigValue::Object(_) => {
+            let perm = match obj_get(item, "perm") {
+                Some(ConfigValue::String(s)) => s.clone(),
+                Some(_) => return Err("field `permissions[].perm` must be a string".to_string()),
+                None => return Err("permission entry is missing required field `perm`".to_string()),
+            };
+            check_permission_perm(&perm)?;
+            let reason = match obj_get(item, "reason") {
+                Some(ConfigValue::String(s)) => Some(s.clone()),
+                Some(_) => return Err("field `permissions[].reason` must be a string".to_string()),
+                None => None,
+            };
+            Ok(PermissionDecl { perm, reason })
+        }
+        _ => Err("field `permissions` must be strings or `{ perm, reason }` tables".to_string()),
+    }
+}
+
+fn parse_allowed_item(item: &ConfigValue) -> Result<PermissionDecl, String> {
+    match item {
+        ConfigValue::String(s) => {
+            check_permission_perm(s)?;
+            Ok(PermissionDecl { perm: s.clone(), reason: None })
+        }
+        _ => Err("field `permissions.allowed` must be strings".to_string()),
+    }
+}
+
 fn check_keyword(word: &str) -> Result<(), String> {
     if word.is_empty() {
         return Err("keyword must not be empty".to_string());
@@ -507,10 +554,7 @@ fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<Workspace
                 Some(ConfigValue::Array(items)) => {
                     let mut allowed = Vec::new();
                     for item in items {
-                        match item {
-                            ConfigValue::String(s) => allowed.push(s.clone()),
-                            _ => return Err("field `permissions` must be strings".to_string()),
-                        }
+                        allowed.push(parse_permission_item(item)?);
                     }
                     Some(allowed)
                 }
@@ -518,14 +562,7 @@ fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<Workspace
                     Some(ConfigValue::Array(items)) => {
                         let mut allowed = Vec::new();
                         for item in items {
-                            match item {
-                                ConfigValue::String(s) => allowed.push(s.clone()),
-                                _ => {
-                                    return Err(
-                                        "field `permissions.allowed` must be strings".to_string()
-                                    );
-                                }
-                            }
+                            allowed.push(parse_allowed_item(item)?);
                         }
                         Some(allowed)
                     }
@@ -724,11 +761,18 @@ pub fn manifest_to_rnx(manifest: &Manifest) -> String {
         }
         if let Some(allowed) = &p.permissions {
             out.push_str("    permissions: [");
-            for (i, c) in allowed.iter().enumerate() {
+            for (i, decl) in allowed.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                out.push_str(&crate::deplock::rnx_string(c));
+                match &decl.reason {
+                    Some(r) => out.push_str(&format!(
+                        "{{ perm: {}, reason: {} }}",
+                        crate::deplock::rnx_string(&decl.perm),
+                        crate::deplock::rnx_string(r)
+                    )),
+                    None => out.push_str(&crate::deplock::rnx_string(&decl.perm)),
+                }
             }
             out.push_str("],\n");
         }
@@ -1683,7 +1727,7 @@ mod tests {
                      zlib: target.os == \"windows\" ? { native: \"zlibstatic\", system: true } : { native: \"z\", system: true },\n\
                      gui: switch (target.arch) { case \"aarch64\": { native: \"gui_arm\" } default: { native: \"gui_x86\" } }\n\
                  },\n\
-                 permissions: [\"native:zlib\", \"native:gui\"]\n\
+                 permissions: [{ perm: \"fs:read:/data\", reason: \"fixtures\" }, \"net:http:example.com\"]\n\
              }\n",
         )
         .unwrap();
@@ -1697,7 +1741,7 @@ mod tests {
                      zlib: target.os == \"windows\" ? { native: \"zlibstatic\", system: true } : { native: \"z\", system: true },\n\
                      gui: switch (target.arch) { case \"aarch64\": { native: \"gui_arm\" } default: { native: \"gui_x86\" } }\n\
                  },\n\
-                 permissions: [\"native:zlib\", \"native:gui\"]\n\
+                 permissions: [{ perm: \"fs:read:/data\", reason: \"fixtures\" }, \"net:http:example.com\"]\n\
              }\n",
         )
         .unwrap()
@@ -1716,7 +1760,7 @@ mod tests {
             c.dependencies["gui"],
             DependencySpec::Native { lib: "gui_x86".to_string(), system: false, path: None }
         );
-        assert_eq!(c.permissions, Some(vec!["native:zlib".to_string(), "native:gui".to_string()]));
+        assert_eq!(c.permissions, Some(vec![PermissionDecl { perm: "fs:read:/data".to_string(), reason: Some("fixtures".to_string()) }, PermissionDecl { perm: "net:http:example.com".to_string(), reason: None }]));
     }
 
     #[test]
@@ -1725,7 +1769,7 @@ mod tests {
              project: { name: \"demo\", version: \"0.1.0\" },\n\
              entries: { main: \"src/app.rnx\", bins: { tool: \"src/bin/tool.rnx\" } },\n\
              dependencies: { helper: \"libs/helper\", zlib: { native: \"z\", system: true } },\n\
-             permissions: [\"native:zlib\"]\n\
+             permissions: [{ perm: \"fs:read:/data\", reason: \"seed data\" }, \"term:write\"]\n\
          }\n";
         let m = parse_manifest(text).unwrap();
         let out = manifest_to_rnx(&Manifest { project: m.0.clone(), workspace: m.1.clone() });
@@ -1735,6 +1779,80 @@ mod tests {
         let (first, second) = (again.0.unwrap(), m.0.unwrap());
         assert_eq!(first.entries, second.entries);
         assert_eq!(first.dependencies, second.dependencies);
+        assert_eq!(first.permissions, second.permissions);
+        assert_eq!(
+            first.permissions,
+            Some(vec![
+                PermissionDecl {
+                    perm: "fs:read:/data".to_string(),
+                    reason: Some("seed data".to_string())
+                },
+                PermissionDecl { perm: "term:write".to_string(), reason: None }
+            ])
+        );
+    }
+
+    #[test]
+    fn permissions_accept_strings_tables_and_mixed() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 permissions: [\"term:write\", { perm: \"fs:read:/data\", reason: \"seed\" }]\n\
+             }\n",
+        );
+        assert_eq!(
+            c.permissions,
+            Some(vec![
+                PermissionDecl { perm: "term:write".to_string(), reason: None },
+                PermissionDecl {
+                    perm: "fs:read:/data".to_string(),
+                    reason: Some("seed".to_string())
+                }
+            ])
+        );
+        let bare = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 permissions: { allowed: [\"fs:delegated\"] }\n\
+             }\n",
+        );
+        assert_eq!(
+            bare.permissions,
+            Some(vec![PermissionDecl { perm: "fs:delegated".to_string(), reason: None }])
+        );
+    }
+
+    #[test]
+    fn permissions_reject_bad_perm_and_non_string_reason() {
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    permissions: [\"bogus:cap\"]\n}\n",
+                "invalid permission",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    permissions: [{ perm: \"fs:read\", reason: \"x\" }]\n}\n",
+                "invalid permission",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    permissions: [{ perm: \"term:write\", reason: 7 }]\n}\n",
+                "must be a string",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    permissions: [{ reason: \"x\" }]\n}\n",
+                "missing required field `perm`",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    permissions: [42]\n}\n",
+                "must be strings or",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    permissions: { allowed: [{ perm: \"term:write\" }] }\n}\n",
+                "must be strings",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
+        }
     }
 
     #[test]
