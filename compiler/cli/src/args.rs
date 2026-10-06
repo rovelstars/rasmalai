@@ -192,6 +192,21 @@ pub enum Command {
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
     },
+    /// Download standard library packages into the global registry cache
+    FetchStd {
+        /// Registry endpoint URL (or RNX_REGISTRY)
+        #[arg(long, env = "RNX_REGISTRY")]
+        registry: Option<String>,
+    },
+    /// Check toolchain health and optionally repair the stdlib cache
+    Doctor {
+        /// Re-download missing standard library packages into the global cache
+        #[arg(long = "repair-std")]
+        repair_std: bool,
+        /// Registry endpoint URL (or RNX_REGISTRY)
+        #[arg(long, env = "RNX_REGISTRY")]
+        registry: Option<String>,
+    },
     /// Generate static documentation site
     Doc {
         /// Package selection

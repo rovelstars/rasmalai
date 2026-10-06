@@ -58,8 +58,10 @@ mod check;
 mod completions;
 mod dev;
 mod doc;
+mod doctor;
 mod explain;
 pub(super) mod fetch;
+pub(super) mod fetch_std;
 mod fmt;
 mod init;
 mod lint;
@@ -84,8 +86,10 @@ use self::check::run_check;
 use self::completions::run_completions;
 use self::dev::run_dev;
 use self::doc::run_doc;
+use self::doctor::run_doctor;
 use self::explain::run_explain;
 use self::fetch::run_fetch;
+use self::fetch_std::run_fetch_std;
 use self::fmt::run_fmt;
 use self::init::run_init;
 use self::lint::run_lint;
@@ -175,6 +179,12 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
             }
             cli::args::Command::Fetch { package } => {
                 run_fetch(package);
+            }
+            cli::args::Command::FetchStd { registry } => {
+                run_fetch_std(registry);
+            }
+            cli::args::Command::Doctor { repair_std, registry } => {
+                run_doctor(repair_std, registry);
             }
             cli::args::Command::Doc {
                 package,
