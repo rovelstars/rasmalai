@@ -314,6 +314,7 @@ import { importSnippet } from '$lib/docs/stdlib';
 		const root: TreeNode = { name: '', full: '', size: 0, kids: new Map() };
 		for (const f of tree ?? []) {
 			const parts = f.path.split('/').filter(Boolean);
+			if (parts.some((p) => p.startsWith('.'))) continue;
 			let node = root;
 			for (let i = 0; i < parts.length; i++) {
 				const part = parts[i];

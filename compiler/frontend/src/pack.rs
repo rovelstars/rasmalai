@@ -161,7 +161,7 @@ pub struct PackedFile {
 fn collect_pack_names(
     package_dir: &Path,
     manifest: &Manifest,
-) -> Result<(Vec<String>, Vec<(String, Vec<u8>)>), Diagnostic> {
+) -> Result<Vec<String>, Diagnostic> {
     validate_for_pack(package_dir, manifest)?;
     let project = manifest.project.as_ref().ok_or_else(|| {
         Diagnostic::new(Code::E108, "rnx pack needs a [project] manifest".to_string())
@@ -222,38 +222,20 @@ fn collect_pack_names(
     }
     let mut names: Vec<String> = rels.into_iter().collect();
     names.sort();
-    let mut generated: Vec<(String, Vec<u8>)> = Vec::new();
-    match package_doc_json(package_dir, manifest) {
-        Ok(json) => generated.push((".rnx/doc.json".to_string(), json.into_bytes())),
-        Err(e) => {
-            return Err(Diagnostic::new(
-                Code::E108,
-                format!("cannot extract package docs: {}", e.message),
-            ));
-        }
-    }
-    for (rel, _) in &generated {
-        names.push(rel.clone());
-    }
-    names.sort();
-    Ok((names, generated))
+    Ok(names)
 }
 
 pub fn package_file_list(
     package_dir: &Path,
     manifest: &Manifest,
 ) -> Result<Vec<PackedFile>, Diagnostic> {
-    let (names, generated) = collect_pack_names(package_dir, manifest)?;
+    let names = collect_pack_names(package_dir, manifest)?;
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        if let Some((_, bytes)) = generated.iter().find(|(g, _)| g == &name) {
-            out.push(PackedFile { path: name, size: bytes.len() as u64 });
-        } else {
-            let size = std::fs::metadata(package_dir.join(&name))
-                .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {name}: {e}")))?
-                .len();
-            out.push(PackedFile { path: name, size });
-        }
+        let size = std::fs::metadata(package_dir.join(&name))
+            .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {name}: {e}")))?
+            .len();
+        out.push(PackedFile { path: name, size });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
@@ -272,16 +254,12 @@ pub fn build_package_tar(
     package_dir: &Path,
     manifest: &Manifest,
 ) -> Result<Vec<u8>, Diagnostic> {
-    let (names, generated) = collect_pack_names(package_dir, manifest)?;
+    let names = collect_pack_names(package_dir, manifest)?;
     let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(names.len());
     for n in &names {
-        if let Some((_, bytes)) = generated.iter().find(|(g, _)| g == n) {
-            files.push((n.clone(), bytes.clone()));
-        } else {
-            let content = std::fs::read(package_dir.join(n))
-                .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {n}: {e}")))?;
-            files.push((n.clone(), content));
-        }
+        let content = std::fs::read(package_dir.join(n))
+            .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {n}: {e}")))?;
+        files.push((n.clone(), content));
     }
     assemble_tar(&names, &files)
 }
@@ -333,12 +311,10 @@ pub fn build_minified_package_tar(
     package_dir: &Path,
     manifest: &Manifest,
 ) -> Result<MinifiedTar, Diagnostic> {
-    let (names, generated) = collect_pack_names(package_dir, manifest)?;
+    let names = collect_pack_names(package_dir, manifest)?;
     let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(names.len());
     for n in &names {
-        if let Some((_, bytes)) = generated.iter().find(|(g, _)| g == n) {
-            files.push((n.clone(), bytes.clone()));
-        } else if crate::minify::is_minified_rel(n) {
+        if crate::minify::is_minified_rel(n) {
             let raw = std::fs::read(package_dir.join(n))
                 .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read {n}: {e}")))?;
             let text = String::from_utf8(raw).map_err(|_| {
@@ -509,7 +485,7 @@ mod tests {
         let manifest = fixture_manifest(&dir);
         let files = package_file_list(&dir, &manifest).unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(paths, vec![".rnx/doc.json", "Project.config", "README.md", "src/main.rnx"]);
+        assert_eq!(paths, vec!["Project.config", "README.md", "src/main.rnx"]);
         for f in &files {
             assert!(!f.path.contains('\\'), "{}", f.path);
             if f.path == "README.md" {
