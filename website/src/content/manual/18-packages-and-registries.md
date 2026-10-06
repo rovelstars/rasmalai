@@ -49,6 +49,7 @@ The fixed paths are:
 | `GET .../<name>@<version>` | metadata: status, checksums, engine range, download/api/guides links |
 | `GET .../<name>@<version>/download` | the tarball bytes, immutable for a year |
 | `GET .../<version>/api` | the jsdoc snapshot JSON |
+| `GET .../<version>/manifest` | the stored dependency manifest (deps, homepage) |
 | `GET .../<name>@<version>/guides[/<slug>]` | guide index or one guide, 404 when the package ships none |
 
 Version metadata and tarballs cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410.

@@ -127,6 +127,7 @@ export async function GET({ params, platform, setHeaders, url }) {
 				links: {
 					download: `/api/packages/${full}@${version}/download`,
 					api: `/api/packages/${full}@${version}/api`,
+					manifest: `/api/packages/${full}@${version}/manifest`,
 					guides: `/api/packages/${full}@${version}/guides`
 				}
 			},
@@ -156,6 +157,15 @@ export async function GET({ params, platform, setHeaders, url }) {
 	}
 
 	if (sub === 'api') {
+		setHeaders({ ...immutable, ...specHeaders() });
+		try {
+			return json(JSON.parse(row.docJson), { headers: headers() });
+		} catch {
+			return json({ modules: [] }, { headers: headers() });
+		}
+	}
+
+	if (sub === 'manifest') {
 		setHeaders({ ...immutable, ...specHeaders() });
 		try {
 			return json(JSON.parse(row.manifestJson), { headers: headers() });

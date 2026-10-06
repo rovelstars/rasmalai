@@ -42,6 +42,7 @@ export interface VersionDoc {
 	version: string;
 	readme: string;
 	docJson: string;
+	guides: string;
 }
 
 export const BASE_SCHEMA = `
@@ -579,7 +580,7 @@ export async function getVersionDoc(
 	if (!parsed || !db) return null;
 	await ensureSchema(db);
 	const rs = await db.execute({
-		sql: `SELECT v.readme_markdown, v.doc_json FROM package_versions v
+		sql: `SELECT v.readme_markdown, v.doc_json, v.guides_json FROM package_versions v
 		      JOIN packages p ON p.id = v.package_id
 		      WHERE p.scope = ? AND p.name = ? AND v.version = ?`,
 		args: [parsed.scope, parsed.name, version]
@@ -589,7 +590,8 @@ export async function getVersionDoc(
 	return {
 		version,
 		readme: String(row['readme_markdown']),
-		docJson: String(row['doc_json'])
+		docJson: String(row['doc_json']),
+		guides: String(row['guides_json'] ?? '[]')
 	};
 }
 
@@ -725,6 +727,7 @@ export interface VersionRow {
 	checksum: string;
 	tarballSha256: string;
 	engineRange: string;
+	docJson: string;
 	manifestJson: string;
 	guidesJson: string;
 	tarManifestJson: string;
@@ -748,6 +751,7 @@ function toVersionRow(r: Record<string, unknown>): VersionRow {
 		tarballSha256: String(r['tarball_sha256'] ?? ''),
 	tarManifestJson: String(r['tar_manifest_json'] ?? '[]'),
 		engineRange: String(r['engine_range'] ?? ''),
+		docJson: String(r['doc_json'] ?? '{"modules":[]}'),
 		manifestJson: String(r['manifest_json'] ?? '{}'),
 		guidesJson: String(r['guides_json'] ?? '[]'),
 		requestId: String(r['request_id'] ?? ''),
@@ -1228,6 +1232,7 @@ export function packagePointerUrls(origin: string, full: string, version?: strin
 		urls.push(`${base}/api/packages/${full}@${version}`);
 		urls.push(`${base}/api/packages/${full}@${version}/download`);
 		urls.push(`${base}/api/packages/${full}@${version}/api`);
+		urls.push(`${base}/api/packages/${full}@${version}/manifest`);
 		urls.push(`${base}/api/packages/${full}@${version}/guides`);
 	}
 	return urls;
