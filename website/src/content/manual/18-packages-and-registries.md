@@ -50,6 +50,8 @@ The fixed paths are:
 | `GET .../<name>@<version>/download` | the tarball bytes, immutable for a year |
 | `GET .../<version>/api` | the jsdoc snapshot JSON |
 | `GET .../<version>/manifest` | the stored dependency manifest (deps, homepage) |
+| `GET .../<version>/chunks` | chunk entry manifest (file names, sizes, content hashes) for browser-side reassembly |
+| `GET .../<version>/chunk/<sha256>` | one content chunk by hash, immutable — browsers fetch these in parallel and unpack locally |
 | `GET .../<name>@<version>/guides[/<slug>]` | guide index or one guide, 404 when the package ships none |
 
 Version metadata and tarballs cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410.
