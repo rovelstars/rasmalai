@@ -1,5 +1,5 @@
 use crate::ast as A;
-use crate::project::{self, ProjectConfig};
+use crate::project::{self, ProjectConfig, RegistryConfig};
 use diagnostics::{Code, Diagnostic, Span};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -1639,18 +1639,61 @@ fn resolve_import(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>
             )
             .with_hint("use `@std/<module>`, e.g. `@std/time`"));
         }
-        if stdlib::source(rest).is_none() {
-            return Err(Diagnostic::new(
-                Code::E108,
-                format!("unknown standard library module `{source}`"),
-            ));
-        }
-        return Ok((PathBuf::from(format!("{STD_SCOPE}{rest}")), None));
+        let overrides: BTreeMap<String, RegistryConfig> = BTreeMap::new();
+        return resolve_std_with_registries(source, rest, None, &overrides);
     }
     if source.starts_with('.') {
         return resolve_relative(from, source);
     }
     resolve_package(from, source)
+}
+
+/// `@std/*` through the same-domain registry server under the hood: exact
+/// CLI-pinned version, integrity-checked cache, embedded sysroot as offline
+/// fallback. No URL imports exist in user code; all fetching here is
+/// toolchain-initiated.
+fn resolve_std_with_registries(
+    source: &str,
+    rest: &str,
+    default: Option<&RegistryConfig>,
+    overrides: &BTreeMap<String, RegistryConfig>,
+) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
+    let (pkg, sub) = match rest.split_once('/') {
+        Some((top, s)) => (format!("@std/{top}"), Some(s)),
+        None => (format!("@std/{rest}"), None),
+    };
+    let pin = env!("CARGO_PKG_VERSION").to_string();
+    let base = crate::fetch::registry_base_for(&pkg, default, overrides);
+    let attempt = cached_std_package(&base, &pkg, &pin).or_else(|| {
+        let have = crate::fetch::scan_cache_have();
+        crate::fetch::resolve_registry_package(&pkg, &pin, default, overrides, Some(pin.clone()), &have)
+            .map(|(dir, cfg, _)| (dir, cfg))
+            .ok()
+    });
+    if let Some((dep_root, dep_cfg)) = attempt {
+        return resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source)
+            .map(|target| (target, Some(dep_root)));
+    }
+    if stdlib::source(rest).is_none() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("unknown standard library module `{source}`"),
+        ));
+    }
+    Ok((PathBuf::from(format!("{STD_SCOPE}{rest}")), None))
+}
+
+fn cached_std_package(base: &str, pkg: &str, pin: &str) -> Option<(PathBuf, ProjectConfig)> {
+    let dir = crate::fetch::cached_package_dir(base, pkg, pin);
+    if !dir.join(crate::project::MANIFEST_FILE).is_file() {
+        return None;
+    }
+    if crate::fetch::cached_integrity(&dir).is_none() {
+        return None;
+    }
+    let dir = std::fs::canonicalize(&dir).ok()?;
+    let cfg = ProjectConfig::load_from_dir(&dir).ok()??;
+    Some((dir, cfg))
 }
 
 fn resolve_relative(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
@@ -1764,6 +1807,17 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
         }
         None => workspace_sibling(&proj_root, &pkg)?.ok_or_else(unknown)?,
     };
+    let target = resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source)?;
+    Ok((target, Some(dep_root)))
+}
+
+fn resolve_subpath_target(
+    dep_root: &Path,
+    sub: Option<&str>,
+    dep_cfg: &ProjectConfig,
+    pkg: &str,
+    source: &str,
+) -> Result<PathBuf, Diagnostic> {
     let target = match sub {
         None => {
             let main = dep_cfg.main_path(&dep_root);
@@ -1824,10 +1878,10 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
     };
     let target = std::fs::canonicalize(&target)
         .map_err(|_| Diagnostic::new(Code::E108, format!("cannot resolve module `{source}`")))?;
-    if !target.starts_with(&dep_root) {
+    if !target.starts_with(dep_root) {
         return Err(Diagnostic::new(Code::E108, format!("cannot resolve module `{source}`")));
     }
-    Ok((target, Some(dep_root)))
+    Ok(target)
 }
 
 fn locked_registry_version(scope_root: &Path, pkg: &str) -> Option<String> {
@@ -2595,5 +2649,75 @@ mod tests {
         let last = bodies.last().unwrap();
         assert_eq!(testkit::requirement(last, "@acme/widget"), "1.2.0");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    fn std_overrides(url: &str) -> BTreeMap<String, crate::project::RegistryConfig> {
+        let mut m = BTreeMap::new();
+        m.insert("@std".to_string(), testkit::registry_cfg(url));
+        m
+    }
+
+    fn dead_overrides() -> BTreeMap<String, crate::project::RegistryConfig> {
+        std_overrides("http://127.0.0.1:1")
+    }
+
+    fn start_std_server() -> testkit::MockRegistry {
+        let pin = env!("CARGO_PKG_VERSION");
+        let (gz, sha) = testkit::fixture_tarball("@std/fs", pin);
+        let node = testkit::node_json("@std/fs", pin, &sha, false);
+        testkit::MockRegistry::start(testkit::MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: testkit::resolve_json_static(&[node]),
+            download_status: 200,
+            download_body: gz,
+            download_error: String::new(),
+        })
+    }
+
+    #[test]
+    fn std_resolves_through_registry_under_the_hood() {
+        let (_guard, _cache) = testkit::isolate_cache("stdreg");
+        let server = start_std_server();
+        let (target, dep) =
+            resolve_std_with_registries("@std/fs", "fs", None, &std_overrides(&server.base)).unwrap();
+        assert!(dep.is_some());
+        assert!(target.ends_with("src/main.rnx"));
+        let bodies = server.resolve_bodies();
+        assert!(!bodies.is_empty());
+        assert_eq!(
+            testkit::requirement(bodies.last().unwrap(), "@std/fs"),
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    #[test]
+    fn std_cache_hit_needs_no_network() {
+        let (_guard, _cache) = testkit::isolate_cache("stdcache");
+        let server = start_std_server();
+        let first =
+            resolve_std_with_registries("@std/fs", "fs", None, &std_overrides(&server.base)).unwrap();
+        let served = server.requests().len();
+        assert!(served > 0);
+        let second =
+            resolve_std_with_registries("@std/fs", "fs", None, &std_overrides(&server.base)).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(server.requests().len(), served);
+    }
+
+    #[test]
+    fn std_falls_back_to_embedded_offline() {
+        let (_guard, _cache) = testkit::isolate_cache("stdfb");
+        let (target, dep) =
+            resolve_std_with_registries("@std/fs", "fs", None, &dead_overrides()).unwrap();
+        assert_eq!(target, PathBuf::from("@std/fs"));
+        assert!(dep.is_none());
+    }
+
+    #[test]
+    fn std_unknown_module_errors() {
+        let (_guard, _cache) = testkit::isolate_cache("stdbad");
+        let err = resolve_std_with_registries("@std/nope", "nope", None, &dead_overrides()).unwrap_err();
+        assert!(err.message.contains("unknown standard library module"));
     }
 }
