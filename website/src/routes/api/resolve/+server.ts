@@ -42,8 +42,10 @@ export async function POST({ request, url, platform }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	try {
 		const { resolved, levels } = await resolveGraph(env, requirements, have);
-		const base = `${url.origin}/api/packages`;
-		return json({ resolved, base, levels }, { headers: specHeaders() });
+		// base omitted: clients default to the request origin + /api/packages.
+		// A future multi-registry response may send an absolute URL (other
+		// host) or a path (same host, other prefix) instead.
+		return json({ resolved, base: '', levels }, { headers: specHeaders() });
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		if (msg.startsWith('dependency cycle')) return err('cycle', msg, 422);
