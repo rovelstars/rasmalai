@@ -92,6 +92,8 @@ Ranges use a small grammar: `*`, `latest`, an exact `X.Y.Z`, `^X.Y.Z`, `~X.Y.Z`,
 
 Conflicting ranges for one package fail the whole resolve as `unsatisfiable`; a dependency cycle fails as `cycle`.
 
+Every resolve error response carries a `requestId` (a UUID v4) alongside `code` and `message`. The server logs the failure under `[resolve <id>]`, so paste the id when reporting a 500 `resolve-failed`.
+
 ## Publishing
 
 `rnx pack` builds the deterministic archive (ustar plus SHA-256, `--gzip` for the compressed form). `rnx publish` ships it:
@@ -110,6 +112,8 @@ The CLI posts the raw bytes with exactly these headers:
 - `X-RNX-Package-Name`, `X-RNX-Package-Version`, `X-RNX-Checksum`
 
 The server also honors `X-RNX-Meta` (readme, docs, guides, manifest JSON) and `X-RNX-Request-ID` for idempotent retries. A 200 or 201 means the version is live; anything else prints the rejection status and message with the hint to check the token and the version.
+
+Publishing minifies on the client before upload. `rnx publish` first refuses unformatted trees with `E108` naming the files (run `rnx fmt` and retry), then extracts the API docs so doc comments survive in `X-RNX-Meta` (`metaVersion` 3), then ships minified `.rnx` sources — comments stripped, `Project.config` sent formatted as-is — and fails closed if the minified output does not re-parse to the same token stream. Checksums cover the minified bytes.
 
 Server-side auth is an exact match against the configured org token. A local server without one accepts `preview-` tokens and logs a warning — a deliberate hole for local development, not for deployment. Browser sessions can publish too: then the username owns the package and scope membership is checked per scope.
 
@@ -278,7 +282,7 @@ import { sqlite3_open } from "sqlite3";
 print(sqlite3_open);
 ```
 
-Publish with `rnx pack` then `rnx publish` as above; once registry fetching lands, the same name works as a `"^3.53.4"` range without the path line. The `unsafe:ffi` permission stays in the manifest: foreign calls need it, and `rnx audit` reports it.
+Publish with `rnx pack` then `rnx publish` as above; once registry fetching lands, the same name works as a `"^3.53.4"` range without the path line. The `unsafe:ffi` permission stays in the manifest: foreign calls need it, and `rnx audit` reports it. When a grant needs justification, declare it as `{ perm: "unsafe:ffi", reason: "calls into libsqlite3" }` instead of the bare string; the registry stores the reason and the package page lists it beside the grant.
 
 ## Dist-tags roadmap
 

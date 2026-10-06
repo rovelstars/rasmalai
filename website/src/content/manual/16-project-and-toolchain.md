@@ -162,12 +162,15 @@ rnx audit --export-manifest    # minimal publishing manifest as JSON
 
 There is no `--unsafe` flag: the default audit already prints every capability, including `unsafe:*` grants. `unsafe` is a language block, not a CLI switch, and capability checks stay enforced at compile time.
 
-Two files bound the surface. `Project.config` takes an optional ceiling:
+Two files bound the surface. `Project.config` takes an optional ceiling. Each entry is either a bare capability string or a `{ perm, reason }` table; the reason is shown on the package page next to the grant, and entries without one render as "no reason given":
 
 ```rnx
 export default {
     project: { name: "colony", version: "0.4.0" },
-    permissions: ["fs:read:/data", "net:http:example.com"]
+    permissions: [
+        "net:http:example.com",
+        { perm: "fs:read:/data", reason: "seed fixtures for the import job" }
+    ]
 }
 ```
 
@@ -246,8 +249,12 @@ print(quote(2.0));
 | `rnx init` | scaffold a new project | `[name]` |
 | `rnx setup` | configure editor LSP and highlighting | `<vscode\|zed\|helix\|neovim>` |
 | `rnx lock/fetch/vendor` | lockfiles and git-dependency cache | `-p` |
+| `rnx fetch-std` | seed the global registry cache with every `@std/*` package | `--registry <url>` |
+| `rnx doctor` | check the stdlib cache pin and contents | `--repair-std`, `--registry <url>` |
 
 Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners.
+
+`rnx fetch-std` resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). The installer runs it automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. Both accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default.
 
 `rnx fmt` rewrites sources with the canonical style (4-space indents, Egyptian braces, single spaces around binary operators, at most one blank line, no trailing whitespace); comments and string contents are never altered and formatting is idempotent. `rnx lint` checks `L001` (unused variable), `L002` (unused parameter), `L003` (unreachable code), `L004` (missing doc comment), and `L005` (empty block).
 
