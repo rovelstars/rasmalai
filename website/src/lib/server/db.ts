@@ -1,8 +1,8 @@
 import { createClient, type Client } from '@libsql/client/web';
 import { drizzle } from 'drizzle-orm/libsql/web';
 import type { BatchItem } from 'drizzle-orm/batch';
-import { and, asc, count, desc, eq, gte, inArray, lt, notExists, sql, sum } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
+import { and, asc, count, desc, eq, gte, inArray, lt, notExists, or, sql, sum } from 'drizzle-orm';
 import * as s from './schema.js';
 import { maxSatisfying, parseSemver, levelize, satisfiesRange, selectLatestVersion } from './registry.js';
 import { sha256Hex, type TarEntryRef } from './chunks.js';
@@ -206,6 +206,11 @@ CREATE TABLE IF NOT EXISTS licenses (
     id INTEGER PRIMARY KEY,
     spdx TEXT NOT NULL UNIQUE
 );
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 `;
 
 const SCOPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -334,9 +339,15 @@ export async function getDdb(env: Record<string, string | undefined>): Promise<D
 export async function ensureSchema(db: Client): Promise<void> {
 	if (schemaReady) return;
 	if (schemaPromise) return schemaPromise;
-	schemaPromise = migrateSchema(db).then(
-		() => {
-			schemaReady = true;
+	schemaPromise = checkSchemaVersion(db).then(
+		(ok) => {
+			if (ok) {
+				schemaReady = true;
+				return;
+			}
+			return migrateSchema(db).then(() => {
+				schemaReady = true;
+			});
 		},
 		(e) => {
 			schemaPromise = null;
@@ -344,6 +355,27 @@ export async function ensureSchema(db: Client): Promise<void> {
 		}
 	);
 	return schemaPromise;
+}
+
+const SCHEMA_VERSION = 2;
+
+async function checkSchemaVersion(db: Client): Promise<boolean> {
+	try {
+		const rs = await db.execute({
+			sql: 'SELECT value FROM meta WHERE key = ?',
+			args: ['schema_version']
+		});
+		return String(rs.rows[0]?.['value'] ?? '') === String(SCHEMA_VERSION);
+	} catch {
+		return false;
+	}
+}
+
+async function stampSchemaVersion(db: Client): Promise<void> {
+	await db.execute({
+		sql: `INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		args: [String(SCHEMA_VERSION)]
+	});
 }
 
 // Turso serves SQLite over HTTP with no interactive transactions, so every
@@ -420,6 +452,7 @@ async function migrateSchema(db: Client): Promise<void> {
 		await db.execute('DROP TABLE manifest_chunks_legacy');
 		await db.execute('CREATE INDEX IF NOT EXISTS idx_mc_hash ON manifest_chunks(chunk_hash)');
 	}
+	await stampSchemaVersion(db);
 }
 
 let previewTokenWarned = false;
@@ -948,6 +981,39 @@ export async function getVersionRow(
 	return { row, withdrawn };
 }
 
+export async function listLiveVersionsBatch(
+	env: Record<string, string | undefined>,
+	fulls: string[]
+): Promise<Map<string, string[]>> {
+	const out = new Map<string, string[]>();
+	const want = fulls
+		.map((full) => ({ full, parsed: parsePackageName(full) }))
+		.filter((w): w is { full: string; parsed: NonNullable<ReturnType<typeof parsePackageName>> } => w.parsed !== null);
+	if (want.length === 0) return out;
+	const db = await getDdb(env);
+	if (!db) return out;
+	const v = alias(s.packageVersions, 'v');
+	const p = s.packages;
+	const rows = await db
+		.select({ scope: p.scope, name: p.name, version: v.version })
+		.from(v)
+		.innerJoin(p, eq(p.id, v.packageId))
+		.where(
+			and(
+				or(...want.map((w) => and(eq(p.scope, w.parsed.scope), eq(p.name, w.parsed.name)))),
+				inArray(v.status, ['live', 'yanked'])
+			)
+		)
+		.orderBy(p.scope, p.name, sql.raw(SEMVER_ORDER));
+	for (const r of rows) {
+		const full = r.scope ? `@${r.scope}/${r.name}` : r.name;
+		const list = out.get(full) ?? [];
+		list.push(r.version);
+		out.set(full, list);
+	}
+	return out;
+}
+
 export async function listLiveVersions(
 	env: Record<string, string | undefined>,
 	full: string
@@ -1437,6 +1503,8 @@ export async function resolveGraph(
 	const visiting: string[] = [];
 	const resolved: Record<string, string> = {};
 
+	const preloaded = await listLiveVersionsBatch(env, Object.keys(requirements));
+
 	const visit = async (full: string, range: string): Promise<string> => {
 		if (resolved[full]) {
 			if (!satisfiesRange(resolved[full], range)) {
@@ -1444,7 +1512,7 @@ export async function resolveGraph(
 			}
 			return resolved[full];
 		}
-		const versions = await listLiveVersions(env, full);
+		const versions = preloaded.get(full) ?? (await listLiveVersions(env, full));
 		const pick = maxSatisfying(versions, range);
 		if (!pick) {
 			throw new Error(
