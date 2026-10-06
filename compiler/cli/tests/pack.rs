@@ -111,21 +111,19 @@ fn test_excluded_paths_not_in_tar() {
     assert!(list.status.success());
     let text = String::from_utf8(list.stdout).unwrap();
     for line in text.lines() {
-        let generated_doc = line == ".rnx/" || line == ".rnx/doc.json";
-        let bad = !generated_doc
-            && (line == ".git"
-                || line.starts_with(".git/")
-                || line == "target"
-                || line.starts_with("target/")
-                || line == ".rnx"
-                || line.starts_with(".rnx/")
-                || line == ".rnx-cache"
-                || line.starts_with(".rnx-cache/")
-                || line == "tests"
-                || line.starts_with("tests/"));
+        let bad = line == ".git"
+            || line.starts_with(".git/")
+            || line == "target"
+            || line.starts_with("target/")
+            || line == ".rnx"
+            || line.starts_with(".rnx/")
+            || line == ".rnx-cache"
+            || line.starts_with(".rnx-cache/")
+            || line == "tests"
+            || line.starts_with("tests/");
         assert!(!bad, "excluded entry packed: {line}");
     }
-    assert!(text.lines().any(|l| l == ".rnx/doc.json"), "doc.json missing:\n{text}");
+    assert!(!text.lines().any(|l| l == ".rnx/doc.json"), "generated doc.json packed");
     assert!(text.lines().any(|l| l == "Project.config"), "config missing:\n{text}");
     assert!(text.lines().any(|l| l == "src/main.rnx"), "source missing:\n{text}");
     let _ = std::fs::remove_dir_all(&dir);

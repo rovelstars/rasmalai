@@ -1679,12 +1679,18 @@ fn resolve_std_with_registries(
     };
     let pin = env!("CARGO_PKG_VERSION").to_string();
     let base = crate::fetch::registry_base_for(&pkg, default, overrides);
-    let attempt = cached_std_package(&base, &pkg, &pin).or_else(|| {
-        let have = crate::fetch::scan_cache_have();
-        crate::fetch::resolve_registry_package(&pkg, &pin, default, overrides, Some(pin.clone()), &have)
-            .map(|(dir, cfg, _)| (dir, cfg))
-            .ok()
-    });
+    // WebAssembly has no filesystem, threads, or sockets: the registry
+    // path cannot run there. Embedded sysroot only (see 11_TOOLING).
+    let attempt = if cfg!(target_arch = "wasm32") {
+        None
+    } else {
+        cached_std_package(&base, &pkg, &pin).or_else(|| {
+            let have = crate::fetch::scan_cache_have();
+            crate::fetch::resolve_registry_package(&pkg, &pin, default, overrides, Some(pin.clone()), &have)
+                .map(|(dir, cfg, _)| (dir, cfg))
+                .ok()
+        })
+    };
     if let Some((dep_root, dep_cfg)) = attempt {
         if let Ok(target) = resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source) {
             set_std_overlay(&virtual_path, &target);

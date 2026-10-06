@@ -28,7 +28,7 @@ fn gunzip(data: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn test_pack_embeds_doc_json() {
+fn test_pack_embeds_no_generated_doc_json() {
     let dir = write_project("doc", "probe", "1.2.3");
     let out = rnx(&dir, &["pack", "-z"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -36,7 +36,8 @@ fn test_pack_embeds_doc_json() {
     assert!(gz.is_file(), "archive missing");
     let tar = gunzip(&std::fs::read(&gz).unwrap());
     let text = String::from_utf8_lossy(&tar);
-    assert!(text.contains(".rnx/doc.json"), "doc.json missing from archive");
+    assert!(!text.contains(".rnx/doc.json"), "generated doc.json still embedded");
+    assert!(text.contains("Project.config"), "config missing from archive");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
