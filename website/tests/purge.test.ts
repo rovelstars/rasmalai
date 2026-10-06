@@ -8,8 +8,9 @@ describe('purge', () => {
 		assert.ok(urls.includes('https://example.com/api/packages'));
 		assert.ok(urls.includes('https://example.com/api/packages/@acme/a'));
 		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/download'));
 		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/api'));
+		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/manifest'));
+		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/chunks'));
 		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/guides'));
 	});
 

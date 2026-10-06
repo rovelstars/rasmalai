@@ -20,6 +20,16 @@
   <a href="https://rasmalai.rovelstars.com/packages">View packages</a>
 </p>
 
+## Stability: 0.x means breaking changes
+
+Rasmalai is pre-1.0. While the major version is 0, expect breaking
+changes in any release with no deprecation period and no backward
+compatibility: CLI flags, manifest keys, registry API paths, file
+layouts, and language semantics can all change. Pin your toolchain
+(`rnx --version`, lockfiles, pinned container images) and read release
+notes before upgrading. Do not build production systems on 0.x without
+accepting that upgrades may require code and workflow changes.
+
 ## What is Rasmalai?
 
 Rasmalai is a high-performance compiled programming language. It pairs

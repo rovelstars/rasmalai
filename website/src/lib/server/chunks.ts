@@ -115,32 +115,6 @@ function cdcSplit(data: Uint8Array): Uint8Array[] {
 	return out;
 }
 
-export function splitTarFiles(tar: Uint8Array): Uint8Array[] {
-	const files: Uint8Array[] = [];
-	let off = 0;
-	while (off + 512 <= tar.length) {
-		const header = tar.slice(off, off + 512);
-		let empty = true;
-		for (let i = 0; i < 512; i++) {
-			if (header[i] !== 0) {
-				empty = false;
-				break;
-			}
-		}
-		if (empty) break;
-		const sizeField = String.fromCharCode(...header.slice(124, 136)).replace(/\0/g, '').trim();
-		const size = parseInt(sizeField, 8);
-		if (!Number.isFinite(size) || size < 0) break;
-		const typeflag = header[156];
-		off += 512;
-		if (typeflag === 53) continue;
-		if (off + size > tar.length) break;
-		if (size > 0) files.push(tar.slice(off, off + size));
-		off += Math.ceil(size / 512) * 512;
-	}
-	return files;
-}
-
 export async function chunkTarball(tar: Uint8Array): Promise<ChunkedTarball> {
 	const units: ChunkUnit[] = [];
 	const byHash = new Map<string, ChunkUnit>();

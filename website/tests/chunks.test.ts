@@ -87,6 +87,22 @@ describe('chunk store', () => {
 		assert.equal(total, big.length);
 	});
 
+	it('pins the tar header layout both implementations share', async () => {
+		const hello = new TextEncoder().encode('hello');
+		const h = 'H'.repeat(64);
+		const out = rebuildTarball([{ name: 'a.txt', size: 5, dir: false, chunks: [h] }], new Map([[h, hello]]));
+		assert.equal(out.length, 2048);
+		assert.equal(
+			Buffer.from(out.subarray(0, 64)).toString('hex'),
+			'612e7478740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'
+		);
+		assert.equal(
+			Buffer.from(out.subarray(256, 320)).toString('hex'),
+			'007573746172003030726e780000000000000000000000000000000000000000000000000000000000726e780000000000000000000000000000000000000000'
+		);
+		assert.deepEqual(out.subarray(512, 517), hello);
+	});
+
 	it('round-trips opaque blobs without archive markers', async () => {
 		const gz = new Uint8Array([0x1f, 0x8b, 0x08, 1, 2, 3, 4, 5]);
 		const { units, entries } = await chunkTarball(gz);

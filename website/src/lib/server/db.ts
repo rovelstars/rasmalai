@@ -1,7 +1,7 @@
 import { createClient, type Client } from '@libsql/client/web';
 import { maxSatisfying, parseSemver, levelize, satisfiesRange, selectLatestVersion } from './registry.js';
-import { sha256Hex, rebuildTarball, type TarEntryRef } from './chunks.js';
-import { r2Bucket, r2PutIfMissing, r2Get, type R2BucketLike } from './r2.js';
+import { sha256Hex, type TarEntryRef } from './chunks.js';
+import { r2Bucket, r2PutIfMissing, r2Get } from './r2.js';
 import { freshQuotaState, shouldSample, effectiveUsage, quotaBudgetBytes, quotaGuardEnabled } from './quota.js';
 
 // Temporary ownership model (no account system yet): a single org owner.
@@ -236,32 +236,6 @@ export function extractDepNames(manifestJson: string): string[] {
 		if (!out.includes(key)) out.push(key);
 	}
 	return out.sort();
-}
-
-export interface FileIndexEntry {
-	path: string;
-	size: number;
-}
-
-export function readFileIndex(tarManifestJson: string): FileIndexEntry[] | null {
-	let entries: unknown;
-	try {
-		entries = JSON.parse(tarManifestJson);
-	} catch {
-		return null;
-	}
-	if (!Array.isArray(entries) || entries.length === 0) return null;
-	const out: FileIndexEntry[] = [];
-	for (const e of entries) {
-		if (!e || typeof e !== 'object') continue;
-		const rec = e as Record<string, unknown>;
-		if (rec['dir'] === true) continue;
-		if (typeof rec['name'] !== 'string' || rec['name'].length === 0) continue;
-		const size = Number(rec['size']);
-		if (!Number.isFinite(size) || size < 0) continue;
-		out.push({ path: rec['name'], size: Math.floor(size) });
-	}
-	return out.length > 0 ? out : null;
 }
 
 export interface PackageFilter {
@@ -1083,102 +1057,6 @@ export async function storeTarManifest(
 	});
 }
 
-async function loadTarEntries(
-	db: NonNullable<ReturnType<typeof getClient>>,
-	versionRowId: string,
-	env: Record<string, string | undefined>
-): Promise<{ expected: string; entries: TarEntryRef[]; byHash: Map<string, Uint8Array> } | null> {
-	const meta = await db.execute({
-		sql: 'SELECT tarball_sha256, tar_manifest_json FROM package_versions WHERE id = ?',
-		args: [versionRowId]
-	});
-	const row = meta.rows[0] as Record<string, unknown> | undefined;
-	if (!row) return null;
-	let entries: TarEntryRef[];
-	try {
-		entries = JSON.parse(String(row['tar_manifest_json'] ?? '[]')) as TarEntryRef[];
-	} catch {
-		return null;
-	}
-	if (!Array.isArray(entries) || entries.length === 0) return null;
-	const rs = await db.execute({
-		sql: `SELECT c.hash AS hash, c.bytes AS bytes FROM manifest_chunks mc
-		      JOIN chunks c ON c.hash = mc.chunk_hash
-		      WHERE mc.version_id = ?`,
-		args: [versionRowId]
-	});
-	const byHash = new Map<string, Uint8Array>();
-	const missing: string[] = [];
-	for (const r of rs.rows) {
-		const raw = r['bytes'] as Uint8Array | ArrayBuffer;
-		const b = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
-		if (b.length > 0) {
-			byHash.set(String(r['hash']), b);
-		} else {
-			missing.push(String(r['hash']));
-		}
-	}
-	if (missing.length > 0) {
-		const bucket = r2Bucket(env);
-		if (!bucket) throw new Error('chunk bytes unavailable: row is R2-backed but no bucket is bound');
-		const got = await Promise.all(
-			missing.map(async (h) => {
-				const bytes = await r2Get(bucket, h);
-				if (!bytes) throw new Error(`missing chunk ${h}`);
-				if ((await sha256Hex(bytes)) !== h) throw new Error(`chunk ${h} failed integrity check`);
-				return [h, bytes] as const;
-			})
-		);
-		for (const [h, bytes] of got) byHash.set(h, bytes);
-	}
-	return { expected: String(row['tarball_sha256'] ?? ''), entries, byHash };
-}
-
-export async function getVersionBytes(
-	env: Record<string, string | undefined>,
-	versionRowId: string
-): Promise<Uint8Array | null> {
-	const db = getClient(env);
-	if (!db) return null;
-	await ensureSchema(db);
-	const loaded = await loadTarEntries(db, versionRowId, env);
-	if (!loaded) return null;
-	const out = rebuildTarball(loaded.entries, loaded.byHash);
-	if (loaded.expected && (await sha256Hex(out)) !== loaded.expected) {
-		throw new Error('assembled tarball failed integrity check');
-	}
-	return out;
-}
-
-export async function getVersionFile(
-	env: Record<string, string | undefined>,
-	versionRowId: string,
-	path: string
-): Promise<{ bytes: Uint8Array; size: number } | null> {
-	const db = getClient(env);
-	if (!db) return null;
-	await ensureSchema(db);
-	const loaded = await loadTarEntries(db, versionRowId, env);
-	if (!loaded) return null;
-	const entry = loaded.entries.find((e) => !e.dir && e.name === path);
-	if (!entry) return null;
-	const parts: Uint8Array[] = [];
-	for (const h of entry.chunks) {
-		const b = loaded.byHash.get(h);
-		if (!b) throw new Error(`missing chunk ${h}`);
-		parts.push(b);
-	}
-	const total = parts.reduce((n, p) => n + p.length, 0);
-	if (total !== entry.size) throw new Error(`size mismatch for ${path}`);
-	const out = new Uint8Array(total);
-	let off = 0;
-	for (const p of parts) {
-		out.set(p, off);
-		off += p.length;
-	}
-	return { bytes: out, size: entry.size };
-}
-
 export async function findOrphanChunks(
 	env: Record<string, string | undefined>,
 	beforeUnix: number,
@@ -1321,9 +1199,9 @@ export function packagePointerUrls(origin: string, full: string, version?: strin
 	const urls = [`${base}/api/packages`, `${base}/api/packages/${full}`];
 	if (version) {
 		urls.push(`${base}/api/packages/${full}@${version}`);
-		urls.push(`${base}/api/packages/${full}@${version}/download`);
 		urls.push(`${base}/api/packages/${full}@${version}/api`);
 		urls.push(`${base}/api/packages/${full}@${version}/manifest`);
+		urls.push(`${base}/api/packages/${full}@${version}/chunks`);
 		urls.push(`${base}/api/packages/${full}@${version}/guides`);
 	}
 	return urls;
@@ -1390,7 +1268,7 @@ export async function resolveGraph(
 				memo.set(id, {
 					full,
 					version: pick,
-					path: `${full}@${pick}/download`,
+					path: `${full}@${pick}/chunks`,
 					integrity: row.tarballSha256,
 					engineRange: row.engineRange,
 					deps: [],
@@ -1416,7 +1294,7 @@ export async function resolveGraph(
 			memo.set(id, {
 				full,
 				version: pick,
-				path: `${full}@${pick}/download`,
+				path: `${full}@${pick}/chunks`,
 				integrity: row.tarballSha256,
 				engineRange: row.engineRange,
 				deps: depIds.map((d) => d.split('@').slice(0, -1).join('@')),

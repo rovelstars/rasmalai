@@ -5,7 +5,6 @@ import {
 	dayString,
 	extractDepNames,
 	matchesPackageFilter,
-	readFileIndex,
 	validateKeywords,
 	type PackageSummary
 } from '../src/lib/server/db.js';
@@ -99,24 +98,6 @@ describe('extractDepNames', () => {
 		assert.deepEqual(extractDepNames('{}'), []);
 		assert.deepEqual(extractDepNames(JSON.stringify({ deps: ['left'] })), []);
 		assert.deepEqual(extractDepNames('not json'), []);
-	});
-});
-
-describe('readFileIndex', () => {
-	it('reads path/size pairs from tar entries', () => {
-		const files = readFileIndex(
-			JSON.stringify([
-				{ name: 'src/main.rnx', size: 12, dir: false, chunks: ['a'] },
-				{ name: 'src', size: 0, dir: true, chunks: [] }
-			])
-		);
-		assert.deepEqual(files, [{ path: 'src/main.rnx', size: 12 }]);
-	});
-
-	it('returns null when entries are absent', () => {
-		assert.equal(readFileIndex('[]'), null);
-		assert.equal(readFileIndex(JSON.stringify({ files: 'nope' })), null);
-		assert.equal(readFileIndex('broken'), null);
 	});
 });
 

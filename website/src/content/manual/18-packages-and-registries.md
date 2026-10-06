@@ -46,15 +46,14 @@ The fixed paths are:
 | `GET /api/packages` | catalog of package summaries |
 | `GET /api/packages/<name>` (or `@<scope>/<name>`) | 302 to the latest versioned URL, never content |
 | `GET .../<name>@<version>` | pinned version; older `/<name>/<version>` path form 308-redirects here |
-| `GET .../<name>@<version>` | metadata: status, checksums, engine range, download/api/guides links |
-| `GET .../<name>@<version>/download` | the tarball bytes, immutable for a year |
+| `GET .../<name>@<version>` | metadata: status, checksums, engine range, api/manifest/chunks/guides links |
 | `GET .../<version>/api` | the jsdoc snapshot JSON |
 | `GET .../<version>/manifest` | the stored dependency manifest (deps, homepage) |
 | `GET .../<version>/chunks` | chunk entry manifest (file names, sizes, content hashes) for browser-side reassembly |
 | `GET .../<version>/chunk/<sha256>` | one content chunk by hash, immutable — browsers fetch these in parallel and unpack locally |
 | `GET .../<name>@<version>/guides[/<slug>]` | guide index or one guide, 404 when the package ships none |
 
-Version metadata and tarballs cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410.
+Version metadata and content chunks cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410.
 
 ## Status code reference
 
@@ -81,7 +80,7 @@ Every response carries an `rnx-registry-spec: 1` header. A client meeting a spec
 }
 ```
 
-The server picks the highest satisfying version for each requirement, walks manifests transitively, and returns `resolved` plus depth-leveled `levels`. Each node carries its download `path`, `integrity` digest, engine range, and a `yanked` flag. Entries in `have` whose integrity still matches skip dependency expansion, so repeated resolves only fetch the delta.
+The server picks the highest satisfying version for each requirement, walks manifests transitively, and returns `resolved` plus depth-leveled `levels`. Each node carries its chunk-manifest `path`, `integrity` digest, engine range, and a `yanked` flag. Clients fetch the manifest, pull content chunks in parallel, reassemble the tarball bytes locally, and verify against `integrity`. Entries in `have` whose integrity still matches skip dependency expansion, so repeated resolves only fetch the delta.
 
 Ranges use a small grammar: `*`, `latest`, an exact `X.Y.Z`, `^X.Y.Z`, `~X.Y.Z`, or `>=X.Y.Z`. Anything else is a 400 `bad-range`. The semantics:
 

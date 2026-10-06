@@ -3,12 +3,9 @@ import {
 	parsePackageName,
 	getVersionRow,
 	getLatestVersion,
-	getVersionBytes,
-	getVersionFile,
 	getChunkBytes,
 	getPackageOwner,
 	getDependents,
-	readFileIndex,
 	yankVersion,
 	recordTombstone,
 	checkPublishToken,
@@ -18,7 +15,6 @@ import {
 import { safeEqual, sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 import { specHeaders, splitNameVersion } from '$lib/server/registry';
 import { sanitizeGuideHtml } from '$lib/server/sanitize';
-import { decodeFileView } from '$lib/server/chunks';
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
 	return { ...specHeaders(), ...extra };
@@ -126,7 +122,6 @@ export async function GET({ params, platform, setHeaders, url }) {
 				tarballSha256: row.tarballSha256,
 				engineRange: row.engineRange,
 				links: {
-					download: `/api/packages/${full}@${version}/download`,
 					api: `/api/packages/${full}@${version}/api`,
 					manifest: `/api/packages/${full}@${version}/manifest`,
 					chunks: `/api/packages/${full}@${version}/chunks`,
@@ -135,27 +130,6 @@ export async function GET({ params, platform, setHeaders, url }) {
 			},
 			{ headers: headers() }
 		);
-	}
-
-	if (sub === 'download') {
-		let bytes: Uint8Array | null;
-		try {
-			bytes = await getVersionBytes(env, row.id);
-		} catch {
-			return json(
-				{ code: 'integrity-failed', message: `stored content for ${full}@${version} failed its integrity check` },
-				{ status: 500, headers: headers() }
-			);
-		}
-		if (!bytes) return notFound(`no stored content for ${full}@${version}`);
-		return new Response(bytes as BodyInit, {
-			headers: {
-				'Content-Type': 'application/octet-stream',
-				'Content-Length': String(bytes.length),
-				...immutable,
-				...specHeaders()
-			}
-		});
 	}
 
 	if (sub === 'api') {
@@ -233,51 +207,6 @@ export async function GET({ params, platform, setHeaders, url }) {
 				...specHeaders()
 			}
 		});
-	}
-
-	if (sub === 'tree' && rest.length === 2) {
-		const files = readFileIndex(row.tarManifestJson);
-		if (!files) {
-			return json(
-				{ code: 'no-file-index', message: `package ${full}@${version} ships no file index` },
-				{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
-			);
-		}
-		setHeaders({ ...immutable, ...specHeaders() });
-		return json({ files }, { headers: headers() });
-	}
-
-	if (sub === 'file' && rest.length === 2) {
-		const filePath = url.searchParams.get('path') ?? '';
-		if (!filePath) {
-			return json(
-				{ code: 'not-found', message: `missing ?path= for ${full}@${version}` },
-				{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
-			);
-		}
-		let found: { bytes: Uint8Array; size: number } | null;
-		try {
-			found = await getVersionFile(env, row.id, filePath);
-		} catch {
-			return json(
-				{ code: 'integrity-failed', message: `stored content for ${full}@${version} failed its integrity check` },
-				{ status: 500, headers: headers() }
-			);
-		}
-		if (!found) return notFound(`path ${filePath} not found in ${full}@${version}`);
-		const decoded = decodeFileView(found.bytes);
-		if (!decoded.ok) {
-			const message =
-				decoded.code === 'too-large'
-					? `path ${filePath} exceeds the 256 KiB file view limit`
-					: `path ${filePath} is not UTF-8 text`;
-			return json(
-				{ code: decoded.code, message },
-				{ status: 415, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
-			);
-		}
-		setHeaders({ ...immutable, ...specHeaders() });
-		return json({ path: filePath, size: found.size, text: decoded.text }, { headers: headers() });
 	}
 
 	if ((sub === 'yank' || sub === 'takedown') && rest.length === 2) {
