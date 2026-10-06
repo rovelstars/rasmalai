@@ -1,5 +1,8 @@
 import { argon2id } from 'hash-wasm';
-import { getClient, ensureSchema } from './db.js';
+import type { BatchItem } from 'drizzle-orm/batch';
+import { and, count, eq, gt, lt, sql, sum } from 'drizzle-orm';
+import { getDdb } from './db.js';
+import * as s from './schema.js';
 
 export const SESSION_COOKIE = 'rnx_session';
 const SESSION_DAYS = 30;
@@ -116,9 +119,8 @@ export async function signup(
 	if (problem) throw new Error(`invalid username: ${problem}`);
 	if (password.length < 12) throw new Error('password must be at least 12 characters');
 	if (!disclaimerAck) throw new Error('testing-phase deletion disclaimer must be accepted');
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) throw new Error('missing database');
-	await ensureSchema(db);
 	const pepper = requirePepper(env);
 	const row = await hashPassword(password, pepper);
 	const now = Math.floor(Date.now() / 1000);
@@ -126,26 +128,28 @@ export async function signup(
 		// last_insert_rowid() resolves on the batch connection, so the org
 		// row always points at the user row from the statement above.
 		await db.batch([
-			{
-				sql: `INSERT INTO users (username, password_hash, password_salt, password_params, disclaimer_ack, created_at)
-				      VALUES (?, ?, ?, ?, 1, ?)`,
-				args: [username, row.hash, row.salt, row.params, now]
-			},
-			{
-				sql: `INSERT INTO orgs (scope, owner_user_id, created_at) VALUES (?, last_insert_rowid(), ?)`,
-				args: [username, now]
-			},
-			{
-				sql: `INSERT INTO scopes (name, owner, reserved, created_at) VALUES (?, ?, 0, ?)
-				      ON CONFLICT(name) DO NOTHING`,
-				args: [username, username, now]
-			}
-		]);
-		const idRs = await db.execute({
-			sql: 'SELECT id FROM users WHERE username = ?',
-			args: [username]
-		});
-		return { id: Number(idRs.rows[0]?.['id'] ?? 0), username, isAdmin: false };
+			db.insert(s.users).values({
+				username,
+				passwordHash: row.hash,
+				passwordSalt: row.salt,
+				passwordParams: row.params,
+				disclaimerAck: 1,
+				createdAt: now
+			}),
+			db.run(
+				sql`INSERT INTO orgs (scope, owner_user_id, created_at) VALUES (${username}, last_insert_rowid(), ${now})`
+			),
+			db
+				.insert(s.scopes)
+				.values({ name: username, owner: username, reserved: 0, createdAt: now })
+				.onConflictDoNothing()
+		] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+		const idRow = await db
+			.select({ id: s.users.id })
+			.from(s.users)
+			.where(eq(s.users.username, username))
+			.get();
+		return { id: Number(idRow?.id ?? 0), username, isAdmin: false };
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		if (msg.includes('UNIQUE')) throw new Error('username is taken');
@@ -158,21 +162,27 @@ export async function login(
 	username: string,
 	password: string
 ): Promise<{ token: string; user: AuthUser }> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) throw new Error('missing database');
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: 'SELECT id, username, password_hash, password_salt, password_params, is_admin FROM users WHERE username = ?',
-		args: [username]
-	});
-	const r = rs.rows[0] as Record<string, unknown> | undefined;
+	const r = await db
+		.select({
+			id: s.users.id,
+			username: s.users.username,
+			passwordHash: s.users.passwordHash,
+			passwordSalt: s.users.passwordSalt,
+			passwordParams: s.users.passwordParams,
+			isAdmin: s.users.isAdmin
+		})
+		.from(s.users)
+		.where(eq(s.users.username, username))
+		.get();
 	const pepper = requirePepper(env);
 	let ok = false;
 	if (r) {
 		ok = await verifyPassword(password, pepper, {
-			hash: String(r['password_hash']),
-			salt: String(r['password_salt']),
-			params: String(r['password_params'])
+			hash: r.passwordHash,
+			salt: r.passwordSalt,
+			params: r.passwordParams
 		});
 	} else {
 		const salt = new Uint8Array(16);
@@ -193,12 +203,14 @@ export async function login(
 	crypto.getRandomValues(bytes);
 	const token = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 	const now = Math.floor(Date.now() / 1000);
-	await db.execute({
-		sql: `INSERT INTO sessions (token_hash, user_id, created_at, expires_at, revoked_at)
-		      VALUES (?, ?, ?, ?, 0)`,
-		args: [await sha256Hex(token), Number(r['id']), now, now + SESSION_DAYS * 86400]
+	await db.insert(s.sessions).values({
+		tokenHash: await sha256Hex(token),
+		userId: r.id,
+		createdAt: now,
+		expiresAt: now + SESSION_DAYS * 86400,
+		revokedAt: 0
 	});
-	return { token, user: { id: Number(r['id']), username: String(r['username']), isAdmin: Number(r['is_admin']) === 1 } };
+	return { token, user: { id: r.id, username: r.username, isAdmin: r.isAdmin === 1 } };
 }
 
 export async function sessionUser(
@@ -206,39 +218,41 @@ export async function sessionUser(
 	token: string
 ): Promise<AuthUser | null> {
 	if (!token) return null;
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return null;
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: `SELECT u.id AS id, u.username AS username, u.is_admin AS is_admin
-		      FROM sessions s JOIN users u ON u.id = s.user_id
-		      WHERE s.token_hash = ? AND s.revoked_at = 0 AND s.expires_at > ?`,
-		args: [await sha256Hex(token), Math.floor(Date.now() / 1000)]
-	});
-	const r = rs.rows[0] as Record<string, unknown> | undefined;
+	const r = await db
+		.select({ id: s.users.id, username: s.users.username, isAdmin: s.users.isAdmin })
+		.from(s.sessions)
+		.innerJoin(s.users, eq(s.users.id, s.sessions.userId))
+		.where(
+			and(
+				eq(s.sessions.tokenHash, await sha256Hex(token)),
+				eq(s.sessions.revokedAt, 0),
+				gt(s.sessions.expiresAt, Math.floor(Date.now() / 1000))
+			)
+		)
+		.get();
 	if (!r) return null;
-	return { id: Number(r['id']), username: String(r['username']), isAdmin: Number(r['is_admin']) === 1 };
+	return { id: r.id, username: r.username, isAdmin: r.isAdmin === 1 };
 }
 
 export async function logout(env: Record<string, string | undefined>, token: string): Promise<void> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db || !token) return;
-	await ensureSchema(db);
-	await db.execute({
-		sql: 'UPDATE sessions SET revoked_at = ? WHERE token_hash = ?',
-		args: [Math.floor(Date.now() / 1000), await sha256Hex(token)]
-	});
+	await db
+		.update(s.sessions)
+		.set({ revokedAt: Math.floor(Date.now() / 1000) })
+		.where(eq(s.sessions.tokenHash, await sha256Hex(token)));
 }
 
 export async function userScopes(env: Record<string, string | undefined>, userId: number): Promise<string[]> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return [];
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: 'SELECT scope FROM orgs WHERE owner_user_id = ?',
-		args: [userId]
-	});
-	return rs.rows.map((r) => String(r['scope']));
+	const rows = await db
+		.select({ scope: s.orgs.scope })
+		.from(s.orgs)
+		.where(eq(s.orgs.ownerUserId, userId));
+	return rows.map((r) => r.scope);
 }
 
 export function clientIp(headers: Headers): string {
@@ -281,15 +295,15 @@ export async function authFailureCount(
 	env: Record<string, string | undefined>,
 	username: string
 ): Promise<number> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return 0;
-	await ensureSchema(db);
 	const now = Math.floor(Date.now() / 1000);
-	const rs = await db.execute({
-		sql: 'SELECT COALESCE(SUM(attempts), 0) AS n FROM auth_attempts WHERE username = ? AND window_start > ?',
-		args: [username, now - AUTH_WINDOW_SECONDS]
-	});
-	return Number(rs.rows[0]?.['n'] ?? 0);
+	const row = await db
+		.select({ n: sum(s.authAttempts.attempts) })
+		.from(s.authAttempts)
+		.where(and(eq(s.authAttempts.username, username), gt(s.authAttempts.windowStart, now - AUTH_WINDOW_SECONDS)))
+		.get();
+	return Number(row?.n ?? 0);
 }
 
 export async function isAuthBlocked(
@@ -297,14 +311,10 @@ export async function isAuthBlocked(
 	_ip: string,
 	username: string
 ): Promise<boolean> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return false;
-	await ensureSchema(db);
 	const now = Math.floor(Date.now() / 1000);
-	await db.execute({
-		sql: 'DELETE FROM auth_attempts WHERE window_start < ?',
-		args: [now - AUTH_PRUNE_SECONDS]
-	});
+	await db.delete(s.authAttempts).where(lt(s.authAttempts.windowStart, now - AUTH_PRUNE_SECONDS));
 	return authBlockedForCount(await authFailureCount(env, username));
 }
 
@@ -314,35 +324,33 @@ export async function auth_attempts(
 	username: string,
 	ok: boolean
 ): Promise<boolean> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return true;
-	await ensureSchema(db);
 	const now = Math.floor(Date.now() / 1000);
-	await db.execute({
-		sql: 'DELETE FROM auth_attempts WHERE window_start < ?',
-		args: [now - AUTH_PRUNE_SECONDS]
-	});
+	await db.delete(s.authAttempts).where(lt(s.authAttempts.windowStart, now - AUTH_PRUNE_SECONDS));
 	if (ok) {
-		await db.execute({
-			sql: 'DELETE FROM auth_attempts WHERE username = ?',
-			args: [username]
-		});
+		await db.delete(s.authAttempts).where(eq(s.authAttempts.username, username));
 		return true;
 	}
+	const cutoff = now - AUTH_WINDOW_SECONDS;
 	const applied = await db.batch([
-		{
-			sql: `INSERT INTO auth_attempts (ip, username, attempts, window_start)
-			      VALUES (?, ?, 1, ?)
-			      ON CONFLICT(ip, username) DO UPDATE SET
-			        attempts = CASE WHEN window_start < ? THEN 1 ELSE attempts + 1 END,
-			        window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END`,
-			args: [ip, username, now, now - AUTH_WINDOW_SECONDS, now - AUTH_WINDOW_SECONDS, now]
-		},
-		{
-			sql: 'SELECT COALESCE(SUM(attempts), 0) AS n FROM auth_attempts WHERE username = ? AND window_start > ?',
-			args: [username, now - AUTH_WINDOW_SECONDS]
-		}
-	]);
-	const count = Number(applied[1]?.rows[0]?.['n'] ?? 0);
-	return !authBlockedForCount(count);
+		db
+			.insert(s.authAttempts)
+			.values({ ip, username, attempts: 1, windowStart: now })
+			.onConflictDoUpdate({
+				target: [s.authAttempts.ip, s.authAttempts.username],
+				set: {
+					attempts:
+						sql`CASE WHEN ${s.authAttempts.windowStart} < ${cutoff} THEN 1 ELSE ${s.authAttempts.attempts} + 1 END`,
+					windowStart:
+						sql`CASE WHEN ${s.authAttempts.windowStart} < ${cutoff} THEN ${now} ELSE ${s.authAttempts.windowStart} END`
+				}
+			}),
+		db
+			.select({ n: sum(s.authAttempts.attempts) })
+			.from(s.authAttempts)
+			.where(and(eq(s.authAttempts.username, username), gt(s.authAttempts.windowStart, cutoff)))
+	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	const counted = applied[1]?.[0]?.n ?? 0;
+	return !authBlockedForCount(Number(counted));
 }

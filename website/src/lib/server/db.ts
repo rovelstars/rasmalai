@@ -1,4 +1,9 @@
 import { createClient, type Client } from '@libsql/client/web';
+import { drizzle } from 'drizzle-orm/libsql/web';
+import type { BatchItem } from 'drizzle-orm/batch';
+import { and, asc, count, desc, eq, gte, inArray, lt, notExists, sql, sum } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
+import * as s from './schema.js';
 import { maxSatisfying, parseSemver, levelize, satisfiesRange, selectLatestVersion } from './registry.js';
 import { sha256Hex, type TarEntryRef } from './chunks.js';
 import { r2Bucket, r2PutIfMissing, r2Get } from './r2.js';
@@ -283,6 +288,22 @@ export function getClient(env: Record<string, string | undefined>): Client | nul
 	}
 }
 
+function connectDrizzle(raw: Client) {
+	return drizzle({ client: raw, schema: s });
+}
+
+export type Ddb = ReturnType<typeof connectDrizzle>;
+
+let ddb: Ddb | null = null;
+
+export async function getDdb(env: Record<string, string | undefined>): Promise<Ddb | null> {
+	const raw = getClient(env);
+	if (!raw) return null;
+	await ensureSchema(raw);
+	if (!ddb) ddb = connectDrizzle(raw);
+	return ddb;
+}
+
 export async function ensureSchema(db: Client): Promise<void> {
 	if (schemaReady) return;
 	if (schemaPromise) return schemaPromise;
@@ -383,31 +404,43 @@ export function checkPublishToken(
 	return provided.startsWith('preview-') && provided.length > 8;
 }
 
+interface SummarySource {
+	scope: string;
+	name: string;
+	description: string;
+	author: string;
+	repository: string | null;
+	license: string;
+	downloads: number;
+	stars: number;
+	tags: string;
+	keywords: string | null;
+	updatedAt: number;
+}
+
 function toSummary(
-	r: Record<string, unknown>,
+	r: SummarySource,
 	latest: string,
 	versionCount: number,
 	dependents: number = 0
 ): PackageSummary {
-	const scope = String(r['scope'] ?? '');
-	const name = String(r['name']);
 	return {
-		name: scope ? `@${scope}/${name}` : name,
-		description: String(r['description']),
-		author: String(r['author']),
-		repository: String(r['repository'] ?? ''),
-		license: String(r['license'] ?? 'MIT'),
-		downloads: Number(r['downloads'] ?? 0),
-		stars: Number(r['stars'] ?? 0),
-		tags: String(r['tags'] ?? '')
+		name: r.scope ? `@${r.scope}/${r.name}` : r.name,
+		description: r.description,
+		author: r.author,
+		repository: r.repository ?? '',
+		license: r.license ?? 'MIT',
+		downloads: r.downloads ?? 0,
+		stars: r.stars ?? 0,
+		tags: (r.tags ?? '')
 			.split(',')
 			.map((t) => t.trim())
 			.filter(Boolean),
-		keywords: String(r['keywords'] ?? '')
+		keywords: (r.keywords ?? '')
 			.split(',')
 			.map((t) => t.trim())
 			.filter(Boolean),
-		updatedAt: Number(r['updated_at'] ?? 0),
+		updatedAt: r.updatedAt ?? 0,
 		latest,
 		versionCount,
 		dependents
@@ -418,48 +451,65 @@ export async function listPackages(
 	env: Record<string, string | undefined>,
 	filters: PackageFilter = {}
 ): Promise<PackageSummary[]> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return [];
-	await ensureSchema(db);
 	const now = Math.floor(Date.now() / 1000);
-	const rs = await db.execute('SELECT * FROM packages ORDER BY updated_at DESC');
-	const vs = await db.execute('SELECT package_id, version, status FROM package_versions');
+	const rows = await db.select().from(s.packages).orderBy(desc(s.packages.updatedAt));
+	const vers = await db
+		.select({
+			packageId: s.packageVersions.packageId,
+			version: s.packageVersions.version,
+			status: s.packageVersions.status
+		})
+		.from(s.packageVersions);
 	const byPkg = new Map<string, Array<{ version: string; status: string }>>();
-	for (const v of vs.rows) {
-		const id = String(v['package_id']);
-		const list = byPkg.get(id) ?? [];
-		list.push({ version: String(v['version']), status: String(v['status'] ?? 'live') });
-		byPkg.set(id, list);
+	for (const v of vers) {
+		const list = byPkg.get(v.packageId) ?? [];
+		list.push({ version: v.version, status: v.status ?? 'live' });
+		byPkg.set(v.packageId, list);
 	}
 	let sums = new Map<string, number>();
 	try {
-		const ds = await db.execute({
-			sql: 'SELECT package_id, SUM(downloads) AS n FROM download_daily WHERE day >= ? GROUP BY package_id',
-			args: [dayString(now - 30 * 86400)]
-		});
-		for (const r of ds.rows) sums.set(String(r['package_id']), Number(r['n'] ?? 0));
+		const ds = await db
+			.select({ packageId: s.downloadDaily.packageId, n: sum(s.downloadDaily.downloads) })
+			.from(s.downloadDaily)
+			.where(gte(s.downloadDaily.day, dayString(now - 30 * 86400)))
+			.groupBy(s.downloadDaily.packageId);
+		for (const r of ds) sums.set(r.packageId, Number(r.n ?? 0));
 	} catch {
 		sums = new Map();
 	}
 	let depCounts = new Map<string, number>();
 	try {
-		const dc = await db.execute('SELECT dep_name, COUNT(*) AS n FROM package_deps GROUP BY dep_name');
-		for (const r of dc.rows) depCounts.set(String(r['dep_name']), Number(r['n'] ?? 0));
+		const dc = await db
+			.select({ depName: s.packageDeps.depName, n: count() })
+			.from(s.packageDeps)
+			.groupBy(s.packageDeps.depName);
+		for (const r of dc) depCounts.set(r.depName, Number(r.n ?? 0));
 	} catch {
 		depCounts = new Map();
 	}
 	const out: PackageSummary[] = [];
-	for (const r of rs.rows) {
-		const rec = r as Record<string, unknown>;
-		const id = String(rec['id']);
-		const versions = byPkg.get(id) ?? [];
+	for (const r of rows) {
+		const versions = byPkg.get(r.id) ?? [];
 		const summary = toSummary(
-			rec,
+			{
+				scope: r.scope,
+				name: r.name,
+				description: r.description,
+				author: r.author,
+				repository: r.repository,
+				license: r.license,
+				downloads: sums.get(r.id) ?? 0,
+				stars: r.stars,
+				tags: r.tags,
+				keywords: r.keywords,
+				updatedAt: r.updatedAt
+			},
 			selectLatestVersion(versions) ?? '',
 			versions.length,
 			0
 		);
-		summary.downloads = sums.get(id) ?? 0;
 		summary.dependents = depCounts.get(summary.name) ?? 0;
 		if (!matchesPackageFilter(summary, filters, now)) continue;
 		out.push(summary);
@@ -472,15 +522,14 @@ export async function getPackageOwner(
 	scope: string,
 	name: string
 ): Promise<string | null> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return null;
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: 'SELECT owner FROM packages WHERE scope = ? AND name = ?',
-		args: [scope, name]
-	});
-	const row = rs.rows[0] as Record<string, unknown> | undefined;
-	return row ? String(row['owner'] ?? '') : null;
+	const row = await db
+		.select({ owner: s.packages.owner })
+		.from(s.packages)
+		.where(and(eq(s.packages.scope, scope), eq(s.packages.name, name)))
+		.get();
+	return row ? row.owner : null;
 }
 
 export async function getDependents(
@@ -488,20 +537,15 @@ export async function getDependents(
 	full: string
 ): Promise<string[]> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) return [];
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: `SELECT p.scope AS scope, p.name AS name FROM package_deps d
-		      JOIN packages p ON p.id = d.package_id
-		      WHERE d.dep_name = ? ORDER BY p.scope ASC, p.name ASC`,
-		args: [parsed.full]
-	});
-	return rs.rows.map((r) => {
-		const scope = String(r['scope'] ?? '');
-		const name = String(r['name']);
-		return scope ? `@${scope}/${name}` : name;
-	});
+	const rows = await db
+		.select({ scope: s.packages.scope, name: s.packages.name })
+		.from(s.packageDeps)
+		.innerJoin(s.packages, eq(s.packages.id, s.packageDeps.packageId))
+		.where(eq(s.packageDeps.depName, parsed.full))
+		.orderBy(asc(s.packages.scope), asc(s.packages.name));
+	return rows.map((r) => (r.scope ? `@${r.scope}/${r.name}` : r.name));
 }
 
 export async function getPackage(
@@ -509,39 +553,58 @@ export async function getPackage(
 	full: string
 ): Promise<PackageDetail | null> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) return null;
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: 'SELECT * FROM packages WHERE scope = ? AND name = ?',
-		args: [parsed.scope, parsed.name]
-	});
-	const row = rs.rows[0] as Record<string, unknown> | undefined;
+	const row = await db
+		.select()
+		.from(s.packages)
+		.where(and(eq(s.packages.scope, parsed.scope), eq(s.packages.name, parsed.name)))
+		.get();
 	if (!row) return null;
-	const vs = await db.execute({
-		sql: 'SELECT version, checksum, status, created_at FROM package_versions WHERE package_id = ? ORDER BY created_at DESC',
-		args: [String(row['id'])]
-	});
-	const versions: VersionMeta[] = vs.rows.map((v) => ({
-		version: String(v['version']),
-		checksum: String(v['checksum']),
-		status: String(v['status'] ?? 'live'),
-		createdAt: Number(v['created_at'])
+	const vrows = await db
+		.select({
+			version: s.packageVersions.version,
+			checksum: s.packageVersions.checksum,
+			status: s.packageVersions.status,
+			createdAt: s.packageVersions.createdAt
+		})
+		.from(s.packageVersions)
+		.where(eq(s.packageVersions.packageId, row.id))
+		.orderBy(desc(s.packageVersions.createdAt));
+	const versions: VersionMeta[] = vrows.map((v) => ({
+		version: v.version,
+		checksum: v.checksum,
+		status: v.status ?? 'live',
+		createdAt: v.createdAt
 	}));
 	if (versions.length === 0) return null;
-	const depRs = await db.execute({
-		sql: 'SELECT COUNT(*) AS n FROM package_deps WHERE dep_name = ?',
-		args: [parsed.scope ? `@${parsed.scope}/${parsed.name}` : parsed.name]
-	});
+	const depName = parsed.scope ? `@${parsed.scope}/${parsed.name}` : parsed.name;
+	const depRow = await db
+		.select({ n: count() })
+		.from(s.packageDeps)
+		.where(eq(s.packageDeps.depName, depName))
+		.get();
 	return {
 		...toSummary(
-			row,
+			{
+				scope: row.scope,
+				name: row.name,
+				description: row.description,
+				author: row.author,
+				repository: row.repository,
+				license: row.license,
+				downloads: row.downloads,
+				stars: row.stars,
+				tags: row.tags,
+				keywords: row.keywords,
+				updatedAt: row.updatedAt
+			},
 			selectLatestVersion(versions) ?? versions[0].version,
 			versions.length,
-			Number(depRs.rows[0]?.['n'] ?? 0)
+			Number(depRow?.n ?? 0)
 		),
 		dependencies: [],
-		createdAt: Number(row['created_at'] ?? 0),
+		createdAt: row.createdAt ?? 0,
 		versions
 	};
 }
@@ -552,22 +615,30 @@ export async function getVersionDoc(
 	version: string
 ): Promise<VersionDoc | null> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) return null;
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: `SELECT v.readme_markdown, v.doc_json, v.guides_json FROM package_versions v
-		      JOIN packages p ON p.id = v.package_id
-		      WHERE p.scope = ? AND p.name = ? AND v.version = ?`,
-		args: [parsed.scope, parsed.name, version]
-	});
-	const row = rs.rows[0];
+	const row = await db
+		.select({
+			readme: s.packageVersions.readmeMarkdown,
+			docJson: s.packageVersions.docJson,
+			guides: s.packageVersions.guidesJson
+		})
+		.from(s.packageVersions)
+		.innerJoin(s.packages, eq(s.packages.id, s.packageVersions.packageId))
+		.where(
+			and(
+				eq(s.packages.scope, parsed.scope),
+				eq(s.packages.name, parsed.name),
+				eq(s.packageVersions.version, version)
+			)
+		)
+		.get();
 	if (!row) return null;
 	return {
 		version,
-		readme: String(row['readme_markdown']),
-		docJson: String(row['doc_json']),
-		guides: String(row['guides_json'] ?? '[]')
+		readme: row.readme,
+		docJson: row.docJson,
+		guides: row.guides ?? '[]'
 	};
 }
 
@@ -610,12 +681,11 @@ export async function publishPackage(
 	p: PublishPayload
 ): Promise<PublishResult> {
 	const parsed = parsePackageName(p.name);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) throw new Error('invalid package name or missing database');
 	const sem = parseSemver(p.version);
 	if (!sem) throw new Error('invalid package version (expected X.Y.Z)');
 	const now = Math.floor(Date.now() / 1000);
-	await ensureSchema(db);
 	const id = packageId(parsed.scope, parsed.name);
 	const auditJson = JSON.stringify({ checksum: p.checksum });
 	const keywords = (p.keywords ?? []).join(',');
@@ -627,54 +697,75 @@ export async function publishPackage(
 	// lands only when this publish actually minted the version. The dep
 	// inserts trail the audit row to keep that reading intact.
 	const applied = await db.batch([
-		{
-			sql: `INSERT INTO scopes (name, owner, reserved, created_at) VALUES (?, ?, ?, ?)
-			      ON CONFLICT(name) DO NOTHING`,
-			args: [parsed.scope, ORG_OWNER, RESERVED_SCOPES.includes(parsed.scope) ? 1 : 0, now]
-		},
-		{
-			sql: `INSERT INTO packages (id, scope, name, owner, description, author, repository, license, downloads, stars, tags, keywords, created_at, updated_at)
-			      VALUES (?, ?, ?, ?, ?, ?, '', ?, 0, 0, ?, ?, ?, ?)
-			      ON CONFLICT(scope, name) DO UPDATE SET description = excluded.description, keywords = excluded.keywords, updated_at = excluded.updated_at`,
-			args: [id, parsed.scope, parsed.name, p.owner ?? '', p.description, p.author, p.license, p.tags.join(','), keywords, now, now]
-		},
-		{
-			sql: `INSERT INTO package_versions (id, package_id, version, readme_markdown, doc_json, checksum, status, created_at,
-			      semver_major, semver_minor, semver_patch, prerelease,
-			      engine_range, manifest_json, guides_json, tarball_sha256, request_id)
-			      VALUES (?, ?, ?, ?, ?, ?, 'live', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			      ON CONFLICT(package_id, version) DO NOTHING`,
-			args: [
-				`ver_${id}_${p.version}`,
+		db
+			.insert(s.scopes)
+			.values({
+				name: parsed.scope,
+				owner: ORG_OWNER,
+				reserved: RESERVED_SCOPES.includes(parsed.scope) ? 1 : 0,
+				createdAt: now
+			})
+			.onConflictDoNothing(),
+		db
+			.insert(s.packages)
+			.values({
 				id,
-				p.version,
-				p.readme,
-				p.docJson,
-				p.checksum,
-				now,
-				sem.major,
-				sem.minor,
-				sem.patch,
-				sem.prerelease,
-				p.engineRange ?? '',
-				p.manifestJson ?? '{}',
-				p.guidesJson ?? '[]',
-				p.tarballSha256 ?? '',
-				p.requestId ?? ''
-			]
-		},
-		{
-			sql: `INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
-			      SELECT 'publish', ?, ?, ?, ?, ? WHERE changes() > 0`,
-			args: [parsed.full, p.version, auditJson, p.requestId ?? '', now]
-		},
-		...depNames.map((dep) => ({
-			sql: `INSERT INTO package_deps (package_id, dep_name) VALUES (?, ?)
-			      ON CONFLICT(package_id, dep_name) DO NOTHING`,
-			args: [id, dep]
-		}))
-	]);
-	const created = ((applied[2]?.rowsAffected ?? 0) > 0);
+				scope: parsed.scope,
+				name: parsed.name,
+				owner: p.owner ?? '',
+				description: p.description,
+				author: p.author,
+				repository: '',
+				license: p.license,
+				downloads: 0,
+				stars: 0,
+				tags: p.tags.join(','),
+				keywords,
+				createdAt: now,
+				updatedAt: now
+			})
+			.onConflictDoUpdate({
+				target: [s.packages.scope, s.packages.name],
+				set: {
+					description: sql`excluded.description`,
+					keywords: sql`excluded.keywords`,
+					updatedAt: sql`excluded.updated_at`
+				}
+			}),
+		db
+			.insert(s.packageVersions)
+			.values({
+				id: `ver_${id}_${p.version}`,
+				packageId: id,
+				version: p.version,
+				readmeMarkdown: p.readme,
+				docJson: p.docJson,
+				checksum: p.checksum,
+				status: 'live',
+				createdAt: now,
+				semverMajor: sem.major,
+				semverMinor: sem.minor,
+				semverPatch: sem.patch,
+				prerelease: sem.prerelease,
+				engineRange: p.engineRange ?? '',
+				manifestJson: p.manifestJson ?? '{}',
+				guidesJson: p.guidesJson ?? '[]',
+				tarballSha256: p.tarballSha256 ?? '',
+				requestId: p.requestId ?? ''
+			})
+			.onConflictDoNothing(),
+		db.run(
+			sql`INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
+			      SELECT 'publish', ${parsed.full}, ${p.version}, ${auditJson}, ${p.requestId ?? ''}, ${now} WHERE changes() > 0`
+		),
+		...depNames.map((dep) =>
+			db
+				.insert(s.packageDeps)
+				.values({ packageId: id, depName: dep })
+				.onConflictDoNothing()
+		)
+	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	const created = (applied[2]?.rowsAffected ?? 0) > 0;
 	return { name: parsed.full, version: p.version, created };
 }
 
@@ -684,16 +775,21 @@ export async function recentVersionCount(
 	sinceSeconds: number
 ): Promise<number> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) return 0;
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: `SELECT COUNT(*) AS n FROM package_versions v
-		      JOIN packages p ON p.id = v.package_id
-		      WHERE p.scope = ? AND p.name = ? AND v.created_at > ?`,
-		args: [parsed.scope, parsed.name, Math.floor(Date.now() / 1000) - sinceSeconds]
-	});
-	return Number(rs.rows[0]?.['n'] ?? 0);
+	const row = await db
+		.select({ n: count() })
+		.from(s.packageVersions)
+		.innerJoin(s.packages, eq(s.packages.id, s.packageVersions.packageId))
+		.where(
+			and(
+				eq(s.packages.scope, parsed.scope),
+				eq(s.packages.name, parsed.name),
+				gte(s.packageVersions.createdAt, Math.floor(Date.now() / 1000) - sinceSeconds)
+			)
+		)
+		.get();
+	return Number(row?.n ?? 0);
 }
 
 export interface VersionRow {
@@ -711,30 +807,6 @@ export interface VersionRow {
 	createdAt: number;
 }
 
-const VERSION_COLS = `v.id AS id, v.package_id AS package_id, v.version AS version,
-	v.readme_markdown AS readme_markdown, v.doc_json AS doc_json, v.checksum AS checksum,
-	v.tarball_sha256 AS tarball_sha256, v.tar_manifest_json AS tar_manifest_json, v.engine_range AS engine_range,
-	v.manifest_json AS manifest_json, v.guides_json AS guides_json, v.request_id AS request_id,
-	v.semver_major AS semver_major, v.semver_minor AS semver_minor, v.semver_patch AS semver_patch,
-	v.prerelease AS prerelease, v.status AS status, v.created_at AS created_at`;
-
-function toVersionRow(r: Record<string, unknown>): VersionRow {
-	return {
-		id: String(r['id']),
-		version: String(r['version']),
-		status: String(r['status'] ?? 'live'),
-		checksum: String(r['checksum'] ?? ''),
-		tarballSha256: String(r['tarball_sha256'] ?? ''),
-	tarManifestJson: String(r['tar_manifest_json'] ?? '[]'),
-		engineRange: String(r['engine_range'] ?? ''),
-		docJson: String(r['doc_json'] ?? '{"modules":[]}'),
-		manifestJson: String(r['manifest_json'] ?? '{}'),
-		guidesJson: String(r['guides_json'] ?? '[]'),
-		requestId: String(r['request_id'] ?? ''),
-		createdAt: Number(r['created_at'] ?? 0)
-	};
-}
-
 export const SEMVER_ORDER = `semver_major DESC, semver_minor DESC, semver_patch DESC,
 	CASE WHEN prerelease = '' THEN 1 ELSE 0 END DESC, prerelease DESC, v.created_at DESC`;
 
@@ -744,18 +816,44 @@ export async function getVersionRow(
 	version: string
 ): Promise<{ row: VersionRow; withdrawn: boolean } | null> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) return null;
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: `SELECT ${VERSION_COLS} FROM package_versions v
-		      JOIN packages p ON p.id = v.package_id
-		      WHERE p.scope = ? AND p.name = ? AND v.version = ?`,
-		args: [parsed.scope, parsed.name, version]
-	});
-	const r = rs.rows[0] as Record<string, unknown> | undefined;
+	const v = s.packageVersions;
+	const p = s.packages;
+	const r = await db
+		.select({
+			id: v.id,
+			version: v.version,
+			status: v.status,
+			checksum: v.checksum,
+			tarballSha256: v.tarballSha256,
+			tarManifestJson: v.tarManifestJson,
+			engineRange: v.engineRange,
+			docJson: v.docJson,
+			manifestJson: v.manifestJson,
+			guidesJson: v.guidesJson,
+			requestId: v.requestId,
+			createdAt: v.createdAt
+		})
+		.from(v)
+		.innerJoin(p, eq(p.id, v.packageId))
+		.where(and(eq(p.scope, parsed.scope), eq(p.name, parsed.name), eq(v.version, version)))
+		.get();
 	if (!r) return null;
-	const row = toVersionRow(r);
+	const row: VersionRow = {
+		id: r.id,
+		version: r.version,
+		status: r.status ?? 'live',
+		checksum: r.checksum ?? '',
+		tarballSha256: r.tarballSha256 ?? '',
+		tarManifestJson: r.tarManifestJson ?? '[]',
+		engineRange: r.engineRange ?? '',
+		docJson: r.docJson ?? '{"modules":[]}',
+		manifestJson: r.manifestJson ?? '{}',
+		guidesJson: r.guidesJson ?? '[]',
+		requestId: r.requestId ?? '',
+		createdAt: r.createdAt ?? 0
+	};
 	const withdrawn = row.status === 'tombstoned' || (await isVersionWithdrawn(env, full, version));
 	return { row, withdrawn };
 }
@@ -765,17 +863,25 @@ export async function listLiveVersions(
 	full: string
 ): Promise<string[]> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) return [];
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: `SELECT v.version FROM package_versions v
-		      JOIN packages p ON p.id = v.package_id
-		      WHERE p.scope = ? AND p.name = ? AND v.status IN ('live', 'yanked')
-		      ORDER BY ${SEMVER_ORDER}`,
-		args: [parsed.scope, parsed.name]
-	});
-	return rs.rows.map((r) => String(r['version']));
+	// Aliased as v: SEMVER_ORDER qualifies created_at as v.created_at,
+	// and the unqualified semver columns resolve to this table.
+	const v = alias(s.packageVersions, 'v');
+	const p = s.packages;
+	const rows = await db
+		.select({ version: v.version })
+		.from(v)
+		.innerJoin(p, eq(p.id, v.packageId))
+		.where(
+			and(
+				eq(p.scope, parsed.scope),
+				eq(p.name, parsed.name),
+				inArray(v.status, ['live', 'yanked'])
+			)
+		)
+		.orderBy(sql.raw(SEMVER_ORDER));
+	return rows.map((r) => r.version);
 }
 
 export async function getLatestVersion(
@@ -783,18 +889,16 @@ export async function getLatestVersion(
 	full: string
 ): Promise<string | null> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) return null;
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: `SELECT v.version AS version, v.status AS status FROM package_versions v
-		      JOIN packages p ON p.id = v.package_id
-		      WHERE p.scope = ? AND p.name = ?`,
-		args: [parsed.scope, parsed.name]
-	});
-	return selectLatestVersion(
-		rs.rows.map((r) => ({ version: String(r['version']), status: String(r['status'] ?? 'live') }))
-	);
+	const v = s.packageVersions;
+	const p = s.packages;
+	const rows = await db
+		.select({ version: v.version, status: v.status })
+		.from(v)
+		.innerJoin(p, eq(p.id, v.packageId))
+		.where(and(eq(p.scope, parsed.scope), eq(p.name, parsed.name)));
+	return selectLatestVersion(rows.map((r) => ({ version: r.version, status: r.status ?? 'live' })));
 }
 
 export async function yankVersion(
@@ -803,24 +907,27 @@ export async function yankVersion(
 	version: string
 ): Promise<boolean> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) throw new Error('invalid package name or missing database');
-	await ensureSchema(db);
 	const id = packageId(parsed.scope, parsed.name);
 	const now = Math.floor(Date.now() / 1000);
 	const applied = await db.batch([
-		{
-			sql: `UPDATE package_versions SET status = 'yanked'
-			      WHERE package_id = ? AND version = ? AND status = 'live'`,
-			args: [id, version]
-		},
-		{
-			sql: `INSERT INTO audit_log (action, full_name, version, created_at)
-			      SELECT 'yank', ?, ?, ? WHERE changes() > 0`,
-			args: [parsed.full, version, now]
-		}
-	]);
-	return ((applied[0]?.rowsAffected ?? 0) > 0);
+		db
+			.update(s.packageVersions)
+			.set({ status: 'yanked' })
+			.where(
+				and(
+					eq(s.packageVersions.packageId, id),
+					eq(s.packageVersions.version, version),
+					eq(s.packageVersions.status, 'live')
+				)
+			),
+		db.run(
+			sql`INSERT INTO audit_log (action, full_name, version, created_at)
+			      SELECT 'yank', ${parsed.full}, ${version}, ${now} WHERE changes() > 0`
+		)
+	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	return (applied[0]?.rowsAffected ?? 0) > 0;
 }
 
 export interface TransferAuditEntry {
@@ -850,93 +957,102 @@ export async function transferScope(
 	newOwner: string,
 	force: boolean
 ): Promise<void> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) throw new Error('missing database');
-	await ensureSchema(db);
+	const v = s.packageVersions;
+	const p = s.packages;
 	if (!force) {
-		const live = await db.execute({
-			sql: `SELECT COUNT(*) AS n FROM package_versions v
-			      JOIN packages p ON p.id = v.package_id
-			      WHERE p.scope = ? AND v.status IN ('live', 'yanked')`,
-			args: [scope]
-		});
-		if (Number(live.rows[0]?.['n'] ?? 0) > 0) {
+		const live = await db
+			.select({ n: count() })
+			.from(v)
+			.innerJoin(p, eq(p.id, v.packageId))
+			.where(and(eq(p.scope, scope), inArray(v.status, ['live', 'yanked'])))
+			.get();
+		if (Number(live?.n ?? 0) > 0) {
 			throw new Error('scope has live versions (retry with force)');
 		}
 	}
 	const now = Math.floor(Date.now() / 1000);
-	const pkgs = await db.execute({
-		sql: 'SELECT id, name FROM packages WHERE scope = ?',
-		args: [scope]
-	});
-	const renames = pkgs.rows.map((r) => ({
-		oldId: String(r['id']),
-		name: String(r['name']),
-		newId: packageId(newOwner, String(r['name']))
+	const pkgs = await db
+		.select({ id: p.id, name: p.name })
+		.from(p)
+		.where(eq(p.scope, scope));
+	const renames = pkgs.map((r) => ({
+		oldId: r.id,
+		name: r.name,
+		newId: packageId(newOwner, r.name)
 	}));
-	const vrows = renames.length
-		? await db.execute({
-				sql: `SELECT package_id, version FROM package_versions WHERE package_id IN (${renames.map(() => '?').join(',')})`,
-				args: renames.map((r) => r.oldId)
-			})
-		: { rows: [] as unknown[] };
+	const vrows =
+		renames.length > 0
+			? await db
+					.select({ packageId: v.packageId, version: v.version })
+					.from(v)
+					.where(inArray(v.packageId, renames.map((r) => r.oldId)))
+			: [];
 	const byPkg = new Map<string, string[]>();
-	for (const v of vrows.rows as Record<string, unknown>[]) {
-		const list = byPkg.get(String(v['package_id'])) ?? [];
-		list.push(String(v['version']));
-		byPkg.set(String(v['package_id']), list);
+	for (const row of vrows) {
+		const list = byPkg.get(row.packageId) ?? [];
+		list.push(row.version);
+		byPkg.set(row.packageId, list);
 	}
-	const stmts: Array<{ sql: string; args: Array<string | number> }> = [];
+	const stmts: Array<BatchItem<'sqlite'>> = [];
 	// Child rows migrate before the parent PK so immediate FK checks never
 	// see a dangling reference mid-batch.
 	for (const r of renames) {
-		stmts.push({
-			sql: 'UPDATE package_versions SET package_id = ? WHERE package_id = ?',
-			args: [r.newId, r.oldId]
-		});
-		stmts.push({
-			sql: 'UPDATE tombstones SET package_id = ? WHERE package_id = ?',
-			args: [r.newId, r.oldId]
-		});
-		stmts.push({
-			sql: 'UPDATE package_deps SET package_id = ? WHERE package_id = ?',
-			args: [r.newId, r.oldId]
-		});
-		stmts.push({
-			sql: 'UPDATE download_daily SET package_id = ? WHERE package_id = ?',
-			args: [r.newId, r.oldId]
-		});
+		stmts.push(
+			db.update(v).set({ packageId: r.newId }).where(eq(v.packageId, r.oldId))
+		);
+		stmts.push(
+			db.update(s.tombstones).set({ packageId: r.newId }).where(eq(s.tombstones.packageId, r.oldId))
+		);
+		stmts.push(
+			db.update(s.packageDeps).set({ packageId: r.newId }).where(eq(s.packageDeps.packageId, r.oldId))
+		);
+		stmts.push(
+			db.update(s.downloadDaily).set({ packageId: r.newId }).where(eq(s.downloadDaily.packageId, r.oldId))
+		);
 	}
 	for (const r of renames) {
-		stmts.push({
-			sql: 'UPDATE packages SET id = ?, scope = ?, updated_at = ? WHERE id = ?',
-			args: [r.newId, newOwner, now, r.oldId]
-		});
+		stmts.push(
+			db
+				.update(p)
+				.set({ id: r.newId, scope: newOwner, updatedAt: now })
+				.where(eq(p.id, r.oldId))
+		);
 	}
-	stmts.push({
-		sql: `INSERT INTO scopes (name, owner, reserved, created_at) VALUES (?, ?, 0, ?)
-		      ON CONFLICT(name) DO NOTHING`,
-		args: [newOwner, newOwner, now]
-	});
-	stmts.push({ sql: 'DELETE FROM scopes WHERE name = ?', args: [scope] });
-	stmts.push({ sql: 'DELETE FROM orgs WHERE scope = ?', args: [scope] });
+	stmts.push(
+		db
+			.insert(s.scopes)
+			.values({ name: newOwner, owner: newOwner, reserved: 0, createdAt: now })
+			.onConflictDoNothing()
+	);
+	stmts.push(db.delete(s.scopes).where(eq(s.scopes.name, scope)));
+	stmts.push(db.delete(s.orgs).where(eq(s.orgs.scope, scope)));
 	for (const r of renames) {
 		const oldFull = scope ? `@${scope}/${r.name}` : r.name;
 		const newFull = `@${newOwner}/${r.name}`;
 		for (const e of buildTransferAuditEntries(oldFull, newFull, byPkg.get(r.oldId) ?? [])) {
-			stmts.push({
-				sql: `INSERT INTO audit_log (action, full_name, version, details_json, created_at)
-				      VALUES (?, ?, ?, ?, ?)`,
-				args: [e.action, e.fullName, e.version, e.detailsJson, now]
-			});
+			stmts.push(
+				db.insert(s.auditLog).values({
+					action: e.action,
+					fullName: e.fullName,
+					version: e.version,
+					detailsJson: e.detailsJson,
+					createdAt: now
+				})
+			);
 		}
 	}
-	stmts.push({
-		sql: `INSERT INTO audit_log (action, full_name, details_json, created_at)
-		      VALUES ('transfer', ?, ?, ?)`,
-		args: [`@${scope}`, JSON.stringify({ newOwner, force }), now]
-	});
-	await db.batch(stmts);
+	stmts.push(
+		db.insert(s.auditLog).values({
+			action: 'transfer',
+			fullName: `@${scope}`,
+			version: '',
+			detailsJson: JSON.stringify({ newOwner, force }),
+			createdAt: now
+		})
+	);
+	await db.batch(stmts as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 }
 
 export async function putChunk(
@@ -945,26 +1061,24 @@ export async function putChunk(
 	sizeBytes: number,
 	bytes: Uint8Array
 ): Promise<void> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) throw new Error('missing database');
-	await ensureSchema(db);
 	const bucket = r2Bucket(env);
+	const now = Math.floor(Date.now() / 1000);
 	if (bucket) {
-		await db.execute({
-			sql: `INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
-			      VALUES (?, ?, x'', ?)
-			      ON CONFLICT(hash) DO NOTHING`,
-			args: [hash, sizeBytes, Math.floor(Date.now() / 1000)]
-		});
+		await db.run(
+			sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
+			      VALUES (${hash}, ${sizeBytes}, x'', ${now})
+			      ON CONFLICT(hash) DO NOTHING`
+		);
 		await r2PutIfMissing(bucket, hash, bytes);
 		return;
 	}
-	await db.execute({
-		sql: `INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
-		      VALUES (?, ?, ?, ?)
-		      ON CONFLICT(hash) DO NOTHING`,
-		args: [hash, sizeBytes, bytes, Math.floor(Date.now() / 1000)]
-	});
+	await db.run(
+		sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
+		      VALUES (${hash}, ${sizeBytes}, ${bytes}, ${now})
+		      ON CONFLICT(hash) DO NOTHING`
+	);
 }
 
 let quotaState = freshQuotaState();
@@ -978,16 +1092,11 @@ export async function getChunkBytes(
 	hash: string
 ): Promise<Uint8Array | null> {
 	if (!/^[0-9a-f]{64}$/.test(hash)) return null;
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return null;
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: 'SELECT bytes FROM chunks WHERE hash = ?',
-		args: [hash]
-	});
-	const row = rs.rows[0] as Record<string, unknown> | undefined;
+	const row = await db.get<{ bytes: unknown }>(sql`SELECT bytes FROM chunks WHERE hash = ${hash}`);
 	if (!row) return null;
-	const raw = row['bytes'] as Uint8Array | ArrayBuffer;
+	const raw = (row as { bytes: Uint8Array | ArrayBuffer }).bytes;
 	const inline = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
 	if (inline.length > 0) return inline;
 	const bucket = r2Bucket(env);
@@ -1001,11 +1110,10 @@ export async function getChunkBytes(
 export async function storedChunkBytes(
 	env: Record<string, string | undefined>
 ): Promise<number> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return 0;
-	await ensureSchema(db);
-	const rs = await db.execute('SELECT COALESCE(SUM(size_bytes), 0) AS n FROM chunks');
-	return Number(rs.rows[0]?.['n'] ?? 0);
+	const row = await db.select({ n: sum(s.chunks.sizeBytes) }).from(s.chunks).get();
+	return Number(row?.n ?? 0);
 }
 
 export async function enforceStorageQuota(
@@ -1030,16 +1138,13 @@ export async function linkVersionChunks(
 	versionRowId: string,
 	hashes: string[]
 ): Promise<void> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) throw new Error('missing database');
-	await ensureSchema(db);
 	if (hashes.length === 0) return;
 	await db.batch(
-		hashes.map((hash, ord) => ({
-			sql: `INSERT INTO manifest_chunks (chunk_hash, version_id, ord)
-			      VALUES (?, ?, ?)`,
-			args: [hash, versionRowId, ord]
-		}))
+		hashes.map((hash, ord) =>
+			db.insert(s.manifestChunks).values({ chunkHash: hash, versionId: versionRowId, ord })
+		) as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]
 	);
 }
 
@@ -1048,13 +1153,12 @@ export async function storeTarManifest(
 	versionRowId: string,
 	entries: TarEntryRef[]
 ): Promise<void> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) throw new Error('missing database');
-	await ensureSchema(db);
-	await db.execute({
-		sql: 'UPDATE package_versions SET tar_manifest_json = ? WHERE id = ?',
-		args: [JSON.stringify(entries), versionRowId]
-	});
+	await db
+		.update(s.packageVersions)
+		.set({ tarManifestJson: JSON.stringify(entries) })
+		.where(eq(s.packageVersions.id, versionRowId));
 }
 
 export async function findOrphanChunks(
@@ -1062,40 +1166,47 @@ export async function findOrphanChunks(
 	beforeUnix: number,
 	limit: number
 ): Promise<string[]> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return [];
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: `SELECT c.hash AS hash FROM chunks c
-		      WHERE c.first_seen_at < ?
-		      AND NOT EXISTS (
-		        SELECT 1 FROM manifest_chunks mc
-		        JOIN package_versions v ON v.id = mc.version_id
-		        WHERE mc.chunk_hash = c.hash AND v.status IN ('live', 'yanked'))
-		      LIMIT ?`,
-		args: [beforeUnix, Math.max(1, Math.min(1000, limit))]
-	});
-	return rs.rows.map((r) => String(r['hash']));
+	const c = s.chunks;
+	const mc = s.manifestChunks;
+	const v = s.packageVersions;
+	const rows = await db
+		.select({ hash: c.hash })
+		.from(c)
+		.where(
+			and(
+				lt(c.firstSeenAt, beforeUnix),
+				notExists(
+					db
+						.select({ one: sql`1` })
+						.from(mc)
+						.innerJoin(v, eq(v.id, mc.versionId))
+						.where(and(eq(mc.chunkHash, c.hash), inArray(v.status, ['live', 'yanked'])))
+				)
+			)
+		)
+		.limit(Math.max(1, Math.min(1000, limit)));
+	return rows.map((r) => r.hash);
 }
 
 export async function reverifyChunks(
 	env: Record<string, string | undefined>,
 	hashes: string[]
 ): Promise<Set<string>> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db || hashes.length === 0) return new Set();
-	await ensureSchema(db);
+	const mc = s.manifestChunks;
+	const v = s.packageVersions;
 	const live = new Set<string>();
 	for (const batch of chunked(hashes, 50)) {
-		const marks = batch.map(() => '?').join(',');
-		const rs = await db.execute({
-			sql: `SELECT mc.chunk_hash AS hash FROM manifest_chunks mc
-			      JOIN package_versions v ON v.id = mc.version_id
-			      WHERE mc.chunk_hash IN (${marks}) AND v.status IN ('live', 'yanked')
-			      GROUP BY mc.chunk_hash`,
-			args: [...batch]
-		});
-		for (const r of rs.rows) live.add(String(r['hash']));
+		const rows = await db
+			.select({ hash: mc.chunkHash })
+			.from(mc)
+			.innerJoin(v, eq(v.id, mc.versionId))
+			.where(and(inArray(mc.chunkHash, batch), inArray(v.status, ['live', 'yanked'])))
+			.groupBy(mc.chunkHash);
+		for (const r of rows) live.add(r.hash);
 	}
 	return live;
 }
@@ -1114,22 +1225,19 @@ export async function deleteChunks(
 	// loss ever matters, the upgrade path is quarantine-then-delete:
 	// move orphans to a quarantine prefix with a second grace window
 	// before hard delete - not a backup system.
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db || hashes.length === 0) return 0;
-	await ensureSchema(db);
 	let deleted = 0;
 	for (const batch of chunked(hashes, 50)) {
-		const marks = batch.map(() => '?').join(',');
-		const res = await db.execute({
-			sql: `DELETE FROM chunks WHERE hash IN (${marks})`,
-			args: [...batch]
-		});
+		const res = await db.delete(s.chunks).where(inArray(s.chunks.hash, batch));
 		deleted += res.rowsAffected ?? 0;
 	}
-	await db.execute({
-		sql: `INSERT INTO audit_log (action, full_name, details_json, created_at)
-		      VALUES ('gc-sweep', '', ?, ?)`,
-		args: [JSON.stringify({ deleted: hashes }), Math.floor(Date.now() / 1000)]
+	await db.insert(s.auditLog).values({
+		action: 'gc-sweep',
+		fullName: '',
+		version: '',
+		detailsJson: JSON.stringify({ deleted: hashes }),
+		createdAt: Math.floor(Date.now() / 1000)
 	});
 	return deleted;
 }
@@ -1166,13 +1274,14 @@ export async function purgeUrls(
 			}
 		}
 		try {
-			const db = getClient(env);
+			const db = await getDdb(env);
 			if (!db) return { ok: false, verified: false };
-			await ensureSchema(db);
-			await db.execute({
-				sql: `INSERT INTO audit_log (action, full_name, details_json, created_at)
-				      VALUES ('purge-failed', ?, ?, ?)`,
-				args: [options?.fullName ?? '', JSON.stringify({ urls, prefixes: options?.prefixes ?? [] }), Math.floor(Date.now() / 1000)]
+			await db.insert(s.auditLog).values({
+				action: 'purge-failed',
+				fullName: options?.fullName ?? '',
+				version: '',
+				detailsJson: JSON.stringify({ urls, prefixes: options?.prefixes ?? [] }),
+				createdAt: Math.floor(Date.now() / 1000)
 			});
 		} catch {
 			// audit write is best-effort too
@@ -1180,13 +1289,14 @@ export async function purgeUrls(
 		return { ok: false, verified: false };
 	}
 	try {
-		const db = getClient(env);
+		const db = await getDdb(env);
 		if (!db) return { ok: false, verified: false };
-		await ensureSchema(db);
-		await db.execute({
-			sql: `INSERT INTO audit_log (action, full_name, details_json, created_at)
-			      VALUES ('purge-skipped', ?, ?, ?)`,
-			args: [options?.fullName ?? '', JSON.stringify({ urls, prefixes: options?.prefixes ?? [] }), Math.floor(Date.now() / 1000)]
+		await db.insert(s.auditLog).values({
+			action: 'purge-skipped',
+			fullName: options?.fullName ?? '',
+			version: '',
+			detailsJson: JSON.stringify({ urls, prefixes: options?.prefixes ?? [] }),
+			createdAt: Math.floor(Date.now() / 1000)
 		});
 		return { ok: true, verified: false };
 	} catch {
@@ -1337,14 +1447,14 @@ export async function insertBenchmarkRun(
 	commitSha: string,
 	snapshotJson: string
 ): Promise<BenchmarkRun> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) throw new Error('missing database');
-	await ensureSchema(db);
 	const now = Math.floor(Date.now() / 1000);
-	const res = await db.execute({
-		sql: `INSERT INTO benchmark_runs (github_run_id, commit_sha, snapshot_json, created_at)
-		      VALUES (?, ?, ?, ?)`,
-		args: [githubRunId, commitSha, snapshotJson, now]
+	const res = await db.insert(s.benchmarkRuns).values({
+		githubRunId,
+		commitSha,
+		snapshotJson,
+		createdAt: now
 	});
 	return {
 		id: Number(res.lastInsertRowid ?? 0),
@@ -1358,20 +1468,28 @@ export async function insertBenchmarkRun(
 export async function getLatestBenchmarks(
 	env: Record<string, string | undefined>
 ): Promise<BenchmarkRun | null> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return null;
-	await ensureSchema(db);
-	const rs = await db.execute(
-		'SELECT id, github_run_id, commit_sha, snapshot_json, created_at FROM benchmark_runs ORDER BY id DESC LIMIT 1'
-	);
-	const row = rs.rows[0] as Record<string, unknown> | undefined;
+	const b = s.benchmarkRuns;
+	const row = await db
+		.select({
+			id: b.id,
+			githubRunId: b.githubRunId,
+			commitSha: b.commitSha,
+			snapshotJson: b.snapshotJson,
+			createdAt: b.createdAt
+		})
+		.from(b)
+		.orderBy(desc(b.id))
+		.limit(1)
+		.get();
 	if (!row) return null;
 	return {
-		id: Number(row['id']),
-		githubRunId: Number(row['github_run_id']),
-		commitSha: String(row['commit_sha']),
-		snapshotJson: String(row['snapshot_json']),
-		createdAt: Number(row['created_at'])
+		id: row.id,
+		githubRunId: row.githubRunId,
+		commitSha: row.commitSha,
+		snapshotJson: row.snapshotJson,
+		createdAt: row.createdAt
 	};
 }
 
@@ -1379,18 +1497,19 @@ export async function listBenchmarkRuns(
 	env: Record<string, string | undefined>,
 	limit: number
 ): Promise<Omit<BenchmarkRun, 'snapshotJson'>[]> {
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!db) return [];
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: 'SELECT id, github_run_id, commit_sha, created_at FROM benchmark_runs ORDER BY id DESC LIMIT ?',
-		args: [Math.max(1, Math.min(60, Math.floor(limit) || 12))]
-	});
-	return rs.rows.map((r) => ({
-		id: Number(r['id']),
-		githubRunId: Number(r['github_run_id']),
-		commitSha: String(r['commit_sha']),
-		createdAt: Number(r['created_at'])
+	const b = s.benchmarkRuns;
+	const rows = await db
+		.select({ id: b.id, githubRunId: b.githubRunId, commitSha: b.commitSha, createdAt: b.createdAt })
+		.from(b)
+		.orderBy(desc(b.id))
+		.limit(Math.max(1, Math.min(60, Math.floor(limit) || 12)));
+	return rows.map((r) => ({
+		id: r.id,
+		githubRunId: r.githubRunId,
+		commitSha: r.commitSha,
+		createdAt: r.createdAt
 	}));
 }
 
@@ -1400,16 +1519,17 @@ export async function isVersionWithdrawn(
 	version: string
 ): Promise<boolean> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) return false;
-	await ensureSchema(db);
-	const rs = await db.execute({
-		sql: `SELECT 1 AS n FROM tombstones t
-		      JOIN packages p ON p.id = t.package_id
-		      WHERE p.scope = ? AND p.name = ? AND t.version = ?`,
-		args: [parsed.scope, parsed.name, version]
-	});
-	return rs.rows.length > 0;
+	const t = s.tombstones;
+	const p = s.packages;
+	const row = await db
+		.select({ one: sql`1` })
+		.from(t)
+		.innerJoin(p, eq(p.id, t.packageId))
+		.where(and(eq(p.scope, parsed.scope), eq(p.name, parsed.name), eq(t.version, version)))
+		.get();
+	return row !== undefined;
 }
 
 export async function versionReuseBlocked(
@@ -1418,23 +1538,30 @@ export async function versionReuseBlocked(
 	version: string
 ): Promise<boolean> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) return false;
-	await ensureSchema(db);
 	const id = packageId(parsed.scope, parsed.name);
-	const live = await db.execute({
-		sql: 'SELECT 1 AS n FROM package_versions WHERE package_id = ? AND version = ?',
-		args: [id, version]
-	});
-	if (live.rows.length > 0) return true;
+	const v = s.packageVersions;
+	const live = await db
+		.select({ one: sql`1` })
+		.from(v)
+		.where(and(eq(v.packageId, id), eq(v.version, version)))
+		.get();
+	if (live !== undefined) return true;
 	if (await isVersionWithdrawn(env, full, version)) return true;
-	const audit = await db.execute({
-		sql: `SELECT 1 AS n FROM audit_log
-		      WHERE full_name = ? AND version = ?
-		      AND action IN ('takedown', 'transfer', 'special-delete', 'publish')`,
-		args: [parsed.full, version]
-	});
-	return audit.rows.length > 0;
+	const a = s.auditLog;
+	const audit = await db
+		.select({ one: sql`1` })
+		.from(a)
+		.where(
+			and(
+				eq(a.fullName, parsed.full),
+				eq(a.version, version),
+				inArray(a.action, ['takedown', 'transfer', 'special-delete', 'publish'])
+			)
+		)
+		.get();
+	return audit !== undefined;
 }
 
 export async function recordTombstone(
@@ -1444,16 +1571,16 @@ export async function recordTombstone(
 	reason: string
 ): Promise<void> {
 	const parsed = parsePackageName(full);
-	const db = getClient(env);
+	const db = await getDdb(env);
 	if (!parsed || !db) throw new Error('invalid package name or missing database');
 	const now = Math.floor(Date.now() / 1000);
-	await ensureSchema(db);
 	const id = packageId(parsed.scope, parsed.name);
-	const cur = await db.execute({
-		sql: 'SELECT manifest_json FROM package_versions WHERE package_id = ? AND version = ?',
-		args: [id, version]
-	});
-	let manifestJson = String(cur.rows[0]?.['manifest_json'] ?? '{}');
+	const cur = await db
+		.select({ manifestJson: s.packageVersions.manifestJson })
+		.from(s.packageVersions)
+		.where(and(eq(s.packageVersions.packageId, id), eq(s.packageVersions.version, version)))
+		.get();
+	let manifestJson = cur?.manifestJson ?? '{}';
 	try {
 		const manifest = JSON.parse(manifestJson) as Record<string, unknown>;
 		manifest['withdrawReason'] = reason;
@@ -1462,21 +1589,22 @@ export async function recordTombstone(
 		manifestJson = JSON.stringify({ withdrawReason: reason });
 	}
 	await db.batch([
-		{
-			sql: `INSERT INTO tombstones (package_id, version, reason, created_at)
-			      VALUES (?, ?, ?, ?)
-			      ON CONFLICT(package_id, version) DO NOTHING`,
-			args: [id, version, reason, now]
-		},
-		{
-			sql: `UPDATE package_versions SET status = 'tombstoned', manifest_json = ?
-			      WHERE package_id = ? AND version = ?`,
-			args: [manifestJson, id, version]
-		},
-		{
-			sql: `INSERT INTO audit_log (action, full_name, version, details_json, created_at)
-			      VALUES ('takedown', ?, ?, ?, ?)`,
-			args: [parsed.full, version, JSON.stringify({ reason }), now]
-		}
-	]);
+		db
+			.insert(s.tombstones)
+			.values({ packageId: id, version, reason, createdAt: now })
+			.onConflictDoNothing(),
+		db
+			.update(s.packageVersions)
+			.set({ status: 'tombstoned', manifestJson })
+			.where(
+				and(eq(s.packageVersions.packageId, id), eq(s.packageVersions.version, version))
+			),
+		db.insert(s.auditLog).values({
+			action: 'takedown',
+			fullName: parsed.full,
+			version,
+			detailsJson: JSON.stringify({ reason }),
+			createdAt: now
+		})
+	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 }
