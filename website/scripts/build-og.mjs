@@ -98,9 +98,13 @@ function brand() {
 	);
 }
 
-function render(svg, file) {
+function renderTo(dir, file, svg) {
 	const png = new Resvg(svg, { fitTo: { mode: 'width', value: W }, font: fonts }).render().asPng();
-	writeFileSync(join(outDir, file), png);
+	writeFileSync(join(dir, file), png);
+}
+
+function render(svg, file) {
+	renderTo(outDir, file, svg);
 }
 
 function frontmatter(path) {
@@ -122,7 +126,7 @@ function slugFile(slug) {
 
 const manifest = {};
 
-render(brand(), 'og-banner.png');
+renderTo(join(root, 'static'), 'og-banner.png', brand());
 manifest['home'] = 'og-banner.png';
 
 for (const [dir, kind] of [
