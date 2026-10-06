@@ -10,7 +10,14 @@ import {
 	isValidRange,
 	levelize
 } from '../src/lib/server/registry.js';
-import { buildTransferAuditEntries } from '../src/lib/server/db.js';
+import { buildTransferAuditEntries, SEMVER_ORDER } from '../src/lib/server/db.js';
+
+describe('semver-order', () => {
+	it('qualifies created_at for joined version queries', () => {
+		assert.ok(SEMVER_ORDER.includes('v.created_at DESC'));
+		assert.ok(!/(^|[^.\w])created_at/.test(SEMVER_ORDER.replace('v.created_at', '')));
+	});
+});
 
 describe('semver', () => {
 	it('parses strict versions', () => {

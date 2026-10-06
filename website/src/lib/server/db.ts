@@ -735,8 +735,8 @@ function toVersionRow(r: Record<string, unknown>): VersionRow {
 	};
 }
 
-const SEMVER_ORDER = `semver_major DESC, semver_minor DESC, semver_patch DESC,
-	CASE WHEN prerelease = '' THEN 1 ELSE 0 END DESC, prerelease DESC, created_at DESC`;
+export const SEMVER_ORDER = `semver_major DESC, semver_minor DESC, semver_patch DESC,
+	CASE WHEN prerelease = '' THEN 1 ELSE 0 END DESC, prerelease DESC, v.created_at DESC`;
 
 export async function getVersionRow(
 	env: Record<string, string | undefined>,
