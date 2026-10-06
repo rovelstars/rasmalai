@@ -141,6 +141,12 @@ export interface DepNode {
 	deps: string[];
 }
 
+const TRANSIENT_RE = /timeout|timed out|socket|econn|reset|fetch failed|temporar|busy|unavailable|429|50[023]|hrana|libsql/i;
+
+export function isTransientStoreError(message: string): boolean {
+	return TRANSIENT_RE.test(message);
+}
+
 export function levelize(nodes: DepNode[]): string[][] {
 	const byId = new Map(nodes.map((n) => [n.id, n]));
 	const state = new Map<string, number>();

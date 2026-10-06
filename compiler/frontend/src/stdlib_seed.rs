@@ -12,15 +12,25 @@ pub fn std_pin_path() -> PathBuf {
     cache::global_cache_dir().join(STD_PIN_FILE)
 }
 
+fn std_package_tops() -> Vec<String> {
+    let mut tops: Vec<String> = stdlib::MODULES
+        .iter()
+        .map(|m| m.split('/').next().unwrap_or(m).to_string())
+        .collect();
+    tops.sort();
+    tops.dedup();
+    tops
+}
+
 pub fn std_package_names() -> Vec<String> {
-    stdlib::MODULES
+    std_package_tops()
         .iter()
         .map(|m| format!("@std/{m}"))
         .collect()
 }
 
 pub fn std_requirements() -> BTreeMap<String, String> {
-    stdlib::MODULES
+    std_package_tops()
         .iter()
         .map(|m| (format!("@std/{m}"), STD_SEED_RANGE.to_string()))
         .collect()
@@ -228,15 +238,16 @@ mod tests {
     }
 
     #[test]
-    fn requirements_cover_every_module_at_star() {
+    fn requirements_cover_every_top_level_package_at_star() {
         let reqs = std_requirements();
-        assert_eq!(reqs.len(), stdlib::MODULES.len());
-        for m in stdlib::MODULES {
+        assert_eq!(reqs.len(), std_package_tops().len());
+        for m in std_package_tops() {
             assert_eq!(
                 reqs.get(&format!("@std/{m}")).map(|s| s.as_str()),
                 Some("*")
             );
         }
+        assert!(!reqs.contains_key("@std/net/http"));
     }
 
     #[test]
@@ -244,7 +255,7 @@ mod tests {
         let (_guard, _dir) = isolate_cache("stdseed");
         let (server, sha, cfg) = start_std_registry("1.0.0");
         let report = seed_stdlib_cache(Some(&cfg), &BTreeMap::new()).unwrap();
-        assert_eq!(report.packages.len(), stdlib::MODULES.len());
+        assert_eq!(report.packages.len(), std_package_tops().len());
         assert!(report.packages.iter().all(|(_, v)| v == "1.0.0"));
         assert_eq!(report.registry, server.base);
         assert_eq!(report.pin_path, std_pin_path());
@@ -260,14 +271,14 @@ mod tests {
             );
         }
         let pin = read_std_pin().expect("pin file written");
-        assert_eq!(pin.packages.len(), stdlib::MODULES.len());
+        assert_eq!(pin.packages.len(), std_package_tops().len());
         assert_eq!(pin.registry, server.base);
         assert!(pin.date_secs > 0);
         for name in std_package_names() {
             assert_eq!(pin.packages.get(&name).map(|s| s.as_str()), Some("1.0.0"));
         }
         let have = fetch::scan_cache_have();
-        assert_eq!(have.len(), stdlib::MODULES.len());
+        assert_eq!(have.len(), std_package_tops().len());
         assert!(have.iter().all(|h| h.integrity == sha));
         assert!(missing_std_packages().is_empty());
     }
