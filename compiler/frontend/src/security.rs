@@ -255,8 +255,8 @@ fn verify_graph(
 
     if let Some(allowed) = &config.permissions {
         let mut ceiling = BTreeSet::new();
-        for s in allowed {
-            match parse_cap(s) {
+        for decl in allowed {
+            match parse_cap(&decl.perm) {
                 Ok(c) => {
                     ceiling.insert(c);
                 }

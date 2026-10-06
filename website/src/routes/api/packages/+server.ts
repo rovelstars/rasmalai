@@ -25,6 +25,7 @@ import {
 } from '$lib/server/db';
 import { specHeaders } from '$lib/server/registry';
 import { normalizeGuideEntry } from '$lib/server/guides';
+import { parseManifestPermissions, type DeclaredPermission } from '$lib/server/permissions';
 import { chunkTarball, rebuildTarball, sha256Hex } from '$lib/server/chunks';
 import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 
@@ -229,6 +230,13 @@ export async function POST({ request, platform, url }) {
 			{ status: 400, headers: specHeaders() }
 		);
 	}
+	let capabilities: DeclaredPermission[] = [];
+	try {
+		capabilities = parseManifestPermissions(manifestJson);
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		return json({ success: false, error: `invalid permissions: ${msg}` }, { status: 400, headers: specHeaders() });
+	}
 	const payload: PublishPayload = {
 		name: parsed.full,
 		version,
@@ -247,7 +255,8 @@ export async function POST({ request, platform, url }) {
 		guidesJson,
 		tarballSha256,
 		requestId,
-		owner: actorOwner
+		owner: actorOwner,
+		capabilities
 	};
 
 	try {

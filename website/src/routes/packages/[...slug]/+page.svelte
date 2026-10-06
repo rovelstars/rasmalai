@@ -88,6 +88,8 @@ import { importSnippet } from '$lib/docs/stdlib';
 	let manifestDeps = $state<Array<{ name: string; range: string }> | null>(null);
 	let homepage = $state<string | null>(null);
 
+	let permissions = $derived(activeVersion.permissions ?? []);
+
 	let readme = $derived(renderMarkdown(activeVersion.readme));
 
 	function isoDate(ts: number): string {
@@ -655,6 +657,23 @@ import { importSnippet } from '$lib/docs/stdlib';
 					</div>
 				</dl>
 			</div>
+			{#if permissions.length > 0}
+				<div class="panel space-y-2 p-4">
+					<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">permissions</p>
+					<ul class="space-y-2">
+						{#each permissions as p}
+							<li class="min-w-0">
+								<p class="truncate font-mono text-[13px] text-aura-text" title={p.arg ? `${p.domain}:${p.arg}` : p.domain}>{p.domain}{#if p.arg}<span class="text-aura-muted">:{p.arg}</span>{/if}</p>
+								{#if p.reason}
+									<p class="mt-0.5 text-[13px] text-aura-muted">{p.reason}</p>
+								{:else}
+									<p class="mt-0.5 text-[13px] text-aura-muted italic">no reason given</p>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
 		</aside>
 	</div>
 </main>
