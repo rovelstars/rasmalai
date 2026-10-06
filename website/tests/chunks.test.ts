@@ -86,4 +86,15 @@ describe('chunk store', () => {
 		const total = units.reduce((n, u) => n + u.size, 0);
 		assert.equal(total, big.length);
 	});
+
+	it('round-trips opaque blobs without archive markers', async () => {
+		const gz = new Uint8Array([0x1f, 0x8b, 0x08, 1, 2, 3, 4, 5]);
+		const { units, entries } = await chunkTarball(gz);
+		assert.equal(entries.length, 1);
+		assert.equal(entries[0].name, '');
+		const byHash = new Map(units.map((u) => [u.hash, u.bytes] as [string, Uint8Array]));
+		const rebuilt = rebuildTarball(entries, byHash);
+		assert.deepEqual(rebuilt, gz);
+		assert.equal(await sha256Hex(rebuilt), await sha256Hex(gz));
+	});
 });

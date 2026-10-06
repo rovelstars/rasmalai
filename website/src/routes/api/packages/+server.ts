@@ -25,7 +25,7 @@ import {
 } from '$lib/server/db';
 import { specHeaders } from '$lib/server/registry';
 import { normalizeGuideEntry } from '$lib/server/guides';
-import { chunkTarball, sha256Hex } from '$lib/server/chunks';
+import { chunkTarball, rebuildTarball, sha256Hex } from '$lib/server/chunks';
 import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 
 const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
@@ -269,6 +269,13 @@ export async function POST({ request, platform, url }) {
 			}
 			const rowId = `ver_${packageId(parsed.scope, parsed.name)}_${version}`;
 			const chunked = await chunkTarball(tarball);
+			const verifyMap = new Map(chunked.units.map((u) => [u.hash, u.bytes] as const));
+			if ((await sha256Hex(rebuildTarball(chunked.entries, verifyMap))) !== tarballSha256) {
+				return json(
+					{ success: false, error: 'tarball failed round-trip verification (not canonical)' },
+					{ status: 400, headers: specHeaders() }
+				);
+			}
 			for (const u of chunked.units) {
 				await putChunk(env, u.hash, u.size, u.bytes);
 			}
