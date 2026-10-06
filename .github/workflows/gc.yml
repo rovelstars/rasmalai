@@ -1,0 +1,43 @@
+name: Monthly chunk GC
+
+# Sweeps orphaned content chunks past the 30d grace window via
+# POST /api/admin/gc: the endpoint re-verifies liveness, deletes R2 objects,
+# and removes the Turso rows, then returns a scanned/orphans/deleted/r2Deleted
+# summary. Needs the ADMIN_TOKEN repo secret (same value as the site's
+# ADMIN_TOKEN env var) plus the shared SITE_URL repo variable.
+on:
+  schedule:
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Max chunks to scan'
+        default: '500'
+
+concurrency:
+  group: chunk-gc
+  cancel-in-progress: false
+
+jobs:
+  gc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Sweep orphan chunks
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: |
+          if [ -z "$ADMIN_TOKEN" ] || [ -z "$SITE_URL" ]; then
+            echo "gc: ADMIN_TOKEN or SITE_URL unset, cannot sweep" >&2
+            exit 1
+          fi
+          LIMIT="${{ inputs.limit }}"
+          if [ -z "$LIMIT" ]; then
+            LIMIT="500"
+          fi
+          curl --fail --show-error --silent \
+            -X POST "$SITE_URL/api/admin/gc" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "{\"limit\":$LIMIT}"
