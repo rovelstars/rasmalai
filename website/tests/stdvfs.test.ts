@@ -5,6 +5,8 @@ import {
 	entryCandidates,
 	fetchStdModule,
 	findFileEntry,
+	isDevOrigin,
+	resolveRegistryOrigin,
 	sha256Hex,
 	stdPackageOf,
 	type ChunkEntry
@@ -154,5 +156,48 @@ describe('fetchStdModule', () => {
 			/HTTP 410/
 		);
 		assert.equal(calls, 1);
+	});
+});
+
+describe('resolveRegistryOrigin', () => {
+	it('uses the page origin with the prod fallback on localhost', () => {
+		assert.deepEqual(resolveRegistryOrigin('http://localhost:5173'), {
+			origin: 'http://localhost:5173',
+			fallback: 'https://rasmalai.rovelstars.com'
+		});
+	});
+
+	it('uses the page origin with no fallback in production', () => {
+		assert.deepEqual(resolveRegistryOrigin('https://rasmalai.rovelstars.com'), {
+			origin: 'https://rasmalai.rovelstars.com',
+			fallback: undefined
+		});
+	});
+
+	it('prefers the VITE_RNX_REGISTRY override with no fallback', () => {
+		assert.deepEqual(resolveRegistryOrigin('http://localhost:5173', { VITE_RNX_REGISTRY: 'https://preview.test/' }), {
+			origin: 'https://preview.test',
+			fallback: undefined
+		});
+		assert.deepEqual(resolveRegistryOrigin('https://rasmalai.rovelstars.com', { VITE_RNX_REGISTRY: 'https://preview.test' }), {
+			origin: 'https://preview.test',
+			fallback: undefined
+		});
+		assert.deepEqual(resolveRegistryOrigin('http://localhost:5173', { VITE_RNX_REGISTRY: 'not a url' }), {
+			origin: 'http://localhost:5173',
+			fallback: 'https://rasmalai.rovelstars.com'
+		});
+	});
+
+	it('rejects non-http origins', () => {
+		assert.throws(() => resolveRegistryOrigin(''), /same-domain registry/);
+	});
+
+	it('detects dev origins', () => {
+		assert.equal(isDevOrigin('http://localhost:5173'), true);
+		assert.equal(isDevOrigin('http://127.0.0.1:4173'), true);
+		assert.equal(isDevOrigin('http://thing.local:5173'), true);
+		assert.equal(isDevOrigin('https://rasmalai.rovelstars.com'), false);
+		assert.equal(isDevOrigin('not a url'), false);
 	});
 });
