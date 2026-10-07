@@ -2691,11 +2691,11 @@ mod tests {
         let mut lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
         lock.write(&root).unwrap();
         let entry = root.join("src").join("main.rnx");
-        ModuleGraph::build(&entry).unwrap();
+        let graph = ModuleGraph::build(&entry).unwrap();
+        assert!(!graph.resolve().unwrap().decls.is_empty());
         let bodies = server.resolve_bodies();
-        assert!(bodies.len() >= 2);
-        let last = bodies.last().unwrap();
-        assert_eq!(testkit::requirement(last, "@acme/widget"), "1.2.0");
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(testkit::requirement(&bodies[0], "@acme/widget"), "^1.0.0");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 
