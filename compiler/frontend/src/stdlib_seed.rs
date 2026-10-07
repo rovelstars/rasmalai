@@ -66,6 +66,10 @@ pub fn seed_stdlib_cache(
     default_registry: Option<&RegistryConfig>,
     overrides: &BTreeMap<String, RegistryConfig>,
 ) -> Result<StdSeedReport, Diagnostic> {
+    // Origin-direct: seeding must see one consistent generation
+    // (resolve integrity + manifests + chunks); shared edge caches can
+    // serve mixed generations with year-long TTLs.
+    let _origin = fetch::origin_direct_guard();
     let requirements = std_requirements();
     let base = fetch::registry_base_for("@std/prelude", default_registry, overrides);
     let have = fetch::scan_cache_have();
@@ -221,6 +225,130 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
     use crate::fetch::testkit::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    struct GenerationServer {
+        log: Arc<Mutex<Vec<(String, String, bool)>>>,
+    }
+
+    fn has_no_cache(head: &str) -> bool {
+        head.lines().skip(1).any(|line| {
+            let lower = line.to_lowercase();
+            lower.starts_with("cache-control:") && lower.contains("no-cache")
+        })
+    }
+
+    fn respond(stream: &mut std::net::TcpStream, status: u16, body: &[u8], json: bool) {
+        let text = format!(
+            "HTTP/1.1 {status} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            if status == 200 { "OK" } else { "Error" },
+            if json { "application/json" } else { "application/octet-stream" },
+            body.len()
+        );
+        let _ = stream.write_all(text.as_bytes());
+        let _ = stream.write_all(body);
+        let _ = stream.flush();
+    }
+
+    // Serves a fresh generation only to origin-direct reads (Cache-Control:
+    // no-cache) and a stale generation otherwise, reproducing shared edge
+    // caches that hold manifests whose chunks no longer match resolve
+    // integrity. Resolve always answers the fresh integrity.
+    fn start_generation_server() -> (GenerationServer, RegistryConfig) {
+        let (fresh_tar, fresh_sha) = fixture_tarball("@std/seed", "1.0.0");
+        let (stale_tar, stale_sha) = fixture_tarball("@std/seed", "0.0.9");
+        let fresh_manifest = fallback_manifest(&fresh_tar);
+        let stale_manifest = fallback_manifest(&stale_tar);
+        let resolve_body = resolve_json_static(&std_nodes("1.0.0", &fresh_sha));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let log: Arc<Mutex<Vec<(String, String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = log.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                loop {
+                    match stream.read(&mut byte) {
+                        Ok(0) => break,
+                        Ok(_) => head.push(byte[0]),
+                        Err(_) => break,
+                    }
+                    if head.ends_with(b"\r\n\r\n") || head.len() > 65536 {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&head).into_owned();
+                let mut lines = text.lines();
+                let request = lines.next().unwrap_or_default().to_string();
+                let mut parts = request.split_whitespace();
+                let method = parts.next().unwrap_or_default().to_string();
+                let path = parts.next().unwrap_or_default().to_string();
+                let direct = has_no_cache(&text);
+                seen.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((method.clone(), path.clone(), direct));
+                if method == "GET" && path == "/api/version" {
+                    respond(&mut stream, 200, b"{\"spec\": 1}", true);
+                } else if method == "POST" && path == "/api/resolve" {
+                    respond(&mut stream, 200, resolve_body.as_bytes(), true);
+                } else if method == "GET" && path.ends_with("/chunks") {
+                    let body = if direct { &fresh_manifest } else { &stale_manifest };
+                    respond(&mut stream, 200, body.as_bytes(), true);
+                } else if method == "GET" && path.contains("/chunk/") {
+                    let hash = path.rsplit('/').next().unwrap_or_default();
+                    if hash == fresh_sha {
+                        respond(&mut stream, 200, &fresh_tar, false);
+                    } else if hash == stale_sha {
+                        respond(&mut stream, 200, &stale_tar, false);
+                    } else {
+                        respond(&mut stream, 404, b"{}", true);
+                    }
+                } else {
+                    respond(&mut stream, 404, b"{}", true);
+                }
+            }
+        });
+        let cfg = RegistryConfig { url: base.clone(), token_env: None, ca_cert: None };
+        (GenerationServer { log }, cfg)
+    }
+
+    #[test]
+    fn seed_reads_origin_direct_past_stale_edge() {
+        let (_guard, _dir) = isolate_cache("stdorigin");
+        let (server, cfg) = start_generation_server();
+        let report = seed_stdlib_cache(Some(&cfg), &BTreeMap::new()).unwrap();
+        assert_eq!(report.packages.len(), std_package_tops().len());
+        assert!(report.packages.iter().all(|(_, v)| v == "1.0.0"));
+        let logged = server.log.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let manifests: Vec<_> = logged
+            .iter()
+            .filter(|(m, p, _)| m == "GET" && p.ends_with("/chunks"))
+            .collect();
+        assert!(!manifests.is_empty());
+        assert!(manifests.iter().all(|(_, _, direct)| *direct));
+        assert!(missing_std_packages().is_empty());
+    }
+
+    #[test]
+    fn stale_edge_without_origin_direct_fails_checksum() {
+        let (_guard, _dir) = isolate_cache("stdstale");
+        let (_server, cfg) = start_generation_server();
+        let err = fetch::ensure_registry_requirements(
+            &std_requirements(),
+            Some(&cfg),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("checksum mismatch"), "{}", err.message);
+    }
 
     fn std_nodes(version: &str, integrity: &str) -> Vec<String> {
         std_package_names()
