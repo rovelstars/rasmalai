@@ -1,5 +1,5 @@
 import type { PlaygroundRunner, RunResult } from '$lib/playground/runner';
-import { ensureStdForSource, ensureStdModule, openStdDb, sweepStaleStd } from '$lib/playground/stdvfs';
+import { ensureStdForSource, ensureStdModule, openStdDb, resolveRegistryOrigin, sweepStaleStd } from '$lib/playground/stdvfs';
 
 export type EngineState = 'unloaded' | 'downloading' | 'ready' | 'running' | 'complete' | 'error';
 
@@ -368,33 +368,18 @@ class Engine {
 		}
 	}
 
-	private registryOrigin(): string {
-		try {
-			if (typeof location !== 'undefined' && location.origin.startsWith('http')) return location.origin;
-		} catch {
-			// fall through to the error below
-		}
-		throw new Error('stdlib fetch needs an http(s) same-domain registry origin');
-	}
-
-	private devFallbackOrigin(origin: string): string | undefined {
-		try {
-			const host = new URL(origin).hostname;
-			if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')) {
-				return 'https://rasmalai.rovelstars.com';
-			}
-		} catch {
-			// unparseable origin: no fallback
-		}
-		return undefined;
+	private registryOrigins(): { origin: string; fallback?: string } {
+		return resolveRegistryOrigin(
+			typeof location !== 'undefined' && location.origin.startsWith('http') ? location.origin : ''
+		);
 	}
 
 	private async preloadStdlib(): Promise<void> {
 		if (!this.runner) return;
 		this.stdDb = await openStdDb();
 		this.stdPin = await this.runner.stdPin();
-		const origin = this.registryOrigin();
-		const prelude = await ensureStdModule('prelude', this.stdPin, origin, this.stdDb, fetch, this.devFallbackOrigin(origin));
+		const origin = this.registryOrigins();
+		const prelude = await ensureStdModule('prelude', this.stdPin, origin.origin, this.stdDb, fetch, origin.fallback);
 		await this.runner.stdProvide('prelude', prelude);
 		if (this.stdDb && this.stdPin) await sweepStaleStd(this.stdDb, this.stdPin);
 	}
@@ -402,8 +387,8 @@ class Engine {
 	private async ensureStd(source: string): Promise<void> {
 		if (!this.runner || !this.stdPin) return;
 		try {
-			const origin = this.registryOrigin();
-			await ensureStdForSource(this.runner, source, this.stdPin, origin, this.stdDb, fetch, this.devFallbackOrigin(origin));
+			const origins = this.registryOrigins();
+			await ensureStdForSource(this.runner, source, this.stdPin, origins.origin, this.stdDb, fetch, origins.fallback);
 		} catch (e) {
 			if (e instanceof Error && /timed out|did not converge/.test(e.message)) throw e;
 		}

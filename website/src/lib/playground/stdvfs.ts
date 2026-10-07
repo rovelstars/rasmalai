@@ -21,6 +21,45 @@ const STD_KEY_PREFIX = 'std::';
 const MAX_STD_MODULE_BYTES = 1024 * 1024;
 const PREFETCH_ROUNDS = 8;
 
+export const PROD_REGISTRY = 'https://rasmalai.rovelstars.com';
+
+export function isDevOrigin(origin: string): boolean {
+	try {
+		const host = new URL(origin).hostname;
+		return host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local');
+	} catch {
+		return false;
+	}
+}
+
+function readOverride(env?: Record<string, string | undefined>): string | null {
+	const raw = (env ?? (import.meta as unknown as { env?: Record<string, string | undefined> }).env)?.[
+		'VITE_RNX_REGISTRY'
+	];
+	if (typeof raw !== 'string') return null;
+	const trimmed = raw.trim().replace(/\/$/, '');
+	if (!/^https?:\/\//.test(trimmed)) return null;
+	return trimmed;
+}
+
+// Registry origin for playground stdlib fetches. VITE_RNX_REGISTRY is an
+// override with highest priority: when set, it is used exclusively and
+// no fallback applies. Without it, the page origin is the registry (so
+// production stays same-origin with zero configuration); localhost pages
+// additionally get the production fallback, because local dev servers
+// have no R2 binding and their chunk reads 404 by design.
+export function resolveRegistryOrigin(
+	locationOrigin: string,
+	env?: Record<string, string | undefined>
+): { origin: string; fallback?: string } {
+	const override = readOverride(env);
+	if (override) return { origin: override };
+	if (!locationOrigin.startsWith('http')) {
+		throw new Error('stdlib fetch needs an http(s) same-domain registry origin');
+	}
+	return { origin: locationOrigin, fallback: isDevOrigin(locationOrigin) ? PROD_REGISTRY : undefined };
+}
+
 function isChunkEntry(v: unknown): v is ChunkEntry {
 	if (typeof v !== 'object' || v === null) return false;
 	const o = v as Record<string, unknown>;
