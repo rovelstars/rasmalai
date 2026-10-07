@@ -69,8 +69,7 @@ pub fn seed_stdlib_cache(
     // Origin-direct: seeding must see one consistent generation
     // (resolve integrity + manifests + chunks); shared edge caches can
     // serve mixed generations with year-long TTLs.
-    let _origin = fetch::origin_direct_guard();
-    let requirements = std_requirements();
+    let _origin = fetch::origin_direct_guard();    let requirements = std_requirements();
     let base = fetch::registry_base_for("@std/prelude", default_registry, overrides);
     let have = fetch::scan_cache_have();
     let fetched =
@@ -233,11 +232,8 @@ mod tests {
         log: Arc<Mutex<Vec<(String, String, bool)>>>,
     }
 
-    fn has_no_cache(head: &str) -> bool {
-        head.lines().skip(1).any(|line| {
-            let lower = line.to_lowercase();
-            lower.starts_with("cache-control:") && lower.contains("no-cache")
-        })
+    fn has_direct_salt(path: &str) -> bool {
+        path.contains("origin-direct=1")
     }
 
     fn respond(stream: &mut std::net::TcpStream, status: u16, body: &[u8], json: bool) {
@@ -252,11 +248,13 @@ mod tests {
         let _ = stream.flush();
     }
 
-    // Serves a fresh generation only to origin-direct reads (Cache-Control:
-    // no-cache) and a stale generation otherwise, reproducing shared edge
-    // caches that hold manifests whose chunks no longer match resolve
-    // integrity. Resolve always answers the fresh integrity.
-    fn start_generation_server() -> (GenerationServer, RegistryConfig) {
+    // Serves a fresh generation only to origin-direct reads
+    // (`?origin-direct=1`) and a stale generation otherwise, reproducing
+    // shared edge caches that hold manifests whose chunks no longer match
+    // resolve integrity. Resolve always answers the fresh integrity. When
+    // `always_stale` is set, even origin-direct reads get the stale
+    // generation, reproducing a genuinely inconsistent registry.
+    fn start_generation_server(always_stale: bool) -> (GenerationServer, RegistryConfig) {
         let (fresh_tar, fresh_sha) = fixture_tarball("@std/seed", "1.0.0");
         let (stale_tar, stale_sha) = fixture_tarball("@std/seed", "0.0.9");
         let fresh_manifest = fallback_manifest(&fresh_tar);
@@ -289,19 +287,20 @@ mod tests {
                 let mut parts = request.split_whitespace();
                 let method = parts.next().unwrap_or_default().to_string();
                 let path = parts.next().unwrap_or_default().to_string();
-                let direct = has_no_cache(&text);
+                let route = path.split('?').next().unwrap_or_default().to_string();
+                let direct = has_direct_salt(&path) && !always_stale;
                 seen.lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push((method.clone(), path.clone(), direct));
-                if method == "GET" && path == "/api/version" {
+                if method == "GET" && route == "/api/version" {
                     respond(&mut stream, 200, b"{\"spec\": 1}", true);
-                } else if method == "POST" && path == "/api/resolve" {
+                } else if method == "POST" && route == "/api/resolve" {
                     respond(&mut stream, 200, resolve_body.as_bytes(), true);
-                } else if method == "GET" && path.ends_with("/chunks") {
+                } else if method == "GET" && route.ends_with("/chunks") {
                     let body = if direct { &fresh_manifest } else { &stale_manifest };
                     respond(&mut stream, 200, body.as_bytes(), true);
-                } else if method == "GET" && path.contains("/chunk/") {
-                    let hash = path.rsplit('/').next().unwrap_or_default();
+                } else if method == "GET" && route.contains("/chunk/") {
+                    let hash = route.rsplit('/').next().unwrap_or_default();
                     if hash == fresh_sha {
                         respond(&mut stream, 200, &fresh_tar, false);
                     } else if hash == stale_sha {
@@ -321,24 +320,45 @@ mod tests {
     #[test]
     fn seed_reads_origin_direct_past_stale_edge() {
         let (_guard, _dir) = isolate_cache("stdorigin");
-        let (server, cfg) = start_generation_server();
+        let (server, cfg) = start_generation_server(false);
         let report = seed_stdlib_cache(Some(&cfg), &BTreeMap::new()).unwrap();
         assert_eq!(report.packages.len(), std_package_tops().len());
         assert!(report.packages.iter().all(|(_, v)| v == "1.0.0"));
         let logged = server.log.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let manifests: Vec<_> = logged
             .iter()
-            .filter(|(m, p, _)| m == "GET" && p.ends_with("/chunks"))
+            .filter(|(m, p, _)| m == "GET" && p.contains("/chunks"))
             .collect();
         assert!(!manifests.is_empty());
-        assert!(manifests.iter().all(|(_, _, direct)| *direct));
+        assert!(manifests.iter().all(|(_, p, _)| p.contains("origin-direct=1")));
         assert!(missing_std_packages().is_empty());
     }
 
     #[test]
-    fn stale_edge_without_origin_direct_fails_checksum() {
+    fn stale_edge_heals_through_guarded_retry() {
+        let (_guard, _dir) = isolate_cache("stdretry");
+        let (server, cfg) = start_generation_server(false);
+        let fetched = fetch::ensure_registry_requirements(
+            &std_requirements(),
+            Some(&cfg),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), std_package_tops().len());
+        let logged = server.log.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let manifests: Vec<_> = logged
+            .iter()
+            .filter(|(m, p, _)| m == "GET" && p.contains("/chunks"))
+            .collect();
+        assert!(manifests.iter().any(|(_, p, _)| !p.contains("origin-direct=1")));
+        assert!(manifests.iter().any(|(_, p, _)| p.contains("origin-direct=1")));
+    }
+
+    #[test]
+    fn persistently_stale_registry_still_fails_closed() {
         let (_guard, _dir) = isolate_cache("stdstale");
-        let (_server, cfg) = start_generation_server();
+        let (_server, cfg) = start_generation_server(true);
         let err = fetch::ensure_registry_requirements(
             &std_requirements(),
             Some(&cfg),
@@ -347,7 +367,11 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, Code::E108);
-        assert!(err.message.contains("checksum mismatch"), "{}", err.message);
+        assert!(
+            err.message.contains("checksum mismatch") || err.message.contains("is missing"),
+            "{}",
+            err.message
+        );
     }
 
     fn std_nodes(version: &str, integrity: &str) -> Vec<String> {

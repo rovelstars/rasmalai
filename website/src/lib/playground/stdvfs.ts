@@ -175,11 +175,15 @@ async function fetchStdModuleFrom(
 ): Promise<string> {
 	const full = stdPackageOf(rest);
 	const base = `${origin}/api/packages/${full}@${version}`;
-	// See the chunk-fetch note below: manifests are versioned and
-	// immutable, so bypassing shared edge caches costs one origin read
-	// per version ever (the parsed result is not cached here, but every
-	// caller memoizes by version in IndexedDB).
-	const manifestRes = await fetchImpl(`${base}/chunks`, { cache: 'reload' });
+	// Tooling reads under a fixed `?origin-direct=1` namespace instead of
+	// the bare URL. Shared edge caches can hold manifest generations
+	// whose chunks no longer match resolve integrity, and client
+	// revalidation headers do not bypass them; the salted key is populated
+	// from origin (always live truth, rows are write-once) and the server
+	// answers it no-store, so the namespace stays correct. Bypassing costs
+	// one origin read per version ever: every caller memoizes by version
+	// in IndexedDB.
+	const manifestRes = await fetchImpl(`${base}/chunks?origin-direct=1`);
 	if (!manifestRes.ok) {
 		throw new Error(`stdlib fetch failed: ${full}@${version} chunks manifest answered HTTP ${manifestRes.status}`);
 	}
@@ -198,13 +202,11 @@ async function fetchStdModuleFrom(
 	const parts = await Promise.all(
 		entry.chunks.map(async (hash) => {
 			if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error(`stdlib fetch failed: bad chunk hash in ${full}@${version}`);
-			// Bypass shared edge caches: some nodes hold pre-CORS generations
-			// of these URLs with year-long TTLs. Reads stay correct either
-			// way (every chunk is sha-verified below), but only a fresh
-			// origin response carries the CORS headers browsers need.
-			// Volume is negligible: each module downloads once per version
-			// and then serves from IndexedDB forever.
-			const res = await fetchImpl(`${base}/chunk/${hash}`, { cache: 'reload' });
+			// Same origin-direct namespace as the manifest fetch above:
+			// the salted key is always populated from origin, so chunk
+			// bytes match the manifest generation by construction (and are
+			// sha-verified below regardless).
+			const res = await fetchImpl(`${base}/chunk/${hash}?origin-direct=1`);
 			if (!res.ok) throw new Error(`stdlib fetch failed: chunk ${hash.slice(0, 12)}... answered HTTP ${res.status}`);
 			const bytes = new Uint8Array(await res.arrayBuffer());
 			if ((await sha256Hex(bytes)) !== hash) {

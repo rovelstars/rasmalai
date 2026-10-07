@@ -501,14 +501,37 @@ impl Drop for OriginDirectGuard {
     }
 }
 
-// Forces registry reads past shared edge caches (Cache-Control/Pragma
-// no-cache) for the guard's lifetime. Edge nodes can hold manifest
-// generations whose chunks no longer match resolve integrity; tooling
-// that must see one consistent generation (stdlib seeding, stdlib docs)
-// reads origin-direct, while per-run and install paths keep edge caching.
+// Reads transport payloads (manifests, chunks) under a fixed
+// `?origin-direct=1` namespace instead of the bare URL. Shared edge caches
+// can hold manifest generations whose chunks no longer match resolve
+// integrity, and client revalidation headers do not bypass them; a
+// distinct key populated from origin (always live truth, rows are
+// write-once) stays correct, and the server answers it no-store so the
+// namespace can never cache a stale generation. Tooling that must see
+// one consistent generation (stdlib seeding, stdlib docs) holds the
+// guard; per-run and install paths keep edge caching with a single
+// guarded retry on generation mismatch.
 pub fn origin_direct_guard() -> OriginDirectGuard {
     let prev = ORIGIN_DIRECT.swap(true, std::sync::atomic::Ordering::SeqCst);
     OriginDirectGuard { prev }
+}
+
+fn direct_url(url: &str) -> String {
+    if !origin_direct() {
+        return url.to_string();
+    }
+    if url.contains('?') {
+        format!("{url}&origin-direct=1")
+    } else {
+        format!("{url}?origin-direct=1")
+    }
+}
+
+fn is_generation_error(e: &Diagnostic) -> bool {
+    e.message.contains("checksum mismatch")
+        || e.message.contains("is missing")
+        || e.message.contains("failed its integrity check")
+        || e.message.contains("failed to reassemble")
 }
 
 pub fn set_registry_transport(transport: std::sync::Arc<dyn RegistryTransport>) {
@@ -728,9 +751,6 @@ fn std_request(
         .set_write_timeout(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
         .map_err(|e| Diagnostic::new(Code::E108, format!("registry request failed: {e}")))?;
     let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
-    if origin_direct() {
-        head.push_str("Cache-Control: no-cache\r\nPragma: no-cache\r\n");
-    }
     if method == "POST" {
         head.push_str("Content-Type: application/json\r\nAccept: application/json\r\n");
     } else {
@@ -1425,7 +1445,7 @@ struct ChunkEntry {
 }
 
 fn fetch_chunks_manifest(url: &str, full: &str, version: &str) -> Result<Vec<ChunkEntry>, Diagnostic> {
-    let reply = http_get(url, &format!("chunk manifest of `{full}@{version}`"))?;
+    let reply = http_get(&direct_url(url), &format!("chunk manifest of `{full}@{version}`"))?;
     if reply.status != 200 {
         return Err(chunk_fetch_error(reply.status, &reply.body, full, version));
     }
@@ -1496,7 +1516,7 @@ fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str) -> Result<Vec<u
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Diagnostic::new(Code::E108, format!("bad chunk hash `{hash}`")));
     }
-    let reply = http_get(url, &format!("chunk {hash} of `{full}@{version}`"))?;
+    let reply = http_get(&direct_url(url), &format!("chunk {hash} of `{full}@{version}`"))?;
     if reply.status != 200 {
         return Err(Diagnostic::new(
             Code::E108,
@@ -1871,33 +1891,43 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode) -> Result<PathBuf
             )
         })?
         .to_string();
-    let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version)?;
-    let mut uniq: BTreeSet<String> = BTreeSet::new();
-    for entry in &entries {
-        for hash in &entry.chunks {
-            uniq.insert(hash.clone());
+    let download = |guard: Option<OriginDirectGuard>| -> Result<Vec<u8>, Diagnostic> {
+        let _hold = guard;
+        let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version)?;
+        let mut uniq: BTreeSet<String> = BTreeSet::new();
+        for entry in &entries {
+            for hash in &entry.chunks {
+                uniq.insert(hash.clone());
+            }
         }
-    }
-    let ordered: Vec<String> = uniq.into_iter().collect();
-    let by_hash = fetch_chunks_parallel(&chunk_base, &ordered, &node.full, &node.version)?;
-    let bytes = rebuild_tar(&entries, &by_hash)?;
-    if bytes.len() > MAX_DOWNLOAD_BYTES {
-        return Err(Diagnostic::new(
-            Code::E108,
-            format!("download of `{}@{}` exceeds size limits", node.full, node.version),
-        ));
-    }
-    let digest = Sha256::hexdigest(&bytes);
-    if !digest.eq_ignore_ascii_case(&node.integrity) {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(Diagnostic::new(
-            Code::E108,
-            format!(
-                "checksum mismatch for package `{}@{}`: download does not match registry integrity",
-                node.full, node.version
-            ),
-        ));
-    }
+        let ordered: Vec<String> = uniq.into_iter().collect();
+        let by_hash = fetch_chunks_parallel(&chunk_base, &ordered, &node.full, &node.version)?;
+        let bytes = rebuild_tar(&entries, &by_hash)?;
+        if bytes.len() > MAX_DOWNLOAD_BYTES {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("download of `{}@{}` exceeds size limits", node.full, node.version),
+            ));
+        }
+        let digest = Sha256::hexdigest(&bytes);
+        if !digest.eq_ignore_ascii_case(&node.integrity) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "checksum mismatch for package `{}@{}`: download does not match registry integrity",
+                    node.full, node.version
+                ),
+            ));
+        }
+        Ok(bytes)
+    };
+    let bytes = match download(None) {
+        Err(first) if is_generation_error(&first) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            download(Some(origin_direct_guard()))
+        }
+        other => other,
+    }?;
     let _ = std::fs::remove_dir_all(&dir);
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -2234,18 +2264,22 @@ pub(crate) mod testkit {
                     let Some((method, path, headers, body)) = read_request(&mut stream) else {
                         continue;
                     };
+                    // Origin-direct reads carry `?origin-direct=1`; match on
+                    // the path without query so salted and plain reads behave
+                    // identically here.
+                    let route = path.split('?').next().unwrap_or_default().to_string();
                     seen.lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .push(LoggedRequest { method: method.clone(), path: path.clone(), headers, body });
                     let spec = config.version_spec.to_string();
                     let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", Box::leak(spec.into_boxed_str()) as &str)];
-                    if method == "GET" && path == "/api/version" {
+                    if method == "GET" && route == "/api/version" {
                         let body = format!(
                             "{{\"spec\": {}, \"capabilities\": [\"tombstones\"], \"registry\": \"test\"}}",
                             config.version_spec
                         );
                         respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
-                    } else if method == "POST" && path == "/api/resolve" {
+                    } else if method == "POST" && route == "/api/resolve" {
                         respond(
                             &mut stream,
                             config.resolve_status,
@@ -2253,7 +2287,7 @@ pub(crate) mod testkit {
                             config.resolve_body.as_bytes(),
                             with_spec,
                         );
-                    } else if method == "GET" && path.ends_with("/chunks") {
+                    } else if method == "GET" && route.ends_with("/chunks") {
                         if config.manifest_status == 200 {
                             let body = match &config.manifest_override {
                                 Some(m) => m.clone(),
@@ -2269,8 +2303,8 @@ pub(crate) mod testkit {
                                 with_spec,
                             );
                         }
-                    } else if method == "GET" && path.contains("/chunk/") {
-                        let hash = path.rsplit('/').next().unwrap_or_default().to_string();
+                    } else if method == "GET" && route.contains("/chunk/") {
+                        let hash = route.rsplit('/').next().unwrap_or_default().to_string();
                         let mut hit: Option<Vec<u8>> = None;
                         if let Some(pairs) = &config.chunk_override {
                             for (h, b) in pairs {
@@ -2322,7 +2356,7 @@ pub(crate) mod testkit {
         pub fn count_get(&self, suffix: &str) -> usize {
             self.requests()
                 .iter()
-                .filter(|(m, p, _)| m == "GET" && p.ends_with(suffix))
+                .filter(|(m, p, _)| m == "GET" && p.split('?').next().unwrap_or_default().ends_with(suffix))
                 .count()
         }
 
