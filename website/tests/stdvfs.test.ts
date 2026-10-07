@@ -161,32 +161,27 @@ describe('fetchStdModule', () => {
 
 describe('resolveRegistryOrigin', () => {
 	it('uses the page origin with the prod fallback on localhost', () => {
-		assert.deepEqual(resolveRegistryOrigin('http://localhost:5173'), {
-			origin: 'http://localhost:5173',
-			fallback: 'https://rasmalai.rovelstars.com'
-		});
+		const resolved = resolveRegistryOrigin('http://localhost:5173');
+		assert.equal(resolved.origin, 'http://localhost:5173');
+		assert.equal(resolved.fallback, 'https://rasmalai.rovelstars.com');
 	});
 
 	it('uses the page origin with no fallback in production', () => {
-		assert.deepEqual(resolveRegistryOrigin('https://rasmalai.rovelstars.com'), {
-			origin: 'https://rasmalai.rovelstars.com',
-			fallback: undefined
-		});
+		const resolved = resolveRegistryOrigin('https://rasmalai.rovelstars.com');
+		assert.equal(resolved.origin, 'https://rasmalai.rovelstars.com');
+		assert.equal(resolved.fallback, undefined);
 	});
 
 	it('prefers the VITE_RNX_REGISTRY override with no fallback', () => {
-		assert.deepEqual(resolveRegistryOrigin('http://localhost:5173', { VITE_RNX_REGISTRY: 'https://preview.test/' }), {
-			origin: 'https://preview.test',
-			fallback: undefined
-		});
-		assert.deepEqual(resolveRegistryOrigin('https://rasmalai.rovelstars.com', { VITE_RNX_REGISTRY: 'https://preview.test' }), {
-			origin: 'https://preview.test',
-			fallback: undefined
-		});
-		assert.deepEqual(resolveRegistryOrigin('http://localhost:5173', { VITE_RNX_REGISTRY: 'not a url' }), {
-			origin: 'http://localhost:5173',
-			fallback: 'https://rasmalai.rovelstars.com'
-		});
+		const local = resolveRegistryOrigin('http://localhost:5173', { VITE_RNX_REGISTRY: 'https://preview.test/' });
+		assert.equal(local.origin, 'https://preview.test');
+		assert.equal(local.fallback, undefined);
+		const prod = resolveRegistryOrigin('https://rasmalai.rovelstars.com', { VITE_RNX_REGISTRY: 'https://preview.test' });
+		assert.equal(prod.origin, 'https://preview.test');
+		assert.equal(prod.fallback, undefined);
+		const invalid = resolveRegistryOrigin('http://localhost:5173', { VITE_RNX_REGISTRY: 'not a url' });
+		assert.equal(invalid.origin, 'http://localhost:5173');
+		assert.equal(invalid.fallback, 'https://rasmalai.rovelstars.com');
 	});
 
 	it('rejects non-http origins', () => {
