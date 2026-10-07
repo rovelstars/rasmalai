@@ -485,6 +485,32 @@ pub trait RegistryTransport: Send + Sync {
 static TRANSPORT: std::sync::Mutex<Option<std::sync::Arc<dyn RegistryTransport>>> =
     std::sync::Mutex::new(None);
 
+static ORIGIN_DIRECT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn origin_direct() -> bool {
+    ORIGIN_DIRECT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub struct OriginDirectGuard {
+    prev: bool,
+}
+
+impl Drop for OriginDirectGuard {
+    fn drop(&mut self) {
+        ORIGIN_DIRECT.store(self.prev, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+// Forces registry reads past shared edge caches (Cache-Control/Pragma
+// no-cache) for the guard's lifetime. Edge nodes can hold manifest
+// generations whose chunks no longer match resolve integrity; tooling
+// that must see one consistent generation (stdlib seeding, stdlib docs)
+// reads origin-direct, while per-run and install paths keep edge caching.
+pub fn origin_direct_guard() -> OriginDirectGuard {
+    let prev = ORIGIN_DIRECT.swap(true, std::sync::atomic::Ordering::SeqCst);
+    OriginDirectGuard { prev }
+}
+
 pub fn set_registry_transport(transport: std::sync::Arc<dyn RegistryTransport>) {
     let mut slot = TRANSPORT.lock().unwrap_or_else(|e| e.into_inner());
     *slot = Some(transport);
@@ -702,6 +728,9 @@ fn std_request(
         .set_write_timeout(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
         .map_err(|e| Diagnostic::new(Code::E108, format!("registry request failed: {e}")))?;
     let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    if origin_direct() {
+        head.push_str("Cache-Control: no-cache\r\nPragma: no-cache\r\n");
+    }
     if method == "POST" {
         head.push_str("Content-Type: application/json\r\nAccept: application/json\r\n");
     } else {
@@ -2029,6 +2058,7 @@ pub(crate) mod testkit {
     pub struct LoggedRequest {
         pub method: String,
         pub path: String,
+        pub headers: Vec<(String, String)>,
         pub body: Vec<u8>,
     }
 
@@ -2122,7 +2152,7 @@ pub(crate) mod testkit {
         }
     }
 
-    fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, String, Vec<u8>)> {
+    fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, String, Vec<(String, String)>, Vec<u8>)> {
         let mut head = Vec::new();
         let mut byte = [0u8; 1];
         while !head.ends_with(b"\r\n\r\n") {
@@ -2142,12 +2172,16 @@ pub(crate) mod testkit {
         let method = parts.next().unwrap_or_default().to_string();
         let path = parts.next().unwrap_or_default().to_string();
         let mut length = 0usize;
+        let mut headers = Vec::new();
         for line in lines {
             if let Some(rest) = line.strip_prefix("Content-Length:") {
                 length = rest.trim().parse::<usize>().unwrap_or(0);
             }
             if let Some(rest) = line.strip_prefix("content-length:") {
                 length = rest.trim().parse::<usize>().unwrap_or(0);
+            }
+            if let Some(i) = line.find(':') {
+                headers.push((line[..i].trim().to_string(), line[i + 1..].trim().to_string()));
             }
         }
         let mut body = vec![0u8; length.min(16 * 1024 * 1024)];
@@ -2160,7 +2194,7 @@ pub(crate) mod testkit {
             }
         }
         body.truncate(read);
-        Some((method, path, body))
+        Some((method, path, headers, body))
     }
 
     fn respond(
@@ -2197,12 +2231,12 @@ pub(crate) mod testkit {
                     let Ok(mut stream) = stream else {
                         continue;
                     };
-                    let Some((method, path, body)) = read_request(&mut stream) else {
+                    let Some((method, path, headers, body)) = read_request(&mut stream) else {
                         continue;
                     };
                     seen.lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .push(LoggedRequest { method: method.clone(), path: path.clone(), body });
+                        .push(LoggedRequest { method: method.clone(), path: path.clone(), headers, body });
                     let spec = config.version_spec.to_string();
                     let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", Box::leak(spec.into_boxed_str()) as &str)];
                     if method == "GET" && path == "/api/version" {
