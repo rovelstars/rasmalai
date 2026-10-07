@@ -29,6 +29,21 @@ npm run dev
 npm run dev -- --open
 ```
 
+### Playground registry origin
+
+The playground resolves `@std/*` against a registry. Without
+configuration it uses the page origin, which is correct in production
+(same-origin, zero config). A local dev server has no chunk store, so
+point it at a live registry instead:
+
+```sh
+VITE_RNX_REGISTRY=https://rasmalai.rovelstars.com npm run dev
+```
+
+`VITE_RNX_REGISTRY` is an override with highest priority: when set, it
+is used exclusively and no fallback applies. Any http(s) origin works,
+including preview deployments. Production builds leave it unset.
+
 ## Building
 
 To create a production version of your app:
