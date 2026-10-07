@@ -109,7 +109,13 @@ export async function GET({ params, platform, setHeaders, url }) {
 		return withdrawn(version, readWithdrawReason(found.row.manifestJson));
 	}
 	const { row } = found;
-	const immutable = { 'Cache-Control': 'public, max-age=31536000, immutable' };
+	// Tooling reads transport payloads (manifests, chunks) under a fixed
+	// `?origin-direct=1` namespace to escape stale shared-cache
+	// generations; answer that namespace no-store so it can never cache
+	// one. Normal reads keep the immutable edge TTL.
+	const immutable = url.searchParams.has('origin-direct')
+		? { 'Cache-Control': 'no-store' }
+		: { 'Cache-Control': 'public, max-age=31536000, immutable' };
 
 	if (!sub) {
 		setHeaders({ ...immutable, ...specHeaders() });

@@ -43,13 +43,10 @@ impl UreqTransport {
 
 impl frontend::fetch::RegistryTransport for UreqTransport {
     fn get(&self, url: &str) -> Result<frontend::fetch::RegistryReply, diagnostics::Diagnostic> {
-        let req = self.agent.get(url).header("Accept", "application/json");
-        let req = if frontend::fetch::origin_direct() {
-            req.header("Cache-Control", "no-cache").header("Pragma", "no-cache")
-        } else {
-            req
-        };
-        Self::reply("registry request", req.call())
+        Self::reply(
+            "registry request",
+            self.agent.get(url).header("Accept", "application/json").call(),
+        )
     }
 
     fn post_json(
@@ -57,17 +54,14 @@ impl frontend::fetch::RegistryTransport for UreqTransport {
         url: &str,
         body: &str,
     ) -> Result<frontend::fetch::RegistryReply, diagnostics::Diagnostic> {
-        let req = self
-            .agent
-            .post(url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json");
-        let req = if frontend::fetch::origin_direct() {
-            req.header("Cache-Control", "no-cache").header("Pragma", "no-cache")
-        } else {
-            req
-        };
-        Self::reply("registry request", req.send(body.as_bytes()))
+        Self::reply(
+            "registry request",
+            self.agent
+                .post(url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .send(body.as_bytes()),
+        )
     }
 }
 
@@ -309,12 +303,16 @@ mod tests {
                     seen.lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .push((method.clone(), path.clone(), body));
+                    // Transport reads may carry `?origin-direct=1`; match on
+                    // the path without query so salted and plain reads behave
+                    // identically here.
+                    let route = path.split('?').next().unwrap_or_default();
                     let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", "1")];
-                    if method == "GET" && path == "/api/version" {
+                    if method == "GET" && route == "/api/version" {
                         let body =
                             "{\"spec\": 1, \"capabilities\": [], \"registry\": \"test\"}";
                         respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
-                    } else if method == "POST" && path == "/api/resolve" {
+                    } else if method == "POST" && route == "/api/resolve" {
                         respond(
                             &mut stream,
                             200,
@@ -322,11 +320,11 @@ mod tests {
                             resolve_body.as_bytes(),
                             with_spec,
                         );
-                    } else if method == "GET" && path.ends_with("/chunks") {
+                    } else if method == "GET" && route.ends_with("/chunks") {
                         let body = fallback_manifest(&tarball);
                         respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
-                    } else if method == "GET" && path.contains("/chunk/") {
-                        let hash = path.rsplit('/').next().unwrap_or_default().to_string();
+                    } else if method == "GET" && route.contains("/chunk/") {
+                        let hash = route.rsplit('/').next().unwrap_or_default().to_string();
                         let digest = frontend::checksum::Sha256::hexdigest(&tarball);
                         if digest == hash {
                             respond(

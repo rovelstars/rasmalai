@@ -99,13 +99,10 @@ impl UreqTransport {
 
 impl frontend::fetch::RegistryTransport for UreqTransport {
     fn get(&self, url: &str) -> Result<frontend::fetch::RegistryReply, diagnostics::Diagnostic> {
-        let req = self.agent.get(url).header("Accept", "application/json");
-        let req = if frontend::fetch::origin_direct() {
-            req.header("Cache-Control", "no-cache").header("Pragma", "no-cache")
-        } else {
-            req
-        };
-        Self::reply("registry request", req.call())
+        Self::reply(
+            "registry request",
+            self.agent.get(url).header("Accept", "application/json").call(),
+        )
     }
 
     fn post_json(
@@ -113,17 +110,14 @@ impl frontend::fetch::RegistryTransport for UreqTransport {
         url: &str,
         body: &str,
     ) -> Result<frontend::fetch::RegistryReply, diagnostics::Diagnostic> {
-        let req = self
-            .agent
-            .post(url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json");
-        let req = if frontend::fetch::origin_direct() {
-            req.header("Cache-Control", "no-cache").header("Pragma", "no-cache")
-        } else {
-            req
-        };
-        Self::reply("registry request", req.send(body.as_bytes()))
+        Self::reply(
+            "registry request",
+            self.agent
+                .post(url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .send(body.as_bytes()),
+        )
     }
 }
 

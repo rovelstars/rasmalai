@@ -100,7 +100,7 @@ describe('fetchStdModule', () => {
 		const real = new TextEncoder().encode('real bytes\n');
 		const hash = createHash('sha256').update(real).digest('hex');
 		const fetchImpl = (async (url: string) => {
-			if (url.endsWith('/chunks')) {
+			if (url.split('?')[0]!.endsWith('/chunks')) {
 				return new Response(
 					JSON.stringify({ entries: [{ name: 'src/lib.rnx', size: src.length, dir: false, chunks: [hash] }] }),
 					{ status: 200 }
@@ -111,18 +111,19 @@ describe('fetchStdModule', () => {
 		await assert.rejects(fetchStdModule('fs', '0.1.0', 'https://example.test', fetchImpl), /integrity/);
 	});
 
-	it('passes cache-reload so shared edge generations never stick', async () => {
+	it('fetches under the origin-direct namespace past stale edge generations', async () => {
 		const src = new TextEncoder().encode('export fn mkdir(): Int { return 0; }\n');
 		const hash = createHash('sha256').update(src).digest('hex');
-		const seen: Array<RequestInit | undefined> = [];
+		const seen: string[] = [];
 		const inner = mockFetch(new Map([['src/lib.rnx', src]]), new Map([[hash, src]]));
-		const fetchImpl = (async (url: string, init?: RequestInit) => {
-			seen.push(init);
+		const fetchImpl = (async (url: string) => {
+			seen.push(url);
 			return inner(url);
 		}) as typeof fetch;
-		await fetchStdModule('fs', '0.1.0', 'https://example.test', fetchImpl);
+		const text = await fetchStdModule('fs', '0.1.0', 'https://example.test', fetchImpl);
+		assert.equal(text, new TextDecoder().decode(src));
 		assert.ok(seen.length > 0);
-		assert.ok(seen.every((v) => v && v.cache === 'reload'));
+		assert.ok(seen.every((u) => u.includes('origin-direct=1')));
 	});
 
 	it('fails closed on a chunks-manifest HTTP error', async () => {
