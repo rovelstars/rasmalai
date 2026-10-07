@@ -666,6 +666,7 @@ dependencies = [
  "diagnostics",
  "frontend",
  "stdlib",
+ "ureq",
 ]
 
 [[package]]

@@ -1,14 +1,14 @@
 name: Release
 
-# Build gates run strictly in order; each leg starts only if the
-# previous one succeeded:
-#   x86_64-linux -> aarch64-linux -> x86_64-windows -> aarch64-macos
-# then publish. A red leg stops everything after it.
+# All four platform legs build concurrently in one matrix after the
+# check-tag gate; publish runs only when every leg is green, then
+# publish-std follows publish. A red leg fails the release without
+# cancelling the other legs (fail-fast is off, so every platform still
+# reports logs).
 #
-# Iterating on one leg: dispatch with `from` set to that leg; earlier
-# legs are skipped and publish stays skipped (it only runs after a
-# full chain). Finalize with a tag push, which always runs everything
-# and publishes all four tarballs.
+# Iterating: dispatch with `tag` set rebuilds all four legs for that
+# tag. A tag push always runs everything and publishes all four
+# tarballs.
 
 on:
   push:
@@ -20,16 +20,6 @@ on:
         description: "Tag to (re)build, e.g. v0.1.0. Empty means the newest v* tag."
         required: false
         default: ""
-      from:
-        description: "First leg to run; earlier legs are skipped (their artifacts must already be on the release)."
-        required: false
-        default: "x86_64-linux"
-        type: choice
-        options:
-          - x86_64-linux
-          - aarch64-linux
-          - x86_64-windows
-          - aarch64-macos
 
 env:
   CARGO_TERM_COLOR: always
@@ -66,14 +56,29 @@ jobs:
             exit 1
           fi
 
-  build-linux-x64:
-    name: x86_64-linux
-    if: ${{ inputs.from == '' || inputs.from == 'x86_64-linux' }}
+  build:
+    name: ${{ matrix.leg }}
     needs: check-tag
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: x86_64-linux
+            runner: ubuntu-24.04
+            target: x86_64-linux
+          - leg: aarch64-linux
+            runner: ubuntu-24.04-arm
+            target: aarch64-linux
+          - leg: x86_64-windows
+            runner: windows-2022
+            target: x86_64-windows
+          - leg: aarch64-macos
+            runner: macos-14
+            target: aarch64-macos
     env:
-      TARGET: x86_64-linux
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -81,137 +86,23 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
 
       - name: Install LLVM 22
+        if: ${{ matrix.leg == 'x86_64-linux' || matrix.leg == 'aarch64-linux' }}
         run: |
           wget -qO llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 22
           sudo apt-get install -y llvm-22-dev libpolly-22-dev
           echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-x86_64-linux
-
-      - name: Build release binary
-        run: cargo build --release -p cli
-
-      - name: Smoke test
-        run: |
-          ./target/release/rnx --version
-          echo 'print("release-ok");' > /tmp/smoke.rnx
-          ./target/release/rnx run /tmp/smoke.rnx
-
-      - name: Package tarball
-        run: |
-          stage="rnx-${TARGET}"
-          mkdir -p "$stage/bin" "$stage/lib"
-          cp target/release/rnx "$stage/bin/rnx.bin"
-          for lib in $(ldd target/release/rnx | grep -o '/[^ ]*libLLVM[^ ]*'); do
-            cp -L "$lib" "$stage/lib/"
-          done
-          cat > "$stage/bin/rnx" <<'WRAPPER'
-          #!/bin/sh
-          here="$(cd "$(dirname "$0")" && pwd)"
-          export LD_LIBRARY_PATH="$here/../lib:${LD_LIBRARY_PATH:-}"
-          exec "$here/rnx.bin" "$@"
-          WRAPPER
-          chmod +x "$stage/bin/rnx"
-          tar czf "$stage.tar.gz" "$stage"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: rnx-x86_64-linux
-          path: rnx-x86_64-linux.tar.gz
-
-  build-linux-arm64:
-    name: aarch64-linux
-    if: ${{ always() && needs.build-linux-x64.result != 'failure' && needs.build-linux-x64.result != 'cancelled' && (inputs.from == '' || inputs.from == 'x86_64-linux' || inputs.from == 'aarch64-linux') }}
-    needs: build-linux-x64
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 360
-    env:
-      TARGET: aarch64-linux
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
-
-      - name: Install LLVM 22
-        run: |
-          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 22
-          sudo apt-get install -y llvm-22-dev libpolly-22-dev
-          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-aarch64-linux
-
-      - name: Build release binary
-        run: cargo build --release -p cli
-
-      - name: Smoke test
-        run: |
-          ./target/release/rnx --version
-          echo 'print("release-ok");' > /tmp/smoke.rnx
-          ./target/release/rnx run /tmp/smoke.rnx
-
-      - name: Package tarball
-        run: |
-          stage="rnx-${TARGET}"
-          mkdir -p "$stage/bin" "$stage/lib"
-          cp target/release/rnx "$stage/bin/rnx.bin"
-          for lib in $(ldd target/release/rnx | grep -o '/[^ ]*libLLVM[^ ]*'); do
-            cp -L "$lib" "$stage/lib/"
-          done
-          cat > "$stage/bin/rnx" <<'WRAPPER'
-          #!/bin/sh
-          here="$(cd "$(dirname "$0")" && pwd)"
-          export LD_LIBRARY_PATH="$here/../lib:${LD_LIBRARY_PATH:-}"
-          exec "$here/rnx.bin" "$@"
-          WRAPPER
-          chmod +x "$stage/bin/rnx"
-          tar czf "$stage.tar.gz" "$stage"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: rnx-aarch64-linux
-          path: rnx-aarch64-linux.tar.gz
-
-  build-windows-x64:
-    name: x86_64-windows
-    if: ${{ always() && needs.build-linux-arm64.result != 'failure' && needs.build-linux-arm64.result != 'cancelled' && (inputs.from == '' || inputs.from == 'x86_64-linux' || inputs.from == 'aarch64-linux' || inputs.from == 'x86_64-windows') }}
-    needs: build-linux-arm64
-    runs-on: windows-2022
-    timeout-minutes: 360
-    env:
-      TARGET: x86_64-windows
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
 
       - name: Install msys2 with LLVM 22
+        if: ${{ matrix.leg == 'x86_64-windows' }}
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           install: git mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-llvm mingw-w64-ucrt-x86_64-libffi mingw-w64-ucrt-x86_64-zstd mingw-w64-ucrt-x86_64-libxml2
 
       - name: Bridge cargo into msys2 PATH
+        if: ${{ matrix.leg == 'x86_64-windows' }}
         shell: pwsh
         run: |
           $cargo = (Get-Command cargo.exe).Path
@@ -219,32 +110,80 @@ jobs:
           "CARGO_EXE=$msysCargo" >> $env:GITHUB_ENV
 
       - name: Check LLVM version
+        if: ${{ matrix.leg == 'x86_64-windows' }}
+        shell: msys2 {0}
         run: |
           llvm-config --version
           test "$(llvm-config --version | cut -d. -f1,2)" = "22.1"
 
+      - name: Install LLVM 22
+        if: ${{ matrix.leg == 'aarch64-macos' }}
+        run: |
+          brew install llvm@22
+          echo "LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        if: ${{ matrix.leg != 'x86_64-windows' }}
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Rust (GNU target)
+        if: ${{ matrix.leg == 'x86_64-windows' }}
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-x86_64-windows
+          shared-key: release-${{ matrix.leg }}
 
       - name: Build release binary
+        if: ${{ matrix.leg != 'x86_64-windows' }}
+        run: cargo build --release -p cli
+
+      - name: Build release binary
+        if: ${{ matrix.leg == 'x86_64-windows' }}
+        shell: msys2 {0}
         env:
           LLVM_SYS_221_PREFIX: /ucrt64
           RUSTFLAGS: -l ffi
         run: '"$CARGO_EXE" build --release --target x86_64-pc-windows-gnu -p cli'
 
       - name: Smoke test
+        if: ${{ matrix.leg != 'x86_64-windows' }}
+        run: |
+          ./target/release/rnx --version
+          echo 'print("release-ok");' > /tmp/smoke.rnx
+          ./target/release/rnx run /tmp/smoke.rnx
+
+      - name: Smoke test
+        if: ${{ matrix.leg == 'x86_64-windows' }}
+        shell: msys2 {0}
         run: |
           ./target/x86_64-pc-windows-gnu/release/rnx.exe --version
           echo 'print("release-ok");' > /tmp/smoke.rnx
           ./target/x86_64-pc-windows-gnu/release/rnx.exe run /tmp/smoke.rnx
 
       - name: Package tarball
+        if: ${{ matrix.leg == 'x86_64-linux' || matrix.leg == 'aarch64-linux' }}
+        run: |
+          stage="rnx-${TARGET}"
+          mkdir -p "$stage/bin" "$stage/lib"
+          cp target/release/rnx "$stage/bin/rnx.bin"
+          for lib in $(ldd target/release/rnx | grep -o '/[^ ]*libLLVM[^ ]*'); do
+            cp -L "$lib" "$stage/lib/"
+          done
+          cat > "$stage/bin/rnx" <<'WRAPPER'
+          #!/bin/sh
+          here="$(cd "$(dirname "$0")" && pwd)"
+          export LD_LIBRARY_PATH="$here/../lib:${LD_LIBRARY_PATH:-}"
+          exec "$here/rnx.bin" "$@"
+          WRAPPER
+          chmod +x "$stage/bin/rnx"
+          tar czf "$stage.tar.gz" "$stage"
+
+      - name: Package tarball
+        if: ${{ matrix.leg == 'x86_64-windows' }}
+        shell: msys2 {0}
         run: |
           stage="rnx-${TARGET}"
           mkdir -p "$stage/bin"
@@ -254,48 +193,8 @@ jobs:
           done
           tar czf "$stage.tar.gz" "$stage"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: rnx-x86_64-windows
-          path: rnx-x86_64-windows.tar.gz
-
-  build-macos-arm64:
-    name: aarch64-macos
-    if: ${{ always() && needs.build-windows-x64.result != 'failure' && needs.build-windows-x64.result != 'cancelled' }}
-    needs: build-windows-x64
-    runs-on: macos-14
-    timeout-minutes: 360
-    env:
-      TARGET: aarch64-macos
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
-
-      - name: Install LLVM 22
-        run: |
-          brew install llvm@22
-          echo "LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)" >> "$GITHUB_ENV"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-aarch64-macos
-
-      - name: Build release binary
-        run: cargo build --release -p cli
-
-      - name: Smoke test
-        run: |
-          ./target/release/rnx --version
-          echo 'print("release-ok");' > /tmp/smoke.rnx
-          ./target/release/rnx run /tmp/smoke.rnx
-
       - name: Package tarball
+        if: ${{ matrix.leg == 'aarch64-macos' }}
         run: |
           stage="rnx-${TARGET}"
           mkdir -p "$stage/bin" "$stage/lib"
@@ -315,13 +214,13 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: rnx-aarch64-macos
-          path: rnx-aarch64-macos.tar.gz
+          name: rnx-${{ matrix.target }}
+          path: rnx-${{ matrix.target }}.tar.gz
 
   publish:
     name: publish release
-    if: ${{ always() && needs.build-macos-arm64.result == 'success' }}
-    needs: build-macos-arm64
+    if: ${{ needs.build.result == 'success' }}
+    needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

@@ -15,10 +15,9 @@ mkdirSync(outDir, { recursive: true });
 //    hermetic, and always consistent with the published packages. This is
 //    also what saves cargo-less build environments (Pages) - they reuse
 //    the last good bundle instead of failing.
-// 2. Local docgen (cargo): fresh snapshot from the working tree. Needs the
-//    global stdlib cache first: docgen resolves @std/* from cache-or-
-//    registry (no embedded fallback), so seed the cache before invoking
-//    it. Seeding is best-effort; docgen reports its own errors.
+// 2. Local docgen (cargo): fresh snapshot from the working tree. Docgen
+//    self-seeds @std/* over HTTPS, so no CLI or LLVM is needed here;
+//    docgen reports its own errors.
 // 3. Release binary docgen (no cargo/LLVM needed): the published rnx
 //    release still carries embedded stdlib, so `doc --stdlib` works fully
 //    offline. This is what saves LLVM-less build environments (Pages).
@@ -48,14 +47,6 @@ if (deployed) {
 }
 
 function tryCargoDocgen() {
-	try {
-		execFileSync('cargo', ['run', '-q', '-p', 'cli', '--', 'fetch-std'], {
-			cwd: compilerDir,
-			stdio: 'inherit'
-		});
-	} catch {
-		console.log('docs: stdlib seeding failed, docgen will use whatever the cache holds');
-	}
 	try {
 		execFileSync('cargo', ['run', '-q', '-p', 'docgen', '--', outDir], {
 			cwd: compilerDir,
