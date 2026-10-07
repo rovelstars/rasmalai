@@ -15,6 +15,7 @@ import {
 	enforceStorageQuota,
 	purgeUrls,
 	packagePointerUrls,
+	extractDepNames,
 	validateKeywords,
 	MAX_DOC_JSON_BYTES,
 	MAX_README_BYTES,
@@ -292,6 +293,9 @@ export async function POST({ request, platform, url }) {
 			await storeTarManifest(env, rowId, chunked.entries);
 		}
 		await purgeUrls(env, packagePointerUrls(url.origin, parsed.full, version), { fullName: parsed.full });
+		for (const dep of extractDepNames(manifestJson)) {
+			await purgeUrls(env, [`${url.origin}/api/packages/${dep}/dependents`], { fullName: dep });
+		}
 		return json({ success: true, url: `/packages/${parsed.full}`, version }, { status: 201, headers: specHeaders() });
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
