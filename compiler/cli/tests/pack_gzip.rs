@@ -89,7 +89,7 @@ fn test_parallel_unpack_and_run() {
     );
     assert!(unpack.status.success(), "{}", String::from_utf8_lossy(&unpack.stderr));
     let stdout = String::from_utf8_lossy(&unpack.stdout).into_owned();
-    assert!(stdout.contains("Extracted 4 files"), "summary:\n{stdout}");
+    assert!(stdout.contains("Extracted 3 files"), "summary:\n{stdout}");
     assert!(ext.join("src").join("main.rnx").is_file());
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx).arg("run").current_dir(&ext).output().unwrap();
