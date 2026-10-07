@@ -98,7 +98,7 @@ export async function GET({ params, platform, setHeaders, url }) {
 		const owner = await getPackageOwner(env, parsedName.scope, parsedName.name);
 		if (owner === null) return notFound(`package ${full} does not exist`);
 		const names = await getDependents(env, full);
-		setHeaders({ 'Cache-Control': 'public, max-age=300, s-maxage=300', ...specHeaders() });
+		setHeaders({ 'Cache-Control': 'public, max-age=60, s-maxage=3600', ...specHeaders() });
 		return json({ dependents: names.map((name) => ({ name })) }, { headers: headers() });
 	}
 

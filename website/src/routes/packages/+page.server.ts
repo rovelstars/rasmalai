@@ -10,8 +10,8 @@ export async function load({ platform, setHeaders }) {
 	} catch {
 		packages = [];
 	}
-	// Latest-pointer aggregate: moves on every publish, so it stays short
-	// (mirrors the /api/packages edge TTL in hooks.server.ts).
-	setHeaders({ 'Cache-Control': 'public, max-age=60, s-maxage=300' });
+	// Catalog aggregate: edge holds an hour, browsers a minute. Freshness
+	// on publish comes from purging, not TTL (see packagePointerUrls).
+	setHeaders({ 'Cache-Control': 'public, max-age=60, s-maxage=3600' });
 	return { packages };
 }

@@ -1462,13 +1462,14 @@ export async function purgeUrls(
 
 export function packagePointerUrls(origin: string, full: string, version?: string): string[] {
 	const base = origin.replace(/\/$/, '');
-	const urls = [`${base}/api/packages`, `${base}/api/packages/${full}`];
+	const urls = [`${base}/api/packages`, `${base}/api/packages/${full}`, `${base}/packages`, `${base}/packages/${full}`];
 	if (version) {
 		urls.push(`${base}/api/packages/${full}@${version}`);
 		urls.push(`${base}/api/packages/${full}@${version}/api`);
 		urls.push(`${base}/api/packages/${full}@${version}/manifest`);
 		urls.push(`${base}/api/packages/${full}@${version}/chunks`);
 		urls.push(`${base}/api/packages/${full}@${version}/guides`);
+		urls.push(`${base}/packages/${full}@${version}`);
 	}
 	return urls;
 }
