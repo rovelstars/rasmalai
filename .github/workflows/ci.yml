@@ -36,7 +36,12 @@ jobs:
           sudo apt-get install -y gdb
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           ulimit -c unlimited
-          cargo run -q -p cli -- fetch-std
+          seeded=""
+          for i in 1 2 3; do
+            if cargo run -q -p cli -- fetch-std; then seeded=1; break; fi
+            sleep 20
+          done
+          [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
           cargo run -q -p cli -- doc --json --stdlib --out-dir website/static/data
           cargo test --workspace --no-fail-fast || {
             echo "--- test failure: collecting native backtraces from cores ---"
