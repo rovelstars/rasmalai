@@ -111,6 +111,20 @@ describe('fetchStdModule', () => {
 		await assert.rejects(fetchStdModule('fs', '0.1.0', 'https://example.test', fetchImpl), /integrity/);
 	});
 
+	it('passes cache-reload so shared edge generations never stick', async () => {
+		const src = new TextEncoder().encode('export fn mkdir(): Int { return 0; }\n');
+		const hash = createHash('sha256').update(src).digest('hex');
+		const seen: Array<RequestInit | undefined> = [];
+		const inner = mockFetch(new Map([['src/lib.rnx', src]]), new Map([[hash, src]]));
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			seen.push(init);
+			return inner(url);
+		}) as typeof fetch;
+		await fetchStdModule('fs', '0.1.0', 'https://example.test', fetchImpl);
+		assert.ok(seen.length > 0);
+		assert.ok(seen.every((v) => v && v.cache === 'reload'));
+	});
+
 	it('fails closed on a chunks-manifest HTTP error', async () => {
 		const fetchImpl = (async () => new Response('gone', { status: 410 })) as typeof fetch;
 		await assert.rejects(fetchStdModule('fs', '0.1.0', 'https://example.test', fetchImpl), /HTTP 410/);
