@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,7 +19,12 @@ mkdirSync(outDir, { recursive: true });
 //    global stdlib cache first: docgen resolves @std/* from cache-or-
 //    registry (no embedded fallback), so seed the cache before invoking
 //    it. Seeding is best-effort; docgen reports its own errors.
-// 3. Empty placeholder: pages render a "No API data yet" empty state
+// 3. Release binary docgen (no cargo/LLVM needed): the published rnx
+//    release still carries embedded stdlib, so `doc --stdlib` works fully
+//    offline. This is what saves LLVM-less build environments (Pages).
+//    Output shape is validated before use; a shape change in the tree's
+//    docgen fails closed to step 4 rather than shipping stale docs.
+// 4. Empty placeholder: pages render a "No API data yet" empty state
 //    instead of failing the build (an absent file 404s prerendered
 //    fetches, which fails `vite build`). A loud warning marks the
 //    degradation. Refresh locally with:
@@ -30,7 +36,18 @@ const deployed = autoBuild ? fetchDeployedApiJson() : null;
 if (deployed) {
 	writeFileSync(join(outDir, 'api.json'), deployed);
 	console.log('docs: api.json reused from the live registry');
-} else {
+} else if (!tryCargoDocgen()) {
+	if (!tryReleaseDocgen()) {
+		if (existsSync(join(outDir, 'api.json'))) {
+			console.log('docs: cargo unavailable, keeping existing api.json');
+		} else {
+			writeFileSync(join(outDir, 'api.json'), '{"modules":[]}');
+			console.log('docs: WARNING api.json could not be generated; wrote empty placeholder so the build stays green');
+		}
+	}
+}
+
+function tryCargoDocgen() {
 	try {
 		execFileSync('cargo', ['run', '-q', '-p', 'cli', '--', 'fetch-std'], {
 			cwd: compilerDir,
@@ -44,14 +61,80 @@ if (deployed) {
 			cwd: compilerDir,
 			stdio: 'inherit'
 		});
-		console.log('docs: api.json regenerated');
 	} catch {
-		if (existsSync(join(outDir, 'api.json'))) {
-			console.log('docs: cargo unavailable, keeping existing api.json');
-		} else {
-			writeFileSync(join(outDir, 'api.json'), '{"modules":[]}');
-			console.log('docs: WARNING api.json could not be generated; wrote empty placeholder so the build stays green');
+		return false;
+	}
+	return validApiJson(join(outDir, 'api.json'));
+}
+
+// Fetch a prebuilt rnx release (pinned per platform) and document its
+// embedded stdlib. No cargo, no LLVM, no network beyond the download.
+function tryReleaseDocgen() {
+	const target =
+		process.platform === 'linux' && process.arch === 'x64'
+			? 'x86_64-linux'
+			: process.platform === 'darwin' && process.arch === 'arm64'
+				? 'aarch64-macos'
+				: process.platform === 'win32' && process.arch === 'x64'
+					? 'x86_64-windows'
+					: null;
+	if (!target) {
+		console.log(`docs: no release binary for ${process.platform}/${process.arch}, skipping`);
+		return false;
+	}
+	const dir = mkdtempSync(join(tmpdir(), 'rnx-rel-'));
+	try {
+		execFileSync(
+			'curl',
+			[
+				'-fsSL',
+				'--max-time',
+				'180',
+				'-o',
+				join(dir, 'rnx.tar.gz'),
+				`https://github.com/rovelstars/rasmalai/releases/latest/download/rnx-${target}.tar.gz`
+			],
+			{ stdio: ['ignore', 'pipe', 'ignore'] }
+		);
+		execFileSync('tar', ['xzf', join(dir, 'rnx.tar.gz'), '-C', dir], { stdio: ['ignore', 'pipe', 'ignore'] });
+		const bin = join(dir, `rnx-${target}`, 'bin', process.platform === 'win32' ? 'rnx.exe' : 'rnx');
+		if (!existsSync(bin)) return false;
+		// Newer binaries ship no embedded stdlib and resolve @std/* from
+		// cache-or-registry instead: seed first (warn-only), so both eras
+		// of release binary work here.
+		try {
+			execFileSync(bin, ['fetch-std'], { stdio: ['ignore', 'pipe', 'ignore'] });
+		} catch {
+			console.log('docs: release fetch-std failed, relying on embedded stdlib if present');
 		}
+		execFileSync(bin, ['doc', '--json', '--stdlib', '--out-dir', outDir], {
+			stdio: ['ignore', 'pipe', 'ignore']
+		});
+		if (!validApiJson(join(outDir, 'api.json'))) {
+			console.log('docs: release docgen output failed validation, discarding');
+			return false;
+		}
+		console.log('docs: api.json generated with the release binary');
+		return true;
+	} catch {
+		return false;
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+function validApiJson(path) {
+	try {
+		const snapshot = JSON.parse(readFileSync(path, 'utf8'));
+		if (!snapshot || !Array.isArray(snapshot.modules) || snapshot.modules.length === 0) return false;
+		const first = snapshot.modules[0];
+		return (
+			typeof first?.name === 'string' &&
+			Array.isArray(first?.functions) &&
+			Array.isArray(first?.classes)
+		);
+	} catch {
+		return false;
 	}
 }
 
