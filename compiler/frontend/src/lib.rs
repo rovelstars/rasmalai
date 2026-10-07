@@ -21,6 +21,7 @@ pub mod lsp_nav;
 pub mod lsp_symbols;
 pub mod semantic_tokens;
 pub mod stdlib_seed;
+pub mod stdvfs;
 pub mod modules;
 pub mod parser;
 pub mod prelude;

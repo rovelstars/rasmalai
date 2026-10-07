@@ -55,6 +55,10 @@ The fixed paths are:
 
 Version metadata and content chunks cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410.
 
+### Playground stdlib prefetch
+
+The web playground carries no standard library inside its wasm engine either: engine download pre-resolves the pinned `@std` set at the engine version, preloads `@std/prelude`, then resolves each compilation in two phases — the engine reports the missing modules (`prelude` plus the transitive closure of the user's `@std/*` imports) and the page fetches them from the same site's registry before checking. Chunk bytes verify per-hash in the browser and persist in IndexedDB beside the engine bytes; versioned package URLs are immutable, so entries cache forever and only fall away when the engine version moves on. User code keeps the plain `@std/<module>` form throughout — no URL imports exist, all fetching is toolchain-initiated against the same domain.
+
 ## Status code reference
 
 | Status | Meaning | Body |
@@ -114,6 +118,10 @@ The CLI posts the raw bytes with exactly these headers:
 The server also honors `X-RNX-Meta` (readme, docs, guides, manifest JSON) and `X-RNX-Request-ID` for idempotent retries. A 200 or 201 means the version is live; anything else prints the rejection status and message with the hint to check the token and the version.
 
 Publishing minifies on the client before upload. `rnx publish` first refuses unformatted trees with `E108` naming the files (run `rnx fmt` and retry), then extracts the API docs so doc comments survive in `X-RNX-Meta` (`metaVersion` 3), then ships minified `.rnx` sources — comments stripped, `Project.config` sent formatted as-is — and fails closed if the minified output does not re-parse to the same token stream. Checksums cover the minified bytes.
+
+The server stores the submitted API snapshot after checking it: the payload must parse as docgen JSON (`{"modules":[...]}` with typed entries per module), fit the same 1 MiB cap as storage, and carry no pre-rendered HTML — unknown fields are dropped before the row is written, and anything misshapen fails with 400 (oversize with 413). The stored snapshot is what `GET .../{version}/api` serves, so the package page and the registry API always agree.
+
+Declarations are checked against the shipped code. The server scans the tarball sources for the same capability sinks the compiler tracks (`File.open`, `fetch`, `Process.spawn`, `Env.get`, `print`, `unsafe`, and the rest of the `sink_for` table) and rejects the publish with 400 when the code uses a domain head the manifest does not declare — the message names the symbol, the file, and the `Project.config` permission entry that would cover it. Declaring a wider ceiling than the code uses is fine; only undeclared use is rejected. Publishes without tarball bytes carry no code to scan, so they store declarations unchecked.
 
 Server-side auth is an exact match against the configured org token. A local server without one accepts `preview-` tokens and logs a warning — a deliberate hole for local development, not for deployment. Browser sessions can publish too: then the username owns the package and scope membership is checked per scope.
 

@@ -6,8 +6,8 @@ static CATALOG: OnceLock<BTreeSet<String>> = OnceLock::new();
 
 fn load_catalog() -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    if let Some(src) = stdlib::source("prelude") {
-        if let Ok(module) = crate::parser::Parser::parse_module(src) {
+    if let Some(src) = crate::stdvfs::std_source("prelude") {
+        if let Ok(module) = crate::parser::Parser::parse_module(&src) {
             for decl in &module.decls {
                 match &decl.node {
                     Decl::Fn(f) => {

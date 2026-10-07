@@ -8,8 +8,12 @@ fn all_stdlib_modules_registered_and_resolvable() {
             "duplicate entry `{module}` in stdlib::MODULES"
         );
         assert!(
-            stdlib::source(module).is_some(),
-            "standard module `@std/{module}` is registered in MODULES but missing implementation"
+            !module.is_empty() && !module.starts_with('/') && !module.ends_with('/'),
+            "malformed entry `{module}` in stdlib::MODULES"
         );
     }
+    assert!(
+        stdlib::MODULES.contains(&"prelude"),
+        "MODULES must list the ambient `prelude`"
+    );
 }

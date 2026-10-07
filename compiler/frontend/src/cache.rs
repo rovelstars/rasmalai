@@ -74,14 +74,67 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 pub fn stdlib_sources_digest() -> Vec<u8> {
     let mut hasher = Sha256::new();
-    for name in stdlib::MODULES {
-        let src = stdlib::source(name).unwrap_or("");
-        hasher.update(&(name.len() as u64).to_le_bytes());
-        hasher.update(name.as_bytes());
-        hasher.update(&(src.len() as u64).to_le_bytes());
-        hasher.update(src.as_bytes());
+    match crate::stdlib_seed::read_std_pin() {
+        Some(pin) => {
+            hasher.update(&(pin.registry.len() as u64).to_le_bytes());
+            hasher.update(pin.registry.as_bytes());
+            for (full, version) in &pin.packages {
+                hasher.update(&(full.len() as u64).to_le_bytes());
+                hasher.update(full.as_bytes());
+                hasher.update(&(version.len() as u64).to_le_bytes());
+                hasher.update(version.as_bytes());
+                let dir = crate::fetch::cached_package_dir(&pin.registry, full, version);
+                hash_cached_package(&mut hasher, &dir);
+            }
+        }
+        None => {
+            for name in stdlib::MODULES {
+                hasher.update(&(name.len() as u64).to_le_bytes());
+                hasher.update(name.as_bytes());
+            }
+        }
     }
     hasher.finalize().to_vec()
+}
+
+fn hash_cached_package(hasher: &mut Sha256, dir: &Path) {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    collect_cached_files(dir, dir, &mut files);
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    hasher.update(&(files.len() as u64).to_le_bytes());
+    for (rel, bytes) in &files {
+        hasher.update(&(rel.len() as u64).to_le_bytes());
+        hasher.update(rel.as_bytes());
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    }
+}
+
+fn collect_cached_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.file_type().is_dir() {
+            collect_cached_files(root, &path, out);
+        } else if meta.file_type().is_file() {
+            let rel = match path.strip_prefix(root) {
+                Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                Err(_) => continue,
+            };
+            out.push((rel, std::fs::read(&path).unwrap_or_default()));
+        }
+    }
 }
 
 pub fn toolchain_parts(
@@ -238,6 +291,7 @@ mod tests {
 
     #[test]
     fn toolchain_parts_track_profile_and_toolchain() {
+        let (_guard, _dir) = crate::fetch::testkit::isolate_cache("toolparts");
         let base = toolchain_parts(false, 1, None, "x86_64-unknown-linux-gnu", false, "0.1.0", "rt", "llvm22");
         assert_eq!(
             base,
@@ -289,9 +343,50 @@ mod tests {
 
     #[test]
     fn stdlib_sources_digest_is_stable() {
+        let (_guard, _dir) = crate::fetch::testkit::isolate_cache("digeststable");
         let first = stdlib_sources_digest();
         assert_eq!(first.len(), 32);
         assert_eq!(stdlib_sources_digest(), first);
+    }
+
+    #[test]
+    fn stdlib_digest_tracks_pin_and_cache_bytes() {
+        use crate::fetch::testkit;
+        use std::collections::BTreeMap;
+
+        let (_guard, _dir) = testkit::isolate_cache("digestpin");
+        let empty = stdlib_sources_digest();
+        let pin = env!("CARGO_PKG_VERSION");
+        let (gz, sha) = testkit::fixture_tarball("@std/seed", pin);
+        let nodes: Vec<String> = crate::stdlib_seed::std_package_names()
+            .iter()
+            .map(|full| testkit::node_json(full, pin, &sha, false))
+            .collect();
+        let server = testkit::MockRegistry::start(testkit::MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: testkit::resolve_json_static(&nodes),
+            manifest_status: 200,
+            fallback_tarball: gz,
+            manifest_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
+        });
+        let cfg = testkit::registry_cfg(&server.base);
+        let report =
+            crate::stdlib_seed::seed_stdlib_cache(Some(&cfg), &BTreeMap::new()).unwrap();
+        let seeded = stdlib_sources_digest();
+        assert_eq!(seeded.len(), 32);
+        assert_ne!(empty, seeded);
+        assert_eq!(stdlib_sources_digest(), seeded);
+        let (first_full, first_version) = report.packages.first().cloned().unwrap();
+        let dir = crate::fetch::cached_package_dir(&report.registry, &first_full, &first_version);
+        let target = dir.join("src").join("main.rnx");
+        assert!(target.is_file());
+        let mut bytes = std::fs::read(&target).unwrap();
+        bytes.extend_from_slice(b"\n");
+        std::fs::write(&target, &bytes).unwrap();
+        assert_ne!(stdlib_sources_digest(), seeded);
     }
 
     #[test]

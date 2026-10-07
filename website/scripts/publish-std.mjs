@@ -41,6 +41,31 @@ modules.sort();
 // net/http.rnx is a submodule file, not a package: it ships inside @std/net.
 const SUBMODULES = { net: ['http.rnx'] };
 
+// Declared permissions per std module, mirroring the server usage scan
+// (website/src/lib/server/permissions.ts) over minified sources. Only
+// modules whose shipped code observably uses a capability sink declare
+// one; everything else publishes with no permissions key (pure).
+const PERMISSIONS = {
+	fs: [{ perm: 'unsafe:raw_memory', reason: 'mmap is backed by a raw address' }],
+	io: [
+		'term:read',
+		'term:write',
+		{ perm: 'env:read:NO_COLOR', reason: 'color detection reads NO_COLOR' },
+		{ perm: 'env:read:COLORTERM', reason: 'color detection reads COLORTERM' },
+		{ perm: 'env:read:TERM', reason: 'color detection reads TERM' }
+	],
+	process: [{ perm: 'env:read:*', reason: 'flattenEnv reads caller-provided keys' }]
+};
+
+function renderPermissions(name) {
+	const decls = PERMISSIONS[name];
+	if (!decls) return '';
+	const items = decls.map((d) =>
+		typeof d === 'string' ? JSON.stringify(d) : `{ perm: ${JSON.stringify(d.perm)}, reason: ${JSON.stringify(d.reason)} }`
+	);
+	return `,\n    permissions: [${items.join(', ')}]`;
+}
+
 const moduleBlurb = (name) => {
 	const text = readFileSync(join(stdDir, `${name}.rnx`), 'utf8');
 	const lines = [];
@@ -71,7 +96,7 @@ for (const name of modules) {
 	writeFileSync(join(dir, 'README.md'), `# ${full}\n\n${moduleBlurb(name)}\n`);
 	writeFileSync(
 		join(dir, 'Project.config'),
-		`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))}\n    },\n    entries: { main: "src/lib.rnx" }\n}\n`
+		`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))}\n    },\n    entries: { main: "src/lib.rnx" }${renderPermissions(name)}\n}\n`
 	);
 	const outDir = join(dir, 'dist');
 	mkdirSync(outDir, { recursive: true });

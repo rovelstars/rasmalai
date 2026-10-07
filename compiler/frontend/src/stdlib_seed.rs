@@ -12,6 +12,18 @@ pub fn std_pin_path() -> PathBuf {
     cache::global_cache_dir().join(STD_PIN_FILE)
 }
 
+pub fn std_registry_from_env() -> (Option<RegistryConfig>, BTreeMap<String, RegistryConfig>) {
+    let url = std::env::var("RNX_REGISTRY")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let default = url.map(|u| RegistryConfig {
+        url: u,
+        token_env: None,
+        ca_cert: None,
+    });
+    (default, BTreeMap::new())
+}
+
 fn std_package_tops() -> Vec<String> {
     let mut tops: Vec<String> = stdlib::MODULES
         .iter()

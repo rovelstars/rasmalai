@@ -1,6 +1,6 @@
 ---
 title: "Modules and Packages"
-description: "ESM imports, the embedded standard library, and the project manifest."
+description: "ESM imports, the seeded standard library, and the project manifest."
 icon: "Library"
 ---
 
@@ -56,9 +56,9 @@ That prints `entries: 1`. Every file pulled in through `import` is declarative-o
 
 **Common mistake:** putting script logic in an imported helper file and wondering why nothing runs — or worse, getting `E112` and deleting the code. Imported files declare; only the entry executes. Move the statements into a function, import it, call it.
 
-## The standard library is embedded
+## The standard library is seeded, not embedded
 
-`@std/` imports resolve from the standard library compiled into `rnx` itself — nothing to install, no versions to pin. Seventeen modules ship with the compiler:
+`@std/` imports resolve from a global cache the installer seeds — nothing to install by hand, versions pinned automatically. Seventeen modules ship with the compiler:
 
 | Module | What it holds |
 |---|---|
@@ -81,6 +81,10 @@ That prints `entries: 1`. Every file pulled in through `import` is declarative-o
 | `@std/prelude` | Foundation types (auto-imported) |
 
 Each module has a generated reference page under [its module docs](/docs/@std/simd/overview), rendered from the same `/** */` doc comments you write with `rnx doc`.
+
+The cache is the offline story: with a seeded machine, builds never touch the network — missing entries download once from the registry, integrity-checked like any other package, and an explicit `dependencies` entry for an `@std/*` package overrides the pinned version. A cold cache with no network fails loudly (`E108` naming the registry, with an `rnx fetch-std` hint); `rnx fetch-std` seeds the cache and `rnx doctor --repair-std` repairs it. Offline labs are served by distribution — seeded installers and pre-warmed images carry the standard library.
+
+The web playground works the same way, minus the filesystem. Its compiler engine downloads first, then preloads `@std/prelude` and fetches each further `@std/*` import from the same site's registry at the engine-pinned version, caching every module in the browser beside the engine bytes. Module paths stay identical, so code that checks in the playground checks the same on the command line.
 
 A taste of the platform side — child processes and OS queries compose like everything else:
 

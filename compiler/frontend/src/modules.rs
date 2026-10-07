@@ -162,7 +162,8 @@ pub fn fn_lines(graph: &ModuleGraph) -> BTreeMap<String, FnLine> {
 impl ModuleGraph {
     /// Merged module from an inline source string: parses the user code,
     /// pulls transitively imported `@std/*` modules plus the ambient
-    /// prelude from the embedded stdlib, and runs the same
+    /// prelude from the seeded global cache (downloading missing modules
+    /// from the registry like any other dependency), and runs the same
     /// qualify-and-merge resolution as file-based builds. String-based
     /// entry points (`check_source`, `run_source`, playground) must use
     /// this instead of bare `parse_module`, otherwise prelude-backed
@@ -188,10 +189,8 @@ impl ModuleGraph {
             if files.iter().any(|f| f.path == PathBuf::from(format!("@std/{name}"))) {
                 continue;
             }
-            let src = stdlib::source(&name).ok_or_else(|| {
-                Diagnostic::new(Code::E108, format!("unknown standard library module `@std/{name}`"))
-            })?;
-            let module = crate::parser::Parser::parse_module(src)?;
+            let src = load_std_module_source(&name)?;
+            let module = crate::parser::Parser::parse_module(&src)?;
             for (spec, _) in module_sources(&module.decls) {
                 if is_std_spec(spec) {
                     let rest = std_rest(spec);
@@ -251,7 +250,12 @@ impl ModuleGraph {
             &mut parse_errors,
         )
         .map_err(|e| vec![e])?;
-        if stdlib::source("prelude").is_some() {
+        let want_prelude = if cfg!(target_arch = "wasm32") {
+            crate::stdvfs::std_source("prelude").is_some()
+        } else {
+            true
+        };
+        if want_prelude {
             visit(
                 &PathBuf::from("@std/prelude"),
                 &base,
@@ -762,8 +766,8 @@ fn prelude_variants() -> &'static BTreeSet<String> {
     static MEMBERS: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
     MEMBERS.get_or_init(|| {
         let mut out = BTreeSet::new();
-        if let Some(src) = stdlib::source("prelude") {
-            if let Ok(module) = crate::parser::Parser::parse_module(src) {
+        if let Some(src) = crate::stdvfs::std_source("prelude") {
+            if let Ok(module) = crate::parser::Parser::parse_module(&src) {
                 for decl in &module.decls {
                     if let A::Decl::Enum { members, .. } = &decl.node {
                         for m in members {
@@ -1522,7 +1526,7 @@ pub fn is_std_spec(source: &str) -> bool {
         || source.starts_with(STD_BARE)
 }
 
-fn std_rest(source: &str) -> &str {
+pub fn std_rest(source: &str) -> &str {
     source
         .strip_prefix(STD_SCOPE)
         .or_else(|| source.strip_prefix(STD_BARE))
@@ -1555,7 +1559,52 @@ fn scheme_error(source: &str) -> Diagnostic {
     Diagnostic::new(Code::E108, format!("cannot resolve module `{source}`")).with_hint(scheme_hint(source))
 }
 
+static PROJECT_MOUNT: std::sync::Mutex<BTreeMap<PathBuf, String>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn mount_lock() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, String>> {
+    PROJECT_MOUNT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn normalize_mount(path: &Path) -> PathBuf {
+    let mut parts: Vec<String> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if parts.pop().is_none() {
+                    parts.push("..".to_string());
+                }
+            }
+            std::path::Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {}
+        }
+    }
+    let mut out = PathBuf::new();
+    out.extend(parts);
+    out
+}
+
+pub fn project_mount(path: &Path, source: String) {
+    mount_lock().insert(normalize_mount(path), source);
+}
+
+pub fn project_unmount_all() {
+    mount_lock().clear();
+}
+
+fn project_get(path: &Path) -> Option<String> {
+    mount_lock().get(&normalize_mount(path)).cloned()
+}
+
+fn project_has(path: &Path) -> bool {
+    mount_lock().contains_key(&normalize_mount(path))
+}
+
 fn canonical(path: &Path) -> Result<PathBuf, Diagnostic> {
+    if project_has(path) {
+        return Ok(normalize_mount(path));
+    }
     std::fs::canonicalize(path)
         .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", path.display())))
 }
@@ -1594,11 +1643,22 @@ fn read_source(path: &Path) -> Result<String, Diagnostic> {
         }
         let rest = std_submodule(path);
         let name = format!("@std/{rest}");
-        return stdlib::source(&rest)
-            .map(|s| s.to_string())
-            .ok_or_else(|| {
-                Diagnostic::new(Code::E108, format!("unknown standard library module `{name}`"))
-            });
+        if let Some(src) = crate::stdvfs::std_source(&rest) {
+            return Ok(src);
+        }
+        if cfg!(target_arch = "wasm32") {
+            return Err(playground_std_error(&name));
+        }
+        if !crate::stdvfs::is_known_module(&rest) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("unknown standard library module `{name}`"),
+            ));
+        }
+        return Err(std_cache_miss_error(&name, &std_cache_registry()));
+    }
+    if let Some(src) = project_get(path) {
+        return Ok(src);
     }
     std::fs::read_to_string(path)
         .map_err(|e| Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", path.display())))
@@ -1649,8 +1709,8 @@ fn resolve_import(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>
             )
             .with_hint("use `@std/<module>`, e.g. `@std/time`"));
         }
-        let overrides: BTreeMap<String, RegistryConfig> = BTreeMap::new();
-        return resolve_std_with_registries(source, rest, None, &overrides);
+        let empty: BTreeMap<String, RegistryConfig> = BTreeMap::new();
+        return resolve_std_with_registries(from, source, rest, None, &empty);
     }
     if source.starts_with('.') {
         return resolve_relative(from, source);
@@ -1659,52 +1719,213 @@ fn resolve_import(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>
 }
 
 /// `@std/*` through the same-domain registry server under the hood: exact
-/// CLI-pinned version, integrity-checked cache, embedded sysroot as offline
-/// fallback. No URL imports exist in user code; all fetching here is
-/// toolchain-initiated.
+/// pinned version from the global pin file, integrity-checked cache,
+/// registry download on a miss. Explicit `dependencies` semver entries
+/// override the pin like any other package. No URL imports exist in user
+/// code; all fetching here is toolchain-initiated.
 ///
 /// The resolved path is ALWAYS the virtual `@std/<rest>` path, so module
 /// keys and merged output are identical online and offline. A registry hit
 /// only swaps the *bytes* behind it via the overlay read by `read_source`.
+/// A VFS hit (tests, playground preloads) short-circuits before any cache
+/// or network access. Offline with an empty cache fails loudly as E108
+/// naming the registry with an `rnx fetch-std` hint.
 fn resolve_std_with_registries(
+    from: &Path,
     source: &str,
     rest: &str,
     default: Option<&RegistryConfig>,
     overrides: &BTreeMap<String, RegistryConfig>,
 ) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
     let virtual_path = PathBuf::from(format!("{STD_SCOPE}{rest}"));
-    let (pkg, sub) = match rest.split_once('/') {
-        Some((top, s)) => (format!("@std/{top}"), Some(s)),
-        None => (format!("@std/{rest}"), None),
-    };
-    let pin = env!("CARGO_PKG_VERSION").to_string();
-    let base = crate::fetch::registry_base_for(&pkg, default, overrides);
-    // WebAssembly has no filesystem, threads, or sockets: the registry
-    // path cannot run there. Embedded sysroot only (see 11_TOOLING).
-    let attempt = if cfg!(target_arch = "wasm32") {
-        None
-    } else {
-        cached_std_package(&base, &pkg, &pin).or_else(|| {
-            let have = crate::fetch::scan_cache_have();
-            crate::fetch::resolve_registry_package(&pkg, &pin, default, overrides, Some(pin.clone()), &have)
-                .map(|(dir, cfg, _)| (dir, cfg))
-                .ok()
-        })
-    };
-    if let Some((dep_root, dep_cfg)) = attempt {
-        if let Ok(target) = resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source) {
-            set_std_overlay(&virtual_path, &target);
+    if cfg!(target_arch = "wasm32") {
+        if crate::stdvfs::std_source(rest).is_some() {
             return Ok((virtual_path, None));
         }
+        return Err(playground_std_error(source));
     }
-    clear_std_overlay(&virtual_path);
-    if stdlib::source(rest).is_none() {
+    if !crate::stdvfs::is_known_module(rest) {
         return Err(Diagnostic::new(
             Code::E108,
             format!("unknown standard library module `{source}`"),
         ));
     }
-    Ok((virtual_path, None))
+    if crate::stdvfs::get(rest).is_some() {
+        clear_std_overlay(&virtual_path);
+        return Ok((virtual_path, None));
+    }
+    let (pkg, sub) = match rest.split_once('/') {
+        Some((top, s)) => (format!("@std/{top}"), Some(s)),
+        None => (format!("@std/{rest}"), None),
+    };
+    let (default_owned, owned_overrides, explicit, locked) = std_ctx_for(from, &pkg);
+    let default_ref = default.or(default_owned.as_ref());
+    let mut merged = owned_overrides;
+    for (k, v) in overrides {
+        merged.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    let base = crate::fetch::registry_base_for(&pkg, default_ref, &merged);
+    let pin_ver = crate::stdlib_seed::read_std_pin()
+        .and_then(|pin| pin.packages.get(&pkg).cloned());
+    let cli = env!("CARGO_PKG_VERSION").to_string();
+    let requirement = explicit.clone().or_else(|| pin_ver.clone()).unwrap_or(cli);
+    let pinned = locked.or_else(|| match &explicit {
+        None => pin_ver.or_else(|| exact_version(&requirement)),
+        Some(range) => exact_version(range),
+    });
+    let have = crate::fetch::scan_cache_have();
+    let mut detail: Option<Diagnostic> = None;
+    match crate::fetch::resolve_registry_package(
+        &pkg,
+        &requirement,
+        default_ref,
+        &merged,
+        pinned,
+        &have,
+    ) {
+        Ok((dep_root, dep_cfg, _)) => {
+            if let Ok(target) =
+                resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source)
+            {
+                set_std_overlay(&virtual_path, &target);
+                return Ok((virtual_path, None));
+            }
+        }
+        Err(e) => {
+            detail = Some(e);
+        }
+    }
+    clear_std_overlay(&virtual_path);
+    if crate::stdvfs::std_source(rest).is_some() {
+        return Ok((virtual_path, None));
+    }
+    Err(match detail {
+        Some(e) => std_fetch_error(source, &base, &e.message),
+        None => std_cache_miss_error(source, &base),
+    })
+}
+
+fn std_ctx_for(
+    from: &Path,
+    pkg: &str,
+) -> (
+    Option<RegistryConfig>,
+    BTreeMap<String, RegistryConfig>,
+    Option<String>,
+    Option<String>,
+) {
+    let (env_default, env_overrides) = crate::stdlib_seed::std_registry_from_env();
+    let ctx = package_ctx_of(from).ok().flatten();
+    let Some((proj_root, cfg)) = ctx else {
+        return (env_default, env_overrides, None, None);
+    };
+    let default = cfg.registry.clone().or(env_default);
+    let mut merged = env_overrides;
+    for (k, v) in &cfg.registries {
+        merged.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    let explicit = match cfg.dependencies.get(pkg) {
+        Some(crate::project::DependencySpec::Semver { version }) => Some(version.clone()),
+        _ => None,
+    };
+    let scope_root = project::find_workspace_root(&proj_root).unwrap_or(proj_root);
+    let locked = locked_registry_version(&scope_root, pkg);
+    (default, merged, explicit, locked)
+}
+
+fn exact_version(range: &str) -> Option<String> {
+    let r = range.trim();
+    if r.is_empty() || r == "*" || r == "latest" {
+        return None;
+    }
+    if r.starts_with(['^', '~', '>', '<', '=']) {
+        return None;
+    }
+    let (core, _) = match r.split_once('-') {
+        Some((c, _)) => (c, true),
+        None => (r, false),
+    };
+    let mut parts = core.split('.');
+    let ok = parts.clone().count() == 3
+        && parts.all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    if ok {
+        Some(r.to_string())
+    } else {
+        None
+    }
+}
+
+pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
+    let rest = crate::stdvfs::normalize_rest(rest);
+    if rest.is_empty() {
+        return Err(
+            Diagnostic::new(Code::E108, "cannot resolve module `@std`")
+                .with_hint("use `@std/<module>`, e.g. `@std/time`"),
+        );
+    }
+    if let Some(src) = crate::stdvfs::std_source(&rest) {
+        return Ok(src);
+    }
+    if cfg!(target_arch = "wasm32") {
+        return Err(playground_std_error(&format!("@std/{rest}")));
+    }
+    if !crate::stdvfs::is_known_module(&rest) {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("unknown standard library module `@std/{rest}`"),
+        ));
+    }
+    let (default, overrides) = crate::stdlib_seed::std_registry_from_env();
+    let top = rest.split('/').next().unwrap_or(rest.as_str());
+    let pkg = format!("@std/{top}");
+    let base = crate::fetch::registry_base_for(&pkg, default.as_ref(), &overrides);
+    let version = crate::stdlib_seed::read_std_pin()
+        .and_then(|pin| pin.packages.get(&pkg).cloned())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let have = crate::fetch::scan_cache_have();
+    match crate::fetch::resolve_registry_package(
+        &pkg,
+        &version,
+        default.as_ref(),
+        &overrides,
+        Some(version.clone()),
+        &have,
+    ) {
+        Ok(_) => crate::stdvfs::std_source(&rest)
+            .ok_or_else(|| std_cache_miss_error(&format!("@std/{rest}"), &base)),
+        Err(e) => Err(std_fetch_error(&format!("@std/{rest}"), &base, &e.message)),
+    }
+}
+
+fn playground_std_error(source: &str) -> Diagnostic {
+    Diagnostic::new(
+        Code::E108,
+        format!("standard library module `{source}` is not preloaded in the playground engine"),
+    )
+    .with_hint("the playground preloads `@std/prelude` at engine download and fetches other `@std/*` modules from the same-domain registry before checking")
+}
+
+fn std_fetch_error(source: &str, base: &str, detail: &str) -> Diagnostic {
+    Diagnostic::new(
+        Code::E108,
+        format!("cannot resolve `{source}` from registry `{base}`: {detail}"),
+    )
+    .with_hint("run `rnx fetch-std` to seed the global cache (or `rnx doctor --repair-std` to repair it)")
+}
+
+fn std_cache_miss_error(source: &str, base: &str) -> Diagnostic {
+    Diagnostic::new(
+        Code::E108,
+        format!("cannot resolve `{source}`: stdlib cache is empty and registry `{base}` is unreachable"),
+    )
+    .with_hint("run `rnx fetch-std` to seed the global cache (or `rnx doctor --repair-std` to repair it)")
+}
+
+fn std_cache_registry() -> String {
+    crate::stdlib_seed::read_std_pin()
+        .map(|pin| pin.registry)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| crate::fetch::expand_registry_base(""))
 }
 
 static STD_OVERLAY: std::sync::Mutex<BTreeMap<PathBuf, PathBuf>> =
@@ -1729,19 +1950,6 @@ fn std_overlay_get(virtual_path: &Path) -> Option<PathBuf> {
         .cloned()
 }
 
-fn cached_std_package(base: &str, pkg: &str, pin: &str) -> Option<(PathBuf, ProjectConfig)> {
-    let dir = crate::fetch::cached_package_dir(base, pkg, pin);
-    if !dir.join(crate::project::MANIFEST_FILE).is_file() {
-        return None;
-    }
-    if crate::fetch::cached_integrity(&dir).is_none() {
-        return None;
-    }
-    let dir = std::fs::canonicalize(&dir).ok()?;
-    let cfg = ProjectConfig::load_from_dir(&dir).ok()??;
-    Some((dir, cfg))
-}
-
 fn resolve_relative(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
     let base = from.parent().unwrap_or(Path::new(".")).join(source);
     let mut probed: Vec<PathBuf> = Vec::new();
@@ -1751,6 +1959,11 @@ fn resolve_relative(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBu
         probed.push(base.with_extension("rnx"));
         probed.push(base.join("mod.rnx"));
         probed.push(base.join("index.rnx"));
+    }
+    for candidate in &probed {
+        if project_has(candidate) {
+            return Ok((normalize_mount(candidate), None));
+        }
     }
     for candidate in &probed {
         if let Ok(target) = std::fs::canonicalize(candidate) {
@@ -2670,6 +2883,7 @@ mod tests {
     fn semver_import_resolves_through_registry() {
         let (_guard, _cache) = testkit::isolate_cache("modreg");
         let server = start_widget_server();
+        plant_prelude_cache(&server.base);
         let root = registry_app("live", &server.base);
         let entry = root.join("src").join("main.rnx");
         let graph = ModuleGraph::build(&entry).unwrap();
@@ -2686,6 +2900,7 @@ mod tests {
     fn locked_registry_version_pins_the_request() {
         let (_guard, _cache) = testkit::isolate_cache("modpin");
         let server = start_widget_server();
+        plant_prelude_cache(&server.base);
         let root = registry_app("pinned", &server.base);
         let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
         let mut lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
@@ -2725,12 +2940,42 @@ mod tests {
         })
     }
 
+    fn dead_from() -> PathBuf {
+        std::env::temp_dir().join(format!("rnx-nostd-{}", std::process::id()))
+    }
+
+    fn plant_prelude_cache(base: &str) {
+        let pin = env!("CARGO_PKG_VERSION");
+        let dir = crate::fetch::cached_package_dir(base, "@std/prelude", pin);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join(crate::project::MANIFEST_FILE),
+            format!(
+                "export default {{\n    project: {{\n        name: \"@std/prelude\",\n        version: \"{pin}\"\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src").join("main.rnx"),
+            "export fn hello(): Int { return 1; }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join(".rnx-integrity"), format!("@std/prelude\n{pin}\ntest\n"))
+            .unwrap();
+    }
+
     #[test]
     fn std_resolves_through_registry_under_the_hood() {
         let (_guard, _cache) = testkit::isolate_cache("stdreg");
         let server = start_std_server();
-        let (target, dep) =
-            resolve_std_with_registries("@std/fs", "fs", None, &std_overrides(&server.base)).unwrap();
+        let (target, dep) = resolve_std_with_registries(
+            &dead_from(),
+            "@std/fs",
+            "fs",
+            None,
+            &std_overrides(&server.base),
+        )
+        .unwrap();
         assert_eq!(target, PathBuf::from("@std/fs"));
         assert!(dep.is_none());
         let overlaid = std_overlay_get(&PathBuf::from("@std/fs")).unwrap();
@@ -2747,30 +2992,49 @@ mod tests {
     fn std_cache_hit_needs_no_network() {
         let (_guard, _cache) = testkit::isolate_cache("stdcache");
         let server = start_std_server();
-        let first =
-            resolve_std_with_registries("@std/fs", "fs", None, &std_overrides(&server.base)).unwrap();
+        let first = resolve_std_with_registries(
+            &dead_from(),
+            "@std/fs",
+            "fs",
+            None,
+            &std_overrides(&server.base),
+        )
+        .unwrap();
         let served = server.requests().len();
         assert!(served > 0);
-        let second =
-            resolve_std_with_registries("@std/fs", "fs", None, &std_overrides(&server.base)).unwrap();
+        let second = resolve_std_with_registries(
+            &dead_from(),
+            "@std/fs",
+            "fs",
+            None,
+            &std_overrides(&server.base),
+        )
+        .unwrap();
         assert_eq!(first, second);
         assert_eq!(server.requests().len(), served);
     }
 
     #[test]
-    fn std_falls_back_to_embedded_offline() {
+    fn std_missing_cache_fails_loudly_offline() {
         let (_guard, _cache) = testkit::isolate_cache("stdfb");
-        let (target, dep) =
-            resolve_std_with_registries("@std/fs", "fs", None, &dead_overrides()).unwrap();
-        assert_eq!(target, PathBuf::from("@std/fs"));
-        assert!(dep.is_none());
+        let err = resolve_std_with_registries(&dead_from(), "@std/fs", "fs", None, &dead_overrides())
+            .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("127.0.0.1:1"), "{}", err.message);
+        assert!(
+            err.hint.as_deref().unwrap_or_default().contains("rnx fetch-std"),
+            "{:?}",
+            err.hint
+        );
         assert_eq!(std_overlay_get(&PathBuf::from("@std/fs")), None);
     }
 
     #[test]
     fn std_unknown_module_errors() {
         let (_guard, _cache) = testkit::isolate_cache("stdbad");
-        let err = resolve_std_with_registries("@std/nope", "nope", None, &dead_overrides()).unwrap_err();
+        let err =
+            resolve_std_with_registries(&dead_from(), "@std/nope", "nope", None, &dead_overrides())
+                .unwrap_err();
         assert!(err.message.contains("unknown standard library module"));
         assert_eq!(std_overlay_get(&PathBuf::from("@std/nope")), None);
     }
@@ -2779,8 +3043,28 @@ mod tests {
     fn std_overlay_serves_registry_bytes() {
         let (_guard, _cache) = testkit::isolate_cache("stdread");
         let server = start_std_server();
-        resolve_std_with_registries("@std/fs", "fs", None, &std_overrides(&server.base)).unwrap();
+        resolve_std_with_registries(
+            &dead_from(),
+            "@std/fs",
+            "fs",
+            None,
+            &std_overrides(&server.base),
+        )
+        .unwrap();
         let src = read_source(&PathBuf::from("@std/fs")).unwrap();
         assert!(src.contains("export fn hello"));
+    }
+
+    #[test]
+    fn from_source_offline_no_cache_fails_loudly() {
+        let (_guard, _cache) = testkit::isolate_cache("srcfb");
+        let err = ModuleGraph::from_source("fn Main(): Int { return 1; }\n").unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("registry"), "{}", err.message);
+        assert!(
+            err.hint.as_deref().unwrap_or_default().contains("rnx fetch-std"),
+            "{:?}",
+            err.hint
+        );
     }
 }

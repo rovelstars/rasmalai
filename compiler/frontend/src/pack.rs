@@ -176,10 +176,7 @@ fn collect_pack_names(
         }
     };
     push_abs(&package_dir.join("Project.config"));
-    let deplock = package_dir.join("Project.deplock");
-    if deplock.is_file() {
-        push_abs(&deplock);
-    }
+    // Project.deplock is consumer-only; never publish it.
     let entry = package_dir.join(&project.entries.main);
     if entry.is_file() {
         push_abs(&entry);
@@ -503,6 +500,19 @@ mod tests {
         for f in &files {
             assert!(text.contains(f.path.as_str()), "tar misses {}", f.path);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deplock_stays_on_disk_but_out_of_bundle() {
+        let dir = fixture_dir("deplock", Some(("README.md", "# probe\n")));
+        std::fs::write(dir.join("Project.deplock"), "export default {}\n").unwrap();
+        let manifest = fixture_manifest(&dir);
+        let files = package_file_list(&dir, &manifest).unwrap();
+        assert!(!files.iter().any(|f| f.path == "Project.deplock"));
+        let tar = build_package_tar(&dir, &manifest).unwrap();
+        assert!(!String::from_utf8_lossy(&tar).contains("Project.deplock"));
+        assert!(dir.join("Project.deplock").is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

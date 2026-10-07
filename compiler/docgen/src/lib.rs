@@ -3,13 +3,8 @@ pub fn generate_stdlib_docs_json(
 ) -> Result<std::path::PathBuf, diagnostics::Diagnostic> {
     let mut all = Vec::new();
     for name in stdlib::MODULES {
-        let src = stdlib::source(name).ok_or_else(|| {
-            diagnostics::Diagnostic::new(
-                diagnostics::Code::E108,
-                format!("unknown standard library module `@std/{name}`"),
-            )
-        })?;
-        let module = frontend::parser::Parser::parse_module(src).map_err(|mut e| {
+        let src = frontend::modules::load_std_module_source(name)?;
+        let module = frontend::parser::Parser::parse_module(&src).map_err(|mut e| {
             e.message = format!("@std/{name}: {}", e.message);
             e
         })?;

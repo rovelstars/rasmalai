@@ -1,5 +1,5 @@
 // Oracles: keyword() in compiler/frontend/src/token.rs, is_type_name in compiler/frontend/src/highlight.rs.
-const KEYWORDS = new Set([
+export const AURA_KEYWORDS = new Set([
 	'true', 'false', 'null', 'this', 'super', 'class', 'struct', 'record',
 	'trait', 'interface', 'extension', 'enum', 'fn', 'init', 'new', 'deinit',
 	'onReload', 'extends', 'with', 'let', 'const', 'static', 'if', 'else',
@@ -9,7 +9,7 @@ const KEYWORDS = new Set([
 	'public', 'private', 'unsafe', 'comptime', 'native', 'async', 'await', 'pass'
 ]);
 
-const TYPES = new Set([
+export const AURA_TYPES = new Set([
 	'Int', 'Float', 'FastFloat', 'Bool', 'Void', 'String', 'Any', 'Array',
 	'Map', 'Set', 'GenRef', 'Vec4f', 'Vec4i', 'Vec2', 'Option', 'Result'
 ]);
@@ -146,9 +146,9 @@ export function highlightAura(src: string, links?: Map<string, string>): AuraSpa
 			spans.push({ text: m[2], cls: 'text-aura-muted italic' });
 		} else if (m[3] !== undefined) {
 			spans.push({ text: m[3], cls: 'text-aura-orange' });
-		} else if (KEYWORDS.has(m[4])) {
+		} else if (AURA_KEYWORDS.has(m[4])) {
 			spans.push({ text: m[4], cls: 'text-aura-purple' });
-		} else if (TYPES.has(m[4])) {
+		} else if (AURA_TYPES.has(m[4])) {
 			spans.push({ text: m[4], cls: 'text-aura-pink', href: links?.get(m[4]) });
 		} else {
 			spans.push({ text: m[4], cls: 'text-aura-text' });
