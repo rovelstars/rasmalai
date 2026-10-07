@@ -2,7 +2,14 @@ export const SPEC_VERSION = 1;
 export const CAPABILITIES = ['tombstones', 'guides', 'jsdoc', 'yank', 'transfer'];
 
 export function specHeaders(): Record<string, string> {
-	return { 'rnx-registry-spec': String(SPEC_VERSION) };
+	// Public read APIs are cross-origin fetchable (ACAO:*) so browser
+	// clients (playground, localhost dev) can read them. This grants
+	// nothing to writers: mutations need Authorization/session auth, and
+	// browsers cannot send those cross-origin because the OPTIONS
+	// preflight (hooks.server.ts) never allows the Authorization header
+	// and session cookies are SameSite httpOnly. Response headers alone
+	// cannot authorize a request the preflight refused.
+	return { 'rnx-registry-spec': String(SPEC_VERSION), 'Access-Control-Allow-Origin': '*' };
 }
 
 export interface Semver {
