@@ -36,6 +36,7 @@ jobs:
           sudo apt-get install -y gdb
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           ulimit -c unlimited
+          cargo run -q -p cli -- fetch-std
           cargo run -q -p cli -- doc --json --stdlib --out-dir website/static/data
           cargo test --workspace --no-fail-fast || {
             echo "--- test failure: collecting native backtraces from cores ---"
