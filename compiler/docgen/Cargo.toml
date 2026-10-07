@@ -11,3 +11,4 @@ path = "src/main.rs"
 diagnostics = { path = "../diagnostics" }
 frontend = { path = "../frontend" }
 stdlib = { path = "../stdlib" }
+ureq = { version = "3.4.2", features = ["rustls", "brotli"] }
