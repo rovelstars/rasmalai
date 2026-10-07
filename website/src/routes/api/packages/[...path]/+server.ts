@@ -192,10 +192,13 @@ export async function GET({ params, platform, setHeaders, url }) {
 		let bytes: Uint8Array | null;
 		try {
 			bytes = await getChunkBytes(env, slug);
-		} catch {
+		} catch (e) {
+			const integrity = e instanceof Error && e.message.includes('failed integrity check');
 			return json(
-				{ code: 'integrity-failed', message: `chunk ${slug} failed its integrity check` },
-				{ status: 500, headers: headers() }
+				integrity
+					? { code: 'integrity-failed', message: `chunk ${slug} failed its integrity check` }
+					: { code: 'chunk-read-failed', message: `chunk ${slug} is temporarily unreadable` },
+				{ status: 500, headers: headers({ 'Cache-Control': 'no-store' }) }
 			);
 		}
 		if (!bytes) return notFound(`chunk ${slug} not found`);
