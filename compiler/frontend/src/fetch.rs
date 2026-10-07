@@ -1902,6 +1902,21 @@ pub fn resolve_registry_package(
     pinned: Option<String>,
     have: &[HaveEntry],
 ) -> Result<(PathBuf, ProjectConfig, String), Diagnostic> {
+    if let Some(pin) = pinned.as_deref() {
+        // Pinned versions skip the network when the cache already holds
+        // them: the integrity file is written only after a verified
+        // download, so its presence means completeness. This keeps
+        // locked builds (and repeat installs) entirely off the wire.
+        let base = registry_base_for(pkg, default_registry, overrides);
+        let dir = cached_package_dir(&base, pkg, pin);
+        if dir.join(crate::project::MANIFEST_FILE).is_file() && cached_integrity(&dir).is_some() {
+            if let Ok(canonical) = std::fs::canonicalize(&dir) {
+                if let Ok(Some(cfg)) = ProjectConfig::load_from_dir(&canonical) {
+                    return Ok((canonical, cfg, pin.to_string()));
+                }
+            }
+        }
+    }
     let requirement = pinned.unwrap_or_else(|| range.to_string());
     let mut reqs = BTreeMap::new();
     reqs.insert(pkg.to_string(), requirement);
@@ -2525,6 +2540,36 @@ mod tests {
         .unwrap_err();
         assert!(err.message.contains("503"), "{}", err.message);
         assert_eq!(server.resolve_bodies().len(), 4);
+    }
+
+    #[test]
+    fn pinned_cache_hit_skips_network() {
+        let (_guard, _dir) = isolate_cache("pinhit");
+        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
+        let node = node_json("@acme/widget", "1.2.0", &sha, false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: gz,
+            manifest_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
+        });
+        let default = registry_cfg(&server.base);
+        let empty = BTreeMap::new();
+        let (dir, _, ver) =
+            resolve_registry_package("@acme/widget", "^1.0.0", Some(&default), &empty, None, &[]).unwrap();
+        assert_eq!(ver, "1.2.0");
+        assert!(dir.is_dir());
+        let served = server.requests().len();
+        assert!(served > 0);
+        let (dir2, _, ver2) =
+            resolve_registry_package("@acme/widget", "^1.0.0", Some(&default), &empty, Some("1.2.0".to_string()), &[]).unwrap();
+        assert_eq!(ver2, "1.2.0");
+        assert_eq!(dir2, dir);
+        assert_eq!(server.requests().len(), served);
     }
 
     #[test]
