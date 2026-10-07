@@ -25,8 +25,13 @@ import {
 	type PackageFilter
 } from '$lib/server/db';
 import { specHeaders } from '$lib/server/registry';
-import { normalizeGuideEntry } from '$lib/server/guides';
-import { parseManifestPermissions, type DeclaredPermission } from '$lib/server/permissions';
+import { normalizeGuideEntry, normalizeDocJson } from '$lib/server/guides';
+import {
+	parseManifestPermissions,
+	checkCapabilityCoverage,
+	scanTarballCapabilities,
+	type DeclaredPermission
+} from '$lib/server/permissions';
 import { chunkTarball, rebuildTarball, sha256Hex } from '$lib/server/chunks';
 import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 
@@ -160,9 +165,22 @@ export async function POST({ request, platform, url }) {
 
 	const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 	const readme = str(meta['readme'], `# ${parsed.full}\n`);
-	// jsdoc snapshots are server-generated (docgen wasm at publish), never
-	// accepted from publishers: client-rendered API data is unverifiable.
-	const docJson = '{"modules":[]}';
+	// API snapshots arrive as compiler docgen JSON (`docs` in X-RNX-Meta,
+	// metaVersion 3). The server re-validates the shape, enforces the same
+	// MAX_DOC_JSON_BYTES cap as storage, and rebuilds the payload key by
+	// key, so unknown fields - including any pre-rendered HTML - are never
+	// stored or served.
+	let docJson = '{"modules":[]}';
+	if (meta['docs'] !== undefined && meta['docs'] !== null) {
+		const normalized = normalizeDocJson(meta['docs']);
+		if (!normalized.ok) {
+			return json(
+				{ success: false, error: `invalid docs: ${normalized.error}` },
+				{ status: normalized.status, headers: specHeaders() }
+			);
+		}
+		docJson = normalized.docJson;
+	}
 	const engineRange = str(meta['engineRange'], '');
 	const guidesRaw = Array.isArray(meta['guides']) ? (meta['guides'] as unknown[]) : [];
 	const guides: Array<Record<string, string | null>> = [];
@@ -237,6 +255,19 @@ export async function POST({ request, platform, url }) {
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		return json({ success: false, error: `invalid permissions: ${msg}` }, { status: 400, headers: specHeaders() });
+	}
+	// Code-against-declaration check: the shipped tarball is scanned for
+	// capability sinks (compiler `sink_for` table, domain-head granularity)
+	// and every used head must be declared. Tarball-less JSON publishes
+	// carry no code to scan, so they store declarations unchecked.
+	if (tarball) {
+		const coverage = checkCapabilityCoverage(capabilities, await scanTarballCapabilities(tarball));
+		if (!coverage.ok) {
+			return json(
+				{ success: false, error: `undeclared capabilities: ${coverage.error}` },
+				{ status: 400, headers: specHeaders() }
+			);
+		}
 	}
 	const payload: PublishPayload = {
 		name: parsed.full,

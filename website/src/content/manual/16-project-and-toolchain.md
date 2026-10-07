@@ -254,7 +254,7 @@ print(quote(2.0));
 
 Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners.
 
-`rnx fetch-std` resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). The installer runs it automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. Both accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default.
+`rnx fetch-std` resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). The installer runs it automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. Both accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default. With an empty cache and no network, `@std/*` imports fail as `E108` naming the registry instead of falling back silently.
 
 `rnx fmt` rewrites sources with the canonical style (4-space indents, Egyptian braces, single spaces around binary operators, at most one blank line, no trailing whitespace); comments and string contents are never altered and formatting is idempotent. `rnx lint` checks `L001` (unused variable), `L002` (unused parameter), `L003` (unreachable code), `L004` (missing doc comment), and `L005` (empty block).
 
@@ -326,7 +326,7 @@ All preset files are validated by `crates/cli/tests/editor_configs_test.rs`, `gr
 
 - `Project.config` (`project`, `registry`, `dependencies`) with SemVer 2.0 requirements; `Project.deplock` plus `--locked` for repeatable builds; `workspace` for monorepos.
 - `main` returns the exit code; `run`/`check`/`build`/`test` form the daily loop.
-- One namespace per file; `@std/` embedded with zero network; `E203` guards `private`.
+- One namespace per file; `@std/` served from the seeded cache (offline-first, `rnx fetch-std` to seed); `E203` guards `private`.
 - `test fn` plus `assert`; `bench` plus `blackBox`; `/** */` plus `rnx doc`.
 - `-O/--opt-level` plus `--time-passes`/`--trace`/`--perf-map`; mold then LLD then system linker; `--release` is byte-identical.
 - `rnx lsp` plus Neovim/Helix/VS Code/Zed presets plus the Tree-sitter grammar; tests validate every preset file.

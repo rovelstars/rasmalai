@@ -227,7 +227,7 @@ pub enum Command {
         /// Write output under this directory instead of `target/doc`
         #[arg(long)]
         out_dir: Option<PathBuf>,
-        /// Document the embedded standard library instead of a project
+        /// Document the standard library (from the seeded global cache) instead of a project
         #[arg(long)]
         stdlib: bool,
     },

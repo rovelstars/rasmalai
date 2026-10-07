@@ -19,26 +19,6 @@ pub const MODULES: &[&str] = &[
     "io",
 ];
 
-pub fn source(name: &str) -> Option<&'static str> {
-    match name {
-        "prelude" => Some(include_str!("prelude.rnx")),
-        "time" => Some(include_str!("time.rnx")),
-        "random" => Some(include_str!("random.rnx")),
-        "fs" => Some(include_str!("fs.rnx")),
-        "env" => Some(include_str!("env.rnx")),
-        "math" => Some(include_str!("math.rnx")),
-        "collections" => Some(include_str!("collections.rnx")),
-        "sync" => Some(include_str!("sync.rnx")),
-        "simd" => Some(include_str!("simd.rnx")),
-        "testing" => Some(include_str!("testing.rnx")),
-        "bytes" => Some(include_str!("bytes.rnx")),
-        "process" => Some(include_str!("process.rnx")),
-        "os" => Some(include_str!("os.rnx")),
-        "web" => Some(include_str!("web.rnx")),
-        "net" => Some(include_str!("net.rnx")),
-        "net/http" => Some(include_str!("net/http.rnx")),
-        "json" => Some(include_str!("json.rnx")),
-        "io" => Some(include_str!("io.rnx")),
-        _ => None,
-    }
+pub fn source(_name: &str) -> Option<&'static str> {
+    None
 }

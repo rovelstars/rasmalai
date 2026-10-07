@@ -1,7 +1,7 @@
 use crate::checksum::Sha256;
 use crate::project::{self, ProjectConfig, RegistryConfig};
 use diagnostics::{Code, Diagnostic};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub const REGISTRY_SPEC: u32 = 1;
@@ -9,6 +9,7 @@ pub const DEFAULT_REGISTRY_DOMAIN: &str = "rasmalai.rovelstars.com";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CHUNK_BYTES: usize = 1024 * 1024;
+const CHUNK_FETCH_CONCURRENCY: usize = 8;
 
 pub fn cache_anchor(proj_root: &Path) -> PathBuf {
     project::find_workspace_root_strict(proj_root).unwrap_or_else(|| proj_root.to_path_buf())
@@ -1488,6 +1489,52 @@ fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str) -> Result<Vec<u
     Ok(reply.body)
 }
 
+fn fetch_chunks_parallel(
+    chunk_base: &str,
+    hashes: &[String],
+    full: &str,
+    version: &str,
+) -> Result<BTreeMap<String, Vec<u8>>, Diagnostic> {
+    if hashes.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let width = CHUNK_FETCH_CONCURRENCY.min(hashes.len()).max(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<Result<Vec<u8>, Diagnostic>>>> =
+        (0..hashes.len()).map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..width {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Some(hash) = hashes.get(i) else {
+                    break;
+                };
+                let url = format!("{chunk_base}/chunk/{hash}");
+                let got = fetch_chunk(&url, hash, full, version);
+                let mut slot = slots[i].lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(got);
+            });
+        }
+    });
+    let mut out: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for (i, hash) in hashes.iter().enumerate() {
+        let mut slot = slots[i].lock().unwrap_or_else(|e| e.into_inner());
+        match slot.take() {
+            Some(Ok(bytes)) => {
+                out.insert(hash.clone(), bytes);
+            }
+            Some(Err(e)) => return Err(e),
+            None => {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("chunk {hash} of `{full}@{version}` was not fetched"),
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn chunk_fetch_error(status: u16, body: &[u8], full: &str, version: &str) -> Diagnostic {
     match status {
         404 => Diagnostic::new(
@@ -1796,16 +1843,14 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode) -> Result<PathBuf
         })?
         .to_string();
     let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version)?;
-    let mut by_hash: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut uniq: BTreeSet<String> = BTreeSet::new();
     for entry in &entries {
         for hash in &entry.chunks {
-            if by_hash.contains_key(hash) {
-                continue;
-            }
-            let url = format!("{chunk_base}/chunk/{hash}");
-            by_hash.insert(hash.clone(), fetch_chunk(&url, hash, &node.full, &node.version)?);
+            uniq.insert(hash.clone());
         }
     }
+    let ordered: Vec<String> = uniq.into_iter().collect();
+    let by_hash = fetch_chunks_parallel(&chunk_base, &ordered, &node.full, &node.version)?;
     let bytes = rebuild_tar(&entries, &by_hash)?;
     if bytes.len() > MAX_DOWNLOAD_BYTES {
         return Err(Diagnostic::new(
@@ -2642,6 +2687,124 @@ mod tests {
         assert_eq!(fetched.len(), 1);
         let main = std::fs::read(fetched[0].dir.join("src").join("main.rnx")).unwrap();
         assert_eq!(main, b"export fn hello(): Int { return 1; }\n");
+    }
+
+    #[test]
+    fn parallel_fetch_reconstructs_many_chunks() {
+        let (_guard, _dir) = isolate_cache("parachunks");
+        let mut files: Vec<(String, Vec<u8>)> = vec![(
+            "Project.config".to_string(),
+            b"export default {}\n".to_vec(),
+        )];
+        for i in 0..12u32 {
+            files.push((
+                format!("src/f{i:02}.rnx"),
+                format!("export fn f{i:02}(): Int {{ return {i}; }}\n").into_bytes(),
+            ));
+        }
+        let mut entries: Vec<ChunkEntry> = Vec::new();
+        let mut bodies: Vec<(String, Vec<u8>)> = Vec::new();
+        for (name, bytes) in &files {
+            let h = Sha256::hexdigest(bytes);
+            entries.push(ChunkEntry {
+                name: name.clone(),
+                size: bytes.len() as u64,
+                dir: false,
+                chunks: vec![h.clone()],
+            });
+            bodies.push((h, bytes.clone()));
+        }
+        let mut by_hash: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for (h, b) in &bodies {
+            by_hash.insert(h.clone(), b.clone());
+        }
+        let tar = rebuild_tar(&entries, &by_hash).unwrap();
+        let sha = Sha256::hexdigest(&tar);
+        let manifest = format!(
+            "{{\"entries\": [{}]}}",
+            entries
+                .iter()
+                .map(|e| format!(
+                    "{{\"name\": \"{}\", \"size\": {}, \"dir\": false, \"chunks\": [\"{}\"]}}",
+                    e.name, e.size, e.chunks[0]
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let node = node_json("@acme/widget", "1.2.0", &sha, false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(bodies),
+        });
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        for i in 0..12u32 {
+            let got = std::fs::read(fetched[0].dir.join(format!("src/f{i:02}.rnx"))).unwrap();
+            assert_eq!(got, format!("export fn f{i:02}(): Int {{ return {i}; }}\n").into_bytes());
+        }
+        let chunk_gets = server
+            .requests()
+            .iter()
+            .filter(|(m, p, _)| m == "GET" && p.contains("/chunk/"))
+            .count();
+        assert_eq!(chunk_gets, 13);
+    }
+
+    #[test]
+    fn parallel_fetch_reports_missing_chunk() {
+        let (_guard, _dir) = isolate_cache("paramissing");
+        let files = vec![
+            ("Project.config", b"export default {}\n".to_vec()),
+            ("src/a.rnx", b"export fn a(): Int { return 1; }\n".to_vec()),
+            ("src/b.rnx", b"export fn b(): Int { return 2; }\n".to_vec()),
+        ];
+        let mut manifest_entries = Vec::new();
+        let mut bodies = Vec::new();
+        for (name, bytes) in &files {
+            let h = Sha256::hexdigest(bytes);
+            manifest_entries.push(format!(
+                "{{\"name\": \"{name}\", \"size\": {}, \"dir\": false, \"chunks\": [\"{h}\"]}}",
+                bytes.len()
+            ));
+            bodies.push((h, bytes.clone()));
+        }
+        bodies.pop();
+        let manifest = format!("{{\"entries\": [{}]}}", manifest_entries.join(", "));
+        let node = node_json("@acme/widget", "1.2.0", &"0".repeat(64), false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(bodies),
+        });
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "1.2.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("missing"), "{}", err.message);
+        let _ = server;
     }
 
     #[test]
