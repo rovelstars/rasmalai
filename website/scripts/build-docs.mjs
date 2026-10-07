@@ -64,7 +64,12 @@ function tryCargoDocgen() {
 	} catch {
 		return false;
 	}
-	return validApiJson(join(outDir, 'api.json'));
+	if (!validApiJson(join(outDir, 'api.json'))) {
+		console.log('docs: cargo docgen output failed validation, discarding');
+		return false;
+	}
+	console.log('docs: api.json regenerated with cargo docgen');
+	return true;
 }
 
 // Fetch a prebuilt rnx release (pinned per platform) and document its
@@ -84,21 +89,34 @@ function tryReleaseDocgen() {
 	}
 	const dir = mkdtempSync(join(tmpdir(), 'rnx-rel-'));
 	try {
-		execFileSync(
-			'curl',
-			[
-				'-fsSL',
-				'--max-time',
-				'180',
-				'-o',
-				join(dir, 'rnx.tar.gz'),
-				`https://github.com/rovelstars/rasmalai/releases/latest/download/rnx-${target}.tar.gz`
-			],
-			{ stdio: ['ignore', 'pipe', 'ignore'] }
-		);
-		execFileSync('tar', ['xzf', join(dir, 'rnx.tar.gz'), '-C', dir], { stdio: ['ignore', 'pipe', 'ignore'] });
+		try {
+			execFileSync(
+				'curl',
+				[
+					'-fsSL',
+					'--max-time',
+					'180',
+					'-o',
+					join(dir, 'rnx.tar.gz'),
+					`https://github.com/rovelstars/rasmalai/releases/latest/download/rnx-${target}.tar.gz`
+				],
+				{ stdio: ['ignore', 'pipe', 'ignore'] }
+			);
+		} catch (e) {
+			console.log(`docs: release download failed: ${errorMessage(e)}`);
+			return false;
+		}
+		try {
+			execFileSync('tar', ['xzf', join(dir, 'rnx.tar.gz'), '-C', dir], { stdio: ['ignore', 'pipe', 'ignore'] });
+		} catch (e) {
+			console.log(`docs: release extract failed: ${errorMessage(e)}`);
+			return false;
+		}
 		const bin = join(dir, `rnx-${target}`, 'bin', process.platform === 'win32' ? 'rnx.exe' : 'rnx');
-		if (!existsSync(bin)) return false;
+		if (!existsSync(bin)) {
+			console.log('docs: release archive has no rnx binary, skipping');
+			return false;
+		}
 		// Newer binaries ship no embedded stdlib and resolve @std/* from
 		// cache-or-registry instead: seed first (warn-only), so both eras
 		// of release binary work here.
@@ -107,20 +125,30 @@ function tryReleaseDocgen() {
 		} catch {
 			console.log('docs: release fetch-std failed, relying on embedded stdlib if present');
 		}
-		execFileSync(bin, ['doc', '--json', '--stdlib', '--out-dir', outDir], {
-			stdio: ['ignore', 'pipe', 'ignore']
-		});
+		try {
+			execFileSync(bin, ['doc', '--json', '--stdlib', '--out-dir', outDir], {
+				stdio: ['ignore', 'pipe', 'ignore']
+			});
+		} catch (e) {
+			console.log(`docs: release doc failed: ${errorMessage(e)}`);
+			return false;
+		}
 		if (!validApiJson(join(outDir, 'api.json'))) {
 			console.log('docs: release docgen output failed validation, discarding');
 			return false;
 		}
 		console.log('docs: api.json generated with the release binary');
 		return true;
-	} catch {
+	} catch (e) {
+		console.log(`docs: release path failed: ${errorMessage(e)}`);
 		return false;
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+}
+
+function errorMessage(e) {
+	return e instanceof Error ? (e.message.split('\n')[0] ?? String(e)).slice(0, 200) : String(e).slice(0, 200);
 }
 
 function validApiJson(path) {
