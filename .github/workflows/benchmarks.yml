@@ -51,6 +51,15 @@ jobs:
           ulimit -c 0
           cargo build --release --bin rnx
 
+      - name: Seed stdlib cache
+        run: |
+          seeded=""
+          for i in 1 2 3; do
+            if ./target/release/rnx fetch-std; then seeded=1; break; fi
+            sleep 20
+          done
+          [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
+
       - name: Run benchmark harness
         run: |
           python3 benches/harness/runner.py --out benches/data/benchmarks.json
