@@ -5,7 +5,7 @@ mod calls;
 mod control;
 mod mem;
 
-pub(super) struct FnLower<'a> {
+pub(super) struct FnLower<'a, M> {
     pub(super) lir: &'a LirModule,
     pub(super) ids: &'a BTreeMap<String, FuncId>,
     pub(super) foreign: &'a BTreeMap<(String, String), FuncId>,
@@ -217,7 +217,7 @@ pub(super) struct FnLower<'a> {
     pub(super) array_slice: FuncId,
     pub(super) bytes_fns: &'a BTreeMap<String, FuncId>,
     pub(super) statics: &'a BTreeMap<String, DataId>,
-    pub(super) module: &'a mut JITModule,
+    pub(super) module: &'a mut M,
     pub(super) vars: Vec<cranelift_frontend::Variable>,
     pub(super) ftypes: Vec<LirType>,
     pub(super) ret_slots: usize,
@@ -233,7 +233,7 @@ pub(super) struct FnLower<'a> {
     pub(super) last_write: BTreeMap<Local, usize>,
 }
 
-impl FnLower<'_> {
+impl<M: Module> FnLower<'_, M> {
     pub(super) fn val(&mut self, b: &mut FunctionBuilder<'_>, l: Local) -> cranelift_codegen::ir::Value {
         b.use_var(self.vars[l as usize])
     }

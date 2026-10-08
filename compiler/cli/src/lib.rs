@@ -96,6 +96,7 @@ fn record_opt_subs(profiler: &mut frontend::profiler::PassProfiler, t: &lir::opt
         ("opt_sroa", t.sroa),
         ("opt_licm", t.licm),
         ("opt_bce", t.bce),
+        ("opt_dom", t.dom),
         ("opt_arc", t.arc),
         ("opt_tco", t.tco),
         ("opt_fixpoint", t.fixpoint),
@@ -243,18 +244,105 @@ pub struct FileProgram {
     pub native_libs: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct CompileConfig {
     pub time_passes: bool,
     pub trace: Option<std::path::PathBuf>,
     pub perf_map: bool,
     pub debug: bool,
+    pub jobs: usize,
+    pub memory_cap: u64,
+}
+
+impl Default for CompileConfig {
+    fn default() -> Self {
+        CompileConfig {
+            time_passes: false,
+            trace: None,
+            perf_map: false,
+            debug: false,
+            jobs: default_jobs(),
+            memory_cap: default_memory_cap(),
+        }
+    }
+}
+
+pub const MEMORY_CAP_CEIL: u64 = 8 * 1024 * 1024 * 1024;
+pub const MEMORY_CAP_FALLBACK: u64 = 4 * 1024 * 1024 * 1024;
+
+pub fn default_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
+pub fn resolve_jobs(requested: Option<usize>) -> usize {
+    // Zero is not a usable worker count; fall back to the default.
+    match requested {
+        Some(n) if n > 0 => n,
+        _ => default_jobs(),
+    }
+}
+
+pub fn resolve_memory_cap(requested: Option<u64>) -> u64 {
+    requested.unwrap_or_else(default_memory_cap)
+}
+
+pub fn default_memory_cap() -> u64 {
+    match total_memory_bytes() {
+        Some(total) => (total / 2).min(MEMORY_CAP_CEIL),
+        None => MEMORY_CAP_FALLBACK,
+    }
+}
+
+fn total_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("MemTotal:") {
+                let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+                return kb.checked_mul(1024);
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+pub fn parse_memory_cap(s: &str) -> Result<u64, String> {
+    let text = s.trim();
+    if text.is_empty() {
+        return Err("memory cap must not be empty".to_string());
+    }
+    let digits = text.len() - text.bytes().rev().take_while(|b| b.is_ascii_alphabetic()).count();
+    let (num, unit) = text.split_at(digits);
+    let num: u64 = num
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad memory cap `{s}`"))?;
+    let mult: u64 = match unit.trim().to_ascii_uppercase().as_str() {
+        "" | "B" => 1,
+        "K" | "KB" => 1024,
+        "M" | "MB" => 1024 * 1024,
+        "G" | "GB" => 1024 * 1024 * 1024,
+        _ => return Err(format!("bad memory cap suffix `{unit}`; use KB, MB, or GB")),
+    };
+    num.checked_mul(mult)
+        .ok_or_else(|| format!("memory cap `{s}` overflows u64"))
 }
 
 impl CompileConfig {
     fn profiler(&self) -> frontend::profiler::PassProfiler {
         frontend::profiler::PassProfiler::new(self.time_passes, self.trace.clone())
     }
+}
+
+pub fn runtime_archive_hash() -> &'static str {
+    runtime::archive::SHA256
 }
 
 pub fn write_perf_map(entries: &[(String, usize, usize)]) {
@@ -296,7 +384,7 @@ pub fn load_program_cfg(
 ) -> Result<FileProgram, Vec<diagnostics::Diagnostic>> {
     let mut profiler = cfg.profiler();
     profiler.start("lex_parse");
-    let graph = frontend::modules::ModuleGraph::build_collecting(std::path::Path::new(path));
+    let graph = frontend::modules::ModuleGraph::build_collecting_parallel(std::path::Path::new(path), cfg.jobs);
     let graph = match graph {
         Ok(g) => g,
         Err(errs) => return Err(errs),
@@ -352,7 +440,7 @@ pub fn load_program_cfg(
         return Err(errors);
     }
     profiler.start("lower");
-    let lowered = match lir::lower::lower(&module) {
+    let lowered = match lir::lower::lower_parallel(&module, cfg.jobs) {
         Ok(l) => l,
         Err(e) => return Err(vec![e]),
     };
@@ -360,11 +448,11 @@ pub fn load_program_cfg(
     profiler.start("opt_pipeline");
     let mut lowered = lowered;
     let entry = resolve_entry(&lowered, entry);
-    let opt_timings = lir::opt::optimize_lir_timed(&mut lowered, opt_level, entry);
+    let opt_timings = lir::opt::optimize_lir_parallel(&mut lowered, opt_level, entry, cfg.jobs);
     record_opt_subs(&mut profiler, &opt_timings);
     profiler.stop();
     profiler.start("verify");
-    errors.extend(lir::verify::verify(&lowered));
+    errors.extend(lir::verify::verify_parallel(&lowered, cfg.jobs));
     profiler.stop();
     if errors.is_empty() {
         errors.extend(graph.isolation_errors());
@@ -520,7 +608,7 @@ pub fn build_lib_files_cfg(
     let opt_level = if release { opt_level.max(1) } else { opt_level };
     let mut profiler = cfg.profiler();
     profiler.start("lex_parse");
-    let graph = frontend::modules::ModuleGraph::build_collecting(std::path::Path::new(path));
+    let graph = frontend::modules::ModuleGraph::build_collecting_parallel(std::path::Path::new(path), cfg.jobs);
     let graph = match graph {
         Ok(g) => g,
         Err(errs) => return Err(errs),
@@ -1035,6 +1123,8 @@ pub fn run_files_cfg(
             }
             let leaked: &'static lir::instr::Module = Box::leak(Box::new(prog.lir));
             let mut machine = Machine::new(leaked);
+            prog.profiler.stop();
+            prog.profiler.start("exec");
             let outcome = match machine.call(entry, args) {
                 Ok(v) => RunOutcome::Value(v),
                 Err(ExecError::Throw(v)) => RunOutcome::Uncaught {
@@ -1048,6 +1138,7 @@ pub fn run_files_cfg(
                     func: machine.error_func.clone(),
                 },
             };
+            prog.profiler.stop();
             (outcome, machine.output.clone())
         }
         TestBackend::Cranelift => {
@@ -1085,6 +1176,8 @@ pub fn run_files_cfg(
             if cfg.perf_map {
                 write_perf_map(&jit.perf_entries());
             }
+            prog.profiler.stop();
+            prog.profiler.start("exec");
             let outcome = match jit.call(entry, &iargs) {
                 Ok(v) => RunOutcome::Value(Value::Int(v)),
                 Err(e) => match uncaught_payload(&e) {
@@ -1107,6 +1200,7 @@ pub fn run_files_cfg(
                     },
                 },
             };
+            prog.profiler.stop();
             (outcome, Vec::new())
         }
         TestBackend::Llvm => {
@@ -1121,6 +1215,8 @@ pub fn run_files_cfg(
                     output: Vec::new(),
                 };
             }
+            prog.profiler.stop();
+            prog.profiler.start("exec");
             let outcome = if cfg.perf_map {
                 match llvm::codegen::execute_with_map(&prog.lir, entry) {
                     Ok((v, entries)) => {
@@ -1163,6 +1259,7 @@ pub fn run_files_cfg(
                     },
                 }
             };
+            prog.profiler.stop();
             (outcome, Vec::new())
         }
     };
@@ -1193,13 +1290,29 @@ pub fn build_files_cfg(
     target: Option<&str>,
     cfg: &CompileConfig,
 ) -> Result<Vec<u8>, Vec<Diagnostic>> {
-    Ok(build_files_staged_cfg(path, entry, release, opt_level, target, cfg)?.bytes)
+    let mut out = build_files_staged_units(path, entry, release, opt_level, target, cfg, Some(1))?.objects;
+    if out.len() != 1 {
+        return Err(vec![Diagnostic::new(
+            Code::E108,
+            "single-object emit produced multiple units",
+        )]);
+    }
+    Ok(out.pop().unwrap_or_default())
 }
 
 pub struct BuildOutput {
-    pub bytes: Vec<u8>,
+    pub objects: Vec<Vec<u8>>,
     pub stages: Vec<(String, f64)>,
     pub native_libs: Vec<String>,
+}
+
+pub fn codegen_units(cfg: &CompileConfig, release: bool) -> usize {
+    if cfg.jobs <= 1 {
+        return 1;
+    }
+    let est_unit: u64 = if release { 256 * 1024 * 1024 } else { 128 * 1024 * 1024 };
+    let by_mem = (cfg.memory_cap / est_unit).max(1).min(usize::MAX as u64) as usize;
+    cfg.jobs.min(by_mem).max(1)
 }
 
 pub fn build_files_staged_cfg(
@@ -1210,6 +1323,18 @@ pub fn build_files_staged_cfg(
     target: Option<&str>,
     cfg: &CompileConfig,
 ) -> Result<BuildOutput, Vec<Diagnostic>> {
+    build_files_staged_units(path, entry, release, opt_level, target, cfg, None)
+}
+
+fn build_files_staged_units(
+    path: &str,
+    entry: &str,
+    release: bool,
+    opt_level: u8,
+    target: Option<&str>,
+    cfg: &CompileConfig,
+    units_override: Option<usize>,
+) -> Result<BuildOutput, Vec<Diagnostic>> {
     let opt_level = if release { opt_level.max(1) } else { opt_level };
     let mut prog = load_program_cfg(path, opt_level, entry, cfg)?;
     let entry = resolve_entry(&prog.lir, entry);
@@ -1219,16 +1344,77 @@ pub fn build_files_staged_cfg(
         llvm::codegen::OptLevel::Dev
     };
     let debug = if release { None } else { prog.debug.as_ref() };
+    let units = units_override.unwrap_or_else(|| codegen_units(cfg, release));
+    let cache_root = {
+        let anchor = std::path::Path::new(path);
+        let anchor = if anchor.is_file() {
+            anchor.parent().unwrap_or_else(|| std::path::Path::new("."))
+        } else {
+            anchor
+        };
+        frontend::project::find_project_root(anchor)
+            .or_else(|| Some(anchor.to_path_buf()))
+    };
     prog.profiler.start("codegen");
-    let out = llvm::codegen::emit_object_with_debug(
-        &prog.lir,
-        "rnx_module",
-        entry,
-        opt,
-        target,
-        debug,
-    )
-    .map_err(|e| vec![e]);
+    let out = match cache_root {
+        Some(root) => {
+            let host = linker::host_triple().0;
+            let parts = frontend::cache::toolchain_parts(
+                release,
+                opt_level,
+                target,
+                &host,
+                debug.is_some(),
+                env!("CARGO_PKG_VERSION"),
+                crate::runtime_archive_hash(),
+                llvm::LLVM_VERSION,
+            );
+            let toolchain = frontend::cache::fingerprint_hex(
+                &parts.iter().map(|b| b.as_slice()).collect::<Vec<_>>(),
+            );
+            let module_hash = lir::codegen_hash::module_salt(&prog.lir);
+            let products_on = frontend::depcache::dep_cache_enabled();
+            let cache = llvm::codegen::ObjectCache {
+                module_hash: &module_hash,
+                toolchain_hash: &toolchain,
+                lookup: &|k: &str| {
+                    if products_on {
+                        if let Some(bytes) = frontend::products::read_global_object(k) {
+                            return Some(bytes);
+                        }
+                    }
+                    frontend::objects::read_object(&root, k)
+                },
+                store: &|k: &str, v: &[u8]| {
+                    frontend::objects::write_object(&root, k, v);
+                    if products_on {
+                        frontend::products::write_global_object(k, v);
+                    }
+                },
+            };
+            llvm::codegen::emit_objects_cached(
+                &prog.lir,
+                "rnx_module",
+                entry,
+                opt,
+                target,
+                debug,
+                units,
+                Some(&cache),
+            )
+            .map_err(|e| vec![e])
+        }
+        None => llvm::codegen::emit_objects(
+            &prog.lir,
+            "rnx_module",
+            entry,
+            opt,
+            target,
+            debug,
+            units,
+        )
+        .map_err(|e| vec![e]),
+    };
     prog.profiler.stop();
     let out = out?;
     prog.profiler.finish();
@@ -1238,7 +1424,7 @@ pub fn build_files_staged_cfg(
         .iter()
         .map(|(name, _, dur_ns)| (name.to_string(), *dur_ns as f64 / 1_000_000.0))
         .collect();
-    Ok(BuildOutput { bytes: out, stages, native_libs: prog.native_libs })
+    Ok(BuildOutput { objects: out, stages, native_libs: prog.native_libs })
 }
 
 
@@ -1620,7 +1806,7 @@ pub fn load_test_program_cfg(
         })?;
     let entry = config.main_path(pkg_root);
     let extra = discover_test_files(pkg_root).map_err(|e| vec![e])?;
-    let graph = frontend::modules::ModuleGraph::build_collecting_extra(&entry, &extra)?;
+    let graph = frontend::modules::ModuleGraph::build_collecting_extra_parallel(&entry, &extra, cfg.jobs)?;
     let module = match graph.resolve() {
         Ok(m) => m,
         Err(e) => return Err(vec![e]),
@@ -1666,18 +1852,18 @@ pub fn load_test_program_cfg(
         return Err(errors);
     }
     profiler.start("lower");
-    let lowered = match lir::lower::lower(&module) {
+    let lowered = match lir::lower::lower_parallel(&module, cfg.jobs) {
         Ok(l) => l,
         Err(e) => return Err(vec![e]),
     };
     profiler.stop();
     profiler.start("opt_pipeline");
     let mut lowered = lowered;
-    let opt_timings = lir::opt::optimize_lir_timed(&mut lowered, opt_level, "Main");
+    let opt_timings = lir::opt::optimize_lir_parallel(&mut lowered, opt_level, "Main", cfg.jobs);
     record_opt_subs(&mut profiler, &opt_timings);
     profiler.stop();
     profiler.start("verify");
-    errors.extend(lir::verify::verify(&lowered));
+    errors.extend(lir::verify::verify_parallel(&lowered, cfg.jobs));
     profiler.stop();
     if errors.is_empty() {
         errors.extend(graph.isolation_errors());
@@ -1714,7 +1900,7 @@ pub fn load_bench_program_cfg(
         })?;
     let entry = config.main_path(pkg_root);
     let extra = discover_test_files(pkg_root).map_err(|e| vec![e])?;
-    let graph = frontend::modules::ModuleGraph::build_collecting_extra(&entry, &extra)?;
+    let graph = frontend::modules::ModuleGraph::build_collecting_extra_parallel(&entry, &extra, cfg.jobs)?;
     let module = match graph.resolve() {
         Ok(m) => m,
         Err(e) => return Err(vec![e]),
@@ -1750,18 +1936,18 @@ pub fn load_bench_program_cfg(
         return Err(errors);
     }
     profiler.start("lower");
-    let lowered = match lir::lower::lower(&module) {
+    let lowered = match lir::lower::lower_parallel(&module, cfg.jobs) {
         Ok(l) => l,
         Err(e) => return Err(vec![e]),
     };
     profiler.stop();
     profiler.start("opt_pipeline");
     let mut lowered = lowered;
-    let opt_timings = lir::opt::optimize_lir_timed(&mut lowered, opt_level, "Main");
+    let opt_timings = lir::opt::optimize_lir_parallel(&mut lowered, opt_level, "Main", cfg.jobs);
     record_opt_subs(&mut profiler, &opt_timings);
     profiler.stop();
     profiler.start("verify");
-    errors.extend(lir::verify::verify(&lowered));
+    errors.extend(lir::verify::verify_parallel(&lowered, cfg.jobs));
     profiler.stop();
     if errors.is_empty() {
         errors.extend(graph.isolation_errors());
@@ -1795,7 +1981,9 @@ pub fn run_test_harness_cfg(
         TestBackend::Interpreter => {
             let leaked: &'static lir::instr::Module = Box::leak(Box::new(lowered));
             let mut machine = runtime::machine::Machine::new(leaked);
-            match machine.call("Main", Vec::new()) {
+            profiler.stop();
+            profiler.start("exec");
+            let outcome = match machine.call("Main", Vec::new()) {
                 Ok(v) => match v {
                     runtime::value::Value::Int(f) => TestOutcome::Completed {
                         output: machine.output.clone(),
@@ -1810,7 +1998,9 @@ pub fn run_test_harness_cfg(
                     TestOutcome::Runtime(format!("uncaught throw: {}", v.display()))
                 }
                 Err(runtime::machine::ExecError::Fatal(m)) => TestOutcome::Runtime(m),
-            }
+            };
+            profiler.stop();
+            outcome
         }
         TestBackend::Cranelift => {
             let mut jit = match cranelift::jit::Jit::compile_with_timings(&lowered) {
@@ -1826,16 +2016,22 @@ pub fn run_test_harness_cfg(
             if cfg.perf_map {
                 write_perf_map(&jit.perf_entries());
             }
-            match jit.call("Main", &[]) {
+            profiler.stop();
+            profiler.start("exec");
+            let outcome = match jit.call("Main", &[]) {
                 Ok(f) => TestOutcome::Completed {
                     output: Vec::new(),
                     failed: f,
                 },
                 Err(e) => TestOutcome::Runtime(e.message.clone()),
-            }
+            };
+            profiler.stop();
+            outcome
         }
         TestBackend::Llvm => {
-            if cfg.perf_map {
+            profiler.stop();
+            profiler.start("exec");
+            let outcome = if cfg.perf_map {
                 match llvm::codegen::execute_with_map(&lowered, "Main") {
                     Ok((f, entries)) => {
                         write_perf_map(&entries);
@@ -1854,7 +2050,9 @@ pub fn run_test_harness_cfg(
                     },
                     Err(e) => TestOutcome::Runtime(e.message.clone()),
                 }
-            }
+            };
+            profiler.stop();
+            outcome
         }
     };
     profiler.stop();

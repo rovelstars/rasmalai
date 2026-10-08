@@ -1,10 +1,12 @@
 pub mod arc_opt;
 pub mod bce;
+pub mod codegen_hash;
 pub mod escape;
 pub mod instr;
 pub mod licm;
 pub mod lower;
 pub mod opt;
+pub mod parallel;
 pub mod reach;
 pub mod sroa;
 pub mod tco;

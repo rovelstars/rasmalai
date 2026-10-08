@@ -14,7 +14,7 @@ mod instr;
 pub mod stdlib_prebuilt;
 
 use self::instr::{FnCx, lower_instr};
-use self::lower_fn::{build_module, check_supported};
+use self::lower_fn::{build_module, build_module_subset, check_supported};
 
 
 pub struct Jit<'ctx> {
@@ -54,6 +54,7 @@ fn start_debug<'ctx>(
     lir: &Module,
     info: &DebugInfo,
     funcs: &BTreeMap<String, FunctionValue<'ctx>>,
+    define: Option<&BTreeSet<usize>>,
 ) -> Result<ActiveDebug<'ctx>, Diagnostic> {
     use inkwell::debug_info::{
         AsDIScope, DIFlags, DIFlagsConstants, DWARFEmissionKind, DWARFSourceLanguage,
@@ -87,7 +88,10 @@ fn start_debug<'ctx>(
     let sub_ty =
         dibuilder.create_subroutine_type(file, Some(i64di.as_type()), &[], DIFlags::ZERO);
     let mut subs = BTreeMap::new();
-    for f in &lir.functions {
+    for (i, f) in lir.functions.iter().enumerate() {
+        if !define.is_none_or(|d| d.contains(&i)) {
+            continue;
+        }
         let (line, _) = info.lines.get(&f.name).copied().unwrap_or((1, 1));
         let sp = dibuilder.create_function(
             cu.as_debug_info_scope(),
@@ -656,6 +660,19 @@ pub fn emit_object_with_debug(
     target: Option<&str>,
     debug: Option<&DebugInfo>,
 ) -> Result<Vec<u8>, Diagnostic> {
+    check_build(lir, entry)?;
+    let context = Context::create();
+    let release = opt == OptLevel::Release;
+    let (module, funcs) = build_module(&context, lir, name, release, debug)?;
+    rename_entry_for_glue(&funcs, entry);
+    synthesize_glue(&context, &module, &funcs, lir, entry, release)?;
+    module.verify().map_err(|e| {
+        Diagnostic::new(Code::E108, format!("llvm verify failed for `{name}`: {e}"))
+    })?;
+    finish_object(&module, name, opt, target)
+}
+
+fn check_build(lir: &Module, entry: &str) -> Result<(), Diagnostic> {
     runtime::native::rnx_set_closure_epoch(0);
     for f in &lir.functions {
         check_supported(lir, f)?;
@@ -683,13 +700,24 @@ pub fn emit_object_with_debug(
             format!("build entry `{entry}` must return Int, not a vector"),
         ));
     }
-    let context = Context::create();
-    let release = opt == OptLevel::Release;
-    let (module, funcs) = build_module(&context, lir, name, release, debug)?;
-    let entry_fn = funcs[entry];
+    Ok(())
+}
+
+fn rename_entry_for_glue<'ctx>(funcs: &BTreeMap<String, FunctionValue<'ctx>>, entry: &str) {
     if entry == "main" {
-        entry_fn.as_global_value().set_name("__rnx_user_main");
+        funcs[entry].as_global_value().set_name("__rnx_user_main");
     }
+}
+
+fn synthesize_glue<'ctx>(
+    context: &'ctx Context,
+    module: &LlModule<'ctx>,
+    funcs: &BTreeMap<String, FunctionValue<'ctx>>,
+    lir: &Module,
+    entry: &str,
+    release: bool,
+) -> Result<(), Diagnostic> {
+    let entry_fn = funcs[entry];
     let i64t = context.i64_type();
     let i32t = context.i32_type();
     let ptr_t = context.ptr_type(inkwell::AddressSpace::default());
@@ -818,10 +846,257 @@ pub fn emit_object_with_debug(
         init.set_section(Some(".text.rnx_init"));
         clo_init.set_section(Some(".text.rnx_closure_init"));
     }
+    Ok(())
+}
+
+const CGU_THRESHOLD: usize = 64;
+
+fn emit_unit(
+    lir: &Module,
+    name: &str,
+    entry: &str,
+    opt: OptLevel,
+    target: Option<&str>,
+    debug: Option<&DebugInfo>,
+    define: &BTreeSet<usize>,
+    with_glue: bool,
+) -> Result<Vec<u8>, Diagnostic> {
+    // One Context per unit, created and destroyed here; never shared across threads.
+    let context = Context::create();
+    let release = opt == OptLevel::Release;
+    let (module, funcs) = build_module_subset(&context, lir, name, release, debug, Some(define))?;
+    // Every unit renames a user `main`: the definition lives in exactly one
+    // unit while unit 0 calls it, so all must agree on `__rnx_user_main`.
+    rename_entry_for_glue(&funcs, entry);
+    if with_glue {
+        synthesize_glue(&context, &module, &funcs, lir, entry, release)?;
+    }
     module.verify().map_err(|e| {
         Diagnostic::new(Code::E108, format!("llvm verify failed for `{name}`: {e}"))
     })?;
     finish_object(&module, name, opt, target)
+}
+
+/// Partition the optimized LIR program into contiguous function groups and emit
+/// one object per group. Unit 0 also holds the entry glue; cross-unit calls
+/// resolve at link as ordinary externals. Concatenate the results in order.
+pub fn emit_objects(
+    lir: &Module,
+    name: &str,
+    entry: &str,
+    opt: OptLevel,
+    target: Option<&str>,
+    debug: Option<&DebugInfo>,
+    units: usize,
+) -> Result<Vec<Vec<u8>>, Diagnostic> {
+    if units <= 1 || lir.functions.len() < CGU_THRESHOLD {
+        return Ok(vec![emit_object_with_debug(lir, name, entry, opt, target, debug)?]);
+    }
+    check_build(lir, entry)?;
+    let total = lir.functions.len();
+    let count = units.min(total);
+    let chunk = total.div_ceil(count);
+    // Concurrent units are capped by the caller's memory budget; see
+    // the units computation at the cli call site.
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(count);
+        for unit in 0..count {
+            let lo = unit * chunk;
+            let hi = ((unit + 1) * chunk).min(total);
+            let unit_name = format!("{name}.{unit}");
+            handles.push(s.spawn(move || {
+                let define: BTreeSet<usize> = (lo..hi).collect();
+                emit_unit(lir, &unit_name, entry, opt, target, debug, &define, unit == 0)
+            }));
+        }
+        let mut out: Vec<Vec<u8>> = Vec::with_capacity(count);
+        for handle in handles {
+            let bytes = handle
+                .join()
+                .map_err(|_| Diagnostic::new(Code::E108, "cgu worker failed"))??;
+            out.push(bytes);
+        }
+        Ok(out)
+    })
+}
+
+pub struct ObjectCache<'a> {
+    pub module_hash: &'a str,
+    pub toolchain_hash: &'a str,
+    pub lookup: &'a dyn Fn(&str) -> Option<Vec<u8>>,
+    pub store: &'a dyn Fn(&str, &[u8]),
+}
+
+pub fn profile_str(opt: OptLevel) -> &'static str {
+    match opt {
+        OptLevel::Dev => "dev",
+        OptLevel::Release => "release",
+    }
+}
+
+pub fn unit_hash(
+    lir: &Module,
+    define: Option<&BTreeSet<usize>>,
+    entry: &str,
+    opt: OptLevel,
+    target: Option<&str>,
+    debug: Option<&DebugInfo>,
+    glue: bool,
+    module_name: &str,
+) -> String {
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    parts.push(b"rnx-unit-v1".to_vec());
+    parts.push(module_name.as_bytes().to_vec());
+    parts.push(vec![match opt {
+        OptLevel::Dev => 0,
+        OptLevel::Release => 1,
+    }]);
+    parts.push(target.unwrap_or("host").as_bytes().to_vec());
+    parts.push(entry.as_bytes().to_vec());
+    parts.push(vec![u8::from(glue)]);
+    match debug {
+        None => parts.push(b"nodebug".to_vec()),
+        Some(info) => {
+            parts.push(b"debug".to_vec());
+            parts.push(info.file.as_bytes().to_vec());
+            parts.push(info.dir.as_bytes().to_vec());
+        }
+    }
+    parts.push(lir::codegen_hash::module_salt(lir).into_bytes());
+    let mut members: Vec<usize> = match define {
+        Some(d) => d.iter().copied().filter(|i| *i < lir.functions.len()).collect(),
+        None => (0..lir.functions.len()).collect(),
+    };
+    members.sort();
+    parts.push((members.len() as u64).to_le_bytes().to_vec());
+    for i in &members {
+        let f = &lir.functions[*i];
+        parts.push(i.to_le_bytes().to_vec());
+        match debug.and_then(|info| info.lines.get(&f.name)) {
+            Some((line, col)) => {
+                parts.push(b"dbg".to_vec());
+                parts.push(line.to_le_bytes().to_vec());
+                parts.push(col.to_le_bytes().to_vec());
+            }
+            None => parts.push(b"nodbg".to_vec()),
+        }
+        parts.push(lir::codegen_hash::fn_hash(f).into_bytes());
+    }
+    let refs: Vec<&[u8]> = parts.iter().map(|p| p.as_slice()).collect();
+    frontend::cache::fingerprint_hex(&refs)
+}
+
+pub fn cache_key(profile: &str, module_hash: &str, toolchain_hash: &str, unit: &str) -> String {
+    format!("{profile}/{module_hash}/{toolchain_hash}/{unit}")
+}
+
+fn unit_cache_key(
+    cache: &ObjectCache,
+    lir: &Module,
+    define: Option<&BTreeSet<usize>>,
+    entry: &str,
+    opt: OptLevel,
+    target: Option<&str>,
+    debug: Option<&DebugInfo>,
+    glue: bool,
+    name: &str,
+) -> String {
+    cache_key(
+        profile_str(opt),
+        cache.module_hash,
+        cache.toolchain_hash,
+        &unit_hash(lir, define, entry, opt, target, debug, glue, name),
+    )
+}
+
+pub fn emit_object_cached(
+    lir: &Module,
+    name: &str,
+    entry: &str,
+    opt: OptLevel,
+    target: Option<&str>,
+    debug: Option<&DebugInfo>,
+    cache: &ObjectCache,
+) -> Result<Vec<u8>, Diagnostic> {
+    let key = unit_cache_key(cache, lir, None, entry, opt, target, debug, true, name);
+    if let Some(bytes) = (cache.lookup)(&key) {
+        return Ok(bytes);
+    }
+    let bytes = emit_object_with_debug(lir, name, entry, opt, target, debug)?;
+    (cache.store)(&key, &bytes);
+    Ok(bytes)
+}
+
+pub fn emit_objects_cached(
+    lir: &Module,
+    name: &str,
+    entry: &str,
+    opt: OptLevel,
+    target: Option<&str>,
+    debug: Option<&DebugInfo>,
+    units: usize,
+    cache: Option<&ObjectCache>,
+) -> Result<Vec<Vec<u8>>, Diagnostic> {
+    let Some(cache) = cache else {
+        return emit_objects(lir, name, entry, opt, target, debug, units);
+    };
+    if units <= 1 || lir.functions.len() < CGU_THRESHOLD {
+        return Ok(vec![emit_object_cached(lir, name, entry, opt, target, debug, cache)?]);
+    }
+    check_build(lir, entry)?;
+    let total = lir.functions.len();
+    let count = units.min(total);
+    let chunk = total.div_ceil(count);
+    let mut keys = Vec::with_capacity(count);
+    for unit in 0..count {
+        let define: BTreeSet<usize> = (unit * chunk..((unit + 1) * chunk).min(total)).collect();
+        keys.push(unit_cache_key(
+            cache,
+            lir,
+            Some(&define),
+            entry,
+            opt,
+            target,
+            debug,
+            unit == 0,
+            name,
+        ));
+    }
+    let mut slots: Vec<Option<Vec<u8>>> = Vec::with_capacity(count);
+    for key in &keys {
+        slots.push((cache.lookup)(key));
+    }
+    let missing: Vec<usize> = (0..count).filter(|u| slots[*u].is_none()).collect();
+    let fresh: Vec<(usize, Vec<u8>)> = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(missing.len());
+        for unit in missing {
+            let lo = unit * chunk;
+            let hi = ((unit + 1) * chunk).min(total);
+            let unit_name = format!("{name}.{unit}");
+            handles.push(s.spawn(move || {
+                let define: BTreeSet<usize> = (lo..hi).collect();
+                emit_unit(lir, &unit_name, entry, opt, target, debug, &define, unit == 0)
+                    .map(|bytes| (unit, bytes))
+            }));
+        }
+        let mut fresh = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let (unit, bytes) = handle
+                .join()
+                .map_err(|_| Diagnostic::new(Code::E108, "cgu worker failed"))??;
+            fresh.push((unit, bytes));
+        }
+        Ok::<_, Diagnostic>(fresh)
+    })?;
+    for (unit, bytes) in &fresh {
+        (cache.store)(&keys[*unit], bytes);
+        slots[*unit] = Some(bytes.clone());
+    }
+    let mut out = Vec::with_capacity(count);
+    for slot in slots {
+        out.push(slot.expect("cached or freshly emitted unit"));
+    }
+    Ok(out)
 }
 
 fn cross_cpu(triple: &str) -> String {
@@ -832,19 +1107,23 @@ fn cross_cpu(triple: &str) -> String {
     }
 }
 
-fn finish_object(
-    module: &LlModule,
-    name: &str,
-    opt: OptLevel,
+static LLVM_TARGETS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+fn ensure_targets() {
+    use inkwell::targets::{InitializationConfig, Target};
+    LLVM_TARGETS.get_or_init(|| {
+        Target::initialize_x86(&InitializationConfig::default());
+        Target::initialize_aarch64(&InitializationConfig::default());
+    });
+}
+
+fn make_machine(
     triple: Option<&str>,
-) -> Result<Vec<u8>, Diagnostic> {
-    use inkwell::targets::{
-        CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple,
-    };
+    opt: OptLevel,
+) -> Result<(inkwell::targets::TargetTriple, TargetMachine), Diagnostic> {
+    use inkwell::targets::{CodeModel, RelocMode, Target, TargetTriple};
     use inkwell::OptimizationLevel;
-    let release = opt == OptLevel::Release;
-    Target::initialize_x86(&InitializationConfig::default());
-    Target::initialize_aarch64(&InitializationConfig::default());
+    ensure_targets();
     let default_triple = TargetMachine::get_default_triple();
     let triple_ref = match triple {
         Some(t) => TargetTriple::create(t),
@@ -873,6 +1152,36 @@ fn finish_object(
             CodeModel::Default,
         )
         .ok_or_else(|| Diagnostic::new(Code::E108, "llvm: no target machine"))?;
+    Ok((triple_ref, machine))
+}
+
+pub fn optimized_ir(lir: &Module, name: &str) -> Result<String, Diagnostic> {
+    let context = Context::create();
+    let (module, _) = build_module(&context, lir, name, true, None)?;
+    let (triple_ref, machine) = make_machine(None, OptLevel::Release)?;
+    module.set_triple(&triple_ref);
+    module.set_data_layout(&machine.get_target_data().get_data_layout());
+    {
+        use inkwell::passes::PassBuilderOptions;
+        module
+            .run_passes("default<O3>", &machine, PassBuilderOptions::create())
+            .map_err(|e| Diagnostic::new(Code::E108, format!("llvm O3 passes: {e}")))?;
+        module.verify().map_err(|e| {
+            Diagnostic::new(Code::E108, format!("llvm verify after O3 for `{name}`: {e}"))
+        })?;
+    }
+    Ok(module.print_to_string().to_string())
+}
+
+fn finish_object(
+    module: &LlModule,
+    name: &str,
+    opt: OptLevel,
+    triple: Option<&str>,
+) -> Result<Vec<u8>, Diagnostic> {
+    use inkwell::targets::FileType;
+    let release = opt == OptLevel::Release;
+    let (triple_ref, machine) = make_machine(triple, opt)?;
     module.set_triple(&triple_ref);
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     if release {
@@ -1752,9 +2061,14 @@ fn cur_blocks<'x>(
 fn inline_array_len(cx: &FnCx, span: diagnostics::Span, arr: Local, dst: Local) -> Result<(), Diagnostic> {
     let i64t = cx.context.i64_type();
     let a = load(cx, arr)?;
-    trap_if_null(cx, span, "len of null", a)?;
+    if !cx.nonnull.contains(&arr) {
+        trap_if_null(cx, span, "len of null", a)?;
+    }
     let ap = as_ptr(cx, a)?;
     let raw = array_len_value(cx, ap)?;
+    if cx.nonnull.contains(&arr) {
+        return store(cx, dst, raw.into());
+    }
     let isnull = cx.builder.build_is_null(ap, "").map_err(err)?;
     let len = cx
         .builder
@@ -1831,10 +2145,15 @@ fn inline_array_get<'x>(
     }
     let len = array_len_value(cx, ap)?;
     let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
-    let notnull = cx.builder.build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "").map_err(err)?;
-    let ok = cx.builder.build_and(notnull, inrange, "").map_err(err)?;
+    let ok = if cx.nonnull.contains(&arr) {
+        inrange
+    } else {
+        let notnull = cx.builder.build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "").map_err(err)?;
+        cx.builder.build_and(notnull, inrange, "").map_err(err)?
+    };
     let (slow_bb, fast_bb, join_bb) = cur_blocks(cx, "ag_slow", "ag_fast", "ag_join")?;
-    cx.builder.build_conditional_branch(ok, fast_bb, slow_bb).map_err(err)?;
+    let br = cx.builder.build_conditional_branch(ok, fast_bb, slow_bb).map_err(err)?;
+    cold_branch(cx, br, 2000000, 1);
     cx.builder.position_at_end(slow_bb);
     let e = i64t.const_int(8, false);
     let site = cx.builder.build_call(cx.array_get, &[ap.into(), i.into(), e.into()], "").map_err(err)?;
@@ -1886,10 +2205,15 @@ fn inline_array_set(
     }
     let len = array_len_value(cx, ap)?;
     let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
-    let notnull = cx.builder.build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "").map_err(err)?;
-    let ok = cx.builder.build_and(notnull, inrange, "").map_err(err)?;
+    let ok = if cx.nonnull.contains(&arr) {
+        inrange
+    } else {
+        let notnull = cx.builder.build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "").map_err(err)?;
+        cx.builder.build_and(notnull, inrange, "").map_err(err)?
+    };
     let (slow_bb, fast_bb, join_bb) = cur_blocks(cx, "as_slow", "as_fast", "as_join")?;
-    cx.builder.build_conditional_branch(ok, fast_bb, slow_bb).map_err(err)?;
+    let br = cx.builder.build_conditional_branch(ok, fast_bb, slow_bb).map_err(err)?;
+    cold_branch(cx, br, 2000000, 1);
     cx.builder.position_at_end(slow_bb);
     let e = i64t.const_int(8, false);
     cx.builder.build_call(cx.array_set, &[ap.into(), i.into(), v.into(), e.into()], "").map_err(err)?;
@@ -1939,8 +2263,12 @@ fn inline_array_push(cx: &FnCx, arr: Local, value: Local) -> Result<(), Diagnost
     let len = array_len_value(cx, ap)?;
     let cap = array_cap_value(cx, ap)?;
     let full = cx.builder.build_int_compare(IntPredicate::EQ, len, cap, "").map_err(err)?;
-    let isnull = cx.builder.build_is_null(ap, "").map_err(err)?;
-    let slow = cx.builder.build_or(isnull, full, "").map_err(err)?;
+    let slow = if cx.nonnull.contains(&arr) {
+        full
+    } else {
+        let isnull = cx.builder.build_is_null(ap, "").map_err(err)?;
+        cx.builder.build_or(isnull, full, "").map_err(err)?
+    };
     let (slow_bb, fast_bb, join_bb) = cur_blocks(cx, "ap_slow", "ap_fast", "ap_join")?;
     let br = cx.builder.build_conditional_branch(slow, slow_bb, fast_bb).map_err(err)?;
     cold_branch(cx, br, 1, 2000000);

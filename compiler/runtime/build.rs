@@ -307,4 +307,11 @@ fn main() {
         build_native_archive(&manifest, &archive, &target, &target_dir);
     }
     assert!(archive.exists(), "runtime archive build failed");
+    let bytes = std::fs::read(&archive).expect("read runtime archive for hashing");
+    let mut digest = String::with_capacity(64);
+    for b in <sha2::Sha256 as sha2::Digest>::digest(&bytes) {
+        digest.push(char::from_digit((b >> 4) as u32, 16).unwrap_or('0'));
+        digest.push(char::from_digit((b & 0xf) as u32, 16).unwrap_or('0'));
+    }
+    println!("cargo:rustc-env=RNX_RUNTIME_ARCHIVE_SHA256={digest}");
 }

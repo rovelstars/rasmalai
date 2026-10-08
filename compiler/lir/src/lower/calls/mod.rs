@@ -150,13 +150,7 @@ impl<'a> Builder<'a> {
                     for a in args {
                         argv.push(self.lower_expr(&a.value.node, a.value.span)?.0);
                     }
-                    let dst = self.local(LirType::Any);
-                    self.emit(Instr::Call { span, 
-                        dsts: vec![dst],
-                        err: None,
-                        target: CallTarget::Value(l),
-                        args: argv,
-                    });
+                    let dst = self.emit_value_call(l, argv, span);
                     return Ok((dst, Simple::Other));
                 }
                 if let Some(kind) = vec_name(n) {
@@ -617,13 +611,7 @@ impl<'a> Builder<'a> {
                             for a in args {
                                 argv.push(self.lower_expr(&a.value.node, a.value.span)?.0);
                             }
-                            let dst = self.local(LirType::Any);
-                            self.emit(Instr::Call { span, 
-                                dsts: vec![dst],
-                                err: None,
-                                target: CallTarget::Value(fl),
-                                args: argv,
-                            });
+                            let dst = self.emit_value_call(fl, argv, span);
                             return Ok((dst, Simple::Other));
                         }
                     }
@@ -798,13 +786,7 @@ impl<'a> Builder<'a> {
                                 obj,
                                 field: fi,
                             });
-                            let dst = self.local(LirType::Any);
-                            self.emit(Instr::Call { span, 
-                                dsts: vec![dst],
-                                err: None,
-                                target: CallTarget::Value(fl),
-                                args: argv,
-                            });
+                            let dst = self.emit_value_call(fl, argv, span);
                             return Ok((dst, Simple::Other));
                         }
                     }
@@ -966,13 +948,7 @@ impl<'a> Builder<'a> {
                 for a in args {
                     argv.push(self.lower_expr(&a.value.node, a.value.span)?.0);
                 }
-                let dst = self.local(LirType::Any);
-                self.emit(Instr::Call { span, 
-                    dsts: vec![dst],
-                    err: None,
-                    target: CallTarget::Value(v),
-                    args: argv,
-                });
+                let dst = self.emit_value_call(v, argv, span);
                 Ok((dst, Simple::Other))
             }
         }

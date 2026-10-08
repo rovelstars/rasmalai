@@ -25,9 +25,21 @@ pub(super) fn run_fetch(package: Option<String>) {
                     std::process::exit(1);
                 }
             }
+            match resolve_fetch_scope(package.as_deref()) {
+                Ok(scope_root) => {
+                    let report = frontend::products::precompile_scope(&scope_root);
+                    if report.entries > 0 {
+                        println!(
+                            "Precompiled {} dep products ({} entries in {} projects)",
+                            report.populated, report.entries, report.projects
+                        );
+                    }
+                }
+                Err(_) => {}
+            }
 }
 
-fn fetch_registry_deps(package: Option<&str>) -> Result<Vec<(String, String)>, diagnostics::Diagnostic> {            let scope_root = match package {
+fn resolve_fetch_scope(package: Option<&str>) -> Result<std::path::PathBuf, diagnostics::Diagnostic> {            match package {
                 Some(name) => cli::resolve_scope_target(None, Some(name))?
                     .scope_root
                     .ok_or_else(|| {
@@ -35,7 +47,7 @@ fn fetch_registry_deps(package: Option<&str>) -> Result<Vec<(String, String)>, d
                             diagnostics::Code::E108,
                             "No file specified and no Project.config found",
                         )
-                    })?,
+                    }),
                 None => {
                     let cwd = std::env::current_dir().map_err(|e| {
                         diagnostics::Diagnostic::new(
@@ -48,9 +60,12 @@ fn fetch_registry_deps(package: Option<&str>) -> Result<Vec<(String, String)>, d
                             diagnostics::Code::E108,
                             "No file specified and no Project.config found",
                         )
-                    })?
+                    })
                 }
-            };
+            }
+}
+
+fn fetch_registry_deps(package: Option<&str>) -> Result<Vec<(String, String)>, diagnostics::Diagnostic> {            let scope_root = resolve_fetch_scope(package)?;
             frontend::fetch::fetch_all_registry_deps(&scope_root)
 }
 

@@ -19,6 +19,12 @@ pub(super) fn run_cache(action: cli::args::CacheAction) {
                     std::process::exit(1);
                 }
             }
+            let freed_objects = frontend::products::prune_global_objects_lru(cap);
+            println!(
+                "pruned {} product-object bytes (usage now {} bytes)",
+                freed_objects,
+                frontend::products::global_objects_usage_bytes()
+            );
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let root = frontend::project::find_project_root(&cwd).unwrap_or(cwd);
             let project = cache::project_cache_dir(&root);
@@ -40,6 +46,12 @@ pub(super) fn run_cache(action: cli::args::CacheAction) {
         cli::args::CacheAction::Status => {
             let global = cache::global_cache_dir();
             println!("global: {} ({} bytes)", global.display(), cache::cache_usage_bytes(&global));
+            let (product_files, product_bytes) = frontend::products::products_usage();
+            println!("products: {product_files} files ({product_bytes} bytes)");
+            println!(
+                "product objects: {} bytes",
+                frontend::products::global_objects_usage_bytes()
+            );
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let root = frontend::project::find_project_root(&cwd).unwrap_or(cwd);
             let project = cache::project_cache_dir(&root);

@@ -6,3 +6,5 @@ edition.workspace = true
 [dependencies]
 diagnostics = { path = "../diagnostics" }
 frontend = { path = "../frontend" }
+rayon = "1.12"
+sha2 = "0.10"

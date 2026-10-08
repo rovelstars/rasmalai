@@ -1,6 +1,6 @@
 use super::*;
 
-impl FnLower<'_> {
+impl<M: Module> FnLower<'_, M> {
     pub(super) fn lower_thread_spawn(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
         let Instr::ThreadSpawn { dst, func, closure, ret_tag, ..} = ins else {
             return Err("unreachable".to_string());

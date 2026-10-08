@@ -131,9 +131,11 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 trace,
                 perf_map,
                 debug,
+                jobs,
+                memory_cap,
                 args: rest,
             } => {
-                run_run(path, entry, package, locked, opt_level, backend, time_passes, trace, perf_map, debug, rest);
+                run_run(path, entry, package, locked, opt_level, backend, time_passes, trace, perf_map, debug, jobs, memory_cap, verbose, rest);
             }
             cli::args::Command::Explain { code } => {
                 run_explain(code);
@@ -151,9 +153,11 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 trace,
                 perf_map,
                 debug,
+                jobs,
+                memory_cap,
                 package,
             } => {
-                run_build(path, entry, release, lib, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, package, verbose, quiet);
+                run_build(path, entry, release, lib, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, verbose, quiet);
             }
             cli::args::Command::Init { name } => {
                 run_init(name);
@@ -237,8 +241,10 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 trace,
                 perf_map,
                 debug,
+                jobs,
+                memory_cap,
             } => {
-                run_bench(package, filter, backend, no_release, time_passes, trace, perf_map, debug);
+                run_bench(package, filter, backend, no_release, time_passes, trace, perf_map, debug, jobs, memory_cap, verbose);
             }
             cli::args::Command::Test {
                 filter,
@@ -247,8 +253,10 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 backend,
                 exact,
                 nocapture,
+                jobs,
+                memory_cap,
             } => {
-                run_test(filter, package, opt_level, backend, exact, nocapture, verbose, quiet, no_color);
+                run_test(filter, package, opt_level, backend, exact, nocapture, jobs, memory_cap, verbose, quiet, no_color);
             }
             cli::args::Command::Setup { editor } => {
                 run_setup(editor);

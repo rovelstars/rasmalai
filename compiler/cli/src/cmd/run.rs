@@ -2,7 +2,7 @@ use super::*;
 use cli::RunOutcome;
 use runtime::value::Value;
 
-pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: Option<String>, locked: bool, opt_level: String, backend: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, rest: Vec<String>) {
+pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: Option<String>, locked: bool, opt_level: String, backend: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, verbose: bool, rest: Vec<String>) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let backend = match backend.as_str() {
@@ -53,7 +53,12 @@ pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: 
                 trace,
                 perf_map,
                 debug: false,
+                jobs: cli::resolve_jobs(jobs),
+                memory_cap: cli::resolve_memory_cap(memory_cap),
             };
+            if verbose {
+                eprintln!("rnx: jobs={} memory-cap={} bytes", cfg.jobs, cfg.memory_cap);
+            }
             let out = cli::run_files_cfg(&target.entry, &entry, args, opt_level, backend, &cfg);
             for line in &out.output {
                 if line.ends_with('\n') {

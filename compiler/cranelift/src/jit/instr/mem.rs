@@ -1,6 +1,6 @@
 use super::*;
 
-impl FnLower<'_> {
+impl<M: Module> FnLower<'_, M> {
     pub(super) fn lower_obj_new(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
         let Instr::ObjNew { dst, class, instance_size: size , ..} = ins else {
             return Err("unreachable".to_string());

@@ -32,6 +32,7 @@ impl<'a> Builder<'a> {
                     ty: t.clone(),
                     src: *l,
                     is_this: false,
+                    ret: self.closure_ret.get(l).cloned(),
                 });
             }
         }
@@ -44,6 +45,7 @@ impl<'a> Builder<'a> {
                     ty,
                     src: slf,
                     is_this: true,
+                    ret: None,
                 });
                 decay_this = true;
             }
@@ -53,6 +55,10 @@ impl<'a> Builder<'a> {
             argv.push(c.src);
         }
         let dst = self.local(LirType::Closure);
+        let ret_ty = ret.as_ref().map(|t| self.resolve_here(t)).unwrap_or(LirType::Any);
+        if Self::any_box_tag(&ret_ty).is_some() {
+            self.closure_ret.insert(dst, ret_ty);
+        }
         let ix = self.blocks[self.current].len();
         self.emit(Instr::ClosureNew { span, 
             dst,
@@ -196,6 +202,13 @@ impl<'a> Builder<'a> {
                 .filter(|t| *t != LirType::Any)
                 .unwrap_or(hint);
             self.def(param.name.clone(), i as Local, simple_of(&ty), ty.clone());
+            if let Some(sig) = param.ty.as_ref().and_then(|t| t.fn_sig.as_ref()) {
+                if let Some(r) = sig.ret.as_ref().map(|r| self.resolve_here(r)) {
+                    if Self::any_box_tag(&r).is_some() {
+                        self.closure_ret.insert(i as Local, r);
+                    }
+                }
+            }
             if matches!(ty, LirType::I64 | LirType::Bool | LirType::F64(_) | LirType::Str) {
                 let tmp = self.local(ty.clone());
                 self.emit_any_unbox(tmp, i as Local, crate::instr::UNKNOWN_SPAN);
@@ -208,6 +221,11 @@ impl<'a> Builder<'a> {
                 self.this_alias = Some(local);
             } else if let Some(n) = &cap.name {
                 self.def(n.clone(), local, simple_of(&cap.ty), cap.ty.clone());
+                if let Some(r) = cap.ret.clone() {
+                    if Self::any_box_tag(&r).is_some() {
+                        self.closure_ret.insert(local, r);
+                    }
+                }
             }
         }
         let _ = p.decay_this;

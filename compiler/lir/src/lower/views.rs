@@ -251,6 +251,37 @@ impl<'a> Builder<'a> {
         }
     }
 
+    pub(super) fn closure_call_ret(&self, callee: Local) -> Option<LirType> {
+        self.closure_ret.get(&callee).cloned().filter(|t| Self::any_box_tag(t).is_some())
+    }
+
+    pub(super) fn emit_value_call(&mut self, callee: Local, args: Vec<Local>, span: Span) -> Local {
+        match self.closure_call_ret(callee) {
+            Some(st) => {
+                let tmp = self.local(st);
+                self.emit(Instr::Call {
+                    span,
+                    dsts: vec![tmp],
+                    err: None,
+                    target: CallTarget::Value(callee),
+                    args,
+                });
+                self.coerce_to_slot(tmp, &LirType::Any, span)
+            }
+            None => {
+                let dst = self.local(LirType::Any);
+                self.emit(Instr::Call {
+                    span,
+                    dsts: vec![dst],
+                    err: None,
+                    target: CallTarget::Value(callee),
+                    args,
+                });
+                dst
+            }
+        }
+    }
+
     pub(super) fn coerce_to_slot(&mut self, v: Local, slot: &LirType, span: Span) -> Local {
         let vt = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
         if slot == &LirType::Any {

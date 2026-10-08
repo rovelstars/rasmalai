@@ -94,6 +94,7 @@ impl<'a> Builder<'a> {
             closure_seq: 0,
             closure_prefix: prefix,
             closure_hints: Vec::new(),
+            closure_ret: BTreeMap::new(),
             synth_seq: 0,
             pending: Vec::new(),
             patches: Vec::new(),
@@ -271,6 +272,14 @@ impl<'a> Builder<'a> {
     }
 
     pub(super) fn emit_copy(&mut self, dst: Local, src: Local, span: Span) {
+        match self.closure_ret.get(&src).cloned() {
+            Some(r) => {
+                self.closure_ret.insert(dst, r);
+            }
+            None => {
+                self.closure_ret.remove(&dst);
+            }
+        }
         if let Some(elems) = self.tuples.get(&src).cloned() {
             self.tuples.insert(dst, elems);
             return;

@@ -1,11 +1,23 @@
 use super::*;
 use super::instr::{FnCx, lower_instr};
 
-pub(super) fn build_module<'ctx>(    context: &'ctx Context,
+pub(super) fn build_module<'ctx>(
+    context: &'ctx Context,
     lir: &Module,
     name: &str,
     release: bool,
     debug: Option<&DebugInfo>,
+) -> Result<(LlModule<'ctx>, BTreeMap<String, FunctionValue<'ctx>>), Diagnostic> {
+    build_module_subset(context, lir, name, release, debug, None)
+}
+
+pub(super) fn build_module_subset<'ctx>(
+    context: &'ctx Context,
+    lir: &Module,
+    name: &str,
+    release: bool,
+    debug: Option<&DebugInfo>,
+    define: Option<&BTreeSet<usize>>,
 ) -> Result<(LlModule<'ctx>, BTreeMap<String, FunctionValue<'ctx>>), Diagnostic> {
     let module = context.create_module(name);
     let builder = context.create_builder();
@@ -744,9 +756,12 @@ pub(super) fn build_module<'ctx>(    context: &'ctx Context,
     let debug = if release { None } else { debug };
     let mut active: Option<ActiveDebug<'ctx>> = None;
     if let Some(info) = debug {
-        active = Some(start_debug(context, &module, lir, info, &funcs)?);
+        active = Some(start_debug(context, &module, lir, info, &funcs, define)?);
     }
-    for f in &lir.functions {
+    for (i, f) in lir.functions.iter().enumerate() {
+        if !define.is_none_or(|d| d.contains(&i)) {
+            continue;
+        }
         let loc = if let Some(dbg) = active.as_ref() {
             match dbg.subs.get(&f.name) {
                 Some(sp) => {
@@ -1769,6 +1784,7 @@ fn lower_fn<'a>(
         stack_next: 0,
         stack: stack_locals(f),
         ftypes: f.locals.clone(),
+        nonnull: lir::bce::nonnull_locals(f),
         ret_slots: lir::instr::flat_sig(&f.ret).len().max(1),
         owned: BTreeSet::new(),
         ever_owned: BTreeSet::new(),

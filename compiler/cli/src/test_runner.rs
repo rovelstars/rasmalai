@@ -15,6 +15,8 @@ pub struct TargetRequest {
     pub exact: bool,
     pub no_color: bool,
     pub quiet: bool,
+    pub jobs: Option<usize>,
+    pub memory_cap: Option<u64>,
 }
 
 fn child_args(req: &TargetRequest) -> Vec<String> {
@@ -31,6 +33,14 @@ fn child_args(req: &TargetRequest) -> Vec<String> {
     }
     if req.no_color {
         args.push("--no-color".to_string());
+    }
+    if let Some(jobs) = req.jobs {
+        args.push("--jobs".to_string());
+        args.push(jobs.to_string());
+    }
+    if let Some(cap) = req.memory_cap {
+        args.push("--memory-cap".to_string());
+        args.push(cap.to_string());
     }
     args
 }

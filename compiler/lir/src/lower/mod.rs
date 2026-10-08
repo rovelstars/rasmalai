@@ -13,6 +13,9 @@ mod signatures;
 mod builder;
 mod closure;
 mod closures;
+mod parallel;
+
+pub use parallel::lower_parallel;
 use closure::*;
 
 pub fn lower(m: &A::Module) -> Result<Module, Diagnostic> {
@@ -645,6 +648,7 @@ struct Capture {
     ty: LirType,
     src: Local,
     is_this: bool,
+    ret: Option<LirType>,
 }
 
 fn shell(
@@ -746,6 +750,7 @@ struct Builder<'a> {
     closure_seq: usize,
     closure_prefix: String,
     closure_hints: Vec<Vec<LirType>>,
+    closure_ret: BTreeMap<Local, LirType>,
     synth_seq: usize,
     pending: Vec<PendingClosure>,
     patches: Vec<(BlockId, usize, String)>,
