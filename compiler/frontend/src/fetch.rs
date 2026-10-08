@@ -10,6 +10,9 @@ const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CHUNK_BYTES: usize = 1024 * 1024;
 const CHUNK_FETCH_CONCURRENCY: usize = 8;
+const PACKAGE_FETCH_CONCURRENCY: usize = 16;
+const GLOBAL_CHUNK_INFLIGHT: usize = 32;
+const POOL_MAX_PER_HOST: usize = 16;
 
 pub fn cache_anchor(proj_root: &Path) -> PathBuf {
     project::find_workspace_root_strict(proj_root).unwrap_or_else(|| proj_root.to_path_buf())
@@ -516,8 +519,8 @@ pub fn origin_direct_guard() -> OriginDirectGuard {
     OriginDirectGuard { prev }
 }
 
-fn direct_url(url: &str) -> String {
-    if !origin_direct() {
+fn direct_url(url: &str, direct: bool) -> String {
+    if !direct {
         return url.to_string();
     }
     if url.contains('?') {
@@ -573,7 +576,7 @@ fn split_http_url(url: &str) -> Result<(String, u16, String), Diagnostic> {
     Ok((host, port, path))
 }
 
-fn read_http_response(stream: &mut std::net::TcpStream) -> Result<RegistryReply, Diagnostic> {
+fn read_http_response(stream: &mut std::net::TcpStream) -> Result<(RegistryReply, bool), Diagnostic> {
     use std::io::Read;
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
@@ -591,16 +594,18 @@ fn read_http_response(stream: &mut std::net::TcpStream) -> Result<RegistryReply,
     }
     let text = String::from_utf8_lossy(&head).into_owned();
     let mut lines = text.lines();
-    let status = lines
-        .next()
-        .unwrap_or_default()
+    let status_line = lines.next().unwrap_or_default().to_string();
+    let status = status_line
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse::<u16>().ok())
         .ok_or_else(|| Diagnostic::new(Code::E108, "registry returned a bad status line"))?;
+    let http11 = status_line.starts_with("HTTP/1.1");
     let mut spec_header = None;
     let mut content_length = None;
     let mut chunked = false;
+    let mut conn_close = false;
+    let mut conn_keep = false;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             match name.trim().to_ascii_lowercase().as_str() {
@@ -609,16 +614,30 @@ fn read_http_response(stream: &mut std::net::TcpStream) -> Result<RegistryReply,
                 "transfer-encoding" => {
                     chunked = value.to_ascii_lowercase().contains("chunked");
                 }
+                "connection" => {
+                    for token in value.split(',') {
+                        match token.trim().to_ascii_lowercase().as_str() {
+                            "close" => conn_close = true,
+                            "keep-alive" => conn_keep = true,
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }
     }
+    let framed = chunked || content_length.is_some();
+    let reusable = framed && !conn_close && (http11 || conn_keep);
     if chunked {
-        return Ok(RegistryReply {
-            status,
-            spec_header,
-            body: read_chunked(stream)?,
-        });
+        return Ok((
+            RegistryReply {
+                status,
+                spec_header,
+                body: read_chunked(stream)?,
+            },
+            reusable,
+        ));
     }
     let mut body = Vec::new();
     match content_length {
@@ -649,7 +668,7 @@ fn read_http_response(stream: &mut std::net::TcpStream) -> Result<RegistryReply,
             body = rest;
         }
     }
-    Ok(RegistryReply { status, spec_header, body })
+    Ok((RegistryReply { status, spec_header, body }, reusable))
 }
 
 fn read_chunked(stream: &mut std::net::TcpStream) -> Result<Vec<u8>, Diagnostic> {
@@ -728,29 +747,81 @@ fn std_request(
     url: &str,
     body: Option<&[u8]>,
 ) -> Result<RegistryReply, Diagnostic> {
-    use std::io::Write;
-    use std::net::ToSocketAddrs;
     let (host, port, path) = split_http_url(url)?;
+    let mut stream = match pool_take(&host, port) {
+        Some(reused) => reused,
+        None => connect_new(&host, port)?,
+    };
+    match exchange_once(method, &host, &path, body, &mut stream) {
+        Ok((reply, reusable)) => {
+            if reusable {
+                pool_put(&host, port, stream);
+            }
+            Ok(reply)
+        }
+        Err(dead) => {
+            drop(stream);
+            let mut fresh = connect_new(&host, port).map_err(|_| dead)?;
+            let (reply, reusable) = exchange_once(method, &host, &path, body, &mut fresh)?;
+            if reusable {
+                pool_put(&host, port, fresh);
+            }
+            Ok(reply)
+        }
+    }
+}
+
+static POOLED: std::sync::Mutex<BTreeMap<(String, u16), Vec<std::net::TcpStream>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn pool_take(host: &str, port: u16) -> Option<std::net::TcpStream> {
+    POOLED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(&(host.to_string(), port))
+        .and_then(|idle| idle.pop())
+}
+
+fn pool_put(host: &str, port: u16, stream: std::net::TcpStream) {
+    let mut pool = POOLED.lock().unwrap_or_else(|e| e.into_inner());
+    let idle = pool.entry((host.to_string(), port)).or_default();
+    if idle.len() < POOL_MAX_PER_HOST {
+        idle.push(stream);
+    }
+}
+
+fn connect_new(host: &str, port: u16) -> Result<std::net::TcpStream, Diagnostic> {
+    use std::net::ToSocketAddrs;
     let addr = format!("{host}:{port}");
     let target = addr
         .to_socket_addrs()
         .map_err(|e| Diagnostic::new(Code::E108, format!("cannot reach registry `{addr}`: {e}")))?
         .next()
         .ok_or_else(|| Diagnostic::new(Code::E108, format!("cannot reach registry `{addr}`")))?;
-    let mut stream = std::net::TcpStream::connect_timeout(
+    std::net::TcpStream::connect_timeout(
         &target,
         std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS),
     )
     .map_err(|e| {
         Diagnostic::new(Code::E108, format!("cannot reach registry `{addr}`: {e}"))
-    })?;
+    })
+}
+
+fn exchange_once(
+    method: &str,
+    host: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    stream: &mut std::net::TcpStream,
+) -> Result<(RegistryReply, bool), Diagnostic> {
+    use std::io::Write;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
         .map_err(|e| Diagnostic::new(Code::E108, format!("registry request failed: {e}")))?;
     stream
         .set_write_timeout(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
         .map_err(|e| Diagnostic::new(Code::E108, format!("registry request failed: {e}")))?;
-    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: keep-alive\r\n");
     if method == "POST" {
         head.push_str("Content-Type: application/json\r\nAccept: application/json\r\n");
     } else {
@@ -766,7 +837,7 @@ fn std_request(
             .write_all(payload)
             .map_err(|e| Diagnostic::new(Code::E108, format!("registry request failed: {e}")))?;
     }
-    read_http_response(&mut stream)
+    read_http_response(stream)
 }
 
 fn retryable_status(status: u16) -> bool {
@@ -1308,7 +1379,7 @@ fn parse_node(value: &JsonValue) -> Result<ResolveNode, Diagnostic> {
     })
 }
 
-fn host_of(base: &str) -> String {
+pub(crate) fn host_of(base: &str) -> String {
     let without_scheme = match base.split_once("://") {
         Some((_, rest)) => rest,
         None => base,
@@ -1318,7 +1389,7 @@ fn host_of(base: &str) -> String {
     sanitize_segment(host)
 }
 
-fn sanitize_segment(s: &str) -> String {
+pub(crate) fn sanitize_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
@@ -1333,7 +1404,7 @@ fn sanitize_segment(s: &str) -> String {
     out
 }
 
-fn sanitize_full(full: &str) -> String {
+pub(crate) fn sanitize_full(full: &str) -> String {
     let mut out = String::with_capacity(full.len());
     for c in full.chars() {
         if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@') {
@@ -1444,8 +1515,8 @@ struct ChunkEntry {
     chunks: Vec<String>,
 }
 
-fn fetch_chunks_manifest(url: &str, full: &str, version: &str) -> Result<Vec<ChunkEntry>, Diagnostic> {
-    let reply = http_get(&direct_url(url), &format!("chunk manifest of `{full}@{version}`"))?;
+fn fetch_chunks_manifest(url: &str, full: &str, version: &str, direct: bool) -> Result<Vec<ChunkEntry>, Diagnostic> {
+    let reply = http_get(&direct_url(url, direct), &format!("chunk manifest of `{full}@{version}`"))?;
     if reply.status != 200 {
         return Err(chunk_fetch_error(reply.status, &reply.body, full, version));
     }
@@ -1512,11 +1583,11 @@ fn fetch_chunks_manifest(url: &str, full: &str, version: &str) -> Result<Vec<Chu
     Ok(out)
 }
 
-fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str) -> Result<Vec<u8>, Diagnostic> {
+fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str, direct: bool) -> Result<Vec<u8>, Diagnostic> {
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Diagnostic::new(Code::E108, format!("bad chunk hash `{hash}`")));
     }
-    let reply = http_get(&direct_url(url), &format!("chunk {hash} of `{full}@{version}`"))?;
+    let reply = http_get(&direct_url(url, direct), &format!("chunk {hash} of `{full}@{version}`"))?;
     if reply.status != 200 {
         return Err(Diagnostic::new(
             Code::E108,
@@ -1538,11 +1609,83 @@ fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str) -> Result<Vec<u
     Ok(reply.body)
 }
 
+struct ChunkBudget {
+    slots: std::sync::Mutex<usize>,
+    changed: std::sync::Condvar,
+}
+
+impl ChunkBudget {
+    fn new(limit: usize) -> ChunkBudget {
+        ChunkBudget { slots: std::sync::Mutex::new(limit.max(1)), changed: std::sync::Condvar::new() }
+    }
+
+    fn acquire(&self) -> BudgetTicket<'_> {
+        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        while *slots == 0 {
+            slots = self.changed.wait(slots).unwrap_or_else(|e| e.into_inner());
+        }
+        *slots -= 1;
+        BudgetTicket { budget: self }
+    }
+}
+
+struct BudgetTicket<'a> {
+    budget: &'a ChunkBudget,
+}
+
+impl Drop for BudgetTicket<'_> {
+    fn drop(&mut self) {
+        let mut slots = self.budget.slots.lock().unwrap_or_else(|e| e.into_inner());
+        *slots += 1;
+        self.budget.changed.notify_one();
+    }
+}
+
+struct FetchShare {
+    chunks: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
+    budget: ChunkBudget,
+}
+
+impl FetchShare {
+    fn new() -> FetchShare {
+        FetchShare {
+            chunks: std::sync::Mutex::new(BTreeMap::new()),
+            budget: ChunkBudget::new(GLOBAL_CHUNK_INFLIGHT),
+        }
+    }
+
+    fn fetch_chunk_shared(
+        &self,
+        chunk_base: &str,
+        hash: &str,
+        full: &str,
+        version: &str,
+        direct: bool,
+    ) -> Result<Vec<u8>, Diagnostic> {
+        if let Some(hit) = self.chunks.lock().unwrap_or_else(|e| e.into_inner()).get(hash) {
+            return Ok(hit.clone());
+        }
+        let _ticket = self.budget.acquire();
+        if let Some(hit) = self.chunks.lock().unwrap_or_else(|e| e.into_inner()).get(hash) {
+            return Ok(hit.clone());
+        }
+        let url = format!("{chunk_base}/chunk/{hash}");
+        let bytes = fetch_chunk(&url, hash, full, version, direct)?;
+        self.chunks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(hash.to_string(), bytes.clone());
+        Ok(bytes)
+    }
+}
+
 fn fetch_chunks_parallel(
     chunk_base: &str,
     hashes: &[String],
     full: &str,
     version: &str,
+    direct: bool,
+    share: &FetchShare,
 ) -> Result<BTreeMap<String, Vec<u8>>, Diagnostic> {
     if hashes.is_empty() {
         return Ok(BTreeMap::new());
@@ -1558,8 +1701,7 @@ fn fetch_chunks_parallel(
                 let Some(hash) = hashes.get(i) else {
                     break;
                 };
-                let url = format!("{chunk_base}/chunk/{hash}");
-                let got = fetch_chunk(&url, hash, full, version);
+                let got = share.fetch_chunk_shared(chunk_base, hash, full, version, direct);
                 let mut slot = slots[i].lock().unwrap_or_else(|e| e.into_inner());
                 *slot = Some(got);
             });
@@ -1866,7 +2008,7 @@ fn api_base_for(response_base: &str, request_base: &str) -> String {
     b.trim_end_matches('/').to_string()
 }
 
-fn ensure_node(base: &str, api_base: &str, node: &ResolveNode) -> Result<PathBuf, Diagnostic> {
+fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShare) -> Result<PathBuf, Diagnostic> {
     let dir = cached_package_dir(base, &node.full, &node.version);
     if dir.join(crate::project::MANIFEST_FILE).is_file()
         && cached_integrity(&dir).as_deref() == Some(node.integrity.as_str())
@@ -1891,9 +2033,10 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode) -> Result<PathBuf
             )
         })?
         .to_string();
-    let download = |guard: Option<OriginDirectGuard>| -> Result<Vec<u8>, Diagnostic> {
-        let _hold = guard;
-        let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version)?;
+    let outer_direct = origin_direct();
+    let download = |retry_direct: bool| -> Result<Vec<u8>, Diagnostic> {
+        let direct = outer_direct || retry_direct;
+        let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version, direct)?;
         let mut uniq: BTreeSet<String> = BTreeSet::new();
         for entry in &entries {
             for hash in &entry.chunks {
@@ -1901,7 +2044,7 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode) -> Result<PathBuf
             }
         }
         let ordered: Vec<String> = uniq.into_iter().collect();
-        let by_hash = fetch_chunks_parallel(&chunk_base, &ordered, &node.full, &node.version)?;
+        let by_hash = fetch_chunks_parallel(&chunk_base, &ordered, &node.full, &node.version, direct, share)?;
         let bytes = rebuild_tar(&entries, &by_hash)?;
         if bytes.len() > MAX_DOWNLOAD_BYTES {
             return Err(Diagnostic::new(
@@ -1921,10 +2064,10 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode) -> Result<PathBuf
         }
         Ok(bytes)
     };
-    let bytes = match download(None) {
+    let bytes = match download(false) {
         Err(first) if is_generation_error(&first) => {
             let _ = std::fs::remove_dir_all(&dir);
-            download(Some(origin_direct_guard()))
+            download(true)
         }
         other => other,
     }?;
@@ -1979,12 +2122,42 @@ pub fn ensure_registry_requirements(
                 nodes.insert((node.full.clone(), node.version.clone()), node);
             }
         }
-        for ((full, _), node) in &nodes {
-            let dir = ensure_node(base, &api_base, node)?;
-            out.insert(
-                full.clone(),
-                FetchedPackage { name: full.clone(), version: node.version.clone(), dir },
-            );
+        let ordered: Vec<&ResolveNode> = nodes.values().copied().collect();
+        let slots: Vec<std::sync::Mutex<Option<Result<PathBuf, Diagnostic>>>> =
+            (0..ordered.len()).map(|_| std::sync::Mutex::new(None)).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let width = PACKAGE_FETCH_CONCURRENCY.min(ordered.len().max(1));
+        let share = FetchShare::new();
+        std::thread::scope(|s| {
+            for _ in 0..width {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let Some(node) = ordered.get(i) else {
+                        break;
+                    };
+                    let got = ensure_node(base, &api_base, node, &share);
+                    let mut slot = slots[i].lock().unwrap_or_else(|e| e.into_inner());
+                    *slot = Some(got);
+                });
+            }
+        });
+        for (i, node) in ordered.iter().enumerate() {
+            let mut slot = slots[i].lock().unwrap_or_else(|e| e.into_inner());
+            match slot.take() {
+                Some(Ok(dir)) => {
+                    out.insert(
+                        node.full.clone(),
+                        FetchedPackage { name: node.full.clone(), version: node.version.clone(), dir },
+                    );
+                }
+                Some(Err(e)) => return Err(e),
+                None => {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        format!("package `{}@{}` was not fetched", node.full, node.version),
+                    ));
+                }
+            }
         }
         for (full, version) in &response.resolved {
             if !out.contains_key(full) {
@@ -2367,6 +2540,152 @@ pub(crate) mod testkit {
                 .filter_map(|(_, _, b)| parse_json(b).ok())
                 .collect()
         }
+
+        pub fn start_routed(config: RoutedConfig) -> MockRegistry {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let base = format!("http://{addr}");
+            let log: Arc<Mutex<Vec<LoggedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+            let spec: &'static str =
+                Box::leak(config.version_spec.to_string().into_boxed_str());
+            let config = Arc::new(config);
+            let seen = log.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(stream) = stream else {
+                        continue;
+                    };
+                    let config = config.clone();
+                    let seen = seen.clone();
+                    std::thread::spawn(move || {
+                        let mut stream = stream;
+                        let Some((method, path, headers, body)) = read_request(&mut stream) else {
+                            return;
+                        };
+                        let route = path.split('?').next().unwrap_or_default().to_string();
+                        seen.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(LoggedRequest { method: method.clone(), path: path.clone(), headers, body });
+                        let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", spec)];
+                        if method == "GET" && route == "/api/version" {
+                            let body = format!(
+                                "{{\"spec\": {}, \"capabilities\": [\"tombstones\"], \"registry\": \"test\"}}",
+                                config.version_spec
+                            );
+                            respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
+                        } else if method == "POST" && route == "/api/resolve" {
+                            respond(
+                                &mut stream,
+                                200,
+                                "application/json",
+                                config.resolve_body.as_bytes(),
+                                with_spec,
+                            );
+                        } else if method == "GET" && route.ends_with("/chunks") {
+                            let pkg = config
+                                .packages
+                                .iter()
+                                .find(|p| route.contains(&format!("{}@{}", p.full, p.version)));
+                            match pkg {
+                                Some(p) => {
+                                    sleep_ms(p.latency_ms);
+                                    let body = match &p.manifest_override {
+                                        Some(m) => m.clone(),
+                                        None => fallback_manifest(&p.tarball),
+                                    };
+                                    respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
+                                }
+                                None => respond(
+                                    &mut stream,
+                                    404,
+                                    "application/json",
+                                    b"{\"code\": \"not-found\", \"message\": \"unknown\"}",
+                                    with_spec,
+                                ),
+                            }
+                        } else if method == "GET" && route.contains("/chunk/") {
+                            let hash = route.rsplit('/').next().unwrap_or_default().to_string();
+                            let mut hit: Option<(Vec<u8>, u64)> = None;
+                            for p in &config.packages {
+                                if let Some(pairs) = &p.chunk_override {
+                                    for (h, b) in pairs {
+                                        if *h == hash {
+                                            hit = Some((b.clone(), p.latency_ms));
+                                            break;
+                                        }
+                                    }
+                                }
+                                if hit.is_some() {
+                                    break;
+                                }
+                                if !p.tarball.is_empty() && Sha256::hexdigest(&p.tarball) == hash {
+                                    hit = Some((p.tarball.clone(), p.latency_ms));
+                                    break;
+                                }
+                            }
+                            match hit {
+                                Some((bytes, latency)) => {
+                                    sleep_ms(latency);
+                                    respond(&mut stream, 200, "application/octet-stream", &bytes, with_spec);
+                                }
+                                None => respond(
+                                    &mut stream,
+                                    404,
+                                    "application/json",
+                                    b"{\"code\": \"not-found\", \"message\": \"chunk not found\"}",
+                                    with_spec,
+                                ),
+                            }
+                        } else {
+                            respond(
+                                &mut stream,
+                                404,
+                                "application/json",
+                                b"{\"code\": \"not-found\", \"message\": \"unknown\"}",
+                                with_spec,
+                            );
+                        }
+                    });
+                }
+            });
+            MockRegistry { base, log }
+        }
+    }
+
+    pub struct RoutedPackage {
+        pub full: String,
+        pub version: String,
+        pub tarball: Vec<u8>,
+        pub manifest_override: Option<String>,
+        pub chunk_override: Option<Vec<(String, Vec<u8>)>>,
+        pub latency_ms: u64,
+    }
+
+    pub struct RoutedConfig {
+        pub version_spec: u32,
+        pub resolve_body: String,
+        pub packages: Vec<RoutedPackage>,
+    }
+
+    fn sleep_ms(ms: u64) {
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
+
+    pub fn routed_fixture(full: &str, version: &str, latency_ms: u64) -> (RoutedPackage, String) {
+        let (tarball, sha) = fixture_tarball(full, version);
+        (
+            RoutedPackage {
+                full: full.to_string(),
+                version: version.to_string(),
+                tarball,
+                manifest_override: None,
+                chunk_override: None,
+                latency_ms,
+            },
+            sha,
+        )
     }
 
     pub fn fallback_manifest(tarball: &[u8]) -> String {
@@ -3031,5 +3350,214 @@ mod tests {
         .unwrap_err();
         assert!(err.message.contains("needs engine"), "{}", err.message);
         assert_eq!(server.count_get("chunks"), 0);
+    }
+
+    fn routed_registry_17(latency_ms: u64) -> (MockRegistry, Vec<(String, String, String)>) {
+        let mut pkgs = Vec::new();
+        let mut nodes = Vec::new();
+        let mut meta = Vec::new();
+        for i in 0..17u32 {
+            let full = format!("test/pkg{i:02}");
+            let (pkg, sha) = routed_fixture(&full, "1.0.0", latency_ms);
+            nodes.push(node_json(&full, "1.0.0", &sha, false));
+            meta.push((full, "1.0.0".to_string(), sha));
+            pkgs.push(pkg);
+        }
+        let server = MockRegistry::start_routed(RoutedConfig {
+            version_spec: 1,
+            resolve_body: resolve_json_static(&nodes),
+            packages: pkgs,
+        });
+        (server, meta)
+    }
+
+    fn chunk_route_gets(server: &MockRegistry) -> usize {
+        server
+            .requests()
+            .iter()
+            .filter(|(m, p, _)| m == "GET" && p.split('?').next().unwrap_or_default().contains("chunk"))
+            .count()
+    }
+
+    #[test]
+    fn multipackage_fetch_lands_every_package_byte_identical() {
+        let (_guard, _dir) = isolate_cache("multipkg");
+        let (server, meta) = routed_registry_17(100);
+        let default = registry_cfg(&server.base);
+        let reqs: BTreeMap<String, String> =
+            meta.iter().map(|(f, _, _)| (f.clone(), "1.0.0".to_string())).collect();
+        let start = std::time::Instant::now();
+        let fetched = ensure_registry_requirements(&reqs, Some(&default), &BTreeMap::new(), &[])
+            .unwrap();
+        eprintln!("multipackage fetch of 17 packages took {:?}", start.elapsed());
+        assert_eq!(fetched.len(), 17);
+        for (full, version, _) in &meta {
+            let found = fetched.iter().find(|f| &f.name == full).unwrap();
+            assert_eq!(&found.version, version);
+            let text = std::fs::read_to_string(found.dir.join("Project.config")).unwrap();
+            assert!(text.contains(full), "{text}");
+            assert!(text.contains(version), "{text}");
+            let main = std::fs::read(found.dir.join("src").join("main.rnx")).unwrap();
+            assert_eq!(main, b"export fn hello(): Int { return 1; }\n");
+        }
+        let have = scan_cache_have();
+        assert_eq!(have.len(), 17);
+        for (full, version, sha) in &meta {
+            assert!(
+                have.iter().any(|h| &h.full == full && &h.version == version && &h.integrity == sha),
+                "{full}"
+            );
+        }
+        assert_eq!(chunk_route_gets(&server), 34);
+    }
+
+    #[test]
+    fn multipackage_reports_sorted_first_error_naming_its_package() {
+        let (_guard, _dir) = isolate_cache("multierror");
+        let mut pkgs = Vec::new();
+        let mut nodes = Vec::new();
+        for i in 0..5u32 {
+            let full = format!("test/pkg{i:02}");
+            let (mut pkg, sha) = routed_fixture(&full, "1.0.0", 0);
+            if i == 1 || i == 3 {
+                let bad_hash = Sha256::hexdigest(format!("{full}-chunk").as_bytes());
+                let manifest = format!(
+                    "{{\"entries\": [{{\"name\": \"Project.config\", \"size\": 8, \"dir\": false, \"chunks\": [\"{bad_hash}\"]}}]}}"
+                );
+                pkg.manifest_override = Some(manifest);
+                pkg.chunk_override = Some(vec![(bad_hash, b"corrupt!".to_vec())]);
+                nodes.push(node_json(&full, "1.0.0", &"0".repeat(64), false));
+            } else {
+                nodes.push(node_json(&full, "1.0.0", &sha, false));
+            }
+            pkgs.push(pkg);
+        }
+        let server = MockRegistry::start_routed(RoutedConfig {
+            version_spec: 1,
+            resolve_body: resolve_json_static(&nodes),
+            packages: pkgs,
+        });
+        let default = registry_cfg(&server.base);
+        let reqs: BTreeMap<String, String> = (0..5u32)
+            .map(|i| (format!("test/pkg{i:02}"), "1.0.0".to_string()))
+            .collect();
+        let err =
+            ensure_registry_requirements(&reqs, Some(&default), &BTreeMap::new(), &[]).unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("test/pkg01@1.0.0"), "{}", err.message);
+        let _ = server;
+    }
+
+    #[test]
+    fn multipackage_cache_hits_issue_zero_chunk_requests() {
+        let (_guard, _dir) = isolate_cache("multihit");
+        let (server, meta) = routed_registry_17(20);
+        let default = registry_cfg(&server.base);
+        let reqs: BTreeMap<String, String> =
+            meta.iter().map(|(f, _, _)| (f.clone(), "1.0.0".to_string())).collect();
+        let first =
+            ensure_registry_requirements(&reqs, Some(&default), &BTreeMap::new(), &[]).unwrap();
+        assert_eq!(first.len(), 17);
+        let before = chunk_route_gets(&server);
+        assert_eq!(before, 34);
+        let have = scan_cache_have();
+        assert_eq!(have.len(), 17);
+        let second =
+            ensure_registry_requirements(&reqs, Some(&default), &BTreeMap::new(), &have).unwrap();
+        assert_eq!(second.len(), 17);
+        assert_eq!(chunk_route_gets(&server), before);
+        for f in &second {
+            let text = std::fs::read_to_string(f.dir.join("Project.config")).unwrap();
+            assert!(text.contains(&f.name), "{text}");
+        }
+    }
+
+    #[test]
+    fn std_transport_reuses_keepalive_connections() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let stats = std::sync::Arc::new(std::sync::Mutex::new((0usize, 0usize)));
+        let seen = stats.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let seen = seen.clone();
+                std::thread::spawn(move || {
+                    seen.lock().unwrap_or_else(|e| e.into_inner()).0 += 1;
+                    loop {
+                        let mut head = Vec::new();
+                        let mut byte = [0u8; 1];
+                        let mut closed = false;
+                        while !head.ends_with(b"\r\n\r\n") {
+                            match stream.read(&mut byte) {
+                                Ok(0) => {
+                                    closed = true;
+                                    break;
+                                }
+                                Ok(_) => head.push(byte[0]),
+                                Err(_) => {
+                                    closed = true;
+                                    break;
+                                }
+                            }
+                            if head.len() > 65536 {
+                                closed = true;
+                                break;
+                            }
+                        }
+                        if closed || head.is_empty() {
+                            return;
+                        }
+                        let text = String::from_utf8_lossy(&head).into_owned();
+                        let mut lines = text.lines();
+                        let request = lines.next().unwrap_or_default().to_string();
+                        let mut length = 0usize;
+                        for line in lines {
+                            if let Some(rest) =
+                                line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:"))
+                            {
+                                length = rest.trim().parse::<usize>().unwrap_or(0);
+                            }
+                        }
+                        let mut body = vec![0u8; length];
+                        let mut read = 0usize;
+                        while read < body.len() {
+                            match stream.read(&mut body[read..]) {
+                                Ok(0) => return,
+                                Ok(n) => read += n,
+                                Err(_) => return,
+                            }
+                        }
+                        seen.lock().unwrap_or_else(|e| e.into_inner()).1 += 1;
+                        let is_resolve = request.contains("POST");
+                        let payload = if is_resolve { b"{}".to_vec() } else { b"{\"spec\": 1}".to_vec() };
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                            payload.len()
+                        );
+                        if stream.write_all(head.as_bytes()).is_err() {
+                            return;
+                        }
+                        if stream.write_all(&payload).is_err() {
+                            return;
+                        }
+                        if stream.flush().is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let reply = http_get(&format!("{base}/api/version"), "probe").unwrap();
+        assert_eq!(reply.status, 200);
+        let reply = http_get(&format!("{base}/api/version"), "probe").unwrap();
+        assert_eq!(reply.status, 200);
+        let (conns, reqs) = *stats.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(reqs, 2);
+        assert_eq!(conns, 1);
     }
 }
