@@ -36,6 +36,39 @@ pub struct OptTimings {
     pub fixpoint: Duration,
     pub sweep: Duration,
     pub deadfn: Duration,
+    pub dom: Duration,
+}
+
+impl OptTimings {
+    pub fn total(&self) -> Duration {
+        self.inline
+            + self.escape
+            + self.sroa
+            + self.licm
+            + self.bce
+            + self.arc
+            + self.tco
+            + self.fixpoint
+            + self.sweep
+            + self.deadfn
+            + self.dom
+    }
+
+    pub fn sub_rows(&self) -> [(&'static str, Duration); 11] {
+        [
+            ("opt_inline", self.inline),
+            ("opt_escape", self.escape),
+            ("opt_sroa", self.sroa),
+            ("opt_licm", self.licm),
+            ("opt_bce", self.bce),
+            ("opt_arc", self.arc),
+            ("opt_tco", self.tco),
+            ("opt_fixpoint", self.fixpoint),
+            ("opt_sweep", self.sweep),
+            ("opt_deadfn", self.deadfn),
+            ("opt_dom", self.dom),
+        ]
+    }
 }
 
 pub fn optimize_lir(module: &mut Module, opt_level: u8, entry: &str) {
@@ -86,9 +119,17 @@ fn optimize_lir_impl(
     }
     t.licm = step.elapsed();
     step = stamp();
-    for fi in 0..module.functions.len() {        let inner = stamp();
+    for fi in 0..module.functions.len() {
+        let inner = stamp();
+        crate::bce::version_counted_loops(&mut module.functions[fi]);
+        t.bce += inner.elapsed();
+        let inner = stamp();
         let dom = crate::licm::compute_dominators(&module.functions[fi]);
+        t.dom += inner.elapsed();
+        let inner = stamp();
         let loops = crate::licm::find_natural_loops(&module.functions[fi], &dom);
+        t.dom += inner.elapsed();
+        let inner = stamp();
         crate::bce::eliminate_bounds_checks(&mut module.functions[fi], &dom, &loops);
         t.bce += inner.elapsed();
         // bce only flips `unchecked` flags and appends guard instructions to
@@ -118,14 +159,20 @@ fn optimize_lir_impl(
             break;
         }
     }
+    t.fixpoint += step.elapsed();
     for fi in 0..module.functions.len() {
+        let inner = stamp();
         let dom = crate::licm::compute_dominators(&module.functions[fi]);
+        t.dom += inner.elapsed();
+        let inner = stamp();
         let loops = crate::licm::find_natural_loops(&module.functions[fi], &dom);
+        t.dom += inner.elapsed();
+        let inner = stamp();
         if fma_reassoc_loops(&mut module.functions[fi], &loops) {
             dce(&mut module.functions[fi]);
         }
+        t.fixpoint += inner.elapsed();
     }
-    t.fixpoint = step.elapsed();
     step = stamp();
     for fi in 0..module.functions.len() {
         crate::temp_sweep::sweep_temps(module, fi);
@@ -987,6 +1034,94 @@ fn dce(f: &mut Function) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loop_function(name: &str) -> Function {
+        Function {
+            name: name.to_string(),
+            params: Vec::new(),
+            sig_params: Vec::new(),
+            ret: LirType::I64,
+            throws: false,
+            is_unsafe: false,
+            method_self: false,
+            is_pub: false,
+            is_closure: false,
+            locals: vec![LirType::I64; 8],
+            blocks: vec![
+                Block {
+                    instrs: vec![
+                        Instr::Const {span: UNKNOWN_SPAN,  dst: 2, lit: Lit::Int(10) },
+                        Instr::Const {span: UNKNOWN_SPAN,  dst: 3, lit: Lit::Int(20) },
+                    ],
+                    term: Terminator::Br(1),
+                },
+                Block {
+                    instrs: vec![
+                        Instr::Const {span: UNKNOWN_SPAN,  dst: 4, lit: Lit::Int(0) },
+                        Instr::Cmp {span: UNKNOWN_SPAN,
+                            op: CmpOp::Lt,
+                            kind: NumKind::Int,
+                            dst: 5,
+                            lhs: 0,
+                            rhs: 4,
+                        },
+                    ],
+                    term: Terminator::BrIf {span: UNKNOWN_SPAN,  cond: 5, then_bb: 2, else_bb: 3 },
+                },
+                Block {
+                    instrs: vec![Instr::Arith {span: UNKNOWN_SPAN,
+                        op: ArithOp::Add,
+                        kind: NumKind::Int,
+                        dst: 6,
+                        lhs: 2,
+                        rhs: 3,
+                    }],
+                    term: Terminator::Br(1),
+                },
+                Block { instrs: Vec::new(), term: Terminator::Ret(vec![6]) },
+            ],
+        }
+    }
+
+    fn loop_module(n: usize) -> Module {
+        let functions = (0..n).map(|i| loop_function(&format!("f{i}"))).collect();
+        Module { functions, ..Default::default() }
+    }
+
+    #[test]
+    fn opt_rows_sum_to_pipeline_total() {
+        let mut module = loop_module(20);
+        let wall = stamp();
+        let t = optimize_lir_timed(&mut module, 1, "f0");
+        let wall = wall.elapsed();
+        let via_rows: Duration = t.sub_rows().iter().map(|(_, d)| *d).sum();
+        assert_eq!(via_rows, t.total());
+        let explicit = t.inline
+            + t.escape
+            + t.sroa
+            + t.licm
+            + t.bce
+            + t.arc
+            + t.tco
+            + t.fixpoint
+            + t.sweep
+            + t.deadfn
+            + t.dom;
+        assert_eq!(explicit, t.total());
+        assert!(t.total() <= wall);
+        assert!(wall - t.total() < Duration::from_millis(50));
+        assert!(!t.dom.is_zero());
+        let mut par = loop_module(20);
+        let tp = optimize_lir_parallel(&mut par, 1, "f0", 4);
+        let via_rows: Duration = tp.sub_rows().iter().map(|(_, d)| *d).sum();
+        assert_eq!(via_rows, tp.total());
+        assert!(!tp.dom.is_zero());
+        assert_eq!(
+            tp.sub_rows().map(|(name, _)| name),
+            t.sub_rows().map(|(name, _)| name)
+        );
+        assert_eq!(format!("{:?}", par), format!("{:?}", module));
+    }
 
     fn single_block() -> Function {
         Function {
@@ -2025,4 +2160,155 @@ mod rpo_tests {
         assert!(pos(3) < pos(1));
         assert_eq!(order.len(), 4);
     }
+}
+
+pub fn optimize_lir_parallel(
+    module: &mut Module,
+    opt_level: u8,
+    entry: &str,
+    jobs: usize,
+) -> OptTimings {
+    if jobs <= 1 {
+        return optimize_lir_timed(module, opt_level, entry);
+    }
+    crate::parallel::with_pool(jobs, || {
+        optimize_lir_impl_parallel(module, opt_level, entry, false)
+    })
+}
+
+pub fn optimize_lir_lib_parallel(module: &mut Module, opt_level: u8, jobs: usize) -> OptTimings {
+    if jobs <= 1 {
+        return optimize_lir_lib_timed(module, opt_level);
+    }
+    crate::parallel::with_pool(jobs, || {
+        optimize_lir_impl_parallel(module, opt_level, "", true)
+    })
+}
+
+fn optimize_lir_impl_parallel(
+    module: &mut Module,
+    opt_level: u8,
+    entry: &str,
+    is_library: bool,
+) -> OptTimings {
+    use rayon::prelude::*;
+    let mut t = OptTimings::default();
+    if opt_level == 0 {
+        return t;
+    }
+    let mut step = stamp();
+    crate::reach::shake_module(module, entry, is_library);
+    t.deadfn += step.elapsed();
+    step = stamp();
+    inline_call_sites(module);
+    t.inline = step.elapsed();
+    step = stamp();
+    for fi in 0..module.functions.len() {
+        crate::escape::optimize_stack_allocations(module, fi);
+    }
+    t.escape = step.elapsed();
+    step = stamp();
+    for fi in 0..module.functions.len() {
+        crate::sroa::scalar_replace_aggregates(module, fi);
+    }
+    t.sroa = step.elapsed();
+    step = stamp();
+    module.functions.par_iter_mut().for_each(|f| {
+        crate::licm::loop_invariant_code_motion(f);
+    });
+    t.licm = step.elapsed();
+    step = stamp();
+    module.functions.par_iter_mut().for_each(|f| {
+        crate::bce::version_counted_loops(f);
+    });
+    t.bce += step.elapsed();
+    step = stamp();
+    let bce_analyses: Vec<(crate::licm::DominatorTree, Vec<crate::licm::NaturalLoop>)> = module
+        .functions
+        .par_iter()
+        .map(|f| {
+            let dom = crate::licm::compute_dominators(f);
+            let loops = crate::licm::find_natural_loops(f, &dom);
+            (dom, loops)
+        })
+        .collect();
+    t.dom += step.elapsed();
+    step = stamp();
+    module
+        .functions
+        .par_iter_mut()
+        .zip(bce_analyses)
+        .for_each(|(f, (dom, loops))| {
+            crate::bce::eliminate_bounds_checks(f, &dom, &loops);
+        });
+    t.bce += step.elapsed();
+    step = stamp();
+    for fi in 0..module.functions.len() {
+        let inner = stamp();
+        let dom = crate::licm::compute_dominators(&module.functions[fi]);
+        t.dom += inner.elapsed();
+        let inner = stamp();
+        crate::arc_opt::eliminate_redundant_arc(module, fi, &dom);
+        t.arc += inner.elapsed();
+    }
+    step = stamp();
+    module
+        .functions
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(fi, f)| {
+            crate::tco::optimize_tail_calls(f, fi);
+        });
+    t.tco = step.elapsed();
+    step = stamp();
+    for _ in 0..MAX_PASSES {
+        let changed = module
+            .functions
+            .par_iter_mut()
+            .map(|f| {
+                let mut c = false;
+                c |= fold_consts(f);
+                c |= fma_synthesis(f);
+                c |= simplify_branches(f);
+                c |= prune_unreachable(f);
+                c |= compact_trampolines(f);
+                c |= dce(f);
+                c
+            })
+            .reduce(|| false, |a, b| a | b);
+        if !changed {
+            break;
+        }
+    }
+    t.fixpoint += step.elapsed();
+    step = stamp();
+    let reassoc_loops: Vec<Vec<crate::licm::NaturalLoop>> = module
+        .functions
+        .par_iter()
+        .map(|f| {
+            let dom = crate::licm::compute_dominators(f);
+            crate::licm::find_natural_loops(f, &dom)
+        })
+        .collect();
+    t.dom += step.elapsed();
+    step = stamp();
+    module
+        .functions
+        .par_iter_mut()
+        .zip(reassoc_loops)
+        .for_each(|(f, loops)| {
+            if fma_reassoc_loops(f, &loops) {
+                dce(f);
+            }
+        });
+    t.fixpoint += step.elapsed();
+    step = stamp();
+    for fi in 0..module.functions.len() {
+        crate::temp_sweep::sweep_temps(module, fi);
+    }
+    t.sweep = step.elapsed();
+    step = stamp();
+    eliminate_dead_functions(module, entry, is_library);
+    t.deadfn += step.elapsed();
+    t
 }

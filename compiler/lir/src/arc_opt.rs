@@ -75,77 +75,67 @@ fn local_type(func: &Function, local: Local) -> LirType {
     func.locals.get(local as usize).cloned().unwrap_or(LirType::Any)
 }
 
-fn group_has_genref(func: &Function, alias: &BTreeMap<Local, Local>, local: Local) -> bool {
-    let root = find_root(alias, local);
+fn tainted_roots(
+    func: &Function,
+    alias: &BTreeMap<Local, Local>,
+) -> (BTreeSet<Local>, BTreeSet<Local>) {
+    let mut genref: BTreeSet<Local> = BTreeSet::new();
+    let mut returned: BTreeSet<Local> = BTreeSet::new();
     for block in &func.blocks {
         for ins in &block.instrs {
             if let Instr::GenRefOf {  obj , ..} = ins {
-                if find_root(alias, *obj) == root {
-                    return true;
-                }
+                genref.insert(find_root(alias, *obj));
             }
         }
-    }
-    false
-}
-
-fn group_returned(func: &Function, alias: &BTreeMap<Local, Local>, local: Local) -> bool {
-    let root = find_root(alias, local);
-    for block in &func.blocks {
         match &block.term {
             Terminator::Ret(v) => {
-                if v.iter().any(|l| find_root(alias, *l) == root) {
-                    return true;
+                for l in v {
+                    returned.insert(find_root(alias, *l));
                 }
             }
             Terminator::Throw { src, .. } => {
-                if find_root(alias, *src) == root {
-                    return true;
-                }
+                returned.insert(find_root(alias, *src));
             }
             Terminator::Rethrow { err, .. } => {
-                if find_root(alias, *err) == root {
-                    return true;
-                }
+                returned.insert(find_root(alias, *err));
             }
             _ => {}
         }
     }
-    false
+    (genref, returned)
 }
 
-fn is_barrier(ins: &Instr, local: Local) -> bool {
+fn invalidate_barrier(active: &mut BTreeMap<Local, usize>, ins: &Instr) {
     match ins {
-        Instr::SetField {  obj, value , ..} | Instr::SetFieldByName { obj, value , ..} => {
-            *obj == local || *value == local
+        Instr::Call { .. }
+        | Instr::ThreadSpawn { .. }
+        | Instr::PoolInit { .. }
+        | Instr::PoolSubmit { .. }
+        | Instr::PoolParallelFor { .. }
+        | Instr::PoolJoin { .. }
+        | Instr::PoolShutdown { .. }
+        | Instr::Defer { .. } => active.clear(),
+        Instr::SetField { obj, value, .. } | Instr::SetFieldByName { obj, value, .. } => {
+            active.remove(obj);
+            active.remove(value);
         }
-        Instr::ArrayPush {  value , ..} => *value == local,
-        Instr::ArraySet {  value , ..} => *value == local,
-        Instr::ThreadSpawn { ..} => true,
-        Instr::PoolInit { ..}
-        | Instr::PoolSubmit { ..}
-        | Instr::PoolParallelFor { ..}
-        | Instr::PoolJoin { ..}
-        | Instr::PoolShutdown { ..} => true,
-        Instr::ClosureNew {  captures , ..} => captures.contains(&local),
-        Instr::Call { ..} => true,
-        Instr::Defer { ..} => true,
-        _ => match instr_dst(ins) {
-            Some(dst) => dst == local,
-            None => false,
-        },
+        Instr::ArrayPush { value, .. } => {
+            active.remove(value);
+        }
+        Instr::ArraySet { value, .. } => {
+            active.remove(value);
+        }
+        Instr::ClosureNew { captures, .. } => {
+            for c in captures {
+                active.remove(c);
+            }
+        }
+        _ => {
+            if let Some(dst) = instr_dst(ins) {
+                active.remove(&dst);
+            }
+        }
     }
-}
-
-fn pair_eligible(module: &Module, func: &Function, local: Local) -> bool {
-    let alias = collect_aliases(func);
-    if group_has_genref(func, &alias, local) {
-        return false;
-    }
-    if group_returned(func, &alias, local) {
-        return false;
-    }
-    trivial_class(module, &local_type(func, local))
 }
 
 fn eligible_locals(module: &Module, func: &Function) -> BTreeSet<Local> {
@@ -157,9 +147,23 @@ fn eligible_locals(module: &Module, func: &Function) -> BTreeSet<Local> {
             }
         }
     }
+    if candidates.is_empty() {
+        return candidates;
+    }
+    let alias = collect_aliases(func);
+    let (genref, returned) = tainted_roots(func, &alias);
     candidates
         .into_iter()
-        .filter(|l| pair_eligible(module, func, *l))
+        .filter(|l| {
+            let root = find_root(&alias, *l);
+            if genref.contains(&root) {
+                return false;
+            }
+            if returned.contains(&root) {
+                return false;
+            }
+            trivial_class(module, &local_type(func, *l))
+        })
         .collect()
 }
 
@@ -186,11 +190,7 @@ fn elide_intra_block(blocks: &mut [Block], eligible: &BTreeSet<Local>) -> bool {
                 }
                 _ => {}
             }
-            for (local, _) in active.clone() {
-                if is_barrier(ins, local) {
-                    active.remove(&local);
-                }
-            }
+            invalidate_barrier(&mut active, ins);
         }
         if !drop.is_empty() {
             let mut kept: Vec<Instr> = Vec::with_capacity(block.instrs.len());
@@ -203,6 +203,96 @@ fn elide_intra_block(blocks: &mut [Block], eligible: &BTreeSet<Local>) -> bool {
         }
     }
     changed
+}
+
+struct EpilogueFacts {
+    defs: BTreeMap<Local, usize>,
+    escaped: BTreeSet<Local>,
+    releases: BTreeMap<Local, Vec<(usize, usize)>>,
+}
+
+impl EpilogueFacts {
+    fn collect(func: &Function) -> EpilogueFacts {
+        let mut facts = EpilogueFacts {
+            defs: BTreeMap::new(),
+            escaped: BTreeSet::new(),
+            releases: BTreeMap::new(),
+        };
+        for (bi, block) in func.blocks.iter().enumerate() {
+            for (ii, ins) in block.instrs.iter().enumerate() {
+                if let Some(dst) = instr_dst(ins) {
+                    *facts.defs.entry(dst).or_insert(0) += 1;
+                }
+                if let Instr::Call {  dsts, err , ..} = ins {
+                    for (i, d) in dsts.iter().enumerate() {
+                        if dsts[..i].contains(d) {
+                            continue;
+                        }
+                        *facts.defs.entry(*d).or_insert(0) += 1;
+                    }
+                    if let Some(e) = err {
+                        if !dsts.contains(e) {
+                            *facts.defs.entry(*e).or_insert(0) += 1;
+                        }
+                    }
+                }
+                match ins {
+                    Instr::Call {  args , ..} => {
+                        for a in args {
+                            facts.escaped.insert(*a);
+                        }
+                    }
+                    Instr::SetField {  value , ..} | Instr::SetFieldByName { value , ..} => {
+                        facts.escaped.insert(*value);
+                    }
+                    Instr::ArraySet {  value , ..} => {
+                        facts.escaped.insert(*value);
+                    }
+                    Instr::ArrayPush {  value , ..} => {
+                        facts.escaped.insert(*value);
+                    }
+                    Instr::EnumNew {  payload , ..} => {
+                        for p in payload {
+                            facts.escaped.insert(*p);
+                        }
+                    }
+                    Instr::ClosureNew {  captures , ..} => {
+                        for c in captures {
+                            facts.escaped.insert(*c);
+                        }
+                    }
+                    Instr::GenRefOf {  obj , ..} => {
+                        facts.escaped.insert(*obj);
+                    }
+                    Instr::AddrOf {  src , ..} => {
+                        facts.escaped.insert(*src);
+                    }
+                    Instr::Release {  obj , ..} => {
+                        facts.releases.entry(*obj).or_default().push((bi, ii));
+                    }
+                    _ => {}
+                }
+            }
+            match &block.term {
+                Terminator::Ret(v) => {
+                    for l in v {
+                        facts.escaped.insert(*l);
+                    }
+                }
+                Terminator::Throw { src, .. } => {
+                    facts.escaped.insert(*src);
+                }
+                Terminator::Rethrow { err, .. } => {
+                    facts.escaped.insert(*err);
+                }
+                Terminator::BrErr { catch_bind, .. } => {
+                    *facts.defs.entry(*catch_bind).or_insert(0) += 1;
+                }
+                _ => {}
+            }
+        }
+        facts
+    }
 }
 
 fn elide_epilogue(
@@ -228,11 +318,16 @@ fn elide_epilogue(
         return false;
     }
     let mut changed = false;
+    let mut facts: Option<EpilogueFacts> = None;
     for (local, _) in entry_retains {
         if !eligible.contains(&local) {
             continue;
         }
-        if all_defs(&module.functions[fi], local) > 0 {
+        if facts.is_none() {
+            facts = Some(EpilogueFacts::collect(&module.functions[fi]));
+        }
+        let f = facts.as_ref().unwrap();
+        if f.defs.get(&local).copied().unwrap_or(0) > 0 {
             continue;
         }
         let entry_count = module.functions[fi].blocks[0]
@@ -243,34 +338,31 @@ fn elide_epilogue(
         if entry_count != 1 {
             continue;
         }
-        if escapes_anywhere(&module.functions[fi], local) {
+        if f.escaped.contains(&local) {
             continue;
         }
         let mut exits: Vec<(usize, usize)> = Vec::new();
         let mut ok = true;
-        for (bi, block) in module.functions[fi].blocks.iter().enumerate() {
-            if !matches!(block.term, Terminator::Ret(_)) {
-                continue;
-            }
-            let mut found = None;
-            for (ii, ins) in block.instrs.iter().enumerate() {
-                if matches!(ins, Instr::Release {  obj , ..} if *obj == local) {
-                    if found.is_some() {
+        if let Some(rel) = f.releases.get(&local) {
+            let mut at = 0;
+            while at < rel.len() {
+                let (bi, ii) = rel[at];
+                let mut end = at + 1;
+                while end < rel.len() && rel[end].0 == bi {
+                    end += 1;
+                }
+                if matches!(module.functions[fi].blocks[bi].term, Terminator::Ret(_)) {
+                    if end - at > 1 {
                         ok = false;
                         break;
                     }
-                    found = Some(ii);
+                    if !dom.dominates(0, bi) {
+                        ok = false;
+                        break;
+                    }
+                    exits.push((bi, ii));
                 }
-            }
-            if !ok {
-                break;
-            }
-            if let Some(ii) = found {
-                if !dom.dominates(0, bi) {
-                    ok = false;
-                    break;
-                }
-                exits.push((bi, ii));
+                at = end;
             }
         }
         if !ok || exits.is_empty() {
@@ -286,99 +378,9 @@ fn elide_epilogue(
             });
         }
         changed = true;
+        facts = None;
     }
     changed
-}
-
-fn all_defs(func: &Function, local: Local) -> usize {
-    let mut count = 0;
-    for block in &func.blocks {
-        for ins in &block.instrs {
-            if instr_dst(ins) == Some(local) {
-                count += 1;
-            }
-            if let Instr::Call {  dsts, err , ..} = ins {
-                if dsts.contains(&local) || *err == Some(local) {
-                    count += 1;
-                }
-            }
-        }
-        if let Terminator::BrErr { catch_bind, .. } = &block.term {
-            if *catch_bind == local {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
-fn escapes_anywhere(func: &Function, local: Local) -> bool {
-    for block in &func.blocks {
-        for ins in &block.instrs {
-            match ins {
-                Instr::Call {  args , ..} => {
-                    if args.contains(&local) {
-                        return true;
-                    }
-                }
-                Instr::SetField {  value , ..} | Instr::SetFieldByName { value , ..} => {
-                    if *value == local {
-                        return true;
-                    }
-                }
-                Instr::ArraySet {  value , ..} => {
-                    if *value == local {
-                        return true;
-                    }
-                }
-                Instr::ArrayPush {  value , ..} => {
-                    if *value == local {
-                        return true;
-                    }
-                }
-                Instr::EnumNew {  payload , ..} => {
-                    if payload.contains(&local) {
-                        return true;
-                    }
-                }
-                Instr::ClosureNew {  captures , ..} => {
-                    if captures.contains(&local) {
-                        return true;
-                    }
-                }
-                Instr::GenRefOf {  obj , ..} => {
-                    if *obj == local {
-                        return true;
-                    }
-                }
-                Instr::AddrOf {  src , ..} => {
-                    if *src == local {
-                        return true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        match &block.term {
-            Terminator::Ret(v) => {
-                if v.contains(&local) {
-                    return true;
-                }
-            }
-            Terminator::Throw { src, .. } => {
-                if *src == local {
-                    return true;
-                }
-            }
-            Terminator::Rethrow { err, .. } => {
-                if *err == local {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 pub fn eliminate_redundant_arc(
@@ -536,5 +538,445 @@ mod tests {
                 Instr::Retain { ..} | Instr::Release { ..}
             )));
         }
+    }
+
+    fn mk_func(locals: Vec<LirType>, blocks: Vec<Block>) -> Function {
+        Function {
+            name: "f".to_string(),
+            params: Vec::new(),
+            sig_params: Vec::new(),
+            ret: LirType::I64,
+            throws: false,
+            is_unsafe: false,
+            method_self: false,
+            is_pub: false,
+            is_closure: false,
+            locals,
+            blocks,
+        }
+    }
+
+    fn obj_locals(n: usize, extra: usize) -> Vec<LirType> {
+        let mut v = vec![LirType::Obj("C".to_string()); n];
+        v.extend(std::iter::repeat(LirType::I64).take(extra));
+        v
+    }
+
+    fn retain(obj: Local) -> Instr {
+        Instr::Retain { span: UNKNOWN_SPAN, obj }
+    }
+
+    fn release(obj: Local) -> Instr {
+        Instr::Release { span: UNKNOWN_SPAN, obj }
+    }
+
+    fn getf(dst: Local, obj: Local) -> Instr {
+        Instr::GetField { span: UNKNOWN_SPAN, dst, obj, field: 0 }
+    }
+
+    fn builtin_call() -> Instr {
+        Instr::Call {
+            span: UNKNOWN_SPAN,
+            dsts: vec![],
+            err: None,
+            target: CallTarget::Builtin("print".to_string()),
+            args: Vec::new(),
+        }
+    }
+
+    fn count_arc(func: &Function) -> (usize, usize) {
+        let mut retains = 0;
+        let mut releases = 0;
+        for b in &func.blocks {
+            for i in &b.instrs {
+                match i {
+                    Instr::Retain { .. } => retains += 1,
+                    Instr::Release { .. } => releases += 1,
+                    _ => {}
+                }
+            }
+        }
+        (retains, releases)
+    }
+
+    fn dump_case(name: &str, func: Function) -> String {
+        let mut module = test_module(func);
+        let (rb, lb) = count_arc(&module.functions[0]);
+        let dom = dom_of(&module);
+        let changed = eliminate_redundant_arc(&mut module, 0, &dom);
+        let (ra, la) = count_arc(&module.functions[0]);
+        let mut out = format!(
+            "=== {name} ===\nchanged={changed} retains={rb}->{ra} releases={lb}->{la}\n"
+        );
+        for (bi, b) in module.functions[0].blocks.iter().enumerate() {
+            out.push_str(&format!("block {bi} term={:?}\n", b.term));
+            for ins in &b.instrs {
+                out.push_str(&format!("  {ins:?}\n"));
+            }
+        }
+        out
+    }
+
+    fn corpus_dump() -> String {
+        let mut out = String::new();
+        let mut dense_instrs = Vec::new();
+        for i in 0..6u32 {
+            dense_instrs.push(retain(i));
+            dense_instrs.push(getf(100 + i, i));
+            dense_instrs.push(release(i));
+        }
+        out.push_str(&dump_case(
+            "dense_pairs",
+            mk_func(
+                obj_locals(6, 110),
+                vec![Block {
+                    instrs: dense_instrs,
+                    term: Terminator::Ret(vec![100]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "call_barrier",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![retain(0), builtin_call(), getf(1, 0), release(0)],
+                    term: Terminator::Ret(vec![1]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "sparse_setfield",
+            mk_func(
+                obj_locals(3, 10),
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        Instr::SetField { span: UNKNOWN_SPAN, obj: 5, field: 0, value: 6 },
+                        retain(1),
+                        Instr::SetField { span: UNKNOWN_SPAN, obj: 5, field: 0, value: 0 },
+                        release(0),
+                        release(1),
+                        retain(2),
+                        Instr::SetField { span: UNKNOWN_SPAN, obj: 2, field: 0, value: 6 },
+                        release(2),
+                    ],
+                    term: Terminator::Ret(vec![4]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "closure_capture",
+            mk_func(
+                obj_locals(2, 4),
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        retain(1),
+                        Instr::ClosureNew {
+                            span: UNKNOWN_SPAN,
+                            dst: 3,
+                            func: 0,
+                            captures: vec![0],
+                            decay: false,
+                            decay_this: false,
+                        },
+                        release(0),
+                        release(1),
+                    ],
+                    term: Terminator::Ret(vec![4]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "array_value_barriers",
+            mk_func(
+                obj_locals(2, 10),
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        Instr::ArrayPush { span: UNKNOWN_SPAN, arr: 5, value: 0, elem_size: 8 },
+                        release(0),
+                        retain(1),
+                        Instr::ArraySet {
+                            span: UNKNOWN_SPAN,
+                            arr: 5,
+                            index: 6,
+                            value: 1,
+                            elem_size: 8,
+                            unchecked: false,
+                        },
+                        release(1),
+                    ],
+                    term: Terminator::Ret(vec![4]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "redefine_barrier",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        Instr::Copy { span: UNKNOWN_SPAN, dst: 0, src: 1 },
+                        release(0),
+                    ],
+                    term: Terminator::Ret(vec![2]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "genref_direct",
+            mk_func(
+                obj_locals(1, 10),
+                vec![
+                    Block { instrs: vec![retain(0), getf(2, 0)], term: Terminator::Br(1) },
+                    Block {
+                        instrs: vec![
+                            Instr::GenRefOf { span: UNKNOWN_SPAN, dst: 9, obj: 0 },
+                            release(0),
+                        ],
+                        term: Terminator::Ret(vec![2]),
+                    },
+                ],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "genref_alias",
+            mk_func(
+                obj_locals(1, 10),
+                vec![
+                    Block {
+                        instrs: vec![
+                            retain(0),
+                            Instr::Copy { span: UNKNOWN_SPAN, dst: 7, src: 0 },
+                            getf(2, 0),
+                        ],
+                        term: Terminator::Br(1),
+                    },
+                    Block {
+                        instrs: vec![
+                            Instr::GenRefOf { span: UNKNOWN_SPAN, dst: 9, obj: 7 },
+                            release(0),
+                        ],
+                        term: Terminator::Ret(vec![2]),
+                    },
+                ],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "returned_excluded",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![retain(0), getf(1, 0), release(0)],
+                    term: Terminator::Ret(vec![0]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "thrown_excluded",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![retain(0), release(0)],
+                    term: Terminator::Throw { span: UNKNOWN_SPAN, src: 0, catch: None },
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "cross_block_epilogue",
+            mk_func(
+                obj_locals(1, 4),
+                vec![
+                    Block { instrs: vec![retain(0)], term: Terminator::Br(1) },
+                    Block { instrs: vec![release(0)], term: Terminator::Ret(vec![]) },
+                ],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "defer_barrier",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        Instr::Defer { span: UNKNOWN_SPAN, body: vec![] },
+                        release(0),
+                    ],
+                    term: Terminator::Ret(vec![1]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "spawn_barrier",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        Instr::ThreadSpawn {
+                            span: UNKNOWN_SPAN,
+                            dst: 2,
+                            func: 0,
+                            closure: None,
+                            ret_tag: 0,
+                        },
+                        release(0),
+                    ],
+                    term: Terminator::Ret(vec![1]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "pool_barriers",
+            mk_func(
+                vec![
+                    LirType::Obj("C".to_string()),
+                    LirType::Obj("C".to_string()),
+                    LirType::Pool,
+                    LirType::I64,
+                    LirType::I64,
+                ],
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        Instr::PoolJoin { span: UNKNOWN_SPAN, pool: 2 },
+                        release(0),
+                        retain(1),
+                        Instr::PoolInit { span: UNKNOWN_SPAN, dst: 2, id: 3, workers: 4 },
+                        release(1),
+                    ],
+                    term: Terminator::Ret(vec![3]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "call_intra",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![retain(0), builtin_call(), release(0), retain(0)],
+                    term: Terminator::Ret(vec![]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "defer_intra",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        Instr::Defer { span: UNKNOWN_SPAN, body: vec![] },
+                        release(0),
+                        retain(0),
+                    ],
+                    term: Terminator::Ret(vec![]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "spawn_intra",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        Instr::ThreadSpawn {
+                            span: UNKNOWN_SPAN,
+                            dst: 2,
+                            func: 0,
+                            closure: None,
+                            ret_tag: 0,
+                        },
+                        release(0),
+                        retain(0),
+                    ],
+                    term: Terminator::Ret(vec![]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "pool_intra",
+            mk_func(
+                vec![
+                    LirType::Obj("C".to_string()),
+                    LirType::Pool,
+                    LirType::I64,
+                ],
+                vec![Block {
+                    instrs: vec![
+                        retain(0),
+                        Instr::PoolJoin { span: UNKNOWN_SPAN, pool: 1 },
+                        release(0),
+                        retain(0),
+                    ],
+                    term: Terminator::Ret(vec![]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "first_retain_wins",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![retain(0), retain(0), release(0)],
+                    term: Terminator::Ret(vec![1]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "lone_release",
+            mk_func(
+                obj_locals(1, 4),
+                vec![Block {
+                    instrs: vec![release(0)],
+                    term: Terminator::Ret(vec![1]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "array_type_ineligible",
+            mk_func(
+                vec![LirType::Array(Box::new(LirType::I64)), LirType::I64],
+                vec![Block {
+                    instrs: vec![retain(0), release(0)],
+                    term: Terminator::Ret(vec![1]),
+                }],
+            ),
+        ));
+        out.push_str(&dump_case(
+            "diamond_epilogue",
+            mk_func(
+                obj_locals(1, 4),
+                vec![
+                    Block {
+                        instrs: vec![retain(0)],
+                        term: Terminator::BrIf { span: UNKNOWN_SPAN, cond: 2, then_bb: 1, else_bb: 2 },
+                    },
+                    Block { instrs: vec![release(0)], term: Terminator::Ret(vec![]) },
+                    Block { instrs: vec![release(0)], term: Terminator::Ret(vec![]) },
+                ],
+            ),
+        ));
+        out
+    }
+
+    #[test]
+    fn arc_differential_corpus() {
+        let dump = corpus_dump();
+        println!("{dump}");
+        assert!(dump.contains("=== dense_pairs ===\nchanged=true retains=6->0 releases=6->0"));
+        assert!(dump.contains("=== call_barrier ===\nchanged=true retains=1->0 releases=1->0"));
+        assert!(dump.contains("=== call_intra ===\nchanged=false retains=2->2 releases=1->1"));
+        assert!(dump.contains("=== defer_intra ===\nchanged=false retains=2->2 releases=1->1"));
+        assert!(dump.contains("=== spawn_intra ===\nchanged=false retains=2->2 releases=1->1"));
+        assert!(dump.contains("=== pool_intra ===\nchanged=false retains=2->2 releases=1->1"));
+        assert!(dump.contains("=== sparse_setfield ===\nchanged=true retains=3->1 releases=3->1"));
+        assert!(dump.contains("=== first_retain_wins ===\nchanged=true retains=2->1 releases=1->0"));
+        assert!(dump.contains("=== lone_release ===\nchanged=false retains=0->0 releases=1->1"));
+        assert!(dump.contains("=== array_type_ineligible ===\nchanged=false"));
     }
 }

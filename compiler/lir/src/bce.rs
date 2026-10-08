@@ -881,6 +881,451 @@ fn elide_affine_loops(func: &mut Function, dom: &DominatorTree, loops: &[Natural
     changed
 }
 
+fn version_call_passes_array(func: &Function, blocks: &BTreeSet<BlockId>) -> bool {
+    let mut arrays: BTreeSet<Local> = BTreeSet::new();
+    for (i, t) in func.locals.iter().enumerate() {
+        if matches!(t, LirType::Array(_)) {
+            arrays.insert(i as Local);
+        }
+    }
+    for b in blocks {
+        let block = match func.blocks.get(*b) {
+            Some(x) => x,
+            None => continue,
+        };
+        let mut hit = false;
+        crate::instr::walk_instrs(&block.instrs, &mut |ins| {
+            if hit {
+                return;
+            }
+            if let Instr::Call { args, .. } = ins {
+                for a in args {
+                    if arrays.contains(a) {
+                        hit = true;
+                        return;
+                    }
+                    for arr in array_aliases(func, *a) {
+                        if arrays.contains(&arr) {
+                            hit = true;
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
+struct VersionCandidate {
+    header: BlockId,
+    pred: BlockId,
+    exit_bb: BlockId,
+    iv: Local,
+    bound: Local,
+    arr: Local,
+    blocks: BTreeSet<BlockId>,
+    accesses: Vec<(BlockId, usize)>,
+}
+
+fn is_param(func: &Function, local: Local) -> bool {
+    (local as usize) < func.params.len()
+}
+
+fn defs_outside_loop(func: &Function, local: Local, blocks: &BTreeSet<BlockId>) -> Vec<(BlockId, usize)> {
+    all_defs(func, local)
+        .into_iter()
+        .filter(|(bi, _)| !blocks.contains(bi))
+        .collect()
+}
+
+fn analyze_versionable(
+    func: &Function,
+    dom: &DominatorTree,
+    lp: &NaturalLoop,
+) -> Option<VersionCandidate> {
+    let header = lp.header;
+    let (iv, bound, then_bb) = header_check(func, header)?;
+    let exit_bb = match func.blocks.get(header).map(|b| &b.term) {
+        Some(Terminator::BrIf { then_bb: t, else_bb: e, .. }) if *t == then_bb => *e,
+        _ => return None,
+    };
+    if lp.blocks.contains(&exit_bb) || !lp.blocks.contains(&then_bb) {
+        return None;
+    }
+    let then_preds: Vec<BlockId> = {
+        let n = func.blocks.len();
+        let mut out: Vec<BlockId> = Vec::new();
+        for (i, block) in func.blocks.iter().enumerate() {
+            if i < n && term_targets(&block.term).contains(&then_bb) {
+                out.push(i);
+            }
+        }
+        out
+    };
+    if then_preds != vec![header] {
+        return None;
+    }
+    if const_of(func, bound).is_some() {
+        return None;
+    }
+    if resolve_len(func, bound).is_some() {
+        return None;
+    }
+    for b in &lp.blocks {
+        let mut bad = false;
+        crate::instr::walk_instrs(&func.blocks[*b].instrs, &mut |ins| {
+            if matches!(ins, Instr::ArrayPush { .. } | Instr::ArrayPop { .. }) {
+                bad = true;
+            }
+        });
+        if bad {
+            return None;
+        }
+    }
+    if version_call_passes_array(func, &lp.blocks) {
+        return None;
+    }
+    for b in &lp.blocks {
+        match &func.blocks[*b].term {
+            Terminator::Ret(_)
+            | Terminator::Throw { .. }
+            | Terminator::Rethrow { .. }
+            | Terminator::Unreachable { .. }
+            | Terminator::BrErr { .. } => return None,
+            Terminator::Br(t) => {
+                if !lp.blocks.contains(t) && !(*b == header && *t == exit_bb) {
+                    return None;
+                }
+            }
+            Terminator::BrIf { then_bb: t, else_bb: e, .. } => {
+                for target in [*t, *e] {
+                    if !lp.blocks.contains(&target) && !(*b == header && target == exit_bb) {
+                        return None;
+                    }
+                }
+            }
+            Terminator::Switch { cases, default, .. } => {
+                for (_, t) in cases {
+                    if !lp.blocks.contains(t) {
+                        return None;
+                    }
+                }
+                if !lp.blocks.contains(default) {
+                    return None;
+                }
+            }
+        }
+    }
+    if loop_latches(func, &lp.blocks, header).is_empty() {
+        return None;
+    }
+    let externals = external_preds(func, header, &lp.blocks);
+    if externals.len() != 1 {
+        return None;
+    }
+    let pred = externals[0];
+    if !matches!(func.blocks.get(pred).map(|b| &b.term), Some(Terminator::Br(t)) if *t == header) {
+        return None;
+    }
+    let (inc_bi, inc_ii) = increment_at(func, &lp.blocks, iv)?;
+    if !increment_ok(func, inc_bi, inc_ii, iv) {
+        return None;
+    }
+    match resolve_init(func, &lp.blocks, iv) {
+        Some(_) => {}
+        None => return None,
+    };
+    let bound_defs = all_defs(func, bound);
+    if bound_defs.iter().any(|(bi, _)| lp.blocks.contains(bi)) {
+        return None;
+    }
+    if bound_defs.is_empty() {
+        if !is_param(func, bound) {
+            return None;
+        }
+    } else if !bound_defs.iter().all(|(bi, _)| dom.dominates(*bi, pred)) {
+        return None;
+    }
+    let mut arrs: BTreeSet<Local> = BTreeSet::new();
+    let mut accesses: Vec<(BlockId, usize, Local)> = Vec::new();
+    for b in &lp.blocks {
+        if *b == header {
+            continue;
+        }
+        if !dom.dominates(then_bb, *b) {
+            continue;
+        }
+        for (ii, ins) in func.blocks[*b].instrs.iter().enumerate() {
+            let (arr, idx) = match ins {
+                Instr::ArrayGet { arr, index, unchecked: false, .. } => (*arr, *index),
+                Instr::ArraySet { arr, index, unchecked: false, .. } => (*arr, *index),
+                _ => continue,
+            };
+            if idx != iv {
+                continue;
+            }
+            if !matches!(func.locals.get(arr as usize), Some(LirType::Array(_))) {
+                continue;
+            }
+            let arr_defs = all_defs(func, arr);
+            if arr_defs.iter().any(|(bi, _)| lp.blocks.contains(bi)) {
+                continue;
+            }
+            if arr_defs.is_empty() {
+                if !is_param(func, arr) {
+                    continue;
+                }
+            } else if !arr_defs.iter().all(|(bi, _)| dom.dominates(*bi, pred)) {
+                continue;
+            }
+            if !clean_reachable(func, header, then_bb, iv, *b, ii) {
+                continue;
+            }
+            arrs.insert(arr);
+            accesses.push((*b, ii, arr));
+        }
+    }
+    if arrs.len() != 1 {
+        return None;
+    }
+    let arr = *arrs.iter().next()?;
+    let mut flat: Vec<(BlockId, usize)> = accesses
+        .into_iter()
+        .filter(|(_, _, a)| *a == arr)
+        .map(|(b, ii, _)| (b, ii))
+        .collect();
+    if flat.is_empty() {
+        return None;
+    }
+    flat.sort();
+    flat.dedup();
+    Some(VersionCandidate { header, pred, exit_bb, iv, bound, arr, blocks: lp.blocks.clone(), accesses: flat })
+}
+
+fn version_one(func: &mut Function, cand: &VersionCandidate) -> bool {
+    let sorted: BTreeSet<BlockId> = cand.blocks.clone();
+    if !sorted.contains(&cand.header) {
+        return false;
+    }
+    let mut old_to_new: BTreeMap<BlockId, BlockId> = BTreeMap::new();
+    let base = func.blocks.len();
+    for (i, b) in sorted.iter().enumerate() {
+        old_to_new.insert(*b, base + i);
+    }
+    let clone_header = match old_to_new.get(&cand.header) {
+        Some(h) => *h,
+        None => return false,
+    };
+    let zero_t = func.locals.len() as Local;
+    func.locals.push(LirType::I64);
+    let notnull_t = func.locals.len() as Local;
+    func.locals.push(LirType::I64);
+    let len_t = func.locals.len() as Local;
+    func.locals.push(LirType::I64);
+    let le_t = func.locals.len() as Local;
+    func.locals.push(LirType::I64);
+    let ok_t = func.locals.len() as Local;
+    func.locals.push(LirType::I64);
+    let mut new_blocks: Vec<Block> = Vec::with_capacity(sorted.len());
+    for b in &sorted {
+        let src = match func.blocks.get(*b) {
+            Some(x) => x.clone(),
+            None => return false,
+        };
+        let mut instrs = src.instrs;
+        if cand.accesses.iter().any(|(ab, _)| ab == b) {
+            for (ab, ii) in &cand.accesses {
+                if ab != b {
+                    continue;
+                }
+                match instrs.get_mut(*ii) {
+                    Some(Instr::ArrayGet { unchecked, arr, index, .. })
+                        if *arr == cand.arr && *index == cand.iv =>
+                    {
+                        *unchecked = true;
+                    }
+                    Some(Instr::ArraySet { unchecked, arr, index, .. })
+                        if *arr == cand.arr && *index == cand.iv =>
+                    {
+                        *unchecked = true;
+                    }
+                    _ => return false,
+                }
+            }
+        }
+        let term = match src.term {
+            Terminator::Br(t) => {
+                if t == cand.header {
+                    Terminator::Br(clone_header)
+                } else if sorted.contains(&t) {
+                    Terminator::Br(old_to_new[&t])
+                } else if *b == cand.header && t == cand.exit_bb {
+                    Terminator::Br(cand.exit_bb)
+                } else {
+                    return false;
+                }
+            }
+            Terminator::BrIf { span, cond, then_bb, else_bb } => {
+                let map = |t: BlockId| -> Option<BlockId> {
+                    if sorted.contains(&t) {
+                        Some(if t == cand.header { clone_header } else { old_to_new[&t] })
+                    } else if *b == cand.header && t == cand.exit_bb {
+                        Some(cand.exit_bb)
+                    } else {
+                        None
+                    }
+                };
+                match (map(then_bb), map(else_bb)) {
+                    (Some(t), Some(e)) => Terminator::BrIf { span, cond, then_bb: t, else_bb: e },
+                    _ => return false,
+                }
+            }
+            Terminator::Switch { span, scrut, mut cases, default } => {
+                if !sorted.contains(&default) {
+                    return false;
+                }
+                for (_, t) in cases.iter_mut() {
+                    if !sorted.contains(t) {
+                        return false;
+                    }
+                    *t = if *t == cand.header { clone_header } else { old_to_new[t] };
+                }
+                let default = if default == cand.header { clone_header } else { old_to_new[&default] };
+                Terminator::Switch { span, scrut, cases, default }
+            }
+            _ => return false,
+        };
+        new_blocks.push(Block { instrs, term });
+    }
+    let pred = match func.blocks.get_mut(cand.pred) {
+        Some(b) => b,
+        None => return false,
+    };
+    if !matches!(pred.term, Terminator::Br(t) if t == cand.header) {
+        return false;
+    }
+    pred.instrs.push(Instr::Const { span: UNKNOWN_SPAN, dst: zero_t, lit: Lit::Int(0) });
+    pred.instrs.push(Instr::Cmp {
+        span: UNKNOWN_SPAN,
+        op: CmpOp::NotEq,
+        kind: NumKind::Int,
+        dst: notnull_t,
+        lhs: cand.arr,
+        rhs: zero_t,
+    });
+    pred.instrs.push(Instr::ArrayLen { span: UNKNOWN_SPAN, dst: len_t, arr: cand.arr });
+    pred.instrs.push(Instr::Cmp {
+        span: UNKNOWN_SPAN,
+        op: CmpOp::LtEq,
+        kind: NumKind::Int,
+        dst: le_t,
+        lhs: cand.bound,
+        rhs: len_t,
+    });
+    pred.instrs.push(Instr::Arith {
+        span: UNKNOWN_SPAN,
+        op: ArithOp::BitAnd,
+        kind: NumKind::Int,
+        dst: ok_t,
+        lhs: notnull_t,
+        rhs: le_t,
+    });
+    pred.term = Terminator::BrIf { span: UNKNOWN_SPAN, cond: ok_t, then_bb: clone_header, else_bb: cand.header };
+    func.blocks.extend(new_blocks);
+    true
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DefKind {
+    New,
+    Copy(Local),
+    Other,
+}
+
+pub fn nonnull_locals(func: &Function) -> BTreeSet<Local> {
+    let mut kinds: BTreeMap<Local, Vec<DefKind>> = BTreeMap::new();
+    for block in &func.blocks {
+        crate::instr::walk_instrs(&block.instrs, &mut |ins| {
+            match ins {
+                Instr::ArrayNew { dst, .. } => kinds.entry(*dst).or_default().push(DefKind::New),
+                Instr::Copy { dst, src, .. } => kinds.entry(*dst).or_default().push(DefKind::Copy(*src)),
+                Instr::Call { dsts, err, .. } => {
+                    for d in dsts {
+                        kinds.entry(*d).or_default().push(DefKind::Other);
+                    }
+                    if let Some(e) = err {
+                        kinds.entry(*e).or_default().push(DefKind::Other);
+                    }
+                }
+                _ => {
+                    if let Some(d) = instr_dst(ins) {
+                        kinds.entry(d).or_default().push(DefKind::Other);
+                    }
+                }
+            }
+        });
+        if let Terminator::BrErr { catch_bind, .. } = &block.term {
+            kinds.entry(*catch_bind).or_default().push(DefKind::Other);
+        }
+    }
+    let mut nn: BTreeSet<Local> = BTreeSet::new();
+    for (l, ks) in &kinds {
+        if !ks.is_empty() && ks.iter().all(|k| *k == DefKind::New) {
+            nn.insert(*l);
+        }
+    }
+    loop {
+        let mut grown = false;
+        for (l, ks) in &kinds {
+            if nn.contains(l) || ks.is_empty() {
+                continue;
+            }
+            if ks.iter().any(|k| *k == DefKind::Other) {
+                continue;
+            }
+            if ks.iter().all(|k| matches!(k, DefKind::New) || matches!(k, DefKind::Copy(s) if nn.contains(s))) {
+                nn.insert(*l);
+                grown = true;
+            }
+        }
+        if !grown {
+            break;
+        }
+    }
+    nn
+}
+
+pub fn version_counted_loops(func: &mut Function) -> bool {    let mut changed = false;
+    loop {
+        let dom = crate::licm::compute_dominators(func);
+        let loops = crate::licm::find_natural_loops(func, &dom);
+        let mut cands: Vec<(usize, VersionCandidate)> = loops
+            .iter()
+            .filter_map(|lp| analyze_versionable(func, &dom, lp).map(|c| (lp.blocks.len(), c)))
+            .collect();
+        if cands.is_empty() {
+            break;
+        }
+        cands.sort_by_key(|(n, _)| *n);
+        let mut fired = false;
+        for (_, cand) in cands {
+            if version_one(func, &cand) {
+                fired = true;
+                changed = true;
+                break;
+            }
+        }
+        if !fired {
+            break;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -949,6 +1394,10 @@ mod tests {
     }
 
     fn unchecked_flags(src: &str, entry: &str) -> Vec<bool> {
+        collect_flags(src, entry, false)
+    }
+
+    fn collect_flags(src: &str, entry: &str, version: bool) -> Vec<bool> {
         let mut m = frontend::parser::Parser::parse_module(src).expect("parse");
         assert!(frontend::desugar::desugar(&mut m).is_empty());
         let mut module = crate::lower::lower(&m).expect("lower");
@@ -957,6 +1406,9 @@ mod tests {
             .iter_mut()
             .find(|f| f.name == entry)
             .expect("entry");
+        if version {
+            version_counted_loops(f);
+        }
         let dom = crate::licm::compute_dominators(f);
         let loops = crate::licm::find_natural_loops(f, &dom);
         eliminate_bounds_checks(f, &dom, &loops);
@@ -972,6 +1424,37 @@ mod tests {
             }
         }
         out
+    }
+
+    fn versioned_shape(src: &str, entry: &str) -> (Vec<bool>, usize, usize, usize) {
+        let mut m = frontend::parser::Parser::parse_module(src).expect("parse");
+        assert!(frontend::desugar::desugar(&mut m).is_empty());
+        let mut module = crate::lower::lower(&m).expect("lower");
+        let f = module
+            .functions
+            .iter_mut()
+            .find(|f| f.name == entry)
+            .expect("entry");
+        let before_blocks = f.blocks.len();
+        version_counted_loops(f);
+        let after_blocks = f.blocks.len();
+        let dom = crate::licm::compute_dominators(f);
+        let loops = crate::licm::find_natural_loops(f, &dom);
+        eliminate_bounds_checks(f, &dom, &loops);
+        let mut out = Vec::new();
+        let mut lens = 0;
+        for b in &f.blocks {
+            for ins in &b.instrs {
+                match ins {
+                    Instr::ArrayGet { unchecked, .. } | Instr::ArraySet { unchecked, .. } => {
+                        out.push(*unchecked)
+                    }
+                    Instr::ArrayLen { .. } => lens += 1,
+                    _ => {}
+                }
+            }
+        }
+        (out, before_blocks, after_blocks, lens)
     }
 
     #[test]
@@ -1045,5 +1528,124 @@ mod tests {
         );
         assert!(!flags.is_empty());
         assert!(flags.iter().all(|u| !u));
+    }
+
+    #[test]
+    fn param_bound_versions_with_checked_fallback() {
+        let src = "fn f(a: Array<Int>, n: Int): Int {\n    let s = 0;\n    let i = 0;\n    while i < n {\n        s = s + a[i];\n        i = i + 1;\n    }\n    return s;\n}\nfn Main(): Int {\n    return 0;\n}\n";
+        let (flags, before, after, lens) = versioned_shape(src, "f");
+        assert!(after > before, "versioning must clone the loop");
+        assert_eq!(lens, 1, "exactly one guard length probe, got {lens}");
+        assert!(flags.contains(&false), "original checked loop must survive, got {flags:?}");
+        assert!(flags.contains(&true), "unchecked clone must exist, got {flags:?}");
+    }
+
+    #[test]
+    fn versioned_guard_selects_clone_or_fallback() {
+        let src = "fn f(a: Array<Int>, n: Int): Int {\n    let s = 0;\n    let i = 0;\n    while i < n {\n        s = s + a[i];\n        i = i + 1;\n    }\n    return s;\n}\nfn Main(): Int {\n    return 0;\n}\n";
+        let mut m = frontend::parser::Parser::parse_module(src).expect("parse");
+        assert!(frontend::desugar::desugar(&mut m).is_empty());
+        let mut module = crate::lower::lower(&m).expect("lower");
+        let f = module.functions.iter_mut().find(|f| f.name == "f").expect("entry");
+        assert!(version_counted_loops(f));
+        let mut checked = 0;
+        let mut unchecked = 0;
+        let mut guard_branches = 0;
+        for b in &f.blocks {
+            for ins in &b.instrs {
+                match ins {
+                    Instr::ArrayGet { unchecked: false, .. } => checked += 1,
+                    Instr::ArrayGet { unchecked: true, .. } => unchecked += 1,
+                    _ => {}
+                }
+            }
+            if let Terminator::BrIf { .. } = &b.term {
+                if b.instrs.iter().any(|ins| matches!(ins, Instr::ArrayLen { .. })) {
+                    guard_branches += 1;
+                }
+            }
+        }
+        assert_eq!((checked, unchecked), (1, 1), "original checked access plus one unchecked clone");
+        assert_eq!(guard_branches, 1, "exactly one guard branch on the length probe");
+    }
+
+    #[test]
+    fn versioning_skips_push_loop() {
+        let src = "fn Main(): Int {\n    let a = [1, 2, 3];\n    let s = 0;\n    let i = 0;\n    while i < 5 {\n        s = s + a[i];\n        a.push(9);\n        i = i + 1;\n    }\n    return s;\n}\n";
+        let (flags, before, after, _) = versioned_shape(src, "Main");
+        assert_eq!(before, after, "mutating loop must not be cloned");
+        assert!(flags.iter().all(|u| !u), "{flags:?}");
+    }
+
+    #[test]
+    fn versioning_skips_conditional_access() {
+        let src = "fn Main(): Int {\n    let a = [1, 2, 3];\n    let s = 0;\n    let i = 0;\n    while i < 5 {\n        if i > 10 {\n            s = s + a[i];\n        }\n        i = i + 1;\n    }\n    return s;\n}\n";
+        let (flags, before, after, _) = versioned_shape(src, "Main");
+        assert_eq!(before, after, "conditional access must not be cloned");
+        assert_eq!(flags, vec![false]);
+    }
+
+    #[test]
+    fn versioning_skips_multi_array_loop() {
+        let src = "fn f(a: Array<Int>, b: Array<Int>, n: Int): Int {\n    let s = 0;\n    let i = 0;\n    while i < n {\n        s = s + a[i] + b[i];\n        i = i + 1;\n    }\n    return s;\n}\nfn Main(): Int {\n    return 0;\n}\n";
+        let (flags, before, after, _) = versioned_shape(src, "f");
+        assert_eq!(before, after, "multi-array loop must not be cloned");
+        assert!(flags.iter().all(|u| !u), "{flags:?}");
+    }
+
+    #[test]
+    fn nested_param_loops_version_inner() {
+        let src = "fn f(a: Array<Int>, n: Int): Int {\n    let s = 0;\n    let i = 0;\n    while i < n {\n        let j = 0;\n        while j < n {\n            s = s + a[j];\n            j = j + 1;\n        }\n        i = i + 1;\n    }\n    return s;\n}\nfn Main(): Int {\n    return 0;\n}\n";
+        let (flags, before, after, _) = versioned_shape(src, "f");
+        assert!(after > before, "inner loop must be cloned");
+        assert!(flags.contains(&false), "{flags:?}");
+        assert!(flags.contains(&true), "{flags:?}");
+    }
+
+    #[test]
+    fn nonnull_finds_fresh_arrays_only() {
+        let mut m = frontend::parser::Parser::parse_module(
+            "fn f(a: Array<Int>): Int {\n    let b: Array<Int> = [];\n    let c = b;\n    return b[0] + c[0] + a[0];\n}\nfn Main(): Int {\n    return 0;\n}\n",
+        )
+        .expect("parse");
+        assert!(frontend::desugar::desugar(&mut m).is_empty());
+        let module = crate::lower::lower(&m).expect("lower");
+        let f = module.functions.iter().find(|f| f.name == "f").expect("entry");
+        let nn = nonnull_locals(f);
+        let fresh: Vec<Local> = f
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .filter_map(|ins| match ins {
+                Instr::ArrayNew { dst, .. } => Some(*dst),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fresh.len(), 1, "one fresh array expected");
+        assert!(nn.contains(&fresh[0]), "ArrayNew result must be non-null");
+        assert!(!nn.contains(&0), "parameter array stays nullable");
+        assert_eq!(nn.len(), 3, "fresh array plus its two copies, got {nn:?}");
+    }
+
+    #[test]
+    fn nonnull_excludes_reassigned() {
+        let mut m = frontend::parser::Parser::parse_module(
+            "fn f(a: Array<Int>, b: Array<Int>): Int {\n    let c: Array<Int> = [];\n    c = a;\n    return c[0];\n}\nfn Main(): Int {\n    return 0;\n}\n",
+        )
+        .expect("parse");
+        assert!(frontend::desugar::desugar(&mut m).is_empty());
+        let module = crate::lower::lower(&m).expect("lower");
+        let f = module.functions.iter().find(|f| f.name == "f").expect("entry");
+        let nn = nonnull_locals(f);
+        let reassigned: Local = f
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .find_map(|ins| match ins {
+                Instr::ArrayGet { arr, .. } => Some(*arr),
+                _ => None,
+            })
+            .expect("one array read");
+        assert!(!nn.contains(&reassigned), "reassigned array must not be non-null, got {nn:?}");
     }
 }

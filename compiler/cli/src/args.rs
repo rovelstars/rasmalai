@@ -85,6 +85,12 @@ pub enum Command {
         /// Package selection for workspace builds
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
+        /// Parallel worker count (or RNX_JOBS). Default: available parallelism
+        #[arg(long, env = "RNX_JOBS")]
+        jobs: Option<usize>,
+        /// Build memory cap in bytes; KB/MB/GB suffixes allowed (or RNX_MEMORY_CAP). Default: min(50% RAM, 8GB); 4GB when RAM size is unreadable
+        #[arg(long, env = "RNX_MEMORY_CAP", value_parser = crate::parse_memory_cap)]
+        memory_cap: Option<u64>,
     },
     /// Fast type-check and semantic validation
     Check {
@@ -128,6 +134,12 @@ pub enum Command {
         /// Accepted for parity with build; ignored for run
         #[arg(short = 'g', long = "debug")]
         debug: bool,
+        /// Parallel worker count (or RNX_JOBS). Default: available parallelism
+        #[arg(long, env = "RNX_JOBS")]
+        jobs: Option<usize>,
+        /// Build memory cap in bytes; KB/MB/GB suffixes allowed (or RNX_MEMORY_CAP). Default: min(50% RAM, 8GB); 4GB when RAM size is unreadable
+        #[arg(long, env = "RNX_MEMORY_CAP", value_parser = crate::parse_memory_cap)]
+        memory_cap: Option<u64>,
         /// Arguments passed directly to the compiled executable
         #[arg(last = true)]
         args: Vec<String>,
@@ -186,7 +198,7 @@ pub enum Command {
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
     },
-    /// Fetch git dependencies into the module cache
+    /// Fetch dependencies into the cache and precompile dep products
     Fetch {
         /// Package selection
         #[arg(short = 'p', long = "package")]
@@ -323,6 +335,12 @@ pub enum Command {
         /// Accepted for parity with build; ignored for bench
         #[arg(short = 'g', long = "debug")]
         debug: bool,
+        /// Parallel worker count (or RNX_JOBS). Default: available parallelism
+        #[arg(long, env = "RNX_JOBS")]
+        jobs: Option<usize>,
+        /// Build memory cap in bytes; KB/MB/GB suffixes allowed (or RNX_MEMORY_CAP). Default: min(50% RAM, 8GB); 4GB when RAM size is unreadable
+        #[arg(long, env = "RNX_MEMORY_CAP", value_parser = crate::parse_memory_cap)]
+        memory_cap: Option<u64>,
     },
     /// Run package unit tests and integration suites
     Test {
@@ -343,6 +361,12 @@ pub enum Command {
         /// Do not capture stdout/stderr; print test output immediately
         #[arg(long)]
         nocapture: bool,
+        /// Parallel worker count (or RNX_JOBS). Default: available parallelism
+        #[arg(long, env = "RNX_JOBS")]
+        jobs: Option<usize>,
+        /// Build memory cap in bytes; KB/MB/GB suffixes allowed (or RNX_MEMORY_CAP). Default: min(50% RAM, 8GB); 4GB when RAM size is unreadable
+        #[arg(long, env = "RNX_MEMORY_CAP", value_parser = crate::parse_memory_cap)]
+        memory_cap: Option<u64>,
     },
     /// Inspect and prune the build cache
     Cache {

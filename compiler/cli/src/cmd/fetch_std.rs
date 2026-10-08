@@ -29,6 +29,32 @@ pub(super) fn run_fetch_std(registry: Option<String>) {
                 report.packages.len(),
                 report.pin_path.display()
             );
+            if let Ok(cwd) = std::env::current_dir()
+                && let Some(scope_root) = frontend::project::find_workspace_root(&cwd)
+            {
+                let pre = frontend::products::precompile_scope(&scope_root);
+                if pre.entries > 0 {
+                    println!(
+                        "Precompiled {} dep products ({} entries in {} projects)",
+                        pre.populated, pre.entries, pre.projects
+                    );
+                }
+            }
+            match frontend::products::precompile_std() {
+                Ok(pre) => {
+                    if pre.entries > 0 {
+                        println!(
+                            "Precompiled {} std products ({} entries in {} projects)",
+                            pre.populated, pre.entries, pre.projects
+                        );
+                    }
+                }
+                Err(reason) => {
+                    println!(
+                        "warning: stdlib precompile skipped ({reason}); first build will populate products"
+                    );
+                }
+            }
         }
         Err(e) => {
             println!("{e}");

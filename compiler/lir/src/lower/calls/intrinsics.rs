@@ -983,6 +983,11 @@ impl<'a> Builder<'a> {
                         let tmp = self.local(LirType::Any);
                         self.emit(Instr::Call { span,  dsts: vec![tmp], err: None, target: CallTarget::Value(argv[0]), args: vec![item] });
                         self.emit_any_unbox(res, tmp, span);
+                    } else if let Some(st) = self.closure_call_ret(argv[0]) {
+                        let tmp = self.local(st);
+                        self.emit(Instr::Call { span,  dsts: vec![tmp], err: None, target: CallTarget::Value(argv[0]), args: vec![item] });
+                        let boxed = self.coerce_to_slot(tmp, &out_elem, span);
+                        self.emit_copy(res, boxed, span);
                     } else {
                         self.emit(Instr::Call { span,  dsts: vec![res], err: None, target: CallTarget::Value(argv[0]), args: vec![item] });
                     }
@@ -1152,8 +1157,7 @@ impl<'a> Builder<'a> {
                 self.set_current(some_bb);
                 let inner = self.local(LirType::Any);
                 self.emit(Instr::EnumPayload { span,  dst: inner, scrut: obj, index: 0 });
-                let mapped = self.local(LirType::Any);
-                self.emit(Instr::Call { span,  dsts: vec![mapped], err: None, target: CallTarget::Value(cb), args: vec![inner] });
+                let mapped = self.emit_value_call(cb, vec![inner], span);
                 let dst = self.local(LirType::Enum(ei));
                 self.emit(Instr::EnumNew { span,  dst, enu: ei, variant: some_vi, payload: vec![mapped] });
                 self.set_term(Terminator::Br(merge));

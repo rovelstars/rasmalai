@@ -70,6 +70,13 @@ impl<'a> Builder<'a> {
             let flat = crate::instr::flat_sig(&ty);
             if flat.len() == 1 {
                 self.def(p.name.clone(), idx, simple_of(&flat[0]), flat[0].clone());
+                if let Some(sig) = p.ty.as_ref().and_then(|t| t.fn_sig.as_ref()) {
+                    if let Some(r) = sig.ret.as_ref().map(|r| self.resolve_here(r)) {
+                        if Self::any_box_tag(&r).is_some() {
+                            self.closure_ret.insert(idx, r);
+                        }
+                    }
+                }
                 if let Some(arg) = p.ty.as_ref().and_then(option_arg) {
                     let pt = self.resolve_here(arg);
                     self.precise.insert(idx, pt);

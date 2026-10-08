@@ -427,3 +427,41 @@ fn check_no_tuple_escape(f: &Function, diags: &mut Vec<Diagnostic>) {
         }
     }
 }
+
+pub fn verify_parallel(module: &Module, jobs: usize) -> Vec<Diagnostic> {
+    if jobs <= 1 {
+        return verify(module);
+    }
+    crate::parallel::with_pool(jobs, || {
+        use rayon::prelude::*;
+        let per: Vec<Vec<Diagnostic>> = (0..module.functions.len())
+            .into_par_iter()
+            .map(|fi| verify_one(module, fi))
+            .collect();
+        let mut diags = Vec::new();
+        for mut d in per {
+            diags.append(&mut d);
+        }
+        diags
+    })
+}
+
+fn verify_one(module: &Module, fi: usize) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let f = &module.functions[fi];
+    if f.blocks.is_empty() {
+        diags.push(Diagnostic::new(
+            Code::E108,
+            format!("function `{}` has no blocks", f.name),
+        ));
+        return diags;
+    }
+    for b in f.blocks.iter() {
+        for ins in &b.instrs {
+            check_instr(module, fi, ins, f.locals.len(), &mut diags);
+        }
+        check_term(module, f, &b.term, &mut diags);
+    }
+    check_no_tuple_escape(f, &mut diags);
+    diags
+}

@@ -1,6 +1,6 @@
 use super::*;
 
-impl FnLower<'_> {
+impl<M: Module> FnLower<'_, M> {
     pub(super) fn lower_const(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
         let Instr::Const { dst, lit , ..} = ins else {
             return Err("unreachable".to_string());

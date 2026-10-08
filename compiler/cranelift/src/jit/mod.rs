@@ -11,6 +11,9 @@ pub(super) use std::sync::atomic::{AtomicU64, Ordering};
 
 mod compile;
 mod instr;
+mod object;
+
+pub use object::emit_object;
 
 use self::compile::{check_supported, lower_fn};
 
@@ -581,6 +584,11 @@ fn array_capturable(inner: &LirType) -> bool {
 pub fn native_flags() -> settings::Flags {
     settings::Flags::new(settings::builder())
 }
+
+pub(super) const SHARED_FLAGS: &[(&str, &str)] = &[
+    ("opt_level", "speed"),
+    ("enable_nan_canonicalization", "false"),
+];
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PrebuiltStatus {

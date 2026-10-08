@@ -1,6 +1,6 @@
 use super::*;
 
-impl FnLower<'_> {
+impl<M: Module> FnLower<'_, M> {
     pub(super) fn trap_if_null(
         &mut self,
         b: &mut FunctionBuilder<'_>,

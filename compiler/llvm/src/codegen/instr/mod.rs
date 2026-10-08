@@ -288,6 +288,7 @@ pub(super) struct FnCx<'ctx> {
     pub(super) stack_next: usize,
     pub(super) stack: BTreeSet<Local>,
     pub(super) ftypes: Vec<LirType>,
+    pub(super) nonnull: BTreeSet<Local>,
     pub(super) ret_slots: usize,
     pub(super) owned: BTreeSet<Local>,
     pub(super) ever_owned: BTreeSet<Local>,

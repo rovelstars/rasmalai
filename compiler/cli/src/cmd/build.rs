@@ -12,6 +12,8 @@ fn build_key(
     opt_level: u8,
     target_triple: Option<&str>,
     debug: bool,
+    jobs: usize,
+    memory_cap: u64,
 ) -> String {
     // Path-dep manifests and path-dep src trees (src/**/*.rnx, skipping
     // target/, .git/, .rnx-cache/) feed the fingerprint. Files outside a
@@ -47,6 +49,7 @@ fn build_key(
         }
     }
     owned.push(entry.as_bytes().to_vec());
+    owned.push(format!("jobs={jobs} memory-cap={memory_cap}").into_bytes());
     let host = linker::host_triple().0;
     owned.extend(frontend::cache::toolchain_parts(
         release,
@@ -55,7 +58,7 @@ fn build_key(
         &host,
         debug,
         env!("CARGO_PKG_VERSION"),
-        &frontend::checksum::Sha256::hexdigest(runtime::archive::BYTES),
+        cli::runtime_archive_hash(),
         llvm::LLVM_VERSION,
     ));
     let parts: Vec<&[u8]> = owned.iter().map(|b| b.as_slice()).collect();
@@ -142,7 +145,7 @@ fn project_root_for(input: &str) -> std::path::PathBuf {
         }
     }
 }
-pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, package: Option<String>, verbose: bool, quiet: bool) {
+pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, verbose: bool, quiet: bool) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let target = cli::resolve_scope_target(path.as_deref(), package.as_deref())
@@ -198,7 +201,12 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 trace,
                 perf_map: false,
                 debug,
+                jobs: cli::resolve_jobs(jobs),
+                memory_cap: cli::resolve_memory_cap(memory_cap),
             };
+            if verbose {
+                eprintln!("rnx: jobs={} memory-cap={} bytes", cfg.jobs, cfg.memory_cap);
+            }
             if lib {
                 let theme = diagnostics::theme::AuraTheme::active();
                 let built = match cli::build_lib_files_cfg(&input, release, opt_level, target_triple.as_deref(), &cfg) {
@@ -301,7 +309,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                             std::process::exit(1);
                         }
                     }
-                    let key = build_key(&input, &root, &entry, release, opt_level, target_triple.as_deref(), debug);
+                    let key = build_key(&input, &root, &entry, release, opt_level, target_triple.as_deref(), debug, cfg.jobs, cfg.memory_cap);
                     let stamp = match path.file_name().map(|s| s.to_string_lossy().into_owned()) {
                         Some(stem) => path.with_file_name(format!("{stem}.fingerprint")),
                         None => path.with_file_name(".fingerprint"),
@@ -320,11 +328,88 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 .iter()
                 .map(|l| linker::LinkInput::Lib(l.clone()))
                 .collect();
-            let link_result = if release {
-                let mut inputs = vec![
-                    linker::LinkInput::ObjectBytes(built.bytes),
-                    linker::LinkInput::ArchiveBytes(runtime::archive::BYTES.to_vec()),
-                ];
+            let user_objects: Vec<linker::LinkInput> = built
+                .objects
+                .into_iter()
+                .map(linker::LinkInput::ObjectBytes)
+                .collect();
+            let native_requested = match std::env::var_os("RNX_NATIVE_LINK") {
+                Some(v) if v == "0" => Some(false),
+                Some(v) if v == "1" => Some(true),
+                Some(_) => Some(false),
+                None => None,
+            };
+            let native = match native_requested {
+                Some(forced) => {
+                    if forced && target.0 != "x86_64-unknown-linux-gnu" {
+                        eprintln!("error: RNX_NATIVE_LINK=1 needs target x86_64-unknown-linux-gnu");
+                        std::process::exit(1);
+                    }
+                    forced
+                }
+                None => target.0 == "x86_64-unknown-linux-gnu",
+            };
+            if native && target.0 != "x86_64-unknown-linux-gnu" {
+                eprintln!("error: native link needs target x86_64-unknown-linux-gnu");
+                std::process::exit(1);
+            }
+            let link_result = if native {
+                if release {
+                    let mut inputs = user_objects;
+                    inputs.push(linker::LinkInput::ArchiveRef(runtime::archive::BYTES));
+                    inputs.extend(foreign_libs);
+                    linker::native::native_link_static(
+                        &inputs,
+                        std::path::Path::new(&out_path),
+                        &linker::native::StaticOpts {
+                            entry: "_start".to_string(),
+                            icf: true,
+                            target: target.0.clone(),
+                            strip: true,
+                        },
+                    )
+                    .map(|_| ())
+                } else {
+                    match linker::find_shared_runtime_dir() {
+                        Some(lib_dir) => {
+                            let mut dyn_libs = vec!["runtime_native".to_string()];
+                            dyn_libs.extend(built.native_libs.iter().cloned());
+                            linker::native::native_link_dynamic(
+                                &user_objects,
+                                std::path::Path::new(&out_path),
+                                &linker::native::DynamicOpts {
+                                    entry: "_start".to_string(),
+                                    icf: false,
+                                    target: target.0.clone(),
+                                    lib_dirs: vec![lib_dir.clone()],
+                                    libs: dyn_libs,
+                                    runpath: Some(lib_dir.display().to_string()),
+                                    strip: false,
+                                },
+                            )
+                            .map(|_| ())
+                        }
+                        None => {
+                            let mut inputs = user_objects;
+                            inputs.push(linker::LinkInput::ArchiveRef(runtime::archive::BYTES));
+                            inputs.extend(foreign_libs);
+                            linker::native::native_link_static(
+                                &inputs,
+                                std::path::Path::new(&out_path),
+                                &linker::native::StaticOpts {
+                                    entry: "_start".to_string(),
+                                    icf: false,
+                                    target: target.0.clone(),
+                                    strip: false,
+                                },
+                            )
+                            .map(|_| ())
+                        }
+                    }
+                }
+            } else if release {
+                let mut inputs = user_objects;
+                inputs.push(linker::LinkInput::ArchiveRef(runtime::archive::BYTES));
                 inputs.extend(foreign_libs);
                 linker::link_executable(&inputs, std::path::Path::new(&out_path), &target, true)
             } else {
@@ -333,17 +418,15 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                         let mut dyn_libs = vec!["runtime_native".to_string()];
                         dyn_libs.extend(built.native_libs.iter().cloned());
                         linker::link_executable_dynamic(
-                            &[linker::LinkInput::ObjectBytes(built.bytes)],
+                            &user_objects,
                             std::path::Path::new(&out_path),
                             &target,
                             &linker::DynLink { lib_dir, libs: dyn_libs },
                         )
                     }
                     None => {
-                        let mut inputs = vec![
-                            linker::LinkInput::ObjectBytes(built.bytes),
-                            linker::LinkInput::ArchiveBytes(runtime::archive::BYTES.to_vec()),
-                        ];
+                        let mut inputs = user_objects;
+                        inputs.push(linker::LinkInput::ArchiveRef(runtime::archive::BYTES));
                         inputs.extend(foreign_libs);
                         linker::link_executable(&inputs, std::path::Path::new(&out_path), &target, false)
                     }
@@ -460,10 +543,10 @@ mod tests {
         let dep_src = dep.join("src").join("lib.rnx");
         std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 1;\n}\n").unwrap();
         let input = main.to_string_lossy().into_owned();
-        let key_before = build_key(&input, &root, "Main", false, 1, None, false);
-        assert_eq!(key_before, build_key(&input, &root, "Main", false, 1, None, false));
+        let key_before = build_key(&input, &root, "Main", false, 1, None, false, 1, 0);
+        assert_eq!(key_before, build_key(&input, &root, "Main", false, 1, None, false, 1, 0));
         std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 2;\n}\n").unwrap();
-        let key_after = build_key(&input, &root, "Main", false, 1, None, false);
+        let key_after = build_key(&input, &root, "Main", false, 1, None, false, 1, 0);
         assert_ne!(key_before, key_after);
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -12,7 +12,7 @@ impl Jit {
         let mut module = Self::jit_module_for(lir)?;
         timings.init = step.elapsed();
         step = Instant::now();
-        let (ids, sigs, rt, bytes_fns, statics, foreign_ids) = Self::declare_imports(&mut module, lir)?;
+        let (ids, sigs, rt, bytes_fns, statics, foreign_ids) = Self::declare_imports(&mut module, lir, Linkage::Local, None)?;
         timings.declare = step.elapsed();
         step = Instant::now();
         timings.fn_count = lir.functions.len();
@@ -27,11 +27,8 @@ impl Jit {
 
     fn jit_module_for(lir: &LirModule) -> Result<JITModule, Diagnostic> {
         runtime::native::rnx_set_closure_epoch(runtime::native::rnx_claim_closure_epoch());
-        let mut builder = JITBuilder::with_flags(
-            &[("enable_nan_canonicalization", "false")],
-            default_libcall_names(),
-        )
-        .map_err(|e| Diagnostic::new(Code::E108, format!("jit init: {e}")))?;
+        let mut builder = JITBuilder::with_flags(SHARED_FLAGS, default_libcall_names())
+            .map_err(|e| Diagnostic::new(Code::E108, format!("jit init: {e}")))?;
         builder.symbol("rnx_alloc", runtime::native::rnx_alloc as *const u8);
         builder.symbol("rnx_free", runtime::native::rnx_free as *const u8);
         builder.symbol("rnx_print_str", runtime::native::rnx_print_str as *const u8);
@@ -372,14 +369,15 @@ impl Jit {
         Ok(module)
     }
 
-    fn declare_imports(module: &mut JITModule, lir: &LirModule) -> Result<(BTreeMap<String, FuncId>, BTreeMap<FuncId, Signature>, RtIds, BTreeMap<String, FuncId>, BTreeMap<String, DataId>, BTreeMap<(String, String), FuncId>), Diagnostic> {
+    pub(super) fn declare_imports<M: Module>(module: &mut M, lir: &LirModule, user_linkage: Linkage, entry: Option<&str>) -> Result<(BTreeMap<String, FuncId>, BTreeMap<FuncId, Signature>, RtIds, BTreeMap<String, FuncId>, BTreeMap<String, DataId>, BTreeMap<(String, String), FuncId>), Diagnostic> {
         let mut ids: BTreeMap<String, FuncId> = BTreeMap::new();
         let mut sigs: BTreeMap<FuncId, Signature> = BTreeMap::new();
         for f in &lir.functions {
             check_supported(lir, f)?;
             let sig = fn_sig(f);
+            let sym = if f.name == "main" && entry == Some("main") { "__rnx_user_main" } else { &f.name };
             let id = module
-                .declare_function(&f.name, Linkage::Local, &sig)
+                .declare_function(sym, user_linkage, &sig)
                 .map_err(|e| Diagnostic::new(Code::E108, format!("declare {}: {e}", f.name)))?;
             ids.insert(f.name.clone(), id);
             sigs.insert(id, sig);
@@ -551,7 +549,7 @@ impl Jit {
         str3_sig.params.push(AbiParam::new(types::I64));
         str3_sig.params.push(AbiParam::new(types::I64));
         str3_sig.returns.push(AbiParam::new(types::I64));
-        let decl_isig = |module: &mut JITModule, name: &str, sig: &Signature| {
+        let decl_isig = |module: &mut M, name: &str, sig: &Signature| {
             module
                 .declare_function(name, Linkage::Import, sig)
                 .map_err(|e| Diagnostic::new(Code::E108, format!("declare {name}: {e}")))
@@ -1004,7 +1002,7 @@ impl Jit {
             proc7_sig.params.push(AbiParam::new(types::I64));
         }
         proc7_sig.returns.push(AbiParam::new(types::I64));
-        let proc_decl = |module: &mut JITModule, name: &str, sig: &Signature| {
+        let proc_decl = |module: &mut M, name: &str, sig: &Signature| {
             module
                 .declare_function(name, Linkage::Import, sig)
                 .map_err(|e| Diagnostic::new(Code::E108, format!("declare {name}: {e}")))
@@ -1597,7 +1595,7 @@ impl Jit {
         Ok((ids, sigs, rt, bytes_fns, statics, foreign_ids))
     }
 
-    fn define_functions(module: &mut JITModule, lir: &LirModule, ids: &BTreeMap<String, FuncId>, sigs: &BTreeMap<FuncId, Signature>, foreign_ids: &BTreeMap<(String, String), FuncId>, rt: &RtIds, bytes_fns: &BTreeMap<String, FuncId>, statics: &BTreeMap<String, DataId>, ctx: &mut FunctionBuilderContext, hot: bool, spare: usize, timings: &mut CodegenTimings) -> Result<(BTreeMap<String, FunctionSlotId>, Vec<String>, Option<Box<[AtomicU64]>>, BTreeMap<String, usize>), Diagnostic> {
+    pub(super) fn define_functions<M: Module>(module: &mut M, lir: &LirModule, ids: &BTreeMap<String, FuncId>, sigs: &BTreeMap<FuncId, Signature>, foreign_ids: &BTreeMap<(String, String), FuncId>, rt: &RtIds, bytes_fns: &BTreeMap<String, FuncId>, statics: &BTreeMap<String, DataId>, ctx: &mut FunctionBuilderContext, hot: bool, spare: usize, timings: &mut CodegenTimings) -> Result<(BTreeMap<String, FunctionSlotId>, Vec<String>, Option<Box<[AtomicU64]>>, BTreeMap<String, usize>), Diagnostic> {
         use std::time::Instant;
         let mut sizes: BTreeMap<String, usize> = BTreeMap::new();
         let (slots, slot_names, table) = if hot {
@@ -1867,7 +1865,7 @@ pub(super) fn check_supported(lir: &LirModule, f: &LirFunction) -> Result<(), Di
     Ok(())
 }
 
-fn declare_statics(module: &mut JITModule, lir: &LirModule) -> Result<BTreeMap<String, DataId>, Diagnostic> {
+fn declare_statics<M: Module>(module: &mut M, lir: &LirModule) -> Result<BTreeMap<String, DataId>, Diagnostic> {
     let mut texts = BTreeSet::new();
     texts.insert(" ".to_string());
     texts.insert("\n".to_string());
@@ -1948,7 +1946,7 @@ fn stack_locals(f: &LirFunction) -> BTreeSet<Local> {
     set
 }
 
-pub(super) fn lower_fn(
+pub(super) fn lower_fn<M: Module>(
     lir: &LirModule,
     f_raw: &LirFunction,
     ids: &BTreeMap<String, FuncId>,
@@ -1957,7 +1955,7 @@ pub(super) fn lower_fn(
     hot: Option<HotCtx<'_>>,
     bytes_fns: &BTreeMap<String, FuncId>,
     statics: &BTreeMap<String, DataId>,
-    module: &mut JITModule,
+    module: &mut M,
     func: &mut ClFunction,
     ctx: &mut FunctionBuilderContext,
 ) -> Result<(), Diagnostic> {
@@ -2269,7 +2267,7 @@ pub(super) fn lower_fn(
     Ok(())
 }
 
-impl FnLower<'_> {
+impl<M: Module> FnLower<'_, M> {
     fn term(
         &mut self,
         b: &mut FunctionBuilder<'_>,

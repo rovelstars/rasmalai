@@ -1,5 +1,5 @@
 
-pub(super) fn run_bench(package: Option<String>, filter: Option<String>, backend: String, no_release: bool, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool) {
+pub(super) fn run_bench(package: Option<String>, filter: Option<String>, backend: String, no_release: bool, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, verbose: bool) {
             let release = !no_release;
             let backend = match backend.as_str() {
                 "interpreter" => cli::TestBackend::Interpreter,
@@ -18,7 +18,12 @@ pub(super) fn run_bench(package: Option<String>, filter: Option<String>, backend
                 trace,
                 perf_map,
                 debug: false,
+                jobs: cli::resolve_jobs(jobs),
+                memory_cap: cli::resolve_memory_cap(memory_cap),
             };
+            if verbose {
+                eprintln!("rnx: jobs={} memory-cap={} bytes", cfg.jobs, cfg.memory_cap);
+            }
             let opt_level = if release { 1 } else { 0 };
             let targets = cli::test_targets(package.as_deref()).unwrap_or_else(|e| {
                 eprintln!("{e}");
