@@ -9,6 +9,7 @@ pub enum LinkInput {
     ObjectBytes(Vec<u8>),
     ObjectPath(PathBuf),
     ArchiveBytes(Vec<u8>),
+    ArchiveRef(&'static [u8]),
     ArchivePath(PathBuf),
     Lib(String),
 }
@@ -19,6 +20,7 @@ pub enum LinkError {
     NoLinker(String),
     Io(String),
     LinkFailed(String),
+    Native(String),
 }
 
 impl std::fmt::Display for LinkError {
@@ -28,11 +30,16 @@ impl std::fmt::Display for LinkError {
             LinkError::NoLinker(m) => write!(f, "linker: {m}"),
             LinkError::Io(m) => write!(f, "linker io: {m}"),
             LinkError::LinkFailed(m) => write!(f, "link failed: {m}"),
+            LinkError::Native(m) => write!(f, "linker: {m}"),
         }
     }
 }
 
 impl std::error::Error for LinkError {}
+
+pub mod core;
+pub mod native;
+pub mod target;
 
 pub fn host_triple() -> TargetTriple {
     TargetTriple(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
@@ -273,6 +280,11 @@ fn stage_inputs(inputs: &[LinkInput], dir: &Path) -> Result<Vec<PathBuf>, LinkEr
             }
             LinkInput::ObjectPath(p) => out.push(p.clone()),
             LinkInput::ArchiveBytes(b) => {
+                let p = dir.join(format!("lib{i}.a"));
+                std::fs::write(&p, b).map_err(|e| LinkError::Io(e.to_string()))?;
+                out.push(p);
+            }
+            LinkInput::ArchiveRef(b) => {
                 let p = dir.join(format!("lib{i}.a"));
                 std::fs::write(&p, b).map_err(|e| LinkError::Io(e.to_string()))?;
                 out.push(p);
