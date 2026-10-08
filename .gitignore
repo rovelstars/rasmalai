@@ -5,6 +5,11 @@ target/
 **/.rnx-cache/
 *.coredump
 core*
+# ...but not the linker's own `core/` + `target/` module trees (source, not artifacts)
+!compiler/linker/src/core/
+!compiler/linker/src/target/
+# ...nor the corelang test suite (source, not a coredump)
+!compiler/cli/tests/corelang.rs
 *.profraw
 compiler/runtime/bundle/Cargo.lock
 benches/data/benchmarks.json
