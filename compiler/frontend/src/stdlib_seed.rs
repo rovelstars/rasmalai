@@ -24,7 +24,7 @@ pub fn std_registry_from_env() -> (Option<RegistryConfig>, BTreeMap<String, Regi
     (default, BTreeMap::new())
 }
 
-fn std_package_tops() -> Vec<String> {
+pub(crate) fn std_package_tops() -> Vec<String> {
     let mut tops: Vec<String> = stdlib::MODULES
         .iter()
         .map(|m| m.split('/').next().unwrap_or(m).to_string())
@@ -32,6 +32,10 @@ fn std_package_tops() -> Vec<String> {
     tops.sort();
     tops.dedup();
     tops
+}
+
+pub(crate) fn std_top_modules() -> Vec<String> {
+    std_package_tops()
 }
 
 pub fn std_package_names() -> Vec<String> {

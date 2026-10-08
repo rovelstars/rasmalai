@@ -4,6 +4,36 @@ use std::path::{Path, PathBuf};
 pub const PROJECT_CACHE_DIR: &str = ".rnx-cache";
 pub const DEFAULT_RETENTION_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+pub fn filesystem_free_bytes(dir: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let anchor = if dir.is_file() {
+            dir.parent().unwrap_or_else(|| Path::new("."))
+        } else {
+            dir
+        };
+        let cstr = std::ffi::CString::new(anchor.as_os_str().as_encoded_bytes()).ok()?;
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(cstr.as_ptr(), &mut stat) } != 0 {
+            return None;
+        }
+        (stat.f_bavail as u64).checked_mul(stat.f_frsize as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
+
+pub fn effective_cap(dir: &Path, requested: Option<u64>) -> u64 {
+    let base = requested.unwrap_or(DEFAULT_RETENTION_BYTES);
+    match filesystem_free_bytes(dir) {
+        Some(free) => base.min(free / 10).max(64 * 1024 * 1024),
+        None => base,
+    }
+}
+
 pub fn global_cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("RNX_CACHE_HOME") {
         if !dir.is_empty() {
@@ -167,20 +197,27 @@ fn collect_rnx(dir: &Path, out: &mut Vec<PathBuf>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.file_type().is_dir() {
             let skip = path
                 .file_name()
                 .is_some_and(|n| n == "target" || n == ".git" || n == ".rnx-cache");
             if !skip {
                 collect_rnx(&path, out);
             }
-        } else if path.extension().is_some_and(|e| e == "rnx") {
+        } else if meta.file_type().is_file() && path.extension().is_some_and(|e| e == "rnx") {
             out.push(path);
         }
     }
 }
 
-pub fn hash_src_tree(root: &Path) -> Vec<u8> {
+pub fn hash_src_tree_files(root: &Path) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
     let mut found = Vec::new();
     collect_rnx(&root.join("src"), &mut found);
     let mut rels: Vec<(String, Vec<u8>)> = Vec::new();
@@ -192,6 +229,7 @@ pub fn hash_src_tree(root: &Path) -> Vec<u8> {
         rels.push((rel, std::fs::read(&path).unwrap_or_default()));
     }
     rels.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut files = Vec::with_capacity(rels.len());
     let mut hasher = Sha256::new();
     for (rel, bytes) in &rels {
         let rel_bytes = rel.as_bytes();
@@ -199,37 +237,63 @@ pub fn hash_src_tree(root: &Path) -> Vec<u8> {
         hasher.update(rel_bytes);
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
+        let mut entry = Sha256::new();
+        entry.update(&(rel_bytes.len() as u64).to_le_bytes());
+        entry.update(rel_bytes);
+        entry.update(&(bytes.len() as u64).to_le_bytes());
+        entry.update(bytes);
+        files.push((rel.clone(), entry.finalize().to_vec()));
     }
-    hasher.finalize().to_vec()
+    (hasher.finalize().to_vec(), files)
+}
+
+pub fn hash_src_tree(root: &Path) -> Vec<u8> {
+    hash_src_tree_files(root).0
+}
+
+pub fn project_deps_dir(root: &Path) -> PathBuf {
+    project_cache_dir(root).join("deps")
+}
+
+fn walk_bin_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.file_type().is_dir() {
+            walk_bin_files(&path, out);
+        } else if meta.file_type().is_file() && path.extension().is_some_and(|e| e == "bin") {
+            out.push(path);
+        }
+    }
 }
 
 pub fn cache_usage_bytes(dir: &Path) -> u64 {
+    let mut files = Vec::new();
+    walk_bin_files(dir, &mut files);
     let mut total = 0;
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return 0,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|e| e == "bin") {
-            total += entry.metadata().map(|m| m.len()).unwrap_or(0);
-        }
+    for path in files {
+        total += std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     }
     total
 }
 
 pub fn prune_lru(dir: &Path, keep_bytes: u64) -> std::io::Result<u64> {
+    let mut paths = Vec::new();
+    walk_bin_files(dir, &mut paths);
     let mut files: Vec<(u64, u64, PathBuf)> = Vec::new();
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return Ok(0),
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() || !path.extension().is_some_and(|e| e == "bin") {
-            continue;
-        }
-        let meta = match entry.metadata() {
+    for path in paths {
+        let meta = match std::fs::metadata(&path) {
             Ok(m) => m,
             Err(_) => continue,
         };
@@ -242,7 +306,7 @@ pub fn prune_lru(dir: &Path, keep_bytes: u64) -> std::io::Result<u64> {
             .unwrap_or(0);
         files.push((age, meta.len(), path));
     }
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
     let mut total: u64 = files.iter().map(|(_, len, _)| len).sum();
     let mut freed = 0;
     for (_, len, path) in files {
@@ -422,6 +486,111 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn src_tree_fixture(dir: &Path) {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir.join("src").join("lib")).unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        std::fs::write(dir.join("src").join("lib").join("util.rnx"), "fn Util(): Int { return 1; }\n")
+            .unwrap();
+        std::fs::write(dir.join("src").join("notes.txt"), "ignored").unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+    }
+
+    fn file_entry<'a>(files: &'a [(String, Vec<u8>)], rel: &str) -> &'a Vec<u8> {
+        files
+            .iter()
+            .find(|(r, _)| r == rel)
+            .map(|(_, h)| h)
+            .expect("expected per-file entry")
+    }
+
+    #[test]
+    fn src_tree_files_digest_matches_legacy_fold() {
+        let dir = std::env::temp_dir().join(format!("rnx-src-files-{}", std::process::id()));
+        src_tree_fixture(&dir);
+        let (digest, files) = hash_src_tree_files(&dir);
+        assert_eq!(digest.len(), 32);
+        assert_eq!(digest, hash_src_tree(&dir));
+        let mut expected = Sha256::new();
+        for name in ["src/lib/util.rnx", "src/main.rnx"] {
+            let bytes = std::fs::read(dir.join(name)).unwrap();
+            let rel = name.as_bytes();
+            expected.update(&(rel.len() as u64).to_le_bytes());
+            expected.update(rel);
+            expected.update(&(bytes.len() as u64).to_le_bytes());
+            expected.update(&bytes);
+        }
+        assert_eq!(digest, expected.finalize().to_vec());
+        let rels: Vec<&str> = files.iter().map(|(r, _)| r.as_str()).collect();
+        assert_eq!(rels, vec!["src/lib/util.rnx", "src/main.rnx"]);
+        for (_, h) in &files {
+            assert_eq!(h.len(), 32);
+        }
+        for (rel, h) in &files {
+            let bytes = std::fs::read(dir.join(rel)).unwrap();
+            let mut entry = Sha256::new();
+            let rel_bytes = rel.as_bytes();
+            entry.update(&(rel_bytes.len() as u64).to_le_bytes());
+            entry.update(rel_bytes);
+            entry.update(&(bytes.len() as u64).to_le_bytes());
+            entry.update(&bytes);
+            assert_eq!(h, &entry.finalize().to_vec());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn src_tree_files_edit_changes_single_entry() {
+        let dir = std::env::temp_dir().join(format!("rnx-src-files-edit-{}", std::process::id()));
+        src_tree_fixture(&dir);
+        let (before_digest, before_files) = hash_src_tree_files(&dir);
+        std::fs::write(dir.join("src").join("lib").join("util.rnx"), "fn Util(): Int { return 2; }\n")
+            .unwrap();
+        let (after_digest, after_files) = hash_src_tree_files(&dir);
+        assert_ne!(before_digest, after_digest);
+        assert_eq!(before_files.len(), 2);
+        assert_eq!(after_files.len(), 2);
+        assert_eq!(
+            file_entry(&before_files, "src/main.rnx"),
+            file_entry(&after_files, "src/main.rnx")
+        );
+        assert_ne!(
+            file_entry(&before_files, "src/lib/util.rnx"),
+            file_entry(&after_files, "src/lib/util.rnx")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn src_tree_files_ignores_non_rnx() {
+        let dir =
+            std::env::temp_dir().join(format!("rnx-src-files-ignore-{}", std::process::id()));
+        src_tree_fixture(&dir);
+        let (before_digest, before_files) = hash_src_tree_files(&dir);
+        std::fs::write(dir.join("src").join("extra.txt"), "ignored").unwrap();
+        std::fs::write(dir.join("README.md"), "ignored").unwrap();
+        let (after_digest, after_files) = hash_src_tree_files(&dir);
+        assert_eq!(before_digest, after_digest);
+        assert_eq!(before_files, after_files);
+        assert!(after_files.iter().all(|(r, _)| r.ends_with(".rnx")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn src_tree_files_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+        let dir =
+            std::env::temp_dir().join(format!("rnx-src-files-link-{}", std::process::id()));
+        src_tree_fixture(&dir);
+        let (before_digest, before_files) = hash_src_tree_files(&dir);
+        symlink(dir.join("src").join("main.rnx"), dir.join("src").join("alias.rnx")).unwrap();
+        let (after_digest, after_files) = hash_src_tree_files(&dir);
+        assert_eq!(before_digest, after_digest);
+        assert_eq!(before_files, after_files);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn prune_and_clean_roundtrip() {
         let dir = std::env::temp_dir().join(format!("rnx-cache-test-{}", std::process::id()));
@@ -436,6 +605,24 @@ mod tests {
         std::fs::write(dir.join("ccc.bin"), b"hello").unwrap();
         assert_eq!(clean_dir(&dir).unwrap(), 5);
         assert_eq!(cache_usage_bytes(&dir), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nested_bin_files_count_toward_lru() {
+        let dir = std::env::temp_dir().join(format!("rnx-cache-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let deep = dir.join("deps").join("pkg").join("1.0.0").join("tool");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("product.bin"), b"1234567").unwrap();
+        std::fs::write(dir.join("top.bin"), b"abc").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"ignored").unwrap();
+        std::fs::create_dir_all(dir.join("empty")).unwrap();
+        assert_eq!(cache_usage_bytes(&dir), 10);
+        let freed = prune_lru(&dir, 5).unwrap();
+        let rest = cache_usage_bytes(&dir);
+        assert!(rest <= 5, "usage after prune is {rest}");
+        assert_eq!(freed + rest, 10);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

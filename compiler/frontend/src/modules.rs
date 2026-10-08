@@ -239,6 +239,11 @@ impl ModuleGraph {
             stack.push(r);
         }
         let mut parse_errors: Vec<Diagnostic> = Vec::new();
+        let dep_gen = crate::depcache::begin_build();
+        let mut edge_log: Vec<LoggedEdge> = Vec::new();
+        if let Some(build_gen) = dep_gen {
+            dep_restore_for_entry(entry_root.as_ref(), build_gen);
+        }
         visit(
             &root,
             &base,
@@ -248,6 +253,7 @@ impl ModuleGraph {
             &mut order,
             &mut stack,
             &mut parse_errors,
+            &mut edge_log,
         )
         .map_err(|e| vec![e])?;
         let want_prelude = if cfg!(target_arch = "wasm32") {
@@ -265,6 +271,7 @@ impl ModuleGraph {
                 &mut order,
                 &mut stack,
                 &mut parse_errors,
+                &mut edge_log,
             )
             .map_err(|e| vec![e])?;
         }
@@ -292,13 +299,88 @@ impl ModuleGraph {
                 &mut order,
                 &mut stack,
                 &mut parse_errors,
+                &mut edge_log,
             )
             .map_err(|e| vec![e])?;
         }
         if parse_errors.is_empty() {
+            if dep_gen.is_some() {
+                dep_populate_for_entry(entry_root.as_ref(), &edge_log);
+            }
             Ok(ModuleGraph { root, files: order })
         } else {
             Err(parse_errors)
+        }
+    }
+
+    pub fn build_collecting_parallel(root: &Path, jobs: usize) -> Result<ModuleGraph, Vec<Diagnostic>> {
+        Self::build_collecting_extra_parallel(root, &[], jobs)
+    }
+
+    pub fn build_collecting_extra_parallel(
+        root: &Path,
+        extra: &[PathBuf],
+        jobs: usize,
+    ) -> Result<ModuleGraph, Vec<Diagnostic>> {
+        if jobs <= 1 {
+            return Self::build_collecting_extra(root, extra);
+        }
+        let pool = match rayon::ThreadPoolBuilder::new().num_threads(jobs).build() {
+            Ok(pool) => Some(pool),
+            Err(_) => None,
+        };
+        let root = canonical(root).map_err(|e| vec![e])?;
+        let base = root.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        let entry_root = package_ctx_of(&root)
+            .map_err(|e| vec![e])?
+            .map(|(r, _)| r);
+        let dep_gen = crate::depcache::begin_build();
+        if let Some(build_gen) = dep_gen {
+            dep_restore_for_entry(entry_root.as_ref(), build_gen);
+        }
+        let overlay_base = snapshot_overlay();
+        let extra_canon: Vec<(PathBuf, Result<PathBuf, Diagnostic>)> = extra
+            .iter()
+            .map(|e| {
+                (
+                    e.clone(),
+                    canonical(e).map_err(|_| {
+                        Diagnostic::new(Code::E108, format!("cannot read `{}`", e.display()))
+                    }),
+                )
+            })
+            .collect();
+        let mut discover = Discover::new(pool.as_ref(), overlay_base);
+        discover.run(vec![root.clone()]);
+        let want_prelude = if cfg!(target_arch = "wasm32") {
+            crate::stdvfs::std_source("prelude").is_some()
+        } else {
+            true
+        };
+        if !discover.clash
+            && want_prelude
+            && !discover.visited.contains(&PathBuf::from("@std/prelude"))
+        {
+            discover.run(vec![PathBuf::from("@std/prelude")]);
+        }
+        if !discover.clash {
+            let mut seeds: Vec<PathBuf> = extra_canon
+                .iter()
+                .filter_map(|(_, r)| r.as_ref().ok().cloned())
+                .collect();
+            seeds.sort();
+            seeds.dedup();
+            seeds.retain(|p| !discover.visited.contains(p));
+            if !seeds.is_empty() {
+                discover.run(seeds);
+            }
+        }
+        if discover.clash {
+            restore_overlay(&discover.overlay_base);
+            assemble_graph(&root, &base, entry_root, &extra_canon, want_prelude, &LiveBackend, dep_gen)
+        } else {
+            let backend = ReplayBackend { files: &discover.files };
+            assemble_graph(&root, &base, entry_root, &extra_canon, want_prelude, &backend, dep_gen)
         }
     }
 
@@ -1643,6 +1725,9 @@ fn read_source(path: &Path) -> Result<String, Diagnostic> {
         }
         let rest = std_submodule(path);
         let name = format!("@std/{rest}");
+        if let Some(cached) = crate::depcache::bytes_get(path) {
+            return Ok(cached);
+        }
         if let Some(src) = crate::stdvfs::std_source(&rest) {
             return Ok(src);
         }
@@ -1658,6 +1743,9 @@ fn read_source(path: &Path) -> Result<String, Diagnostic> {
         return Err(std_cache_miss_error(&name, &std_cache_registry()));
     }
     if let Some(src) = project_get(path) {
+        return Ok(src);
+    }
+    if let Some(src) = crate::depcache::bytes_get(path) {
         return Ok(src);
     }
     std::fs::read_to_string(path)
@@ -1697,6 +1785,16 @@ fn package_ctx_of(file: &Path) -> Result<Option<(PathBuf, ProjectConfig)>, Diagn
 }
 
 fn resolve_import(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
+    resolve_import_meta(from, source).map(|(target, dep_root, _)| (target, dep_root))
+}
+
+fn resolve_import_meta(
+    from: &Path,
+    source: &str,
+) -> Result<(PathBuf, Option<PathBuf>, Option<(String, String)>), Diagnostic> {
+    if let Some(hit) = crate::depcache::memo_lookup(from, source) {
+        return Ok(hit);
+    }
     if source.contains(':') {
         return Err(scheme_error(source));
     }
@@ -1713,7 +1811,7 @@ fn resolve_import(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>
         return resolve_std_with_registries(from, source, rest, None, &empty);
     }
     if source.starts_with('.') {
-        return resolve_relative(from, source);
+        return resolve_relative(from, source).map(|(t, d)| (t, d, None));
     }
     resolve_package(from, source)
 }
@@ -1736,11 +1834,16 @@ fn resolve_std_with_registries(
     rest: &str,
     default: Option<&RegistryConfig>,
     overrides: &BTreeMap<String, RegistryConfig>,
-) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
+) -> Result<(PathBuf, Option<PathBuf>, Option<(String, String)>), Diagnostic> {
     let virtual_path = PathBuf::from(format!("{STD_SCOPE}{rest}"));
+    let (pkg, sub) = match rest.split_once('/') {
+        Some((top, s)) => (format!("@std/{top}"), Some(s)),
+        None => (format!("@std/{rest}"), None),
+    };
+    let meta = Some((pkg.clone(), crate::depcache::KIND_STD.to_string()));
     if cfg!(target_arch = "wasm32") {
         if crate::stdvfs::std_source(rest).is_some() {
-            return Ok((virtual_path, None));
+            return Ok((virtual_path, None, meta));
         }
         return Err(playground_std_error(source));
     }
@@ -1752,12 +1855,8 @@ fn resolve_std_with_registries(
     }
     if crate::stdvfs::get(rest).is_some() {
         clear_std_overlay(&virtual_path);
-        return Ok((virtual_path, None));
+        return Ok((virtual_path, None, meta));
     }
-    let (pkg, sub) = match rest.split_once('/') {
-        Some((top, s)) => (format!("@std/{top}"), Some(s)),
-        None => (format!("@std/{rest}"), None),
-    };
     let (default_owned, owned_overrides, explicit, locked) = std_ctx_for(from, &pkg);
     let default_ref = default.or(default_owned.as_ref());
     let mut merged = owned_overrides;
@@ -1788,7 +1887,7 @@ fn resolve_std_with_registries(
                 resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source)
             {
                 set_std_overlay(&virtual_path, &target);
-                return Ok((virtual_path, None));
+                return Ok((virtual_path, None, meta));
             }
         }
         Err(e) => {
@@ -1797,7 +1896,7 @@ fn resolve_std_with_registries(
     }
     clear_std_overlay(&virtual_path);
     if crate::stdvfs::std_source(rest).is_some() {
-        return Ok((virtual_path, None));
+        return Ok((virtual_path, None, meta));
     }
     Err(match detail {
         Some(e) => std_fetch_error(source, &base, &e.message),
@@ -1833,7 +1932,7 @@ fn std_ctx_for(
     (default, merged, explicit, locked)
 }
 
-fn exact_version(range: &str) -> Option<String> {
+pub(crate) fn exact_version(range: &str) -> Option<String> {
     let r = range.trim();
     if r.is_empty() || r == "*" || r == "latest" {
         return None;
@@ -2012,14 +2111,17 @@ fn valid_subpath(s: &str) -> bool {
         && s.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
 
-fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
+fn resolve_package(
+    from: &Path,
+    source: &str,
+) -> Result<(PathBuf, Option<PathBuf>, Option<(String, String)>), Diagnostic> {
     let (pkg, sub) = split_package_spec(source);
     if pkg.is_empty() || pkg == "@" {
         return Err(Diagnostic::new(Code::E108, format!("cannot resolve module `{source}`")));
     }
     let unknown = || Diagnostic::new(Code::E108, format!("unknown package dependency `{pkg}`"));
     let (proj_root, cfg) = package_ctx_of(from)?.ok_or_else(unknown)?;
-    let (dep_root, dep_cfg) = match cfg.dependencies.get(pkg.as_str()) {
+    let (dep_root, dep_cfg, kind) = match cfg.dependencies.get(pkg.as_str()) {
         Some(crate::project::DependencySpec::Path { path }) => {
             let dep_root = std::fs::canonicalize(proj_root.join(path)).map_err(|_| {
                 Diagnostic::new(Code::E108, format!("cannot resolve package `{pkg}`"))
@@ -2027,7 +2129,7 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
             let dep_cfg = ProjectConfig::load_from_dir(&dep_root)?.ok_or_else(|| {
                 Diagnostic::new(Code::E108, format!("package `{pkg}` has no Project.config"))
             })?;
-            (dep_root, dep_cfg)
+            (dep_root, dep_cfg, crate::depcache::KIND_PATH.to_string())
         }
         Some(crate::project::DependencySpec::Git { git, rev }) => {
             let anchor = crate::fetch::cache_anchor(&proj_root);
@@ -2035,7 +2137,7 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
             let dep_cfg = ProjectConfig::load_from_dir(&dep_root)?.ok_or_else(|| {
                 Diagnostic::new(Code::E108, format!("package `{pkg}` has no Project.config"))
             })?;
-            (dep_root, dep_cfg)
+            (dep_root, dep_cfg, crate::depcache::KIND_GIT.to_string())
         }
         Some(crate::project::DependencySpec::Semver { version }) => {
             let scope_root =
@@ -2050,7 +2152,7 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
                 pinned,
                 &have,
             )?;
-            (dep_root, dep_cfg)
+            (dep_root, dep_cfg, crate::depcache::KIND_SEMVER.to_string())
         }
         Some(crate::project::DependencySpec::Url { url, .. }) => {
             return Err(Diagnostic::new(
@@ -2064,10 +2166,12 @@ fn resolve_package(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf
                 format!("cannot import native system dependency `{pkg}` (`{lib}`) as a module; call it with `from native \"{lib}\"`"),
             ));
         }
-        None => workspace_sibling(&proj_root, &pkg)?.ok_or_else(unknown)?,
+        None => workspace_sibling(&proj_root, &pkg)?
+            .ok_or_else(unknown)
+            .map(|(r, c)| (r, c, crate::depcache::KIND_WORKSPACE.to_string()))?,
     };
     let target = resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source)?;
-    Ok((target, Some(dep_root)))
+    Ok((target, Some(dep_root), Some((pkg, kind))))
 }
 
 fn resolve_subpath_target(
@@ -2174,6 +2278,1036 @@ fn workspace_sibling(
     Ok(members.get(pkg).cloned())
 }
 
+fn std_overlay_lookup(path: &Path) -> Option<PathBuf> {
+    STD_OVERLAY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+}
+
+fn dep_spec_string(spec: &crate::project::DependencySpec) -> String {
+    match spec {
+        crate::project::DependencySpec::Semver { version } => format!("semver:{version}"),
+        crate::project::DependencySpec::Path { path } => format!("path:{}", path.display()),
+        crate::project::DependencySpec::Git { git, rev } => format!("git:{git}@{rev}"),
+        crate::project::DependencySpec::Url { version, url, checksum } => {
+            format!("url:{url}@{version}:{}", checksum.as_deref().unwrap_or(""))
+        }
+        crate::project::DependencySpec::Native { lib, system, path } => format!(
+            "native:{lib}:{system}:{}",
+            path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+        ),
+    }
+}
+
+fn dep_scope_root(entry_root: &Path) -> PathBuf {
+    project::find_workspace_root(entry_root).unwrap_or_else(|| entry_root.to_path_buf())
+}
+
+fn dep_entry_snapshot(
+    entry_root: &Path,
+) -> Option<(ProjectConfig, Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let entry_cfg = ProjectConfig::load_from_dir(entry_root).ok()??;
+    let entry_raw =
+        std::fs::read(entry_root.join(project::MANIFEST_FILE)).unwrap_or_default();
+    let scope_root = dep_scope_root(entry_root);
+    let scope_raw = if scope_root == *entry_root {
+        entry_raw.clone()
+    } else {
+        std::fs::read(scope_root.join(project::MANIFEST_FILE)).unwrap_or_default()
+    };
+    let lock_raw = std::fs::read(scope_root.join(crate::deplock::LOCK_FILE)).unwrap_or_default();
+    Some((entry_cfg, entry_raw, scope_raw, lock_raw))
+}
+
+fn dep_set_hex(
+    entry_raw: &[u8],
+    scope_raw: &[u8],
+    lock_raw: &[u8],
+    dep_cfg_raw: &[u8],
+    dep_subs: &[String],
+) -> String {
+    let mut parts = vec![
+        format!("entry={}", crate::depcache::hex_bytes(entry_raw)),
+        format!("scope={}", crate::depcache::hex_bytes(scope_raw)),
+        format!("lock={}", crate::depcache::hex_bytes(lock_raw)),
+        format!("dep={}", crate::depcache::hex_bytes(dep_cfg_raw)),
+    ];
+    for s in dep_subs {
+        parts.push(format!("sub={s}"));
+    }
+    crate::depcache::dep_set_digest_hex(&parts)
+}
+
+fn dep_sub_specs(cfg: &ProjectConfig) -> Vec<String> {
+    cfg.dependencies
+        .iter()
+        .map(|(n, s)| format!("{n}={}", dep_spec_string(s)))
+        .collect()
+}
+
+fn dep_version_key(
+    kind: &str,
+    pkg: &str,
+    entry_root: &Path,
+    entry_cfg: &ProjectConfig,
+    dep_cfg: Option<&ProjectConfig>,
+) -> Option<String> {
+    use crate::depcache::*;
+    if kind == KIND_PATH || kind == KIND_WORKSPACE {
+        return dep_cfg.map(|c| c.version.clone());
+    }
+    if kind == KIND_GIT {
+        return match entry_cfg.dependencies.get(pkg) {
+            Some(crate::project::DependencySpec::Git { rev, .. }) => Some(rev.clone()),
+            _ => None,
+        };
+    }
+    if kind == KIND_SEMVER {
+        let requirement = match entry_cfg.dependencies.get(pkg) {
+            Some(crate::project::DependencySpec::Semver { version }) => version.clone(),
+            _ => return None,
+        };
+        let scope_root = dep_scope_root(entry_root);
+        if let Some(locked) = locked_registry_version(&scope_root, pkg) {
+            return Some(locked);
+        }
+        return exact_version(&requirement);
+    }
+    if kind == KIND_STD {
+        let scope_root = dep_scope_root(entry_root);
+        if let Some(locked) = locked_registry_version(&scope_root, pkg) {
+            return Some(locked);
+        }
+        let explicit = match entry_cfg.dependencies.get(pkg) {
+            Some(crate::project::DependencySpec::Semver { version }) => Some(version.clone()),
+            _ => None,
+        };
+        let pin_ver = crate::stdlib_seed::read_std_pin()
+            .and_then(|pin| pin.packages.get(pkg).cloned());
+        let requirement = explicit
+            .or(pin_ver)
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        return exact_version(&requirement)
+            .or_else(|| Some(requirement));
+    }
+    None
+}
+
+fn dep_expected_spec(
+    kind: &str,
+    pkg: &str,
+    entry_cfg: &ProjectConfig,
+) -> Option<String> {
+    use crate::depcache::*;
+    if kind == KIND_STD {
+        let top = pkg.strip_prefix("@std/")?;
+        if top.is_empty() || top.contains('/') || !crate::stdvfs::is_known_module(top) {
+            return None;
+        }
+        return Some("std".to_string());
+    }
+    if kind == KIND_WORKSPACE {
+        return Some("workspace".to_string());
+    }
+    entry_cfg.dependencies.get(pkg).map(dep_spec_string)
+}
+
+fn dep_expected_root(
+    kind: &str,
+    pkg: &str,
+    entry_root: &Path,
+    entry_cfg: &ProjectConfig,
+    version_key: &str,
+) -> Option<PathBuf> {
+    use crate::depcache::*;
+    if kind == KIND_PATH {
+        let crate::project::DependencySpec::Path { path } = entry_cfg.dependencies.get(pkg)?
+        else {
+            return None;
+        };
+        return std::fs::canonicalize(entry_root.join(path)).ok();
+    }
+    if kind == KIND_GIT {
+        let crate::project::DependencySpec::Git { rev, .. } = entry_cfg.dependencies.get(pkg)?
+        else {
+            return None;
+        };
+        let anchor = crate::fetch::cache_anchor(entry_root);
+        let vendor = anchor.join("vendor").join(pkg);
+        if vendor.join(crate::project::MANIFEST_FILE).is_file() {
+            return std::fs::canonicalize(&vendor).ok();
+        }
+        let dir = anchor
+            .join(".rnx-cache")
+            .join("cache")
+            .join("git")
+            .join(format!("{pkg}-{}", crate::fetch::short_rev(rev)));
+        return std::fs::canonicalize(&dir).ok();
+    }
+    if kind == KIND_SEMVER {
+        let base = crate::fetch::registry_base_for(
+            pkg,
+            entry_cfg.registry.as_ref(),
+            &entry_cfg.registries,
+        );
+        let dir = crate::fetch::cached_package_dir(&base, pkg, version_key);
+        return std::fs::canonicalize(&dir).ok();
+    }
+    if kind == KIND_WORKSPACE {
+        let ws_root = project::find_workspace_root_strict(entry_root)?;
+        let manifest = project::load_manifest(&ws_root).ok()??;
+        let members = project::resolve_workspace_members(&ws_root, &manifest.workspace?).ok()?;
+        let (member_root, _) = members.get(pkg)?;
+        return std::fs::canonicalize(member_root).ok();
+    }
+    None
+}
+
+fn dep_expected_base(
+    kind: &str,
+    pkg: &str,
+    entry_root: &Path,
+    entry_cfg: &ProjectConfig,
+) -> String {
+    use crate::depcache::*;
+    if kind == KIND_SEMVER {
+        return crate::fetch::registry_base_for(
+            pkg,
+            entry_cfg.registry.as_ref(),
+            &entry_cfg.registries,
+        );
+    }
+    if kind == KIND_STD {
+        let from = entry_cfg.main_path(entry_root);
+        let (default_owned, owned_overrides, _, _) = std_ctx_for(&from, pkg);
+        return crate::fetch::registry_base_for(
+            pkg,
+            default_owned.as_ref(),
+            &owned_overrides,
+        );
+    }
+    String::new()
+}
+
+fn dep_git_commit(root: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(root.join(".rnx-fetch")).ok()?;
+    text.lines().nth(2).map(|s| s.trim().to_string())
+}
+
+fn collect_dep_products(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth > 4 {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.file_type().is_dir() {
+            collect_dep_products(&path, out, depth + 1);
+        } else if meta.file_type().is_file()
+            && path.file_name().is_some_and(|n| n == crate::depcache::PRODUCT_FILE)
+        {
+            out.push(path);
+        }
+    }
+}
+
+fn dep_restore_for_entry(entry_root: Option<&PathBuf>, build_gen: u64) {
+    let Some(entry_root) = entry_root else { return };
+    let Some((entry_cfg, entry_raw, scope_raw, lock_raw)) = dep_entry_snapshot(entry_root) else {
+        return;
+    };
+    let toolchain = crate::depcache::dep_toolchain_hash(None);
+    let mut products = Vec::new();
+    collect_dep_products(&crate::cache::project_deps_dir(entry_root), &mut products, 0);
+    products.sort();
+    let mut restored: BTreeSet<(String, String)> = BTreeSet::new();
+    for path in products {
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let Some(product) = crate::depcache::decode_product(&bytes) else {
+            continue;
+        };
+        if validate_dep_product(
+            &product,
+            entry_root,
+            &entry_cfg,
+            &entry_raw,
+            &scope_raw,
+            &lock_raw,
+            &toolchain,
+            build_gen,
+        ) {
+            restored.insert((product.pkg.clone(), product.kind.clone()));
+        }
+    }
+    dep_restore_global(
+        entry_root,
+        &entry_cfg,
+        &entry_raw,
+        &scope_raw,
+        &lock_raw,
+        &toolchain,
+        build_gen,
+        &mut restored,
+    );
+}
+
+fn dep_restore_global(
+    entry_root: &Path,
+    entry_cfg: &ProjectConfig,
+    entry_raw: &[u8],
+    scope_raw: &[u8],
+    lock_raw: &[u8],
+    toolchain: &str,
+    build_gen: u64,
+    restored: &mut BTreeSet<(String, String)>,
+) {
+    use crate::depcache::*;
+    let mut candidates: Vec<(String, &str)> = Vec::new();
+    for (pkg, spec) in &entry_cfg.dependencies {
+        match spec {
+            crate::project::DependencySpec::Git { .. } => {
+                candidates.push((pkg.clone(), KIND_GIT));
+            }
+            crate::project::DependencySpec::Semver { .. } if pkg.starts_with("@std/") => {
+                candidates.push((pkg.clone(), KIND_STD));
+            }
+            crate::project::DependencySpec::Semver { .. } => {
+                candidates.push((pkg.clone(), KIND_SEMVER));
+            }
+            _ => {}
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    if !candidates.iter().any(|(pkg, _)| pkg == "@std/prelude") {
+        candidates.push(("@std/prelude".to_string(), KIND_STD));
+    }
+    for (pkg, kind) in candidates {
+        if restored.contains(&(pkg.clone(), kind.to_string())) {
+            continue;
+        }
+        let Some(version_key) = dep_version_key(kind, &pkg, entry_root, entry_cfg, None) else {
+            continue;
+        };
+        if !crate::products::exact_pin(kind, &version_key) {
+            continue;
+        }
+        let base = dep_expected_base(kind, &pkg, entry_root, entry_cfg);
+        let Some(dir) = crate::products::product_dir(kind, &base, &pkg, &version_key, toolchain)
+        else {
+            continue;
+        };
+        for path in crate::products::scan_product_files(&dir) {
+            let Some(product) = crate::products::read_product_file(&path) else {
+                continue;
+            };
+            if validate_dep_product(
+                &product,
+                entry_root,
+                entry_cfg,
+                entry_raw,
+                scope_raw,
+                lock_raw,
+                toolchain,
+                build_gen,
+            ) {
+                restored.insert((product.pkg.clone(), product.kind.clone()));
+                break;
+            }
+        }
+    }
+}
+
+pub fn product_statuses(entry_root: &Path) -> Vec<crate::products::ProductStatus> {
+    use crate::depcache::*;
+    let mut out = Vec::new();
+    let entry_cfg = match ProjectConfig::load_from_dir(entry_root) {
+        Ok(Some(cfg)) => cfg,
+        _ => return out,
+    };
+    let toolchain = crate::depcache::dep_toolchain_hash(None);
+    let mut pkgs: Vec<(String, &str)> = Vec::new();
+    for (pkg, spec) in &entry_cfg.dependencies {
+        match spec {
+            crate::project::DependencySpec::Git { .. } => pkgs.push((pkg.clone(), KIND_GIT)),
+            crate::project::DependencySpec::Semver { .. } if pkg.starts_with("@std/") => {
+                pkgs.push((pkg.clone(), KIND_STD));
+            }
+            crate::project::DependencySpec::Semver { .. } => {
+                pkgs.push((pkg.clone(), KIND_SEMVER));
+            }
+            _ => {}
+        }
+    }
+    pkgs.sort();
+    pkgs.dedup();
+    for (pkg, kind) in pkgs {
+        let version = dep_version_key(kind, &pkg, entry_root, &entry_cfg, None);
+        let present = match &version {
+            Some(version_key) if crate::products::exact_pin(kind, version_key) => {
+                let base = dep_expected_base(kind, &pkg, entry_root, &entry_cfg);
+                crate::products::product_dir(kind, &base, &pkg, version_key, &toolchain)
+                    .is_some_and(|dir| !crate::products::scan_product_files(&dir).is_empty())
+            }
+            _ => false,
+        };
+        out.push(crate::products::ProductStatus {
+            pkg,
+            kind: kind.to_string(),
+            version,
+            present,
+        });
+    }
+    out
+}
+
+fn read_product_current(files: &[crate::depcache::DepFile]) -> Option<Vec<(String, Vec<u8>)>> {
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        let path = PathBuf::from(&f.path);
+        let bytes = if is_virtual(&path) {
+            // Bypass the resolve overlay: restore runs before any resolve
+            // in this build, so the overlay can only hold another build's
+            // stale mapping. The pinned cache is the validation source.
+            let rest = std_submodule(&path);
+            crate::stdvfs::std_source(&rest)?.into_bytes()
+        } else {
+            std::fs::read(&path).ok()?
+        };
+        out.push((f.path.clone(), bytes));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Some(out)
+}
+
+fn validate_dep_product(
+    product: &crate::depcache::DepProduct,
+    entry_root: &Path,
+    entry_cfg: &ProjectConfig,
+    entry_raw: &[u8],
+    scope_raw: &[u8],
+    lock_raw: &[u8],
+    toolchain: &str,
+    build_gen: u64,
+) -> bool {
+    use crate::depcache::*;
+    if product.toolchain != toolchain {
+        return false;
+    }
+    let Some(expected_spec) = dep_expected_spec(&product.kind, &product.pkg, entry_cfg) else {
+        return false;
+    };
+    if product.spec != expected_spec {
+        return false;
+    }
+    let root_path = PathBuf::from(&product.root);
+    let dep_cfg_raw = match std::fs::read(root_path.join(crate::project::MANIFEST_FILE)) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let dep_cfg = match ProjectConfig::load_from_dir(&root_path) {
+        Ok(Some(c)) => c,
+        _ => return false,
+    };
+    let Some(version_key) =
+        dep_version_key(&product.kind, &product.pkg, entry_root, entry_cfg, Some(&dep_cfg))
+    else {
+        return false;
+    };
+    if product.version_key != version_key {
+        return false;
+    }
+    if product.kind == KIND_STD {
+        if dep_cfg.name != product.pkg || dep_cfg.version != version_key {
+            return false;
+        }
+    } else {
+        let Some(expected) =
+            dep_expected_root(&product.kind, &product.pkg, entry_root, entry_cfg, &version_key)
+        else {
+            return false;
+        };
+        if expected != root_path {
+            return false;
+        }
+    }
+    if product.kind == KIND_SEMVER || product.kind == KIND_STD {
+        if dep_expected_base(&product.kind, &product.pkg, entry_root, entry_cfg) != product.base {
+            return false;
+        }
+    }
+    if product.kind == KIND_GIT {
+        if product.commit.is_empty() {
+            let anchor = crate::fetch::cache_anchor(entry_root);
+            let vendor = anchor.join("vendor").join(&product.pkg);
+            if !vendor.join(crate::project::MANIFEST_FILE).is_file() {
+                return false;
+            }
+        } else if dep_git_commit(&root_path).as_deref() != Some(product.commit.as_str()) {
+            return false;
+        }
+    }
+    // KIND_STD uses a project-independent dep set: std resolution inputs
+    // are fully covered by version_key, base, and the content digest, so
+    // entry/scope/lock bytes are pinned empty. Entry-manifest edits
+    // elsewhere then keep hitting, while dep-manifest edits still
+    // invalidate. This lets install/fetch-std-time std products restore
+    // into any project on the same pin instead of sharding per entry.
+    let expected_dep_set = if product.kind == KIND_STD {
+        dep_set_hex(b"", b"", b"", &dep_cfg_raw, &dep_sub_specs(&dep_cfg))
+    } else {
+        dep_set_hex(entry_raw, scope_raw, lock_raw, &dep_cfg_raw, &dep_sub_specs(&dep_cfg))
+    };
+    if expected_dep_set != product.dep_set {
+        return false;
+    }
+    let Some(current) = read_product_current(&product.files) else {
+        return false;
+    };
+    if crate::depcache::content_digest_hex(&current) != product.content {
+        return false;
+    }
+    let mut edges = Vec::with_capacity(product.edges.len());
+    for e in &product.edges {
+        edges.push((
+            PathBuf::from(&e.from),
+            e.source.clone(),
+            PathBuf::from(&e.target),
+            e.dep_root.as_ref().map(PathBuf::from),
+            e.meta.clone(),
+        ));
+    }
+    let mut blobs = Vec::with_capacity(product.files.len());
+    for f in &product.files {
+        let bytes = current
+            .iter()
+            .find(|(p, _)| p == &f.path)
+            .map(|(_, b)| b.clone())
+            .unwrap_or_default();
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        blobs.push((PathBuf::from(&f.path), text));
+    }
+    crate::depcache::memo_install(build_gen, &edges);
+    crate::depcache::bytes_install(build_gen, &blobs);
+    crate::depcache::note_hit();
+    true
+}
+
+fn dep_populate_for_entry(entry_root: Option<&PathBuf>, log: &[LoggedEdge]) {
+    let Some(entry_root) = entry_root else { return };
+    let Some((entry_cfg, entry_raw, scope_raw, lock_raw)) = dep_entry_snapshot(entry_root) else {
+        return;
+    };
+    let toolchain = crate::depcache::dep_toolchain_hash(None);
+    let mut groups: BTreeMap<(String, String), Vec<&LoggedEdge>> = BTreeMap::new();
+    for e in log {
+        let Some((pkg, kind)) = e.meta.clone() else {
+            continue;
+        };
+        groups.entry((pkg, kind)).or_default().push(e);
+    }
+    for ((pkg, kind), edges) in &groups {
+        build_dep_product(
+            entry_root,
+            &entry_cfg,
+            &entry_raw,
+            &scope_raw,
+            &lock_raw,
+            &toolchain,
+            pkg,
+            kind,
+            edges,
+            log,
+        );
+    }
+}
+
+fn build_dep_product(
+    entry_root: &Path,
+    entry_cfg: &ProjectConfig,
+    entry_raw: &[u8],
+    scope_raw: &[u8],
+    lock_raw: &[u8],
+    toolchain: &str,
+    pkg: &str,
+    kind: &str,
+    edges: &[&LoggedEdge],
+    log: &[LoggedEdge],
+) {
+    use crate::depcache::*;
+    let mut dep_root: Option<PathBuf> = None;
+    for e in edges {
+        match (&dep_root, &e.dep_root) {
+            (None, r) => dep_root = r.clone(),
+            (Some(a), Some(b)) if a == b => {}
+            _ => return,
+        }
+    }
+    if kind != KIND_STD && dep_root.is_none() {
+        return;
+    }
+    let mut files: BTreeSet<PathBuf> = BTreeSet::new();
+    for e in edges {
+        files.insert(e.target.clone());
+    }
+    loop {
+        let mut grown = false;
+        for e in log {
+            if e.meta.is_some() {
+                continue;
+            }
+            if files.contains(&e.from) && files.insert(e.target.clone()) {
+                grown = true;
+            }
+        }
+        if !grown {
+            break;
+        }
+    }
+    let mut real_paths: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+    for target in &files {
+        if is_virtual(target) {
+            let Some(real) = std_overlay_lookup(target) else {
+                return;
+            };
+            real_paths.insert(target.clone(), real);
+        }
+    }
+    let package_root = match dep_root.clone() {
+        Some(r) => r,
+        None => {
+            let Some(first_virtual) = files.iter().find(|p| is_virtual(p)) else {
+                return;
+            };
+            let first_real = &real_paths[first_virtual];
+            let Some(root) = find_manifest_root(first_real) else {
+                return;
+            };
+            for target in &files {
+                if is_virtual(target) && !real_paths[target].starts_with(&root) {
+                    return;
+                }
+            }
+            root
+        }
+    };
+    if kind != KIND_STD && package_root == *entry_root {
+        return;
+    }
+    let mut blobs: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
+    for target in &files {
+        let disk = real_paths.get(target).unwrap_or(target);
+        let bytes = match std::fs::read(disk) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        if std::str::from_utf8(&bytes).is_err() {
+            return;
+        }
+        blobs.push((target.to_string_lossy().replace('\\', "/"), bytes));
+    }
+    let dep_cfg_raw = match std::fs::read(package_root.join(crate::project::MANIFEST_FILE)) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let dep_cfg = match ProjectConfig::load_from_dir(&package_root) {
+        Ok(Some(c)) => c,
+        _ => return,
+    };
+    let Some(version_key) = dep_version_key(kind, pkg, entry_root, entry_cfg, Some(&dep_cfg))
+    else {
+        return;
+    };
+    let Some(spec) = dep_expected_spec(kind, pkg, entry_cfg) else {
+        return;
+    };
+    let base = dep_expected_base(kind, pkg, entry_root, entry_cfg);
+    let commit = if kind == KIND_GIT {
+        let anchor = crate::fetch::cache_anchor(entry_root);
+        let vendor = anchor.join("vendor").join(pkg);
+        if vendor.join(crate::project::MANIFEST_FILE).is_file() {
+            String::new()
+        } else {
+            match dep_git_commit(&package_root) {
+                Some(c) => c,
+                None => return,
+            }
+        }
+    } else {
+        String::new()
+    };
+    let mut stored_edges: BTreeSet<(String, String, String, Option<String>)> = BTreeSet::new();
+    for e in edges {
+        stored_edges.insert((
+            e.from.to_string_lossy().replace('\\', "/"),
+            e.source.clone(),
+            e.target.to_string_lossy().replace('\\', "/"),
+            e.dep_root.as_ref().map(|p| p.to_string_lossy().replace('\\', "/")),
+        ));
+    }
+    for e in log {
+        if e.meta.is_some() {
+            continue;
+        }
+        if files.contains(&e.from) {
+            stored_edges.insert((
+                e.from.to_string_lossy().replace('\\', "/"),
+                e.source.clone(),
+                e.target.to_string_lossy().replace('\\', "/"),
+                e.dep_root.as_ref().map(|p| p.to_string_lossy().replace('\\', "/")),
+            ));
+        }
+    }
+    let dep_set = if kind == KIND_STD {
+        dep_set_hex(b"", b"", b"", &dep_cfg_raw, &dep_sub_specs(&dep_cfg))
+    } else {
+        dep_set_hex(entry_raw, scope_raw, lock_raw, &dep_cfg_raw, &dep_sub_specs(&dep_cfg))
+    };
+    let product = DepProduct {
+        pkg: pkg.to_string(),
+        kind: kind.to_string(),
+        spec,
+        version_key: version_key.clone(),
+        toolchain: toolchain.to_string(),
+        dep_set,
+        content: content_digest_hex(&blobs),
+        root: package_root.to_string_lossy().replace('\\', "/"),
+        base,
+        commit,
+        files: blobs
+            .iter()
+            .map(|(p, b)| DepFile { path: p.clone(), bytes: b.clone() })
+            .collect(),
+        edges: stored_edges
+            .iter()
+            .map(|(from, source, target, dep_root)| DepEdge {
+                from: from.clone(),
+                source: source.clone(),
+                target: target.clone(),
+                dep_root: dep_root.clone(),
+                meta: Some((pkg.to_string(), kind.to_string())),
+            })
+            .collect(),
+    };
+    let path = product_path(entry_root, pkg, &version_key, toolchain);
+    if path.parent().is_some_and(|p| std::fs::create_dir_all(p).is_err()) {
+        return;
+    }
+    if std::fs::write(&path, encode_product(&product)).is_ok() {
+        note_populated();
+        crate::products::mirror_product(&product);
+    }
+}
+
+fn find_manifest_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.parent()?.to_path_buf();
+    for _ in 0..8 {
+        if dir.join(crate::project::MANIFEST_FILE).is_file() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+    None
+}
+
+pub struct LoggedEdge {
+    pub from: PathBuf,
+    pub source: String,
+    pub target: PathBuf,
+    pub dep_root: Option<PathBuf>,
+    pub meta: Option<(String, String)>,
+}
+
+enum LoadResult {
+    Ready(A::Module),
+    ParseErrs(Vec<Diagnostic>),
+    Fatal(Diagnostic),
+}
+
+trait VisitBackend {
+    fn load(&self, path: &Path) -> LoadResult;
+    fn resolve(
+        &self,
+        path: &Path,
+        source: &str,
+    ) -> Result<(PathBuf, Option<PathBuf>, Option<(String, String)>), Diagnostic>;
+}
+
+struct LiveBackend;
+
+impl VisitBackend for LiveBackend {
+    fn load(&self, path: &Path) -> LoadResult {
+        match read_source(path) {
+            Err(e) => LoadResult::Fatal(e),
+            Ok(src) => match crate::parser::Parser::parse_module_all(&src) {
+                Ok(module) => LoadResult::Ready(module),
+                Err(errs) => LoadResult::ParseErrs(tag_file(errs, path)),
+            },
+        }
+    }
+
+    fn resolve(
+        &self,
+        path: &Path,
+        source: &str,
+    ) -> Result<(PathBuf, Option<PathBuf>, Option<(String, String)>), Diagnostic> {
+        resolve_import_meta(path, source)
+    }
+}
+
+fn tag_file(errs: Vec<Diagnostic>, path: &Path) -> Vec<Diagnostic> {
+    errs.into_iter()
+        .map(|e| match e.file {
+            Some(_) => e,
+            None => e.with_file(path.to_path_buf()),
+        })
+        .collect()
+}
+
+struct CachedFile {
+    load: LoadResult,
+}
+
+struct ReplayBackend<'a> {
+    files: &'a BTreeMap<PathBuf, CachedFile>,
+}
+
+impl VisitBackend for ReplayBackend<'_> {
+    fn load(&self, path: &Path) -> LoadResult {
+        match self.files.get(path) {
+            Some(f) => match &f.load {
+                LoadResult::Ready(m) => LoadResult::Ready(m.clone()),
+                LoadResult::ParseErrs(e) => LoadResult::ParseErrs(e.clone()),
+                LoadResult::Fatal(e) => LoadResult::Fatal(e.clone()),
+            },
+            None => LiveBackend.load(path),
+        }
+    }
+
+    fn resolve(
+        &self,
+        path: &Path,
+        source: &str,
+    ) -> Result<(PathBuf, Option<PathBuf>, Option<(String, String)>), Diagnostic> {
+        LiveBackend.resolve(path, source)
+    }
+}
+
+fn snapshot_overlay() -> BTreeMap<PathBuf, PathBuf> {
+    STD_OVERLAY.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn restore_overlay(snap: &BTreeMap<PathBuf, PathBuf>) {
+    *STD_OVERLAY.lock().unwrap_or_else(|e| e.into_inner()) = snap.clone();
+}
+
+fn overlay_value(path: &Path) -> Option<PathBuf> {
+    STD_OVERLAY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+}
+
+struct Discover<'a> {
+    pool: Option<&'a rayon::ThreadPool>,
+    files: BTreeMap<PathBuf, CachedFile>,
+    visited: BTreeSet<PathBuf>,
+    overlay_base: BTreeMap<PathBuf, PathBuf>,
+    observed: BTreeMap<PathBuf, (Option<PathBuf>, BTreeSet<Option<PathBuf>>)>,
+    clash: bool,
+}
+
+impl<'a> Discover<'a> {
+    fn new(pool: Option<&'a rayon::ThreadPool>, overlay_base: BTreeMap<PathBuf, PathBuf>) -> Self {
+        Discover {
+            pool,
+            files: BTreeMap::new(),
+            visited: BTreeSet::new(),
+            overlay_base,
+            observed: BTreeMap::new(),
+            clash: false,
+        }
+    }
+
+    fn observe_std(&mut self, source: &str) {
+        let key = PathBuf::from(format!("{}{}", STD_SCOPE, std_rest(source)));
+        let current = overlay_value(&key);
+        let entry = self
+            .observed
+            .entry(key.clone())
+            .or_insert_with(|| (self.overlay_base.get(&key).cloned(), BTreeSet::new()));
+        entry.1.insert(current);
+        let (base, seen) = entry;
+        if seen.len() > 1
+            || (seen.len() == 1 && seen.iter().next().and_then(|o| o.as_ref()) != base.as_ref())
+        {
+            self.clash = true;
+        }
+    }
+
+    fn run(&mut self, seeds: Vec<PathBuf>) {
+        let mut frontier = seeds;
+        loop {
+            if self.clash {
+                return;
+            }
+            frontier.sort();
+            frontier.dedup();
+            let batch: Vec<PathBuf> = frontier
+                .drain(..)
+                .filter(|p| !self.visited.contains(p))
+                .collect();
+            for p in &batch {
+                self.visited.insert(p.clone());
+            }
+            if batch.is_empty() {
+                break;
+            }
+            let loaded: Vec<(PathBuf, LoadResult)> = match self.pool {
+                Some(pool) => pool.install(|| {
+                    use rayon::prelude::*;
+                    batch.par_iter().map(|p| (p.clone(), LiveBackend.load(p))).collect()
+                }),
+                None => batch.into_iter().map(|p| (p.clone(), LiveBackend.load(&p))).collect(),
+            };
+            let mut next: Vec<PathBuf> = Vec::new();
+            for (path, load) in loaded {
+                if self.clash {
+                    return;
+                }
+                let sources: Vec<String> = match &load {
+                    LoadResult::Ready(m) => {
+                        module_sources(&m.decls).into_iter().map(|(s, _)| s.to_string()).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                for source in &sources {
+                    let target = match resolve_import_meta(&path, source) {
+                        Ok((target, _, _)) => Some(target),
+                        Err(_) => None,
+                    };
+                    if is_std_spec(source) {
+                        self.observe_std(source);
+                        if self.clash {
+                            return;
+                        }
+                    }
+                    if let Some(target) = target {
+                        next.push(target);
+                    }
+                }
+                self.files.insert(path, CachedFile { load });
+            }
+            frontier = next;
+        }
+    }
+}
+
+fn assemble_graph<B: VisitBackend>(
+    root: &Path,
+    base: &Path,
+    entry_root: Option<PathBuf>,
+    extra_canon: &[(PathBuf, Result<PathBuf, Diagnostic>)],
+    want_prelude: bool,
+    backend: &B,
+    dep_gen: Option<u64>,
+) -> Result<ModuleGraph, Vec<Diagnostic>> {
+    let mut order: Vec<ModuleFile> = Vec::new();
+    let mut state: BTreeMap<PathBuf, u8> = BTreeMap::new();
+    let mut stack: Vec<PathBuf> = Vec::new();
+    if let Some(r) = entry_root.clone() {
+        stack.push(r);
+    }
+    let mut parse_errors: Vec<Diagnostic> = Vec::new();
+    let mut edge_log: Vec<LoggedEdge> = Vec::new();
+    visit_impl(
+        root,
+        base,
+        root,
+        entry_root.as_ref(),
+        &mut state,
+        &mut order,
+        &mut stack,
+        &mut parse_errors,
+        &mut edge_log,
+        backend,
+    )
+    .map_err(|e| vec![e])?;
+    if want_prelude {
+        visit_impl(
+            &PathBuf::from("@std/prelude"),
+            base,
+            root,
+            entry_root.as_ref(),
+            &mut state,
+            &mut order,
+            &mut stack,
+            &mut parse_errors,
+            &mut edge_log,
+            backend,
+        )
+        .map_err(|e| vec![e])?;
+    }
+    let mut extras: Vec<PathBuf> = Vec::new();
+    for (orig, result) in extra_canon {
+        match result {
+            Ok(c) => extras.push(c.clone()),
+            Err(_) => {
+                parse_errors.push(Diagnostic::new(
+                    Code::E108,
+                    format!("cannot read `{}`", orig.display()),
+                ));
+            }
+        }
+    }
+    extras.sort();
+    extras.dedup();
+    for e in extras {
+        visit_impl(
+            &e,
+            base,
+            root,
+            entry_root.as_ref(),
+            &mut state,
+            &mut order,
+            &mut stack,
+            &mut parse_errors,
+            &mut edge_log,
+            backend,
+        )
+        .map_err(|e| vec![e])?;
+    }
+    if parse_errors.is_empty() {
+        if dep_gen.is_some() {
+            dep_populate_for_entry(entry_root.as_ref(), &edge_log);
+        }
+        Ok(ModuleGraph { root: root.to_path_buf(), files: order })
+    } else {
+        Err(parse_errors)
+    }
+}
+
 fn visit(
     path: &Path,
     base: &Path,
@@ -2183,27 +3317,42 @@ fn visit(
     order: &mut Vec<ModuleFile>,
     stack: &mut Vec<PathBuf>,
     parse_errors: &mut Vec<Diagnostic>,
+    edge_log: &mut Vec<LoggedEdge>,
+) -> Result<(), Diagnostic> {
+    visit_impl(
+        path, base, root, entry_root, state, order, stack, parse_errors, edge_log, &LiveBackend,
+    )
+}
+
+fn visit_impl<B: VisitBackend>(
+    path: &Path,
+    base: &Path,
+    root: &Path,
+    entry_root: Option<&PathBuf>,
+    state: &mut BTreeMap<PathBuf, u8>,
+    order: &mut Vec<ModuleFile>,
+    stack: &mut Vec<PathBuf>,
+    parse_errors: &mut Vec<Diagnostic>,
+    edge_log: &mut Vec<LoggedEdge>,
+    backend: &B,
 ) -> Result<(), Diagnostic> {
     match state.get(path) {
         Some(_) => return Ok(()),
         None => {}
     }
     state.insert(path.to_path_buf(), 1);
-    let src = read_source(path)?;
-    let module = match crate::parser::Parser::parse_module_all(&src) {
-        Ok(module) => module,
-        Err(errs) => {
-            parse_errors.extend(errs.into_iter().map(|e| match e.file {
-                Some(_) => e,
-                None => e.with_file(path.to_path_buf()),
-            }));
+    let module = match backend.load(path) {
+        LoadResult::Ready(module) => module,
+        LoadResult::ParseErrs(errs) => {
+            parse_errors.extend(errs);
             return Ok(());
         }
+        LoadResult::Fatal(e) => return Err(e),
     };
     let mut deps: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
     for (source, source_span) in module_sources(&module.decls) {
         {
-            let child = resolve_import(path, source)
+            let (target, dep_root, meta) = backend.resolve(path, source)
                 .map_err(|mut e: Diagnostic| {
                     e.span = Some(source_span);
                     if e.file.is_none() {
@@ -2211,6 +3360,14 @@ fn visit(
                     }
                     e
                 })?;
+            let child = (target, dep_root);
+            edge_log.push(LoggedEdge {
+                from: path.to_path_buf(),
+                source: source.to_string(),
+                target: child.0.clone(),
+                dep_root: child.1.clone(),
+                meta: meta.clone(),
+            });
             if let Some(dep_root) = &child.1
                 && stack.contains(dep_root)
             {
@@ -2230,11 +3387,17 @@ fn visit(
     for (child, dep_root) in deps {
         if let Some(dep) = dep_root {
             stack.push(dep);
-            let r = visit(&child, base, root, entry_root, state, order, stack, parse_errors);
+            let r = visit_impl(
+                &child, base, root, entry_root, state, order, stack, parse_errors, edge_log,
+                backend,
+            );
             stack.pop();
             r?;
         } else {
-            visit(&child, base, root, entry_root, state, order, stack, parse_errors)?;
+            visit_impl(
+                &child, base, root, entry_root, state, order, stack, parse_errors, edge_log,
+                backend,
+            )?;
         }
     }
     state.insert(path.to_path_buf(), 2);
@@ -2968,7 +4131,7 @@ mod tests {
     fn std_resolves_through_registry_under_the_hood() {
         let (_guard, _cache) = testkit::isolate_cache("stdreg");
         let server = start_std_server();
-        let (target, dep) = resolve_std_with_registries(
+        let (target, dep, _) = resolve_std_with_registries(
             &dead_from(),
             "@std/fs",
             "fs",
@@ -3066,5 +4229,932 @@ mod tests {
             "{:?}",
             err.hint
         );
+    }
+
+    static DEP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvUnsetOnDrop;
+    impl EnvUnsetOnDrop {
+        fn set(key: &str, val: &str) -> Self {
+            unsafe {
+                std::env::set_var(key, val);
+            }
+            EnvUnsetOnDrop
+        }
+    }
+    impl Drop for EnvUnsetOnDrop {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("RNX_DEP_CACHE");
+            }
+        }
+    }
+
+    fn depcache_fixture(tag: &str, dep_version: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("rnx-depcache-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let app = base.join("app");
+        let dep = base.join("libs").join("utils");
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::create_dir_all(dep.join("src")).unwrap();
+        std::fs::write(
+            dep.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"utils\",\n        version: \"{dep_version}\"\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dep.join("src").join("main.rnx"),
+            "import { bonus } from \"./extra\";\nexport fn helper(): Int { return bonus(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dep.join("src").join("extra.rnx"),
+            "export fn bonus(): Int { return 1; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("Project.config"),
+            "export default {\n    project: {\n        name: \"app\",\n        version: \"0.1.0\"\n    },\n    dependencies: {\n        \"utils\": \"../libs/utils\"\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("src").join("main.rnx"),
+            "import { helper } from \"utils\";\nfn Main(): Int { return helper(); }\n",
+        )
+        .unwrap();
+        (app.join("src").join("main.rnx"), app, dep)
+    }
+
+    fn plant_default_prelude() {
+        plant_prelude_cache(&crate::fetch::expand_registry_base(""));
+    }
+
+    fn merged_debug(entry: &Path) -> String {
+        let graph = ModuleGraph::build(entry).unwrap();
+        format!("{:?}", graph.resolve().unwrap())
+    }
+
+    fn dep_product_file(app: &Path, version: &str) -> PathBuf {
+        crate::depcache::product_path(
+            app,
+            "utils",
+            version,
+            &crate::depcache::dep_toolchain_hash(None),
+        )
+    }
+
+    #[test]
+    fn depcache_second_build_hits_with_identical_merge() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("dephit");
+        crate::depcache::reset_stats();
+        plant_default_prelude();
+        let (entry, app, _dep) = depcache_fixture("hit", "1.0.0");
+        let first = merged_debug(&entry);
+        assert!(first.contains("Int(1)"), "{first}");
+        let (_, _, populated) = crate::depcache::stats();
+        assert!(populated > 0, "miss path must populate the dep product");
+        assert!(dep_product_file(&app, "1.0.0").is_file());
+        let (_, memo_before, _) = crate::depcache::stats();
+        let (hits_before, _, _) = crate::depcache::stats();
+        let second = merged_debug(&entry);
+        assert_eq!(first, second);
+        let (hits_after, memo_after, _) = crate::depcache::stats();
+        assert!(hits_after > hits_before, "second build must restore a dep product");
+        assert!(memo_after > memo_before, "second build must skip resolution via memo");
+        let _no_cache = EnvUnsetOnDrop::set("RNX_DEP_CACHE", "0");
+        let third = merged_debug(&entry);
+        drop(_no_cache);
+        assert_eq!(first, third);
+        let _ = std::fs::remove_dir_all(app.parent().unwrap());
+    }
+
+    #[test]
+    fn depcache_dep_edit_invalidates() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("depedit");
+        crate::depcache::reset_stats();
+        plant_default_prelude();
+        let (entry, app, dep) = depcache_fixture("edit", "1.0.0");
+        let first = merged_debug(&entry);
+        assert!(first.contains("Int(1)"), "{first}");
+        assert_eq!(merged_debug(&entry), first);
+        std::fs::write(dep.join("src").join("extra.rnx"), "export fn bonus(): Int { return 2; }\n")
+            .unwrap();
+        let (hits_before, _, _) = crate::depcache::stats();
+        let third = merged_debug(&entry);
+        assert!(third.contains("Int(2)"), "{third}");
+        assert_ne!(first, third);
+        let (hits_after, _, _) = crate::depcache::stats();
+        assert_eq!(hits_before, hits_after, "edited dep must miss the cache");
+        let fourth = merged_debug(&entry);
+        assert_eq!(third, fourth);
+        let (hits_final, _, _) = crate::depcache::stats();
+        assert!(hits_final > hits_after, "repopulation must hit again");
+        let _ = std::fs::remove_dir_all(app.parent().unwrap());
+    }
+
+    #[test]
+    fn depcache_version_bump_and_toolchain_change_invalidate() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("depver");
+        crate::depcache::reset_stats();
+        plant_default_prelude();
+        let (entry, app, dep) = depcache_fixture("ver", "1.0.0");
+        let first = merged_debug(&entry);
+        assert!(dep_product_file(&app, "1.0.0").is_file());
+        let prof = crate::depcache::DepProfile {
+            release: true,
+            opt_level: 2,
+            target: None,
+            host: "x86_64-unknown-linux-gnu".to_string(),
+            debug: false,
+            runtime_hash: "rt".to_string(),
+            llvm_version: "llvm22".to_string(),
+        };
+        let other_toolchain = crate::depcache::dep_toolchain_hash(Some(&prof));
+        assert_ne!(other_toolchain, crate::depcache::dep_toolchain_hash(None));
+        let other_path =
+            crate::depcache::product_path(&app, "utils", "1.0.0", &other_toolchain);
+        assert_ne!(other_path, dep_product_file(&app, "1.0.0"));
+        std::fs::write(
+            dep.join("Project.config"),
+            "export default {\n    project: {\n        name: \"utils\",\n        version: \"2.0.0\"\n    }\n}\n",
+        )
+        .unwrap();
+        let (hits_before, _, _) = crate::depcache::stats();
+        let second = merged_debug(&entry);
+        assert_eq!(first, second, "version bump must not change merged output");
+        let (hits_after, _, _) = crate::depcache::stats();
+        assert_eq!(hits_before, hits_after, "version bump must miss the cache");
+        assert!(dep_product_file(&app, "2.0.0").is_file());
+        let third = merged_debug(&entry);
+        assert_eq!(second, third);
+        let (hits_final, _, _) = crate::depcache::stats();
+        assert!(hits_final > hits_after, "bumped version must hit after repopulation");
+        let _ = std::fs::remove_dir_all(app.parent().unwrap());
+    }
+
+    #[test]
+    fn depcache_corrupt_product_falls_back() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("depcorrupt");
+        crate::depcache::reset_stats();
+        plant_default_prelude();
+        let (entry, app, _dep) = depcache_fixture("corrupt", "1.0.0");
+        let first = merged_debug(&entry);
+        let path = dep_product_file(&app, "1.0.0");
+        assert!(path.is_file());
+        std::fs::write(&path, b"not a dep product").unwrap();
+        let second = merged_debug(&entry);
+        assert_eq!(first, second, "corrupt cache must fall back to a full build");
+        let valid = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &valid[..valid.len() / 2]).unwrap();
+        let third = merged_debug(&entry);
+        assert_eq!(first, third, "truncated cache must fall back to a full build");
+        let _ = std::fs::remove_dir_all(app.parent().unwrap());
+    }
+
+    #[test]
+    fn depcache_registry_dep_hits_without_network() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("depreg");
+        crate::depcache::reset_stats();
+        let server = start_widget_server();
+        plant_prelude_cache(&server.base);
+        let root = registry_app("dep", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        lock.write(&root).unwrap();
+        let entry = root.join("src").join("main.rnx");
+        let first = merged_debug(&entry);
+        assert!(!first.is_empty());
+        let served = server.requests().len();
+        assert!(served > 0);
+        let product = crate::depcache::product_path(
+            &root,
+            "@acme/widget",
+            "1.2.0",
+            &crate::depcache::dep_toolchain_hash(None),
+        );
+        assert!(product.is_file(), "{}", product.display());
+        let (hits_before, _, _) = crate::depcache::stats();
+        let second = merged_debug(&entry);
+        assert_eq!(first, second);
+        assert_eq!(
+            server.requests().len(),
+            served,
+            "hit path must not touch the registry"
+        );
+        let (hits_after, _, _) = crate::depcache::stats();
+        assert!(hits_after > hits_before, "registry dep must restore from cache");
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn global_products_survive_project_cache_wipe() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("globwipe");
+        crate::depcache::reset_stats();
+        crate::products::reset_stats();
+        let server = start_widget_server();
+        plant_prelude_cache(&server.base);
+        let root = registry_app("glob", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        lock.write(&root).unwrap();
+        let entry = root.join("src").join("main.rnx");
+        let first = merged_debug(&entry);
+        assert!(!first.is_empty());
+        let served = server.requests().len();
+        assert!(served > 0);
+        let (files, _) = crate::products::products_usage();
+        assert!(files > 0, "build must mirror dep products into the global store");
+        std::fs::remove_dir_all(crate::cache::project_cache_dir(&root)).unwrap();
+        assert!(!crate::cache::project_cache_dir(&root).exists());
+        let (hits_before, _, _) = crate::depcache::stats();
+        let second = merged_debug(&entry);
+        assert_eq!(first, second);
+        let (hits_after, _, _) = crate::depcache::stats();
+        assert!(hits_after > hits_before, "wiped project cache must restore from global products");
+        assert_eq!(
+            server.requests().len(),
+            served,
+            "global hit path must not touch the registry"
+        );
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn global_products_corrupt_falls_back_and_heals() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("globcorrupt");
+        crate::depcache::reset_stats();
+        crate::products::reset_stats();
+        let server = start_widget_server();
+        plant_prelude_cache(&server.base);
+        let root = registry_app("globbad", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        lock.write(&root).unwrap();
+        let entry = root.join("src").join("main.rnx");
+        let first = merged_debug(&entry);
+        assert!(!first.is_empty());
+        for path in crate::products::product_files() {
+            std::fs::write(&path, b"corrupt").unwrap();
+        }
+        std::fs::remove_dir_all(crate::cache::project_cache_dir(&root)).unwrap();
+        let second = merged_debug(&entry);
+        assert_eq!(first, second, "corrupt global products must fall back to a full build");
+        for path in crate::products::product_files() {
+            assert!(
+                crate::products::read_product_file(&path).is_some(),
+                "repopulation must heal corrupt entries"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn global_products_entry_change_invalidates() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("globentry");
+        crate::depcache::reset_stats();
+        crate::products::reset_stats();
+        let server = start_widget_server();
+        plant_prelude_cache(&server.base);
+        let root = registry_app("globinv", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        lock.write(&root).unwrap();
+        let entry = root.join("src").join("main.rnx");
+        let first = merged_debug(&entry);
+        assert!(!first.is_empty());
+        let manifest = root.join("Project.config");
+        let mut text = std::fs::read_to_string(&manifest).unwrap();
+        text.push('\n');
+        std::fs::write(&manifest, &text).unwrap();
+        std::fs::remove_dir_all(crate::cache::project_cache_dir(&root)).unwrap();
+        let (hits_before, _, _) = crate::depcache::stats();
+        let second = merged_debug(&entry);
+        assert_eq!(first, second);
+        let (hits_after, _, _) = crate::depcache::stats();
+        assert_eq!(hits_before, hits_after, "changed entry manifest must miss global products");
+        let third = merged_debug(&entry);
+        assert_eq!(second, third);
+        let (hits_final, _, _) = crate::depcache::stats();
+        assert!(hits_final > hits_after, "repopulation must hit again");
+        let widget_files: Vec<_> = crate::products::product_files()
+            .into_iter()
+            .filter(|path| path.to_string_lossy().contains("@acme/widget"))
+            .collect();
+        assert_eq!(widget_files.len(), 2, "distinct dep sets shard into distinct files");
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn floating_range_never_populates_global() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("globfloat");
+        crate::depcache::reset_stats();
+        crate::products::reset_stats();
+        let server = start_widget_server();
+        plant_prelude_cache(&server.base);
+        let root = registry_app("globfl", &server.base);
+        let entry = root.join("src").join("main.rnx");
+        let first = merged_debug(&entry);
+        assert!(!first.is_empty());
+        let statuses = product_statuses(&root);
+        let widget = statuses.iter().find(|status| status.pkg == "@acme/widget").expect("widget");
+        assert_eq!(widget.version, None);
+        assert!(!widget.present);
+        let widget_files: Vec<_> = crate::products::product_files()
+            .into_iter()
+            .filter(|path| path.to_string_lossy().contains("@acme/widget"))
+            .collect();
+        assert!(widget_files.is_empty(), "floating ranges must never populate");
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn fetch_precompile_populates_global_without_build() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("globpre");
+        crate::depcache::reset_stats();
+        crate::products::reset_stats();
+        let server = start_widget_server();
+        plant_prelude_cache(&server.base);
+        let root = registry_app("globpre", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        lock.write(&root).unwrap();
+        let report = crate::products::precompile_scope(&root);
+        assert_eq!(report.projects, 1);
+        assert_eq!(report.entries, 1);
+        assert!(report.populated > 0, "precompile must populate global products");
+        let served = server.requests().len();
+        assert!(served > 0);
+        crate::depcache::reset_stats();
+        let entry = root.join("src").join("main.rnx");
+        let merged = merged_debug(&entry);
+        assert!(!merged.is_empty());
+        let (hits, _, _) = crate::depcache::stats();
+        assert!(hits > 0, "first build after precompile must restore from global products");
+        assert_eq!(
+            server.requests().len(),
+            served,
+            "precompiled build must not touch the registry"
+        );
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, val);
+            }
+            EnvVarGuard { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn std_install_tarball(full: &str, version: &str, main_rnx: &str) -> (Vec<u8>, String) {
+        let manifest = format!(
+            "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }}\n}}\n"
+        );
+        let mut buf = Vec::new();
+        {
+            let mut tar = crate::tar::TarWriter::new(&mut buf);
+            tar.add_file("Project.config", manifest.as_bytes()).unwrap();
+            tar.add_file("src/main.rnx", main_rnx.as_bytes()).unwrap();
+            tar.finish().unwrap();
+        }
+        let gz = crate::gzip::compress_gzip(&buf);
+        let sha = crate::checksum::Sha256::hexdigest(&gz);
+        (gz, sha)
+    }
+
+    struct StdInstallServer {
+        base: String,
+        log: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+
+    impl StdInstallServer {
+        fn requests(&self) -> Vec<(String, String)> {
+            self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+
+    fn start_std_install_server() -> StdInstallServer {
+        use std::io::{Read, Write};
+        let pin = env!("CARGO_PKG_VERSION");
+        let mut balls: BTreeMap<(String, String), (Vec<u8>, String)> = BTreeMap::new();
+        for full in crate::stdlib_seed::std_package_names() {
+            let top = full.strip_prefix("@std/").unwrap_or(&full);
+            let main = if top == "time" {
+                "export fn tick(): Int { return 1; }\nexport fn hello(): Int { return 1; }\n"
+            } else {
+                "export fn hello(): Int { return 1; }\n"
+            };
+            let (gz, sha) = std_install_tarball(&full, pin, main);
+            balls.insert((full, pin.to_string()), (gz, sha));
+        }
+        let nodes: Vec<String> = balls
+            .iter()
+            .map(|((full, version), (_, sha))| testkit::node_json(full, version, sha, false))
+            .collect();
+        let resolve_body = testkit::resolve_json_static(&nodes);
+        let balls = std::sync::Arc::new(balls);
+        let log: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = log.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                loop {
+                    match stream.read(&mut byte) {
+                        Ok(0) => break,
+                        Ok(_) => head.push(byte[0]),
+                        Err(_) => break,
+                    }
+                    if head.ends_with(b"\r\n\r\n") || head.len() > 65536 {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&head).into_owned();
+                let mut lines = text.lines();
+                let request = lines.next().unwrap_or_default().to_string();
+                let mut parts = request.split_whitespace();
+                let method = parts.next().unwrap_or_default().to_string();
+                let path = parts.next().unwrap_or_default().to_string();
+                seen.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((method.clone(), path.clone()));
+                let route = path.split('?').next().unwrap_or_default().to_string();
+                let mut respond = |status: u16, body: &[u8], json: bool| {
+                    let text = format!(
+                        "HTTP/1.1 {status} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        if status == 200 { "OK" } else { "Error" },
+                        if json { "application/json" } else { "application/octet-stream" },
+                        body.len()
+                    );
+                    let _ = stream.write_all(text.as_bytes());
+                    let _ = stream.write_all(body);
+                    let _ = stream.flush();
+                };
+                if method == "GET" && route == "/api/version" {
+                    respond(200, b"{\"spec\": 1}", true);
+                } else if method == "POST" && route == "/api/resolve" {
+                    respond(200, resolve_body.as_bytes(), true);
+                } else if method == "GET" && route.ends_with("/chunks") {
+                    let hit = route.find("@std/").and_then(|i| {
+                        route[i..].strip_suffix("/chunks").and_then(|key| {
+                            key.rsplit_once('@').and_then(|(full, version)| {
+                                balls.get(&(full.to_string(), version.to_string())).cloned()
+                            })
+                        })
+                    });
+                    match hit {
+                        Some((gz, _)) => respond(200, testkit::fallback_manifest(&gz).as_bytes(), true),
+                        None => respond(404, b"{}", true),
+                    }
+                } else if method == "GET" && route.contains("/chunk/") {
+                    let hash = route.rsplit('/').next().unwrap_or_default();
+                    let hit = balls.values().find(|(_, sha)| sha == hash).map(|(gz, _)| gz.clone());
+                    match hit {
+                        Some(gz) => respond(200, &gz, false),
+                        None => respond(404, b"{}", true),
+                    }
+                } else {
+                    respond(404, b"{}", true);
+                }
+            }
+        });
+        StdInstallServer { base, log }
+    }
+
+    fn std_install_app(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rnx-stdapp-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let pin = env!("CARGO_PKG_VERSION");
+        std::fs::write(
+            root.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"app\",\n        version: \"0.1.0\"\n    }},\n    dependencies: {{\n        \"@std/time\": {{ version: \"{pin}\" }}\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src").join("main.rnx"),
+            "import { tick } from \"@std/time\";\nfn Main(): Int { return tick(); }\n",
+        )
+        .unwrap();
+        root
+    }
+
+    fn try_seed_from_env() -> Result<crate::stdlib_seed::StdSeedReport, diagnostics::Diagnostic> {
+        let (default, overrides) = crate::stdlib_seed::std_registry_from_env();
+        crate::stdlib_seed::seed_stdlib_cache(default.as_ref(), &overrides)
+    }
+
+    fn seed_from_env() -> crate::stdlib_seed::StdSeedReport {
+        try_seed_from_env().unwrap()
+    }
+
+    #[test]
+    fn install_cold_build_populates_but_never_hits() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _dir) = testkit::isolate_cache("stdcold");
+        crate::depcache::reset_stats();
+        crate::products::reset_stats();
+        crate::stdvfs::clear();
+        let server = start_std_install_server();
+        let _reg = EnvVarGuard::set("RNX_REGISTRY", &server.base);
+        let seed = match try_seed_from_env() {
+            Ok(report) => report,
+            Err(e) => {
+                eprintln!("cold requests: {:#?}", server.requests());
+                panic!("seed failed: {e}");
+            }
+        };
+        assert_eq!(seed.packages.len(), crate::stdlib_seed::std_package_names().len());
+        let root = std_install_app("cold");
+        let entry = root.join("src").join("main.rnx");
+        let first = merged_debug(&entry);
+        assert!(first.contains("Int(1)"), "{first}");
+        let (hits, _, _) = crate::depcache::stats();
+        assert_eq!(hits, 0, "cold build with no precompile must not restore anything");
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn install_flow_warms_std_products_and_later_build_hits() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _dir) = testkit::isolate_cache("stdinstall");
+        crate::depcache::reset_stats();
+        crate::products::reset_stats();
+        crate::stdvfs::clear();
+        let server = start_std_install_server();
+        let _reg = EnvVarGuard::set("RNX_REGISTRY", &server.base);
+        let seed = seed_from_env();
+        assert_eq!(seed.packages.len(), crate::stdlib_seed::std_package_names().len());
+        assert!(crate::products::product_files().is_empty());
+        let start = std::time::Instant::now();
+        let pre = crate::products::precompile_std().expect("standalone std precompile");
+        let cost = start.elapsed();
+        eprintln!(
+            "std precompile: populated={} entries={} projects={} cost={}ms",
+            pre.populated,
+            pre.entries,
+            pre.projects,
+            cost.as_millis()
+        );
+        assert_eq!(pre.projects, 1);
+        assert_eq!(pre.entries, 1);
+        assert!(pre.populated > 0, "precompile must populate global std products");
+        assert!(
+            !crate::products::std_scaffold_dir().exists(),
+            "scaffold project must be removed after precompile"
+        );
+        let (files, _) = crate::products::products_usage();
+        assert!(files > 0, "precompile must leave product files behind");
+        for path in crate::products::product_files() {
+            assert!(
+                crate::products::read_product_file(&path).is_some(),
+                "warmed product must decode: {}",
+                path.display()
+            );
+            let dir = path.parent().expect("product dir");
+            let lines = crate::products::manifest_lines(dir).expect("product manifest");
+            assert_eq!(lines.len(), 9);
+            assert!(lines[0].starts_with("@std/"));
+            assert!(crate::products::exact_pin(&lines[1], &lines[3]));
+        }
+        let (sum_files, sum_pkgs) =
+            crate::products::std_products_summary().expect("std products summary");
+        assert_eq!(sum_files, files);
+        assert!(sum_pkgs > 0);
+        let served = server.requests().len();
+        assert!(served > 0);
+        let root = std_install_app("warmed");
+        let entry = root.join("src").join("main.rnx");
+        crate::depcache::reset_stats();
+        let first = merged_debug(&entry);
+        assert!(first.contains("Int(1)"), "{first}");
+        let (hits, _, _) = crate::depcache::stats();
+        assert!(hits > 0, "later build must restore install-warmed std products");
+        assert_eq!(
+            server.requests().len(),
+            served,
+            "warmed build must not touch the registry"
+        );
+        crate::depcache::reset_stats();
+        let second = merged_debug(&entry);
+        assert_eq!(first, second);
+        let (_, memo_hits, _) = crate::depcache::stats();
+        assert!(memo_hits > 0, "repeat build must resolve through the restored memo");
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn precompile_std_without_seed_is_fail_open() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _dir) = testkit::isolate_cache("stdoffpre");
+        crate::products::reset_stats();
+        crate::stdvfs::clear();
+        let err = crate::products::precompile_std().unwrap_err();
+        assert!(err.contains("pin"), "{err}");
+        assert!(crate::products::product_files().is_empty());
+        assert!(!crate::products::std_scaffold_dir().exists());
+        assert_eq!(crate::products::std_products_summary(), None);
+    }
+
+    #[test]
+    fn precompile_std_dead_registry_is_fail_open() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _dir) = testkit::isolate_cache("stddeadpre");
+        crate::depcache::reset_stats();
+        crate::products::reset_stats();
+        crate::stdvfs::clear();
+        let server = start_std_install_server();
+        let _reg = EnvVarGuard::set("RNX_REGISTRY", &server.base);
+        let seed = seed_from_env();
+        assert!(!seed.packages.is_empty());
+        drop(_reg);
+        let _dead = EnvVarGuard::set("RNX_REGISTRY", "http://127.0.0.1:9");
+        let pre = crate::products::precompile_std().expect("must not fail hard offline");
+        assert_eq!(
+            pre.populated, 0,
+            "unreachable registry must not mint products from thin air"
+        );
+        assert!(crate::products::product_files().is_empty());
+        assert!(!crate::products::std_scaffold_dir().exists());
+    }
+
+    #[test]
+    fn depcache_hit_vs_miss_timing() {
+        let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_guard, _cache) = testkit::isolate_cache("deptime");
+        crate::depcache::reset_stats();
+        plant_default_prelude();
+        let base = std::env::temp_dir().join(format!("rnx-deptime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let app = base.join("app");
+        let dep = base.join("libs").join("wide");
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::create_dir_all(dep.join("src")).unwrap();
+        std::fs::write(
+            dep.join("Project.config"),
+            "export default {\n    project: {\n        name: \"wide\",\n        version: \"1.0.0\"\n    }\n}\n",
+        )
+        .unwrap();
+        let mut imports = String::new();
+        let mut calls = String::new();
+        for i in 0..24 {
+            imports.push_str(&format!("import {{ f{i} }} from \"wide/mod{i}\";\n"));
+            calls.push_str(&format!("    acc = acc + f{i}();\n"));
+            std::fs::write(
+                dep.join("src").join(format!("mod{i}.rnx")),
+                format!("export fn f{i}(): Int {{ return {i}; }}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            dep.join("src").join("main.rnx"),
+            "export fn wide_entry(): Int { return 0; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("Project.config"),
+            "export default {\n    project: {\n        name: \"app\",\n        version: \"0.1.0\"\n    },\n    dependencies: {\n        \"wide\": \"../libs/wide\"\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("src").join("main.rnx"),
+            format!("{imports}fn Main(): Int {{\n    let acc: Int = 0;\n{calls}    return acc;\n}}\n"),
+        )
+        .unwrap();
+        let entry = app.join("src").join("main.rnx");
+        let start = std::time::Instant::now();
+        let first = merged_debug(&entry);
+        let miss = start.elapsed();
+        let start = std::time::Instant::now();
+        let second = merged_debug(&entry);
+        let hit = start.elapsed();
+        assert_eq!(first, second);
+        let (hits, memo_hits, _) = crate::depcache::stats();
+        eprintln!(
+            "depcache timing: miss={}ms hit={}ms hits={hits} memo_hits={memo_hits}",
+            miss.as_millis(),
+            hit.as_millis()
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn par_fixture(tag: &str, files: &[(&str, &str)]) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("rnx-parmod-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for (name, src) in files {
+            let p = base.join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, src).unwrap();
+        }
+        base.join("main.rnx")
+    }
+
+    fn par_cleanup(tag: &str) {
+        let base = std::env::temp_dir().join(format!("rnx-parmod-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn collected(entry: &Path, jobs: Option<usize>) -> Result<String, String> {
+        let graph = match jobs {
+            Some(j) => ModuleGraph::build_collecting_extra_parallel(entry, &[], j),
+            None => ModuleGraph::build_collecting(entry),
+        };
+        match graph {
+            Ok(g) => {
+                let mut files = String::new();
+                for f in &g.files {
+                    files.push_str(&format!("{}|{}|{:?}\n", f.path.display(), f.key, f.kind));
+                }
+                Ok(format!("{files}{:?}", g.resolve()))
+            }
+            Err(e) => Err(format!("{e:?}")),
+        }
+    }
+
+    fn assert_parallel_matches_sequential(tag: &str, files: &[(&str, &str)]) {
+        let (_guard, _cache) = testkit::isolate_cache(&format!("parmod-{tag}"));
+        plant_default_prelude();
+        let entry = par_fixture(tag, files);
+        let expect = collected(&entry, None);
+        for jobs in [0, 1, 2, 8] {
+            assert_eq!(collected(&entry, Some(jobs)), expect, "tag={tag} jobs={jobs}");
+        }
+        match tag {
+            "dia" | "cyc" => assert!(expect.is_ok(), "tag={tag}: {expect:?}"),
+            _ => assert!(expect.is_err(), "tag={tag}: {expect:?}"),
+        }
+        par_cleanup(tag);
+    }
+
+    #[test]
+    fn parallel_matches_sequential_diamond() {
+        assert_parallel_matches_sequential(
+            "dia",
+            &[
+                (
+                    "main.rnx",
+                    "import { a } from \"./a\";\nimport { b } from \"./b\";\nfn Main(): Int { return a() + b(); }\n",
+                ),
+                (
+                    "a.rnx",
+                    "import { c } from \"./c\";\nexport fn a(): Int { return c() + 1; }\n",
+                ),
+                (
+                    "b.rnx",
+                    "import { c } from \"./c\";\nexport fn b(): Int { return c() + 2; }\n",
+                ),
+                ("c.rnx", "export fn c(): Int { return 10; }\n"),
+            ],
+        );
+    }
+
+    #[test]
+    fn parallel_matches_sequential_cycle() {
+        assert_parallel_matches_sequential(
+            "cyc",
+            &[
+                ("main.rnx", "import { a } from \"./a\";\nfn Main(): Int { return a(); }\n"),
+                (
+                    "a.rnx",
+                    "import { b } from \"./b\";\nexport fn a(): Int { return b() + 1; }\n",
+                ),
+                (
+                    "b.rnx",
+                    "import { a } from \"./a\";\nexport fn b(): Int { return a() + 1; }\n",
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn parallel_matches_sequential_errors() {
+        assert_parallel_matches_sequential(
+            "errmix",
+            &[
+                (
+                    "main.rnx",
+                    "import { x } from \"./bad\";\nimport { y } from \"./fatal\";\nfn Main(): Int { return x() + y(); }\n",
+                ),
+                ("bad.rnx", "export fn x(: Int { return ;;; broken (((\n"),
+                (
+                    "fatal.rnx",
+                    "import { z } from \"./nonexistent\";\nexport fn y(): Int { return z(); }\n",
+                ),
+            ],
+        );
+        let (_guard, _cache) = testkit::isolate_cache("parmod-errtwo");
+        plant_default_prelude();
+        let entry = par_fixture(
+            "errtwo",
+            &[
+                (
+                    "main.rnx",
+                    "import { x } from \"./fa\";\nimport { y } from \"./fb\";\nfn Main(): Int { return x() + y(); }\n",
+                ),
+                (
+                    "fa.rnx",
+                    "import { z } from \"./missing_a\";\nexport fn x(): Int { return z(); }\n",
+                ),
+                (
+                    "fb.rnx",
+                    "import { z } from \"./missing_b\";\nexport fn y(): Int { return z(); }\n",
+                ),
+            ],
+        );
+        let expect = collected(&entry, None);
+        assert!(matches!(&expect, Err(e) if e.contains("missing_a")), "{expect:?}");
+        for jobs in [0, 1, 2, 8] {
+            assert_eq!(collected(&entry, Some(jobs)), expect, "jobs={jobs}");
+        }
+        par_cleanup("errtwo");
+    }
+
+    #[test]
+    fn parallel_parse_timing() {
+        let (_guard, _cache) = testkit::isolate_cache("parmod-time");
+        plant_default_prelude();
+        let tag = "time";
+        let base = std::env::temp_dir().join(format!("rnx-parmod-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let n = 48;
+        let per = 20;
+        let mut imports = String::new();
+        let mut calls = String::new();
+        for i in 0..n {
+            imports.push_str(&format!("import {{ g{i}_0 }} from \"./m{i}\";\n"));
+            calls.push_str(&format!("    acc = acc + g{i}_0(acc);\n"));
+            let mut body = String::new();
+            for k in 0..per {
+                body.push_str(&format!(
+                    "export fn g{i}_{k}(x: Int): Int {{\n    let y: Int = x + {k};\n    return y * {i} + {k};\n}}\n"
+                ));
+            }
+            std::fs::write(base.join(format!("m{i}.rnx")), body).unwrap();
+        }
+        std::fs::write(
+            base.join("main.rnx"),
+            format!("{imports}fn Main(): Int {{\n    let acc: Int = 0;\n{calls}    return acc;\n}}\n"),
+        )
+        .unwrap();
+        let entry = base.join("main.rnx");
+        let start = std::time::Instant::now();
+        let seq = collected(&entry, None);
+        let seq_ms = start.elapsed();
+        let start = std::time::Instant::now();
+        let par2 = collected(&entry, Some(2));
+        let par2_ms = start.elapsed();
+        let start = std::time::Instant::now();
+        let par = collected(&entry, Some(8));
+        let par_ms = start.elapsed();
+        assert_eq!(par2, seq);
+        assert_eq!(par, seq);
+        assert!(matches!(&seq, Ok(_)), "{seq:?}");
+        eprintln!(
+            "parallel lex_parse: seq={}ms par2={}ms par8={}ms",
+            seq_ms.as_millis(),
+            par2_ms.as_millis(),
+            par_ms.as_millis()
+        );
+        par_cleanup(tag);
     }
 }

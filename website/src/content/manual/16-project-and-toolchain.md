@@ -248,13 +248,15 @@ print(quote(2.0));
 | `rnx unpack` | verify and extract archive | `--out-dir <dir>` |
 | `rnx init` | scaffold a new project | `[name]` |
 | `rnx setup` | configure editor LSP and highlighting | `<vscode\|zed\|helix\|neovim>` |
-| `rnx lock/fetch/vendor` | lockfiles and git-dependency cache | `-p` |
+| `rnx lock/fetch/vendor` | lockfiles, git-dependency cache, and dep precompilation | `-p` |
 | `rnx fetch-std` | seed the global registry cache with every `@std/*` package | `--registry <url>` |
-| `rnx doctor` | check the stdlib cache pin and contents | `--repair-std`, `--registry <url>` |
+| `rnx doctor` | check the stdlib cache pin and contents, plus dep product status | `--repair-std`, `--registry <url>` |
 
 Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners.
 
 `rnx fetch-std` resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). The installer runs it automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. Both accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default. With an empty cache and no network, `@std/*` imports fail as `E108` naming the registry instead of falling back silently.
+
+`rnx fetch` downloads every dependency of the current scope and then precompiles the scope: it loads each member's entry module so the dependency resolver records its products. Each product is mirrored from the project cache into the global store at `products/<registry-host>/<package>/<version>/<toolchain>/` (git dependencies under `products/git/<name>/<rev>/<toolchain>/`), next to a `manifest` file holding the content hash, dep set, and toolchain. A product is reused only when the exact pinned version, the toolchain hash, and the content digest all match; floating ranges never populate, and a missing or corrupt entry falls back to the normal path. `rnx build` also keeps whole-program codegen units in a content-keyed global `objects/` pool, so rebuilding the same program with an empty project cache skips LLVM emission. `rnx doctor` lists each pinned dependency as `cached` or `absent` (floating ranges are reported as unpinned), and `rnx cache status`/`prune` covers the new pools.
 
 `rnx fmt` rewrites sources with the canonical style (4-space indents, Egyptian braces, single spaces around binary operators, at most one blank line, no trailing whitespace); comments and string contents are never altered and formatting is idempotent. `rnx lint` checks `L001` (unused variable), `L002` (unused parameter), `L003` (unreachable code), `L004` (missing doc comment), and `L005` (empty block).
 
