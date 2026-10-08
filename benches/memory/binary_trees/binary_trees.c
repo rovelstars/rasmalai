@@ -17,8 +17,10 @@ static long build(Tables *t, int depth, long item) {
     long idx = t->len++;
     t->items[idx] = item; t->lefts[idx] = -1; t->rights[idx] = -1;
     if (depth > 0) {
-        t->lefts[idx] = build(t, depth - 1, item * 2 - 1);
-        t->rights[idx] = build(t, depth - 1, item * 2);
+        long l = build(t, depth - 1, item * 2 - 1);
+        long r = build(t, depth - 1, item * 2);
+        t->lefts[idx] = l;
+        t->rights[idx] = r;
     }
     return idx;
 }
