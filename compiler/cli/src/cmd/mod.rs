@@ -156,8 +156,10 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 jobs,
                 memory_cap,
                 package,
+                deny_perf_lints,
+                show_perf_notes,
             } => {
-                run_build(path, entry, release, lib, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, verbose, quiet);
+                run_build(path, entry, release, lib, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, deny_perf_lints, show_perf_notes, verbose, quiet);
             }
             cli::args::Command::Init { name } => {
                 run_init(name);

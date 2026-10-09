@@ -239,6 +239,18 @@ Capability and permission failures. The full model — capability grammar, `[per
 |---|---|---|---|
 | `W201` | warning | unrecognized manifest section or field; ignored | correct the spelling or remove the entry |
 
+## Performance notes and warnings (P101-P201)
+
+The optimizer reports what it did to loop nests, and where it held back. These diagnostics never fail a build on their own. Warnings print to stderr on `rnx build` next to the timing table; notes (`P101`/`P102`) stay hidden unless `rnx build --show-perf-notes` (or `RNX_SHOW_PERF_NOTES=1` when the flag is absent) asks for them.
+
+| Code | Severity | Cause | Resolution |
+|---|---|---|---|
+| `P101` | note | a reduction nest was restructured to accumulation form | none; the compiler already did the work |
+| `P102` | note | bounds checks in a loop were versioned behind a hoisted guard | none; the fast path runs unchecked |
+| `P201` | warning | a reduction nest kept scalar order for one named reason (aliasing, unproven zero-fill, cost gate, or index roles) | fix the named proof; see the hint |
+
+`#[Allow(PerfP201)]` on a function silences P-diagnostics inside it, `#[Allow(PerfAll)]` silences all of them, and `#![Allow(...)]` at the top of a file silences the whole file. `rnx build --deny-perf-lints` (bare for all, or `--deny-perf-lints=P201,P203`, repeatable; `RNX_DENY_PERF_LINTS` sets the same list when the flag is absent) promotes P-warnings to build failures for CI. Notes are never promoted, even with `--show-perf-notes`.
+
 ## Lint rules (L001-L005)
 
 `rnx lint` reports these as `warning[L00N]` findings; `--deny-warnings` promotes them to build failures for CI.
@@ -255,4 +267,4 @@ Capability and permission failures. The full model — capability grammar, `[per
 
 - Every diagnostic is code plus sentence plus `▲` pointer plus fix note; codes are stable and CI-matchable.
 - Errors fail the build, warnings advise, fatals report runtime stops.
-- `rnx explain <code>`, editor hovers, and `rnx check --json` expose the same registry to humans and scripts. `explain` covers every `E`, `W`, and `S` code; the `L001`-`L005` lint rules below are documented in their table and fixed per row rather than through `explain`.
+- `rnx explain <code>`, editor hovers, and `rnx check --json` expose the same registry to humans and scripts. `explain` covers every `E`, `W`, `S`, and `P` code; the `L001`-`L005` lint rules below are documented in their table and fixed per row rather than through `explain`.

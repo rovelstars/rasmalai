@@ -39,6 +39,7 @@ pub struct OptTimings {
     pub sweep: Duration,
     pub deadfn: Duration,
     pub dom: Duration,
+    pub perflint: Duration,
 }
 
 impl OptTimings {
@@ -56,9 +57,10 @@ impl OptTimings {
             + self.sweep
             + self.deadfn
             + self.dom
+            + self.perflint
     }
 
-    pub fn sub_rows(&self) -> [(&'static str, Duration); 13] {
+    pub fn sub_rows(&self) -> [(&'static str, Duration); 14] {
         [
             ("opt_inline", self.inline),
             ("opt_escape", self.escape),
@@ -73,6 +75,7 @@ impl OptTimings {
             ("opt_sweep", self.sweep),
             ("opt_deadfn", self.deadfn),
             ("opt_dom", self.dom),
+            ("opt_perflint", self.perflint),
         ]
     }
 }
@@ -127,8 +130,34 @@ fn optimize_lir_impl(
     step = stamp();
     for fi in 0..module.functions.len() {
         let inner = stamp();
-        let _ = crate::accum::accumulate_interchange(&mut module.functions[fi]);
+        let (action, _, span, missed) =
+            crate::accum::accumulate_interchange_tracked(&mut module.functions[fi]);
         t.accum += inner.elapsed();
+        let kind = match (action, span) {
+            (crate::accum::AccumAction::V1, Some(span)) => {
+                Some((crate::perflint::ReceiptKind::AccumV1, span))
+            }
+            (crate::accum::AccumAction::Peel, Some(span)) => {
+                Some((crate::perflint::ReceiptKind::AccumPeel, span))
+            }
+            _ => None,
+        };
+        if let Some((kind, span)) = kind {
+            module.transform_receipts.push(crate::perflint::TransformReceipt {
+                func: module.functions[fi].name.clone(),
+                kind,
+                span,
+            });
+        }
+        if let Some((reason, span, inner_trip, alloc)) = missed {
+            module.missed_reductions.push(crate::perflint::MissedReduction {
+                func: module.functions[fi].name.clone(),
+                reason,
+                span,
+                inner_trip,
+                alloc,
+            });
+        }
     }
     step = stamp();
     for fi in 0..module.functions.len() {
@@ -138,8 +167,16 @@ fn optimize_lir_impl(
     step = stamp();
     for fi in 0..module.functions.len() {
         let inner = stamp();
-        crate::bce::version_counted_loops(&mut module.functions[fi]);
+        let (_, spans) =
+            crate::bce::version_counted_loops_tracked(&mut module.functions[fi]);
         t.bce += inner.elapsed();
+        for span in spans {
+            module.transform_receipts.push(crate::perflint::TransformReceipt {
+                func: module.functions[fi].name.clone(),
+                kind: crate::perflint::ReceiptKind::BceVersioned,
+                span,
+            });
+        }
         let inner = stamp();
         let dom = crate::licm::compute_dominators(&module.functions[fi]);
         t.dom += inner.elapsed();
@@ -198,7 +235,19 @@ fn optimize_lir_impl(
     step = stamp();
     eliminate_dead_functions(module, entry, is_library);
     t.deadfn += step.elapsed();
+    step = stamp();
+    retain_live_records(module);
+    let lints = crate::perflint::lint_module(module);
+    module.perf_lints = lints;
+    t.perflint = step.elapsed();
     t
+}
+
+fn retain_live_records(module: &mut Module) {
+    let live: BTreeSet<&str> =
+        module.functions.iter().map(|f| f.name.as_str()).collect();
+    module.transform_receipts.retain(|r| live.contains(r.func.as_str()));
+    module.missed_reductions.retain(|r| live.contains(r.func.as_str()));
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1125,7 +1174,8 @@ mod tests {
             + t.fixpoint
             + t.sweep
             + t.deadfn
-            + t.dom;
+            + t.dom
+            + t.perflint;
         assert_eq!(explicit, t.total());
         assert!(t.total() <= wall);
         assert!(wall - t.total() < Duration::from_millis(50));
@@ -2237,20 +2287,64 @@ fn optimize_lir_impl_parallel(
     });
     t.loopdep = step.elapsed();
     step = stamp();
-    module.functions.par_iter_mut().for_each(|f| {
-        let _ = crate::accum::accumulate_interchange(f);
-    });
+    let acc_out: Vec<(
+        Option<(String, crate::perflint::ReceiptKind, diagnostics::Span)>,
+        Option<crate::perflint::MissedReduction>,
+    )> = module
+        .functions
+        .par_iter_mut()
+        .map(|f| {
+            let (action, _, span, missed) = crate::accum::accumulate_interchange_tracked(f);
+            let kind = match (action, span) {
+                (crate::accum::AccumAction::V1, Some(span)) => {
+                    Some((crate::perflint::ReceiptKind::AccumV1, span))
+                }
+                (crate::accum::AccumAction::Peel, Some(span)) => {
+                    Some((crate::perflint::ReceiptKind::AccumPeel, span))
+                }
+                _ => None,
+            };
+            let name = f.name.clone();
+            let receipt = kind.map(|(kind, span)| (name.clone(), kind, span));
+            let missed = missed.map(|(reason, span, inner_trip, alloc)| {
+                crate::perflint::MissedReduction { func: name, reason, span, inner_trip, alloc }
+            });
+            (receipt, missed)
+        })
+        .collect();
     t.accum = step.elapsed();
+    for (receipt, missed) in acc_out {
+        if let Some((func, kind, span)) = receipt {
+            module.transform_receipts.push(crate::perflint::TransformReceipt { func, kind, span });
+        }
+        if let Some(missed) = missed {
+            module.missed_reductions.push(missed);
+        }
+    }
     step = stamp();
     module.functions.par_iter_mut().for_each(|f| {
         crate::licm::loop_invariant_code_motion(f);
     });
     t.licm = step.elapsed();
     step = stamp();
-    module.functions.par_iter_mut().for_each(|f| {
-        crate::bce::version_counted_loops(f);
-    });
+    let bce_receipts: Vec<(String, Vec<diagnostics::Span>)> = module
+        .functions
+        .par_iter_mut()
+        .map(|f| {
+            let (_, spans) = crate::bce::version_counted_loops_tracked(f);
+            (f.name.clone(), spans)
+        })
+        .collect();
     t.bce += step.elapsed();
+    for (func, spans) in bce_receipts {
+        for span in spans {
+            module.transform_receipts.push(crate::perflint::TransformReceipt {
+                func: func.clone(),
+                kind: crate::perflint::ReceiptKind::BceVersioned,
+                span,
+            });
+        }
+    }
     step = stamp();
     let bce_analyses: Vec<(crate::licm::DominatorTree, Vec<crate::licm::NaturalLoop>)> = module
         .functions
@@ -2339,5 +2433,10 @@ fn optimize_lir_impl_parallel(
     step = stamp();
     eliminate_dead_functions(module, entry, is_library);
     t.deadfn += step.elapsed();
+    step = stamp();
+    retain_live_records(module);
+    let lints = crate::perflint::lint_module(module);
+    module.perf_lints = lints;
+    t.perflint = step.elapsed();
     t
 }

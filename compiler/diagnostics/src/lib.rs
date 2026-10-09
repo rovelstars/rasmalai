@@ -45,6 +45,9 @@ pub enum Code {
     W109,
     W201,
     W204,
+    P101,
+    P102,
+    P201,
     S101,
     S102,
     S201,
@@ -87,11 +90,22 @@ impl Code {
             Code::W109 => "W109",
             Code::W201 => "W201",
             Code::W204 => "W204",
+            Code::P101 => "P101",
+            Code::P102 => "P102",
+            Code::P201 => "P201",
         }
     }
 
     pub fn is_warning(self) -> bool {
-        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W204)
+        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W204 | Code::P201)
+    }
+
+    pub fn is_perf_note(self) -> bool {
+        matches!(self, Code::P101 | Code::P102)
+    }
+
+    pub fn is_perf_lint(self) -> bool {
+        self.is_perf_note() || matches!(self, Code::P201)
     }
 
     pub fn title(self) -> &'static str {
@@ -127,6 +141,9 @@ impl Code {
             Code::W109 => "allowed cycle never cleared",
             Code::W201 => "unrecognized manifest section or field",
             Code::W204 => "deprecated `pub` visibility",
+            Code::P101 => "compiler-restructured reduction nest",
+            Code::P102 => "compiler-versioned bounds checks",
+            Code::P201 => "missed reduction restructure",
         }
     }
 
@@ -163,6 +180,9 @@ impl Code {
             "W109" => Code::W109,
             "W201" => Code::W201,
             "W204" => Code::W204,
+            "P101" => Code::P101,
+            "P102" => Code::P102,
+            "P201" => Code::P201,
             _ => return None,
         })
     }
@@ -206,6 +226,9 @@ pub const ALL: &[Code] = &[
     Code::W109,
     Code::W201,
     Code::W204,
+    Code::P101,
+    Code::P102,
+    Code::P201,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,7 +269,9 @@ impl Diagnostic {
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = if self.code.is_warning() {
+        let kind = if self.code.is_perf_note() {
+            "note"
+        } else if self.code.is_warning() {
             "warning"
         } else {
             "error"

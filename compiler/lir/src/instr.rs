@@ -833,6 +833,9 @@ pub struct Module {
     pub foreign: Vec<ForeignFn>,
     pub foreign_index: BTreeMap<String, usize>,
     pub namespaces: BTreeMap<String, NamespaceDesc>,
+    pub transform_receipts: Vec<crate::perflint::TransformReceipt>,
+    pub missed_reductions: Vec<crate::perflint::MissedReduction>,
+    pub perf_lints: Vec<crate::perflint::PerfLint>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

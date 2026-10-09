@@ -1,6 +1,7 @@
 use crate::instr::*;
 use crate::licm::{DominatorTree, NaturalLoop};
 use crate::opt::instr_dst;
+use diagnostics::Span;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn all_defs(func: &Function, local: Local) -> Vec<(BlockId, usize)> {
@@ -1400,7 +1401,13 @@ pub fn nonnull_locals(func: &Function) -> BTreeSet<Local> {
     nn
 }
 
-pub fn version_counted_loops(func: &mut Function) -> bool {    let mut changed = false;
+pub fn version_counted_loops(func: &mut Function) -> bool {
+    version_counted_loops_tracked(func).0
+}
+
+pub(crate) fn version_counted_loops_tracked(func: &mut Function) -> (bool, Vec<Span>) {
+    let mut changed = false;
+    let mut spans: Vec<Span> = Vec::new();
     loop {
         let dom = crate::licm::compute_dominators(func);
         let loops = crate::licm::find_natural_loops(func, &dom);
@@ -1414,7 +1421,11 @@ pub fn version_counted_loops(func: &mut Function) -> bool {    let mut changed =
         cands.sort_by_key(|(n, _)| *n);
         let mut fired = false;
         for (_, cand) in cands {
+            let span = header_span(func, cand.header);
             if version_one(func, &cand) {
+                if span != UNKNOWN_SPAN {
+                    spans.push(span);
+                }
                 fired = true;
                 changed = true;
                 break;
@@ -1424,7 +1435,19 @@ pub fn version_counted_loops(func: &mut Function) -> bool {    let mut changed =
             break;
         }
     }
-    changed
+    (changed, spans)
+}
+
+fn header_span(func: &Function, header: BlockId) -> Span {
+    if let Some(block) = func.blocks.get(header) {
+        for ins in &block.instrs {
+            let span = ins.span();
+            if span != UNKNOWN_SPAN {
+                return span;
+            }
+        }
+    }
+    UNKNOWN_SPAN
 }
 
 pub struct ExactCountLoop {
