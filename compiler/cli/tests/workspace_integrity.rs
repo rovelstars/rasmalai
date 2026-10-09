@@ -91,7 +91,7 @@ fn test_diagnostic_registry_coverage() {
         let fix = cli::explain(code);
         assert!(fix.is_some(), "{code} has no explain fix");
         assert!(!fix.unwrap().1.is_empty(), "{code} has empty fix");
-        if code.starts_with('W') || *code == "P201" {
+        if code.starts_with('W') || *code == "P201" || *code == "P202" {
             assert!(c.is_warning(), "{code} should be a warning");
         } else {
             assert!(!c.is_warning(), "{code} should be an error");

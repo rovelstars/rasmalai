@@ -152,7 +152,7 @@ fn env_flag_enabled(name: &str) -> bool {
     }
 }
 
-pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, deny_perf_lints: Vec<String>, show_perf_notes: bool, verbose: bool, quiet: bool) {
+pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, deny_perf_lints: Vec<String>, show_perf_notes: bool, fix: bool, fix_force: bool, fix_keep_backup: bool, verbose: bool, quiet: bool) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let deny_raw: Vec<String> = if deny_perf_lints.is_empty() {
@@ -169,6 +169,14 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             };
             if !deny.is_empty() && (lib || emit_obj) {
                 eprintln!("error: --deny-perf-lints is only supported for executable builds");
+                std::process::exit(2);
+            }
+            if fix && (lib || emit_obj) {
+                eprintln!("error: --fix is only supported for executable builds");
+                std::process::exit(2);
+            }
+            if fix && deny.denies("P201") {
+                eprintln!("error: --fix cannot be combined with --deny-perf-lints for P201 (run `build --fix` first, then `build --deny-perf-lints`)");
                 std::process::exit(2);
             }
             let show_notes = show_perf_notes || env_flag_enabled("RNX_SHOW_PERF_NOTES");
@@ -230,6 +238,24 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             };
             if verbose {
                 eprintln!("rnx: jobs={} memory-cap={} bytes", cfg.jobs, cfg.memory_cap);
+            }
+            if fix {
+                let req = cli::fix::FixRequest {
+                    input: input.clone(),
+                    root: root.clone(),
+                    entry: entry.clone(),
+                    release,
+                    opt_level,
+                    package: package.clone(),
+                    locked,
+                    fix_force,
+                    fix_keep_backup,
+                    cfg: cfg.clone(),
+                };
+                match cli::fix::run_fix(&req) {
+                    cli::fix::FixOutcome::Done => {}
+                    cli::fix::FixOutcome::Exit(code) => std::process::exit(code),
+                }
             }
             if lib {
                 let theme = diagnostics::theme::AuraTheme::active();

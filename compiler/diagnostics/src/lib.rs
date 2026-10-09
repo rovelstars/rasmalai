@@ -48,6 +48,7 @@ pub enum Code {
     P101,
     P102,
     P201,
+    P202,
     S101,
     S102,
     S201,
@@ -93,11 +94,12 @@ impl Code {
             Code::P101 => "P101",
             Code::P102 => "P102",
             Code::P201 => "P201",
+            Code::P202 => "P202",
         }
     }
 
     pub fn is_warning(self) -> bool {
-        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W204 | Code::P201)
+        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W204 | Code::P201 | Code::P202)
     }
 
     pub fn is_perf_note(self) -> bool {
@@ -105,7 +107,7 @@ impl Code {
     }
 
     pub fn is_perf_lint(self) -> bool {
-        self.is_perf_note() || matches!(self, Code::P201)
+        self.is_perf_note() || matches!(self, Code::P201 | Code::P202)
     }
 
     pub fn title(self) -> &'static str {
@@ -144,6 +146,7 @@ impl Code {
             Code::P101 => "compiler-restructured reduction nest",
             Code::P102 => "compiler-versioned bounds checks",
             Code::P201 => "missed reduction restructure",
+            Code::P202 => "linear search inside a loop",
         }
     }
 
@@ -183,6 +186,7 @@ impl Code {
             "P101" => Code::P101,
             "P102" => Code::P102,
             "P201" => Code::P201,
+            "P202" => Code::P202,
             _ => return None,
         })
     }
@@ -229,6 +233,7 @@ pub const ALL: &[Code] = &[
     Code::P101,
     Code::P102,
     Code::P201,
+    Code::P202,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
