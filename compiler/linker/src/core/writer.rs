@@ -1,7 +1,7 @@
 use crate::core::graph::{Graph, SecClass, TargetSym};
 use crate::core::layout::{outsec_class, Layout, OutSec, SegClass, SynthSec, PAGE};
 use crate::core::obj::{
-    Object, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHT_NOBITS, STB_GLOBAL, STB_WEAK, STT_FILE, STT_SECTION, STT_TLS,
+    Object, SHF_COMPRESSED, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHT_NOBITS, STB_GLOBAL, STB_WEAK, STT_FILE, STT_SECTION, STT_TLS,
 };
 use crate::core::string::StrTab;
 use crate::target::{elf, ApplyCtx, Plan, Target};
@@ -123,6 +123,7 @@ pub(crate) fn target_address(
     g: &Graph,
     layout: &Layout,
     t: &TargetSym,
+    for_debug: bool,
 ) -> Result<u64, LinkError> {
     if t.weak_zero || t.dynamic {
         return Ok(0);
@@ -148,9 +149,21 @@ pub(crate) fn target_address(
         })?;
         return Ok(base + off + t.value);
     }
-    layout.sec_addr.get(&id).copied().map(|a| a + t.value).ok_or_else(|| {
-        LinkError::Native(format!("reference to discarded section in `{}`", t.name))
-    })
+    match layout.sec_addr.get(&id).copied().map(|a| a + t.value) {
+        Some(a) => Ok(a),
+        None if for_debug => Ok(0),
+        None => Err(LinkError::Native(format!(
+            "reference to discarded section in `{}`",
+            t.name
+        ))),
+    }
+}
+
+pub(crate) fn is_debug_sec(g: &Graph, oi: usize, si: u32) -> bool {
+    g.objs
+        .get(oi)
+        .and_then(|o| o.classes.get(si as usize))
+        .is_some_and(|&c| c == SecClass::Debug)
 }
 
 fn tls_values(g: &Graph, t: &TargetSym) -> (i64, u64) {
@@ -454,7 +467,7 @@ fn emit_eh_frame(
                 continue;
             }
             let t = g.resolved[foi].get(r.sym as usize).and_then(|o| o.as_ref()).ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
-            let s = target_address(g, layout, &t)?;
+            let s = target_address(g, layout, &t, false)?;
             let (tpoff, dtpoff) = tls_values(g, &t);
             let place = eh_base + g.eh_cie_off[ci] + (r.offset as usize - fstart) as u64;
             if g.relaxed.contains(&(foi, fsi, r.offset)) {
@@ -500,7 +513,7 @@ fn emit_eh_frame(
                     continue;
                 }
                 let t = g.resolved[oi].get(r.sym as usize).and_then(|o| o.as_ref()).ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
-                let s = target_address(g, layout, &t)?;
+                let s = target_address(g, layout, &t, false)?;
                 let (tpoff, dtpoff) = tls_values(g, &t);
                 let place = field_out + (r.offset as usize - in_start) as u64 - 4;
                 let rel_off = r.offset as usize - in_start;
@@ -540,7 +553,7 @@ fn emit_eh_frame(
                         if let Some(&i) = relas[cpos..].iter().find(|&&i| (obj.relas[i].offset as usize) < cell_in + 8) {
                             let r = &obj.relas[i];
                             let t = g.resolved[oi].get(r.sym as usize).and_then(|o| o.as_ref()).ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
-                            let cell_out = target_address(g, layout, &t)?;
+                            let cell_out = target_address(g, layout, &t, false)?;
                             let field_out_addr = eh_base + sec_out + f.out_off + (payload_in - in_start) as u64;
                             let nv = cell_out.wrapping_sub(field_out_addr) as i32;
                             let at = out_start + (payload_in - in_start);
@@ -638,13 +651,16 @@ fn apply_relocations(
             let obj = &parsed[oi];
             let n = obj.sections[si as usize].size as usize;
             let buf = out.get_mut(base_off as usize..base_off as usize + n).ok_or_else(|| LinkError::Native("output overflow".to_string()))?;
+            if obj.sections[si as usize].flags & SHF_COMPRESSED != 0 {
+                continue;
+            }
             for &ri in ridx[oi][si as usize].iter() {
                 let r = &obj.relas[ri];
                 if g.consumed_call.contains(&(oi, si, r.offset)) {
                     continue;
                 }
                 let t = g.resolved[oi].get(r.sym as usize).and_then(|o| o.as_ref()).ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
-                let s = target_address(g, layout, &t)?;
+                let s = target_address(g, layout, &t, is_debug_sec(g, oi, si))?;
                 let (tpoff, dtpoff) = tls_values(g, &t);
                 let place = base_addr + r.offset;
                 if g.relaxed.contains(&(oi, si, r.offset)) {
@@ -840,6 +856,7 @@ fn shdr_kind_flags(o: &OutSec, g: &Graph, layout: &Layout, dyn_sym_idx: u32, dyn
             SecClass::DataRelRo | SecClass::Data => (1, 0x3, 0, 0, 0),
             SecClass::Bss => (8, 0x3, 0, 0, 0),
             SecClass::Note => (7, 0x2, 0, 0, 0),
+            SecClass::Debug => (1, 0x0, 0, 0, 0),
             _ => (1, 0x2, 0, 0, 0),
         };
     }
@@ -851,6 +868,7 @@ fn shdr_kind_flags(o: &OutSec, g: &Graph, layout: &Layout, dyn_sym_idx: u32, dyn
         SecClass::DataRelRo | SecClass::Data => (1, 0x3, 0, 0, 0),
         SecClass::Bss => (8, 0x3, 0, 0, 0),
         SecClass::Note => (7, 0x2, 0, 0, 0),
+        SecClass::Debug => (1, 0x0, 0, 0, 0),
         _ => (1, 0x2, 0, 0, 0),
     }
 }

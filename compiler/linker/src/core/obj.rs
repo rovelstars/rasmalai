@@ -18,6 +18,7 @@ pub const SHF_ALLOC: u64 = 0x2;
 pub const SHF_EXECINSTR: u64 = 0x4;
 pub const SHF_WRITE: u64 = 0x1;
 pub const SHF_TLS: u64 = 0x400;
+pub const SHF_COMPRESSED: u64 = 0x800;
 
 pub const STB_LOCAL: u8 = 0;
 pub const STB_GLOBAL: u8 = 1;
