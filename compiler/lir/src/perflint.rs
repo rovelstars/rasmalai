@@ -24,7 +24,14 @@ pub enum PerfCode {
     P101,
     P102,
     P201,
+    P202,
 }
+
+pub const P202_SCALE_PRODUCT: i64 = 1024;
+pub const P202_LARGE_TRIP: i64 = 256;
+pub const P202_MIN_TRIP: i64 = 4;
+pub const P202_INDEXOF_MIN_OUTER: i64 = 64;
+const P202_MAX_BODY_INSTRS: usize = 128;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MissedReason {
@@ -119,6 +126,7 @@ pub fn lint_module(module: &Module) -> Vec<PerfLint> {
                 hint,
             });
         }
+        out.extend(lint_search_and_accum(func));
     }
     out.sort_by(|a, b| {
         a.func
@@ -171,6 +179,443 @@ fn fail_text(fail: PerfFail, extra: &str) -> (String, String) {
             "no source change enables this transform; the nest shape itself blocks interchange".to_string(),
         ),
     }
+}
+
+fn is_indexof_builtin(name: &str) -> bool {
+    name == "__rnx_string_index_of" || name == "__rnx_string_index_of_from"
+}
+
+fn counted_trip(cl: &crate::bce::CountedLoop) -> Option<i64> {
+    match &cl.init {
+        crate::bce::InitExpr::Const(c) => {
+            let trip = cl.bound.checked_sub(*c)?;
+            if trip >= 1 {
+                Some(trip)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn block_instr_count(func: &Function, blocks: &BTreeSet<BlockId>) -> usize {
+    let mut n = 0usize;
+    for b in blocks {
+        n += func.blocks.get(*b).map(|x| x.instrs.len()).unwrap_or(0);
+    }
+    n
+}
+
+fn has_conditional_exit(func: &Function, inner: &crate::bce::CountedLoop) -> bool {
+    for b in &inner.blocks {
+        if *b == inner.header {
+            continue;
+        }
+        let block = match func.blocks.get(*b) {
+            Some(x) => x,
+            None => return false,
+        };
+        if let Terminator::BrIf { then_bb, else_bb, .. } = &block.term
+            && (!inner.blocks.contains(then_bb) || !inner.blocks.contains(else_bb))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn scan_side(
+    func: &Function,
+    maps: &FuncMaps,
+    dom: &DominatorTree,
+    inner: &crate::bce::CountedLoop,
+    operand: Local,
+    cmp_block: BlockId,
+    cmp_idx: usize,
+) -> Option<Local> {
+    let (db, di) = single_def_uniq(maps, operand)?;
+    if !inner.blocks.contains(&db) {
+        return None;
+    }
+    let dominates = (db == cmp_block && di < cmp_idx)
+        || (db != cmp_block && dom.dominates(db, cmp_block));
+    if !dominates {
+        return None;
+    }
+    match func.blocks.get(db)?.instrs.get(di)? {
+        Instr::ArrayGet { arr, index, .. } => {
+            let nest = [inner];
+            let form = crate::bce::idx_affine(func, &nest, dom, db, di, *index, 0)?;
+            if form.coeffs.is_empty() {
+                return None;
+            }
+            if form.coeffs.keys().all(|k| *k == inner.iv) {
+                Some(*arr)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn invariant_side(
+    func: &Function,
+    maps: &FuncMaps,
+    dom: &DominatorTree,
+    inner: &crate::bce::CountedLoop,
+    operand: Local,
+) -> bool {
+    let (db, di) = match single_def_uniq(maps, operand) {
+        Some(x) => x,
+        None => return false,
+    };
+    match func.blocks.get(db).and_then(|b| b.instrs.get(di)) {
+        Some(Instr::Const { lit: Lit::Int(_), .. }) => true,
+        Some(_) => {
+            if inner.blocks.contains(&db) {
+                return false;
+            }
+            dom.dominates(db, inner.header)
+        }
+        None => false,
+    }
+}
+
+struct ScanCompare {
+    span: Span,
+    site: (BlockId, usize),
+    lhs: Local,
+    rhs: Local,
+    is_str: bool,
+}
+
+fn inner_scan_compare(
+    func: &Function,
+    inner: &crate::bce::CountedLoop,
+) -> Option<ScanCompare> {
+    let mut found: Option<ScanCompare> = None;
+    let mut ordered: Vec<BlockId> = inner.blocks.iter().copied().collect();
+    ordered.sort();
+    for b in ordered {
+        let count = func.blocks.get(b).map(|x| x.instrs.len()).unwrap_or(0);
+        for ii in 0..count {
+            let ins = func.blocks.get(b)?.instrs.get(ii)?;
+            let cand = match ins {
+                Instr::Cmp { span, op: CmpOp::Eq, kind: NumKind::Int, lhs, rhs, .. } => {
+                    Some(ScanCompare { span: *span, site: (b, ii), lhs: *lhs, rhs: *rhs, is_str: false })
+                }
+                Instr::Cmp { op: CmpOp::Eq, .. } => return None,
+                Instr::Call { span, dsts, target: CallTarget::Builtin(name), args, .. }
+                    if name == "streq" && args.len() == 2 && dsts.len() == 1 =>
+                {
+                    Some(ScanCompare {
+                        span: *span,
+                        site: (b, ii),
+                        lhs: args[0],
+                        rhs: args[1],
+                        is_str: true,
+                    })
+                }
+                _ => None,
+            };
+            if cand.is_some() {
+                if found.is_some() {
+                    return None;
+                }
+                found = cand;
+            }
+        }
+    }
+    found
+}
+
+fn inner_scan_veto(func: &Function, inner: &crate::bce::CountedLoop) -> bool {
+    let mut ordered: Vec<BlockId> = inner.blocks.iter().copied().collect();
+    ordered.sort();
+    for b in ordered {
+        let count = func.blocks.get(b).map(|x| x.instrs.len()).unwrap_or(0);
+        for ii in 0..count {
+            match func.blocks.get(b).and_then(|x| x.instrs.get(ii)) {
+                Some(Instr::Call { target: CallTarget::Builtin(name), .. })
+                    if name == "streq" || is_indexof_builtin(name) => {}
+                Some(Instr::Call { .. }) => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn match_inner_scan(
+    func: &Function,
+    maps: &FuncMaps,
+    dom: &DominatorTree,
+    inner: &crate::bce::CountedLoop,
+    outer_trip: i64,
+    inner_trip: i64,
+) -> Option<PerfLint> {
+    let product = (outer_trip as i128).checked_mul(inner_trip as i128)?;
+    let big_enough = product >= P202_SCALE_PRODUCT as i128
+        || (outer_trip >= P202_LARGE_TRIP && inner_trip >= P202_MIN_TRIP)
+        || (inner_trip >= P202_LARGE_TRIP && outer_trip >= P202_MIN_TRIP);
+    if !big_enough {
+        return None;
+    }
+    if block_instr_count(func, &inner.blocks) > P202_MAX_BODY_INSTRS {
+        return None;
+    }
+    if inner_scan_veto(func, inner) {
+        return None;
+    }
+    let cmp = inner_scan_compare(func, inner)?;
+    if cmp.span == UNKNOWN_SPAN {
+        return None;
+    }
+    let (cb, ci) = cmp.site;
+    let left_scan = scan_side(func, maps, dom, inner, cmp.lhs, cb, ci);
+    let right_scan = scan_side(func, maps, dom, inner, cmp.rhs, cb, ci);
+    let left_inv = invariant_side(func, maps, dom, inner, cmp.lhs);
+    let right_inv = invariant_side(func, maps, dom, inner, cmp.rhs);
+    let arr = match (left_scan, right_scan, left_inv, right_inv) {
+        (Some(a), None, _, true) => a,
+        (None, Some(a), true, _) => a,
+        _ => return None,
+    };
+    if !has_conditional_exit(func, inner) {
+        return None;
+    }
+    let what = if cmp.is_str {
+        "string"
+    } else {
+        match func.locals.get(arr as usize) {
+            Some(LirType::Array(inner_ty))
+                if matches!(inner_ty.as_ref(), LirType::Str) =>
+            {
+                "string"
+            }
+            _ => "array",
+        }
+    };
+    Some(PerfLint {
+        func: String::new(),
+        code: PerfCode::P202,
+        span: cmp.span,
+        message: format!(
+            "linear scan over {what} of length {inner_trip} inside loop of {outer_trip} iterations (~{} comparisons); this is quadratic.",
+            product
+        ),
+        hint: "Hoist the scan out of the loop, or build a lookup table (object/dictionary keyed by the compared field) once before the loop and probe it inside.".to_string(),
+    })
+}
+
+fn iv_forward_reach(func: &Function, outer: &crate::bce::CountedLoop) -> BTreeSet<Local> {
+    let mut set: BTreeSet<Local> = BTreeSet::from([outer.iv]);
+    let mut ordered: Vec<BlockId> = outer.blocks.iter().copied().collect();
+    ordered.sort();
+    let mut tmp: Vec<Local> = Vec::new();
+    let mut dsts: Vec<Local> = Vec::new();
+    loop {
+        let before = set.len();
+        for b in &ordered {
+            let count = func.blocks.get(*b).map(|x| x.instrs.len()).unwrap_or(0);
+            for ii in 0..count {
+                let ins = match func.blocks.get(*b).and_then(|x| x.instrs.get(ii)) {
+                    Some(x) => x,
+                    None => continue,
+                };
+                tmp.clear();
+                instr_reads(ins, &mut tmp);
+                if tmp.iter().any(|l| set.contains(l)) {
+                    dsts.clear();
+                    match ins {
+                        Instr::Call { dsts: d, err, .. } => {
+                            dsts.extend(d.iter().copied());
+                            dsts.extend(err.iter().copied());
+                        }
+                        _ => {
+                            if let Some(d) = instr_dst(ins) {
+                                dsts.push(d);
+                            }
+                        }
+                    }
+                    for d in &dsts {
+                        set.insert(*d);
+                    }
+                }
+            }
+        }
+        if set.len() == before {
+            break;
+        }
+    }
+    set
+}
+
+fn match_indexof(
+    func: &Function,
+    outer: &crate::bce::CountedLoop,
+    outer_trip: i64,
+    skip_blocks: &BTreeSet<BlockId>,
+) -> Vec<PerfLint> {
+    let mut out = Vec::new();
+    if outer_trip < P202_INDEXOF_MIN_OUTER {
+        return out;
+    }
+    let varying = iv_forward_reach(func, outer);
+    let mut ordered: Vec<BlockId> = outer.blocks.iter().copied().collect();
+    ordered.sort();
+    for b in ordered {
+        if skip_blocks.contains(&b) {
+            continue;
+        }
+        let count = func.blocks.get(b).map(|x| x.instrs.len()).unwrap_or(0);
+        for ii in 0..count {
+            match func.blocks.get(b).and_then(|x| x.instrs.get(ii)) {
+                Some(Instr::Call { span, target: CallTarget::Builtin(name), args, .. })
+                    if is_indexof_builtin(name) =>
+                {
+                    if *span == UNKNOWN_SPAN {
+                        continue;
+                    }
+                    if args.iter().any(|a| varying.contains(a)) {
+                        out.push(PerfLint {
+                            func: String::new(),
+                            code: PerfCode::P202,
+                            span: *span,
+                            message: format!(
+                                "string search (indexOf) inside loop of {outer_trip} iterations; each call scans the haystack, so total work grows with the trip count times the haystack length."
+                            ),
+                            hint: "replace per-iteration indexOf with a precomputed position table or a single pass.".to_string(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn lint_search_and_accum(func: &Function) -> Vec<PerfLint> {
+    let mut out = Vec::new();
+    if !has_cfg_cycle(func) {
+        return out;
+    }
+    let dom = crate::licm::compute_dominators(func);
+    let loops = crate::licm::find_natural_loops(func, &dom);
+    let mut counted: Vec<crate::bce::CountedLoop> = loops
+        .iter()
+        .filter_map(|lp| crate::bce::analyze_counted(func, lp))
+        .collect();
+    if counted.is_empty() {
+        return out;
+    }
+    let maps = func_maps(func);
+    if maps.truncated {
+        return out;
+    }
+    counted.sort_by_key(|l| (l.header, l.iv));
+    let trips: Vec<Option<i64>> = counted.iter().map(counted_trip).collect();
+    let mut scan_inner_blocks: BTreeSet<BlockId> = BTreeSet::new();
+    for (oi, outer) in counted.iter().enumerate() {
+        let outer_trip = match trips[oi] {
+            Some(t) => t,
+            None => continue,
+        };
+        let mut inners: Vec<usize> = Vec::new();
+        for (ii, inner) in counted.iter().enumerate() {
+            if ii != oi
+                && inner.blocks.is_subset(&outer.blocks)
+                && inner.blocks != outer.blocks
+            {
+                inners.push(ii);
+            }
+        }
+        inners.sort_by_key(|ii| counted[*ii].blocks.len());
+        for ii in inners {
+            if counted[ii].blocks.iter().any(|b| scan_inner_blocks.contains(b)) {
+                continue;
+            }
+            let inner_trip = match trips[ii] {
+                Some(t) => t,
+                None => continue,
+            };
+            if let Some(mut lint) =
+                match_inner_scan(func, &maps, &dom, &counted[ii], outer_trip, inner_trip)
+            {
+                lint.func = func.name.clone();
+                scan_inner_blocks.extend(counted[ii].blocks.iter().copied());
+                out.push(lint);
+                break;
+            }
+        }
+    }
+    for (oi, outer) in counted.iter().enumerate() {
+        let outer_trip = match trips[oi] {
+            Some(t) => t,
+            None => continue,
+        };
+        let mut lints = match_indexof(func, outer, outer_trip, &scan_inner_blocks);
+        for lint in lints.drain(..) {
+            let mut lint = lint;
+            lint.func = func.name.clone();
+            out.push(lint);
+        }
+    }
+    out
+}
+
+fn has_cfg_cycle(func: &Function) -> bool {
+    let n = func.blocks.len();
+    let mut color: Vec<u8> = vec![0; n];
+    for start in 0..n {
+        if color[start] != 0 {
+            continue;
+        }
+        let mut stack: Vec<(usize, bool)> = vec![(start, false)];
+        while let Some((b, done)) = stack.pop() {
+            if b >= n {
+                continue;
+            }
+            if done {
+                color[b] = 2;
+                continue;
+            }
+            if color[b] != 0 {
+                continue;
+            }
+            color[b] = 1;
+            stack.push((b, true));
+            let targets: Vec<usize> = match &func.blocks[b].term {
+                Terminator::Ret(_) | Terminator::Unreachable { .. } => Vec::new(),
+                Terminator::Br(t) => vec![*t],
+                Terminator::BrIf { then_bb, else_bb, .. } => vec![*then_bb, *else_bb],
+                Terminator::BrErr { catch_bb, next_bb, .. } => vec![*catch_bb, *next_bb],
+                Terminator::Switch { cases, default, .. } => {
+                    let mut out: Vec<usize> = cases.iter().map(|(_, x)| *x).collect();
+                    out.push(*default);
+                    out
+                }
+                Terminator::Throw { catch, .. } => {
+                    catch.map(|(x, _, _)| vec![x]).unwrap_or_default()
+                }
+                Terminator::Rethrow { catch_bb, .. } => vec![*catch_bb],
+            };
+            for x in targets {
+                if x < n {
+                    if color[x] == 1 {
+                        return true;
+                    }
+                    if color[x] == 0 {
+                        stack.push((x, false));
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 struct FuncMaps {
@@ -246,6 +691,16 @@ fn sites_of(vecs: &[Vec<(BlockId, usize)>], local: Local) -> &[(BlockId, usize)]
 
 fn single_def_in(maps: &FuncMaps, local: Local) -> Option<(BlockId, usize)> {
     match sites_of(&maps.defs, local) {
+        [(bi, ii)] if *ii != usize::MAX => Some((*bi, *ii)),
+        _ => None,
+    }
+}
+
+fn single_def_uniq(maps: &FuncMaps, local: Local) -> Option<(BlockId, usize)> {
+    let mut sites = def_sites(maps, local);
+    sites.sort();
+    sites.dedup();
+    match sites.as_slice() {
         [(bi, ii)] if *ii != usize::MAX => Some((*bi, *ii)),
         _ => None,
     }
@@ -618,6 +1073,7 @@ pub fn to_diagnostics(lints: &[PerfLint]) -> Vec<Diagnostic> {
                 PerfCode::P101 => Code::P101,
                 PerfCode::P102 => Code::P102,
                 PerfCode::P201 => Code::P201,
+                PerfCode::P202 => Code::P202,
             };
             Diagnostic::new(code, l.message.clone())
                 .with_span(l.span)
@@ -726,6 +1182,9 @@ mod tests {
                     p201 += 1;
                     assert!(l.message.contains("zero-initialization"));
                 }
+                PerfCode::P202 => {
+                    panic!("unexpected {:?} on garbage matmul variant: {l:?}", l.code)
+                }
             }
         }
         assert_eq!(p101, 1);
@@ -792,6 +1251,114 @@ mod tests {
         }
     }
 
+    const SCAN_NEST: &str = "fn Main(): Int {\n    let n = 64;\n    let m = 32;\n    let keys: Array<Int> = [];\n    let table: Array<Int> = [];\n    let out: Array<Int> = [];\n    let i = 0;\n    while i < 2048 {\n        keys.push(i % 97);\n        table.push((i * 3) % 101);\n        out.push(0);\n        i = i + 1;\n    }\n    let o = 0;\n    while o < n {\n        let needle = keys[o];\n        let found = -1;\n        let k = 0;\n        while k < m {\n            if table[k] == needle {\n                found = k;\n                break;\n            }\n            k = k + 1;\n        }\n        out[o] = found;\n        o = o + 1;\n    }\n    return out[0] + out[1];\n}\n";
+
+    const SCAN_NEST_STR: &str = "fn Main(): Int {\n    let n = 64;\n    let m = 32;\n    let keys: Array<String> = [];\n    let table: Array<String> = [];\n    let out: Array<Int> = [];\n    let i = 0;\n    while i < 64 {\n        keys.push(\"k\");\n        table.push(\"v\");\n        out.push(0);\n        i = i + 1;\n    }\n    let o = 0;\n    while o < n {\n        let needle = keys[o];\n        let found = -1;\n        let k = 0;\n        while k < m {\n            if table[k] == needle {\n                found = k;\n                break;\n            }\n            k = k + 1;\n        }\n        out[o] = found;\n        o = o + 1;\n    }\n    return out[0];\n}\n";
+
+    const INDEXOF_NEST: &str = "fn Main(): Int {\n    let n = 64;\n    let hay = \"abcdefghijklmnopqrstuvwxyz0123456789\";\n    let needles: Array<String> = [];\n    let outs: Array<Int> = [];\n    let q = 0;\n    while q < 32 {\n        needles.push(\"zz\");\n        outs.push(0);\n        q = q + 1;\n    }\n    let o = 0;\n    while o < n {\n        outs[o] = hay.indexOf(needles[o]);\n        o = o + 1;\n    }\n    return outs[0] + outs[1];\n}\n";
+
+    const SCAN_SINGLE: &str = "fn Main(): Int {\n    let table: Array<Int> = [];\n    let i = 0;\n    while i < 128 {\n        table.push(i * 3);\n        i = i + 1;\n    }\n    let needle = 42;\n    let found = -1;\n    let k = 0;\n    while k < 128 {\n        if table[k] == needle {\n            found = k;\n            break;\n        }\n        k = k + 1;\n    }\n    return found;\n}\n";
+
+    const SCAN_NOEXIT: &str = "fn Main(): Int {\n    let n = 64;\n    let m = 32;\n    let table: Array<Int> = [];\n    let out: Array<Int> = [];\n    let i = 0;\n    while i < 2048 {\n        table.push(i % 5);\n        out.push(0);\n        i = i + 1;\n    }\n    let o = 0;\n    while o < n {\n        let c = 0;\n        let k = 0;\n        while k < m {\n            if table[k] == 3 {\n                c = c + 1;\n            }\n            k = k + 1;\n        }\n        out[o] = c;\n        o = o + 1;\n    }\n    return out[0];\n}\n";
+
+    const SCAN_DISPATCH: &str = "fn Main(): Int {\n    let n = 64;\n    let ops: Array<Int> = [];\n    let keys: Array<Int> = [];\n    let i = 0;\n    while i < 4 {\n        ops.push(i);\n        i = i + 1;\n    }\n    let q = 0;\n    while q < 64 {\n        keys.push(q % 4);\n        q = q + 1;\n    }\n    let o = 0;\n    let acc = 0;\n    while o < n {\n        let needle = keys[o];\n        let k = 0;\n        while k < 4 {\n            if ops[k] == needle {\n                acc = acc + k;\n                break;\n            }\n            k = k + 1;\n        }\n        o = o + 1;\n    }\n    return acc;\n}\n";
+
+    const SCAN_MAPFILTER: &str = "fn Main(): Int {\n    let a: Array<Int> = [];\n    let i = 0;\n    while i < 64 {\n        a.push(i);\n        i = i + 1;\n    }\n    let b = a.map((x) => x * 2);\n    let c = b.filter((x) => x == 4);\n    return c[0];\n}\n";
+
+    const SCAN_DYNCALL: &str = "class Box {\n    fn get(self, i: Int): Int {\n        return i * 2;\n    }\n}\nfn Main(): Int {\n    let n = 64;\n    let m = 32;\n    let b = new Box();\n    let o = 0;\n    let acc = 0;\n    while o < n {\n        let k = 0;\n        while k < m {\n            if b.get(k) == o {\n                acc = acc + 1;\n                break;\n            }\n            k = k + 1;\n        }\n        o = o + 1;\n    }\n    return acc;\n}\n";
+
+    const INDEXOF_CONST: &str = "fn Main(): Int {\n    let hay = \"abcdefghijklmnopqrstuvwxyz\";\n    let at = hay.indexOf(\"mn\");\n    return at;\n}\n";
+
+    fn p202_lints(module: &Module) -> Vec<&PerfLint> {
+        module.perf_lints.iter().filter(|l| l.code == PerfCode::P202).collect()
+    }
+
+    #[test]
+    fn nested_scan_fires_p202() {
+        let module = opt_module(SCAN_NEST);
+        let fires = p202_lints(&module);
+        assert_eq!(fires.len(), 1, "{:?}", module.perf_lints);
+        assert!(fires[0].message.contains("linear scan over array of length 32"));
+        assert!(fires[0].message.contains("inside loop of 64 iterations"));
+        assert!(fires[0].message.contains("2048 comparisons"));
+        assert!(fires[0].hint.contains("lookup table"));
+    }
+
+    #[test]
+    fn nested_str_scan_fires_p202() {
+        let module = opt_module(SCAN_NEST_STR);
+        let fires = p202_lints(&module);
+        assert_eq!(fires.len(), 1, "{:?}", module.perf_lints);
+        assert!(fires[0].message.contains("linear scan over string"));
+    }
+
+    #[test]
+    fn indexof_in_loop_fires_p202() {
+        let module = opt_module(INDEXOF_NEST);
+        let fires = p202_lints(&module);
+        assert_eq!(fires.len(), 1, "{:?}", module.perf_lints);
+        assert!(fires[0].message.contains("indexOf"));
+        assert!(fires[0].hint.contains("precomputed"));
+    }
+
+    #[test]
+    fn p202_near_miss_shapes_stay_silent() {
+        for (name, src) in [
+            ("single", SCAN_SINGLE),
+            ("noexit", SCAN_NOEXIT),
+            ("dispatch", SCAN_DISPATCH),
+            ("mapfilter", SCAN_MAPFILTER),
+            ("dyncall", SCAN_DYNCALL),
+            ("constidx", INDEXOF_CONST),
+        ] {
+            let module = opt_module(src);
+            let fires: Vec<&PerfLint> = module
+                .perf_lints
+                .iter()
+                .filter(|l| l.code == PerfCode::P202)
+                .collect();
+            assert!(fires.is_empty(), "{name} fired {fires:?}");
+        }
+    }
+
+    #[test]
+    fn p202_stream_matches_across_jobs() {
+        for src in [SCAN_NEST, INDEXOF_NEST] {
+            let seq = opt_module(src);
+            let mut par = lower_module(src);
+            crate::opt::optimize_lir_parallel(&mut par, 1, "Main", 4);
+            let seq_lints: Vec<&PerfLint> = seq
+                .perf_lints
+                .iter()
+                .filter(|l| l.code == PerfCode::P202)
+                .collect();
+            let par_lints: Vec<&PerfLint> = par
+                .perf_lints
+                .iter()
+                .filter(|l| l.code == PerfCode::P202)
+                .collect();
+            assert_eq!(
+                format!("{seq_lints:?}"),
+                format!("{par_lints:?}"),
+                "jobs diverge"
+            );
+        }
+    }
+
+    #[test]
+    fn p202_diagnostics_carry_warn_codes() {
+        for (src, code) in [(SCAN_NEST, Code::P202), (INDEXOF_NEST, Code::P202)] {
+            let module = opt_module(src);
+            let diags = to_diagnostics(&module.perf_lints);
+            assert_eq!(diags.len(), 1, "{code:?}: {diags:?}");
+            assert_eq!(diags[0].code, code);
+            assert!(diags[0].code.is_warning());
+            assert!(diags[0].code.is_perf_lint());
+            assert!(!diags[0].code.is_perf_note());
+            assert!(diags[0].hint.is_some());
+        }
+    }
+
     fn lower_bench(path: &str) -> Option<Module> {
         let dir = std::env::temp_dir().join(format!("rnx-perflint-corpus-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -832,6 +1399,7 @@ mod tests {
         let mut p101 = 0usize;
         let mut p102 = 0usize;
         let mut p201: Vec<String> = Vec::new();
+        let mut p202: Vec<String> = Vec::new();
         for kind in &kinds {
             let module = lower_bench(&format!("{root}/{kind}/main.rnx")).expect("bench lowers");
             let mut notes: Vec<(ReceiptKind, Span)> = Vec::new();
@@ -863,6 +1431,10 @@ mod tests {
                         );
                     }
                     PerfCode::P201 => p201.push(format!("{kind}:{}", lint.func)),
+                    PerfCode::P202 => p202.push(format!(
+                        "{kind}:{}@{}..{} {}",
+                        lint.func, lint.span.start, lint.span.end, lint.message
+                    )),
                 }
             }
             for receipt in &module.transform_receipts {
@@ -890,6 +1462,7 @@ mod tests {
             }
         }
         assert!(p201.is_empty(), "P201 fired on corpus: {p201:?}");
+        assert!(p202.is_empty(), "P202 fired on corpus: {p202:?}");
         eprintln!("corpus audit: kinds={kinds:?} p101={p101} p102={p102}");
     }
 

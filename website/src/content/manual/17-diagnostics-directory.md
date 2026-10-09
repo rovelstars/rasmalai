@@ -248,8 +248,13 @@ The optimizer reports what it did to loop nests, and where it held back. These d
 | `P101` | note | a reduction nest was restructured to accumulation form | none; the compiler already did the work |
 | `P102` | note | bounds checks in a loop were versioned behind a hoisted guard | none; the fast path runs unchecked |
 | `P201` | warning | a reduction nest kept scalar order for one named reason (aliasing, unproven zero-fill, cost gate, or index roles) | fix the named proof; see the hint |
+| `P202` | warning | a linear scan runs inside an outer loop (confidently quadratic at the stated trip product) | hoist the scan or precompute a lookup table; see the hint |
 
-`#[Allow(PerfP201)]` on a function silences P-diagnostics inside it, `#[Allow(PerfAll)]` silences all of them, and `#![Allow(...)]` at the top of a file silences the whole file. `rnx build --deny-perf-lints` (bare for all, or `--deny-perf-lints=P201,P203`, repeatable; `RNX_DENY_PERF_LINTS` sets the same list when the flag is absent) promotes P-warnings to build failures for CI. Notes are never promoted, even with `--show-perf-notes`.
+`#[Allow(PerfP201)]` on a function silences P-diagnostics inside it, `#[Allow(PerfAll)]` silences all of them, and `#![Allow(...)]` at the top of a file silences the whole file. `#[Allow(PerfP202)]` works the same way for scan warnings. `rnx build --deny-perf-lints` (bare for all, or `--deny-perf-lints=P201,P202`, repeatable; `RNX_DENY_PERF_LINTS` sets the same list when the flag is absent) promotes P-warnings to build failures for CI. (`P203` is a reserved code accepted by the flag but emitted by no lint yet.) Notes are never promoted, even with `--show-perf-notes`.
+
+### Automatic fixes (`--fix`)
+
+`rnx build --fix` applies the compiler's own proven rewrite for the one qualifying case: a `P201` ZeroInit failure becomes a zero-fill plus the accumulation form the optimizer then handles (verified by the `P101` receipt appearing after the edit). Every other shape — aliasing, cost-gate and role failures, `P202` scans — is refused with `no autofix available`; those need human judgment. The engine previews a diff, edits span-precisely (formatting outside the edit is byte-preserved), writes in place with a `.bak` backup per file (refused when a backup already exists unless `--fix-force`; `--fix-keep-backup` retains it), then re-parses, rebuilds, and compares program output against the pre-fix binary. Any step failing restores the file byte-for-byte and exits non-zero; files are applied all-or-nothing, fail-fast across files. Combining `--fix` with `--deny-perf-lints` on the same lint is an error: fix first, deny second.
 
 ## Lint rules (L001-L005)
 

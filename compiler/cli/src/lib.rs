@@ -3,6 +3,7 @@ pub mod audit;
 pub mod check;
 pub mod delta;
 pub mod dev;
+pub mod fix;
 pub mod fmt;
 pub mod mcp;
 pub mod styles;
@@ -203,6 +204,7 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::P101 => "no action needed; the compiler already restructured this nest",
         Code::P102 => "no action needed; bounds checks were versioned with a hoisted guard",
         Code::P201 => "restructure the nest so the failed proof holds (see the diagnostic hint)",
+        Code::P202 => "hoist the scan out of the loop or build a lookup table once before the loop",
         Code::W201 => "correct the spelling or remove the entry",
         Code::W204 => "replace `pub`/`public` with `export`",
         Code::W108 => "make one side `GenRef` or add `#[Allow(CyclicReference)]`",

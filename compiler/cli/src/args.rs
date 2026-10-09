@@ -97,6 +97,15 @@ pub enum Command {
         /// Show Tier-1 performance notes (P101/P102); hidden by default (or RNX_SHOW_PERF_NOTES=1 when the flag is absent; the flag overrides the env)
         #[arg(long = "show-perf-notes")]
         show_perf_notes: bool,
+        /// Apply the P201 ZeroInit autofix: preview a unified diff, rewrite sources in place with .bak backups, then verify (re-parse, rebuild, receipt, checksum)
+        #[arg(long = "fix")]
+        fix: bool,
+        /// Overwrite existing .bak backups when fixing
+        #[arg(long = "fix-force")]
+        fix_force: bool,
+        /// Keep .bak backups after a successful fix
+        #[arg(long = "fix-keep-backup")]
+        fix_keep_backup: bool,
     },
     /// Fast type-check and semantic validation
     Check {
