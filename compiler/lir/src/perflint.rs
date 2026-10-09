@@ -3,7 +3,7 @@ use crate::instr::*;
 use crate::licm::DominatorTree;
 use crate::opt::{instr_dst, instr_reads, term_reads};
 use diagnostics::{Code, Diagnostic, Span};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReceiptKind {
@@ -25,6 +25,7 @@ pub enum PerfCode {
     P102,
     P201,
     P202,
+    P203,
 }
 
 pub const P202_SCALE_PRODUCT: i64 = 1024;
@@ -498,6 +499,185 @@ fn match_indexof(
     out
 }
 
+fn concat_rebuild_span(
+    func: &Function,
+    maps: &FuncMaps,
+    blocks: &BTreeSet<BlockId>,
+    acc: Local,
+    start: Local,
+) -> Option<Span> {
+    let mut cur = start;
+    for _ in 0..8 {
+        let (db, di) = single_def_uniq(maps, cur)?;
+        let ins = func.blocks.get(db)?.instrs.get(di)?;
+        match ins {
+            Instr::Copy { dst, src, .. } if *dst == cur => {
+                cur = *src;
+            }
+            Instr::Concat { span, dst, lhs, rhs, .. } if *dst == cur => {
+                if !blocks.contains(&db) || *span == UNKNOWN_SPAN {
+                    return None;
+                }
+                if *lhs == acc || *rhs == acc {
+                    return Some(*span);
+                }
+                return None;
+            }
+            Instr::Call { span, dsts, target: CallTarget::Builtin(name), args, .. }
+                if name == "__rnx_string_concat" && dsts.len() == 1 && dsts[0] == cur =>
+            {
+                if !blocks.contains(&db) || *span == UNKNOWN_SPAN {
+                    return None;
+                }
+                if args.contains(&acc) {
+                    return Some(*span);
+                }
+                return None;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn used_outside(maps: &FuncMaps, local: Local, blocks: &BTreeSet<BlockId>) -> bool {
+    sites_of(&maps.uses, local).iter().any(|(b, _)| !blocks.contains(b))
+}
+
+fn match_concat_accum(
+    func: &Function,
+    maps: &FuncMaps,
+    dom: &DominatorTree,
+    counted: &crate::bce::CountedLoop,
+    trip: i64,
+) -> Vec<PerfLint> {
+    let mut out = Vec::new();
+    if trip < accum::MIN_ACCUM_TRIP {
+        return out;
+    }
+    for (acc, sites) in maps.defs.iter().enumerate() {
+        let acc = acc as Local;
+        let mut defs: Vec<(BlockId, usize)> = Vec::with_capacity(2);
+        for (b, ii) in sites {
+            if *ii != usize::MAX && !defs.contains(&(*b, *ii)) {
+                defs.push((*b, *ii));
+            }
+        }
+        if defs.len() != 2 {
+            continue;
+        }
+        let in_idx = defs.iter().position(|(b, _)| counted.blocks.contains(b));
+        let oi = match in_idx {
+            Some(0) => 1,
+            Some(1) => 0,
+            _ => continue,
+        };
+        let (ob, _) = defs[oi];
+        let (ib, ii) = defs[in_idx.expect("in_idx")];
+        if counted.blocks.contains(&ob) {
+            continue;
+        }
+        if !dom.dominates(ob, counted.header) {
+            continue;
+        }
+        let start = match func.blocks.get(ib).and_then(|b| b.instrs.get(ii)) {
+            Some(Instr::Copy { dst, src, .. }) if *dst == acc => *src,
+            Some(Instr::Concat { dst, .. }) if *dst == acc => acc,
+            Some(Instr::Call { dsts, target: CallTarget::Builtin(name), .. })
+                if name == "__rnx_string_concat" && dsts.len() == 1 && dsts[0] == acc =>
+            {
+                acc
+            }
+            _ => continue,
+        };
+        let span = match concat_rebuild_span(func, maps, &counted.blocks, acc, start) {
+            Some(s) => s,
+            None => continue,
+        };
+        if !used_outside(maps, acc, &counted.blocks) {
+            continue;
+        }
+        out.push(PerfLint {
+            func: String::new(),
+            code: PerfCode::P203,
+            span,
+            message: format!(
+                "string accumulator is rebuilt by concatenation on every iteration ({trip} iterations, each copying the prefix)."
+            ),
+            hint: "Collect pieces into an array with push and join once after the loop, or pre-size a buffer.".to_string(),
+        });
+    }
+    out
+}
+
+fn match_inner_alloc(
+    func: &Function,
+    maps: &FuncMaps,
+    dom: &DominatorTree,
+    counted: &crate::bce::CountedLoop,
+    trip: i64,
+) -> Vec<PerfLint> {
+    let mut out = Vec::new();
+    if trip < accum::MIN_ACCUM_TRIP {
+        return out;
+    }
+    let mut ordered: Vec<BlockId> = counted.blocks.iter().copied().collect();
+    ordered.sort();
+    let mut copy_links: BTreeMap<Local, Vec<Local>> = BTreeMap::new();
+    let mut pushes: BTreeSet<Local> = BTreeSet::new();
+    for b in &ordered {
+        let count = func.blocks.get(*b).map(|x| x.instrs.len()).unwrap_or(0);
+        for ii in 0..count {
+            match func.blocks.get(*b).and_then(|x| x.instrs.get(ii)) {
+                Some(Instr::Copy { dst, src, .. }) => {
+                    copy_links.entry(*src).or_default().push(*dst);
+                }
+                Some(Instr::ArrayPush { arr, .. }) => {
+                    pushes.insert(*arr);
+                }
+                _ => {}
+            }
+        }
+    }
+    for b in &ordered {
+        let count = func.blocks.get(*b).map(|x| x.instrs.len()).unwrap_or(0);
+        for ii in 0..count {
+            let (dst, span) = match func.blocks.get(*b).and_then(|x| x.instrs.get(ii)) {
+                Some(Instr::ArrayNew { span, dst, .. }) => (*dst, *span),
+                _ => continue,
+            };
+            if span == UNKNOWN_SPAN {
+                continue;
+            }
+            if !dom.dominates(counted.header, *b) || dom.dominates(*b, counted.header) {
+                continue;
+            }
+            let mut arrs: Vec<Local> = vec![dst];
+            if let Some(linked) = copy_links.get(&dst) {
+                arrs.extend(linked.iter().copied());
+            }
+            arrs.sort();
+            arrs.dedup();
+            if !arrs.iter().any(|a| pushes.contains(a)) {
+                continue;
+            }
+            if !arrs.iter().any(|a| used_outside(maps, *a, &counted.blocks)) {
+                continue;
+            }
+            out.push(PerfLint {
+                func: String::new(),
+                code: PerfCode::P203,
+                span,
+                message: format!(
+                    "array accumulator is reallocated on every iteration ({trip} iterations; created inside the loop, then grown)."
+                ),
+                hint: "Move the creation before the loop and push into the same array, or collect per-iteration arrays and concatenate once after the loop.".to_string(),
+            });
+        }
+    }
+    out
+}
+
 fn lint_search_and_accum(func: &Function) -> Vec<PerfLint> {
     let mut out = Vec::new();
     if !has_cfg_cycle(func) {
@@ -560,6 +740,18 @@ fn lint_search_and_accum(func: &Function) -> Vec<PerfLint> {
         let mut lints = match_indexof(func, outer, outer_trip, &scan_inner_blocks);
         for lint in lints.drain(..) {
             let mut lint = lint;
+            lint.func = func.name.clone();
+            out.push(lint);
+        }
+    }
+    for (ci, cl) in counted.iter().enumerate() {
+        let trip = match trips[ci] {
+            Some(t) => t,
+            None => continue,
+        };
+        let mut lints = match_concat_accum(func, &maps, &dom, cl, trip);
+        lints.extend(match_inner_alloc(func, &maps, &dom, cl, trip));
+        for mut lint in lints {
             lint.func = func.name.clone();
             out.push(lint);
         }
@@ -1074,6 +1266,7 @@ pub fn to_diagnostics(lints: &[PerfLint]) -> Vec<Diagnostic> {
                 PerfCode::P102 => Code::P102,
                 PerfCode::P201 => Code::P201,
                 PerfCode::P202 => Code::P202,
+                PerfCode::P203 => Code::P203,
             };
             Diagnostic::new(code, l.message.clone())
                 .with_span(l.span)
@@ -1182,7 +1375,7 @@ mod tests {
                     p201 += 1;
                     assert!(l.message.contains("zero-initialization"));
                 }
-                PerfCode::P202 => {
+                PerfCode::P202 | PerfCode::P203 => {
                     panic!("unexpected {:?} on garbage matmul variant: {l:?}", l.code)
                 }
             }
@@ -1257,6 +1450,12 @@ mod tests {
 
     const INDEXOF_NEST: &str = "fn Main(): Int {\n    let n = 64;\n    let hay = \"abcdefghijklmnopqrstuvwxyz0123456789\";\n    let needles: Array<String> = [];\n    let outs: Array<Int> = [];\n    let q = 0;\n    while q < 32 {\n        needles.push(\"zz\");\n        outs.push(0);\n        q = q + 1;\n    }\n    let o = 0;\n    while o < n {\n        outs[o] = hay.indexOf(needles[o]);\n        o = o + 1;\n    }\n    return outs[0] + outs[1];\n}\n";
 
+    const CONCAT_ACCUM: &str = "fn Main(): Int {\n    let n = 64;\n    let s = \"\";\n    let i = 0;\n    while i < n {\n        s = s + \"ab\";\n        i = i + 1;\n    }\n    print(\"RESULT\", s);\n    return 0;\n}\n";
+
+    const CONCAT_METHOD_ACCUM: &str = "fn Main(): Int {\n    let n = 64;\n    let s = \"\";\n    let i = 0;\n    while i < n {\n        s = s.concat(\"ab\");\n        i = i + 1;\n    }\n    print(\"RESULT\", s);\n    return 0;\n}\n";
+
+    const INNER_ALLOC: &str = "fn Main(): Int {\n    let n = 64;\n    let out: Array<Int> = [];\n    let buf: Array<Int> = [];\n    let i = 0;\n    while i < n {\n        buf = [];\n        buf.push(i);\n        buf.push(i * 2);\n        out.push(buf[0] + buf[1]);\n        i = i + 1;\n    }\n    return buf[0] + out[0];\n}\n";
+
     const SCAN_SINGLE: &str = "fn Main(): Int {\n    let table: Array<Int> = [];\n    let i = 0;\n    while i < 128 {\n        table.push(i * 3);\n        i = i + 1;\n    }\n    let needle = 42;\n    let found = -1;\n    let k = 0;\n    while k < 128 {\n        if table[k] == needle {\n            found = k;\n            break;\n        }\n        k = k + 1;\n    }\n    return found;\n}\n";
 
     const SCAN_NOEXIT: &str = "fn Main(): Int {\n    let n = 64;\n    let m = 32;\n    let table: Array<Int> = [];\n    let out: Array<Int> = [];\n    let i = 0;\n    while i < 2048 {\n        table.push(i % 5);\n        out.push(0);\n        i = i + 1;\n    }\n    let o = 0;\n    while o < n {\n        let c = 0;\n        let k = 0;\n        while k < m {\n            if table[k] == 3 {\n                c = c + 1;\n            }\n            k = k + 1;\n        }\n        out[o] = c;\n        o = o + 1;\n    }\n    return out[0];\n}\n";
@@ -1269,8 +1468,18 @@ mod tests {
 
     const INDEXOF_CONST: &str = "fn Main(): Int {\n    let hay = \"abcdefghijklmnopqrstuvwxyz\";\n    let at = hay.indexOf(\"mn\");\n    return at;\n}\n";
 
+    const CONCAT_SMALL: &str = "fn Main(): Int {\n    let s = \"\";\n    let i = 0;\n    while i < 3 {\n        s = s + \"ab\";\n        i = i + 1;\n    }\n    print(\"RESULT\", s);\n    return 0;\n}\n";
+
+    const CONCAT_DEAD: &str = "fn Main(): Int {\n    let n = 64;\n    let s = \"\";\n    let i = 0;\n    while i < n {\n        s = s + \"ab\";\n        i = i + 1;\n    }\n    return n;\n}\n";
+
+    const CONCAT_FRESH: &str = "fn Main(): Int {\n    let n = 64;\n    let total = 0;\n    let i = 0;\n    while i < n {\n        let t = \"x\" + \"y\";\n        total = total + 1;\n        i = i + 1;\n    }\n    print(\"RESULT\", total);\n    return 0;\n}\n";
+
     fn p202_lints(module: &Module) -> Vec<&PerfLint> {
         module.perf_lints.iter().filter(|l| l.code == PerfCode::P202).collect()
+    }
+
+    fn p203_lints(module: &Module) -> Vec<&PerfLint> {
+        module.perf_lints.iter().filter(|l| l.code == PerfCode::P203).collect()
     }
 
     #[test]
@@ -1302,40 +1511,69 @@ mod tests {
     }
 
     #[test]
-    fn p202_near_miss_shapes_stay_silent() {
+    fn concat_accum_fires_p203() {
+        let module = opt_module(CONCAT_ACCUM);
+        let fires = p203_lints(&module);
+        assert_eq!(fires.len(), 1, "{:?}", module.perf_lints);
+        assert!(fires[0].message.contains("rebuilt by concatenation"));
+        assert!(fires[0].message.contains("64 iterations"));
+        assert!(fires[0].hint.contains("push and join"));
+    }
+
+    #[test]
+    fn concat_method_accum_fires_p203() {
+        let module = opt_module(CONCAT_METHOD_ACCUM);
+        let fires = p203_lints(&module);
+        assert_eq!(fires.len(), 1, "{:?}", module.perf_lints);
+    }
+
+    #[test]
+    fn inner_alloc_fires_p203() {
+        let module = opt_module(INNER_ALLOC);
+        let fires = p203_lints(&module);
+        assert_eq!(fires.len(), 1, "{:?}", module.perf_lints);
+        assert!(fires[0].message.contains("reallocated on every iteration"));
+    }
+
+    #[test]
+    fn p202_p203_near_miss_shapes_stay_silent() {
         for (name, src) in [
             ("single", SCAN_SINGLE),
             ("noexit", SCAN_NOEXIT),
             ("dispatch", SCAN_DISPATCH),
             ("mapfilter", SCAN_MAPFILTER),
             ("dyncall", SCAN_DYNCALL),
+            ("builder", BUILDER),
+            ("small", CONCAT_SMALL),
+            ("dead", CONCAT_DEAD),
+            ("fresh", CONCAT_FRESH),
             ("constidx", INDEXOF_CONST),
         ] {
             let module = opt_module(src);
             let fires: Vec<&PerfLint> = module
                 .perf_lints
                 .iter()
-                .filter(|l| l.code == PerfCode::P202)
+                .filter(|l| matches!(l.code, PerfCode::P202 | PerfCode::P203))
                 .collect();
             assert!(fires.is_empty(), "{name} fired {fires:?}");
         }
     }
 
     #[test]
-    fn p202_stream_matches_across_jobs() {
-        for src in [SCAN_NEST, INDEXOF_NEST] {
+    fn p202_p203_stream_matches_across_jobs() {
+        for src in [SCAN_NEST, INDEXOF_NEST, CONCAT_ACCUM, INNER_ALLOC] {
             let seq = opt_module(src);
             let mut par = lower_module(src);
             crate::opt::optimize_lir_parallel(&mut par, 1, "Main", 4);
             let seq_lints: Vec<&PerfLint> = seq
                 .perf_lints
                 .iter()
-                .filter(|l| l.code == PerfCode::P202)
+                .filter(|l| matches!(l.code, PerfCode::P202 | PerfCode::P203))
                 .collect();
             let par_lints: Vec<&PerfLint> = par
                 .perf_lints
                 .iter()
-                .filter(|l| l.code == PerfCode::P202)
+                .filter(|l| matches!(l.code, PerfCode::P202 | PerfCode::P203))
                 .collect();
             assert_eq!(
                 format!("{seq_lints:?}"),
@@ -1346,8 +1584,13 @@ mod tests {
     }
 
     #[test]
-    fn p202_diagnostics_carry_warn_codes() {
-        for (src, code) in [(SCAN_NEST, Code::P202), (INDEXOF_NEST, Code::P202)] {
+    fn p202_p203_diagnostics_carry_warn_codes() {
+        for (src, code) in [
+            (SCAN_NEST, Code::P202),
+            (INDEXOF_NEST, Code::P202),
+            (CONCAT_ACCUM, Code::P203),
+            (INNER_ALLOC, Code::P203),
+        ] {
             let module = opt_module(src);
             let diags = to_diagnostics(&module.perf_lints);
             assert_eq!(diags.len(), 1, "{code:?}: {diags:?}");
@@ -1400,6 +1643,7 @@ mod tests {
         let mut p102 = 0usize;
         let mut p201: Vec<String> = Vec::new();
         let mut p202: Vec<String> = Vec::new();
+        let mut p203: Vec<String> = Vec::new();
         for kind in &kinds {
             let module = lower_bench(&format!("{root}/{kind}/main.rnx")).expect("bench lowers");
             let mut notes: Vec<(ReceiptKind, Span)> = Vec::new();
@@ -1435,6 +1679,10 @@ mod tests {
                         "{kind}:{}@{}..{} {}",
                         lint.func, lint.span.start, lint.span.end, lint.message
                     )),
+                    PerfCode::P203 => p203.push(format!(
+                        "{kind}:{}@{}..{} {}",
+                        lint.func, lint.span.start, lint.span.end, lint.message
+                    )),
                 }
             }
             for receipt in &module.transform_receipts {
@@ -1463,6 +1711,7 @@ mod tests {
         }
         assert!(p201.is_empty(), "P201 fired on corpus: {p201:?}");
         assert!(p202.is_empty(), "P202 fired on corpus: {p202:?}");
+        assert!(p203.is_empty(), "P203 fired on corpus: {p203:?}");
         eprintln!("corpus audit: kinds={kinds:?} p101={p101} p102={p102}");
     }
 

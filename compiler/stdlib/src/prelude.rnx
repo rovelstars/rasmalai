@@ -377,16 +377,41 @@ extension Array<T> {
     * print([4, 9, 16].join(" | "));
     */
     fn join(separator: String = ""): String {
-        let out = "";
+        let n = this.length();
+        if n == 0 {
+            return "";
+        }
+        if n == 1 {
+            return "" + this[0];
+        }
+        let parts: Array<String> = [];
         let i = 0;
-        while i < this.length() {
-            if i == 0 {
-                out = "" + this[i];
-            } else {
-                out = out + separator + ("" + this[i]);
-            }
+        while i < n {
+            parts.push("" + this[i]);
             i = i + 1;
         }
+        let sepChars = separator.length();
+        let totalChars = 0;
+        i = 0;
+        while i < n {
+            totalChars = totalChars + parts[i].length();
+            i = i + 1;
+        }
+        if sepChars > 0 {
+            totalChars = totalChars + sepChars * (n - 1);
+        }
+        let buf = __rnx_bytes_alloc(totalChars * 4);
+        let pos = 0;
+        i = 0;
+        while i < n {
+            if i > 0 && sepChars > 0 {
+                pos = pos + __rnx_bytes_write_string(buf, pos, separator);
+            }
+            pos = pos + __rnx_bytes_write_string(buf, pos, parts[i]);
+            i = i + 1;
+        }
+        let out = __rnx_bytes_read_string(buf, 0, pos);
+        __rnx_bytes_free(buf);
         return out;
     }
 

@@ -49,6 +49,7 @@ pub enum Code {
     P102,
     P201,
     P202,
+    P203,
     S101,
     S102,
     S201,
@@ -95,11 +96,12 @@ impl Code {
             Code::P102 => "P102",
             Code::P201 => "P201",
             Code::P202 => "P202",
+            Code::P203 => "P203",
         }
     }
 
     pub fn is_warning(self) -> bool {
-        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W204 | Code::P201 | Code::P202)
+        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W204 | Code::P201 | Code::P202 | Code::P203)
     }
 
     pub fn is_perf_note(self) -> bool {
@@ -107,7 +109,7 @@ impl Code {
     }
 
     pub fn is_perf_lint(self) -> bool {
-        self.is_perf_note() || matches!(self, Code::P201 | Code::P202)
+        self.is_perf_note() || matches!(self, Code::P201 | Code::P202 | Code::P203)
     }
 
     pub fn title(self) -> &'static str {
@@ -147,6 +149,7 @@ impl Code {
             Code::P102 => "compiler-versioned bounds checks",
             Code::P201 => "missed reduction restructure",
             Code::P202 => "linear search inside a loop",
+            Code::P203 => "quadratic accumulator rebuild in loop",
         }
     }
 
@@ -187,6 +190,7 @@ impl Code {
             "P102" => Code::P102,
             "P201" => Code::P201,
             "P202" => Code::P202,
+            "P203" => Code::P203,
             _ => return None,
         })
     }
@@ -234,6 +238,7 @@ pub const ALL: &[Code] = &[
     Code::P102,
     Code::P201,
     Code::P202,
+    Code::P203,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
