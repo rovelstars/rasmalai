@@ -145,9 +145,33 @@ fn project_root_for(input: &str) -> std::path::PathBuf {
         }
     }
 }
-pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, verbose: bool, quiet: bool) {
+fn env_flag_enabled(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
+
+pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, deny_perf_lints: Vec<String>, show_perf_notes: bool, verbose: bool, quiet: bool) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
+            let deny_raw: Vec<String> = if deny_perf_lints.is_empty() {
+                std::env::var("RNX_DENY_PERF_LINTS").map(|v| vec![v]).unwrap_or_default()
+            } else {
+                deny_perf_lints
+            };
+            let deny = match cli::report::parse_deny_perf(&deny_raw) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }
+            };
+            if !deny.is_empty() && (lib || emit_obj) {
+                eprintln!("error: --deny-perf-lints is only supported for executable builds");
+                std::process::exit(2);
+            }
+            let show_notes = show_perf_notes || env_flag_enabled("RNX_SHOW_PERF_NOTES");
             let target = cli::resolve_scope_target(path.as_deref(), package.as_deref())
                 .unwrap_or_else(|e| {
                     eprintln!("{e}");
@@ -301,6 +325,39 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     std::process::exit(1);
                 }
             };
+            let perf_diags: Vec<diagnostics::Diagnostic> = built
+                .perf_diags
+                .iter()
+                .filter(|d| d.code.is_perf_lint())
+                .cloned()
+                .collect();
+            if !perf_diags.is_empty() || !deny.is_empty() {
+                let rendered = cli::report::render_perf_stream(
+                    &theme,
+                    std::path::Path::new(&input),
+                    &perf_diags,
+                    &deny,
+                    show_notes,
+                );
+                if !rendered.text.is_empty() {
+                    eprint!("{}", rendered.text);
+                }
+                if !rendered.denied.is_empty() {
+                    let mut codes: Vec<String> = rendered
+                        .denied
+                        .iter()
+                        .map(|d| d.code.as_str().to_string())
+                        .collect();
+                    codes.sort();
+                    codes.dedup();
+                    eprintln!(
+                        "error: build denied by --deny-perf-lints ({}: {} diagnostic(s))",
+                        codes.join(", "),
+                        rendered.denied.len()
+                    );
+                    std::process::exit(1);
+                }
+            }
             let (out_path, pending_stamp) = {
                     let path = default_out_path(&input, &root, release);
                     if let Some(parent) = path.parent() {

@@ -91,6 +91,12 @@ pub enum Command {
         /// Build memory cap in bytes; KB/MB/GB suffixes allowed (or RNX_MEMORY_CAP). Default: min(50% RAM, 8GB); 4GB when RAM size is unreadable
         #[arg(long, env = "RNX_MEMORY_CAP", value_parser = crate::parse_memory_cap)]
         memory_cap: Option<u64>,
+        /// Promote performance warnings to hard errors: bare flag denies all (P201-P203); or comma list, repeatable, e.g. --deny-perf-lints=P201,P203 (or RNX_DENY_PERF_LINTS when the flag is absent; the flag overrides the env)
+        #[arg(long = "deny-perf-lints", num_args = 0..=1, default_missing_value = "ALL", require_equals = true, value_delimiter = ',')]
+        deny_perf_lints: Vec<String>,
+        /// Show Tier-1 performance notes (P101/P102); hidden by default (or RNX_SHOW_PERF_NOTES=1 when the flag is absent; the flag overrides the env)
+        #[arg(long = "show-perf-notes")]
+        show_perf_notes: bool,
     },
     /// Fast type-check and semantic validation
     Check {

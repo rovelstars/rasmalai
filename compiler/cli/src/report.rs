@@ -1,4 +1,5 @@
 use diagnostics::{line_col, Code, Diagnostic, Span};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 pub struct Attributed {
@@ -175,10 +176,27 @@ pub fn render_diagnostic(
     attr: &Attributed,
     src: &str,
 ) -> String {
-    let label = if diag.code.is_warning() {
-        "warning"
-    } else {
-        "error"
+    render_diagnostic_with_label(theme, diag, attr, src, None)
+}
+
+pub fn render_diagnostic_with_label(
+    theme: &diagnostics::theme::AuraTheme,
+    diag: &Diagnostic,
+    attr: &Attributed,
+    src: &str,
+    label_override: Option<&str>,
+) -> String {
+    let label = match label_override {
+        Some(l) => l,
+        None => {
+            if diag.code.is_perf_note() {
+                "note"
+            } else if diag.code.is_warning() {
+                "warning"
+            } else {
+                "error"
+            }
+        }
     };
     let lines: Vec<&str> = src.lines().collect();
     let idx = attr.line.saturating_sub(1);
@@ -687,6 +705,228 @@ pub fn render_security_issues(diags: &[diagnostics::Diagnostic]) -> String {
     out
 }
 
+#[derive(Debug)]
+pub struct DenyPerf {
+    pub all: bool,
+    pub codes: BTreeSet<String>,
+}
+
+impl DenyPerf {
+    pub fn empty() -> DenyPerf {
+        DenyPerf {
+            all: false,
+            codes: BTreeSet::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.all && self.codes.is_empty()
+    }
+
+    pub fn denies(&self, code: &str) -> bool {
+        self.all || self.codes.contains(code)
+    }
+}
+
+pub fn parse_deny_perf(values: &[String]) -> Result<DenyPerf, String> {
+    let mut deny = DenyPerf::empty();
+    for value in values {
+        for part in value.split(',') {
+            let code = part.trim().to_ascii_uppercase();
+            if code.is_empty() {
+                continue;
+            }
+            if code == "ALL" {
+                deny.all = true;
+            } else if code == "P201" || code == "P202" || code == "P203" {
+                deny.codes.insert(code);
+            } else {
+                return Err(format!(
+                    "unknown --deny-perf-lints code `{part}`; expected P201, P202, P203 (or bare --deny-perf-lints for all)"
+                ));
+            }
+        }
+    }
+    Ok(deny)
+}
+
+fn perf_tag(code: Code) -> Option<&'static str> {
+    match code {
+        Code::P101 => Some("PerfP101"),
+        Code::P102 => Some("PerfP102"),
+        Code::P201 => Some("PerfP201"),
+        _ => None,
+    }
+}
+
+fn allow_hits(attrs: &[frontend::ast::Attr], code: Code) -> bool {
+    let tag = perf_tag(code);
+    attrs.iter().any(|a| {
+        a.name == "Allow"
+            && a.args.iter().any(|arg| match &arg.node {
+                frontend::ast::Expr::Ident(s) => s == "PerfAll" || Some(s.as_str()) == tag,
+                _ => false,
+            })
+    })
+}
+
+fn unknown_perf_allows(module: &frontend::ast::Module) -> Vec<(Span, String)> {
+    let mut out = Vec::new();
+    let mut scan = |attrs: &[frontend::ast::Attr]| {
+        for a in attrs {
+            if a.name != "Allow" {
+                continue;
+            }
+            for arg in &a.args {
+                if let frontend::ast::Expr::Ident(s) = &arg.node {
+                    if s == "PerfAll" || s == "PerfP101" || s == "PerfP102" || s == "PerfP201" {
+                        continue;
+                    }
+                    if s.starts_with("Perf") {
+                        out.push((a.span, s.clone()));
+                    }
+                }
+            }
+        }
+    };
+    scan(&module.inner_attrs);
+    for decl in &module.decls {
+        if let frontend::ast::Decl::Fn(f) = &decl.node {
+            scan(&f.attrs);
+        }
+    }
+    out
+}
+
+fn span_contains(outer: Span, inner: Span) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
+fn perf_suppressed(
+    files: &[(PathBuf, String, frontend::ast::Module)],
+    idx: usize,
+    diag: &Diagnostic,
+) -> bool {
+    let (_, _, module) = match files.get(idx) {
+        Some(entry) => entry,
+        None => return false,
+    };
+    if !diag.code.is_perf_lint() {
+        return false;
+    }
+    if allow_hits(&module.inner_attrs, diag.code) {
+        return true;
+    }
+    let span = match diag.span {
+        Some(s) => s,
+        None => return false,
+    };
+    for decl in &module.decls {
+        if let frontend::ast::Decl::Fn(f) = &decl.node {
+            if allow_hits(&f.attrs, diag.code) && span_contains(decl.span, span) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub struct PerfRender {
+    pub text: String,
+    pub denied: Vec<Diagnostic>,
+}
+
+pub fn render_perf_stream(
+    theme: &diagnostics::theme::AuraTheme,
+    entry: &Path,
+    diags: &[Diagnostic],
+    deny: &DenyPerf,
+    show_notes: bool,
+) -> PerfRender {
+    let entry_abs: PathBuf = if entry.is_absolute() {
+        entry.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(entry)
+    };
+    let entry = entry_abs.as_path();
+    let root = project_root_for(entry);
+    let (files, mut failed) = discover_files(&root);
+    let mut text = String::new();
+    let mut denied = Vec::new();
+    let mut unknowns: BTreeSet<(String, u32, u32, String)> = BTreeSet::new();
+    for (path, _, module) in &files {
+        for (span, arg) in unknown_perf_allows(module) {
+            unknowns.insert((
+                path.to_string_lossy().into_owned(),
+                span.start,
+                span.end,
+                arg,
+            ));
+        }
+    }
+    for diag in diags {
+        if !diag.code.is_perf_lint() {
+            continue;
+        }
+        if diag.code.is_perf_note() && !show_notes {
+            continue;
+        }
+        if files.is_empty() {
+            continue;
+        }
+        let idx = best_module(&files, diag.span).min(files.len().saturating_sub(1));
+        if perf_suppressed(&files, idx, diag) {
+            continue;
+        }
+        let (attr, src) = attribute_lenient(&files, &mut failed, diag, entry);
+        let is_denied = diag.code.is_warning() && deny.denies(diag.code.as_str());
+        if is_denied {
+            text.push_str(&render_diagnostic_with_label(
+                theme,
+                diag,
+                &attr,
+                &src,
+                Some("error"),
+            ));
+            denied.push(diag.clone());
+        } else {
+            text.push_str(&render_diagnostic(theme, diag, &attr, &src));
+        }
+    }
+    let mut unknowns: Vec<(String, u32, u32, String)> = unknowns.into_iter().collect();
+    unknowns.sort();
+    for (path, start, end, arg) in unknowns {
+        let path = PathBuf::from(path);
+        let src = std::fs::read_to_string(&path).unwrap_or_default();
+        let span = Span { start, end };
+        let (line, col) = line_col(&src, start);
+        let warn = Diagnostic::new(
+            Code::W201,
+            format!(
+                "unknown lint code `{arg}` in `Allow`; expected PerfP101, PerfP102, PerfP201, or PerfAll"
+            ),
+        )
+        .with_span(span)
+        .with_file(path.clone());
+        let attr = Attributed {
+            path: path.clone(),
+            display: relative_display(&path),
+            line,
+            col,
+        };
+        text.push_str(&render_diagnostic(theme, &warn, &attr, &src));
+    }
+    denied.sort_by(|a, b| {
+        a.code
+            .as_str()
+            .cmp(b.code.as_str())
+            .then(a.span.cmp(&b.span))
+    });
+    PerfRender { text, denied }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,5 +981,119 @@ mod tests {
         let main_src = "fn Main(): Int {\n    return 0;\n}\n";
         let files = vec![(PathBuf::from("src/main.rnx"), main_src.to_string(), parse(main_src))];
         assert_eq!(best_module(&files, None), 0);
+    }
+
+    #[test]
+    fn deny_perf_parses_shapes() {
+        let d = parse_deny_perf(&[]).unwrap();
+        assert!(d.is_empty());
+        assert!(!d.denies("P201"));
+        let d = parse_deny_perf(&["ALL".to_string()]).unwrap();
+        assert!(!d.is_empty() && d.denies("P201") && d.denies("P202") && d.denies("P203"));
+        let d = parse_deny_perf(&["P201".to_string(), "P203".to_string()]).unwrap();
+        assert!(d.denies("P201") && d.denies("P203") && !d.denies("P202"));
+        let d = parse_deny_perf(&["P201,P203".to_string()]).unwrap();
+        assert!(d.denies("P201") && d.denies("P203") && !d.denies("P202"));
+        let d = parse_deny_perf(&["p201".to_string()]).unwrap();
+        assert!(d.denies("P201"));
+        let err = parse_deny_perf(&["P999".to_string()]).unwrap_err();
+        assert!(err.contains("P201, P202, P203"), "{err}");
+        let err = parse_deny_perf(&["".to_string()]).unwrap();
+        assert!(err.is_empty());
+    }
+
+    fn write_perf_case(tag: &str, src: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rnx-perf-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.rnx");
+        std::fs::write(&main, src).unwrap();
+        main
+    }
+
+    fn perf_diag(code: Code, src: &str, needle: &str) -> Diagnostic {
+        let start = src.find(needle).expect("needle") as u32;
+        Diagnostic::new(code, format!("{code} probe")).with_span(Span {
+            start,
+            end: start + needle.len() as u32,
+        })
+    }
+
+    const ALLOW_SRC: &str = "#[Allow(PerfP201)]\nfn Main(): Int {\n    let x = 1;\n    return x;\n}\nfn Other(): Int {\n    return 2;\n}\n";
+
+    #[test]
+    fn allow_on_item_suppresses_span_inside() {
+        let main = write_perf_case("allow", ALLOW_SRC);
+        let theme = diagnostics::theme::AuraTheme::plain();
+        let in_main = perf_diag(Code::P201, ALLOW_SRC, "return x;");
+        let in_other = perf_diag(Code::P201, ALLOW_SRC, "return 2;");
+        let deny = DenyPerf::empty();
+        let out_main = render_perf_stream(&theme, &main, &[in_main], &deny, false);
+        assert!(out_main.text.is_empty(), "{}", out_main.text);
+        let out_other = render_perf_stream(&theme, &main, &[in_other], &deny, false);
+        assert!(
+            out_other.text.contains("warning[P201]"),
+            "{}",
+            out_other.text
+        );
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    #[test]
+    fn file_allow_suppresses_and_denies_only_unsuppressed() {
+        let src = "#![Allow(PerfAll)]\nfn Main(): Int {\n    return 0;\n}\n";
+        let main = write_perf_case("fileallow", src);
+        let theme = diagnostics::theme::AuraTheme::plain();
+        let diag = perf_diag(Code::P201, src, "return 0;");
+        let deny = parse_deny_perf(&["ALL".to_string()]).unwrap();
+        let out = render_perf_stream(&theme, &main, &[diag], &deny, false);
+        assert!(out.text.is_empty(), "{}", out.text);
+        assert!(out.denied.is_empty());
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    #[test]
+    fn denied_renders_as_error() {
+        let src = "fn Main(): Int {\n    return 0;\n}\n";
+        let main = write_perf_case("deny", src);
+        let theme = diagnostics::theme::AuraTheme::plain();
+        let diag = perf_diag(Code::P201, src, "return 0;");
+        let deny = parse_deny_perf(&["P201".to_string()]).unwrap();
+        let out = render_perf_stream(&theme, &main, &[diag], &deny, false);
+        assert_eq!(out.denied.len(), 1);
+        assert!(out.text.contains("error[P201]"), "{}", out.text);
+        let note = perf_diag(Code::P101, src, "return 0;");
+        let out = render_perf_stream(&theme, &main, &[note], &deny, true);
+        assert!(out.denied.is_empty());
+        assert!(out.text.contains("note[P101]"), "{}", out.text);
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    #[test]
+    fn notes_hidden_unless_shown() {
+        let src = "fn Main(): Int {\n    return 0;\n}\n";
+        let main = write_perf_case("notegate", src);
+        let theme = diagnostics::theme::AuraTheme::plain();
+        let note = perf_diag(Code::P101, src, "return 0;");
+        let warn = perf_diag(Code::P201, src, "return 0;");
+        let hidden = render_perf_stream(&theme, &main, &[note.clone(), warn.clone()], &DenyPerf::empty(), false);
+        assert!(!hidden.text.contains("note[P101]"), "{}", hidden.text);
+        assert!(hidden.text.contains("warning[P201]"), "{}", hidden.text);
+        let shown = render_perf_stream(&theme, &main, &[note, warn], &DenyPerf::empty(), true);
+        assert!(shown.text.contains("note[P101]"), "{}", shown.text);
+        assert!(shown.text.contains("warning[P201]"), "{}", shown.text);
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    #[test]
+    fn unknown_perf_allow_warns() {
+        let src = "#[Allow(PerfP999)]\nfn Main(): Int {\n    return 0;\n}\n";
+        let main = write_perf_case("unknown", src);
+        let theme = diagnostics::theme::AuraTheme::plain();
+        let diag = perf_diag(Code::P201, src, "return 0;");
+        let out = render_perf_stream(&theme, &main, &[diag], &DenyPerf::empty(), false);
+        assert!(out.text.contains("warning[P201]"), "{}", out.text);
+        assert!(out.text.contains("PerfP999"), "{}", out.text);
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 }

@@ -58,20 +58,20 @@ impl AccumTimes {
 }
 
 #[derive(Clone, Debug)]
-struct LoopFacts {
-    header: BlockId,
-    then_bb: BlockId,
-    exit_bb: BlockId,
-    latch: BlockId,
-    iv: Local,
-    cond: Local,
-    bound_local: Local,
-    init_const: i64,
-    bound_const: i64,
-    pre: BlockId,
-    init_instrs: Vec<(BlockId, usize)>,
-    blocks: BTreeSet<BlockId>,
-    counted: CountedLoop,
+pub(crate) struct LoopFacts {
+    pub(crate) header: BlockId,
+    pub(crate) then_bb: BlockId,
+    pub(crate) exit_bb: BlockId,
+    pub(crate) latch: BlockId,
+    pub(crate) iv: Local,
+    pub(crate) cond: Local,
+    pub(crate) bound_local: Local,
+    pub(crate) init_const: i64,
+    pub(crate) bound_const: i64,
+    pub(crate) pre: BlockId,
+    pub(crate) init_instrs: Vec<(BlockId, usize)>,
+    pub(crate) blocks: BTreeSet<BlockId>,
+    pub(crate) counted: CountedLoop,
 }
 
 #[derive(Clone, Debug)]
@@ -155,7 +155,7 @@ fn exit_of(func: &Function, header: BlockId) -> Option<BlockId> {
     }
 }
 
-fn counted_facts(func: &Function, lp: &NaturalLoop) -> Option<LoopFacts> {
+pub(crate) fn counted_facts(func: &Function, lp: &NaturalLoop) -> Option<LoopFacts> {
     let counted = analyze_counted(func, lp)?;
     let (iv, bound_local, cond, then_bb) = header_cmp(func, lp.header)?;
     if iv != counted.iv || then_bb != counted.then_bb {
@@ -278,7 +278,7 @@ fn single_def(func: &Function, local: Local) -> Option<(BlockId, usize)> {
     Some(defs[0])
 }
 
-fn union_banned(func: &Function, union_blocks: &BTreeSet<BlockId>) -> bool {
+pub(crate) fn union_banned(func: &Function, union_blocks: &BTreeSet<BlockId>) -> bool {
     for b in union_blocks {
         let block = match func.blocks.get(*b) {
             Some(x) => x,
@@ -366,6 +366,14 @@ fn incr_const(func: &Function, other: Local, v: i64) -> Option<IncrConst> {
 }
 
 fn find_candidate(func: &Function, dom: &DominatorTree) -> Option<NestMatch> {
+    find_candidate_locating(func, dom, None)
+}
+
+fn find_candidate_locating(
+    func: &Function,
+    dom: &DominatorTree,
+    mut located: Option<&mut Vec<[LoopFacts; 3]>>,
+) -> Option<NestMatch> {
     let loops = find_natural_loops(func, dom);
     let mut counted: Vec<LoopFacts> =
         loops.iter().filter_map(|lp| counted_facts(func, lp)).collect();
@@ -412,6 +420,11 @@ fn find_candidate(func: &Function, dom: &DominatorTree) -> Option<NestMatch> {
         let ivs: BTreeSet<Local> = nest.iter().map(|l| l.iv).collect();
         if ivs.len() != 3 {
             continue;
+        }
+        if let [x, y, z] = &nest[..] {
+            if let Some(out) = located.as_mut() {
+                out.push([x.clone(), y.clone(), z.clone()]);
+            }
         }
         let refs: Vec<&CountedLoop> =
             vec![&nest[0].counted, &nest[1].counted, &nest[2].counted];
@@ -1086,21 +1099,52 @@ fn matches_plan(func: &Function) -> Option<(NestMatch, bool)> {
 }
 
 pub fn accumulate_interchange(func: &mut Function) -> (AccumAction, AccumTimes) {
+    let (action, times, _, _) = accumulate_interchange_tracked(func);
+    (action, times)
+}
+
+pub(crate) fn accumulate_interchange_tracked(
+    func: &mut Function,
+) -> (
+    AccumAction,
+    AccumTimes,
+    Option<Span>,
+    Option<(crate::perflint::MissedReason, Span, i64, Option<Span>)>,
+) {
     let mut times = AccumTimes::default();
     let start = stamp();
     let dom = compute_dominators(func);
-    let found = find_candidate(func, &dom);
+    let mut located: Vec<[LoopFacts; 3]> = Vec::new();
+    let found = find_candidate_locating(func, &dom, Some(&mut located));
     times.shape = start.elapsed();
     let m = match found {
         Some(v) => v,
-        None => return (AccumAction::Untouched, times),
+        None => {
+            let missed = crate::perflint::subscript_missed(func, &dom, &located);
+            return (AccumAction::Untouched, times, None, missed);
+        }
     };
     let start = stamp();
     let nest_refs = [&m.x.counted, &m.y.counted, &m.z.counted];
     let alias_ok = alias_safe(func, &dom, &nest_refs, &m);
     times.alias = start.elapsed();
-    if !alias_ok || !cost_gate(&m) {
-        return (AccumAction::Untouched, times);
+    if !alias_ok {
+        let missed = Some((
+            crate::perflint::MissedReason::Alias,
+            m.triple.store_span,
+            inner_trip(&m),
+            None,
+        ));
+        return (AccumAction::Untouched, times, None, missed);
+    }
+    if !cost_gate(&m) {
+        let missed = Some((
+            crate::perflint::MissedReason::CostGate,
+            m.triple.store_span,
+            inner_trip(&m),
+            None,
+        ));
+        return (AccumAction::Untouched, times, None, missed);
     }
     let start = stamp();
     let zero_ok = zero_proven(func, &dom, &m);
@@ -1130,7 +1174,66 @@ pub fn accumulate_interchange(func: &mut Function) -> (AccumAction, AccumTimes) 
         AccumAction::Untouched
     };
     times.rewrite = start.elapsed();
-    (action, times)
+    let span = match action {
+        AccumAction::V1 | AccumAction::Peel => Some(m.triple.store_span),
+        AccumAction::Untouched => None,
+    };
+    let missed = match action {
+        AccumAction::V1 => None,
+        AccumAction::Peel => Some((
+            crate::perflint::MissedReason::ZeroInit,
+            m.triple.store_span,
+            inner_trip(&m),
+            zero_alloc_span(func, &m),
+        )),
+        AccumAction::Untouched
+            if !zero_ok && m.z.bound_const - m.z.init_const < 1 =>
+        {
+            Some((
+                crate::perflint::MissedReason::ZeroInit,
+                m.triple.store_span,
+                inner_trip(&m),
+                zero_alloc_span(func, &m),
+            ))
+        }
+        AccumAction::Untouched => None,
+    };
+    (action, times, span, missed)
+}
+
+fn inner_trip(m: &NestMatch) -> i64 {
+    m.z.bound_const - m.z.init_const
+}
+
+fn zero_alloc_span(func: &Function, m: &NestMatch) -> Option<Span> {
+    let fc = array_aliases(func, m.triple.arr_c);
+    let mut defs: Vec<(BlockId, usize)> = Vec::new();
+    for local in fc.iter() {
+        for d in all_defs(func, *local) {
+            if d.1 == usize::MAX {
+                return None;
+            }
+            defs.push(d);
+        }
+    }
+    defs.sort();
+    defs.dedup();
+    if defs.len() > MAX_DEF_WALK {
+        return None;
+    }
+    let mut found: Option<Span> = None;
+    for (db, di) in &defs {
+        match func.blocks.get(*db).and_then(|b| b.instrs.get(*di)) {
+            Some(Instr::ArrayNew { span, .. }) => {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(*span);
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 

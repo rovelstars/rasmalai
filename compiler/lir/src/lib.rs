@@ -9,6 +9,7 @@ pub mod loopdep;
 pub mod lower;
 pub mod opt;
 pub mod parallel;
+pub mod perflint;
 pub mod reach;
 pub mod sroa;
 pub mod tco;

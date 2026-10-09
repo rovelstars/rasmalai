@@ -104,6 +104,7 @@ fn record_opt_subs(profiler: &mut frontend::profiler::PassProfiler, t: &lir::opt
         ("opt_fixpoint", t.fixpoint),
         ("opt_sweep", t.sweep),
         ("opt_deadfn", t.deadfn),
+        ("opt_perflint", t.perflint),
     ] {
         if !dur.is_zero() {
             profiler.record_sub("opt_pipeline", name, dur);
@@ -199,6 +200,9 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::S401 => "add a covering `sys:exec:<name>` grant with explicit approval",
         Code::S501 => "split the package into smaller modules; never skip the scan",
         Code::W104 => "capture with `fn decay(this)`",
+        Code::P101 => "no action needed; the compiler already restructured this nest",
+        Code::P102 => "no action needed; bounds checks were versioned with a hoisted guard",
+        Code::P201 => "restructure the nest so the failed proof holds (see the diagnostic hint)",
         Code::W201 => "correct the spelling or remove the entry",
         Code::W204 => "replace `pub`/`public` with `export`",
         Code::W108 => "make one side `GenRef` or add `#[Allow(CyclicReference)]`",
@@ -241,6 +245,7 @@ pub fn build_object(src: &str, entry: &str, release: bool) -> Result<Vec<u8>, Ve
 pub struct FileProgram {
     pub lir: lir::instr::Module,
     pub warnings: Vec<diagnostics::Diagnostic>,
+    pub perf_diags: Vec<diagnostics::Diagnostic>,
     pub profiler: frontend::profiler::PassProfiler,
     pub debug: Option<llvm::codegen::DebugInfo>,
     pub native_libs: Vec<String>,
@@ -463,7 +468,8 @@ pub fn load_program_cfg(
         return Err(errors);
     }
     let native_libs = lir::instr::native_libs(&lowered);
-    Ok(FileProgram { lir: lowered, warnings, profiler, debug, native_libs })
+    let perf_diags = lir::perflint::to_diagnostics(&lowered.perf_lints);
+    Ok(FileProgram { lir: lowered, warnings, perf_diags, profiler, debug, native_libs })
 }
 
 pub struct LibBuild {
@@ -1306,6 +1312,7 @@ pub struct BuildOutput {
     pub objects: Vec<Vec<u8>>,
     pub stages: Vec<(String, f64)>,
     pub native_libs: Vec<String>,
+    pub perf_diags: Vec<diagnostics::Diagnostic>,
 }
 
 pub fn codegen_units(cfg: &CompileConfig, release: bool) -> usize {
@@ -1426,7 +1433,7 @@ fn build_files_staged_units(
         .iter()
         .map(|(name, _, dur_ns)| (name.to_string(), *dur_ns as f64 / 1_000_000.0))
         .collect();
-    Ok(BuildOutput { objects: out, stages, native_libs: prog.native_libs })
+    Ok(BuildOutput { objects: out, stages, native_libs: prog.native_libs, perf_diags: prog.perf_diags })
 }
 
 
