@@ -194,16 +194,16 @@ fn fix_refuses_search_shape() {
 }
 
 #[test]
-fn fix_leaves_concat_shape_untouched_without_lint() {
+fn fix_leaves_concat_shape_untouched_suggest_only() {
     let root = proj("concat-probe", CONCAT);
     let main = root.join("main.rnx");
     let pre = std::fs::read(&main).unwrap();
-    let (code, stdout, stderr) = build(&root, &[]);
+    let (code, _, stderr) = build(&root, &[]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(!stderr.contains("warning[P2"), "{stderr}");
-    let (code, stdout, stderr) = build(&root, &["--fix"]);
-    assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("no performance lints to fix"), "{stdout}");
+    assert!(stderr.contains("warning[P203]"), "{stderr}");
+    let (code, _, stderr) = build(&root, &["--fix"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("no autofix available for P203"), "{stderr}");
     assert_eq!(std::fs::read(&main).unwrap(), pre);
     assert!(!root.join("main.rnx.bak").exists());
     let _ = std::fs::remove_dir_all(&root);

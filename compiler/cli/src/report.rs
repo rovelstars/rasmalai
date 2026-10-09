@@ -755,6 +755,8 @@ fn perf_tag(code: Code) -> Option<&'static str> {
         Code::P101 => Some("PerfP101"),
         Code::P102 => Some("PerfP102"),
         Code::P201 => Some("PerfP201"),
+        Code::P202 => Some("PerfP202"),
+        Code::P203 => Some("PerfP203"),
         _ => None,
     }
 }
@@ -779,7 +781,7 @@ fn unknown_perf_allows(module: &frontend::ast::Module) -> Vec<(Span, String)> {
             }
             for arg in &a.args {
                 if let frontend::ast::Expr::Ident(s) = &arg.node {
-                    if s == "PerfAll" || s == "PerfP101" || s == "PerfP102" || s == "PerfP201" {
+                    if s == "PerfAll" || s == "PerfP101" || s == "PerfP102" || s == "PerfP201" || s == "PerfP202" || s == "PerfP203" {
                         continue;
                     }
                     if s.starts_with("Perf") {
@@ -905,7 +907,7 @@ pub fn render_perf_stream(
         let warn = Diagnostic::new(
             Code::W201,
             format!(
-                "unknown lint code `{arg}` in `Allow`; expected PerfP101, PerfP102, PerfP201, or PerfAll"
+                "unknown lint code `{arg}` in `Allow`; expected PerfP101, PerfP102, PerfP201, PerfP202, PerfP203, or PerfAll"
             ),
         )
         .with_span(span)
