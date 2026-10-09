@@ -1559,14 +1559,19 @@ fn vector_shape(
     let mut fresh_store = false;
     let mut shape_ok = true;
     for &bi in lp.blocks.iter() {
-        for ins in &f.blocks[bi].instrs {
+        for (ii, ins) in f.blocks[bi].instrs.iter().enumerate() {
+            let stride_ok = |index: Local| match iv {
+                Some(v) if v == index => true,
+                Some(v) => lir::bce::index_unit_stride(f, v, bi, ii, index),
+                None => false,
+            };
             match ins {
                 Instr::ArrayGet { arr, elem_size, index, .. } => {
                     if array_inline_elem(cx, *arr, *elem_size).is_some()
                         && cx.fresh_array_root.contains_key(arr)
                     {
                         fresh_load = true;
-                        if iv != Some(*index) {
+                        if !stride_ok(*index) {
                             shape_ok = false;
                         }
                     } else {
@@ -1583,7 +1588,7 @@ fn vector_shape(
                         && cx.fresh_array_root.contains_key(arr)
                     {
                         fresh_store = true;
-                        if iv != Some(*index) {
+                        if !stride_ok(*index) {
                             shape_ok = false;
                         }
                     } else {

@@ -379,7 +379,7 @@ pub(crate) fn const_of(func: &Function, local: Local) -> Option<i64> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum InitExpr {
     Const(i64),
     OuterAdd { outer: Local, add: i64 },
@@ -411,6 +411,7 @@ fn init_shape(func: &Function, local: Local, depth: usize) -> Option<InitExpr> {
     }
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct CountedLoop {
     pub(crate) header: BlockId,
     pub(crate) then_bb: BlockId,
@@ -1665,6 +1666,35 @@ fn analyze_exact(func: &Function, dom: &DominatorTree, lp: &NaturalLoop) -> Opti
         add_lhs,
         add_rhs,
     })
+}
+
+pub fn index_unit_stride(
+    func: &Function,
+    iv: Local,
+    access_b: BlockId,
+    access_ii: usize,
+    index: Local,
+) -> bool {
+    if iv == index {
+        return true;
+    }
+    let dom = crate::licm::compute_dominators(func);
+    let loops = crate::licm::find_natural_loops(func, &dom);
+    let counted: Vec<CountedLoop> =
+        loops.iter().filter_map(|lp| analyze_counted(func, lp)).collect();
+    if counted.iter().all(|l| l.iv != iv) {
+        return false;
+    }
+    let mut nest: Vec<&CountedLoop> =
+        counted.iter().filter(|l| l.blocks.contains(&access_b)).collect();
+    if nest.is_empty() {
+        return false;
+    }
+    nest.sort_by_key(|l| std::cmp::Reverse(l.blocks.len()));
+    match idx_affine(func, &nest, &dom, access_b, access_ii, index, 0) {
+        Some(form) => form.coeffs.get(&iv) == Some(&1),
+        None => false,
+    }
 }
 
 pub fn exact_count_loops(func: &Function) -> Vec<ExactCountLoop> {

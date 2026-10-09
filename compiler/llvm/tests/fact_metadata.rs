@@ -219,7 +219,6 @@ fn small_trip_pair_keeps_existing_hints() {
 }
 
 const ALIASED_PAIR: &str = "fn f(a: Array<Int>, b: Array<Int>): Int {\n    let i = 0;\n    while i < 8 {\n        a[i] = b[i] + 1;\n        i = i + 1;\n    }\n    return a[0];\n}\nfn Main(): Int {\n    return 0;\n}\n";
-
 #[test]
 fn unproven_pair_gets_no_vectorize_hints() {
     let context = Context::create();
@@ -242,4 +241,33 @@ fn unproven_pair_gets_no_vectorize_hints() {
         body.contains("llvm.loop.unroll.count"),
         "may-alias pair keeps its unroll hint; got:\n{body}"
     );
+}
+
+const ACCUM_MATMUL: &str = "fn Main(): Int {\n    let n = 32;\n    let a: Array<Int> = [];\n    let b: Array<Int> = [];\n    let c: Array<Int> = [];\n    let i = 0;\n    while i < n * n {\n        a.push(0);\n        b.push(0);\n        c.push(0);\n        i = i + 1;\n    }\n    let r = 0;\n    while r < n {\n        let k = 0;\n        while k < n {\n            a[r * n + k] = (r + k) % 8;\n            b[r * n + k] = (r * k) % 8;\n            k = k + 1;\n        }\n        r = r + 1;\n    }\n    let x = 0;\n    while x < n {\n        let y = 0;\n        while y < n {\n            let s = 0;\n            let z = 0;\n            while z < n {\n                s = s + a[x * n + z] * b[z * n + y];\n                z = z + 1;\n            }\n            c[x * n + y] = s;\n            y = y + 1;\n        }\n        x = x + 1;\n    }\n    let total = 0;\n    let t = 0;\n    while t < n * n {\n        total = total + c[t];\n        t = t + 1;\n    }\n    return total;\n}\n";
+
+#[test]
+fn rewritten_accumulation_inner_gets_vectorize_hints() {
+    let context = Context::create();
+    let lir = opt_lir(ACCUM_MATMUL, "accum", "Main");
+    let jit = Jit::compile(&context, &lir, "accum").unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(jit.call("Main", &[]).unwrap(), 315392);
+    let body = fn_ir(&jit.ir(), "Main");
+    assert!(
+        body.contains("llvm.loop.vectorize.enable"),
+        "rewritten unit-stride inner needs vectorize.enable; got:\n{body}"
+    );
+    assert!(
+        body.contains("llvm.loop.interleave.count"),
+        "rewritten unit-stride inner needs interleave.count; got:\n{body}"
+    );
+    assert!(
+        body.contains("llvm.loop.parallel_accesses"),
+        "rewritten inner keeps parallel_accesses; got:\n{body}"
+    );
+    assert!(
+        body.contains("llvm.loop.estimated_trip_count"),
+        "rewritten loops keep trip counts; got:\n{body}"
+    );
+    assert!(body.contains("!range"), "rewritten inner keeps range facts; got:\n{body}");
+    assert!(body.contains("!tbaa"), "rewritten inner keeps tbaa; got:\n{body}");
 }

@@ -32,6 +32,7 @@ pub struct OptTimings {
     pub licm: Duration,
     pub bce: Duration,
     pub loopdep: Duration,
+    pub accum: Duration,
     pub arc: Duration,
     pub tco: Duration,
     pub fixpoint: Duration,
@@ -48,6 +49,7 @@ impl OptTimings {
             + self.licm
             + self.bce
             + self.loopdep
+            + self.accum
             + self.arc
             + self.tco
             + self.fixpoint
@@ -56,7 +58,7 @@ impl OptTimings {
             + self.dom
     }
 
-    pub fn sub_rows(&self) -> [(&'static str, Duration); 12] {
+    pub fn sub_rows(&self) -> [(&'static str, Duration); 13] {
         [
             ("opt_inline", self.inline),
             ("opt_escape", self.escape),
@@ -64,6 +66,7 @@ impl OptTimings {
             ("opt_licm", self.licm),
             ("opt_bce", self.bce),
             ("opt_loopdep", self.loopdep),
+            ("opt_accum", self.accum),
             ("opt_arc", self.arc),
             ("opt_tco", self.tco),
             ("opt_fixpoint", self.fixpoint),
@@ -120,6 +123,12 @@ fn optimize_lir_impl(
         let inner = stamp();
         let _ = crate::loopdep::analyze_function(f);
         t.loopdep += inner.elapsed();
+    }
+    step = stamp();
+    for fi in 0..module.functions.len() {
+        let inner = stamp();
+        let _ = crate::accum::accumulate_interchange(&mut module.functions[fi]);
+        t.accum += inner.elapsed();
     }
     step = stamp();
     for fi in 0..module.functions.len() {
@@ -1110,6 +1119,7 @@ mod tests {
             + t.licm
             + t.bce
             + t.loopdep
+            + t.accum
             + t.arc
             + t.tco
             + t.fixpoint
@@ -2226,6 +2236,11 @@ fn optimize_lir_impl_parallel(
         let _ = crate::loopdep::analyze_function(f);
     });
     t.loopdep = step.elapsed();
+    step = stamp();
+    module.functions.par_iter_mut().for_each(|f| {
+        let _ = crate::accum::accumulate_interchange(f);
+    });
+    t.accum = step.elapsed();
     step = stamp();
     module.functions.par_iter_mut().for_each(|f| {
         crate::licm::loop_invariant_code_motion(f);
