@@ -10,3 +10,6 @@ lir = { path = "../lir" }
 runtime = { path = "../runtime" }
 inkwell = { version = "=0.10.0", features = ["llvm22-1"] }
 llvm-sys = "=221.1.0"
+
+[dev-dependencies]
+cranelift = { path = "../cranelift" }

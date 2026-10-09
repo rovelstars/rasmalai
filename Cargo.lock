@@ -1178,6 +1178,7 @@ dependencies = [
 name = "llvm"
 version = "0.1.0"
 dependencies = [
+ "cranelift",
  "diagnostics",
  "frontend",
  "inkwell",

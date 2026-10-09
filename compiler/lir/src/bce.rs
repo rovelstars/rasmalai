@@ -3,7 +3,7 @@ use crate::licm::{DominatorTree, NaturalLoop};
 use crate::opt::instr_dst;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn all_defs(func: &Function, local: Local) -> Vec<(BlockId, usize)> {
+pub(crate) fn all_defs(func: &Function, local: Local) -> Vec<(BlockId, usize)> {
     let mut out: Vec<(BlockId, usize)> = Vec::new();
     for (bi, block) in func.blocks.iter().enumerate() {
         for (ii, ins) in block.instrs.iter().enumerate() {
@@ -199,7 +199,7 @@ fn defines_in(instrs: &[Instr], local: Local) -> bool {
     false
 }
 
-fn clean_reachable(
+pub(crate) fn clean_reachable(
     func: &Function,
     header: BlockId,
     then_bb: BlockId,
@@ -239,7 +239,7 @@ fn clean_reachable(
     !defines_in(&instrs[..prefix.min(instrs.len())], iv)
 }
 
-fn external_preds(func: &Function, header: BlockId, blocks: &BTreeSet<BlockId>) -> Vec<BlockId> {
+pub(crate) fn external_preds(func: &Function, header: BlockId, blocks: &BTreeSet<BlockId>) -> Vec<BlockId> {
     let n = func.blocks.len();
     let mut out: Vec<BlockId> = Vec::new();
     for (i, block) in func.blocks.iter().enumerate() {
@@ -359,7 +359,7 @@ pub fn eliminate_bounds_checks(
     changed
 }
 
-fn const_of(func: &Function, local: Local) -> Option<i64> {
+pub(crate) fn const_of(func: &Function, local: Local) -> Option<i64> {
     let mut seen: BTreeSet<Local> = BTreeSet::new();
     let mut cur = local;
     loop {
@@ -380,7 +380,7 @@ fn const_of(func: &Function, local: Local) -> Option<i64> {
 }
 
 #[derive(Clone)]
-enum InitExpr {
+pub(crate) enum InitExpr {
     Const(i64),
     OuterAdd { outer: Local, add: i64 },
 }
@@ -411,13 +411,13 @@ fn init_shape(func: &Function, local: Local, depth: usize) -> Option<InitExpr> {
     }
 }
 
-struct CountedLoop {
-    header: BlockId,
-    then_bb: BlockId,
-    iv: Local,
-    init: InitExpr,
-    bound: i64,
-    blocks: BTreeSet<BlockId>,
+pub(crate) struct CountedLoop {
+    pub(crate) header: BlockId,
+    pub(crate) then_bb: BlockId,
+    pub(crate) iv: Local,
+    pub(crate) init: InitExpr,
+    pub(crate) bound: i64,
+    pub(crate) blocks: BTreeSet<BlockId>,
 }
 
 fn loop_step_value(func: &Function, blocks: &BTreeSet<BlockId>, iv: Local) -> Option<i64> {
@@ -467,7 +467,7 @@ fn loop_step_value(func: &Function, blocks: &BTreeSet<BlockId>, iv: Local) -> Op
     }
 }
 
-fn analyze_counted(func: &Function, lp: &NaturalLoop) -> Option<CountedLoop> {
+pub(crate) fn analyze_counted(func: &Function, lp: &NaturalLoop) -> Option<CountedLoop> {
     let (iv, bound_local, then_bb) = header_check(func, lp.header)?;
     let n = func.blocks.len();
     let mut then_preds: Vec<BlockId> = Vec::new();
@@ -517,7 +517,7 @@ fn analyze_counted(func: &Function, lp: &NaturalLoop) -> Option<CountedLoop> {
     })
 }
 
-fn iv_range(nest: &[&CountedLoop], iv: Local) -> Option<(i128, i128)> {
+pub(crate) fn iv_range(nest: &[&CountedLoop], iv: Local) -> Option<(i128, i128)> {
     iv_range_depth(nest, iv, 0)
 }
 
@@ -541,7 +541,7 @@ fn iv_range_depth(nest: &[&CountedLoop], iv: Local, depth: usize) -> Option<(i12
     Some((lo, hi))
 }
 
-fn idx_interval(
+pub(crate) fn idx_interval(
     func: &Function,
     nest: &[&CountedLoop],
     dom: &DominatorTree,
@@ -603,7 +603,107 @@ fn idx_interval(
     }
 }
 
-fn loop_latches(func: &Function, lp_blocks: &BTreeSet<BlockId>, header: BlockId) -> Vec<BlockId> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AffineForm {
+    pub c0: i128,
+    pub coeffs: BTreeMap<Local, i128>,
+}
+
+impl AffineForm {
+    fn constant(c: i128) -> AffineForm {
+        AffineForm { c0: c, coeffs: BTreeMap::new() }
+    }
+
+    fn add(&self, other: &AffineForm) -> Option<AffineForm> {
+        let mut coeffs = self.coeffs.clone();
+        for (v, c) in &other.coeffs {
+            let e = coeffs.entry(*v).or_insert(0);
+            *e = e.checked_add(*c)?;
+            if *e == 0 {
+                coeffs.remove(v);
+            }
+        }
+        Some(AffineForm { c0: self.c0.checked_add(other.c0)?, coeffs })
+    }
+
+    fn sub(&self, other: &AffineForm) -> Option<AffineForm> {
+        let mut coeffs = self.coeffs.clone();
+        for (v, c) in &other.coeffs {
+            let e = coeffs.entry(*v).or_insert(0);
+            *e = e.checked_sub(*c)?;
+            if *e == 0 {
+                coeffs.remove(v);
+            }
+        }
+        Some(AffineForm { c0: self.c0.checked_sub(other.c0)?, coeffs })
+    }
+
+    fn scale(&self, k: i128) -> Option<AffineForm> {
+        let mut coeffs = BTreeMap::new();
+        for (v, c) in &self.coeffs {
+            let s = c.checked_mul(k)?;
+            if s != 0 {
+                coeffs.insert(*v, s);
+            }
+        }
+        Some(AffineForm { c0: self.c0.checked_mul(k)?, coeffs })
+    }
+}
+
+pub(crate) fn idx_affine(
+    func: &Function,
+    nest: &[&CountedLoop],
+    dom: &DominatorTree,
+    access_b: BlockId,
+    access_ii: usize,
+    local: Local,
+    depth: usize,
+) -> Option<AffineForm> {
+    if depth > 32 {
+        return None;
+    }
+    if nest.iter().any(|l| l.iv == local) {
+        return Some(AffineForm { c0: 0, coeffs: BTreeMap::from([(local, 1)]) });
+    }
+    let defs = all_defs(func, local);
+    if defs.len() != 1 {
+        return None;
+    }
+    let (bi, ii) = defs[0];
+    let dominates = (bi == access_b && ii < access_ii)
+        || (bi != access_b && dom.dominates(bi, access_b));
+    if !dominates {
+        return None;
+    }
+    match func.blocks.get(bi)?.instrs.get(ii)? {
+        Instr::Const { lit: Lit::Int(c), .. } => Some(AffineForm::constant(*c as i128)),
+        Instr::Copy { src, .. } => idx_affine(func, nest, dom, access_b, access_ii, *src, depth + 1),
+        Instr::Arith { op: ArithOp::Add, kind: NumKind::Int, lhs, rhs, .. } => {
+            let a = idx_affine(func, nest, dom, access_b, access_ii, *lhs, depth + 1)?;
+            let b = idx_affine(func, nest, dom, access_b, access_ii, *rhs, depth + 1)?;
+            a.add(&b)
+        }
+        Instr::Arith { op: ArithOp::Sub, kind: NumKind::Int, lhs, rhs, .. } => {
+            let a = idx_affine(func, nest, dom, access_b, access_ii, *lhs, depth + 1)?;
+            let b = idx_affine(func, nest, dom, access_b, access_ii, *rhs, depth + 1)?;
+            a.sub(&b)
+        }
+        Instr::Arith { op: ArithOp::Mul, kind: NumKind::Int, lhs, rhs, .. } => {
+            let a = idx_affine(func, nest, dom, access_b, access_ii, *lhs, depth + 1)?;
+            let b = idx_affine(func, nest, dom, access_b, access_ii, *rhs, depth + 1)?;
+            if a.coeffs.is_empty() {
+                b.scale(a.c0)
+            } else if b.coeffs.is_empty() {
+                a.scale(b.c0)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn loop_latches(func: &Function, lp_blocks: &BTreeSet<BlockId>, header: BlockId) -> Vec<BlockId> {
     let mut out = Vec::new();
     for b in lp_blocks {
         if *b == header {
@@ -620,7 +720,7 @@ fn loop_latches(func: &Function, lp_blocks: &BTreeSet<BlockId>, header: BlockId)
     out
 }
 
-fn nest_has_exits(func: &Function, union_blocks: &BTreeSet<BlockId>, headers: &BTreeSet<BlockId>) -> bool {
+pub(crate) fn nest_has_exits(func: &Function, union_blocks: &BTreeSet<BlockId>, headers: &BTreeSet<BlockId>) -> bool {
     for b in union_blocks {
         let block = match func.blocks.get(*b) {
             Some(x) => x,
@@ -647,7 +747,7 @@ fn nest_has_exits(func: &Function, union_blocks: &BTreeSet<BlockId>, headers: &B
     false
 }
 
-fn array_aliases(func: &Function, arr: Local) -> BTreeSet<Local> {
+pub(crate) fn array_aliases(func: &Function, arr: Local) -> BTreeSet<Local> {
     let mut set: BTreeSet<Local> = BTreeSet::from([arr]);
     loop {
         let mut grown = false;
@@ -1326,6 +1426,258 @@ pub fn version_counted_loops(func: &mut Function) -> bool {    let mut changed =
     changed
 }
 
+pub struct ExactCountLoop {
+    pub header: BlockId,
+    pub latch: BlockId,
+    pub blocks: BTreeSet<BlockId>,
+    pub iv: Local,
+    pub init: i64,
+    pub bound: i64,
+    pub add_block: BlockId,
+    pub add_idx: usize,
+    pub add_dst: Local,
+    pub add_lhs: Local,
+    pub add_rhs: Local,
+}
+
+fn induction_add(
+    func: &Function,
+    blocks: &BTreeSet<BlockId>,
+    iv: Local,
+) -> Option<(BlockId, usize, Local, Local, Local, i64)> {
+    let defs = all_defs(func, iv);
+    if defs.len() != 2 {
+        return None;
+    }
+    let in_loop: Vec<(BlockId, usize)> = defs
+        .into_iter()
+        .filter(|(bi, _)| blocks.contains(bi))
+        .collect();
+    if in_loop.len() != 1 {
+        return None;
+    }
+    let (bi, ii) = in_loop[0];
+    if ii == usize::MAX {
+        return None;
+    }
+    let step_of = |l: Local| const_of(func, l);
+    match func.blocks.get(bi)?.instrs.get(ii)? {
+        Instr::Copy { dst, src, .. } if *dst == iv => {
+            let tdefs = all_defs(func, *src);
+            if tdefs.len() != 1 {
+                return None;
+            }
+            let (tbi, tii) = tdefs[0];
+            if tii == usize::MAX {
+                return None;
+            }
+            match func.blocks.get(tbi)?.instrs.get(tii)? {
+                Instr::Arith { op: ArithOp::Add, lhs, rhs, dst, .. } if *dst == *src => {
+                    if *lhs == iv {
+                        Some((tbi, tii, *dst, *lhs, *rhs, step_of(*rhs)?))
+                    } else if *rhs == iv {
+                        Some((tbi, tii, *dst, *lhs, *rhs, step_of(*lhs)?))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        Instr::Arith { op: ArithOp::Add, lhs, rhs, dst, .. } if *dst == iv => {
+            if *lhs == iv {
+                Some((bi, ii, *dst, *lhs, *rhs, step_of(*rhs)?))
+            } else if *rhs == iv {
+                Some((bi, ii, *dst, *lhs, *rhs, step_of(*lhs)?))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn const_init(func: &Function, blocks: &BTreeSet<BlockId>, local: Local) -> Option<(BlockId, i64)> {
+    let mut seen: BTreeSet<Local> = BTreeSet::new();
+    let mut cur = local;
+    loop {
+        if !seen.insert(cur) {
+            return None;
+        }
+        let defs = all_defs(func, cur);
+        if defs.len() != 1 {
+            return None;
+        }
+        let (bi, ii) = defs[0];
+        if ii == usize::MAX || blocks.contains(&bi) {
+            return None;
+        }
+        match func.blocks.get(bi)?.instrs.get(ii)? {
+            Instr::Const { lit: Lit::Int(c), .. } => return Some((bi, *c)),
+            Instr::Copy { src, .. } => cur = *src,
+            _ => return None,
+        }
+    }
+}
+
+fn loop_cfg_preds(func: &Function) -> Vec<Vec<BlockId>> {
+    let n = func.blocks.len();
+    let mut preds: Vec<Vec<BlockId>> = vec![Vec::new(); n];
+    for (i, block) in func.blocks.iter().enumerate() {
+        for t in term_targets(&block.term) {
+            if t < n {
+                preds[t].push(i);
+            }
+        }
+    }
+    preds
+}
+
+fn analyze_exact(func: &Function, dom: &DominatorTree, lp: &NaturalLoop) -> Option<ExactCountLoop> {
+    let (iv, bound_local, then_bb) = header_check(func, lp.header)?;
+    if then_bb == lp.header {
+        return None;
+    }
+    let cond = match func.blocks.get(lp.header).map(|b| &b.term) {
+        Some(Terminator::BrIf { cond, .. }) => *cond,
+        _ => return None,
+    };
+    let int_cmp = func.blocks.get(lp.header)?.instrs.iter().any(|ins| {
+        matches!(ins, Instr::Cmp { kind: NumKind::Int, dst, .. } if *dst == cond)
+    });
+    if !int_cmp {
+        return None;
+    }
+    let n = func.blocks.len();
+    let mut then_preds: Vec<BlockId> = Vec::new();
+    for (i, block) in func.blocks.iter().enumerate() {
+        if i < n && term_targets(&block.term).contains(&then_bb) {
+            then_preds.push(i);
+        }
+    }
+    if then_preds != vec![lp.header] {
+        return None;
+    }
+    let bound = const_of(func, bound_local)?;
+    if bound <= 0 {
+        return None;
+    }
+    let (add_block, add_idx, add_dst, add_lhs, add_rhs, step) =
+        induction_add(func, &lp.blocks, iv)?;
+    if step != 1 || add_block == lp.header {
+        return None;
+    }
+    let outside: Vec<(BlockId, usize)> = all_defs(func, iv)
+        .into_iter()
+        .filter(|(bi, _)| !lp.blocks.contains(bi))
+        .collect();
+    if outside.len() != 1 {
+        return None;
+    }
+    let (obi, oii) = outside[0];
+    if oii == usize::MAX {
+        return None;
+    }
+    let (init_block, init) = match func.blocks.get(obi)?.instrs.get(oii)? {
+        Instr::Const { lit: Lit::Int(c), .. } => (obi, *c),
+        Instr::Copy { src, .. } => const_init(func, &lp.blocks, *src)?,
+        _ => return None,
+    };
+    let externals = external_preds(func, lp.header, &lp.blocks);
+    if externals.len() != 1 {
+        return None;
+    }
+    let pred = externals[0];
+    if !matches!(func.blocks.get(pred).map(|b| &b.term), Some(Terminator::Br(t)) if *t == lp.header) {
+        return None;
+    }
+    if !dom.dominates(init_block, pred) {
+        return None;
+    }
+    let preds = loop_cfg_preds(func);
+    for b in &lp.blocks {
+        for p in preds.get(*b).cloned().unwrap_or_default() {
+            if !lp.blocks.contains(&p) && p != pred {
+                return None;
+            }
+        }
+    }
+    let latches = loop_latches(func, &lp.blocks, lp.header);
+    if latches.len() != 1 {
+        return None;
+    }
+    let latch = latches[0];
+    let exit_bb = match func.blocks.get(lp.header).map(|b| &b.term) {
+        Some(Terminator::BrIf { then_bb: t, else_bb: e, .. }) if *t == then_bb => *e,
+        _ => return None,
+    };
+    if lp.blocks.contains(&exit_bb) {
+        return None;
+    }
+    for b in &lp.blocks {
+        match &func.blocks[*b].term {
+            Terminator::Br(t) => {
+                if !lp.blocks.contains(t) && !(*b == lp.header && *t == exit_bb) {
+                    return None;
+                }
+            }
+            Terminator::BrIf { then_bb: t, else_bb: e, .. } => {
+                for target in [*t, *e] {
+                    if !lp.blocks.contains(&target) && !(*b == lp.header && target == exit_bb) {
+                        return None;
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    for other in crate::licm::find_natural_loops(func, dom) {
+        if other.blocks.contains(&add_block) && !other.blocks.is_superset(&lp.blocks) {
+            return None;
+        }
+    }
+    let mut stack: Vec<BlockId> = vec![then_bb];
+    let mut seen: BTreeSet<BlockId> = BTreeSet::new();
+    while let Some(b) = stack.pop() {
+        if b == add_block || b == lp.header || !seen.insert(b) {
+            continue;
+        }
+        if b == latch {
+            return None;
+        }
+        if !lp.blocks.contains(&b) {
+            continue;
+        }
+        for t in term_targets(&func.blocks[b].term) {
+            stack.push(t);
+        }
+    }
+    Some(ExactCountLoop {
+        header: lp.header,
+        latch,
+        blocks: lp.blocks.clone(),
+        iv,
+        init,
+        bound,
+        add_block,
+        add_idx,
+        add_dst,
+        add_lhs,
+        add_rhs,
+    })
+}
+
+pub fn exact_count_loops(func: &Function) -> Vec<ExactCountLoop> {
+    let dom = crate::licm::compute_dominators(func);
+    let loops = crate::licm::find_natural_loops(func, &dom);
+    let mut out: Vec<ExactCountLoop> = loops
+        .iter()
+        .filter_map(|lp| analyze_exact(func, &dom, lp))
+        .collect();
+    out.sort_by_key(|l| (l.header, l.latch));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1647,5 +1999,68 @@ mod tests {
             })
             .expect("one array read");
         assert!(!nn.contains(&reassigned), "reassigned array must not be non-null, got {nn:?}");
+    }
+
+    fn exact_of(src: &str, entry: &str) -> Vec<(i64, i64)> {
+        let mut m = frontend::parser::Parser::parse_module(src).expect("parse");
+        assert!(frontend::desugar::desugar(&mut m).is_empty());
+        let module = crate::lower::lower(&m).expect("lower");
+        let f = module.functions.iter().find(|f| f.name == entry).expect("entry");
+        exact_count_loops(f).iter().map(|l| (l.init, l.bound)).collect()
+    }
+
+    #[test]
+    fn exact_count_fires_on_const_bound() {
+        let trips = exact_of(
+            "fn Main(): Int {\n    let s = 0;\n    let i = 0;\n    while i < 5 {\n        s = s + i;\n        i = i + 1;\n    }\n    return s;\n}\n",
+            "Main",
+        );
+        assert_eq!(trips, vec![(0, 5)], "{trips:?}");
+    }
+
+    #[test]
+    fn exact_count_rejects_param_bound() {
+        let trips = exact_of(
+            "fn f(n: Int): Int {\n    let s = 0;\n    let i = 0;\n    while i < n {\n        s = s + i;\n        i = i + 1;\n    }\n    return s;\n}\nfn Main(): Int {\n    return 0;\n}\n",
+            "f",
+        );
+        assert!(trips.is_empty(), "{trips:?}");
+    }
+
+    #[test]
+    fn exact_count_rejects_step_two() {
+        let trips = exact_of(
+            "fn Main(): Int {\n    let s = 0;\n    let i = 0;\n    while i < 8 {\n        s = s + i;\n        i = i + 2;\n    }\n    return s;\n}\n",
+            "Main",
+        );
+        assert!(trips.is_empty(), "{trips:?}");
+    }
+
+    #[test]
+    fn exact_count_rejects_early_exit() {
+        let trips = exact_of(
+            "fn Main(): Int {\n    let s = 0;\n    let i = 0;\n    while i < 8 {\n        if i == 3 {\n            break;\n        }\n        s = s + i;\n        i = i + 1;\n    }\n    return s;\n}\n",
+            "Main",
+        );
+        assert!(trips.is_empty(), "{trips:?}");
+    }
+
+    #[test]
+    fn exact_count_covers_nested_loops() {
+        let mut trips = exact_of(
+            "fn Main(): Int {\n    let s = 0;\n    let i = 0;\n    while i < 3 {\n        let j = 0;\n        while j < 4 {\n            s = s + i + j;\n            j = j + 1;\n        }\n        i = i + 1;\n    }\n    return s;\n}\n",
+            "Main",
+        );
+        trips.sort();
+        assert_eq!(trips, vec![(0, 3), (0, 4)], "{trips:?}");
+    }
+
+    #[test]
+    fn exact_count_covers_zero_trip_shape() {
+        let trips = exact_of(
+            "fn Main(): Int {\n    let s = 7;\n    let i = 10;\n    while i < 5 {\n        s = s + i;\n        i = i + 1;\n    }\n    return s;\n}\n",
+            "Main",
+        );
+        assert_eq!(trips, vec![(10, 5)], "{trips:?}");
     }
 }

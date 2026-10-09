@@ -4,6 +4,7 @@ pub mod codegen_hash;
 pub mod escape;
 pub mod instr;
 pub mod licm;
+pub mod loopdep;
 pub mod lower;
 pub mod opt;
 pub mod parallel;

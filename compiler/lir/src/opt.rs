@@ -31,6 +31,7 @@ pub struct OptTimings {
     pub sroa: Duration,
     pub licm: Duration,
     pub bce: Duration,
+    pub loopdep: Duration,
     pub arc: Duration,
     pub tco: Duration,
     pub fixpoint: Duration,
@@ -46,6 +47,7 @@ impl OptTimings {
             + self.sroa
             + self.licm
             + self.bce
+            + self.loopdep
             + self.arc
             + self.tco
             + self.fixpoint
@@ -54,13 +56,14 @@ impl OptTimings {
             + self.dom
     }
 
-    pub fn sub_rows(&self) -> [(&'static str, Duration); 11] {
+    pub fn sub_rows(&self) -> [(&'static str, Duration); 12] {
         [
             ("opt_inline", self.inline),
             ("opt_escape", self.escape),
             ("opt_sroa", self.sroa),
             ("opt_licm", self.licm),
             ("opt_bce", self.bce),
+            ("opt_loopdep", self.loopdep),
             ("opt_arc", self.arc),
             ("opt_tco", self.tco),
             ("opt_fixpoint", self.fixpoint),
@@ -113,6 +116,11 @@ fn optimize_lir_impl(
         crate::sroa::scalar_replace_aggregates(module, fi);
     }
     t.sroa = step.elapsed();
+    for f in &module.functions {
+        let inner = stamp();
+        let _ = crate::loopdep::analyze_function(f);
+        t.loopdep += inner.elapsed();
+    }
     step = stamp();
     for fi in 0..module.functions.len() {
         crate::licm::loop_invariant_code_motion(&mut module.functions[fi]);
@@ -1101,6 +1109,7 @@ mod tests {
             + t.sroa
             + t.licm
             + t.bce
+            + t.loopdep
             + t.arc
             + t.tco
             + t.fixpoint
@@ -2212,6 +2221,11 @@ fn optimize_lir_impl_parallel(
         crate::sroa::scalar_replace_aggregates(module, fi);
     }
     t.sroa = step.elapsed();
+    step = stamp();
+    module.functions.par_iter_mut().for_each(|f| {
+        let _ = crate::loopdep::analyze_function(f);
+    });
+    t.loopdep = step.elapsed();
     step = stamp();
     module.functions.par_iter_mut().for_each(|f| {
         crate::licm::loop_invariant_code_motion(f);

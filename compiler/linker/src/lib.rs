@@ -10,6 +10,7 @@ pub enum LinkInput {
     ObjectPath(PathBuf),
     ArchiveBytes(Vec<u8>),
     ArchiveRef(&'static [u8]),
+    ArchiveRefKnown { bytes: &'static [u8], sha256: &'static str },
     ArchivePath(PathBuf),
     Lib(String),
 }
@@ -39,6 +40,7 @@ impl std::error::Error for LinkError {}
 
 pub mod core;
 pub mod native;
+pub mod plan;
 pub mod target;
 
 pub fn host_triple() -> TargetTriple {
@@ -287,6 +289,11 @@ fn stage_inputs(inputs: &[LinkInput], dir: &Path) -> Result<Vec<PathBuf>, LinkEr
             LinkInput::ArchiveRef(b) => {
                 let p = dir.join(format!("lib{i}.a"));
                 std::fs::write(&p, b).map_err(|e| LinkError::Io(e.to_string()))?;
+                out.push(p);
+            }
+            LinkInput::ArchiveRefKnown { bytes, .. } => {
+                let p = dir.join(format!("lib{i}.a"));
+                std::fs::write(&p, bytes).map_err(|e| LinkError::Io(e.to_string()))?;
                 out.push(p);
             }
             LinkInput::ArchivePath(p) => out.push(p.clone()),

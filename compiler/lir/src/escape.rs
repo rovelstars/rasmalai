@@ -500,6 +500,56 @@ pub fn optimize_stack_allocations(module: &mut Module, fi: usize) -> bool {
     true
 }
 
+pub fn fresh_array_roots(func: &Function) -> BTreeMap<Local, Local> {
+    let alias = collect_aliases(func);
+    let mut tainted: BTreeSet<Local> = BTreeSet::new();
+    let mut has_new: BTreeSet<Local> = BTreeSet::new();
+    let mut note = |local: Local, fresh: bool| {
+        let root = find_root(&alias, local);
+        if fresh {
+            has_new.insert(root);
+        } else {
+            tainted.insert(root);
+        }
+    };
+    for block in &func.blocks {
+        for ins in &block.instrs {
+            walk_def(ins, &mut note);
+        }
+        if let Terminator::BrErr { catch_bind, .. } = &block.term {
+            note(*catch_bind, false);
+        }
+    }
+    let mut out: BTreeMap<Local, Local> = BTreeMap::new();
+    for local in all_locals(func) {
+        let root = find_root(&alias, local);
+        if has_new.contains(&root) && !tainted.contains(&root) {
+            out.insert(local, root);
+        }
+    }
+    out
+}
+
+fn walk_def(ins: &Instr, note: &mut impl FnMut(Local, bool)) {
+    crate::instr::walk_instrs(std::slice::from_ref(ins), &mut |nested| match nested {
+        Instr::ArrayNew { dst, .. } => note(*dst, true),
+        Instr::Copy { .. } | Instr::Cast { .. } => {}
+        Instr::Call { dsts, err, .. } => {
+            for d in dsts {
+                note(*d, false);
+            }
+            if let Some(e) = err {
+                note(*e, false);
+            }
+        }
+        _ => {
+            if let Some(d) = instr_dst(nested) {
+                note(d, false);
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +644,65 @@ mod tests {
         module.classes[0].dtor = Some(7);
         assert!(!optimize_stack_allocations(&mut module, 0));
         assert!(matches!(module.functions[0].blocks[0].instrs[0], Instr::ObjNew { ..}));
+    }
+
+    fn lowered_func(src: &str, entry: &str) -> (Module, usize) {
+        let mut m = frontend::parser::Parser::parse_module(src).expect("parse");
+        assert!(frontend::desugar::desugar(&mut m).is_empty());
+        let module = crate::lower::lower(&m).expect("lower");
+        let fi = module.functions.iter().position(|f| f.name == entry).expect("entry");
+        (module, fi)
+    }
+
+    fn roots_of(src: &str, entry: &str) -> (Vec<LirType>, BTreeMap<Local, Local>) {
+        let (module, fi) = lowered_func(src, entry);
+        let func = &module.functions[fi];
+        (func.locals.clone(), fresh_array_roots(func))
+    }
+
+    const FRESH_SRC: &str = "fn F(a: Array<Int>): Int {\n    let b = [1, 2];\n    let c = [3];\n    let d = b;\n    return a[0] + b[0] + c[0] + d[1];\n}\n";
+
+    #[test]
+    fn fresh_arrays_get_distinct_roots() {
+        let (locals, roots) = roots_of(FRESH_SRC, "F");
+        let distinct: BTreeSet<Local> = roots.values().copied().collect();
+        assert_eq!(distinct.len(), 2);
+        for (local, _) in roots.iter() {
+            assert!((*local as usize) >= 1, "param local {local} must never be fresh");
+            assert!(matches!(locals[*local as usize], LirType::Array(_)));
+        }
+    }
+
+    #[test]
+    fn copy_shares_fresh_root() {
+        let (_, roots) = roots_of(FRESH_SRC, "F");
+        let mut by_root: BTreeMap<Local, usize> = BTreeMap::new();
+        for root in roots.values() {
+            *by_root.entry(*root).or_default() += 1;
+        }
+        assert!(by_root.values().any(|n| *n >= 2), "{by_root:?}");
+    }
+
+    #[test]
+    fn call_result_array_is_not_fresh() {
+        let src = "fn G(x: Array<Int>): Array<Int> {\n    return x;\n}\nfn F(): Int {\n    let b = [1, 2];\n    let c = G(b);\n    return c[0];\n}\n";
+        let (module, fi) = lowered_func(src, "F");
+        let roots = fresh_array_roots(&module.functions[fi]);
+        let distinct: BTreeSet<Local> = roots.values().copied().collect();
+        assert_eq!(distinct.len(), 1, "{roots:?}");
+    }
+
+    #[test]
+    fn nested_array_get_is_not_fresh() {
+        let src = "fn F(m: Array<Array<Int>>): Int {\n    let row = m[0];\n    return row[0];\n}\n";
+        let (_, roots) = roots_of(src, "F");
+        assert!(roots.is_empty(), "{roots:?}");
+    }
+
+    #[test]
+    fn params_only_gives_no_roots() {
+        let src = "fn F(a: Array<Int>, b: Array<Int>): Int {\n    return a[0] + b[0];\n}\n";
+        let (_, roots) = roots_of(src, "F");
+        assert!(roots.is_empty(), "{roots:?}");
     }
 }

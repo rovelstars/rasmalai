@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::json_scanner::{count_structurals, stream_next, StreamCursor};
+use super::json_scanner::{stream_next, StreamCursor};
 use super::JsonSink;
 
 pub const TAPE_NULL: u8 = 0;
@@ -741,36 +741,38 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        let keep: Vec<(u64, usize, usize, usize)> = {
-            let mut out: Vec<(u64, usize, usize, usize)> = Vec::with_capacity(pairs.len());
-            let keys = &self.keys;
-            let key_ends = &self.key_ends;
-            let nodes = &self.nodes;
-            for pr in pairs {
-                if let Some(last) = out.last() {
-                    if last.0 == pr.0
-                        && key_slice(nodes, keys, key_ends, last.1)
-                            == key_slice(nodes, keys, key_ends, pr.1)
-                    {
-                        *out.last_mut().unwrap() = pr;
-                        continue;
-                    }
-                }
-                out.push(pr);
+        let mut w = 0usize;
+        for r in 0..pairs.len() {
+            let dup = if w == 0 {
+                false
+            } else if pairs[w - 1].0 != pairs[r].0 {
+                false
+            } else {
+                let keys = &self.keys;
+                let key_ends = &self.key_ends;
+                let nodes = &self.nodes;
+                key_slice(nodes, keys, key_ends, pairs[w - 1].1)
+                    == key_slice(nodes, keys, key_ends, pairs[r].1)
+            };
+            if dup {
+                pairs[w - 1] = pairs[r];
+            } else {
+                pairs[w] = pairs[r];
+                w += 1;
             }
-            out
-        };
-        let words: Vec<u64> = keep
-            .iter()
-            .flat_map(|(_, k, v, l)| {
-                let mut w = Vec::with_capacity(1 + l);
-                w.push(self.nodes[*k]);
-                w.extend_from_slice(&self.nodes[*v..*v + *l]);
-                w
-            })
-            .collect();
+        }
+        pairs.truncate(w);
+        let mut total = 0usize;
+        for (_, _, _, l) in pairs.iter() {
+            total += 1 + l;
+        }
+        let mut words: Vec<u64> = Vec::with_capacity(total);
+        for (_, k, v, l) in pairs.iter() {
+            words.push(self.nodes[*k]);
+            words.extend_from_slice(&self.nodes[*v..*v + *l]);
+        }
         self.nodes.truncate(idx + 1);
-        let count = keep.len() as u32;
+        let count = w as u32;
         self.nodes.extend_from_slice(&words);
         self.nodes[idx] = mk_word(TAPE_OBJECT, count, 0);
         Ok(idx)
@@ -785,7 +787,11 @@ fn key_slice<'b>(nodes: &[u64], keys: &'b [u8], key_ends: &[u32], kidx: usize) -
 }
 
 pub fn parse_tape(input: &[u8]) -> Result<JsonDoc, JsonError> {
-    let count = count_structurals(input);
+    // Node capacity without a pre-scan: no valid document needs more than
+    // one node per two input bytes (scalars take at least one byte, empty
+    // containers two, nesting pairs every opener with a closer), so this
+    // bound never under-reserves; per-object compaction may transiently
+    // cost one reallocation on giant flat objects, which stays correct.
     let mut b = Builder {
         input,
         feed: StructFeed {
@@ -797,7 +803,7 @@ pub fn parse_tape(input: &[u8]) -> Result<JsonDoc, JsonError> {
         },
         si: 0,
         pos: 0,
-        nodes: Vec::with_capacity(count + 8),
+        nodes: Vec::with_capacity(input.len() / 2 + 16),
         strings: Vec::with_capacity(input.len() / 2),
         keys: Vec::with_capacity(64),
         key_ends: Vec::with_capacity(16),
@@ -1040,14 +1046,9 @@ pub fn tape_write_doc(out: &mut impl JsonSink, doc: &JsonDoc, idx: usize, depth:
     match tape_tag(doc.nodes[idx]) {
         TAPE_NULL => out.push_str("null"),
         TAPE_BOOL => out.push_str(if bool_at(doc, idx) { "true" } else { "false" }),
-        TAPE_INT => out.push_str(&int_at(doc, idx).to_string()),
+        TAPE_INT => super::json_push_int(out, int_at(doc, idx)),
         TAPE_FLOAT => {
-            let f = float_at(doc, idx);
-            if !f.is_finite() {
-                out.push_str("null");
-            } else {
-                out.push_str(&super::fmt_float(f));
-            }
+            super::json_fmt_float_into(out, float_at(doc, idx));
         }
         TAPE_STR => {
             out.push_byte(b'"');
@@ -1518,5 +1519,60 @@ mod tests {
         assert_eq!(root_tag(&parse_tape(b"9223372036854775808").unwrap()), TAPE_FLOAT);
         assert_eq!(root_tag(&parse_tape(b"1e3").unwrap()), TAPE_FLOAT);
         assert_eq!(float_at(&parse_tape(b"-0.5e-2").unwrap(), 0), -0.005);
+    }
+
+    fn write_doc(input: &[u8]) -> String {
+        let doc = parse_tape(input).unwrap();
+        let mut out = String::new();
+        tape_write_doc(&mut out, &doc, 0, 0);
+        out
+    }
+
+    #[test]
+    fn write_canonical_exact() {
+        assert_eq!(write_doc(b"null"), "null");
+        assert_eq!(write_doc(b"true"), "true");
+        assert_eq!(write_doc(b"12345"), "12345");
+        assert_eq!(write_doc(b"-7"), "-7");
+        assert_eq!(write_doc(b"3.1415"), "3.1415");
+        assert_eq!(write_doc(b"3.0"), "3.0");
+        assert_eq!(write_doc(b"1e3"), "1000.0");
+        assert_eq!(write_doc(b"\"hello world\""), "\"hello world\"");
+        assert_eq!(
+            write_doc(br#"{"name":"Rasmalai","version":1,"features":["fast","arc","mio"],"meta":{"ok":true}}"#),
+            r#"{"features":["fast","arc","mio"],"meta":{"ok":true},"name":"Rasmalai","version":1}"#
+        );
+        assert_eq!(
+            write_doc(br#"{"b":1,"a":2,"b":3}"#),
+            r#"{"a":2,"b":3}"#
+        );
+        assert_eq!(
+            write_doc(br#"{"q":"a\"b\\c\nd","tab":"x\ty"}"#),
+            r#"{"q":"a\"b\\c\nd","tab":"x\ty"}"#
+        );
+        assert_eq!(
+            write_doc("{\"e\":\"\\u00e9\\uD83D\\uDE00\"}".as_bytes()),
+            "{\"e\":\"é😀\"}"
+        );
+        assert_eq!(write_doc(b"[]"), "[]");
+        assert_eq!(write_doc(b"{}"), "{}");
+        assert_eq!(write_doc(b"[1,[2,3],{\"x\":null}]"), "[1,[2,3],{\"x\":null}]");
+    }
+
+    #[test]
+    fn write_numbers_exact() {
+        assert_eq!(write_doc(b"0"), "0");
+        assert_eq!(write_doc(b"9223372036854775807"), "9223372036854775807");
+        assert_eq!(write_doc(b"9223372036854775808"), "9223372036854775808.0");
+        assert_eq!(write_doc(b"-9223372036854775808"), "-9223372036854775808");
+        assert_eq!(write_doc(b"-0.0"), "-0.0");
+        assert_eq!(write_doc(b"1.5"), "1.5");
+        assert_eq!(write_doc(b"-0.5e-2"), "-0.005");
+    }
+
+    #[test]
+    fn write_control_escapes_exact() {
+        assert_eq!(write_doc(b"\"\\u0001\\u001f\""), "\"\\u0001\\u001f\"");
+        assert_eq!(write_doc(b"\"\\b\\f\""), "\"\\b\\f\"");
     }
 }
