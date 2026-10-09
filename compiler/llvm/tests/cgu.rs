@@ -1,4 +1,4 @@
-use llvm::codegen::{OptLevel, emit_object, emit_objects};
+use llvm::codegen::{ObjectCache, OptLevel, emit_object, emit_objects, emit_objects_cached};
 
 fn lowered(src: &str) -> lir::instr::Module {
     let mut module = frontend::modules::ModuleGraph::from_source(src).unwrap();
@@ -126,4 +126,77 @@ fn multi_unit_main_entry_renamed_everywhere() {
     assert!(contains(&out[0], "rnx_entry_main"));
     assert!(contains(&out[def_unit], "__rnx_user_main"));
     assert!(contains(&out[0], "__rnx_user_main"));
+}
+
+fn big_module() -> lir::instr::Module {
+    let mut src = String::new();
+    for i in 0..200 {
+        src.push_str(&format!("fn CguD{i:03}(): Int {{ return {i} * 3 + 1; }} "));
+    }
+    src.push_str("fn Main(): Int { return CguD000() + CguD199(); } ");
+    let lir = lowered(&src);
+    assert!(lir.functions.len() >= 64);
+    lir
+}
+
+// Units reuse pooled contexts with one machine each; every repeated
+// parallel emission must still produce byte-identical objects, on both
+// the unoptimized and the O3 paths.
+#[test]
+fn shared_setup_byte_identical_across_runs() {
+    let lir = big_module();
+    let first = emit_objects(&lir, "cgu_det", "Main", OptLevel::Dev, None, None, 8).unwrap();
+    assert_eq!(first.len(), 8);
+    for obj in &first {
+        assert!(is_elf(obj));
+    }
+    for _ in 0..2 {
+        let again = emit_objects(&lir, "cgu_det", "Main", OptLevel::Dev, None, None, 8).unwrap();
+        assert_eq!(again, first);
+    }
+    let rel_first = emit_objects(&lir, "cgu_det", "Main", OptLevel::Release, None, None, 8).unwrap();
+    assert_eq!(rel_first.len(), 8);
+    for obj in &rel_first {
+        assert!(is_elf(obj));
+    }
+    let rel_again = emit_objects(&lir, "cgu_det", "Main", OptLevel::Release, None, None, 8).unwrap();
+    assert_eq!(rel_again, rel_first);
+
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    let map: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
+    let cache = ObjectCache {
+        module_hash: "m",
+        toolchain_hash: "t",
+        lookup: &|k: &str| map.borrow().get(k).cloned(),
+        store: &|k: &str, v: &[u8]| {
+            map.borrow_mut().insert(k.to_string(), v.to_vec());
+        },
+    };
+    let miss = emit_objects_cached(&lir, "cgu_det", "Main", OptLevel::Dev, None, None, 8, Some(&cache))
+        .unwrap();
+    assert_eq!(miss, first);
+    let hit = emit_objects_cached(&lir, "cgu_det", "Main", OptLevel::Dev, None, None, 8, Some(&cache))
+        .unwrap();
+    assert_eq!(hit, first);
+}
+
+// Concurrent emissions share the process-wide context pool; pooled
+// contexts are handed out owned, never aliased, so parallel builds
+// agree byte-for-byte with a sequential one.
+#[test]
+fn concurrent_builds_share_pool_safely() {
+    let lir = big_module();
+    let seq = emit_objects(&lir, "cgu_race", "Main", OptLevel::Dev, None, None, 4).unwrap();
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            handles.push(s.spawn(|| {
+                emit_objects(&lir, "cgu_race", "Main", OptLevel::Dev, None, None, 4).unwrap()
+            }));
+        }
+        for h in handles {
+            assert_eq!(h.join().unwrap(), seq);
+        }
+    });
 }

@@ -354,11 +354,36 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 std::process::exit(1);
             }
             let link_result = if native {
+                // Incremental-link cache: project-local memo of the archive
+                // pull order. Cold builds (no plan file yet) take the exact
+                // uncached path; the plan only ever accelerates rebuilds.
+                // Construction here is in-memory only (one stat for the
+                // rewrite gate, no hashing, no reads).
+                let link_cache = || linker::plan::CacheCtx {
+                    dir: frontend::cache::project_cache_dir(&root)
+                        .join("link")
+                        .join(profile_name(release)),
+                    toolchain: format!(
+                        "rnx={} llvm={} rt={} release={} opt={} target={} debug={}",
+                        env!("CARGO_PKG_VERSION"),
+                        llvm::LLVM_VERSION,
+                        cli::runtime_archive_hash(),
+                        release,
+                        opt_level,
+                        target_triple.as_deref().unwrap_or(target.0.as_str()),
+                        debug,
+                    ),
+                    allow_write: std::path::Path::new(&out_path).is_file(),
+                };
                 if release {
                     let mut inputs = user_objects;
-                    inputs.push(linker::LinkInput::ArchiveRef(runtime::archive::BYTES));
+                    inputs.push(linker::LinkInput::ArchiveRefKnown {
+                        bytes: runtime::archive::BYTES,
+                        sha256: runtime::archive::SHA256,
+                    });
                     inputs.extend(foreign_libs);
-                    linker::native::native_link_static(
+                    let cache = link_cache();
+                    linker::native::native_link_static_cached(
                         &inputs,
                         std::path::Path::new(&out_path),
                         &linker::native::StaticOpts {
@@ -367,6 +392,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                             target: target.0.clone(),
                             strip: true,
                         },
+                        &cache,
                     )
                     .map(|_| ())
                 } else {
@@ -391,9 +417,13 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                         }
                         None => {
                             let mut inputs = user_objects;
-                            inputs.push(linker::LinkInput::ArchiveRef(runtime::archive::BYTES));
+                            inputs.push(linker::LinkInput::ArchiveRefKnown {
+                                bytes: runtime::archive::BYTES,
+                                sha256: runtime::archive::SHA256,
+                            });
                             inputs.extend(foreign_libs);
-                            linker::native::native_link_static(
+                            let cache = link_cache();
+                            linker::native::native_link_static_cached(
                                 &inputs,
                                 std::path::Path::new(&out_path),
                                 &linker::native::StaticOpts {
@@ -402,6 +432,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                                     target: target.0.clone(),
                                     strip: false,
                                 },
+                                &cache,
                             )
                             .map(|_| ())
                         }

@@ -82,6 +82,10 @@ impl<'a> Archive<'a> {
         self.members.get(idx).map(|m| m.name.as_str()).unwrap_or("?")
     }
 
+    pub fn member_range(&self, idx: usize) -> Option<(usize, usize)> {
+        self.members.get(idx).map(|m| (m.off, m.size))
+    }
+
     pub fn build_index(&mut self, symbols_of: &dyn Fn(&[u8], &str) -> Result<Vec<String>, LinkError>) -> Result<(), LinkError> {
         if let Some((start, end)) = self.sysv {
             return self.build_index_sysv(start, end);

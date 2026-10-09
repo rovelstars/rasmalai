@@ -109,7 +109,7 @@ impl<'a> Machine<'a> {
         match v {
             Value::Null => out.push_str("null"),
             Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Value::Int(i) => out.push_str(&i.to_string()),
+            Value::Int(i) => crate::native::json_push_int(out, *i),
             Value::Pointer(h) if self.json_maps.contains(h) => {
                 out.push('{');
                 let mut first = true;
@@ -137,11 +137,7 @@ impl<'a> Machine<'a> {
                 out.push('}');
             }
             Value::Float(f, _) => {
-                if !f.is_finite() {
-                    out.push_str("null");
-                } else {
-                    out.push_str(&crate::native::fmt_float(*f));
-                }
+                crate::native::json_fmt_float_into(out, *f);
             }
             Value::Str(s) => {
                 out.push('"');

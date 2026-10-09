@@ -238,6 +238,12 @@ pub(super) fn lower_arith(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                 }
             }
             .map_err(err)?;
+            if cx.induction_adds.contains(&(cx.cur_block, cx.cur_instr, *dst, *lhs, *rhs)) {
+                if let Some(inst) = v.as_instruction() {
+                    let _ = inst.set_no_signed_wrap_flag(true);
+                    let _ = inst.set_no_unsigned_wrap_flag(true);
+                }
+            }
             store(cx, *dst, v.into())?;
         }
         Instr::Fma { dst, a, b, c, .. } => {

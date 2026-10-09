@@ -548,6 +548,18 @@ fn arith(op: ArithOp, a: &Value, b: &Value) -> Result<Value, ExecError> {
             };
             Ok(Value::Int(r))
         }
+        // BCE loop versioning conjoins Cmp results with BitAnd; keep accepting
+        // the Bool shape both JITs already lower as 0/1 integers.
+        (Value::Bool(x), Value::Bool(y))
+            if matches!(op, ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor) =>
+        {
+            let r = match op {
+                ArithOp::BitAnd => *x & *y,
+                ArithOp::BitOr => *x | *y,
+                _ => *x ^ *y,
+            };
+            Ok(Value::Bool(r))
+        }
         _ => {
             let (x, xk) = num(a)?;
             let (y, yk) = num(b)?;

@@ -50,11 +50,18 @@ impl Default for DynamicOpts {
 
 pub static TIME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+fn time_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        TIME.load(std::sync::atomic::Ordering::Relaxed) || std::env::var_os("RNX_LINK_TIME").is_some()
+    })
+}
+
 macro_rules! tphase {
     ($name:expr, $block:expr) => {{
         let __t0 = std::time::Instant::now();
         let __r = $block;
-        if TIME.load(std::sync::atomic::Ordering::Relaxed) {
+        if time_on() {
             eprintln!("t-{} {:?}", $name, __t0.elapsed());
         }
         __r
@@ -111,15 +118,22 @@ fn load_inputs(inputs: &[LinkInput]) -> Result<(Vec<Input<'_>>, Vec<ArchiveInput
             LinkInput::ArchiveBytes(b) => archives.push(ArchiveInput {
                 label: format!("archive{}", archives.len()),
                 storage: Storage::Borrowed(b),
+                known_sha: None,
             }),
             LinkInput::ArchiveRef(b) => archives.push(ArchiveInput {
                 label: format!("archive{}", archives.len()),
                 storage: Storage::Borrowed(b),
+                known_sha: None,
+            }),
+            LinkInput::ArchiveRefKnown { bytes, sha256 } => archives.push(ArchiveInput {
+                label: format!("archive{}", archives.len()),
+                storage: Storage::Borrowed(bytes),
+                known_sha: Some(sha256),
             }),
             LinkInput::ArchivePath(p) => {
                 let file = std::fs::File::open(p).map_err(|e| LinkError::Io(format!("{}: {e}", p.display())))?;
                 let map = unsafe { memmap2::Mmap::map(&file).map_err(|e| LinkError::Io(e.to_string()))? };
-                archives.push(ArchiveInput { label: p.display().to_string(), storage: Storage::Map(map) });
+                archives.push(ArchiveInput { label: p.display().to_string(), storage: Storage::Map(map), known_sha: None });
             }
             LinkInput::Lib(name) => {
                 pending_libs.push(name.clone());
@@ -132,6 +146,55 @@ fn load_inputs(inputs: &[LinkInput]) -> Result<(Vec<Input<'_>>, Vec<ArchiveInput
 struct ArchiveInput<'a> {
     label: String,
     storage: Storage<'a>,
+    known_sha: Option<&'static str>,
+}
+
+fn sha1hex(data: &[u8]) -> String {
+    let mut out = String::with_capacity(40);
+    for b in crate::core::writer::sha1(data) {
+        out.push(char::from_digit((b >> 4) as u32, 16).unwrap_or('0'));
+        out.push(char::from_digit((b & 0xf) as u32, 16).unwrap_or('0'));
+    }
+    out
+}
+
+fn archive_idents(archives: &[ArchiveInput<'_>], manifest_present: bool) -> Vec<crate::plan::ArchiveIdent> {
+    let mut out = Vec::with_capacity(archives.len());
+    for a in archives {
+        if let Some(sha) = a.known_sha {
+            out.push(crate::plan::ArchiveIdent {
+                tag: format!("sha256:{sha}"),
+                path: String::new(),
+                size: a.storage.bytes().len() as u64,
+                mtime_secs: 0,
+                mtime_nanos: 0,
+            });
+            continue;
+        }
+        let path = Path::new(&a.label);
+        if let Some(ident) = crate::plan::stat_ident(&format!("path:{}", a.label), path) {
+            out.push(ident);
+            continue;
+        }
+        if !manifest_present {
+            out.push(crate::plan::ArchiveIdent {
+                tag: "unhashed".to_string(),
+                path: a.label.clone(),
+                size: a.storage.bytes().len() as u64,
+                mtime_secs: 0,
+                mtime_nanos: 0,
+            });
+            continue;
+        }
+        out.push(crate::plan::ArchiveIdent {
+            tag: format!("sha1:{}", sha1hex(a.storage.bytes())),
+            path: a.label.clone(),
+            size: a.storage.bytes().len() as u64,
+            mtime_secs: 0,
+            mtime_nanos: 0,
+        });
+    }
+    out
 }
 
 fn cached_system_dirs() -> Vec<PathBuf> {
@@ -235,7 +298,7 @@ fn archive_file(file: &str) -> Result<Vec<ArchiveInput<'static>>, LinkError> {
     let path = system_file(file)?;
     let f = std::fs::File::open(&path).map_err(|e| LinkError::Io(format!("{}: {e}", path.display())))?;
     let map = unsafe { memmap2::Mmap::map(&f).map_err(|e| LinkError::Io(e.to_string()))? };
-    Ok(vec![ArchiveInput { label: path.display().to_string(), storage: Storage::Map(map) }])
+    Ok(vec![ArchiveInput { label: path.display().to_string(), storage: Storage::Map(map), known_sha: None }])
 }
 
 fn system_archive(name: &str) -> Result<Vec<ArchiveInput<'static>>, LinkError> {
@@ -253,7 +316,7 @@ fn load_archive_path(path: &Path) -> Result<Vec<ArchiveInput<'static>>, LinkErro
     if bytes.starts_with(b"!<arch>") {
         let f = std::fs::File::open(path).map_err(|e| LinkError::Io(format!("{}: {e}", path.display())))?;
         let map = unsafe { memmap2::Mmap::map(&f).map_err(|e| LinkError::Io(e.to_string()))? };
-        return Ok(vec![ArchiveInput { label: path.display().to_string(), storage: Storage::Map(map) }]);
+        return Ok(vec![ArchiveInput { label: path.display().to_string(), storage: Storage::Map(map), known_sha: None }]);
     }
     let text = std::str::from_utf8(&bytes).map_err(|_| LinkError::Native(format!("{}: not an archive or linker script", path.display())))?;
     let mut out = Vec::new();
@@ -373,15 +436,24 @@ fn seed_synthetics(db: &mut SymDb) {
 }
 
 pub fn native_link_static(inputs: &[LinkInput], output: &Path, opts: &StaticOpts) -> Result<NativeStats, LinkError> {
-    static_link_inner(inputs, output, opts, CrtKind::DynPie)
+    static_link_inner(inputs, output, opts, CrtKind::DynPie, None)
+}
+
+pub fn native_link_static_cached(
+    inputs: &[LinkInput],
+    output: &Path,
+    opts: &StaticOpts,
+    cache: &crate::plan::CacheCtx,
+) -> Result<NativeStats, LinkError> {
+    static_link_inner(inputs, output, opts, CrtKind::DynPie, Some(cache))
 }
 
 pub fn native_link_fully_static(inputs: &[LinkInput], output: &Path, opts: &StaticOpts) -> Result<NativeStats, LinkError> {
-    static_link_inner(inputs, output, opts, CrtKind::Static)
+    static_link_inner(inputs, output, opts, CrtKind::Static, None)
 }
 
 pub fn native_link_static_pie(inputs: &[LinkInput], output: &Path, opts: &StaticOpts) -> Result<NativeStats, LinkError> {
-    static_link_inner(inputs, output, opts, CrtKind::StaticPie)
+    static_link_inner(inputs, output, opts, CrtKind::StaticPie, None)
 }
 
 struct SharedSet {
@@ -402,6 +474,7 @@ fn static_link_inner(
     output: &Path,
     opts: &StaticOpts,
     crt: CrtKind,
+    cache: Option<&crate::plan::CacheCtx>,
 ) -> Result<NativeStats, LinkError> {
     if opts.target != "x86_64-unknown-linux-gnu" {
         return Err(LinkError::Native(format!(
@@ -412,11 +485,15 @@ fn static_link_inner(
     let fully_static = matches!(crt, CrtKind::Static | CrtKind::StaticPie);
     let pie = !matches!(crt, CrtKind::Static);
     let target = X86_64 { static_link: fully_static };
-    let (mut objects, mut archives, pending_libs) = load_inputs(inputs)?;
-    let mut shared = SharedSet { early: Vec::new(), late: Vec::new(), loader: loader_dyn_lib() };
+    let (mut objects, mut archives, pending_libs) = tphase!("link-load", load_inputs(inputs)?);
+    let mut shared = SharedSet {
+        early: Vec::new(),
+        late: Vec::new(),
+        loader: tphase!("link-dynparse", loader_dyn_lib()),
+    };
     if fully_static {
         for name in ["libgcc.a", "libgcc_eh.a"] {
-            archives.extend(archive_file(name)?);
+            archives.extend(tphase!("link-archread", archive_file(name)?));
         }
         let mut seen_files: BTreeSet<String> = BTreeSet::new();
         for lib in pending_libs.iter().map(String::as_str).chain(["c", "m"]) {
@@ -426,20 +503,20 @@ fn static_link_inner(
                 _ => "",
             };
             if file.is_empty() {
-                archives.extend(system_archive(lib)?);
+                archives.extend(tphase!("link-archread", system_archive(lib)?));
                 continue;
             }
             if seen_files.insert(file.to_string()) {
-                archives.extend(system_archive(lib)?);
+                archives.extend(tphase!("link-archread", system_archive(lib)?));
             }
         }
     } else {
-        archives.extend(archive_file("libgcc.a")?);
+        archives.extend(tphase!("link-archread", archive_file("libgcc.a")?));
         let mut seen_sys: BTreeSet<&'static str> = BTreeSet::new();
         let mut push_sys = |name: &'static str, shared: &mut SharedSet| -> Result<(), LinkError> {
             if seen_sys.insert(name) {
                 let path = system_file(name)?;
-                let lib = parse_dyn_lib(&path)?;
+                let lib = tphase!("link-dynparse", parse_dyn_lib(&path)?);
                 if name == "libgcc_s.so.1" {
                     shared.late.push(lib);
                 } else {
@@ -455,18 +532,48 @@ fn static_link_inner(
                 _ => {
                     let path = find_shlib(&[], lib)?;
                     if !shared.early.iter().any(|l| l.path == path) {
-                        shared.early.push(parse_dyn_lib(&path)?);
+                        shared.early.push(tphase!("link-dynparse", parse_dyn_lib(&path)?));
                     }
                 }
             }
         }
         push_sys("libgcc_s.so.1", &mut shared)?;
     }
-    let mut prefixed = crt_objects(crt)?;
+    let mut prefixed = tphase!("link-crt", crt_objects(crt)?);
     prefixed.append(&mut objects);
-    prefixed.extend(crt_end(crt)?);
+    prefixed.extend(tphase!("link-crtend", crt_end(crt)?));
     objects = prefixed;
-    link_all(&mut objects, archives, output, opts.entry.clone(), opts.icf, opts.strip, &target, &shared, pie, crt == CrtKind::StaticPie)
+    let mut libs: Vec<&str> = pending_libs.iter().map(String::as_str).collect();
+    libs.sort();
+    let opts_desc = format!(
+        "entry={} icf={} strip={} pie={} force_dynamic={} machine={} crt={} libs={}",
+        opts.entry,
+        u8::from(opts.icf),
+        u8::from(opts.strip),
+        u8::from(pie),
+        u8::from(crt == CrtKind::StaticPie),
+        target.machine(),
+        match crt {
+            CrtKind::Static => "static",
+            CrtKind::DynPie => "dynpie",
+            CrtKind::StaticPie => "staticpie",
+        },
+        libs.join(","),
+    );
+    link_all(
+        objects,
+        &archives,
+        output,
+        opts.entry.clone(),
+        opts.icf,
+        opts.strip,
+        &target,
+        &shared,
+        pie,
+        crt == CrtKind::StaticPie,
+        cache,
+        &opts_desc,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -479,9 +586,96 @@ fn cmdline_has_debug(objects: &[Input<'_>]) -> bool {
     })
 }
 
-fn link_all(
-    objects: &mut Vec<Input<'_>>,
-    archives: Vec<ArchiveInput<'_>>,
+#[derive(Default)]
+struct PullTimers {
+    copy: std::time::Duration,
+    parse: std::time::Duration,
+    scan: std::time::Duration,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize_member<'a>(
+    ai: usize,
+    m: usize,
+    member_name: &str,
+    archives: &'a [ArchiveInput<'a>],
+    parsed_archives: &[crate::core::archive::Archive<'_>],
+    live: &mut Option<crate::plan::LivePlan>,
+    objects: &mut Vec<Input<'a>>,
+    obj_data: &mut Vec<crate::core::graph::ObjData>,
+    pulled_objs: &mut BTreeMap<usize, Object<'a>>,
+    pulls: &mut Vec<(u32, u32, usize, String)>,
+    db: &mut SymDb,
+    winners: &mut BTreeMap<String, usize>,
+    pending: Option<&mut BTreeSet<String>>,
+    keep_debug: bool,
+    target: &dyn Target,
+    timers: &mut PullTimers,
+) -> Result<(), LinkError> {
+    let label = format!("{}({})", archives[ai].label, member_name);
+    if live.is_none() {
+        let bytes = parsed_archives[ai].member_bytes(m)?.to_vec();
+        let oi = objects.len();
+        let obj = Object::parse(&bytes, &label)?;
+        if obj.machine != target.machine() {
+            return Err(LinkError::Native(format!("{label}: unsupported machine type {}", obj.machine)));
+        }
+        let (data, defined, referenced) = graph::build_object(&obj, oi, &label, false, keep_debug, db, winners)?;
+        if let Some(pending) = pending {
+            for d in defined {
+                pending.remove(&d);
+            }
+            for r in referenced {
+                if db.is_unresolved(&r) {
+                    pending.insert(r);
+                }
+            }
+        }
+        objects.push(Input { label, command_line: false, storage: Storage::Heap(bytes) });
+        obj_data.push(data);
+        return Ok(());
+    }
+    let oi = objects.len();
+    let t0 = std::time::Instant::now();
+    let (off, size) = parsed_archives[ai]
+        .member_range(m)
+        .ok_or_else(|| LinkError::Native(format!("{}: bad member index", archives[ai].label)))?;
+    let end = off.checked_add(size).ok_or_else(|| LinkError::Native(format!("{}: bad member size", archives[ai].label)))?;
+    let bytes: &'a [u8] = archives[ai]
+        .storage
+        .bytes()
+        .get(off..end)
+        .ok_or_else(|| LinkError::Native(format!("{}: member out of range", archives[ai].label)))?;
+    timers.copy += t0.elapsed();
+    let t1 = std::time::Instant::now();
+    let obj = Object::parse(bytes, &label)?;
+    timers.parse += t1.elapsed();
+    if obj.machine != target.machine() {
+        return Err(LinkError::Native(format!("{label}: unsupported machine type {}", obj.machine)));
+    }
+    let t3 = std::time::Instant::now();
+    let (data, defined, referenced) = graph::build_object(&obj, oi, &label, false, keep_debug, db, winners)?;
+    timers.scan += t3.elapsed();
+    if let Some(pending) = pending {
+        for d in defined {
+            pending.remove(&d);
+        }
+        for r in referenced {
+            if db.is_unresolved(&r) {
+                pending.insert(r);
+            }
+        }
+    }
+    pulled_objs.insert(oi, obj);
+    objects.push(Input { label, command_line: false, storage: Storage::Borrowed(bytes) });
+    obj_data.push(data);
+    pulls.push((ai as u32, m as u32, oi, member_name.to_string()));
+    Ok(())
+}
+
+fn link_all<'a>(
+    mut objects: Vec<Input<'a>>,
+    archives: &'a [ArchiveInput<'a>],
     output: &Path,
     entry: String,
     icf: bool,
@@ -490,19 +684,28 @@ fn link_all(
     shared: &SharedSet,
     pie: bool,
     force_dynamic: bool,
+    cache: Option<&crate::plan::CacheCtx>,
+    opts_desc: &str,
 ) -> Result<NativeStats, LinkError> {
-    let keep_debug = !strip && cmdline_has_debug(objects);
+    let keep_debug = !strip && cmdline_has_debug(&objects);
     let mut db = SymDb::new();
     seed_synthetics(&mut db);
     let mut winners: BTreeMap<String, usize> = BTreeMap::new();
     let mut obj_data = Vec::new();
+    let mut user_defined: BTreeSet<String> = BTreeSet::new();
     for (oi, input) in objects.iter().enumerate() {
         let obj = Object::parse(input.storage.bytes(), &input.label)?;
         if obj.machine != target.machine() {
             return Err(LinkError::Native(format!("{}: unsupported machine type {}", input.label, obj.machine)));
         }
-        obj_data.push(graph::build_object(&obj, oi, &input.label, input.command_line, keep_debug, &mut db, &mut winners)?.0);
+        let (data, defined, _) = graph::build_object(&obj, oi, &input.label, input.command_line, keep_debug, &mut db, &mut winners)?;
+        obj_data.push(data);
+        for d in defined {
+            user_defined.insert(d);
+        }
     }
+    let user_unresolved: BTreeSet<String> =
+        db.unresolved().into_iter().map(|(name, _)| name).collect();
     let mut parsed_archives: Vec<Archive> = Vec::new();
     for a in archives.iter() {
         parsed_archives.push(Archive::parse(a.storage.bytes(), &a.label)?);
@@ -517,53 +720,153 @@ fn link_all(
         Ok::<(), LinkError>(())
     })?;
     let mut pulled: Vec<BTreeSet<usize>> = parsed_archives.iter().map(|_| BTreeSet::new()).collect();
-    tphase!("link-pull", {
-        let mut pending: BTreeSet<String> = db.unresolved().into_iter().map(|(name, _)| name).collect();
-        while let Some(name) = pending.iter().next().cloned() {
-            pending.remove(&name);
-            if !db.is_unresolved(&name) {
-                continue;
+    let mut live: Option<crate::plan::LivePlan> = tphase!("link-planload", match cache {
+        Some(ctx) => {
+            let manifest_present = ctx.dir.join(crate::plan::MANIFEST_NAME).is_file();
+            if !manifest_present && !ctx.allow_write {
+                None
+            } else {
+                let idents = archive_idents(&archives, manifest_present);
+                match crate::plan::LivePlan::load(ctx, opts_desc, &idents, &user_defined, &user_unresolved) {
+                    Some(plan) => Some(plan),
+                    None if ctx.allow_write => {
+                        Some(crate::plan::LivePlan::blank(ctx, opts_desc, idents, &user_defined, &user_unresolved))
+                    }
+                    None => None,
+                }
             }
-            let mut found = None;
-            for (ai, arch) in parsed_archives.iter().enumerate() {
-                if let Some(m) = arch.providers(&name).and_then(|v| v.iter().find(|&&m| !pulled[ai].contains(&m)).copied()) {
-                    found = Some((ai, m));
+        }
+        None => None,
+    });
+    let mut pulls: Vec<(u32, u32, usize, String)> = Vec::new();
+    let mut pulled_objs: BTreeMap<usize, Object> = BTreeMap::new();
+    let mut timers = PullTimers::default();
+    let mut pending: BTreeSet<String> = db.unresolved().into_iter().map(|(name, _)| name).collect();
+    let trusted: Option<Vec<(u32, u32, String)>> = match live.as_ref() {
+        Some(plan) if plan.loaded => {
+            let mut ord = Vec::with_capacity(plan.ordered_members().len());
+            let mut ok = true;
+            for key in plan.ordered_members() {
+                let good = parsed_archives.get(key.archive as usize).is_some_and(|a| {
+                    (key.member as usize) < a.member_count() && a.member_name(key.member as usize) == key.name
+                });
+                if !good {
+                    ok = false;
                     break;
                 }
+                ord.push((key.archive, key.member, key.name.clone()));
             }
-            let (ai, m) = match found {
-                Some(f) => f,
-                None => continue,
-            };
-            pulled[ai].insert(m);
-            let label = format!("{}({})", archives[ai].label, parsed_archives[ai].member_name(m));
-            let bytes = parsed_archives[ai].member_bytes(m)?.to_vec();
-            let oi = objects.len();
-            let obj = Object::parse(&bytes, &label)?;
-            if obj.machine != target.machine() {
-                return Err(LinkError::Native(format!("{label}: unsupported machine type {}", obj.machine)));
+            if ok { Some(ord) } else { None }
+        }
+        _ => None,
+    };
+    let trusted_hit = trusted.is_some();
+    if let Some(order) = trusted {
+        tphase!("link-pull", {
+            for (ai, mi, name) in &order {
+                materialize_member(
+                    *ai as usize,
+                    *mi as usize,
+                    name,
+                    &archives,
+                    &parsed_archives,
+                    &mut live,
+                    &mut objects,
+                    &mut obj_data,
+                    &mut pulled_objs,
+                    &mut pulls,
+                    &mut db,
+                    &mut winners,
+                    None,
+                    keep_debug,
+                    target,
+                    &mut timers,
+                )?;
             }
-            let (data, defined, referenced) = graph::build_object(&obj, oi, &label, false, keep_debug, &mut db, &mut winners)?;
-            for d in defined {
-                pending.remove(&d);
+            Ok::<(), LinkError>(())
+        })?;
+    } else {
+        if let Some(plan) = live.as_mut() {
+            plan.extended = true;
+        }
+        tphase!("link-pull", {
+            while let Some(name) = pending.iter().next().cloned() {
+                pending.remove(&name);
+                if !db.is_unresolved(&name) {
+                    continue;
+                }
+                let mut found = None;
+                for (ai, arch) in parsed_archives.iter().enumerate() {
+                    if let Some(m) = arch.providers(&name).and_then(|v| v.iter().find(|&&m| !pulled[ai].contains(&m)).copied()) {
+                        found = Some((ai, m));
+                        break;
+                    }
+                }
+                let (ai, m) = match found {
+                    Some(f) => f,
+                    None => continue,
+                };
+                pulled[ai].insert(m);
+                let member_name = parsed_archives[ai].member_name(m).to_string();
+                materialize_member(
+                    ai,
+                    m,
+                    &member_name,
+                    &archives,
+                    &parsed_archives,
+                    &mut live,
+                    &mut objects,
+                    &mut obj_data,
+                    &mut pulled_objs,
+                    &mut pulls,
+                    &mut db,
+                    &mut winners,
+                    Some(&mut pending),
+                    keep_debug,
+                    target,
+                    &mut timers,
+                )?;
             }
-            for r in referenced {
-                if db.is_unresolved(&r) {
-                    pending.insert(r);
+            Ok::<(), LinkError>(())
+        })?;
+    }
+    if time_on() {
+        let trusted_note = if trusted_hit { "trusted" } else { "discovery" };
+        eprintln!(
+            "t-pull-split mode={trusted_note} copy={:?} parse={:?} scan={:?}",
+            timers.copy, timers.parse, timers.scan
+        );
+    }
+    let parsed: Vec<Object> = if pulled_objs.is_empty() {
+        tphase!("link-parse", {
+            use rayon::prelude::*;
+            objects
+                .par_iter()
+                .map(|input| Object::parse(input.storage.bytes(), &input.label))
+                .collect::<Result<Vec<_>, LinkError>>()
+        })?
+    } else {
+        tphase!("link-parse", {
+            use rayon::prelude::*;
+            let fresh_idx: Vec<usize> = (0..objects.len()).filter(|i| !pulled_objs.contains_key(i)).collect();
+            let fresh: Vec<(usize, Object)> = fresh_idx
+                .par_iter()
+                .map(|&i| Object::parse(objects[i].storage.bytes(), &objects[i].label).map(|o| (i, o)))
+                .collect::<Result<Vec<_>, LinkError>>()?;
+            let mut fresh_map: BTreeMap<usize, Object> = fresh.into_iter().collect();
+            let mut out: Vec<Object> = Vec::with_capacity(objects.len());
+            for i in 0..objects.len() {
+                if let Some(o) = pulled_objs.remove(&i) {
+                    out.push(o);
+                } else if let Some(o) = fresh_map.remove(&i) {
+                    out.push(o);
+                } else {
+                    return Err(LinkError::Native("linker: lost parsed object".to_string()));
                 }
             }
-            objects.push(Input { label, command_line: false, storage: Storage::Heap(bytes) });
-            obj_data.push(data);
-        }
-        Ok::<(), LinkError>(())
-    })?;
-    let parsed: Vec<Object> = tphase!("link-parse", {
-        use rayon::prelude::*;
-        objects
-            .par_iter()
-            .map(|input| Object::parse(input.storage.bytes(), &input.label))
-            .collect::<Result<Vec<_>, LinkError>>()
-    })?;
+            Ok::<Vec<Object>, LinkError>(out)
+        })?
+    };
     let mut dyn_syms_map: BTreeMap<String, DynSym> = BTreeMap::new();
     if !shared.early.is_empty() || !shared.late.is_empty() {
         let mut prov: BTreeMap<&str, &DynLib> = BTreeMap::new();
@@ -669,6 +972,19 @@ fn link_all(
     })?);
     if strip {
         tphase!("link-buildid", patch_build_id(output, &layout)?);
+    }
+    if let Some(plan) = live.as_ref() {
+        if time_on() {
+            eprintln!("t-link-plan pulls={} trusted={}", pulls.len(), trusted_hit);
+        }
+        let want_flush = !plan.loaded || plan.extended;
+        if want_flush {
+            if let Some(ctx) = cache {
+                if ctx.allow_write && plan.storable() {
+                    tphase!("link-planstore", plan.flush(ctx, &pulls)?);
+                }
+            }
+        }
     }
     Ok(NativeStats {
         output_size: total,
@@ -1359,12 +1675,12 @@ pub fn native_link_dynamic(
         )));
     }
     let target = X86_64 { static_link: false };
-    let (mut cmd_objects, archives, pending) = load_inputs(objects)?;
-    let keep_debug = !opts.strip && cmdline_has_debug(&cmd_objects);
+    let (mut cmd_objects, archives, pending) = tphase!("link-load", load_inputs(objects)?);
+    let keep_debug = tphase!("link-debugscan", !opts.strip && cmdline_has_debug(&cmd_objects));
     let _ = pending;
-    let mut prefixed = crt_objects(CrtKind::DynPie)?;
+    let mut prefixed = tphase!("link-crt", crt_objects(CrtKind::DynPie)?);
     prefixed.append(&mut cmd_objects);
-    prefixed.extend(crt_end(CrtKind::DynPie)?);
+    prefixed.extend(tphase!("link-crtend", crt_end(CrtKind::DynPie)?));
     let mut objects = prefixed;
     let mut lib_files: Vec<PathBuf> = Vec::new();
     for name in opts.libs.iter() {
@@ -1372,7 +1688,7 @@ pub fn native_link_dynamic(
     }
     let mut dyn_libs: Vec<DynLib> = Vec::new();
     for path in lib_files.iter() {
-        dyn_libs.push(parse_dyn_lib(path)?);
+        dyn_libs.push(tphase!("link-dynparse", parse_dyn_lib(path)?));
     }
     let mut sys_libs: Vec<DynLib> = Vec::new();
     let mut sys_paths: Vec<PathBuf> = Vec::new();
@@ -1384,9 +1700,9 @@ pub fn native_link_dynamic(
         }
     }
     for path in sys_paths.iter() {
-        sys_libs.push(parse_dyn_lib(path)?);
+        sys_libs.push(tphase!("link-dynparse", parse_dyn_lib(path)?));
     }
-    let interp_lib: Option<DynLib> = loader_dyn_lib();
+    let interp_lib: Option<DynLib> = tphase!("link-dynparse", loader_dyn_lib());
     let mut dyn_prov: BTreeMap<&str, &DynLib> = BTreeMap::new();
     for lib in dyn_libs.iter().chain(sys_libs.iter()) {
         for name in lib.syms.keys() {
@@ -1396,25 +1712,32 @@ pub fn native_link_dynamic(
     let mut db = SymDb::new();
     seed_synthetics(&mut db);
     let mut winners: BTreeMap<String, usize> = BTreeMap::new();
-    let mut obj_data = Vec::new();
-    for (oi, input) in objects.iter().enumerate() {
-        let obj = Object::parse(input.storage.bytes(), &input.label)?;
-        if obj.machine != target.machine() {
-            return Err(LinkError::Native(format!("{}: unsupported machine type {}", input.label, obj.machine)));
+    let mut obj_data = tphase!("link-scan", {
+        let mut obj_data = Vec::new();
+        for (oi, input) in objects.iter().enumerate() {
+            let obj = Object::parse(input.storage.bytes(), &input.label)?;
+            if obj.machine != target.machine() {
+                return Err(LinkError::Native(format!("{}: unsupported machine type {}", input.label, obj.machine)));
+            }
+            obj_data.push(graph::build_object(&obj, oi, &input.label, input.command_line, keep_debug, &mut db, &mut winners)?.0);
         }
-        obj_data.push(graph::build_object(&obj, oi, &input.label, input.command_line, keep_debug, &mut db, &mut winners)?.0);
-    }
+        Ok::<_, LinkError>(obj_data)
+    })?;
     let mut parsed_archives: Vec<Archive> = Vec::new();
     for a in archives.iter() {
         parsed_archives.push(Archive::parse(a.storage.bytes(), &a.label)?);
     }
-    for (ai, arch) in parsed_archives.iter_mut().enumerate() {
-        let label = archives[ai].label.clone();
-        arch.build_index(&|bytes, member_label| member_symbols(bytes, member_label).map_err(|e| {
-            LinkError::Native(format!("{label}: {e}"))
-        }))?;
-    }
+    tphase!("link-index", {
+        for (ai, arch) in parsed_archives.iter_mut().enumerate() {
+            let label = archives[ai].label.clone();
+            arch.build_index(&|bytes, member_label| member_symbols(bytes, member_label).map_err(|e| {
+                LinkError::Native(format!("{label}: {e}"))
+            }))?;
+        }
+        Ok::<(), LinkError>(())
+    })?;
     let mut pulled: Vec<BTreeSet<usize>> = parsed_archives.iter().map(|_| BTreeSet::new()).collect();
+    tphase!("link-pull", {
     let mut pending: BTreeSet<String> = db.unresolved().into_iter().map(|(name, _)| name).collect();
     while let Some(name) = pending.iter().next().cloned() {
         pending.remove(&name);
@@ -1452,6 +1775,8 @@ pub fn native_link_dynamic(
         objects.push(Input { label, command_line: false, storage: Storage::Heap(bytes) });
         obj_data.push(data);
     }
+        Ok::<(), LinkError>(())
+    })?;
     for (name, objs) in db.unresolved() {
         if dyn_prov.contains_key(name.as_str()) {
             continue;
@@ -1472,34 +1797,34 @@ pub fn native_link_dynamic(
             }
         }
     }
-    let parsed: Vec<Object> = {
+    let parsed: Vec<Object> = tphase!("link-parse", {
         use rayon::prelude::*;
         objects
             .par_iter()
             .map(|input| Object::parse(input.storage.bytes(), &input.label))
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    let mut g = graph::mark(&parsed, obj_data, &db, &dyn_syms_map, &opts.entry, keep_debug)?;
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    let mut g = tphase!("link-resolve", graph::mark(&parsed, obj_data, &db, &dyn_syms_map, &opts.entry, keep_debug)?);
     if opts.icf {
-        graph::icf_fold(&mut g, &parsed)?;
+        tphase!("link-icf", graph::icf_fold(&mut g, &parsed)?);
     }
-    graph::plan_slots(&mut g, &parsed, &db, &dyn_syms_map, &target, false)?;
+    tphase!("link-plan", graph::plan_slots(&mut g, &parsed, &db, &dyn_syms_map, &target, false)?);
     graph::collect_tls(&mut g, &parsed);
     if g.tls.size > 0 {
         return Err(LinkError::Native("TLS sections in dynamic native link are not implemented yet".to_string()));
     }
     graph::collect_commons(&mut g, &db);
-    graph::compute_eh_plan(&mut g, &parsed)?;
-    let mut dyn_info = build_dyn_info(&g, &db, &dyn_libs, &sys_libs, interp_lib.as_ref(), opts.runpath.as_deref(), &target)?;
+    tphase!("link-eh", graph::compute_eh_plan(&mut g, &parsed)?);
+    let mut dyn_info = tphase!("link-dyninfo", build_dyn_info(&g, &db, &dyn_libs, &sys_libs, interp_lib.as_ref(), opts.runpath.as_deref(), &target)?);
     if db.get("_init").and_then(|e| e.def.as_ref()).is_some_and(|d| d.obj != usize::MAX) {
         dyn_info.init_addr = 1;
     }
     if db.get("_fini").and_then(|e| e.def.as_ref()).is_some_and(|d| d.obj != usize::MAX) {
         dyn_info.fini_addr = 1;
     }
-    let pie_targets = pie_targets(&parsed, &g, &db, &target)?;
+    let pie_targets = tphase!("link-pie", pie_targets(&parsed, &g, &db, &target)?);
     let synth = synth_list(&g, &dyn_info, &target, pie_targets.len(), opts.strip);
-    let mut layout = layout::layout(&mut g, &parsed, &synth, 0)?;
+    let mut layout = tphase!("link-layout", layout::layout(&mut g, &parsed, &synth, 0)?);
     fill_synthetics(&mut layout, &g, &db, Some(SynthFill { dynamic: true, iplt: None }))?;
     if let Some((addr, _)) = layout.order.iter().find(|o| o.synth == layout::SynthSec::Dynamic).map(|o| (o.addr, o.size)) {
         layout.synth_addr.insert("_DYNAMIC".to_string(), addr);
@@ -1514,17 +1839,17 @@ pub fn native_link_dynamic(
             dyn_info.fini_addr = init_value(&g, &layout, fini);
         }
     }
-    fill_dyn_relocs(&mut g, &layout, &db, &mut dyn_info, &target)?;
+    tphase!("link-dynrel", fill_dyn_relocs(&mut g, &layout, &db, &mut dyn_info, &target)?);
     {
-        let mut entries = pie_entries(&pie_targets, &parsed, &g, &layout, &db, &target)?;
+        let mut entries = tphase!("link-pierel", pie_entries(&pie_targets, &parsed, &g, &layout, &db, &target)?);
         dyn_info.dyn_rel.append(&mut entries);
         dyn_info.relacount = writer::order_rela_dyn(&mut dyn_info.dyn_rel, target.rel_relative());
     }
-    let symdata = writer::build_symtab(&parsed, &g, &db, &layout, false)?;
+    let symdata = tphase!("link-symtab", writer::build_symtab(&parsed, &g, &db, &layout, false)?);
     let total = writer::table_layout(&layout, &symdata, opts.strip).total;
-    write_file(output, total, |out| {
+    tphase!("link-write", write_file(output, total, |out| {
         writer::write_output(&parsed, &g, &db, &layout, &target, &dyn_info, false, &symdata, opts.strip, out)
-    })?;
+    })?);
     if opts.strip {
         patch_build_id(output, &layout)?;
     }

@@ -37,17 +37,6 @@ pub(crate) fn stream_next(input: &[u8], cur: &mut StreamCursor, out: &mut Vec<u3
     true
 }
 
-pub(crate) fn count_structurals(input: &[u8]) -> usize {
-    let mut cur = StreamCursor::default();
-    let mut tmp = Vec::with_capacity(32);
-    let mut n = 0usize;
-    while stream_next(input, &mut cur, &mut tmp) {
-        n += tmp.len();
-        tmp.clear();
-    }
-    n
-}
-
 #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
 fn scan_chunk(block: &[u8], base: u32, carry: &mut ScanCarry, out: &mut Vec<u32>) {
     unsafe {

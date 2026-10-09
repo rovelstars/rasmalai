@@ -851,6 +851,32 @@ fn synthesize_glue<'ctx>(
 
 const CGU_THRESHOLD: usize = 64;
 
+// LLVM contexts are never shared across threads: the pool hands out one
+// owned Context at a time, and each unit returns its context only after
+// its module is destroyed. Exactly one context per worker at a time, as
+// before; reuse across units just skips re-allocation. (Sharing one
+// TargetMachine across threads was tried and reverted: concurrent
+// emission on a single machine corrupts LLVM state here - duplicate
+// symbols, then double-free - so each unit keeps its own machine, the
+// rustc-per-CGU pattern.)
+static CONTEXT_POOL: std::sync::Mutex<Vec<Context>> = std::sync::Mutex::new(Vec::new());
+const CONTEXT_POOL_CAP: usize = 64;
+
+fn acquire_context() -> Context {
+    CONTEXT_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pop()
+        .unwrap_or_else(Context::create)
+}
+
+fn release_context(context: Context) {
+    let mut pool = CONTEXT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    if pool.len() < CONTEXT_POOL_CAP {
+        pool.push(context);
+    }
+}
+
 fn emit_unit(
     lir: &Module,
     name: &str,
@@ -861,20 +887,23 @@ fn emit_unit(
     define: &BTreeSet<usize>,
     with_glue: bool,
 ) -> Result<Vec<u8>, Diagnostic> {
-    // One Context per unit, created and destroyed here; never shared across threads.
-    let context = Context::create();
-    let release = opt == OptLevel::Release;
-    let (module, funcs) = build_module_subset(&context, lir, name, release, debug, Some(define))?;
-    // Every unit renames a user `main`: the definition lives in exactly one
-    // unit while unit 0 calls it, so all must agree on `__rnx_user_main`.
-    rename_entry_for_glue(&funcs, entry);
-    if with_glue {
-        synthesize_glue(&context, &module, &funcs, lir, entry, release)?;
-    }
-    module.verify().map_err(|e| {
-        Diagnostic::new(Code::E108, format!("llvm verify failed for `{name}`: {e}"))
-    })?;
-    finish_object(&module, name, opt, target)
+    let context = acquire_context();
+    let result = (|| {
+        let release = opt == OptLevel::Release;
+        let (module, funcs) = build_module_subset(&context, lir, name, release, debug, Some(define))?;
+        // Every unit renames a user `main`: the definition lives in exactly one
+        // unit while unit 0 calls it, so all must agree on `__rnx_user_main`.
+        rename_entry_for_glue(&funcs, entry);
+        if with_glue {
+            synthesize_glue(&context, &module, &funcs, lir, entry, release)?;
+        }
+        module.verify().map_err(|e| {
+            Diagnostic::new(Code::E108, format!("llvm verify failed for `{name}`: {e}"))
+        })?;
+        finish_object(&module, name, opt, target)
+    })();
+    release_context(context);
+    result
 }
 
 /// Partition the optimized LIR program into contiguous function groups and emit
@@ -1117,6 +1146,21 @@ fn ensure_targets() {
     });
 }
 
+// Process-global host description, queried once: every unit machine for
+// a host build uses the same triple, CPU, and features.
+static HOST_INFO: std::sync::OnceLock<(String, String, String)> = std::sync::OnceLock::new();
+
+fn host_info() -> &'static (String, String, String) {
+    HOST_INFO.get_or_init(|| {
+        ensure_targets();
+        (
+            TargetMachine::get_default_triple().as_str().to_string_lossy().into_owned(),
+            TargetMachine::get_host_cpu_name().to_string(),
+            TargetMachine::get_host_cpu_features().to_string(),
+        )
+    })
+}
+
 fn make_machine(
     triple: Option<&str>,
     opt: OptLevel,
@@ -1124,10 +1168,9 @@ fn make_machine(
     use inkwell::targets::{CodeModel, RelocMode, Target, TargetTriple};
     use inkwell::OptimizationLevel;
     ensure_targets();
-    let default_triple = TargetMachine::get_default_triple();
     let triple_ref = match triple {
         Some(t) => TargetTriple::create(t),
-        None => default_triple,
+        None => TargetTriple::create(&host_info().0),
     };
     let target = Target::from_triple(&triple_ref)
         .map_err(|e| Diagnostic::new(Code::E108, format!("llvm target: {e}")))?;
@@ -1137,10 +1180,7 @@ fn make_machine(
     };
     let (cpu, features) = match triple {
         Some(t) => (cross_cpu(t), String::new()),
-        None => (
-            TargetMachine::get_host_cpu_name().to_string(),
-            TargetMachine::get_host_cpu_features().to_string(),
-        ),
+        None => (host_info().1.clone(), host_info().2.clone()),
     };
     let machine = target
         .create_target_machine(
@@ -1450,21 +1490,130 @@ fn zero_value<'a>(context: &'a Context, ty: BasicTypeEnum<'a>) -> Result<BasicVa
     }
 }
 
-fn loop_unroll_id<'a>(cx: &'a FnCx<'a>, count: u32) -> inkwell::values::MetadataValue<'a> {
+fn unroll_hint<'a>(cx: &'a FnCx<'a>, count: u32) -> inkwell::values::MetadataValue<'a> {
     use inkwell::values::BasicMetadataValueEnum as M;
     let i32t = cx.context.i32_type();
-    let hint = cx.context.metadata_node(&[
+    cx.context.metadata_node(&[
         M::MetadataValue(cx.context.metadata_string("llvm.loop.unroll.count")),
         M::IntValue(i32t.const_int(count as u64, false)),
-    ]);
+    ])
+}
+
+fn parallel_hint<'a>(
+    cx: &'a FnCx<'a>,
+    groups: &[inkwell::values::MetadataValue<'a>],
+) -> inkwell::values::MetadataValue<'a> {
+    use inkwell::values::BasicMetadataValueEnum as M;
+    let mut ops: Vec<M> = Vec::with_capacity(groups.len() + 1);
+    ops.push(M::MetadataValue(
+        cx.context.metadata_string("llvm.loop.parallel_accesses"),
+    ));
+    for g in groups {
+        ops.push(M::MetadataValue(*g));
+    }
+    cx.context.metadata_node(&ops)
+}
+
+fn trip_hint<'a>(cx: &'a FnCx<'a>, trip: u32) -> inkwell::values::MetadataValue<'a> {
+    use inkwell::values::BasicMetadataValueEnum as M;
+    let i32t = cx.context.i32_type();
+    cx.context.metadata_node(&[
+        M::MetadataValue(cx.context.metadata_string("llvm.loop.estimated_trip_count")),
+        M::IntValue(i32t.const_int(trip as u64, false)),
+    ])
+}
+
+const VEC_LANES_I64: u32 = 4;
+const JAM_FACTOR: u32 = 2;
+const MIN_VECTOR_TRIP: u32 = 16;
+
+fn vectorize_hint<'a>(cx: &'a FnCx<'a>) -> inkwell::values::MetadataValue<'a> {
+    use inkwell::values::BasicMetadataValueEnum as M;
+    cx.context.metadata_node(&[
+        M::MetadataValue(cx.context.metadata_string("llvm.loop.vectorize.enable")),
+        M::IntValue(cx.context.bool_type().const_int(1, false)),
+    ])
+}
+
+fn interleave_hint<'a>(cx: &'a FnCx<'a>, count: u32) -> inkwell::values::MetadataValue<'a> {
+    use inkwell::values::BasicMetadataValueEnum as M;
+    let i32t = cx.context.i32_type();
+    cx.context.metadata_node(&[
+        M::MetadataValue(cx.context.metadata_string("llvm.loop.interleave.count")),
+        M::IntValue(i32t.const_int(count as u64, false)),
+    ])
+}
+
+fn vector_shape(
+    cx: &FnCx,
+    f: &lir::instr::Function,
+    loops: &[lir::licm::NaturalLoop],
+    lp: &lir::licm::NaturalLoop,
+    iv: Option<Local>,
+    calls: bool,
+) -> (bool, bool) {
+    let innermost = loops
+        .iter()
+        .all(|o| o.header == lp.header || !lp.blocks.contains(&o.header));
+    let mut fresh_load = false;
+    let mut fresh_store = false;
+    let mut shape_ok = true;
+    for &bi in lp.blocks.iter() {
+        for ins in &f.blocks[bi].instrs {
+            match ins {
+                Instr::ArrayGet { arr, elem_size, index, .. } => {
+                    if array_inline_elem(cx, *arr, *elem_size).is_some()
+                        && cx.fresh_array_root.contains_key(arr)
+                    {
+                        fresh_load = true;
+                        if iv != Some(*index) {
+                            shape_ok = false;
+                        }
+                    } else {
+                        shape_ok = false;
+                    }
+                }
+                Instr::ArraySet { arr, elem_size, index, value, .. } => {
+                    let prim = matches!(
+                        cx.ftypes.get(*value as usize),
+                        Some(LirType::I64) | Some(LirType::I8) | Some(LirType::F64(_))
+                    );
+                    if prim
+                        && array_inline_elem(cx, *arr, *elem_size).is_some()
+                        && cx.fresh_array_root.contains_key(arr)
+                    {
+                        fresh_store = true;
+                        if iv != Some(*index) {
+                            shape_ok = false;
+                        }
+                    } else {
+                        shape_ok = false;
+                    }
+                }
+                Instr::ArrayPush { .. } | Instr::ArrayPop { .. } => {
+                    shape_ok = false;
+                }
+                _ => {}
+            }
+        }
+    }
+    (!calls && innermost && fresh_load && shape_ok, fresh_load && fresh_store)
+}
+
+fn loop_id<'a>(
+    cx: &'a FnCx<'a>,
+    hints: &[inkwell::values::MetadataValue<'a>],
+) -> inkwell::values::MetadataValue<'a> {
     unsafe {
         use inkwell::context::AsContextRef;
         use inkwell::values::AsValueRef;
         let ctx_ref = cx.context.as_ctx_ref();
-        let hint_ref = llvm_sys::core::LLVMValueAsMetadata(hint.as_value_ref());
-        let mut alone = [hint_ref];
-        let temp = llvm_sys::debuginfo::LLVMTemporaryMDNode(ctx_ref, alone.as_mut_ptr(), alone.len());
-        let mut pair = [temp, hint_ref];
+        let mut parts: Vec<_> = hints
+            .iter()
+            .map(|h| llvm_sys::core::LLVMValueAsMetadata(h.as_value_ref()))
+            .collect();
+        let temp = llvm_sys::debuginfo::LLVMTemporaryMDNode(ctx_ref, parts.as_mut_ptr(), parts.len());
+        let mut pair: Vec<_> = std::iter::once(temp).chain(parts.iter().copied()).collect();
         let node = llvm_sys::core::LLVMMDNodeInContext2(ctx_ref, pair.as_mut_ptr(), pair.len());
         llvm_sys::debuginfo::LLVMMetadataReplaceAllUsesWith(temp, node);
         let val = llvm_sys::core::LLVMMetadataAsValue(ctx_ref, node);
@@ -1472,8 +1621,13 @@ fn loop_unroll_id<'a>(cx: &'a FnCx<'a>, count: u32) -> inkwell::values::Metadata
     }
 }
 
-fn tag_loop_unrolls(cx: &FnCx, f: &lir::instr::Function) -> Result<(), Diagnostic> {
+fn tag_loop_facts(cx: &FnCx, f: &lir::instr::Function) -> Result<(), Diagnostic> {
     let loops = lir::licm::find_natural_loops(f, &cx.dom);
+    let exact_iv: BTreeMap<usize, Local> = lir::bce::exact_count_loops(f)
+        .into_iter()
+        .map(|t| (t.header, t.iv))
+        .collect();
+    let kind = cx.context.get_kind_id("llvm.loop");
     for lp in &loops {
         let mut calls = false;
         for &bi in lp.blocks.iter() {
@@ -1487,11 +1641,50 @@ fn tag_loop_unrolls(cx: &FnCx, f: &lir::instr::Function) -> Result<(), Diagnosti
                 break;
             }
         }
-        if calls {
+        let mut hints: Vec<inkwell::values::MetadataValue> = Vec::new();
+        let trip = cx
+            .exact_trips
+            .iter()
+            .find(|(h, _, _)| *h == lp.header)
+            .map(|(_, _, t)| *t);
+        let has_exact_trip = trip.is_some();
+        let (proven_inner, inline_pair) =
+            vector_shape(cx, f, &loops, lp, exact_iv.get(&lp.header).copied(), calls);
+        let vector_ok = proven_inner && matches!(trip, Some(t) if t >= MIN_VECTOR_TRIP);
+        let unroll_blocked = vector_ok
+            && inline_pair
+            && matches!(trip, Some(t) if t % (VEC_LANES_I64 * JAM_FACTOR) != 0);
+        if !calls && has_exact_trip && !unroll_blocked {
+            hints.push(unroll_hint(cx, 4));
+        }
+        if vector_ok {
+            hints.push(vectorize_hint(cx));
+            hints.push(interleave_hint(cx, 2));
+        }
+        let mut has_fresh_load = false;
+        for &bi in lp.blocks.iter() {
+            for ins in &f.blocks[bi].instrs {
+                if let Instr::ArrayGet { arr, elem_size, .. } = ins {
+                    if array_inline_elem(cx, *arr, *elem_size).is_some()
+                        && cx.fresh_array_root.contains_key(arr)
+                    {
+                        has_fresh_load = true;
+                    }
+                }
+            }
+        }
+        if has_fresh_load {
+            if let Some(group) = cx.access_group {
+                hints.push(parallel_hint(cx, &[group]));
+            }
+        }
+        if let Some((_, _, trip)) = cx.exact_trips.iter().find(|(h, _, _)| *h == lp.header) {
+            hints.push(trip_hint(cx, *trip));
+        }
+        if hints.is_empty() {
             continue;
         }
-        let id = loop_unroll_id(cx, 4);
-        let kind = cx.context.get_kind_id("llvm.loop");
+        let id = loop_id(cx, &hints);
         for &bi in lp.blocks.iter() {
             let is_latch = match &f.blocks[bi].term {
                 Terminator::Br(t) => *t == lp.header,
@@ -1511,6 +1704,7 @@ fn tag_loop_unrolls(cx: &FnCx, f: &lir::instr::Function) -> Result<(), Diagnosti
 }
 
 fn emit_run_defers(cx: &mut FnCx, lir: &Module, keep: usize) -> Result<(), Diagnostic> {
+    cx.cur_instr = usize::MAX;
     if cx.defers.is_empty() {
         return Ok(());
     }
@@ -1598,10 +1792,15 @@ fn err<E: std::fmt::Display>(e: E) -> Diagnostic {
 }
 
 fn load<'a>(cx: &FnCx<'a>, l: Local) -> Result<IntValue<'a>, Diagnostic> {
-    cx.builder
+    let v = cx
+        .builder
         .build_load(cx.context.i64_type(), cx.locals[l as usize], "v")
-        .map_err(err)
-        .map(|v| v.into_int_value())
+        .map_err(err)?
+        .into_int_value();
+    if let (Some(inst), Some(tag)) = (v.as_instruction(), cx.induction_ranges.get(&l)) {
+        let _ = inst.set_metadata(*tag, cx.range_kind);
+    }
+    Ok(v)
 }
 
 fn load_value<'a>(cx: &FnCx<'a>, l: Local) -> Result<BasicValueEnum<'a>, Diagnostic> {
@@ -1998,26 +2197,57 @@ fn tag_last(cx: &FnCx, tag: inkwell::values::MetadataValue) {
     }
 }
 
+// Array headers and element buffers both come from rnx_alloc, which
+// guarantees at least 8-byte alignment, and every header field and element
+// sits at a multiple-of-8 offset, so 8-byte accesses here are 8-aligned.
+fn align_last(cx: &FnCx) {
+    if let Some(inst) = cx
+        .builder
+        .get_insert_block()
+        .and_then(|b| b.get_last_instruction())
+    {
+        let _ = inst.set_alignment(8);
+    }
+}
+
+fn tag_group(cx: &FnCx, arr: Local) {
+    if !cx.fresh_array_root.contains_key(&arr) {
+        return;
+    }
+    if let Some(tag) = cx.access_group {
+        if let Some(inst) = cx
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_last_instruction())
+        {
+            let _ = inst.set_metadata(tag, cx.acc_kind);
+        }
+    }
+}
+
 fn array_len_value<'a>(cx: &'a FnCx<'a>, ap: PointerValue<'a>) -> Result<IntValue<'a>, Diagnostic> {
+    let i8t = cx.context.i8_type();
     let i64t = cx.context.i64_type();
-    let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
-    let base = cx.builder.build_ptr_to_int(ap, i64t, "").map_err(err)?;
-    let addr = cx.builder.build_int_add(base, i64t.const_int(16, false), "").map_err(err)?;
-    let field = cx.builder.build_int_to_ptr(addr, ptr_t, "").map_err(err)?;
-    let v = cx.builder.build_load(i64t, field, "").map_err(err)?.into_int_value();
+    let off = i64t.const_int(16, false);
+    let field = unsafe { cx.builder.build_in_bounds_gep(i8t, ap, &[off], "") }.map_err(err)?;
+    let loaded = cx.builder.build_load(i64t, field, "").map_err(err)?;
+    align_last(cx);
+    let v = loaded.into_int_value();
     tag_last(cx, cx.tbaa_header);
     Ok(v)
 }
 
 fn array_data_ptr<'a>(cx: &'a FnCx<'a>, ap: PointerValue<'a>) -> Result<PointerValue<'a>, Diagnostic> {
+    let i8t = cx.context.i8_type();
     let i64t = cx.context.i64_type();
     let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
-    let base = cx.builder.build_ptr_to_int(ap, i64t, "").map_err(err)?;
-    let addr = cx.builder.build_int_add(base, i64t.const_int(32, false), "").map_err(err)?;
-    let field = cx.builder.build_int_to_ptr(addr, ptr_t, "").map_err(err)?;
-    let data = cx.builder.build_load(i64t, field, "").map_err(err)?.into_int_value();
+    let off = i64t.const_int(32, false);
+    let field = unsafe { cx.builder.build_in_bounds_gep(i8t, ap, &[off], "") }.map_err(err)?;
+    let loaded = cx.builder.build_load(ptr_t, field, "").map_err(err)?;
+    align_last(cx);
+    let data = loaded.into_pointer_value();
     tag_last(cx, cx.tbaa_header);
-    cx.builder.build_int_to_ptr(data, ptr_t, "").map_err(err)
+    Ok(data)
 }
 
 fn array_elem_ptr<'a>(
@@ -2026,36 +2256,7 @@ fn array_elem_ptr<'a>(
     idx: IntValue<'a>,
 ) -> Result<PointerValue<'a>, Diagnostic> {
     let i64t = cx.context.i64_type();
-    let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
-    let base = cx.builder.build_ptr_to_int(datap, i64t, "").map_err(err)?;
-    let off = cx.builder.build_int_mul(idx, i64t.const_int(8, false), "").map_err(err)?;
-    let addr = cx.builder.build_int_add(base, off, "").map_err(err)?;
-    cx.builder.build_int_to_ptr(addr, ptr_t, "").map_err(err)
-}
-
-fn cur_blocks<'x>(
-    cx: &FnCx<'x>,
-    slow: &str,
-    fast: &str,
-    join: &str,
-) -> Result<
-    (
-        inkwell::basic_block::BasicBlock<'x>,
-        inkwell::basic_block::BasicBlock<'x>,
-        inkwell::basic_block::BasicBlock<'x>,
-    ),
-    Diagnostic,
-> {
-    let fv = cx
-        .builder
-        .get_insert_block()
-        .and_then(|b| b.get_parent())
-        .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: no insert function"))?;
-    Ok((
-        cx.context.append_basic_block(fv, slow),
-        cx.context.append_basic_block(fv, fast),
-        cx.context.append_basic_block(fv, join),
-    ))
+    unsafe { cx.builder.build_in_bounds_gep(i64t, datap, &[idx], "") }.map_err(err)
 }
 
 fn inline_array_len(cx: &FnCx, span: diagnostics::Span, arr: Local, dst: Local) -> Result<(), Diagnostic> {
@@ -2121,39 +2322,57 @@ fn inline_array_get<'x>(
     let a = load(cx, arr)?;
     let ap = as_ptr(cx, a)?;
     let i = load(cx, index)?;
-    let datap = array_data_ptr(cx, ap)?;
-    let ep = array_elem_ptr(cx, datap, i)?;
-    let fast_bits = match elem {
-        ArrElem::I64 => {
-            let v = cx.builder.build_load(i64t, ep, "").map_err(err)?.into_int_value();
-            tag_last(cx, cx.tbaa_payload);
-            v
-        }
-        ArrElem::F64 => {
-            let d = cx
-                .builder
-                .build_load(cx.context.f64_type(), ep, "")
-                .map_err(err)?
-                .into_float_value();
-            tag_last(cx, cx.tbaa_payload);
-            cx.builder.build_bit_cast(d, i64t, "").map_err(err)?.into_int_value()
-        }
-    };
     if !checked {
+        let datap = array_data_ptr(cx, ap)?;
+        let ep = array_elem_ptr(cx, datap, i)?;
+        let fast_bits = match elem {
+            ArrElem::I64 => {
+                let loaded = cx.builder.build_load(i64t, ep, "").map_err(err)?;
+                align_last(cx);
+                tag_group(cx, arr);
+                let v = loaded.into_int_value();
+                tag_last(cx, cx.tbaa_payload);
+                v
+            }
+            ArrElem::F64 => {
+                let loaded = cx
+                    .builder
+                    .build_load(cx.context.f64_type(), ep, "")
+                    .map_err(err)?;
+                align_last(cx);
+                tag_group(cx, arr);
+                let d = loaded.into_float_value();
+                tag_last(cx, cx.tbaa_payload);
+                cx.builder.build_bit_cast(d, i64t, "").map_err(err)?.into_int_value()
+            }
+        };
         store(cx, dst, fast_bits.into())?;
         return Ok(());
     }
-    let len = array_len_value(cx, ap)?;
-    let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
-    let ok = if cx.nonnull.contains(&arr) {
-        inrange
+    let fv = cx
+        .builder
+        .get_insert_block()
+        .and_then(|b| b.get_parent())
+        .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: no insert function"))?;
+    let slow_bb = cx.context.append_basic_block(fv, "ag_slow");
+    let fast_bb = cx.context.append_basic_block(fv, "ag_fast");
+    let join_bb = cx.context.append_basic_block(fv, "ag_join");
+    if cx.nonnull.contains(&arr) {
+        let len = array_len_value(cx, ap)?;
+        let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
+        let br = cx.builder.build_conditional_branch(inrange, fast_bb, slow_bb).map_err(err)?;
+        cold_branch(cx, br, 2000000, 1);
     } else {
+        let check_bb = cx.context.append_basic_block(fv, "ag_check");
         let notnull = cx.builder.build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "").map_err(err)?;
-        cx.builder.build_and(notnull, inrange, "").map_err(err)?
-    };
-    let (slow_bb, fast_bb, join_bb) = cur_blocks(cx, "ag_slow", "ag_fast", "ag_join")?;
-    let br = cx.builder.build_conditional_branch(ok, fast_bb, slow_bb).map_err(err)?;
-    cold_branch(cx, br, 2000000, 1);
+        let br_null = cx.builder.build_conditional_branch(notnull, check_bb, slow_bb).map_err(err)?;
+        cold_branch(cx, br_null, 2000000, 1);
+        cx.builder.position_at_end(check_bb);
+        let len = array_len_value(cx, ap)?;
+        let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
+        let br = cx.builder.build_conditional_branch(inrange, fast_bb, slow_bb).map_err(err)?;
+        cold_branch(cx, br, 2000000, 1);
+    }
     cx.builder.position_at_end(slow_bb);
     let e = i64t.const_int(8, false);
     let site = cx.builder.build_call(cx.array_get, &[ap.into(), i.into(), e.into()], "").map_err(err)?;
@@ -2165,6 +2384,29 @@ fn inline_array_get<'x>(
     };
     cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
     cx.builder.position_at_end(fast_bb);
+    let datap = array_data_ptr(cx, ap)?;
+    let ep = array_elem_ptr(cx, datap, i)?;
+    let fast_bits = match elem {
+        ArrElem::I64 => {
+            let loaded = cx.builder.build_load(i64t, ep, "").map_err(err)?;
+            align_last(cx);
+            tag_group(cx, arr);
+            let v = loaded.into_int_value();
+            tag_last(cx, cx.tbaa_payload);
+            v
+        }
+        ArrElem::F64 => {
+            let loaded = cx
+                .builder
+                .build_load(cx.context.f64_type(), ep, "")
+                .map_err(err)?;
+            align_last(cx);
+            tag_group(cx, arr);
+            let d = loaded.into_float_value();
+            tag_last(cx, cx.tbaa_payload);
+            cx.builder.build_bit_cast(d, i64t, "").map_err(err)?.into_int_value()
+        }
+    };
     cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
     cx.builder.position_at_end(join_bb);
     let phi = cx.builder.build_phi(i64t, "ag").map_err(err)?;
@@ -2196,50 +2438,67 @@ fn inline_array_set(
     let ap = as_ptr(cx, a)?;
     let i = load(cx, index)?;
     let v = load(cx, value)?;
-    let datap = array_data_ptr(cx, ap)?;
-    let ep = array_elem_ptr(cx, datap, i)?;
     if !checked {
+        let datap = array_data_ptr(cx, ap)?;
+        let ep = array_elem_ptr(cx, datap, i)?;
         cx.builder.build_store(ep, v).map_err(err)?;
+        align_last(cx);
         tag_last(cx, cx.tbaa_payload);
         return Ok(());
     }
-    let len = array_len_value(cx, ap)?;
-    let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
-    let ok = if cx.nonnull.contains(&arr) {
-        inrange
+    let fv = cx
+        .builder
+        .get_insert_block()
+        .and_then(|b| b.get_parent())
+        .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: no insert function"))?;
+    let slow_bb = cx.context.append_basic_block(fv, "as_slow");
+    let fast_bb = cx.context.append_basic_block(fv, "as_fast");
+    let join_bb = cx.context.append_basic_block(fv, "as_join");
+    if cx.nonnull.contains(&arr) {
+        let len = array_len_value(cx, ap)?;
+        let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
+        let br = cx.builder.build_conditional_branch(inrange, fast_bb, slow_bb).map_err(err)?;
+        cold_branch(cx, br, 2000000, 1);
     } else {
+        let check_bb = cx.context.append_basic_block(fv, "as_check");
         let notnull = cx.builder.build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "").map_err(err)?;
-        cx.builder.build_and(notnull, inrange, "").map_err(err)?
-    };
-    let (slow_bb, fast_bb, join_bb) = cur_blocks(cx, "as_slow", "as_fast", "as_join")?;
-    let br = cx.builder.build_conditional_branch(ok, fast_bb, slow_bb).map_err(err)?;
-    cold_branch(cx, br, 2000000, 1);
+        let br_null = cx.builder.build_conditional_branch(notnull, check_bb, slow_bb).map_err(err)?;
+        cold_branch(cx, br_null, 2000000, 1);
+        cx.builder.position_at_end(check_bb);
+        let len = array_len_value(cx, ap)?;
+        let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
+        let br = cx.builder.build_conditional_branch(inrange, fast_bb, slow_bb).map_err(err)?;
+        cold_branch(cx, br, 2000000, 1);
+    }
     cx.builder.position_at_end(slow_bb);
     let e = i64t.const_int(8, false);
     cx.builder.build_call(cx.array_set, &[ap.into(), i.into(), v.into(), e.into()], "").map_err(err)?;
     cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
     cx.builder.position_at_end(fast_bb);
+    let datap = array_data_ptr(cx, ap)?;
+    let ep = array_elem_ptr(cx, datap, i)?;
     cx.builder.build_store(ep, v).map_err(err)?;
+    align_last(cx);
     cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
     cx.builder.position_at_end(join_bb);
     Ok(())
 }
 
 fn array_len_slot<'a>(cx: &'a FnCx<'a>, ap: PointerValue<'a>) -> Result<PointerValue<'a>, Diagnostic> {
+    let i8t = cx.context.i8_type();
     let i64t = cx.context.i64_type();
-    let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
-    let base = cx.builder.build_ptr_to_int(ap, i64t, "").map_err(err)?;
-    let addr = cx.builder.build_int_add(base, i64t.const_int(16, false), "").map_err(err)?;
-    cx.builder.build_int_to_ptr(addr, ptr_t, "").map_err(err)
+    let off = i64t.const_int(16, false);
+    unsafe { cx.builder.build_in_bounds_gep(i8t, ap, &[off], "") }.map_err(err)
 }
 
 fn array_cap_value<'a>(cx: &'a FnCx<'a>, ap: PointerValue<'a>) -> Result<IntValue<'a>, Diagnostic> {
+    let i8t = cx.context.i8_type();
     let i64t = cx.context.i64_type();
-    let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
-    let base = cx.builder.build_ptr_to_int(ap, i64t, "").map_err(err)?;
-    let addr = cx.builder.build_int_add(base, i64t.const_int(24, false), "").map_err(err)?;
-    let field = cx.builder.build_int_to_ptr(addr, ptr_t, "").map_err(err)?;
-    let v = cx.builder.build_load(i64t, field, "").map_err(err)?.into_int_value();
+    let off = i64t.const_int(24, false);
+    let field = unsafe { cx.builder.build_in_bounds_gep(i8t, ap, &[off], "") }.map_err(err)?;
+    let loaded = cx.builder.build_load(i64t, field, "").map_err(err)?;
+    align_last(cx);
+    let v = loaded.into_int_value();
     tag_last(cx, cx.tbaa_header);
     Ok(v)
 }
@@ -2260,18 +2519,34 @@ fn inline_array_push(cx: &FnCx, arr: Local, value: Local) -> Result<(), Diagnost
     let a = load(cx, arr)?;
     let ap = as_ptr(cx, a)?;
     let v = load(cx, value)?;
-    let len = array_len_value(cx, ap)?;
-    let cap = array_cap_value(cx, ap)?;
-    let full = cx.builder.build_int_compare(IntPredicate::EQ, len, cap, "").map_err(err)?;
-    let slow = if cx.nonnull.contains(&arr) {
-        full
+    let fv = cx
+        .builder
+        .get_insert_block()
+        .and_then(|b| b.get_parent())
+        .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: no insert function"))?;
+    let slow_bb = cx.context.append_basic_block(fv, "ap_slow");
+    let fast_bb = cx.context.append_basic_block(fv, "ap_fast");
+    let join_bb = cx.context.append_basic_block(fv, "ap_join");
+    let len = if cx.nonnull.contains(&arr) {
+        let len = array_len_value(cx, ap)?;
+        let cap = array_cap_value(cx, ap)?;
+        let full = cx.builder.build_int_compare(IntPredicate::EQ, len, cap, "").map_err(err)?;
+        let br_full = cx.builder.build_conditional_branch(full, slow_bb, fast_bb).map_err(err)?;
+        cold_branch(cx, br_full, 1, 2000000);
+        len
     } else {
+        let check_bb = cx.context.append_basic_block(fv, "ap_check");
         let isnull = cx.builder.build_is_null(ap, "").map_err(err)?;
-        cx.builder.build_or(isnull, full, "").map_err(err)?
+        let br_null = cx.builder.build_conditional_branch(isnull, slow_bb, check_bb).map_err(err)?;
+        cold_branch(cx, br_null, 1, 2000000);
+        cx.builder.position_at_end(check_bb);
+        let len = array_len_value(cx, ap)?;
+        let cap = array_cap_value(cx, ap)?;
+        let full = cx.builder.build_int_compare(IntPredicate::EQ, len, cap, "").map_err(err)?;
+        let br_full = cx.builder.build_conditional_branch(full, slow_bb, fast_bb).map_err(err)?;
+        cold_branch(cx, br_full, 1, 2000000);
+        len
     };
-    let (slow_bb, fast_bb, join_bb) = cur_blocks(cx, "ap_slow", "ap_fast", "ap_join")?;
-    let br = cx.builder.build_conditional_branch(slow, slow_bb, fast_bb).map_err(err)?;
-    cold_branch(cx, br, 1, 2000000);
     cx.builder.position_at_end(slow_bb);
     let e = i64t.const_int(8, false);
     cx.builder.build_call(cx.array_push, &[ap.into(), v.into(), e.into()], "").map_err(err)?;
@@ -2280,10 +2555,12 @@ fn inline_array_push(cx: &FnCx, arr: Local, value: Local) -> Result<(), Diagnost
     let datap = array_data_ptr(cx, ap)?;
     let ep = array_elem_ptr(cx, datap, len)?;
     cx.builder.build_store(ep, v).map_err(err)?;
+    align_last(cx);
     tag_last(cx, cx.tbaa_payload);
     let new_len = cx.builder.build_int_add(len, i64t.const_int(1, false), "").map_err(err)?;
     let slot = array_len_slot(cx, ap)?;
     cx.builder.build_store(slot, new_len).map_err(err)?;
+    align_last(cx);
     tag_last(cx, cx.tbaa_header);
     cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
     cx.builder.position_at_end(join_bb);

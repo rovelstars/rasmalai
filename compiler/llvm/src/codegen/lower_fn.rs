@@ -1476,6 +1476,40 @@ fn lower_fn<'a>(
     let math_round = runtime_fn("rnx_math_round")?;
     let math_log = runtime_fn("rnx_math_log")?;
     let strings = declare_strings(context, module, lir, is_release)?;
+    let fresh_roots = lir::escape::fresh_array_roots(f);
+    let access_group = if fresh_roots.is_empty() {
+        None
+    } else {
+        Some(context.metadata_node(&[]))
+    };
+    let mut induction_adds: BTreeSet<(usize, usize, Local, Local, Local)> = BTreeSet::new();
+    let mut induction_ranges: BTreeMap<Local, inkwell::values::MetadataValue> = BTreeMap::new();
+    let mut exact_trips: Vec<(usize, usize, u32)> = Vec::new();
+    for t in lir::bce::exact_count_loops(f) {
+        induction_adds.insert((t.add_block, t.add_idx, t.add_dst, t.add_lhs, t.add_rhs));
+        let lo = t.init.min(0);
+        let hi = t.init.max(t.bound);
+        // The range covers the bound itself: iv holds bound after the final
+        // increment, so narrowing hi to bound would let LLVM fold the loop
+        // exit check away.
+        if hi < i64::MAX {
+            let lot = context.i64_type().const_int(lo as u64, false);
+            let hit = context.i64_type().const_int(hi as u64 + 1, false);
+            induction_ranges.insert(
+                t.iv,
+                context.metadata_node(&[lot.into(), hit.into()]),
+            );
+        }
+        let trip: u64 = if t.init >= t.bound {
+            0
+        } else {
+            (t.bound as i128 - t.init as i128) as u64
+        };
+        if trip <= u32::MAX as u64 {
+            exact_trips.push((t.header, t.latch, trip as u32));
+        }
+    }
+    exact_trips.sort();
     let mut cx = FnCx {
         context,
         sqrt_fn: {
@@ -1509,6 +1543,13 @@ fn lower_fn<'a>(
             ]);
             context.metadata_node(&[ty.into(), ty.into(), zero.into()])
         },
+        range_kind: context.get_kind_id("range"),
+        acc_kind: context.get_kind_id("llvm.access.group"),
+        access_group,
+        fresh_array_root: fresh_roots,
+        induction_adds,
+        induction_ranges,
+        exact_trips,
         builder: context.create_builder(),
         funcs: funcs.clone(),
         alloc,
@@ -1791,6 +1832,7 @@ fn lower_fn<'a>(
         nborrowed: f.params.len(),
         dom: lir::licm::compute_dominators(f),
         cur_block: 0,
+        cur_instr: 0,
         last_write: std::cell::RefCell::new(BTreeMap::new()),
         in_enum_dtor: f_raw.name.starts_with("__enum_dtor_"),
         defers: Vec::new(),
@@ -1858,12 +1900,13 @@ fn lower_fn<'a>(
         let block = &f.blocks[i];
         cx.builder.position_at_end(cx.blocks[i]);
         cx.cur_block = i;
-        for ins in &block.instrs {
+        for (ii, ins) in block.instrs.iter().enumerate() {
+            cx.cur_instr = ii;
             lower_instr(&mut cx, lir, ins, &f.name)?;
         }
         lower_term(&mut cx, lir, &block.term)?;
     }
-    tag_loop_unrolls(&cx, f)?;
+    tag_loop_facts(&cx, f)?;
     if fv.verify(true) {
         Ok(())
     } else {

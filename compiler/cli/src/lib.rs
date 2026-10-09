@@ -96,6 +96,7 @@ fn record_opt_subs(profiler: &mut frontend::profiler::PassProfiler, t: &lir::opt
         ("opt_sroa", t.sroa),
         ("opt_licm", t.licm),
         ("opt_bce", t.bce),
+        ("opt_loopdep", t.loopdep),
         ("opt_dom", t.dom),
         ("opt_arc", t.arc),
         ("opt_tco", t.tco),

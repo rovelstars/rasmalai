@@ -1141,32 +1141,112 @@ pub(crate) fn json_push_int(out: &mut impl JsonSink, n: i64) {
 }
 
 pub fn json_escape_into(out: &mut impl JsonSink, s: &str) {
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    let mut start = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let rep: Option<&[u8]> = match b {
+            b'"' => Some(b"\\\""),
+            b'\\' => Some(b"\\\\"),
+            b'\n' => Some(b"\\n"),
+            b'\r' => Some(b"\\r"),
+            b'\t' => Some(b"\\t"),
+            0x08 => Some(b"\\b"),
+            0x0C => Some(b"\\f"),
+            0x00..=0x1F => None,
+            _ => {
+                i += 1;
+                continue;
             }
-            c => {
-                let mut buf = [0u8; 4];
-                out.push_str(c.encode_utf8(&mut buf));
+        };
+        if start < i {
+            // Clean runs are cut at ASCII bytes, so they stay valid str slices.
+            out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[start..i]) });
+        }
+        match rep {
+            Some(e) => out.push_str(unsafe { std::str::from_utf8_unchecked(e) }),
+            None => {
+                let buf = [
+                    b'\\',
+                    b'u',
+                    b'0',
+                    b'0',
+                    HEX[(b >> 4) as usize],
+                    HEX[(b & 15) as usize],
+                ];
+                out.push_str(unsafe { std::str::from_utf8_unchecked(&buf) });
             }
         }
+        i += 1;
+        start = i;
+    }
+    if start < bytes.len() {
+        out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[start..]) });
     }
 }
 
-pub(crate) fn json_fmt_float(out: &mut impl JsonSink, f: f64) {
+struct SinkFmt<'a, S: JsonSink + ?Sized> {
+    out: &'a mut S,
+}
+
+impl<S: JsonSink + ?Sized> std::fmt::Write for SinkFmt<'_, S> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.out.push_str(s);
+        Ok(())
+    }
+}
+
+pub(crate) fn json_fmt_float_into(out: &mut impl JsonSink, f: f64) {
     if !f.is_finite() {
         out.push_str("null");
         return;
     }
-    out.push_str(&fmt_float(f));
+    let bits = f.to_bits();
+    let hit = JSON_FLOAT_FMT.with(|c| {
+        let c = c.borrow();
+        for (b, s) in c.iter() {
+            if *b == bits {
+                out.push_str(s);
+                return true;
+            }
+        }
+        false
+    });
+    if hit {
+        return;
+    }
+    use std::fmt::Write as _;
+    let mut tmp = String::new();
+    {
+        let mut w = SinkFmt { out: &mut tmp };
+        if f.fract() == 0.0 {
+            let _ = write!(w, "{f:.1}");
+        } else {
+            let _ = write!(w, "{f}");
+        }
+    }
+    out.push_str(&tmp);
+    JSON_FLOAT_FMT.with(|c| {
+        let mut c = c.borrow_mut();
+        for i in (1..c.len()).rev() {
+            c.swap(i, i - 1);
+        }
+        c[0] = (bits, tmp);
+    });
+}
+
+std::thread_local! {
+    // Rendered-float memo: repeated values (1.5 in json_stress) skip the
+    // shortest-repr algorithm entirely. u64::MAX marks empty slots; NaN
+    // bit patterns never reach the cache (non-finite returns early).
+    static JSON_FLOAT_FMT: std::cell::RefCell<[(u64, String); 8]> =
+        std::cell::RefCell::new([(); 8].map(|_| (u64::MAX, String::new())));
+}
+
+pub(crate) fn json_fmt_float(out: &mut impl JsonSink, f: f64) {
+    json_fmt_float_into(out, f)
 }
 
 unsafe fn json_write_gmap(out: &mut impl JsonSink, map: *mut u8, depth: usize) {
@@ -1348,6 +1428,105 @@ pub unsafe extern "C" fn rnx_json_stringify_into(any: u64, buf: *mut u8, pos: i6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn escaped(s: &str) -> String {
+        let mut out = String::new();
+        json_escape_into(&mut out, s);
+        out
+    }
+
+    #[test]
+    fn escape_plain_passthrough() {
+        assert_eq!(escaped(""), "");
+        assert_eq!(escaped("name-7"), "name-7");
+        assert_eq!(escaped("hello world"), "hello world");
+        assert_eq!(escaped("é😀"), "é😀");
+    }
+
+    #[test]
+    fn escape_table_exact() {
+        assert_eq!(escaped("a\"b"), "a\\\"b");
+        assert_eq!(escaped("a\\b"), "a\\\\b");
+        assert_eq!(escaped("a\nb\rc\td"), "a\\nb\\rc\\td");
+        assert_eq!(escaped("\u{08}\u{0C}"), "\\b\\f");
+        assert_eq!(escaped("\u{01}\u{1F}"), "\\u0001\\u001f");
+        assert_eq!(escaped("\u{00}"), "\\u0000");
+        assert_eq!(escaped("x\u{7F}y"), "x\u{7F}y");
+    }
+
+    #[test]
+    fn escape_mixed_runs() {
+        assert_eq!(escaped("ab\"cd\\ef\ngh"), "ab\\\"cd\\\\ef\\ngh");
+        assert_eq!(escaped("\""), "\\\"");
+        assert_eq!(escaped("\n"), "\\n");
+    }
+
+    fn fmt_float_str(f: f64) -> String {
+        let mut out = String::new();
+        json_fmt_float_into(&mut out, f);
+        out
+    }
+
+    #[test]
+    fn float_into_matches_fmt_float() {
+        for f in [
+            0.0,
+            -0.0,
+            1.5,
+            -0.005,
+            3.1415,
+            3.0,
+            1000.0,
+            1e20,
+            -12.0,
+            3.25,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert_eq!(fmt_float_str(f), {
+                let mut s = String::new();
+                json_fmt_float(&mut s, f);
+                s
+            });
+            assert_eq!(fmt_float_str(f), {
+                if !f.is_finite() {
+                    "null".to_string()
+                } else {
+                    fmt_float(f)
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn float_cache_repeat_stable() {
+        assert_eq!(fmt_float_str(1.5), "1.5");
+        for _ in 0..20 {
+            assert_eq!(fmt_float_str(1.5), "1.5");
+            assert_eq!(fmt_float_str(2.5), "2.5");
+        }
+        assert_eq!(fmt_float_str(1.5), "1.5");
+    }
+
+    fn push_int_str(n: i64) -> String {
+        let mut out = String::new();
+        json_push_int(&mut out, n);
+        out
+    }
+
+    #[test]
+    fn push_int_exact() {
+        assert_eq!(push_int_str(0), "0");
+        assert_eq!(push_int_str(7), "7");
+        assert_eq!(push_int_str(-7), "-7");
+        assert_eq!(push_int_str(12345), "12345");
+        assert_eq!(push_int_str(i64::MAX), "9223372036854775807");
+        assert_eq!(push_int_str(i64::MIN), "-9223372036854775808");
+        for n in [1, -1, 10, -10, 100, i32::MAX as i64, i32::MIN as i64] {
+            assert_eq!(push_int_str(n), n.to_string());
+        }
+    }
 
     #[test]
     fn alloc_free_roundtrip() {

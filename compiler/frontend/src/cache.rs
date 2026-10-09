@@ -218,8 +218,14 @@ fn collect_rnx(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 pub fn hash_src_tree_files(root: &Path) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+    // Every `.rnx` file under the project root feeds the fingerprint, not
+    // just `src/`: relative file imports (`./m2`, `../lib/m2`, nested
+    // `./a/b/c`) resolve next to their importer, and any of those files
+    // can sit outside `src/`. Missing one lets an edited dependency serve
+    // a stale binary. Unrelated `.rnx` files over-invalidate (a rebuild,
+    // never a stale binary): correctness over hit rate, always.
     let mut found = Vec::new();
-    collect_rnx(&root.join("src"), &mut found);
+    collect_rnx(root, &mut found);
     let mut rels: Vec<(String, Vec<u8>)> = Vec::new();
     for path in found {
         let rel = match path.strip_prefix(root) {
@@ -588,6 +594,56 @@ mod tests {
         let (after_digest, after_files) = hash_src_tree_files(&dir);
         assert_eq!(before_digest, after_digest);
         assert_eq!(before_files, after_files);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn src_tree_files_cover_sibling_imports_outside_src() {
+        let dir = std::env::temp_dir().join(format!("rnx-src-sibling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.rnx"), "import { helper } from \"./m2\";\nfn Main(): Int { return helper(); }\n").unwrap();
+        std::fs::write(dir.join("m2.rnx"), "export fn helper(): Int { return 1; }\n").unwrap();
+        let (before_digest, before_files) = hash_src_tree_files(&dir);
+        let rels: Vec<&str> = before_files.iter().map(|(r, _)| r.as_str()).collect();
+        assert!(rels.contains(&"main.rnx"), "{rels:?}");
+        assert!(rels.contains(&"m2.rnx"), "{rels:?}");
+        assert_eq!(before_digest, hash_src_tree(&dir));
+        std::fs::write(dir.join("m2.rnx"), "export fn helper(): Int { return 2; }\n").unwrap();
+        let (after_digest, after_files) = hash_src_tree_files(&dir);
+        assert_ne!(before_digest, after_digest);
+        assert_eq!(
+            file_entry(&before_files, "main.rnx"),
+            file_entry(&after_files, "main.rnx")
+        );
+        assert_ne!(
+            file_entry(&before_files, "m2.rnx"),
+            file_entry(&after_files, "m2.rnx")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn src_tree_files_cover_lib_imports_outside_src_at_depth() {
+        let dir = std::env::temp_dir().join(format!("rnx-src-libdepth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src").join("a").join("b")).unwrap();
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        std::fs::write(dir.join("src").join("a").join("b").join("deep.rnx"), "fn Deep(): Int { return 1; }\n").unwrap();
+        std::fs::write(dir.join("lib").join("m2.rnx"), "export fn helper(): Int { return 1; }\n").unwrap();
+        let (before_digest, before_files) = hash_src_tree_files(&dir);
+        let rels: Vec<&str> = before_files.iter().map(|(r, _)| r.as_str()).collect();
+        assert!(rels.contains(&"src/main.rnx"), "{rels:?}");
+        assert!(rels.contains(&"src/a/b/deep.rnx"), "{rels:?}");
+        assert!(rels.contains(&"lib/m2.rnx"), "{rels:?}");
+        assert!(rels.windows(2).all(|w| w[0] < w[1]), "{rels:?}");
+        std::fs::write(dir.join("lib").join("m2.rnx"), "export fn helper(): Int { return 2; }\n").unwrap();
+        let (after_digest, _) = hash_src_tree_files(&dir);
+        assert_ne!(before_digest, after_digest);
+        std::fs::write(dir.join("src").join("a").join("b").join("deep.rnx"), "fn Deep(): Int { return 2; }\n").unwrap();
+        let (third_digest, _) = hash_src_tree_files(&dir);
+        assert_ne!(after_digest, third_digest);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
