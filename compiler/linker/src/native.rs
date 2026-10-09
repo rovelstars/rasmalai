@@ -470,6 +470,15 @@ fn static_link_inner(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn cmdline_has_debug(objects: &[Input<'_>]) -> bool {
+    objects.iter().filter(|i| i.command_line).any(|input| {
+        Object::parse(input.storage.bytes(), &input.label).is_ok_and(|obj| {
+            (0..obj.sections.len())
+                .any(|si| obj.section_name(si).is_ok_and(|n| n.starts_with(".debug")))
+        })
+    })
+}
+
 fn link_all(
     objects: &mut Vec<Input<'_>>,
     archives: Vec<ArchiveInput<'_>>,
@@ -482,6 +491,7 @@ fn link_all(
     pie: bool,
     force_dynamic: bool,
 ) -> Result<NativeStats, LinkError> {
+    let keep_debug = !strip && cmdline_has_debug(objects);
     let mut db = SymDb::new();
     seed_synthetics(&mut db);
     let mut winners: BTreeMap<String, usize> = BTreeMap::new();
@@ -491,7 +501,7 @@ fn link_all(
         if obj.machine != target.machine() {
             return Err(LinkError::Native(format!("{}: unsupported machine type {}", input.label, obj.machine)));
         }
-        obj_data.push(graph::build_object(&obj, oi, &input.label, input.command_line, &mut db, &mut winners)?.0);
+        obj_data.push(graph::build_object(&obj, oi, &input.label, input.command_line, keep_debug, &mut db, &mut winners)?.0);
     }
     let mut parsed_archives: Vec<Archive> = Vec::new();
     for a in archives.iter() {
@@ -533,7 +543,7 @@ fn link_all(
             if obj.machine != target.machine() {
                 return Err(LinkError::Native(format!("{label}: unsupported machine type {}", obj.machine)));
             }
-            let (data, defined, referenced) = graph::build_object(&obj, oi, &label, false, &mut db, &mut winners)?;
+            let (data, defined, referenced) = graph::build_object(&obj, oi, &label, false, keep_debug, &mut db, &mut winners)?;
             for d in defined {
                 pending.remove(&d);
             }
@@ -572,7 +582,7 @@ fn link_all(
             }
         }
     }
-    let mut g = tphase!("link-resolve", graph::mark(&parsed, obj_data, &db, &dyn_syms_map, &entry)?);
+    let mut g = tphase!("link-resolve", graph::mark(&parsed, obj_data, &db, &dyn_syms_map, &entry, keep_debug)?);
     let folded_before: usize = g.kept.iter().map(|k| k.iter().filter(|&&b| b).count()).sum();
     if icf {
         tphase!("link-icf", graph::icf_fold(&mut g, &parsed)?);
@@ -734,7 +744,7 @@ fn pie_targets(parsed: &[Object], g: &Graph, db: &SymDb, target: &dyn Target) ->
             let si = si as u32;
             if matches!(
                 class,
-                SecClass::Skip | SecClass::GnuStack | SecClass::NoteProperty | SecClass::EhFrame
+                SecClass::Skip | SecClass::GnuStack | SecClass::NoteProperty | SecClass::EhFrame | SecClass::Debug
             ) {
                 continue;
             }
@@ -845,7 +855,7 @@ fn pie_entries(
                     .get(r.sym as usize)
                     .and_then(|o| o.as_ref())
                     .ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
-                let addr = writer::target_address(g, layout, sym)?;
+                let addr = writer::target_address(g, layout, sym, writer::is_debug_sec(g, *oi, *si))?;
                 let class = g.objs[*oi].classes[*si as usize];
                 let place = if crate::core::layout::is_merged(class) {
                     let synth = crate::core::layout::merged_synth_of(class);
@@ -864,7 +874,7 @@ fn pie_entries(
                     .get(r.sym as usize)
                     .and_then(|o| o.as_ref())
                     .ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
-                let addr = writer::target_address(g, layout, sym)?;
+                let addr = writer::target_address(g, layout, sym, false)?;
                 let place =
                     layout::synth_base(layout, SynthSec::MergedEh) + g.eh_cie_off[*ci] + (r.offset as usize - fstart) as u64;
                 out.push((place, rel, 0, pie_baked(r.kind, addr, r.addend)?));
@@ -877,7 +887,7 @@ fn pie_entries(
                     .get(r.sym as usize)
                     .and_then(|o| o.as_ref())
                     .ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
-                let addr = writer::target_address(g, layout, sym)?;
+                let addr = writer::target_address(g, layout, sym, false)?;
                 let sec = &g.eh.sections[key];
                 let f = &sec.fdes[*fde];
                 let in_start = f.start;
@@ -1350,6 +1360,7 @@ pub fn native_link_dynamic(
     }
     let target = X86_64 { static_link: false };
     let (mut cmd_objects, archives, pending) = load_inputs(objects)?;
+    let keep_debug = !opts.strip && cmdline_has_debug(&cmd_objects);
     let _ = pending;
     let mut prefixed = crt_objects(CrtKind::DynPie)?;
     prefixed.append(&mut cmd_objects);
@@ -1391,7 +1402,7 @@ pub fn native_link_dynamic(
         if obj.machine != target.machine() {
             return Err(LinkError::Native(format!("{}: unsupported machine type {}", input.label, obj.machine)));
         }
-        obj_data.push(graph::build_object(&obj, oi, &input.label, input.command_line, &mut db, &mut winners)?.0);
+        obj_data.push(graph::build_object(&obj, oi, &input.label, input.command_line, keep_debug, &mut db, &mut winners)?.0);
     }
     let mut parsed_archives: Vec<Archive> = Vec::new();
     for a in archives.iter() {
@@ -1429,7 +1440,7 @@ pub fn native_link_dynamic(
         if obj.machine != target.machine() {
             return Err(LinkError::Native(format!("{label}: unsupported machine type {}", obj.machine)));
         }
-        let (data, defined, referenced) = graph::build_object(&obj, oi, &label, false, &mut db, &mut winners)?;
+        let (data, defined, referenced) = graph::build_object(&obj, oi, &label, false, keep_debug, &mut db, &mut winners)?;
         for d in defined {
             pending.remove(&d);
         }
@@ -1468,7 +1479,7 @@ pub fn native_link_dynamic(
             .map(|input| Object::parse(input.storage.bytes(), &input.label))
             .collect::<Result<Vec<_>, _>>()?
     };
-    let mut g = graph::mark(&parsed, obj_data, &db, &dyn_syms_map, &opts.entry)?;
+    let mut g = graph::mark(&parsed, obj_data, &db, &dyn_syms_map, &opts.entry, keep_debug)?;
     if opts.icf {
         graph::icf_fold(&mut g, &parsed)?;
     }

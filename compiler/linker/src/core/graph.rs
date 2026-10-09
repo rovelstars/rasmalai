@@ -28,9 +28,10 @@ pub enum SecClass {
     Note,
     NoteProperty,
     GnuStack,
+    Debug,
 }
 
-pub fn classify(sec: &Section, name: &str) -> SecClass {
+pub fn classify(sec: &Section, name: &str, keep_debug: bool) -> SecClass {
     if sec.kind == SHT_NULL
         || sec.kind == SHT_SYMTAB
         || sec.kind == SHT_STRTAB
@@ -49,8 +50,13 @@ pub fn classify(sec: &Section, name: &str) -> SecClass {
     if name == ".note.stapsdt" {
         return SecClass::Skip;
     }
-    if name.starts_with(".debug")
-        || name.starts_with(".comment")
+    if name.starts_with(".debug") {
+        if keep_debug {
+            return SecClass::Debug;
+        }
+        return SecClass::Skip;
+    }
+    if name.starts_with(".comment")
         || name.starts_with(".llvm")
         || name == ".sframe"
         || name == ".eh_frame_hdr"
@@ -364,6 +370,7 @@ pub fn build_object(
     oi: usize,
     label: &str,
     command_line: bool,
+    keep_debug: bool,
     db: &mut SymDb,
     winners: &mut BTreeMap<String, usize>,
 ) -> Result<(ObjData, Vec<String>, Vec<String>), LinkError> {
@@ -389,7 +396,7 @@ pub fn build_object(
             continue;
         }
         let name = obj.section_name(si).unwrap_or("");
-        classes.push(classify(sec, name));
+        classes.push(classify(sec, name, keep_debug));
     }
     let mut local_target: Vec<Option<(u32, u64)>> = vec![None; obj.symbols.len()];
     let mut defined: Vec<String> = Vec::new();
@@ -629,6 +636,7 @@ pub fn mark(
     db: &SymDb,
     dyn_syms: &BTreeMap<String, DynSym>,
     entry_name: &str,
+    keep_debug: bool,
 ) -> Result<Graph, LinkError> {
     let mut kept: Vec<Vec<bool>> = parsed.iter().map(|o| vec![false; o.sections.len()]).collect();
     let mut queue: VecDeque<(usize, u32)> = VecDeque::new();
@@ -643,6 +651,9 @@ pub fn mark(
         for (si, _sec) in obj.sections.iter().enumerate() {
             match objs[oi].classes[si] {
                 SecClass::Init | SecClass::InitArray | SecClass::Fini | SecClass::FiniArray | SecClass::Note => {
+                    push(&mut kept, &mut queue, oi, si as u32);
+                }
+                SecClass::Debug if keep_debug => {
                     push(&mut kept, &mut queue, oi, si as u32);
                 }
                 _ => {}
@@ -733,6 +744,9 @@ pub fn mark(
         if (sec as usize) >= ridx[oi].len() {
             continue;
         }
+        if objs[oi].classes.get(sec as usize).copied().unwrap_or(SecClass::Skip) == SecClass::Debug {
+            continue;
+        }
         for &ri in ridx[oi][sec as usize].iter() {
             let rela = &parsed[oi].relas[ri];
             if !follow(oi, sec, rela.offset) {
@@ -794,6 +808,9 @@ pub fn mark(
         }
         while let Some((oi, sec)) = queue.pop_front() {
             if (sec as usize) >= ridx[oi].len() {
+                continue;
+            }
+            if objs[oi].classes.get(sec as usize).copied().unwrap_or(SecClass::Skip) == SecClass::Debug {
                 continue;
             }
             for &ri in ridx[oi][sec as usize].iter() {

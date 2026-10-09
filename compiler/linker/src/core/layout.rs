@@ -1,5 +1,5 @@
 use crate::core::graph::Graph;
-use crate::core::obj::SHT_NOBITS;
+use crate::core::obj::{SHT_NOBITS, SHF_COMPRESSED};
 use crate::LinkError;
 use std::collections::BTreeMap;
 
@@ -148,6 +148,24 @@ fn out_name_of(class: SecClass, sec_name: &str) -> &'static str {
                 ".note"
             }
         }
+        SecClass::Debug => match sec_name {
+            ".debug_info" => ".debug_info",
+            ".debug_abbrev" => ".debug_abbrev",
+            ".debug_line" => ".debug_line",
+            ".debug_str" => ".debug_str",
+            ".debug_aranges" => ".debug_aranges",
+            ".debug_ranges" => ".debug_ranges",
+            ".debug_loc" => ".debug_loc",
+            ".debug_loclists" => ".debug_loclists",
+            ".debug_rnglists" => ".debug_rnglists",
+            ".debug_addr" => ".debug_addr",
+            ".debug_names" => ".debug_names",
+            ".debug_frame" => ".debug_frame",
+            ".debug_macinfo" => ".debug_macinfo",
+            ".debug_macro" => ".debug_macro",
+            ".debug_types" => ".debug_types",
+            _ => ".debug",
+        },
         SecClass::NoteProperty | SecClass::GnuStack | SecClass::Skip => ".note",
     }
 }
@@ -172,6 +190,9 @@ pub fn merged_synth_of(class: SecClass) -> SynthSec {
 }
 
 fn merge_key(class: SecClass, sec: &crate::core::obj::Section, sec_name: &str) -> Option<MergeKey> {
+    if sec.flags & SHF_COMPRESSED != 0 {
+        return None;
+    }
     match class {
         SecClass::Text
         | SecClass::Rodata
@@ -179,6 +200,7 @@ fn merge_key(class: SecClass, sec: &crate::core::obj::Section, sec_name: &str) -
         | SecClass::DataRelRo
         | SecClass::Data
         | SecClass::Bss
+        | SecClass::Debug
         | SecClass::Note => Some(MergeKey {
             name: out_name_of(class, sec_name),
             kind: sec.kind,

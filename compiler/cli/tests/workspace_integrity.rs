@@ -34,7 +34,15 @@ fn test_zero_external_dependencies_in_core() {
     //   lockfile entry as serde_json, no new supply-chain surface).
     // - frontend/sha2: plan-mandated SHA-256 content fingerprints for the
     //   build cache (pure Rust, no build scripts).
-    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2")];
+    // - frontend/rayon + lir/rayon: data-parallel lowering, LIR optimization
+    //   passes, and codegen-unit scheduling across worker threads (work
+    //   stealing, no unsafe; deterministic order-restoring collects).
+    // - frontend/libc (unix-only): statvfs disk-space queries so cache
+    //   retention caps scale down on small disks (pure FFI, no build
+    //   scripts, single function used).
+    // - lir/sha2: content hashing for per-function codegen cache keys
+    //   (same crate and lockfile entry as frontend/sha2, no new surface).
+    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2"), ("frontend", "rayon"), ("frontend", "libc"), ("lir", "rayon"), ("lir", "sha2")];
     for krate in ["frontend", "lir", "runtime", "diagnostics", "stdlib"] {
         let path = root.join(krate).join("Cargo.toml");
         assert!(path.is_file(), "missing {}", path.display());

@@ -33,7 +33,7 @@ jobs:
 
       - name: Full workspace test suite
         run: |
-          sudo apt-get install -y gdb
+          sudo apt-get install -y gdb binutils
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           ulimit -c unlimited
           seeded=""
