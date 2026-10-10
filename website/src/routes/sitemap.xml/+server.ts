@@ -1,6 +1,7 @@
 import {
 	GUIDE_CHAPTERS,
 	MANUAL_SECTIONS,
+	ETC_SECTIONS,
 	ROSETTA,
 	TRACKS,
 	STDLIB
@@ -8,12 +9,13 @@ import {
 
 const BASE = 'https://rasmalai.rovelstars.com';
 
-const STATIC_PAGES = ['/', '/guide', '/manual', '/packages', '/playground', '/license', '/discord'];
+const STATIC_PAGES = ['/', '/guide', '/manual', '/etc', '/packages', '/playground', '/license', '/discord'];
 
 export async function GET() {
 	const urls: string[] = [...STATIC_PAGES];
 	for (const c of GUIDE_CHAPTERS) urls.push(c.path);
 	for (const m of MANUAL_SECTIONS) urls.push(m.path);
+	for (const e of ETC_SECTIONS) urls.push(e.path);
 	for (const r of ROSETTA) urls.push(r.path);
 	for (const t of TRACKS) urls.push(`/guide/tracks/${t.slug}`);
 	for (const m of STDLIB) {
