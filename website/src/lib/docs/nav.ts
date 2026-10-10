@@ -104,10 +104,13 @@ function withIcons(chapters: { slug: string; title: string; description: string;
 
 const guideFiles = import.meta.glob('/src/content/guide/*.md', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 const manualFiles = import.meta.glob('/src/content/manual/*.md', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+const etcFiles = import.meta.glob('/src/content/etc/*.md', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 
 export const GUIDE_CHAPTERS: ChapterMeta[] = withIcons(buildChapters(guideFiles, '/guide'), false);
 
 export const MANUAL_SECTIONS: ManualMeta[] = withIcons(buildChapters(manualFiles, '/manual'), true);
+
+export const ETC_SECTIONS: ManualMeta[] = withIcons(buildChapters(etcFiles, '/etc'), true);
 
 export const MANUAL_PARTS: string[] = [...new Set(MANUAL_SECTIONS.map((m) => m.part))];
 
