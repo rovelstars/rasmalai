@@ -192,6 +192,12 @@ describe('resolveRegistryOrigin', () => {
 		assert.equal(isDevOrigin('http://localhost:5173'), true);
 		assert.equal(isDevOrigin('http://127.0.0.1:4173'), true);
 		assert.equal(isDevOrigin('http://thing.local:5173'), true);
+		assert.equal(isDevOrigin('http://100.99.21.126:5173'), true);
+		assert.equal(isDevOrigin('http://192.168.1.10:5173'), true);
+		assert.equal(isDevOrigin('http://10.0.0.5:5173'), true);
+		assert.equal(isDevOrigin('http://172.20.4.9:5173'), true);
+		assert.equal(isDevOrigin('http://172.32.0.5:5173'), false);
+		assert.equal(isDevOrigin('http://8.8.8.8:5173'), false);
 		assert.equal(isDevOrigin('https://rasmalai.rovelstars.com'), false);
 		assert.equal(isDevOrigin('not a url'), false);
 	});
