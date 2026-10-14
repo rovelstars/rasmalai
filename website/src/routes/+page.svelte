@@ -21,7 +21,24 @@
 	let installCmd = $derived(
 		os === 'windows' ? `irm ${protocol}//${host}/install.ps1 | iex` : `curl -fsSL ${protocol}//${host}/install.sh | sh`
 	);
-	let osLabel = $derived(os === 'windows' ? 'Windows' : 'Linux / macOS');
+
+	let segEl: HTMLDivElement | undefined = $state();
+	let pill = $state({ left: 0, width: 0, ready: false });
+
+	function measurePill() {
+		const root = segEl;
+		if (!root) return;
+		const order: OsKind[] = ['unix', 'windows'];
+		const btns = root.querySelectorAll('button');
+		const at = btns[order.indexOf(os)] as HTMLElement | undefined;
+		if (!at) return;
+		pill = { left: at.offsetLeft, width: at.offsetWidth, ready: true };
+	}
+
+	function selectOs(next: OsKind) {
+		os = next;
+		requestAnimationFrame(() => measurePill());
+	}
 
 	onMount(() => {
 		host = window.location.host;
@@ -30,6 +47,10 @@
 		const hint = ua?.platform ?? navigator.platform ?? navigator.userAgent ?? '';
 		if (/win/i.test(hint)) os = 'windows';
 		else os = 'unix';
+		measurePill();
+		const onResize = () => measurePill();
+		window.addEventListener('resize', onResize);
+		return () => window.removeEventListener('resize', onResize);
 	});
 
 	async function copyInstall() {
@@ -69,17 +90,28 @@
 				>
 				<button
 					onclick={copyInstall}
-					class="press max-w-full rounded-full border border-aura-border bg-aura-surface/70 px-5 py-2.5 font-mono text-sm text-aura-text backdrop-blur hover:border-aura-borderHover"
+					class="press max-w-full rounded-full border backdrop-blur transition-colors duration-200 {copied ? 'border-aura-green/60 bg-aura-surface/70' : 'border-aura-border bg-aura-surface/70 hover:border-aura-borderHover'} px-5 py-2.5 font-mono text-sm text-aura-text"
 				>
-					<span class="text-aura-muted">{os === 'windows' ? '>' : '$'}</span> <span class="break-all">{installCmd}</span>
+					<span class="inline-flex min-w-0 items-center overflow-hidden align-bottom">
+						{#key os}
+							<span class="cmd-roll inline-block whitespace-nowrap"><span class="text-aura-muted">{os === 'windows' ? '>' : '$'}</span> <span class="break-all">{installCmd}</span></span>
+						{/key}
+					</span>
 					<span class="ml-1 text-xs text-aura-muted">{copied ? '- copied' : '- copy'}</span>
 				</button>
-				<div class="flex items-center gap-1 rounded-full border border-aura-border bg-aura-surface/70 px-1 py-1 backdrop-blur" role="group" aria-label="Operating system">
+				<div bind:this={segEl} class="relative flex items-center gap-1 rounded-full border border-aura-border bg-aura-surface/70 px-1 py-1 backdrop-blur" role="group" aria-label="Operating system">
+					<span
+						aria-hidden="true"
+						class="os-pill pointer-events-none absolute top-1 bottom-1 rounded-full bg-aura-purple"
+						style:left="{pill.left}px"
+						style:width="{pill.width}px"
+						style:opacity={pill.ready ? 1 : 0}
+					></span>
 					{#each [['unix', 'Linux / macOS'], ['windows', 'Windows']] as [id, label]}
 						<button
-							onclick={() => (os = id as typeof os)}
+							onclick={() => selectOs(id as typeof os)}
 							aria-pressed={os === id}
-							class="press rounded-full px-2.5 py-1 font-mono text-xs {os === id ? 'bg-aura-purple text-aura-bg' : 'text-aura-muted hover:text-aura-text'}"
+							class="press relative z-10 rounded-full px-2.5 py-1 font-mono text-xs transition-colors duration-200 {os === id ? 'text-aura-bg' : 'text-aura-muted hover:text-aura-text'}"
 						>
 							{label}
 						</button>
@@ -169,56 +201,61 @@
 			</div>
 		</section>
 
-		<!-- install strip -->
-		<section class="mt-12 border-t border-aura-border pt-8 pb-4">
+		<!-- footer -->
+		<footer class="mt-12 border-t border-aura-border pt-8 pb-6">
 			<div use:reveal class="grid gap-8 md:grid-cols-[7fr_5fr]">
 				<div>
-					<h2 class="text-xl font-bold tracking-tight text-aura-text">Take it for a spin</h2>
-					<p class="mt-2 max-w-[52ch] text-sm leading-relaxed text-aura-muted">
-						Free, open source (MIT), and built in the open. Hit a rough edge? Open an
-						issue — we read every one.
+					<p class="flex items-center gap-2 font-mono text-sm tracking-wide text-aura-text">
+						<Diamond size={12} class="shrink-0 text-aura-purple" />Rasmalai
 					</p>
-					<div class="panel mt-4 flex items-center justify-between gap-3 px-4 py-3">
-						<code class="tabular overflow-x-auto font-mono text-[13px] text-aura-cyan"
-							>{installCmd}</code
-						>
-						<button
-							onclick={copyInstall}
-							class="press shrink-0 rounded border border-aura-border px-2.5 py-1 font-mono text-[11px] text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
-						>
-							{copied ? 'copied' : 'copy'}
-						</button>
-					</div>
-					<p class="mt-2 font-mono text-[11px] text-aura-muted">showing {osLabel} instructions — switch above if that is wrong</p>
+					<p class="mt-2 max-w-[52ch] text-sm leading-relaxed text-aura-muted">
+						Free, open source (MIT), and built in the open. Hit a rough edge?
+						Open an issue — we read every one.
+					</p>
 				</div>
-				<nav class="grid grid-cols-2 content-start gap-2 text-sm" aria-label="Quick reference">
-					<a href="/guide" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
-						><BookOpen size={14} />Guide</a
-					>
-					<a href="/playground" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
-						><FlaskConical size={14} />Playground</a
-					>
-					<a href="/packages" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
-						><Package size={14} />Packages</a
-					>
-					<a
-						href="https://github.com/rovelstars/rasmalai"
-						class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
-						><BrandMark name="github" />GitHub</a
-					>
-					<a href="/discord" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
-						><BrandMark name="discord" />Discord</a
-					>
-					<a href="/license" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
-						><Scale size={14} />License (MIT)</a
-					>
+				<nav class="grid grid-cols-2 gap-x-2 gap-y-6 content-start text-sm sm:grid-cols-3" aria-label="Footer">
+					<div>
+						<p class="font-mono text-[11px] tracking-[0.2em] text-aura-muted">LEARN</p>
+						<div class="mt-2 flex flex-col items-start gap-2">
+							<a href="/guide" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
+								><BookOpen size={14} />Guide</a
+							>
+							<a href="/playground" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
+								><FlaskConical size={14} />Playground</a
+							>
+							<a href="/packages" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
+								><Package size={14} />Packages</a
+							>
+						</div>
+					</div>
+					<div>
+						<p class="font-mono text-[11px] tracking-[0.2em] text-aura-muted">COMMUNITY</p>
+						<div class="mt-2 flex flex-col items-start gap-2">
+							<a
+								href="https://github.com/rovelstars/rasmalai"
+								class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
+								><BrandMark name="github" />GitHub</a
+							>
+							<a href="/discord" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
+								><BrandMark name="discord" />Discord</a
+							>
+						</div>
+					</div>
+					<div>
+						<p class="font-mono text-[11px] tracking-[0.2em] text-aura-muted">LEGAL</p>
+						<div class="mt-2 flex flex-col items-start gap-2">
+							<a href="/license" class="flex items-center gap-2 text-aura-muted hover:text-aura-text"
+								><Scale size={14} />License (MIT)</a
+							>
+						</div>
+					</div>
 				</nav>
 			</div>
 			<p use:reveal class="mt-10 border-t border-aura-border py-5 text-sm text-aura-muted">
 				Made by people who got tired of waiting on compilers. Star the repo, file the
 				bug, shape the language.
 			</p>
-		</section>
+		</footer>
 	</div>
 </div>
 
