@@ -149,6 +149,14 @@ async function fetchBytes(
 	return out.buffer as ArrayBuffer;
 }
 
+function parseProtocol<T>(raw: string, call: string): T {
+	try {
+		return JSON.parse(raw) as T;
+	} catch {
+		throw new Error(`${call} returned malformed response`);
+	}
+}
+
 class Engine {
 	state = $state<EngineState>('unloaded');
 	progress = $state<number | null>(null);
@@ -260,7 +268,7 @@ class Engine {
 		await this.ensureLoaded();
 		if (!this.runner) throw new Error('engine unavailable');
 		const raw = await this.runner.format(source);
-		const parsed = JSON.parse(raw) as { ok: boolean; output?: string; error?: string };
+		const parsed = parseProtocol<{ ok: boolean; output?: string; error?: string }>(raw, 'format');
 		if (!parsed.ok || typeof parsed.output !== 'string') {
 			throw new Error(parsed.error ?? 'format failed');
 		}
@@ -271,7 +279,7 @@ class Engine {
 		await this.ensureLoaded();
 		if (!this.runner) throw new Error('engine unavailable');
 		const raw = await this.runner.complete(source, line, character);
-		const parsed = JSON.parse(raw) as { items?: CompletionEntry[]; error?: string };
+		const parsed = parseProtocol<{ items?: CompletionEntry[]; error?: string }>(raw, 'complete');
 		if (parsed.error) throw new Error(parsed.error);
 		return parsed.items ?? [];
 	}
@@ -280,7 +288,7 @@ class Engine {
 		await this.ensureLoaded();
 		if (!this.runner) throw new Error('engine unavailable');
 		const raw = await this.runner.hover(source, line, character);
-		const parsed = JSON.parse(raw) as { empty?: boolean; error?: string } & Partial<HoverInfo>;
+		const parsed = parseProtocol<{ empty?: boolean; error?: string } & Partial<HoverInfo>>(raw, 'hover');
 		if (parsed.error) throw new Error(parsed.error);
 		if (parsed.empty || typeof parsed.signature !== 'string') return null;
 		return {
@@ -295,7 +303,7 @@ class Engine {
 		await this.ensureLoaded();
 		if (!this.runner) throw new Error('engine unavailable');
 		const raw = await this.runner.diagJson(source);
-		return JSON.parse(raw) as ProjectDiag[];
+		return parseProtocol<ProjectDiag[]>(raw, 'diagJson');
 	}
 
 	async diagProject(filesJson: string, entry: string): Promise<ProjectDiag[]> {
@@ -304,7 +312,7 @@ class Engine {
 		const files = JSON.parse(filesJson) as Record<string, string>;
 		await this.ensureStdMany(Object.values(files));
 		const raw = await this.runner.diagProject(filesJson, entry);
-		return JSON.parse(raw) as ProjectDiag[];
+		return parseProtocol<ProjectDiag[]>(raw, 'diagProject');
 	}
 
 	async checkProject(filesJson: string, entry: string): Promise<string> {
@@ -391,6 +399,10 @@ class Engine {
 			await ensureStdForSource(this.runner, source, this.stdPin, origins.origin, this.stdDb, fetch, origins.fallback);
 		} catch (e) {
 			if (e instanceof Error && /timed out|did not converge/.test(e.message)) throw e;
+			// Transient fetch failures stay non-fatal (retried on the next
+			// run), but surface them instead of dropping silently — a missing
+			// stdlib downstream otherwise fails with an unrelated error.
+			this.detail = `stdlib prefetch had issues (${e instanceof Error ? e.message : 'unknown error'}); retrying on next run.`;
 		}
 	}
 

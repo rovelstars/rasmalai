@@ -147,7 +147,12 @@ export class PlaygroundRunner {
 	async runProject(filesJson: string, entry: string): Promise<RunResult> {
 		try {
 			const raw = await this.post('RUN_PROJECT', { source: filesJson, entry }, TIMEOUT_MS);
-			const parsed = JSON.parse(raw) as { output: string; duration: number };
+			let parsed: { output: string; duration: number };
+			try {
+				parsed = JSON.parse(raw) as { output: string; duration: number };
+			} catch {
+				throw new Error('runProject returned malformed response');
+			}
 			return { output: parsed.output, duration: parsed.duration, timedOut: false };
 		} catch (e) {
 			if (e instanceof Error && e.message.includes('worker restarted')) {
@@ -160,7 +165,12 @@ export class PlaygroundRunner {
 	async testProject(filesJson: string, entry: string): Promise<RunResult> {
 		try {
 			const raw = await this.post('TEST_PROJECT', { source: filesJson, entry }, TIMEOUT_MS);
-			const parsed = JSON.parse(raw) as { output: string; duration: number };
+			let parsed: { output: string; duration: number };
+			try {
+				parsed = JSON.parse(raw) as { output: string; duration: number };
+			} catch {
+				throw new Error('testProject returned malformed response');
+			}
 			return { output: parsed.output, duration: parsed.duration, timedOut: false };
 		} catch (e) {
 			if (e instanceof Error && e.message.includes('worker restarted')) {
