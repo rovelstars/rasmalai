@@ -2,6 +2,7 @@
 	import { ArrowLeft, ArrowRight } from 'lucide-svelte';
 	import { withHost } from '$lib/docs/host';
 	import { onDocCodeClick } from '$lib/docs/codeActions';
+	import { canonicalUrl } from '$lib/site';
 	import { attachSectionCopy, onSectionCopyClick } from '$lib/docs/sectionCopy';
 	import { GUIDE_CHAPTERS } from '$lib/docs/nav';
 
@@ -24,7 +25,7 @@
 		'@type': 'TechArticle',
 		headline: data.title,
 		description: data.description,
-		url: `https://rasmalai.rovelstars.com/guide/${data.slug}`,
+		url: canonicalUrl(`/guide/${data.slug}`),
 		inLanguage: 'en',
 		author: { '@type': 'Organization', name: 'Rasmalai' }
 	})}<\/script>`}

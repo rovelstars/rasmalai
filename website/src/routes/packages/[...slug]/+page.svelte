@@ -4,6 +4,7 @@
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import { renderMarkdown } from '$lib/docs/markdown';
+	import { canonicalUrl } from '$lib/site';
 	import AuraCode from '$lib/components/AuraCode.svelte';
 	import ModuleDocs from '$lib/components/ModuleDocs.svelte';
 	import type { DocModule } from '$lib/docs/api';
@@ -346,7 +347,7 @@ import { importSnippet } from '$lib/docs/stdlib';
 <svelte:head>
 	<title>{pkg.name} v{activeVersion.version} | Packages</title>
 	<meta name="description" content={pkg.description} />
-	<link rel="canonical" href="https://rasmalai.rovelstars.com/packages/{pkg.name}" />
+	<link rel="canonical" href={canonicalUrl(`/packages/${pkg.name}`)} />
 </svelte:head>
 
 <main class="mx-auto max-w-7xl px-4 pb-16">

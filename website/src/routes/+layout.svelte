@@ -10,19 +10,21 @@
 	import { afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import Navbar from '$lib/components/Navbar.svelte';
+	import Footer from '$lib/components/Footer.svelte';
 	import { enhanceDocCode } from '$lib/docs/enhance';
 	import { ogImageFor } from '$lib/docs/og';
+	import { canonicalUrl } from '$lib/site';
 	import ogManifest from '../../static/og/manifest.json';
 
 	let { children } = $props();
 
-	const canonical = $derived(`https://rasmalai.rovelstars.com${page.url.pathname}`);
-	const ogImage = $derived(`https://rasmalai.rovelstars.com${ogImageFor(page.url.pathname, ogManifest)}`);
+	const canonical = $derived(canonicalUrl(page.url.pathname));
+	const ogImage = $derived(canonicalUrl(ogImageFor(page.url.pathname, ogManifest)));
 	const ogUrl = $derived.by(() => {
 		if (!page.url.pathname.startsWith('/packages/')) return canonical;
 		const segs = page.url.pathname.split('/').filter(Boolean).slice(1);
 		if (segs.length > 1 && /^\d+\.\d+\.\d+$/.test(segs[segs.length - 1])) segs.pop();
-		return `https://rasmalai.rovelstars.com/packages/${segs.join('/')}`;
+		return canonicalUrl(`/packages/${segs.join('/')}`);
 	});
 
 	function enhance() {
@@ -77,3 +79,4 @@
 
 <Navbar />
 {@render children()}
+<Footer />

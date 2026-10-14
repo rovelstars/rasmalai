@@ -8,6 +8,8 @@
 // Versioned package URLs are immutable, so fetched modules cache in
 // IndexedDB beside the engine bytes forever.
 
+import { CANONICAL_ORIGIN } from '$lib/site';
+
 export interface ChunkEntry {
 	name: string;
 	size: number;
@@ -21,7 +23,7 @@ const STD_KEY_PREFIX = 'std::';
 const MAX_STD_MODULE_BYTES = 1024 * 1024;
 const PREFETCH_ROUNDS = 8;
 
-export const PROD_REGISTRY = 'https://rasmalai.rovelstars.com';
+export const PROD_REGISTRY = CANONICAL_ORIGIN;
 
 export function isDevOrigin(origin: string): boolean {
 	try {
