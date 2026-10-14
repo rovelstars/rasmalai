@@ -96,8 +96,20 @@ for (const name of modules) {
 	writeFileSync(join(dir, 'README.md'), `# ${full}\n\n${moduleBlurb(name)}\n`);
 	writeFileSync(
 		join(dir, 'Project.config'),
-		`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))}\n    },\n    entries: { main: "src/lib.rnx" }${renderPermissions(name)}\n}\n`
+		`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))}\n    },\n    entries: {\n        main: "src/lib.rnx"\n    }${renderPermissions(name)}\n}\n`
 	);
+	// Generated config is canonicalized mechanically; staged sources must
+	// already be clean (checked below) so published bytes match the repo.
+	rnx(['fmt', join(dir, 'Project.config')], dir);
+	for (const f of [join(dir, 'src', 'lib.rnx'), ...(SUBMODULES[name] ?? []).map((s) => join(dir, 'src', s))]) {
+		try {
+			rnx(['fmt', '--check', f], dir);
+		} catch {
+			throw new Error(
+				`publish-std: staged source ${f} is not fmt-clean; run \`rnx fmt\` on compiler/stdlib and recommit`
+			);
+		}
+	}
 	const outDir = join(dir, 'dist');
 	mkdirSync(outDir, { recursive: true });
 	rnx(['pack', '--out-dir', outDir], dir);

@@ -381,7 +381,7 @@ fn range_admits_pre(range: &str, current: (u64, u64, u64, &str)) -> bool {
     b.0 == current.0 && b.1 == current.1 && b.2 == current.2
 }
 
-fn engine_satisfied(range: &str, current: &str) -> bool {
+pub(crate) fn engine_satisfied(range: &str, current: &str) -> bool {
     let Some(v) = parse_semver(current.trim()) else {
         return false;
     };
@@ -1774,72 +1774,175 @@ fn write_tar_octal(buf: &mut [u8], off: usize, len: usize, value: u64) {
     buf[off + len - 1] = 0;
 }
 
-fn rebuild_tar(entries: &[ChunkEntry], by_hash: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, Diagnostic> {
-    let bad = || Diagnostic::new(Code::E108, "chunk manifest failed to reassemble".to_string());
-    let fallback = entries.len() == 1 && entries[0].name.is_empty() && !entries[0].dir;
-    let mut out: Vec<u8> = Vec::new();
+fn tar_entry_header(entry: &ChunkEntry, full: &str, version: &str) -> Result<[u8; 512], Diagnostic> {
+    let name = entry.name.as_bytes();
+    if name.len() > 100 {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!(
+                "chunk manifest of `{full}@{version}` has an overlong file name `{}`",
+                entry.name
+            ),
+        ));
+    }
+    let mut head = [0u8; 512];
+    head[..name.len()].copy_from_slice(name);
+    write_tar_octal(&mut head, 100, 8, if entry.dir { 0o755 } else { 0o644 });
+    write_tar_octal(&mut head, 108, 8, 0);
+    write_tar_octal(&mut head, 116, 8, 0);
+    write_tar_octal(&mut head, 124, 12, entry.size);
+    write_tar_octal(&mut head, 136, 12, 0);
+    for b in head.iter_mut().skip(148).take(8) {
+        *b = b' ';
+    }
+    head[156] = if entry.dir { b'5' } else { b'0' };
+    head[257..263].copy_from_slice(b"ustar\0");
+    head[263..265].copy_from_slice(b"00");
+    head[265..268].copy_from_slice(b"rnx");
+    head[297..300].copy_from_slice(b"rnx");
+    let sum: u64 = head.iter().map(|b| *b as u64).sum();
+    let sum_text = format!("{sum:06o}");
+    head[148..154].copy_from_slice(&sum_text.as_bytes()[..6]);
+    head[154] = 0;
+    head[155] = b' ';
+    Ok(head)
+}
+
+struct DirectTree {
+    files: BTreeMap<String, Vec<u8>>,
+    dirs: BTreeSet<String>,
+    digest: String,
+}
+
+fn feed_capped(
+    hash: &mut Sha256,
+    bytes: &[u8],
+    total: &mut u64,
+    full: &str,
+    version: &str,
+) -> Result<(), Diagnostic> {
+    *total += bytes.len() as u64;
+    if *total > MAX_DOWNLOAD_BYTES as u64 {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("download of `{full}@{version}` exceeds size limits"),
+        ));
+    }
+    hash.update(bytes);
+    Ok(())
+}
+
+fn assemble_direct_tree(
+    entries: &[ChunkEntry],
+    by_hash: &BTreeMap<String, Vec<u8>>,
+    full: &str,
+    version: &str,
+) -> Result<DirectTree, Diagnostic> {
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut dirs: BTreeSet<String> = BTreeSet::new();
+    let mut hash = Sha256::new();
+    let mut total: u64 = 0;
+    const ZEROS: [u8; 1024] = [0; 1024];
     for e in entries {
-        if e.name.is_empty() && !e.dir && !fallback {
-            return Err(bad());
+        if e.name.is_empty() {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("chunk manifest of `{full}@{version}` has a file entry with an empty name"),
+            ));
         }
+        let path = tar_safe_rel(&e.name).map_err(|_| {
+            Diagnostic::new(
+                Code::E108,
+                format!("unsafe file path `{}` in chunk manifest of `{full}@{version}`", e.name),
+            )
+        })?;
         if e.dir {
             if !e.chunks.is_empty() {
-                return Err(bad());
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "checksum mismatch for file `{path}` of `{full}@{version}`: directory entry lists content chunks"
+                    ),
+                ));
             }
-        }
-        if fallback {
-            for h in &e.chunks {
-                out.extend_from_slice(by_hash.get(h).ok_or_else(bad)?);
-            }
+            let head = tar_entry_header(e, full, version)?;
+            feed_capped(&mut hash, &head, &mut total, full, version)?;
+            dirs.insert(path);
             continue;
         }
-        if e.dir {
-            // header-only entry below
-        }
-        let name = e.name.as_bytes();
-        if name.len() > 100 {
-            return Err(bad());
-        }
-        let mut head = vec![0u8; 512];
-        head[..name.len()].copy_from_slice(name);
-        write_tar_octal(&mut head, 100, 8, if e.dir { 0o755 } else { 0o644 });
-        write_tar_octal(&mut head, 108, 8, 0);
-        write_tar_octal(&mut head, 116, 8, 0);
-        write_tar_octal(&mut head, 124, 12, e.size);
-        write_tar_octal(&mut head, 136, 12, 0);
-        for b in head.iter_mut().skip(148).take(8) {
-            *b = b' ';
-        }
-        head[156] = if e.dir { b'5' } else { b'0' };
-        head[257..263].copy_from_slice(b"ustar\0");
-        head[263..265].copy_from_slice(b"00");
-        head[265..268].copy_from_slice(b"rnx");
-        head[297..300].copy_from_slice(b"rnx");
-        let sum: u64 = head.iter().map(|b| *b as u64).sum();
-        let sum_text = format!("{sum:06o}");
-        head[148..154].copy_from_slice(&sum_text.as_bytes()[..6]);
-        head[154] = 0;
-        head[155] = b' ';
-        out.extend_from_slice(&head);
-        if e.dir {
-            continue;
-        }
-        let mut done = 0u64;
+        let mut data = Vec::new();
         for h in &e.chunks {
-            let bytes = by_hash.get(h).ok_or_else(bad)?;
-            out.extend_from_slice(bytes);
-            done += bytes.len() as u64;
+            match by_hash.get(h) {
+                Some(bytes) => data.extend_from_slice(bytes),
+                None => {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        format!(
+                            "chunk manifest of `{full}@{version}` failed to reassemble file `{path}`: chunk `{h}` is missing"
+                        ),
+                    ));
+                }
+            }
         }
-        if done != e.size {
-            return Err(bad());
+        if data.len() as u64 != e.size {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "checksum mismatch for file `{path}` of `{full}@{version}`: manifest says {} bytes but chunks hold {}",
+                    e.size,
+                    data.len()
+                ),
+            ));
         }
+        let head = tar_entry_header(e, full, version)?;
+        feed_capped(&mut hash, &head, &mut total, full, version)?;
+        feed_capped(&mut hash, &data, &mut total, full, version)?;
         let pad = (512 - (e.size % 512)) % 512;
-        out.extend(std::iter::repeat(0).take(pad as usize));
+        feed_capped(&mut hash, &ZEROS[..pad as usize], &mut total, full, version)?;
+        files.insert(path, data);
     }
-    if !fallback {
-        out.extend(std::iter::repeat(0).take(1024));
+    feed_capped(&mut hash, &ZEROS, &mut total, full, version)?;
+    Ok(DirectTree { files, dirs, digest: crate::checksum::hex_of(&hash.finish()) })
+}
+
+fn write_direct_tree(tree: &DirectTree, full: &str, dest: &Path) -> Result<(), Diagnostic> {
+    for dir in &tree.dirs {
+        std::fs::create_dir_all(dest.join(dir)).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dest.display()))
+        })?;
     }
-    Ok(out)
+    let mut parents: BTreeSet<&str> = BTreeSet::new();
+    for path in tree.files.keys() {
+        if let Some((parent, _)) = path.rsplit_once('/') {
+            parents.insert(parent);
+        }
+    }
+    for parent in parents {
+        std::fs::create_dir_all(dest.join(parent)).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dest.display()))
+        })?;
+    }
+    for (path, data) in &tree.files {
+        std::fs::write(dest.join(path), data).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot write `{}`: {e}", dest.join(path).display()),
+            )
+        })?;
+    }
+    if !dest.join(crate::project::MANIFEST_FILE).is_file() {
+        let _ = std::fs::remove_dir_all(dest);
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("package `{full}` from the registry has no Project.config"),
+        ));
+    }
+    Ok(())
+}
+
+enum Downloaded {
+    Tarball(Vec<u8>),
+    Tree(DirectTree),
 }
 
 fn tar_octal(bytes: &[u8]) -> Result<u64, Diagnostic> {
@@ -2034,7 +2137,7 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
         })?
         .to_string();
     let outer_direct = origin_direct();
-    let download = |retry_direct: bool| -> Result<Vec<u8>, Diagnostic> {
+    let download = |retry_direct: bool| -> Result<Downloaded, Diagnostic> {
         let direct = outer_direct || retry_direct;
         let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version, direct)?;
         let mut uniq: BTreeSet<String> = BTreeSet::new();
@@ -2045,15 +2148,39 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
         }
         let ordered: Vec<String> = uniq.into_iter().collect();
         let by_hash = fetch_chunks_parallel(&chunk_base, &ordered, &node.full, &node.version, direct, share)?;
-        let bytes = rebuild_tar(&entries, &by_hash)?;
-        if bytes.len() > MAX_DOWNLOAD_BYTES {
-            return Err(Diagnostic::new(
-                Code::E108,
-                format!("download of `{}@{}` exceeds size limits", node.full, node.version),
-            ));
+        if entries.len() == 1 && entries[0].name.is_empty() && !entries[0].dir {
+            let mut bytes = Vec::new();
+            for h in &entries[0].chunks {
+                match by_hash.get(h) {
+                    Some(chunk) => bytes.extend_from_slice(chunk),
+                    None => {
+                        return Err(Diagnostic::new(
+                            Code::E108,
+                            format!("chunk {h} of `{}@{}` is missing", node.full, node.version),
+                        ));
+                    }
+                }
+            }
+            if bytes.len() > MAX_DOWNLOAD_BYTES {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("download of `{}@{}` exceeds size limits", node.full, node.version),
+                ));
+            }
+            let digest = Sha256::hexdigest(&bytes);
+            if !digest.eq_ignore_ascii_case(&node.integrity) {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "checksum mismatch for package `{}@{}`: download does not match registry integrity",
+                        node.full, node.version
+                    ),
+                ));
+            }
+            return Ok(Downloaded::Tarball(bytes));
         }
-        let digest = Sha256::hexdigest(&bytes);
-        if !digest.eq_ignore_ascii_case(&node.integrity) {
+        let tree = assemble_direct_tree(&entries, &by_hash, &node.full, &node.version)?;
+        if !tree.digest.eq_ignore_ascii_case(&node.integrity) {
             return Err(Diagnostic::new(
                 Code::E108,
                 format!(
@@ -2062,9 +2189,9 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
                 ),
             ));
         }
-        Ok(bytes)
+        Ok(Downloaded::Tree(tree))
     };
-    let bytes = match download(false) {
+    let downloaded = match download(false) {
         Err(first) if is_generation_error(&first) => {
             let _ = std::fs::remove_dir_all(&dir);
             download(true)
@@ -2077,7 +2204,10 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
             Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
         })?;
     }
-    extract_download(&bytes, &node.full, &dir)?;
+    match &downloaded {
+        Downloaded::Tarball(bytes) => extract_download(bytes, &node.full, &dir)?,
+        Downloaded::Tree(tree) => write_direct_tree(tree, &node.full, &dir)?,
+    }
     std::fs::write(integrity_path(&dir), format!("{}\n{}\n{}\n", node.full, node.version, node.integrity))
         .map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dir.display()))
@@ -2915,29 +3045,39 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_tar_matches_server_byte_layout() {
-        let entries = vec![ChunkEntry {
+    fn tar_header_matches_server_byte_layout() {
+        let entry = ChunkEntry {
             name: "a.txt".to_string(),
             size: 5,
             dir: false,
             chunks: vec!["H".repeat(64)],
-        }];
-        let mut by_hash = BTreeMap::new();
-        by_hash.insert("H".repeat(64), b"hello".to_vec());
-        let out = rebuild_tar(&entries, &by_hash).unwrap();
-        assert_eq!(out.len(), 2048);
-        let hex: String = out[..64].iter().map(|b| format!("{b:02x}")).collect();
+        };
+        let head = tar_entry_header(&entry, "pkg", "1.0.0").unwrap();
+        let hex: String = head[..64].iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
             "612e7478740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
         );
-        let hex2: String = out[256..320].iter().map(|b| format!("{b:02x}")).collect();
+        let hex2: String = head[256..320].iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex2,
             "007573746172003030726e780000000000000000000000000000000000000000000000000000000000726e780000000000000000000000000000000000000000"
         );
-        assert!(out[1024..].iter().all(|b| *b == 0));
-        assert_eq!(&out[512..517], b"hello");
+        assert_eq!(&head[124..136], b"00000000005\0");
+        assert_eq!(head[156], b'0');
+        let dir_head = tar_entry_header(
+            &ChunkEntry { name: "src".to_string(), size: 0, dir: true, chunks: Vec::new() },
+            "pkg",
+            "1.0.0",
+        )
+        .unwrap();
+        assert_eq!(dir_head[156], b'5');
+        assert!(tar_entry_header(
+            &ChunkEntry { name: "x".repeat(101), size: 0, dir: false, chunks: Vec::new() },
+            "pkg",
+            "1.0.0"
+        )
+        .is_err());
     }
 
     #[test]
@@ -3105,8 +3245,7 @@ mod tests {
         for (h, b) in &bodies {
             by_hash.insert(h.clone(), b.clone());
         }
-        let tar = rebuild_tar(&entries, &by_hash).unwrap();
-        let sha = Sha256::hexdigest(&tar);
+        let sha = assemble_direct_tree(&entries, &by_hash, "@acme/widget", "1.2.0").unwrap().digest;
         let manifest = format!(
             "{{\"entries\": [{}]}}",
             entries
@@ -3191,6 +3330,270 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, Code::E108);
         assert!(err.message.contains("missing"), "{}", err.message);
+        let _ = server;
+    }
+
+    fn direct_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, String) {
+        let pc = b"export default {\n    project: {\n        name: \"test/direct\",\n        version: \"1.0.0\"\n    }\n}\n".to_vec();
+        let main_a = b"export fn main(): Int {\n".to_vec();
+        let main_b = b"    return 40 + 2;\n}\n".to_vec();
+        let util = b"export fn util(): Int { return 2; }\n".to_vec();
+        let manifest = "{\"entries\": [{\"name\": \"src/lib/util.rnx\", \"size\": 36, \"dir\": false, \"chunks\": [\"2f8af1e91c09e64e5192906fb40a356174bf7b7d3c08f97595776b47a153fda3\"]}, {\"name\": \"assets\", \"size\": 0, \"dir\": true, \"chunks\": []}, {\"name\": \"Project.config\", \"size\": 94, \"dir\": false, \"chunks\": [\"d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c\"]}, {\"name\": \"src/main.rnx\", \"size\": 45, \"dir\": false, \"chunks\": [\"6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046\", \"6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4\"]}, {\"name\": \"src/lib\", \"size\": 0, \"dir\": true, \"chunks\": []}]}".to_string();
+        (pc, main_a, main_b, util, manifest)
+    }
+
+    #[test]
+    fn direct_write_matches_reassembled_tree() {
+        let (_guard, _dir) = isolate_cache("directident");
+        let (pc, main_a, main_b, util, manifest) = direct_fixture();
+        let mut main = main_a.clone();
+        main.extend_from_slice(&main_b);
+        let integrity = "8253b121105d1737a76421667e4d5b1794959702399b2d6f65de7513fd8db942";
+        let node = node_json("test/direct", "1.0.0", integrity, false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(vec![
+                (
+                    "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c".to_string(),
+                    pc.clone(),
+                ),
+                (
+                    "6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046".to_string(),
+                    main_a.clone(),
+                ),
+                (
+                    "6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4".to_string(),
+                    main_b.clone(),
+                ),
+                (
+                    "2f8af1e91c09e64e5192906fb40a356174bf7b7d3c08f97595776b47a153fda3".to_string(),
+                    util.clone(),
+                ),
+            ]),
+        });
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("test/direct", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        let root = &fetched[0].dir;
+        assert_eq!(std::fs::read(root.join("Project.config")).unwrap(), pc);
+        assert_eq!(std::fs::read(root.join("src").join("main.rnx")).unwrap(), main);
+        assert_eq!(std::fs::read(root.join("src").join("lib").join("util.rnx")).unwrap(), util);
+        assert_eq!(
+            Sha256::hexdigest(&std::fs::read(root.join("Project.config")).unwrap()),
+            "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c"
+        );
+        assert_eq!(
+            Sha256::hexdigest(&std::fs::read(root.join("src").join("main.rnx")).unwrap()),
+            "3321a1c66144f749241a4e83af446d4e3fa56d4731d7bad02e6c14b9d4fdb2b7"
+        );
+        assert_eq!(
+            Sha256::hexdigest(&std::fs::read(root.join("src").join("lib").join("util.rnx")).unwrap()),
+            "2f8af1e91c09e64e5192906fb40a356174bf7b7d3c08f97595776b47a153fda3"
+        );
+        assert!(root.join("assets").is_dir());
+        assert!(root.join("src").join("lib").is_dir());
+        let have = scan_cache_have();
+        assert_eq!(have.len(), 1);
+        assert_eq!(have[0].integrity, integrity);
+    }
+
+    #[test]
+    fn direct_write_rejects_tampered_chunk() {
+        let (_guard, _dir) = isolate_cache("directtamper");
+        let (pc, _main_a, main_b, util, manifest) = direct_fixture();
+        let node = node_json(
+            "test/direct",
+            "1.0.0",
+            "8253b121105d1737a76421667e4d5b1794959702399b2d6f65de7513fd8db942",
+            false,
+        );
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(vec![
+                (
+                    "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c".to_string(),
+                    pc,
+                ),
+                (
+                    "6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046".to_string(),
+                    b"export fn MAIN(): Int {\n".to_vec(),
+                ),
+                (
+                    "6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4".to_string(),
+                    main_b,
+                ),
+                (
+                    "2f8af1e91c09e64e5192906fb40a356174bf7b7d3c08f97595776b47a153fda3".to_string(),
+                    util,
+                ),
+            ]),
+        });
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("test/direct", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046"), "{}", err.message);
+        assert!(err.message.contains("failed its integrity check"), "{}", err.message);
+        assert!(scan_cache_have().is_empty());
+    }
+
+    #[test]
+    fn direct_write_rejects_truncated_chunk() {
+        let (_guard, _dir) = isolate_cache("directtrunc");
+        let (pc, main_a, main_b, util, manifest) = direct_fixture();
+        let mut cut = main_b.clone();
+        cut.pop();
+        let node = node_json(
+            "test/direct",
+            "1.0.0",
+            "8253b121105d1737a76421667e4d5b1794959702399b2d6f65de7513fd8db942",
+            false,
+        );
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(vec![
+                (
+                    "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c".to_string(),
+                    pc,
+                ),
+                (
+                    "6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046".to_string(),
+                    main_a,
+                ),
+                (
+                    "6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4".to_string(),
+                    cut,
+                ),
+                (
+                    "2f8af1e91c09e64e5192906fb40a356174bf7b7d3c08f97595776b47a153fda3".to_string(),
+                    util,
+                ),
+            ]),
+        });
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("test/direct", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4"), "{}", err.message);
+        assert!(err.message.contains("failed its integrity check"), "{}", err.message);
+        assert!(scan_cache_have().is_empty());
+    }
+
+    #[test]
+    fn direct_write_rejects_entry_size_mismatch() {
+        let (_guard, _dir) = isolate_cache("directsize");
+        let (pc, main_a, main_b, util, _) = direct_fixture();
+        let manifest = "{\"entries\": [{\"name\": \"Project.config\", \"size\": 94, \"dir\": false, \"chunks\": [\"d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c\"]}, {\"name\": \"src/main.rnx\", \"size\": 44, \"dir\": false, \"chunks\": [\"6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046\", \"6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4\"]}]}".to_string();
+        let node = node_json("test/direct", "1.0.0", &"0".repeat(64), false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(vec![
+                (
+                    "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c".to_string(),
+                    pc,
+                ),
+                (
+                    "6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046".to_string(),
+                    main_a,
+                ),
+                (
+                    "6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4".to_string(),
+                    main_b,
+                ),
+                (
+                    "2f8af1e91c09e64e5192906fb40a356174bf7b7d3c08f97595776b47a153fda3".to_string(),
+                    util,
+                ),
+            ]),
+        });
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("test/direct", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("checksum mismatch"), "{}", err.message);
+        assert!(err.message.contains("src/main.rnx"), "{}", err.message);
+        assert!(err.message.contains("44"), "{}", err.message);
+        assert!(err.message.contains("45"), "{}", err.message);
+        assert!(scan_cache_have().is_empty());
+        let _ = server;
+    }
+
+    #[test]
+    fn direct_write_rejects_unsafe_path() {
+        let (_guard, _dir) = isolate_cache("directunsafe");
+        let evil = b"x".to_vec();
+        let evil_hash = Sha256::hexdigest(&evil);
+        let manifest = format!(
+            "{{\"entries\": [{{\"name\": \"../evil.rnx\", \"size\": 1, \"dir\": false, \"chunks\": [\"{evil_hash}\"]}}, {{\"name\": \"Project.config\", \"size\": 17, \"dir\": false, \"chunks\": [\"{evil_hash}\"]}}]}}"
+        );
+        let node = node_json("test/direct", "1.0.0", &"0".repeat(64), false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(vec![(evil_hash, evil)]),
+        });
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("test/direct", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("unsafe file path"), "{}", err.message);
+        assert!(err.message.contains("../evil.rnx"), "{}", err.message);
+        assert!(scan_cache_have().is_empty());
         let _ = server;
     }
 

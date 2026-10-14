@@ -1740,6 +1740,24 @@ fn read_source(path: &Path) -> Result<String, Diagnostic> {
                 format!("unknown standard library module `{name}`"),
             ));
         }
+        // Same guarded embedded fallback as the resolve paths: file reads
+        // must observe what resolution established. Requirement here is the
+        // global pin-or-toolchain version (this path carries no project
+        // context), so only an exact toolchain-version match serves.
+        let top = rest.split('/').next().unwrap_or(rest.as_str());
+        let pkg = format!("@std/{top}");
+        let version = crate::stdlib_seed::read_std_pin()
+            .and_then(|pin| pin.packages.get(&pkg).cloned())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        if crate::fetch::scan_cache_have()
+            .iter()
+            .any(|h| h.full == pkg)
+        {
+            return Err(std_cache_miss_error(&name, &std_cache_registry()));
+        }
+        if let Some(src) = embedded_serve(&pkg, &rest, &Some(version.clone()), &version, false) {
+            return Ok(src);
+        }
         return Err(std_cache_miss_error(&name, &std_cache_registry()));
     }
     if let Some(src) = project_get(path) {
@@ -1828,6 +1846,39 @@ fn resolve_import_meta(
 /// A VFS hit (tests, playground preloads) short-circuits before any cache
 /// or network access. Offline with an empty cache fails loudly as E108
 /// naming the registry with an `rnx fetch-std` hint.
+fn embedded_allowed(
+    pinned: &Option<String>,
+    requirement: &str,
+    cli: &str,
+    have_pkg: bool,
+) -> bool {
+    if have_pkg {
+        return false;
+    }
+    match pinned {
+        Some(v) => v == cli,
+        None => crate::fetch::engine_satisfied(requirement, cli),
+    }
+}
+
+fn embedded_serve(
+    pkg: &str,
+    rest: &str,
+    pinned: &Option<String>,
+    requirement: &str,
+    have_pkg: bool,
+) -> Option<String> {
+    if std::env::var("RNX_EMBEDDED_STDLIB").as_deref() != Ok("1") {
+        return None;
+    }
+    if !embedded_allowed(pinned, requirement, env!("CARGO_PKG_VERSION"), have_pkg) {
+        return None;
+    }
+    let src = stdlib::source(&crate::stdvfs::normalize_rest(rest))?;
+    crate::stdvfs::set(rest, src.to_string());
+    Some(src.to_string())
+}
+
 fn resolve_std_with_registries(
     from: &Path,
     source: &str,
@@ -1879,7 +1930,7 @@ fn resolve_std_with_registries(
         &requirement,
         default_ref,
         &merged,
-        pinned,
+        pinned.clone(),
         &have,
     ) {
         Ok((dep_root, dep_cfg, _)) => {
@@ -1896,6 +1947,25 @@ fn resolve_std_with_registries(
     }
     clear_std_overlay(&virtual_path);
     if crate::stdvfs::std_source(rest).is_some() {
+        return Ok((virtual_path, None, meta));
+    }
+    // Bundled-tree fallback (bootstrap/offline): the toolchain carries its
+    // own stdlib sources. Serve them ONLY when (a) the effective pin is the
+    // toolchain version itself or the requirement admits it, (b) no cached
+    // copy of the package exists at any version, and (c) the operator
+    // opted in via RNX_EMBEDDED_STDLIB=1. Anything versioned differently
+    // keeps failing loud — a silent wrong-version build is worse than an
+    // error. Mirrors the VFS-overlay early return above so later reads
+    // through std_source observe the same bytes.
+    if embedded_serve(
+        &pkg,
+        rest,
+        &pinned,
+        &requirement,
+        have.iter().any(|h| h.full == pkg),
+    )
+    .is_some()
+    {
         return Ok((virtual_path, None, meta));
     }
     Err(match detail {
@@ -1992,7 +2062,21 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
     ) {
         Ok(_) => crate::stdvfs::std_source(&rest)
             .ok_or_else(|| std_cache_miss_error(&format!("@std/{rest}"), &base)),
-        Err(e) => Err(std_fetch_error(&format!("@std/{rest}"), &base, &e.message)),
+        Err(e) => {
+            // Same guarded embedded fallback as the resolve path (see
+            // helper): exact-pin equality only, since this path never sees
+            // ranges.
+            if let Some(src) = embedded_serve(
+                &pkg,
+                &rest,
+                &Some(version.clone()),
+                &version,
+                have.iter().any(|h| h.full == pkg),
+            ) {
+                return Ok(src);
+            }
+            Err(std_fetch_error(&format!("@std/{rest}"), &base, &e.message))
+        }
     }
 }
 
@@ -4200,6 +4284,91 @@ mod tests {
                 .unwrap_err();
         assert!(err.message.contains("unknown standard library module"));
         assert_eq!(std_overlay_get(&PathBuf::from("@std/nope")), None);
+    }
+
+    #[test]
+    fn embedded_guard_matrix() {
+        let cli = env!("CARGO_PKG_VERSION");
+        // Exact pin equal to the toolchain version: allowed.
+        assert!(super::embedded_allowed(
+            &Some(cli.to_string()),
+            cli,
+            cli,
+            false
+        ));
+        // Foreign exact pin: refused even with an empty cache.
+        assert!(!super::embedded_allowed(
+            &Some("9.9.9".to_string()),
+            "9.9.9",
+            cli,
+            false
+        ));
+        // Locked mismatch beats a satisfying range: the lock is exact.
+        assert!(!super::embedded_allowed(
+            &Some("0.2.0".to_string()),
+            "^0.1.0",
+            cli,
+            false
+        ));
+        // Unpinned ranges admitting the toolchain version: allowed.
+        assert!(super::embedded_allowed(
+            &None,
+            &format!("^{cli}"),
+            cli,
+            false
+        ));
+        assert!(super::embedded_allowed(&None, "*", cli, false));
+        // Unpinned foreign range: refused.
+        assert!(!super::embedded_allowed(&None, "9.9.9", cli, false));
+        // Any cached copy disables the fallback: cache wins.
+        assert!(!super::embedded_allowed(
+            &Some(cli.to_string()),
+            cli,
+            cli,
+            true
+        ));
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, val);
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+            crate::stdvfs::clear();
+        }
+    }
+
+    #[test]
+    fn embedded_fallback_serves_tree_sources_offline() {
+        let (_guard, _cache) = testkit::isolate_cache("stdembed");
+        let _env = EnvGuard::set("RNX_EMBEDDED_STDLIB", "1");
+        let (target, dep, _) =
+            resolve_std_with_registries(&dead_from(), "@std/time", "time", None, &dead_overrides())
+                .expect("embedded fallback should serve tree sources");
+        assert_eq!(target, PathBuf::from("@std/time"));
+        assert!(dep.is_none());
+        let served =
+            super::load_std_module_source("time").expect("served bytes must be readable");
+        let tree = stdlib::source("time").expect("tree must carry time");
+        assert_eq!(served, tree);
     }
 
     #[test]

@@ -30,7 +30,6 @@
 //! else. `slice` copies a range out into a new buffer, and `copyWithin`
 //! shifts a range inside the buffer that already exists. `address` hands
 //! the raw pointer to `Pointer.fromAddress` for `unsafe` work and C calls.
-
 /**
 * Fixed-size raw byte buffer. All offsets and sizes are plain `Int`;
 * integer lanes widen into 64-bit `Int` (signed lanes sign-extend,

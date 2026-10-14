@@ -398,7 +398,7 @@ fn isAllDigits(s: String): Bool {
     }
     let i = 0;
     while i < s.length() {
-        if ! isDigitCode(s.charCodeAt(i)) {
+        if !isDigitCode(s.charCodeAt(i)) {
             return false;
         }
         i = i + 1;
@@ -616,7 +616,7 @@ fn decodeComponent(s: String, plus: Bool): String {
                         b3 = hexPair(s.slice(i + 10, i + 11), s.slice(i + 11, i + 12));
                     }
                     let ok = b1 >= 128 && b1 < 192 && b2 >= 128 && b2 < 192 && b3 >= 128 && b3 < 192;
-                    if ! ok {
+                    if !ok {
                         out = out + "%";
                         i = i + 1;
                     } else {
@@ -957,7 +957,7 @@ class UrlParts {
 */
 fn isSchemeCode(code: Int, first: Bool): Bool {
     if code >= 48 && code <= 57 {
-        return ! first;
+        return !first;
     }
     if code >= 65 && code <= 90 {
         return true;
@@ -966,7 +966,7 @@ fn isSchemeCode(code: Int, first: Bool): Bool {
         return true;
     }
     if code == 43 || code == 45 || code == 46 {
-        return ! first;
+        return !first;
     }
     return false;
 }
@@ -1058,7 +1058,7 @@ fn parseAbsolute(s: String, parts: UrlParts): Bool {
     }
     let i = 0;
     while i < head.length() {
-        if ! isSchemeCode(head.charCodeAt(i), i == 0) {
+        if !isSchemeCode(head.charCodeAt(i), i == 0) {
             return false;
         }
         i = i + 1;
@@ -1600,7 +1600,7 @@ class URL {
                 this.path = "/";
                 return;
             }
-            if ! p.startsWith("/") {
+            if !p.startsWith("/") {
                 this.path = "/" + p;
                 return;
             }
@@ -2607,7 +2607,7 @@ async fn readHeaders(s: TcpStream, buf: Array<Int>): Promise<Int> {
 */
 async fn readBodyInto(s: TcpStream, buf: Array<Int>, hend: Int, mode: Int, want: Int): Promise<Array<Int>> {
     let done = bodyDone(buf, hend, mode, want);
-    while ! done {
+    while !done {
         let n: Int = await readMore(s, buf);
         if n == 0 {
             done = true;
@@ -2662,7 +2662,7 @@ fn chunkLineValue(buf: Array<Int>, pos: Int, end: Int): Int {
     let i = pos;
     let bad = false;
     let empty = true;
-    while i < end && ! bad {
+    while i < end && !bad {
         if buf[i] == 59 {
             i = end;
         } else {
@@ -2844,7 +2844,7 @@ async fn fetch(url: String, options: RequestOptions = null): Promise<Response> {
     let method = "GET";
     let extra = new Headers();
     let body = "";
-    if ! (options == null) {
+    if !(options == null) {
         method = options.methodName();
         extra = options.extraHeaders();
         body = options.bodyText();
@@ -3097,7 +3097,7 @@ async fn readHeadersTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
 */
 async fn readBodyIntoTls(s: TlsStream, buf: Array<Int>, hend: Int, mode: Int, want: Int): Promise<Array<Int>> {
     let done = bodyDone(buf, hend, mode, want);
-    while ! done {
+    while !done {
         let n: Int = await readMoreTls(s, buf);
         if n == 0 {
             done = true;

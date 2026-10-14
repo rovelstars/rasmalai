@@ -20,7 +20,6 @@
 //! about 7 decimal digits. Integer lanes are signed 32-bit, so a lane keeps
 //! only its low 32 bits and arithmetic wraps inside the signed 32-bit range
 //! instead of growing.
-
 /**
 * Four-lane 32-bit float vector.
 *

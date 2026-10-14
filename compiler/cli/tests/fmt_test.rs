@@ -191,3 +191,28 @@ fn test_fmt_shift_operators_stay_joined() {
     let again = fmt(&out);
     assert_eq!(out, again, "shift formatting not idempotent");
 }
+
+const UNARY_SRC: &str = "import { Clock } from \"@std/time\";\nfn f(g: Array<fn(Int): Bool>, ok: Bool): Int {\n    if !ok {\n        return (1);\n    }\n    let y = -5;\n    while !ok {\n        ok = !ok;\n    }\n    return -ok;\n}\n";
+
+#[test]
+fn test_fmt_unary_and_control_spacing() {
+    let out = fmt(UNARY_SRC);
+    for tight in [
+        "import { Clock } from \"@std/time\";",
+        "Array<fn(Int): Bool>",
+        "if !ok {",
+        "while !ok {",
+        "ok = !ok;",
+        "return -ok;",
+        "return (1);",
+    ] {
+        assert!(out.contains(tight), "missing {tight:?} in:\n{out}");
+    }
+    for bad in ["Array <", "if!ok", "while!ok", "! ok", "return(", "return - "] {
+        assert!(!out.contains(bad), "bad spacing {bad:?} in:\n{out}");
+    }
+    let again = fmt(&out);
+    assert_eq!(out, again, "unary formatting not idempotent");
+    frontend::parser::Parser::parse_module(&out)
+        .unwrap_or_else(|e| panic!("formatted unary fails to parse: {e}"));
+}
