@@ -125,6 +125,36 @@ pub(crate) fn env_args() -> Vec<String> {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", not(reactor_stub)))]
+mod wasm_clock {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen]
+    unsafe extern "C" {
+        // performance.now(): monotonic per spec, available on window and
+        // worker scopes. Resolution is clamped by browsers (Spectre
+        // mitigations); fine for elapsed-time measurement, never for
+        // sub-microsecond timing.
+        #[wasm_bindgen(js_namespace = ["performance"])]
+        fn now() -> f64;
+    }
+    pub fn monotonic_nanos() -> u64 {
+        (now() * 1_000_000.0) as u64
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", not(reactor_stub)))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rnx_clock_monotonic_nanos() -> u64 {
+    // Same elapsed-since-first-call contract as native: T0 anchors the
+    // origin so readings match the documented semantics.
+    // NOTE: the direct-rustc archive build (reactor_stub, no third-party
+    // crates) deliberately carries no definition here; the final link
+    // resolves the symbol from the object built with dependencies.
+    static T0: std::sync::LazyLock<u64> = std::sync::LazyLock::new(wasm_clock::monotonic_nanos);
+    wasm_clock::monotonic_nanos().saturating_sub(*T0)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rnx_clock_monotonic_nanos() -> u64 {
     static T0: std::sync::LazyLock<std::time::Instant> =
