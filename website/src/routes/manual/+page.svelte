@@ -5,7 +5,7 @@
 </script>
 
 <svelte:head>
-	<title>Language Manual — Rasmalai</title>
+	<title>Language Manual | Rasmalai</title>
 	<meta
 		name="description"
 		content="The normative Rasmalai reference: numerics, memory, protocols, concurrency, and toolchain."

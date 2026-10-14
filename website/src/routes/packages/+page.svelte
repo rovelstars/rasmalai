@@ -171,7 +171,7 @@
 </script>
 
 <svelte:head>
-	<title>Packages — Rasmalai</title>
+	<title>Packages | Rasmalai</title>
 </svelte:head>
 
 <main class="mx-auto max-w-7xl px-4 pb-16">

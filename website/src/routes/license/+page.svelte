@@ -1,5 +1,5 @@
 <svelte:head>
-	<title>License — Rasmalai</title>
+	<title>License | Rasmalai</title>
 </svelte:head>
 
 <main class="mx-auto max-w-3xl px-4 pb-16 pt-8">
