@@ -7,7 +7,6 @@
 //!
 //! Tests are not this module's job: write `test fn` blocks, check values with
 //! the `assert(cond, message)` builtin, and run them with `rnx test`.
-
 /**
     * Opaque pass-through that defeats dead-code elimination in benchmarks.
     * The value goes through the backend's black-box barrier instead of being

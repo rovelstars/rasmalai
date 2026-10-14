@@ -7,7 +7,6 @@
 //! The bare `fs` name is sync and blocking; the `Async` suffix returns
 //! a `Promise`. Fallible operations return `Result<T, String>`; only
 //! `File.open` keeps the `isOpen` sentinel for a refused open.
-
 import { Result, Promise, PromiseWithResolvers } from "@std/prelude";
 import { ByteBuffer } from "@std/bytes";
 import { Mutex, Channel, AtomicInt } from "@std/sync";
@@ -437,7 +436,7 @@ class Mmap {
     * m.close();
     */
     unsafe fn address(): Int {
-        if ! this.isOpen {
+        if !this.isOpen {
             return 0;
         }
         return __rnx_fs_mmap_addr(this.handle);
@@ -870,7 +869,7 @@ class File {
     * f.close();
     */
     readText(): Result<String, String> {
-        if ! this.isOpen {
+        if !this.isOpen {
             return Result.Err<String, String>("readText failed for `" + this.path + "`: closed handle");
         }
         let e = __rnx_file_read_text_err(this.handle);
@@ -892,7 +891,7 @@ class File {
     * f.close();
     */
     writeText(text: String): Result<Int, String> {
-        if ! this.isOpen {
+        if !this.isOpen {
             return Result.Err<Int, String>("writeText failed for `" + this.path + "`: closed handle");
         }
         let n = __rnx_file_write_text(this.handle, text);
@@ -919,7 +918,7 @@ class File {
     * f.close();
     */
     readBytes(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Result<Int, String> {
-        if ! this.isOpen {
+        if !this.isOpen {
             return Result.Err<Int, String>("readBytes failed for `" + this.path + "`: closed handle");
         }
         let n = __rnx_file_read_bytes(this.handle, buf.handle, offset, len);
@@ -944,7 +943,7 @@ class File {
     * f.close();
     */
     writeBytes(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Result<Int, String> {
-        if ! this.isOpen {
+        if !this.isOpen {
             return Result.Err<Int, String>("writeBytes failed for `" + this.path + "`: closed handle");
         }
         let n = __rnx_file_write_bytes(this.handle, buf.handle, offset, len);
@@ -968,7 +967,7 @@ class File {
     * f.close();
     */
     seek(pos: Int): Result<Int, String> {
-        if ! this.isOpen {
+        if !this.isOpen {
             return Result.Err<Int, String>("seek failed for `" + this.path + "`: closed handle");
         }
         if pos < 0 {
@@ -992,7 +991,7 @@ class File {
     * f.close();
     */
     tell(): Int {
-        if ! this.isOpen {
+        if !this.isOpen {
             return -1;
         }
         return __rnx_file_tell(this.handle);
@@ -1010,7 +1009,7 @@ class File {
     * f.close();
     */
     len(): Result<Int, String> {
-        if ! this.isOpen {
+        if !this.isOpen {
             return Result.Err<Int, String>("len failed for `" + this.path + "`: closed handle");
         }
         __rnx_file_flush(this.handle);
@@ -1050,7 +1049,7 @@ class File {
     * f.close();
     */
     sync(): Result<Bool, String> {
-        if ! this.isOpen {
+        if !this.isOpen {
             return Result.Err<Bool, String>("sync failed for `" + this.path + "`: closed handle");
         }
         __rnx_file_flush(this.handle);
@@ -1074,7 +1073,7 @@ class File {
     * f.close();
     */
     truncate(n: Int): Result<Bool, String> {
-        if ! this.isOpen {
+        if !this.isOpen {
             return Result.Err<Bool, String>("truncate failed for `" + this.path + "`: closed handle");
         }
         __rnx_file_flush(this.handle);

@@ -21,7 +21,6 @@
 //! through `Env.get`, which cannot tell an empty value
 //! from an unset one, so an explicitly empty `NO_COLOR` is treated as
 //! unset until a presence check exists.
-
 import { Result } from "@std/prelude";
 import { Env } from "@std/env";
 import { ByteBuffer } from "@std/bytes";

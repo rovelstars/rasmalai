@@ -347,6 +347,33 @@ fn prev_sig_idx(toks: &[Ft], i: usize) -> Option<usize> {
     None
 }
 
+fn is_control_keyword(w: &str) -> bool {
+    matches!(
+        w,
+        "if" | "while" | "switch" | "for" | "in" | "return" | "catch" | "throw"
+    )
+}
+
+fn brace_group_is_single_line(toks: &[Ft], i: usize) -> bool {
+    let mut depth = 1usize;
+    let mut j = i + 1;
+    while j < toks.len() {
+        match toks[j].kind {
+            Fk::LBrace => depth += 1,
+            Fk::RBrace => {
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+            Fk::Newline => return false,
+            _ => {}
+        }
+        j += 1;
+    }
+    false
+}
+
 fn match_generic_brackets(toks: &[Ft]) -> Vec<bool> {
     let mut generic = vec![false; toks.len()];
     for i in 0..toks.len() {
@@ -360,6 +387,7 @@ fn match_generic_brackets(toks: &[Ft]) -> Vec<bool> {
             continue;
         }
         let mut depth = 1usize;
+        let mut paren = 0usize;
         let mut j = i + 1;
         let mut close = None;
         while j < toks.len() {
@@ -374,6 +402,13 @@ fn match_generic_brackets(toks: &[Ft]) -> Vec<bool> {
                     }
                     depth -= closes;
                 }
+                Fk::LParen => {
+                    paren += 1;
+                }
+                Fk::RParen if paren > 0 => {
+                    paren -= 1;
+                }
+                Fk::Colon | Fk::Arrow => {}
                 Fk::Word | Fk::Num | Fk::Comma | Fk::Question | Fk::Dot | Fk::DotDot
                 | Fk::ColonColon | Fk::LBrack | Fk::RBrack => {}
                 _ => break,
@@ -605,17 +640,32 @@ impl<'a> Emitter<'a> {
                     self.ensure_indent();
                     self.out.push('{');
                     let pos = self.out.len();
-                    self.stack.push((true, self.indent, pos));
-                    self.indent += 1;
-                    if self.next_sig(i).map(|j| self.toks[j].kind) != Some(Fk::RBrace) {
-                        self.nl();
+                    let inline_group = matches!(self.prev_sig(i), Some(j) if self.toks[j].kind == Fk::Word && matches!(self.toks[j].text.as_str(), "import" | "export" | "default"))
+                        && brace_group_is_single_line(&self.toks, i);
+                    self.stack.push((inline_group, self.indent, pos));
+                    if inline_group {
+                        self.sp();
+                    } else {
+                        self.indent += 1;
+                        if self.next_sig(i).map(|j| self.toks[j].kind) != Some(Fk::RBrace) {
+                            self.nl();
+                        }
                     }
                     i += 1;
                 }
                 Fk::RBrace => {
-                    let base = self.stack.pop().map(|(_, b, _)| b).unwrap_or(0);
+                    let (inline_group, base, _) = self.stack.pop().unwrap_or((false, 0, 0));
                     self.indent = base;
                     if self.out.ends_with('{') {
+                        self.out.push('}');
+                        self.start = false;
+                    } else if inline_group {
+                        while self.out.ends_with(' ') {
+                            self.out.pop();
+                        }
+                        if !self.out.ends_with('{') {
+                            self.sp();
+                        }
                         self.out.push('}');
                         self.start = false;
                     } else {
@@ -643,6 +693,13 @@ impl<'a> Emitter<'a> {
                         self.stripped.push(self.m[i].unwrap());
                         i += 1;
                     } else {
+                        if let Some(j) = self.prev_sig(i) {
+                            if self.toks[j].kind == Fk::Word
+                                && is_control_keyword(self.toks[j].text.as_str())
+                            {
+                                self.sp();
+                            }
+                        }
                         self.ensure_indent();
                         self.out.push('(');
                         self.stack.push((false, self.indent, self.out.len()));
@@ -796,16 +853,15 @@ impl<'a> Emitter<'a> {
                         i += 1;
                         continue;
                     }
-                    let unary = (text == "-" || text == "!" || text == "&")
-                        && !matches!(
-                            self.prev_sig(i).map(|j| self.toks[j].kind),
-                            Some(Fk::Word)
-                                | Some(Fk::Num)
-                                | Some(Fk::Str)
-                                | Some(Fk::RParen)
-                                | Some(Fk::RBrack)
-                                | Some(Fk::RBrace)
-                        );
+                    let prev_is_operand = match self.prev_sig(i) {
+                        Some(j) => match self.toks[j].kind {
+                            Fk::Word => !is_control_keyword(self.toks[j].text.as_str()),
+                            Fk::Num | Fk::Str | Fk::RParen | Fk::RBrack | Fk::RBrace => true,
+                            _ => false,
+                        },
+                        None => false,
+                    };
+                    let unary = (text == "-" || text == "!" || text == "&") && !prev_is_operand;
                     if !unary {
                         if !self.start
                             && !self.out.ends_with('(')
@@ -830,6 +886,12 @@ impl<'a> Emitter<'a> {
                             _ => self.sp(),
                         }
                     } else {
+                        if !self.start
+                            && !self.out.ends_with('(')
+                            && !self.out.ends_with('[')
+                        {
+                            self.sp();
+                        }
                         self.ensure_indent();
                         self.out.push_str(&text);
                     }

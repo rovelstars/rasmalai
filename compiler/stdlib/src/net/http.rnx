@@ -12,7 +12,6 @@
 //! print(line);
 //! print(statusCode("HTTP/1.1 200 OK"));
 //! ```
-
 /**
 * Request target split into dial and send parts. `host` and `port` select
 * the socket for `TcpStream.connect()`; `path` is the origin-form target
