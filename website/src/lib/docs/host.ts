@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import { CANONICAL_ORIGIN } from '$lib/site';
 
 // Install snippets are written against the canonical host, but a preview
 // or self-hosted deployment lives elsewhere. Rewrite to the current
@@ -13,7 +14,7 @@ export function withHost(html: string): string {
 	if (!browser) return html;
 	const esc = (c: string) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 	const pattern = new RegExp(
-		[...'https://rasmalai.rovelstars.com'].map((c) => `${esc(c)}(?:<[^>]*>)*`).join(''),
+		[...CANONICAL_ORIGIN].map((c) => `${esc(c)}(?:<[^>]*>)*`).join(''),
 		'g'
 	);
 	return html.replace(pattern, `${window.location.protocol}//${window.location.host}`);

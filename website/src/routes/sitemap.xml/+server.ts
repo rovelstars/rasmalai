@@ -6,8 +6,9 @@ import {
 	TRACKS,
 	STDLIB
 } from '$lib/docs/nav';
+import { CANONICAL_ORIGIN } from '$lib/site';
 
-const BASE = 'https://rasmalai.rovelstars.com';
+const BASE = CANONICAL_ORIGIN;
 
 const STATIC_PAGES = ['/', '/guide', '/manual', '/etc', '/packages', '/playground', '/license', '/discord'];
 
