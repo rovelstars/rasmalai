@@ -8,6 +8,7 @@ import {
 	isDevOrigin,
 	resolveRegistryOrigin,
 	sha256Hex,
+	sha256HexFallback,
 	stdPackageOf,
 	type ChunkEntry
 } from '../src/lib/playground/stdvfs.ts';
@@ -41,6 +42,21 @@ describe('stdvfs package mapping', () => {
 		const bytes = new TextEncoder().encode('export fn hello(): Int { return 1; }\n');
 		const want = createHash('sha256').update(bytes).digest('hex');
 		assert.equal(await sha256Hex(bytes), want);
+	});
+
+	it('sha256 fallback matches NIST vectors', () => {
+		const cases: Array<[string, string]> = [
+			['', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'],
+			['abc', 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'],
+			['abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq', '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1']
+		];
+		for (const [input, want] of cases) {
+			assert.equal(sha256HexFallback(new TextEncoder().encode(input)), want, JSON.stringify(input));
+		}
+		// 1 MiB of pseudorandom bytes exercises multi-block padding.
+		const big = new Uint8Array(1 << 20);
+		for (let i = 0; i < big.length; i++) big[i] = (i * 2654435761) % 251;
+		assert.equal(sha256HexFallback(big), createHash('sha256').update(big).digest('hex'));
 	});
 });
 
