@@ -43,7 +43,7 @@
 </script>
 
 <svelte:head>
-	<title>Rasmalai — Memory safety without the negotiations.</title>
+	<title>Rasmalai | Memory safety without the negotiations</title>
 	<meta
 		name="description"
 		content="A systems language with deterministic memory reclamation, Cranelift dev builds, and zero-codegen semantic checks."
@@ -55,7 +55,7 @@
 	{/if}
 	<meta property="og:type" content="website" />
 	<meta property="og:site_name" content="Rasmalai" />
-	<meta property="og:title" content="Rasmalai — Memory safety without the negotiations." />
+	<meta property="og:title" content="Rasmalai | Memory safety without the negotiations" />
 	<meta
 		property="og:description"
 		content="A systems language with deterministic memory reclamation, Cranelift dev builds, and zero-codegen semantic checks."
@@ -66,7 +66,7 @@
 	<meta property="og:image:height" content="630" />
 	<meta property="og:image:alt" content="Rasmalai — memory safety without the negotiations." />
 	<meta name="twitter:card" content="summary_large_image" />
-	<meta name="twitter:title" content="Rasmalai — Memory safety without the negotiations." />
+	<meta name="twitter:title" content="Rasmalai | Memory safety without the negotiations" />
 	<meta
 		name="twitter:description"
 		content="A systems language with deterministic memory reclamation, Cranelift dev builds, and zero-codegen semantic checks."

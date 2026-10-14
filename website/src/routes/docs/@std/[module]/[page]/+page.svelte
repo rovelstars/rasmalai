@@ -24,7 +24,7 @@
 </script>
 
 <svelte:head>
-	<title>@std/{data.module} - {titles[data.page] ?? data.page} — Rasmalai Docs</title>
+	<title>@std/{data.module} - {titles[data.page] ?? data.page} | Rasmalai Docs</title>
 	<meta name="description" content={stdMeta(data.module).tagline} />
 	{@html `<script type="application/ld+json">${JSON.stringify({
 		'@context': 'https://schema.org',

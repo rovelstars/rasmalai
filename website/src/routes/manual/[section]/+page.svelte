@@ -17,7 +17,7 @@
 </script>
 
 <svelte:head>
-	<title>{data.title} — Rasmalai Language Manual</title>
+	<title>{data.title} | Rasmalai Language Manual</title>
 	<meta name="description" content={data.description} />
 	{@html `<script type="application/ld+json">${JSON.stringify({
 		'@context': 'https://schema.org',

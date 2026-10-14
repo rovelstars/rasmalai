@@ -22,7 +22,7 @@
 </script>
 
 <svelte:head>
-	<title>{data.title} — Rasmalai Guide</title>
+	<title>{data.title} | Rasmalai Guide</title>
 	<meta name="description" content={data.description} />
 </svelte:head>
 

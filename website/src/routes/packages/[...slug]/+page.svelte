@@ -344,7 +344,7 @@ import { importSnippet } from '$lib/docs/stdlib';
 </script>
 
 <svelte:head>
-	<title>{pkg.name} v{activeVersion.version} — Packages</title>
+	<title>{pkg.name} v{activeVersion.version} | Packages</title>
 	<meta name="description" content={pkg.description} />
 	<link rel="canonical" href="https://rasmalai.rovelstars.com/packages/{pkg.name}" />
 </svelte:head>

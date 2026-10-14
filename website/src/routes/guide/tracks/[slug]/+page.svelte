@@ -12,7 +12,7 @@
 </script>
 
 <svelte:head>
-	<title>{data.title} — Rasmalai Docs</title>
+	<title>{data.title} | Rasmalai Docs</title>
 	<meta name="description" content={data.description} />
 </svelte:head>
 

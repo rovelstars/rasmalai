@@ -290,7 +290,7 @@
 </script>
 
 <svelte:head>
-	<title>Playground — Rasmalai</title>
+	<title>Playground | Rasmalai</title>
 	<style>
 		select option {
 			background-color: #1c1b22;

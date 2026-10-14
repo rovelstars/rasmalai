@@ -4,7 +4,7 @@
 </script>
 
 <svelte:head>
-	<title>Redirecting — Rasmalai Docs</title>
+	<title>Redirecting | Rasmalai Docs</title>
 	<meta name="robots" content="noindex" />
 </svelte:head>
 

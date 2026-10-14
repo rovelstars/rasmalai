@@ -17,7 +17,7 @@
 </script>
 
 <svelte:head>
-	<title>{data.title} — Rasmalai Guide</title>
+	<title>{data.title} | Rasmalai Guide</title>
 	<meta name="description" content={data.description} />
 	{@html `<script type="application/ld+json">${JSON.stringify({
 		'@context': 'https://schema.org',

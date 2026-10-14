@@ -5,7 +5,7 @@
 </script>
 
 <svelte:head>
-	<title>Registry & Policy — Rasmalai</title>
+	<title>Registry & Policy | Rasmalai</title>
 	<meta
 		name="description"
 		content="Non-language rules of the Rasmalai registry: publishing, versioning, abuse handling, and tiers."

@@ -12,7 +12,7 @@
 </script>
 
 <svelte:head>
-	<title>The Guide — Learn Rasmalai</title>
+	<title>The Guide | Learn Rasmalai</title>
 	<meta
 		name="description"
 		content="The friendly, progressive path into Rasmalai: rosetta guides, and tracks."
