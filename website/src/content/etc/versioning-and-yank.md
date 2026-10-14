@@ -43,3 +43,7 @@ Anything beyond the owner's window needs staff. Takedown writes a tombstone row 
 ## Pinned builds always resolve
 
 A build pinned by `Project.deplock` resolves from the local cache without touching the network, and the recorded integrity digest must still match — bytes that differ from the lockfile abort the build instead of installing. Yanked pins keep building with their warning. Tombstoned pins fail with the 410, the reason, and the upgrade pointer, because a removal the registry stands behind must not be papered over by a cache.
+
+## Notices come from the registry, never from packages
+
+Warnings, funding appeals, and critical holds render from registry-signed payloads only — no code path renders package content as a notice, so spoofing is structurally impossible. Funding banners are maintainer opt-in with a set link, shown at most once per resolution; yank, quota, and grace notices show on the operations they concern. Only the critical tier (tombstone, security hold) fails operations; everything else informs without blocking.

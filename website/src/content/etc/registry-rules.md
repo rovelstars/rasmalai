@@ -37,6 +37,23 @@ With that manifest the upload holds `Project.config`, the two entry files, the r
 
 `target/`, `.git/`, `.rnx/`, `.rnx-cache/`, and `tests/` are excluded even when they hold matching files. `Project.deplock` never ships either — the lockfile pins your build and stays on your machine; publishing it would pin everyone else's. There are no wasm blobs, no compiled binaries, and no generated output in uploads: if a file is not source, manifest, readme, guide, or license text, it does not belong in the archive.
 
+## Native binaries and wasm live outside source packages
+
+Compiled artifacts are never uploaded with source — neither per-platform native libraries nor `.wasm` modules. They ship as OCI artifacts: one index per version, per-target manifests beneath it, identical shape for bindings and binaries. A package that needs them declares the reference and the pinned digest:
+
+```rnx
+export default {
+    project: { name: "codec", version: "0.3.0" },
+    entries: { lib: "src/lib.rnx" },
+    artifacts: {
+        native: { ref: "ghcr.io/org/codec:0.3.0", digest: "sha256:<64 hex chars>" },
+        wasm:   { ref: "ghcr.io/org/codec-wasm:0.3.0", digest: "sha256:<64 hex chars>" }
+    }
+}
+```
+
+Tags discover, digests pin: the digest is resolved once and stored, and every fetch below it addresses content by digest only — a moved tag can never affect a pinned consumer. The package manager downloads, hash-verifies, and caches artifacts globally (`~/.cache/rnx/artifacts/<hash>`, shared across projects). First fetch of a native artifact prints what is being installed from where. Linking native code voids all other sandbox guarantees for that scope — see the capability rules in the language manual. WebAssembly follows this same path with a single entry, since one module runs everywhere; execution needs a wasm runtime, which is a separate, not-yet-built phase — declarations and verification work today, running comes later. Our own blob tier speaks the same OCI protocol, so origins are interchangeable without client changes.
+
 ## LICENSE is required
 
 Every version must include `LICENSE` or `LICENSE.txt` at the package root. An upload without one is rejected, because the registry redistributes your code and needs the grant on record.

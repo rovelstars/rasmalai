@@ -34,3 +34,7 @@ The free tier covers public packages within the caps above. Paid tiers add four 
 - **SPDX filtering**, resolving and auditing dependencies by license expression.
 
 TODO(owner): paid tiers are not offered yet — confirm availability, pricing, and which of the four lands first before linking this page from anywhere billing-adjacent.
+
+## Large-blob hosting (planned)
+
+Source packages stay small by rule, but platform binaries, datasets, and media need a home with different economics: an LFS-style blob addon with its own meter (indicative: 1 GB for $1, reads free under standard rate limits). Blobs referenced by live package versions reject deletion naming the referencing versions — reproducibility outranks tidiness. Unreferenced blobs delete freely; anything else needs the deprecate-first path or an audited force override. Closed-source libraries ride the same rails under team plans (private scopes plus storage and limits). None of this exists yet; the source registry above is unaffected either way.
