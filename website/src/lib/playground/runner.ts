@@ -50,7 +50,7 @@ export class PlaygroundRunner {
 			else if (msg.type === 'STD_MISSING' && msg.missing !== undefined) p.resolve(JSON.stringify(msg.missing));
 			else if (msg.type === 'STD_PROVIDED') p.resolve('ok');
 			else if (msg.type === 'STD_PIN' && msg.version !== undefined) p.resolve(msg.version);
-			else if (msg.type === 'DIAG' && msg.text !== undefined && (p.type === 'RUN' || p.type.startsWith('STD_'))) p.reject(new Error(msg.text));
+			else if (msg.type === 'DIAG' && msg.text !== undefined && p.type !== 'CHECK' && p.type !== 'CHECK_PROJECT') p.reject(new Error(msg.text));
 			else if (msg.type === 'TOKENS' && msg.json !== undefined) p.resolve(msg.json);
 			else if (msg.type === 'JSON' && msg.json !== undefined) p.resolve(msg.json);
 			else if (msg.type === 'DIAG' && msg.text !== undefined) p.resolve(msg.text);
