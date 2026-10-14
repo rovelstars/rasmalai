@@ -27,8 +27,33 @@ export const PROD_REGISTRY = CANONICAL_ORIGIN;
 
 export function isDevOrigin(origin: string): boolean {
 	try {
-		const host = new URL(origin).hostname;
-		return host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local');
+		const host = new URL(origin).hostname.toLowerCase();
+		if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+		if (
+			host.endsWith('.local') ||
+			host.endsWith('.lan') ||
+			host.endsWith('.home') ||
+			host.endsWith('.internal') ||
+			host.endsWith('.test') ||
+			host.endsWith('.example') ||
+			host.endsWith('.invalid')
+		)
+			return true;
+		// Private-network IPv4 literals (office/home LAN, Docker, Tailscale
+		// CGNAT 100.64/10, link-local): dev servers there have no R2
+		// binding, so their chunk reads 404 by design and need the
+		// production fallback exactly like localhost does.
+		const octets = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+		if (octets) {
+			const a = Number(octets[1]);
+			const b = Number(octets[2]);
+			if (a === 10) return true;
+			if (a === 172 && b >= 16 && b <= 31) return true;
+			if (a === 192 && b === 168) return true;
+			if (a === 100 && b >= 64 && b <= 127) return true;
+			if (a === 169 && b === 254) return true;
+		}
+		return false;
 	} catch {
 		return false;
 	}
