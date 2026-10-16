@@ -154,8 +154,31 @@ fn link_ref_static_pie(objects: &[Vec<u8>], out: &Path, dir: &Path) {
     assert!(status.status.success(), "ref link failed: {}", String::from_utf8_lossy(&status.stderr));
 }
 
+#[cfg(unix)]
+fn signal_name(sig: i32) -> &'static str {
+    match sig {
+        4 => "SIGILL",
+        6 => "SIGABRT",
+        7 => "SIGBUS",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        31 => "SIGSYS",
+        _ => "unknown signal",
+    }
+}
+
 fn run_bin(bin: &Path) -> (i32, String) {
     let out = Command::new(bin).output().unwrap();
+    #[cfg(unix)]
+    if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&out.status) {
+        panic!(
+            "{bin:?} killed by {} ({sig})\nstdout: {}\nstderr: {}",
+            signal_name(sig),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
