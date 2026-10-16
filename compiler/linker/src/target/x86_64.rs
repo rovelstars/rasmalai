@@ -319,9 +319,14 @@ fn apply_gottpoff(bytes: &mut [u8], tpoff: i32) -> Result<(), LinkError> {    if
     if modrm & 0xc7 != 0x05 {
         return Err(LinkError::Native("unsupported GOTTPOFF addressing form".to_string()));
     }
-    let dst = (modrm >> 3) & 7;
+    // mov reads its destination from ModRM.reg (extended by REX.R), but mov r/m64, imm32 (0xc7)
+    // reads it from ModRM.rm (extended by REX.B), so the register has to move between the two
+    // fields. Dropping it lands the tpoff in the wrong register and the next fs-relative access
+    // uses a live register instead, which faults.
+    let dst = (modrm >> 3) & 7 | if rex & 0x4 != 0 { 8 } else { 0 };
+    bytes[0] = 0x48 | if dst & 8 != 0 { 0x1 } else { 0 };
     bytes[1] = 0xc7;
-    bytes[2] = 0xc0 | dst;
+    bytes[2] = 0xc0 | (dst & 7);
     bytes[3..7].copy_from_slice(&tpoff.to_le_bytes());
     Ok(())
 }
@@ -359,4 +364,50 @@ pub fn apply_relaxed(bytes: &mut [u8], field: usize, sym_addr: u64, place_addr: 
     slot.copy_from_slice(&(rel as i32).to_le_bytes());
     field_bytes(bytes, field + 3, 1)?[0] = 0x90;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // glibc's `movq errno@gottpoff(%rip), %r10` (libc.a vfscanf-internal.o) with the REX.R bit
+    // set: the destination register lives in ModRM.reg, the relaxed `mov $tpoff, %r10` form
+    // reads it from ModRM.rm with REX.B instead.
+    fn gottpoff_mov(rex: u8, reg: u8) -> [u8; 7] {
+        [rex, 0x8b, 0x05 | (reg << 3), 0, 0, 0, 0]
+    }
+
+    fn relax(rex: u8, reg: u8, tpoff: i32) -> [u8; 7] {
+        let mut bytes = gottpoff_mov(rex, reg);
+        apply_gottpoff(&mut bytes, tpoff).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn gottpoff_relax_keeps_the_destination_register() {
+        for (reg, rex) in [(0, 0x48u8), (2, 0x48), (2, 0x4c), (6, 0x4c)] {
+            let out = relax(rex, reg, -64);
+            let dst = (out[2] & 7) | if out[0] & 1 != 0 { 8 } else { 0 };
+            let want = reg | if rex & 4 != 0 { 8 } else { 0 };
+            assert_eq!(out[0], 0x48 | if want & 8 != 0 { 1 } else { 0 }, "rex for reg {reg}");
+            assert_eq!(out[1], 0xc7);
+            assert_eq!(dst, want, "relaxed destination for reg {reg} rex {rex:#x}");
+            assert_eq!(&out[3..7], &(-64i32).to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn gottpoff_relax_matches_lld_for_r10() {
+        assert_eq!(relax(0x4c, 2, -64), [0x49, 0xc7, 0xc2, 0xc0, 0xff, 0xff, 0xff]);
+    }
+
+    #[test]
+    fn gottpoff_relax_rejects_unsupported_forms() {
+        let mut call = gottpoff_mov(0x4c, 2);
+        call[1] = 0xe8;
+        assert!(apply_gottpoff(&mut call, -64).is_err());
+        let mut not_rip = gottpoff_mov(0x48, 0);
+        not_rip[2] = 0x04;
+        assert!(apply_gottpoff(&mut not_rip, -64).is_err());
+    }
 }
