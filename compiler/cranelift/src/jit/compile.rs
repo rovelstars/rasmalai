@@ -22,7 +22,7 @@ impl Jit {
         step = Instant::now();
         let vec_rets = Self::finalize_module(&mut module, lir, &ids, &table)?;
         timings.finalize = step.elapsed();
-        Ok((Jit { module, funcs: ids, sizes, vec_rets, hot, slots, slot_names, table, versions: BTreeMap::new(), sigs, rt, bytes_fns, statics, foreign_ids }, timings))
+        Ok((Jit { module, funcs: ids, sizes, vec_rets, hot, slots, slot_names, table, versions: BTreeMap::new(), sigs, rt, bytes_fns, statics, foreign_ids, epoch: runtime::native::current_closure_epoch() }, timings))
     }
 
     fn jit_module_for(lir: &LirModule) -> Result<JITModule, Diagnostic> {
@@ -1641,13 +1641,20 @@ impl Jit {
         module.finalize_definitions().map_err(|e| {
             Diagnostic::new(Code::E108, format!("finalize: {e}"))
         })?;
-            for (i, f) in lir.functions.iter().enumerate() {
-            if f.is_closure {
-                if let Some(id) = ids.get(&f.name) {
-                    let addr = module.get_finalized_function(*id) as usize;
+            let mut lo = usize::MAX;
+        let mut hi = 0usize;
+        for (i, f) in lir.functions.iter().enumerate() {
+            if let Some(id) = ids.get(&f.name) {
+                let addr = module.get_finalized_function(*id) as usize;
+                lo = lo.min(addr);
+                hi = hi.max(addr);
+                if f.is_closure {
                     runtime::native::rnx_closure_register(runtime::native::rnx_closure_tag(i as u64), addr);
                 }
             }
+        }
+        if hi >= lo {
+            runtime::native::rnx_jit_module_register(runtime::native::current_closure_epoch(), lo, hi);
         }
         if let Some(t) = table.as_ref() {
             for (i, f) in lir.functions.iter().enumerate() {
