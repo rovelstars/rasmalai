@@ -34,7 +34,7 @@ Yanking a live version flips its status without removing anything. The metadata 
 
 Mistakes in the first 72 hours after publish — a wrong tarball, a leaked secret, a version cut from the wrong branch — can be self-serve unpublished by the owner. Past that window the version is permanent history: yank it, publish a fixed successor, and let pins age out. Unpublish burns the number either way.
 
-TODO(owner): wire the exact unpublish endpoint, its auth, and its response codes once the server exposes them.
+Within the window, the owner removes the version with `rnx unpublish <name>@<version>`; the command disappears the version, burns the number, and leaves an audit entry.
 
 ## Staff-only hard removal
 

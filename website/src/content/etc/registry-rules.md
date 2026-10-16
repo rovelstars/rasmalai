@@ -58,7 +58,7 @@ Tags discover, digests pin: the digest is resolved once and stored, and every fe
 
 Every version must include `LICENSE` or `LICENSE.txt` at the package root. An upload without one is rejected, because the registry redistributes your code and needs the grant on record.
 
-TODO(owner): pin down the exact rejection status code for allowlist and LICENSE failures so clients can match on it.
+Rejections fail the publish with `E108` and a message naming the offending file; the CLI surfaces them verbatim.
 
 ## Entries must match both ways
 
