@@ -73,7 +73,8 @@ pub fn seed_stdlib_cache(
     // Origin-direct: seeding must see one consistent generation
     // (resolve integrity + manifests + chunks); shared edge caches can
     // serve mixed generations with year-long TTLs.
-    let _origin = fetch::origin_direct_guard();    let requirements = std_requirements();
+    let _origin = fetch::origin_direct_guard();
+    let requirements = std_requirements();
     let base = fetch::registry_base_for("@std/prelude", default_registry, overrides);
     let have = fetch::scan_cache_have();
     let fetched =
