@@ -661,6 +661,7 @@ impl<'a> Builder<'a> {
             _ => LirType::Any,
         };
         let dst = self.local(out_ty);
+        let ix = self.unbox_operand(ix, index.span);
         self.emit(Instr::ArrayGet { span,  dst, arr, index: ix, elem_size: es, unchecked: false });
         Ok((dst, Simple::Other))
 
@@ -1128,6 +1129,7 @@ impl<'a> Builder<'a> {
                     Some(LirType::Array(inner)) => (**inner).clone(),
                     _ => LirType::Any,
                 };
+                let ix = self.unbox_operand(ix, index.span);
                 let cur = self.local(slot.clone());
                 self.emit(Instr::ArrayGet { span, dst: cur, arr, index: ix, elem_size: es, unchecked: false });
                 let (newv, s) = self.incdec_step(cur, &slot, delta, span)?;

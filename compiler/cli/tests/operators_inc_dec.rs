@@ -40,8 +40,7 @@ fn sem_err(src: &str, tag: &str) -> diagnostics::Diagnostic {
 
 fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     let (module, dir) = resolve_src(src, tag);
-    let leaked: &'static lir::instr::Module = Box::leak(Box::new(module));
-    let mut machine = runtime::machine::Machine::new(leaked);
+    let mut machine = runtime::machine::Machine::new(&module);
     let r = machine.call("Main", vec![]).unwrap_or_else(|e| panic!("interpreter {tag}: {e:?}"));
     match r {
         runtime::value::Value::Int(v) if v == want => {}
@@ -51,12 +50,31 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     let want_out: Vec<String> = want_out.to_vec();
     assert_eq!(got, want_out, "interpreter {tag} stdout");
 
-    let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
-    assert_eq!(llvm::codegen::execute(leaked, "Main").unwrap(), want, "llvm {tag}");
+    let rnx = env!("CARGO_BIN_EXE_rnx");
+    let suffix = if want_out.is_empty() { "" } else { "\n" };
+    for backend in ["cranelift", "llvm"] {
+        let run = std::process::Command::new(rnx)
+            .arg("run")
+            .arg("--backend")
+            .arg(backend)
+            .arg(dir.join("main.rnx"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            run.status.code(),
+            Some(want as i32),
+            "{backend} {tag} exit: status={:?} stderr={}",
+            run.status,
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(run.stdout).unwrap(),
+            want_out.join("\n") + suffix,
+            "{backend} {tag} stdout"
+        );
+    }
 
     for release in [false, true] {
-        let rnx = env!("CARGO_BIN_EXE_rnx");
         let mut cmd = std::process::Command::new(rnx);
         cmd.arg("build").arg(dir.join("main.rnx"));
         if release {
@@ -67,7 +85,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
         let run = std::process::Command::new(&bin).output().unwrap();
         assert_eq!(run.status.code().unwrap(), want as i32, "aot {tag} exit");
-        let suffix = if want_out.is_empty() { "" } else { "\n" };
         assert_eq!(
             String::from_utf8(run.stdout).unwrap(),
             want_out.join("\n") + suffix,
