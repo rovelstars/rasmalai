@@ -7,7 +7,7 @@ fn registry_covers_spec_codes() {
     assert_eq!(
         got,
         vec![
-            "E005", "E105", "E107", "E108", "E109", "E110", "E111", "E112", "E201", "E202", "E203", "E204", "E205", "E206", "E302", "E303", "E304", "E305", "E402", "E501", "S101", "S102", "S201", "S301", "S401", "S501", "W104", "W108", "W109", "W201", "W204"
+            "E005", "E105", "E107", "E108", "E109", "E110", "E111", "E112", "E201", "E202", "E203", "E204", "E205", "E206", "E302", "E303", "E304", "E305", "E402", "E501", "P101", "P102", "P201", "P202", "P203", "S101", "S102", "S201", "S301", "S401", "S501", "W104", "W108", "W109", "W201", "W204"
         ]
     );
 }
@@ -25,7 +25,7 @@ fn warnings_are_warnings_only() {
     for code in ALL {
         let expect_warning = matches!(
             code,
-            Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W204
+            Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W204 | Code::P201 | Code::P202 | Code::P203
         );
         assert_eq!(code.is_warning(), expect_warning, "{}", code);
     }
