@@ -665,6 +665,36 @@ fn system_file_miss_lists_search_dirs() {
     assert!(msg.contains("/usr/lib"), "{msg}");
 }
 
+/// The native backend links startup files and runtime libraries itself, so it has
+/// to resolve them out of the same toolchain the C driver would have used.
+/// Picking the newest `/usr/lib/gcc/<triplet>/*` directory instead breaks as soon
+/// as a machine carries more than one GCC: the objects come from one toolchain
+/// while the reference link uses the driver's, and the two disagree on which
+/// archive members get pulled.
+#[test]
+fn system_files_come_from_the_driver_toolchain() {
+    let driver = std::env::var("RNX_CC").or_else(|_| std::env::var("CC")).unwrap_or_else(|_| "cc".to_string());
+    let out = Command::new(&driver).arg("-print-search-dirs").output();
+    let Ok(out) = out else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let Some(list) = text.lines().find_map(|l| l.strip_prefix("libraries:")).and_then(|l| l.split_once('=')) else {
+        panic!("{driver} -print-search-dirs reported no library path:\n{text}");
+    };
+    let dirs: Vec<PathBuf> = list.1.split(':').filter(|p| !p.is_empty()).map(PathBuf::from).collect();
+    let mut checked = 0;
+    for name in ["crt1.o", "crti.o", "crtbeginT.o", "crtend.o", "crtn.o", "libgcc.a", "libgcc_eh.a", "libc.a", "libm.a"] {
+        let want = dirs.iter().map(|d| d.join(name)).find(|p| p.is_file());
+        let Some(want) = want else {
+            continue;
+        };
+        checked += 1;
+        assert_eq!(native::system_file(name).unwrap(), want, "{name} resolved outside the driver toolchain");
+    }
+    assert!(checked > 0, "no startup files found in the driver search path");
+}
+
 #[test]
 fn native_rejects_cross_target() {
     let dir = fixture_dir("crosstarget");
