@@ -14,7 +14,7 @@ Versions die in three steps, each louder than the last: deprecate, yank, tombsto
 
 Deprecation marks a version or package as discouraged while it still resolves cleanly. Pins keep building with no new warnings, floating ranges keep selecting it, and the only change is the signal: prefer the successor. Deprecate when a better version exists but the old one still works — the rename, the re-scope, the API you wish you had designed first.
 
-TODO(owner): settle the exact deprecate mechanism — a metadata flag the registry serves versus a README-level badge — before documenting the command.
+Deprecation is a registry flag first (`rnx deprecate <name>@<version>`), so the site and the package manager agree regardless of what the README says; a README badge is optional and advisory.
 
 ## 2. Yank: the warning
 

@@ -18,7 +18,7 @@ Publishing needs a token: pass `--token` or set `RNX_TOKEN`, or the CLI stops wi
 
 Only accepted versions count against quota — rejected uploads, failed validations, and idempotent retries cost nothing. What counts is the stored bytes of live versions, sampled against the storage budget with a pity-style ramp: a flat base sample rate while usage is comfortable, rising toward certain measurement as the budget fills. The per-version 512KB cap and a weekly per-package publish cap of 20 keep any single publisher from moving the needle far.
 
-TODO(owner): publish the exact numeric rate limits and quota thresholds so clients can display them instead of discovering them.
+Publishing is metered by what you store: each accepted version counts against your quota, and rejected or retried uploads never do. Read the current allowance with `rnx quota`.
 
 ## Abuse backoff is separate
 
@@ -33,7 +33,7 @@ The free tier covers public packages within the caps above. Paid tiers add four 
 - **Provenance**, recording which identity and pipeline cut each version.
 - **SPDX filtering**, resolving and auditing dependencies by license expression.
 
-TODO(owner): paid tiers are not offered yet — confirm availability, pricing, and which of the four lands first before linking this page from anywhere billing-adjacent.
+Paid tiers are not on sale yet. Everything above applies unchanged to every tier; a paid tier raises caps and adds private scopes, provenance, and license filtering, never paywalled correctness.
 
 ## Large-blob hosting (planned)
 

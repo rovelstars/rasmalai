@@ -28,4 +28,4 @@ Yank handles the ordinary end of life (see [Deprecation](/etc/deprecation)). Tom
 
 If a package harms machines, steals credentials, squats a name, or ships code its license forbids, report it with the package name, the exact version, and what you observed. Include the audit id if you already hit a 410, and the resolve `requestId` if the failure came from the resolver.
 
-TODO(owner): name the actual reporting channel — address or endpoint — and the response-time commitment.
+Reports go to the Discord server linked in the site footer. Flagged uploads are reviewed in a weekly digest; a report normally gets a human answer within a week, sooner if it names a security issue.

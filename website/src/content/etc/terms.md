@@ -26,4 +26,4 @@ The operator may yank or take down any version that breaks these terms, followin
 
 The registry is offered as-is. Version metadata, uptime, and download counts carry no guarantees — pin your builds with `Project.deplock` rather than trusting any of them.
 
-TODO(owner): fill in governing law, operator contact, effective date, and the appeal turnaround before these terms go live.
+These terms are not yet in force. Until they are, treat the published rules on this page as the whole agreement, and send any question to the Discord server linked in the site footer.
