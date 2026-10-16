@@ -812,6 +812,7 @@ impl<'a> Builder<'a> {
                         _ => LirType::Any,
                     };
                     self.deny_tuple(v, "in an array store", value.span)?;
+                    let ix = self.unbox_operand(ix, index.span);
                     let v = self.coerce_to_slot(v, &slot, value.span);
                     let needs_drop = matches!(
                         self.func.locals.get(arr as usize),
@@ -862,6 +863,7 @@ impl<'a> Builder<'a> {
                         Some(LirType::Array(inner)) => (**inner).clone(),
                         _ => LirType::Any,
                     };
+                    let ix = self.unbox_operand(ix, index.span);
                     let cur = self.local(slot.clone());
                     self.emit(Instr::ArrayGet { span, dst: cur, arr, index: ix, elem_size: es, unchecked: false });
                     let curu = self.unbox_operand(cur, span);

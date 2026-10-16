@@ -480,9 +480,18 @@ pub struct RegistryReply {
     pub body: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestReply {
+    pub reply: RegistryReply,
+    pub content_encoding: Option<String>,
+}
+
 pub trait RegistryTransport: Send + Sync {
     fn get(&self, url: &str) -> Result<RegistryReply, Diagnostic>;
     fn post_json(&self, url: &str, body: &str) -> Result<RegistryReply, Diagnostic>;
+    fn manifest_get(&self, url: &str) -> Result<ManifestReply, Diagnostic> {
+        Ok(ManifestReply { reply: self.get(url)?, content_encoding: None })
+    }
 }
 
 static TRANSPORT: std::sync::Mutex<Option<std::sync::Arc<dyn RegistryTransport>>> =
@@ -576,7 +585,7 @@ fn split_http_url(url: &str) -> Result<(String, u16, String), Diagnostic> {
     Ok((host, port, path))
 }
 
-fn read_http_response(stream: &mut std::net::TcpStream) -> Result<(RegistryReply, bool), Diagnostic> {
+fn read_http_response(stream: &mut std::net::TcpStream) -> Result<(RegistryReply, bool, Option<String>), Diagnostic> {
     use std::io::Read;
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
@@ -602,6 +611,7 @@ fn read_http_response(stream: &mut std::net::TcpStream) -> Result<(RegistryReply
         .ok_or_else(|| Diagnostic::new(Code::E108, "registry returned a bad status line"))?;
     let http11 = status_line.starts_with("HTTP/1.1");
     let mut spec_header = None;
+    let mut content_encoding = None;
     let mut content_length = None;
     let mut chunked = false;
     let mut conn_close = false;
@@ -610,6 +620,7 @@ fn read_http_response(stream: &mut std::net::TcpStream) -> Result<(RegistryReply
         if let Some((name, value)) = line.split_once(':') {
             match name.trim().to_ascii_lowercase().as_str() {
                 "rnx-registry-spec" => spec_header = Some(value.trim().to_string()),
+                "content-encoding" => content_encoding = Some(value.trim().to_string()),
                 "content-length" => content_length = value.trim().parse::<usize>().ok(),
                 "transfer-encoding" => {
                     chunked = value.to_ascii_lowercase().contains("chunked");
@@ -637,6 +648,7 @@ fn read_http_response(stream: &mut std::net::TcpStream) -> Result<(RegistryReply
                 body: read_chunked(stream)?,
             },
             reusable,
+            content_encoding,
         ));
     }
     let mut body = Vec::new();
@@ -668,7 +680,7 @@ fn read_http_response(stream: &mut std::net::TcpStream) -> Result<(RegistryReply
             body = rest;
         }
     }
-    Ok((RegistryReply { status, spec_header, body }, reusable))
+    Ok((RegistryReply { status, spec_header, body }, reusable, content_encoding))
 }
 
 fn read_chunked(stream: &mut std::net::TcpStream) -> Result<Vec<u8>, Diagnostic> {
@@ -740,6 +752,11 @@ impl RegistryTransport for StdTransport {
     fn post_json(&self, url: &str, body: &str) -> Result<RegistryReply, Diagnostic> {
         std_request("POST", url, Some(body.as_bytes()))
     }
+
+    fn manifest_get(&self, url: &str) -> Result<ManifestReply, Diagnostic> {
+        std_request_full("GET", url, None)
+            .map(|(reply, content_encoding)| ManifestReply { reply, content_encoding })
+    }
 }
 
 fn std_request(
@@ -747,26 +764,35 @@ fn std_request(
     url: &str,
     body: Option<&[u8]>,
 ) -> Result<RegistryReply, Diagnostic> {
+    std_request_full(method, url, body).map(|(reply, _)| reply)
+}
+
+fn std_request_full(
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+) -> Result<(RegistryReply, Option<String>), Diagnostic> {
     let (host, port, path) = split_http_url(url)?;
     let mut stream = match pool_take(&host, port) {
         Some(reused) => reused,
         None => connect_new(&host, port)?,
     };
     match exchange_once(method, &host, &path, body, &mut stream) {
-        Ok((reply, reusable)) => {
+        Ok((reply, reusable, content_encoding)) => {
             if reusable {
                 pool_put(&host, port, stream);
             }
-            Ok(reply)
+            Ok((reply, content_encoding))
         }
         Err(dead) => {
             drop(stream);
             let mut fresh = connect_new(&host, port).map_err(|_| dead)?;
-            let (reply, reusable) = exchange_once(method, &host, &path, body, &mut fresh)?;
+            let (reply, reusable, content_encoding) =
+                exchange_once(method, &host, &path, body, &mut fresh)?;
             if reusable {
                 pool_put(&host, port, fresh);
             }
-            Ok(reply)
+            Ok((reply, content_encoding))
         }
     }
 }
@@ -813,7 +839,7 @@ fn exchange_once(
     path: &str,
     body: Option<&[u8]>,
     stream: &mut std::net::TcpStream,
-) -> Result<(RegistryReply, bool), Diagnostic> {
+) -> Result<(RegistryReply, bool, Option<String>), Diagnostic> {
     use std::io::Write;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
@@ -850,6 +876,30 @@ fn http_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
         match transport().get(url) {
             Ok(reply) => {
                 if retryable_status(reply.status) && attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
+                    attempt += 1;
+                    continue;
+                }
+                return Ok(reply);
+            }
+            Err(e) => {
+                if attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
+                    attempt += 1;
+                    continue;
+                }
+                return Err(Diagnostic::new(Code::E108, format!("{what} failed: {}", e.message)));
+            }
+        }
+    }
+}
+
+fn http_manifest_get(url: &str, what: &str) -> Result<ManifestReply, Diagnostic> {
+    let mut attempt = 0u32;
+    loop {
+        match transport().manifest_get(url) {
+            Ok(reply) => {
+                if retryable_status(reply.reply.status) && attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
                     attempt += 1;
                     continue;
@@ -1515,12 +1565,53 @@ struct ChunkEntry {
     chunks: Vec<String>,
 }
 
-fn fetch_chunks_manifest(url: &str, full: &str, version: &str, direct: bool) -> Result<Vec<ChunkEntry>, Diagnostic> {
-    let reply = http_get(&direct_url(url, direct), &format!("chunk manifest of `{full}@{version}`"))?;
-    if reply.status != 200 {
-        return Err(chunk_fetch_error(reply.status, &reply.body, full, version));
+fn decode_chunk_manifest_body(
+    body: &[u8],
+    encoding: Option<&str>,
+    full: &str,
+    version: &str,
+) -> Result<Vec<u8>, Diagnostic> {
+    let tag = encoding.unwrap_or("").trim();
+    if tag.is_empty() || tag.eq_ignore_ascii_case("identity") {
+        return Ok(body.to_vec());
     }
-    let value = parse_json(&reply.body).map_err(|_| {
+    if tag.eq_ignore_ascii_case("gzip") {
+        let out = crate::gzip::decompress_gzip(body).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!(
+                    "chunk manifest of `{full}@{version}` claims gzip content encoding but cannot be decoded: {}",
+                    e.message
+                ),
+            )
+        })?;
+        if out.len() > MAX_DOWNLOAD_BYTES {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("chunk manifest of `{full}@{version}` exceeds size limits"),
+            ));
+        }
+        return Ok(out);
+    }
+    Err(Diagnostic::new(
+        Code::E108,
+        format!("chunk manifest of `{full}@{version}` uses unsupported content encoding `{tag}`"),
+    ))
+}
+
+fn fetch_chunks_manifest(url: &str, full: &str, version: &str, direct: bool) -> Result<Vec<ChunkEntry>, Diagnostic> {
+    let fetched =
+        http_manifest_get(&direct_url(url, direct), &format!("chunk manifest of `{full}@{version}`"))?;
+    if fetched.reply.status != 200 {
+        return Err(chunk_fetch_error(fetched.reply.status, &fetched.reply.body, full, version));
+    }
+    let raw = decode_chunk_manifest_body(
+        &fetched.reply.body,
+        fetched.content_encoding.as_deref(),
+        full,
+        version,
+    )?;
+    let value = parse_json(&raw).map_err(|_| {
         Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
     })?;
     let items = value
@@ -2661,6 +2752,128 @@ pub(crate) mod testkit {
                 .iter()
                 .filter(|(m, p, _)| m == "GET" && p.split('?').next().unwrap_or_default().ends_with(suffix))
                 .count()
+        }
+
+        pub fn requests_with_headers(
+            &self,
+        ) -> Vec<(String, String, Vec<(String, String)>, Vec<u8>)> {
+            self.log
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|r| (r.method.clone(), r.path.clone(), r.headers.clone(), r.body.clone()))
+                .collect()
+        }
+
+        pub fn start_encoded(
+            config: MockConfig,
+            manifest_body: Vec<u8>,
+            manifest_encoding: Option<&'static str>,
+        ) -> MockRegistry {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let base = format!("http://{addr}");
+            let log: Arc<Mutex<Vec<LoggedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+            let config = Arc::new(config);
+            let manifest_body = Arc::new(manifest_body);
+            let seen = log.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else {
+                        continue;
+                    };
+                    let Some((method, path, headers, body)) = read_request(&mut stream) else {
+                        continue;
+                    };
+                    let route = path.split('?').next().unwrap_or_default().to_string();
+                    seen.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(LoggedRequest { method: method.clone(), path: path.clone(), headers, body });
+                    let spec = config.version_spec.to_string();
+                    let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", Box::leak(spec.into_boxed_str()) as &str)];
+                    if method == "GET" && route == "/api/version" {
+                        let body = format!(
+                            "{{\"spec\": {}, \"capabilities\": [\"tombstones\"], \"registry\": \"test\"}}",
+                            config.version_spec
+                        );
+                        respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
+                    } else if method == "POST" && route == "/api/resolve" {
+                        respond(
+                            &mut stream,
+                            200,
+                            "application/json",
+                            config.resolve_body.as_bytes(),
+                            with_spec,
+                        );
+                    } else if method == "GET" && route.ends_with("/chunks") {
+                        if config.manifest_status == 200 {
+                            match manifest_encoding {
+                                Some(enc) => respond(
+                                    &mut stream,
+                                    200,
+                                    "application/json",
+                                    &manifest_body,
+                                    &[
+                                        ("rnx-registry-spec", with_spec[0].1),
+                                        ("Content-Encoding", enc),
+                                    ],
+                                ),
+                                None => respond(
+                                    &mut stream,
+                                    200,
+                                    "application/json",
+                                    &manifest_body,
+                                    with_spec,
+                                ),
+                            }
+                        } else {
+                            respond(
+                                &mut stream,
+                                config.manifest_status,
+                                "application/json",
+                                config.manifest_error.as_bytes(),
+                                with_spec,
+                            );
+                        }
+                    } else if method == "GET" && route.contains("/chunk/") {
+                        let hash = route.rsplit('/').next().unwrap_or_default().to_string();
+                        let mut hit: Option<Vec<u8>> = None;
+                        if let Some(pairs) = &config.chunk_override {
+                            for (h, b) in pairs {
+                                if *h == hash {
+                                    hit = Some(b.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        if hit.is_none() && !config.fallback_tarball.is_empty() {
+                            let digest = Sha256::hexdigest(&config.fallback_tarball);
+                            if digest == hash {
+                                hit = Some(config.fallback_tarball.clone());
+                            }
+                        }
+                        match hit {
+                            Some(bytes) => respond(&mut stream, 200, "application/octet-stream", &bytes, with_spec),
+                            None => respond(
+                                &mut stream,
+                                404,
+                                "application/json",
+                                b"{\"code\": \"not-found\", \"message\": \"chunk not found\"}",
+                                with_spec,
+                            ),
+                        }
+                    } else {
+                        respond(
+                            &mut stream,
+                            404,
+                            "application/json",
+                            b"{\"code\": \"not-found\", \"message\": \"unknown\"}",
+                            with_spec,
+                        );
+                    }
+                }
+            });
+            MockRegistry { base, log }
         }
 
         pub fn resolve_bodies(&self) -> Vec<JsonValue> {
@@ -3962,5 +4175,285 @@ mod tests {
         let (conns, reqs) = *stats.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(reqs, 2);
         assert_eq!(conns, 1);
+    }
+
+    const INTEROP_PC: &[u8] = b"export default {\n    project: {\n        name: \"test/interop\",\n        version: \"1.0.0\"\n    }\n}\n";
+    const INTEROP_MAIN: &[u8] = b"export fn hello(): Int { return 1; }\n";
+    const INTEROP_MANIFEST_GZ: &[u8] = &[
+        31, 139, 8, 8, 20, 198, 209, 106, 2, 3, 105, 110, 116, 101, 114, 111, 112, 95, 109,
+        97, 110, 105, 102, 101, 115, 116, 46, 106, 115, 111, 110, 0, 117, 205, 49, 110, 195,
+        48, 12, 133, 225, 187, 112, 54, 18, 73, 164, 100, 210, 167, 232, 94, 100, 160, 40,
+        169, 117, 219, 40, 128, 156, 2, 69, 130, 220, 189, 238, 146, 173, 227, 251, 129,
+        135, 239, 14, 181, 95, 199, 90, 55, 88, 94, 239, 208, 245, 92, 97, 129, 151, 113,
+        249, 168, 118, 61, 216, 165, 183, 245, 13, 38, 216, 214, 219, 222, 37, 78, 80, 214,
+        1, 75, 211, 175, 173, 78, 96, 239, 223, 253, 243, 239, 8, 213, 103, 137, 197, 145,
+        42, 206, 88, 201, 19, 161, 186, 192, 190, 102, 113, 232, 57, 25, 146, 205, 89, 178,
+        115, 209, 167, 196, 202, 33, 69, 110, 45, 178, 82, 51, 196, 0, 167, 199, 244, 212,
+        183, 97, 199, 179, 174, 253, 48, 250, 207, 211, 198, 249, 63, 187, 213, 198, 18, 74,
+        201, 164, 57, 250, 194, 222, 133, 150, 130, 101, 81, 37, 44, 226, 72, 216, 147, 5,
+        107, 104, 196, 44, 89, 101, 95, 200, 141, 115, 228, 76, 226, 118, 251, 244, 248, 5,
+        136, 34, 143, 96, 7, 1, 0, 0,
+    ];
+
+    #[test]
+    fn manifest_body_decode_absent_means_identity_bytes() {
+        let raw = br#"{"entries": []}"#;
+        assert_eq!(decode_chunk_manifest_body(raw, None, "pkg", "1.0.0").unwrap(), raw);
+        assert_eq!(
+            decode_chunk_manifest_body(raw, Some("identity"), "pkg", "1.0.0").unwrap(),
+            raw
+        );
+        assert_eq!(
+            decode_chunk_manifest_body(raw, Some("Identity"), "pkg", "1.0.0").unwrap(),
+            raw
+        );
+    }
+
+    #[test]
+    fn manifest_body_decode_gzip_roundtrip() {
+        let raw = br#"{"entries": [{"name": "a.rnx", "size": 3, "dir": false, "chunks": ["ab"]}]}"#;
+        let gz = crate::gzip::compress_gzip(raw);
+        assert_eq!(
+            decode_chunk_manifest_body(&gz, Some("gzip"), "pkg", "1.0.0").unwrap(),
+            raw
+        );
+        assert_eq!(
+            decode_chunk_manifest_body(&gz, Some("GZIP"), "pkg", "1.0.0").unwrap(),
+            raw
+        );
+    }
+
+    #[test]
+    fn manifest_body_decode_rejects_corrupt_and_unknown() {
+        let bad =
+            decode_chunk_manifest_body(b"not gzip bytes at all!!!!", Some("gzip"), "pkg", "9.9.9")
+                .unwrap_err();
+        assert_eq!(bad.code, Code::E108);
+        assert!(bad.message.contains("cannot be decoded"), "{}", bad.message);
+        assert!(bad.message.contains("pkg@9.9.9"), "{}", bad.message);
+        let gz = crate::gzip::compress_gzip(br#"{"entries": []}"#);
+        let mut cut = gz.clone();
+        cut.truncate(cut.len() / 2);
+        assert!(decode_chunk_manifest_body(&cut, Some("gzip"), "pkg", "1.0.0").is_err());
+        for enc in ["zstd", "br", "gzip, br", "compress"] {
+            let err =
+                decode_chunk_manifest_body(br#"{"entries": []}"#, Some(enc), "pkg", "1.0.0")
+                    .unwrap_err();
+            assert_eq!(err.code, Code::E108);
+            assert!(err.message.contains("unsupported content encoding"), "{}", err.message);
+            assert!(err.message.contains(enc), "{}", err.message);
+        }
+    }
+
+    fn interop_entries() -> (Vec<ChunkEntry>, BTreeMap<String, Vec<u8>>) {
+        let pc_hash = Sha256::hexdigest(INTEROP_PC);
+        let main_hash = Sha256::hexdigest(INTEROP_MAIN);
+        let entries = vec![
+            ChunkEntry {
+                name: "Project.config".to_string(),
+                size: INTEROP_PC.len() as u64,
+                dir: false,
+                chunks: vec![pc_hash.clone()],
+            },
+            ChunkEntry {
+                name: "src/main.rnx".to_string(),
+                size: INTEROP_MAIN.len() as u64,
+                dir: false,
+                chunks: vec![main_hash.clone()],
+            },
+        ];
+        let mut by_hash = BTreeMap::new();
+        by_hash.insert(pc_hash, INTEROP_PC.to_vec());
+        by_hash.insert(main_hash, INTEROP_MAIN.to_vec());
+        (entries, by_hash)
+    }
+
+    fn interop_manifest_json(entries: &[ChunkEntry]) -> Vec<u8> {
+        let mut out = String::from("{\"entries\": [");
+        for (i, e) in entries.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!(
+                "{{\"name\": \"{}\", \"size\": {}, \"dir\": false, \"chunks\": [\"{}\"]}}",
+                e.name, e.size, e.chunks[0]
+            ));
+        }
+        out.push_str("]}");
+        out.into_bytes()
+    }
+
+    fn start_interop(
+        manifest_body: Vec<u8>,
+        encoding: Option<&'static str>,
+        node: &str,
+        bodies: Vec<(String, Vec<u8>)>,
+    ) -> MockRegistry {
+        MockRegistry::start_encoded(
+            MockConfig {
+                version_spec: 1,
+                resolve_status: 200,
+                resolve_body: resolve_json_static(&[node.to_string()]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: None,
+                chunk_override: Some(bodies),
+            },
+            manifest_body,
+            encoding,
+        )
+    }
+
+    fn assert_no_accept_encoding(server: &MockRegistry) {
+        for (_, _, headers, _) in server.requests_with_headers() {
+            assert!(
+                !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("accept-encoding")),
+                "{headers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_gzip_end_to_end_with_system_gzip_bytes() {
+        let (_guard, _dir) = isolate_cache("mzgzip");
+        let (entries, by_hash) = interop_entries();
+        let digest =
+            assemble_direct_tree(&entries, &by_hash, "test/interop", "1.0.0").unwrap().digest;
+        let node = node_json("test/interop", "1.0.0", &digest, false);
+        let bodies: Vec<(String, Vec<u8>)> = by_hash.into_iter().collect();
+        let server = start_interop(INTEROP_MANIFEST_GZ.to_vec(), Some("gzip"), &node, bodies);
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("test/interop", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(std::fs::read(fetched[0].dir.join("Project.config")).unwrap(), INTEROP_PC);
+        assert_eq!(
+            std::fs::read(fetched[0].dir.join("src").join("main.rnx")).unwrap(),
+            INTEROP_MAIN
+        );
+        assert_no_accept_encoding(&server);
+    }
+
+    #[test]
+    fn manifest_gzip_end_to_end_with_intree_bytes() {
+        let (_guard, _dir) = isolate_cache("mzintree");
+        let (entries, by_hash) = interop_entries();
+        let digest =
+            assemble_direct_tree(&entries, &by_hash, "test/interop", "1.0.0").unwrap().digest;
+        let node = node_json("test/interop", "1.0.0", &digest, false);
+        let manifest = interop_manifest_json(&entries);
+        let gz = crate::gzip::compress_gzip(&manifest);
+        let bodies: Vec<(String, Vec<u8>)> = by_hash.into_iter().collect();
+        let server = start_interop(gz, Some("gzip"), &node, bodies);
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("test/interop", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(std::fs::read(fetched[0].dir.join("Project.config")).unwrap(), INTEROP_PC);
+        assert_eq!(
+            std::fs::read(fetched[0].dir.join("src").join("main.rnx")).unwrap(),
+            INTEROP_MAIN
+        );
+        assert_no_accept_encoding(&server);
+    }
+
+    #[test]
+    fn manifest_identity_through_manifest_path_sends_no_accept_encoding() {
+        let (_guard, _dir) = isolate_cache("mzident");
+        let (entries, by_hash) = interop_entries();
+        let digest =
+            assemble_direct_tree(&entries, &by_hash, "test/interop", "1.0.0").unwrap().digest;
+        let node = node_json("test/interop", "1.0.0", &digest, false);
+        let manifest = interop_manifest_json(&entries);
+        let bodies: Vec<(String, Vec<u8>)> = by_hash.into_iter().collect();
+        let server = start_interop(manifest, None, &node, bodies);
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("test/interop", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(std::fs::read(fetched[0].dir.join("Project.config")).unwrap(), INTEROP_PC);
+        assert_no_accept_encoding(&server);
+    }
+
+    #[test]
+    fn manifest_gzip_corrupt_fails_loud_without_cache() {
+        let (_guard, _dir) = isolate_cache("mzcorrupt");
+        let node = node_json("test/interop", "1.0.0", &"0".repeat(64), false);
+        let server = start_interop(
+            b"definitely not gzip bytes!!!!".to_vec(),
+            Some("gzip"),
+            &node,
+            Vec::new(),
+        );
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("test/interop", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("cannot be decoded"), "{}", err.message);
+        assert!(err.message.contains("test/interop@1.0.0"), "{}", err.message);
+        assert!(scan_cache_have().is_empty());
+        let mut cut = INTEROP_MANIFEST_GZ.to_vec();
+        cut.truncate(cut.len() / 2);
+        let server = start_interop(cut, Some("gzip"), &node, Vec::new());
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("test/interop", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("cannot be decoded"), "{}", err.message);
+        assert!(scan_cache_have().is_empty());
+    }
+
+    #[test]
+    fn manifest_unknown_encoding_fails_closed() {
+        let (_guard, _dir) = isolate_cache("mzunknown");
+        let (entries, by_hash) = interop_entries();
+        let manifest = interop_manifest_json(&entries);
+        let node = node_json("test/interop", "1.0.0", &"0".repeat(64), false);
+        let bodies: Vec<(String, Vec<u8>)> = by_hash.into_iter().collect();
+        let server = start_interop(manifest, Some("zstd"), &node, bodies);
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("test/interop", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("unsupported content encoding"), "{}", err.message);
+        assert!(err.message.contains("`zstd`"), "{}", err.message);
+        assert!(scan_cache_have().is_empty());
+        let chunk_gets = server
+            .requests()
+            .iter()
+            .filter(|(m, p, _)| m == "GET" && p.split('?').next().unwrap_or_default().contains("/chunk/"))
+            .count();
+        assert_eq!(chunk_gets, 0);
     }
 }
