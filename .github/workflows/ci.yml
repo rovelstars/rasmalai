@@ -33,7 +33,9 @@ jobs:
 
       - name: Full workspace test suite
         run: |
-          sudo apt-get install -y gdb binutils
+          sudo apt-get install -y gdb binutils lld-22
+          command -v ld >/dev/null || { echo "no ld on PATH"; exit 1; }
+          command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           ulimit -c unlimited
           seeded=""
