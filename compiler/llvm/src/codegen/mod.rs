@@ -22,6 +22,16 @@ pub struct Jit<'ctx> {
     funcs: BTreeMap<String, FunctionValue<'ctx>>,
     engine: inkwell::execution_engine::ExecutionEngine<'ctx>,
     vec_rets: BTreeSet<String>,
+    epoch: u64,
+}
+
+// Dropping the ExecutionEngine releases the memory its code lives in.
+// Workers spawned from that code keep running after the entry function
+// returns, so retiring the epoch first waits for them to leave.
+impl Drop for Jit<'_> {
+    fn drop(&mut self) {
+        runtime::native::rnx_jit_module_retire(self.epoch);
+    }
 }
 
 type JitFn0 = unsafe extern "C" fn() -> i64;
@@ -508,6 +518,8 @@ impl<'ctx> Jit<'ctx> {
             })? as usize;
             engine.add_global_mapping(&fv, addr);
         }
+        let mut lo = usize::MAX;
+        let mut hi = 0usize;
         for (i, f) in lir.functions.iter().enumerate() {
             if !f.is_closure {
                 continue;
@@ -518,12 +530,29 @@ impl<'ctx> Jit<'ctx> {
             let addr = engine
                 .get_function_address(&fv.get_name().to_string_lossy())
                 .map_err(|e| Diagnostic::new(Code::E108, format!("llvm jit closure addr: {e}")))?;
+            lo = lo.min(addr);
+            hi = hi.max(addr);
             runtime::native::rnx_closure_register(runtime::native::rnx_closure_tag(i as u64), addr);
+        }
+        // Non-closure entries reach the spawn paths as bare function
+        // pointers, so the whole code span has to resolve to this epoch.
+        for f in lir.functions.iter().filter(|f| !f.is_closure) {
+            if let Some(fv) = funcs.get(&f.name) {
+                if let Ok(addr) = engine.get_function_address(&fv.get_name().to_string_lossy()) {
+                    lo = lo.min(addr);
+                    hi = hi.max(addr);
+                }
+            }
+        }
+        let epoch = runtime::native::current_closure_epoch();
+        if hi >= lo {
+            runtime::native::rnx_jit_module_register(epoch, lo, hi);
         }
         Ok(Jit {
             module,
             funcs,
             engine,
+            epoch,
             vec_rets: lir
                 .functions
                 .iter()
@@ -535,6 +564,9 @@ impl<'ctx> Jit<'ctx> {
 
     pub fn call(&self, name: &str, args: &[i64]) -> Result<i64, Diagnostic> {
         runtime::guard::guard_install();
+        // Holds this module's code mapped for the duration of the call, and
+        // covers any worker this call detaches.
+        let _residency = runtime::native::JitResidency::enter(self.epoch);
         let fv = self.funcs.get(name).copied().ok_or_else(|| {
             Diagnostic::new(Code::E108, format!("unknown function `{name}`"))
         })?;

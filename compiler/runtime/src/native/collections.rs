@@ -2990,6 +2990,170 @@ pub(crate) fn any_box_tag(any: u64) -> Option<u32> {
 pub(crate) static CLOSURE_CODE: std::sync::LazyLock<std::sync::Mutex<std::collections::BTreeMap<u64, usize>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
 
+// Epoch residency. A JIT backend frees the memory holding its compiled
+// code when the module handle drops, but a worker it detached may still be
+// executing that code: `Thread.spawn` returns as soon as the OS thread
+// exists, so the entry function can return and drop the handle while a
+// worker is still unwinding through the module. Freeing the module then
+// unmaps the code the worker is running, which is the SIGSEGV.
+//
+// Every in-process compile claims an epoch and records the address range
+// its code occupies. Running code from an epoch means holding one
+// residency token for it:
+//
+//   * `Jit::call` takes a token on entry and drops it on return.
+//   * Every spawn that can run module code later (thread spawn, pool
+//     submit) takes the child's token *before* the thread exists, on the
+//     spawning thread, and hands it to the child.
+//
+// Taking the child's token on the spawning side is what makes the count
+// trustworthy: a token can only be minted by a thread that is itself
+// running the module, so a count of zero proves no worker exists or can
+// appear. The backend's `Drop` then blocks until the count reaches zero
+// before releasing the code.
+//
+// Tokens are per epoch, so retiring one module never waits on another's
+// workers. Ahead-of-time modules use epoch 0, run in their own process,
+// and are never freed, so they record no range and take no tokens.
+pub(crate) struct JitEpoch {
+    live: std::sync::Mutex<usize>,
+    drained: std::sync::Condvar,
+}
+
+impl JitEpoch {
+    fn new() -> JitEpoch {
+        JitEpoch { live: std::sync::Mutex::new(0), drained: std::sync::Condvar::new() }
+    }
+
+    fn enter(&self) {
+        *self.live.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    }
+
+    fn leave(&self) {
+        let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        *live -= 1;
+        if *live == 0 {
+            self.drained.notify_all();
+        }
+    }
+
+    fn drain(&self) {
+        let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        while *live > 0 {
+            live = self.drained.wait(live).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
+static JIT_EPOCH_SPAN: std::sync::LazyLock<std::sync::Mutex<std::vec::Vec<(usize, usize, u64)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::vec::Vec::new()));
+
+static JIT_EPOCHS: std::sync::LazyLock<std::sync::Mutex<std::collections::BTreeMap<u64, std::sync::Arc<JitEpoch>>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+
+/// The epoch this thread last claimed, i.e. the module currently being
+/// compiled. JIT backends read it to tag what they finalize.
+pub fn current_closure_epoch() -> u64 {
+    CLOSURE_TAG_EPOCH.get() & CLOSURE_FID_MASK
+}
+
+/// Record the address range of the code just finalized for `epoch`. The
+/// spawn paths receive bare function pointers, so the range is what lets
+/// them attribute a pointer back to the module that owns it. A hot JIT
+/// compiles more functions into the same epoch later, so a repeated call
+/// widens the span rather than adding a second one.
+pub fn rnx_jit_module_register(epoch: u64, lo: usize, hi: usize) {
+    if epoch == 0 || hi < lo {
+        return;
+    }
+    let mut spans = JIT_EPOCH_SPAN.lock().unwrap_or_else(|e| e.into_inner());
+    match spans.iter_mut().find(|(_, _, e)| *e == epoch) {
+        Some(span) => {
+            span.0 = span.0.min(lo);
+            span.1 = span.1.max(hi);
+        }
+        None => spans.push((lo, hi, epoch)),
+    }
+}
+
+fn jit_epoch_of_addr(addr: usize) -> Option<u64> {
+    if addr == 0 {
+        return None;
+    }
+    JIT_EPOCH_SPAN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(lo, hi, _)| addr >= *lo && addr <= *hi)
+        .map(|(_, _, epoch)| *epoch)
+}
+
+fn jit_epoch_cell(epoch: u64) -> std::sync::Arc<JitEpoch> {
+    JIT_EPOCHS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(epoch)
+        .or_insert_with(|| std::sync::Arc::new(JitEpoch::new()))
+        .clone()
+}
+
+pub(crate) fn jit_epoch_of_tag(tag: u64) -> Option<u64> {
+    let epoch = tag >> 32;
+    if epoch == 0 { None } else { Some(epoch) }
+}
+
+/// Residency token for one epoch, held while a thread runs code from it.
+pub struct JitResidency {
+    cell: Option<std::sync::Arc<JitEpoch>>,
+}
+
+impl JitResidency {
+    pub fn enter(epoch: u64) -> JitResidency {
+        if epoch == 0 {
+            return JitResidency { cell: None };
+        }
+        let cell = jit_epoch_cell(epoch);
+        cell.enter();
+        JitResidency { cell: Some(cell) }
+    }
+
+    /// Token for a closure tag, which carries its epoch in the high bits.
+    pub(crate) fn enter_tag(tag: u64) -> JitResidency {
+        Self::enter(jit_epoch_of_tag(tag).unwrap_or(0))
+    }
+
+    /// Token for a bare code pointer handed to a spawn call.
+    pub fn enter_addr(addr: usize) -> JitResidency {
+        Self::enter(jit_epoch_of_addr(addr).unwrap_or(0))
+    }
+
+    /// Inert token for work that runs in the interpreter rather than in
+    /// JIT'd code, so no module can be freed underneath it.
+    pub(crate) fn interp() -> JitResidency {
+        JitResidency { cell: None }
+    }
+}
+
+impl Drop for JitResidency {
+    fn drop(&mut self) {
+        if let Some(cell) = &self.cell {
+            cell.leave();
+        }
+    }
+}
+
+/// Backend teardown: block until every thread that could be running this
+/// module's code has left, then forget the range. Called from the
+/// backend's `Drop`, before the code memory is released.
+pub fn rnx_jit_module_retire(epoch: u64) {
+    if epoch == 0 {
+        return;
+    }
+    jit_epoch_cell(epoch).drain();
+    JIT_EPOCH_SPAN.lock().unwrap_or_else(|e| e.into_inner()).retain(|(_, _, e)| *e != epoch);
+    JIT_EPOCHS.lock().unwrap_or_else(|e| e.into_inner()).remove(&epoch);
+}
+
 // Closure dispatch tags. JIT backends compile many modules in one
 // process (tests, REPL, hosts), and every module numbers its closures
 // from zero, so a bare function index is not a unique key. Each in-process
@@ -2998,9 +3162,9 @@ pub(crate) static CLOSURE_CODE: std::sync::LazyLock<std::sync::Mutex<std::collec
 // Epoch 0 means "plain fid" and is used for ahead-of-time objects, which
 // are self-consistent single-module processes and must stay byte
 // deterministic across builds. Entries are never removed: a stale entry
-// is inert (its tag can never be re-minted), and dropping a JIT while
-// its detached workers still run keeps the same behavior as before
-// instead of failing closed.
+// is inert because its tag can never be re-minted. Keeping the entry
+// after the module is dropped is sound because residency (above) keeps
+// the code it points at mapped until every worker has left.
 
 pub const CLOSURE_FID_MASK: u64 = 0xFFFF_FFFF;
 
@@ -3696,5 +3860,100 @@ mod any_box_tests {
             }
             assert!(bs.table.iter().any(|&v| v == BOX_EMPTY), "lost EMPTY slot after drain");
         }
+    }
+}
+
+#[cfg(test)]
+mod jit_residency_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+
+    fn span_is_registered(epoch: u64) -> bool {
+        JIT_EPOCH_SPAN.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(_, _, e)| *e == epoch)
+    }
+
+    #[test]
+    fn retire_waits_for_worker_that_still_holds_a_token() {
+        let epoch = 9_000_000_001u64;
+        rnx_jit_module_register(epoch, 0x1000, 0x2000);
+        let (tx, rx) = mpsc::channel();
+        let inside = std::sync::Arc::new(AtomicBool::new(true));
+        let worker_flag = inside.clone();
+        let worker = std::thread::spawn(move || {
+            // Stands in for a detached worker: takes its token on the
+            // spawning side, then runs long after the caller moves on.
+            let _residency = JitResidency::enter(epoch);
+            tx.send(()).unwrap();
+            while worker_flag.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+        });
+        rx.recv().unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let retire = std::thread::spawn(move || {
+            rnx_jit_module_retire(epoch);
+            done_tx.send(()).unwrap();
+        });
+        assert!(
+            done_rx.recv_timeout(std::time::Duration::from_millis(150)).is_err(),
+            "retire returned while a worker was still inside the module"
+        );
+        assert!(span_is_registered(epoch), "span was forgotten before the worker left");
+
+        inside.store(false, Ordering::SeqCst);
+        worker.join().unwrap();
+        done_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("retire did not finish after the worker left");
+        retire.join().unwrap();
+        assert!(!span_is_registered(epoch), "retire left the span behind");
+    }
+
+    #[test]
+    fn token_for_tag_maps_back_to_the_compiling_epoch() {
+        let epoch = 9_000_000_002u64;
+        let residency = JitResidency::enter_tag((epoch << 32) | 7);
+        assert!(residency.cell.is_some(), "tagged closure took no token");
+        drop(residency);
+        let aot = JitResidency::enter_tag(7);
+        assert!(aot.cell.is_none(), "epoch 0 is ahead-of-time and must be inert");
+    }
+
+    #[test]
+    fn token_for_address_resolves_through_the_registered_span() {
+        let epoch = 9_000_000_003u64;
+        rnx_jit_module_register(epoch, 0x40_0000, 0x50_0000);
+        let inside = JitResidency::enter_addr(0x45_0000);
+        assert!(inside.cell.is_some(), "address inside the span took no token");
+        drop(inside);
+        let outside = JitResidency::enter_addr(0x90_0000);
+        assert!(outside.cell.is_none(), "address outside every span must be inert");
+    }
+
+    #[test]
+    fn registering_twice_widens_the_span_instead_of_duplicating_it() {
+        let epoch = 9_000_000_004u64;
+        rnx_jit_module_register(epoch, 0x400_0000, 0x410_0000);
+        rnx_jit_module_register(epoch, 0x300_0000, 0x500_0000);
+        let spans: Vec<_> = JIT_EPOCH_SPAN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+            .filter(|(_, _, e)| *e == epoch)
+            .collect();
+        assert_eq!(spans, vec![(0x300_0000, 0x500_0000, epoch)]);
+        rnx_jit_module_retire(epoch);
+    }
+
+    #[test]
+    fn retire_is_a_no_op_for_ahead_of_time_modules() {
+        rnx_jit_module_register(0, 0x1000, 0x2000);
+        rnx_jit_module_retire(0);
+        let spans = JIT_EPOCH_SPAN.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            !spans.iter().any(|(_, _, e)| *e == 0),
+            "epoch 0 must never register a span"
+        );
     }
 }

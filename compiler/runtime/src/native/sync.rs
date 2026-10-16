@@ -530,6 +530,20 @@ pub(crate) struct PoolTask {
     pub(crate) call: PoolCall,
     pub(crate) result: Option<std::sync::Arc<TaskBox>>,
     pub(crate) ret_tag: u32,
+    // Pool workers outlive any single module, so a queued task can start
+    // after the JIT that produced it was dropped. Holding the producing
+    // module's token keeps that code mapped until the task finishes; the
+    // field exists for its Drop, not to be read.
+    pub(crate) _residency: JitResidency,
+}
+
+fn pool_task(target: PoolTarget, call: PoolCall, result: Option<std::sync::Arc<TaskBox>>, ret_tag: u32) -> PoolTask {
+    let _residency = match &target {
+        PoolTarget::Native(entry) => JitResidency::enter_addr(*entry),
+        PoolTarget::Closure { bbox } => jit_residency_for_box(*bbox as *mut u8),
+        PoolTarget::Interp { .. } | PoolTarget::ClosureInterp { .. } => JitResidency::enter(0),
+    };
+    PoolTask { target, call, result, ret_tag, _residency }
 }
 
 pub struct PoolInterpCall {
@@ -830,12 +844,12 @@ pub unsafe extern "C" fn rnx_thread_pool_init(id: i64, num_workers: i64) {
 pub unsafe extern "C" fn rnx_thread_pool_submit(id: i64, entry: usize, arg: i64, has_arg: i64) {
     pool_submit_task(
         id,
-        PoolTask {
-            target: PoolTarget::Native(entry),
-            call: PoolCall::Once { arg, has_arg: has_arg != 0 },
-            result: None,
-            ret_tag: 0,
-        },
+        pool_task(
+            PoolTarget::Native(entry),
+            PoolCall::Once { arg, has_arg: has_arg != 0 },
+            None,
+            0,
+        ),
     );
 }
 
@@ -851,12 +865,12 @@ pub unsafe extern "C" fn rnx_thread_pool_submit_handle(
     let handle = task_box_handle(&slot);
     pool_submit_task(
         id,
-        PoolTask {
-            target: PoolTarget::Native(entry),
-            call: PoolCall::Once { arg, has_arg: has_arg != 0 },
-            result: Some(slot),
+        pool_task(
+            PoolTarget::Native(entry),
+            PoolCall::Once { arg, has_arg: has_arg != 0 },
+            Some(slot),
             ret_tag,
-        },
+        ),
     );
     handle
 }
@@ -879,12 +893,12 @@ pub unsafe extern "C" fn rnx_thread_pool_submit_closure(
     let handle = task_box_handle(&slot);
     pool_submit_task(
         id,
-        PoolTask {
-            target: PoolTarget::Closure { bbox },
-            call: PoolCall::Once { arg, has_arg: has_arg != 0 },
-            result: Some(slot),
+        pool_task(
+            PoolTarget::Closure { bbox },
+            PoolCall::Once { arg, has_arg: has_arg != 0 },
+            Some(slot),
             ret_tag,
-        },
+        ),
     );
     handle
 }
@@ -910,12 +924,12 @@ pub unsafe extern "C" fn rnx_thread_pool_parallel_closure(
             }
             pool_push_task(
                 &e,
-                PoolTask {
-                    target: PoolTarget::Closure { bbox },
-                    call: PoolCall::Range { start: s, end: hi },
-                    result: None,
-                    ret_tag: 0,
-                },
+                pool_task(
+                    PoolTarget::Closure { bbox },
+                    PoolCall::Range { start: s, end: hi },
+                    None,
+                    0,
+                ),
             );
             s = hi;
         }
@@ -938,12 +952,12 @@ pub unsafe extern "C" fn rnx_thread_pool_parallel_for(
             let hi = (s + chunk).min(end);
             pool_push_task(
                 &e,
-                PoolTask {
-                    target: PoolTarget::Native(entry),
-                    call: PoolCall::Range { start: s, end: hi },
-                    result: None,
-                    ret_tag: 0,
-                },
+                pool_task(
+                    PoolTarget::Native(entry),
+                    PoolCall::Range { start: s, end: hi },
+                    None,
+                    0,
+                ),
             );
             s = hi;
         }
@@ -985,9 +999,11 @@ pub unsafe extern "C" fn rnx_thread_spawn(
     let inner = RawEntry(entry_fn as usize);
     let pack = RawPack(Box::into_raw(Box::new((inner, 0usize))) as usize);
     let pack_addr = pack.0;
+    let residency = JitResidency::enter_addr(entry_fn as usize);
     let (id, slot) = thread_alloc();
     let handle = std::thread::Builder::new()
         .spawn(move || {
+            let _residency = residency;
             guard::guard_thread_init();
             let out = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
                 thread_main(pack_addr)
@@ -1104,6 +1120,7 @@ pub unsafe extern "C" fn rnx_thread_spawn_closure(box_ptr: *mut u8, ret_tag: u32
     unsafe {
         rnx_retain(box_ptr);
     }
+    let residency = jit_residency_for_box(box_ptr);
     let (id, slot) = thread_alloc();
     let handle = std::thread::Builder::new()
         .spawn({
@@ -1114,6 +1131,7 @@ pub unsafe extern "C" fn rnx_thread_spawn_closure(box_ptr: *mut u8, ret_tag: u32
             let arg = SendPtr(box_ptr as usize);
             let tag = SendTag(ret_tag);
             move || {
+                let _residency = residency;
                 guard::guard_thread_init();
                 let out = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     closure_thread_main(arg.0 as *mut u8, tag.0)
@@ -1135,6 +1153,18 @@ pub unsafe extern "C" fn rnx_thread_spawn_closure(box_ptr: *mut u8, ret_tag: u32
             -id
         }
     }
+}
+
+// The worker inherits the epoch of the closure it was spawned from, so the
+// module holding that code cannot be freed while the worker is alive. The
+// token is taken here, on the spawning thread, because that thread is
+// itself running module code and therefore already counted.
+fn jit_residency_for_box(box_ptr: *mut u8) -> JitResidency {
+    if box_ptr.is_null() {
+        return JitResidency::enter(0);
+    }
+    let tag = unsafe { (box_ptr.add(8) as *const u64).read_unaligned() };
+    JitResidency::enter_tag(tag)
 }
 
 #[unsafe(no_mangle)]
@@ -1685,12 +1715,12 @@ mod sync_tests {
             );
         }
         pool_set_interp_runner(probe);
-        exec_pool_task(PoolTask {
-            target: PoolTarget::Interp { module: 0, func: 0, heaps: 0 },
-            call: PoolCall::Once { arg: 0, has_arg: false },
-            result: None,
-            ret_tag: 0,
-        });
+        exec_pool_task(pool_task(
+            PoolTarget::Interp { module: 0, func: 0, heaps: 0 },
+            PoolCall::Once { arg: 0, has_arg: false },
+            None,
+            0,
+        ));
         *POOL_INTERP_RUNNER.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 

@@ -798,6 +798,7 @@ impl<'a> Machine<'a> {
                                     },
                                     result: Some(slot),
                                     ret_tag: *ret_tag,
+                                    _residency: crate::native::JitResidency::interp(),
                                 },
                             );
                             handle as i64
@@ -824,6 +825,7 @@ impl<'a> Machine<'a> {
                                 },
                                 result: Some(slot),
                                 ret_tag: *ret_tag,
+                                _residency: crate::native::JitResidency::interp(),
                             },
                         );
                         handle as i64
@@ -878,6 +880,7 @@ impl<'a> Machine<'a> {
                                 call: crate::native::PoolCall::Range { start: lo, end: hi },
                                 result: None,
                                 ret_tag: 0,
+                                _residency: crate::native::JitResidency::interp(),
                             },
                         );
                         lo = hi;

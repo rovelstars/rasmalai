@@ -262,6 +262,16 @@ pub struct Jit {
     bytes_fns: BTreeMap<String, FuncId>,
     statics: BTreeMap<String, DataId>,
     foreign_ids: BTreeMap<(String, String), FuncId>,
+    epoch: u64,
+}
+
+// Dropping a JITModule releases the memory its code lives in. Workers
+// spawned from that code keep running after the entry function returns, so
+// retiring the epoch first waits for them to leave.
+impl Drop for Jit {
+    fn drop(&mut self) {
+        runtime::native::rnx_jit_module_retire(self.epoch);
+    }
 }
 
 fn fn_sig(f: &LirFunction) -> Signature {
@@ -393,6 +403,7 @@ impl Jit {
             .finalize_definitions()
             .map_err(|e| Diagnostic::new(Code::E108, format!("finalize {sym}: {e}")))?;
         let addr = self.module.get_finalized_function(new_id) as u64;
+        runtime::native::rnx_jit_module_register(self.epoch, addr as usize, addr as usize);
         if let Some(t) = self.table.as_ref() {
             t[slot as usize].store(addr, Ordering::Release);
         }
@@ -453,6 +464,7 @@ impl Jit {
             .finalize_definitions()
             .map_err(|e| Diagnostic::new(Code::E108, format!("finalize {name}: {e}")))?;
         let addr = self.module.get_finalized_function(new_id) as u64;
+        runtime::native::rnx_jit_module_register(self.epoch, addr as usize, addr as usize);
         if let Some(t) = self.table.as_ref() {
             t[slot].store(addr, Ordering::Release);
         }
@@ -485,6 +497,9 @@ impl Jit {
 
     pub fn call(&mut self, name: &str, args: &[i64]) -> Result<i64, Diagnostic> {
         runtime::guard::guard_install();
+        // Holds this module's code mapped for the duration of the call, and
+        // covers any worker this call detaches.
+        let _residency = runtime::native::JitResidency::enter(self.epoch);
         let id = self.funcs.get(name).copied().ok_or_else(|| {
             Diagnostic::new(Code::E108, format!("unknown function `{name}`"))
         })?;
