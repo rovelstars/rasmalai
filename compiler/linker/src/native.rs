@@ -197,10 +197,41 @@ fn archive_idents(archives: &[ArchiveInput<'_>], manifest_present: bool) -> Vec<
     out
 }
 
+/// Ask the compiler driver where its startup files and runtime libraries live.
+///
+/// The native backend links `crt*.o`, `libgcc*.a` and `libc.a` itself instead of
+/// going through a driver. Scanning `/usr/lib/gcc/<triplet>/*` and taking the
+/// newest directory is not equivalent: a machine can carry several GCC
+/// toolchains, and only the one the driver defaults to supplies the object files
+/// the driver itself would have used. Mixing them changes which archive members
+/// get pulled. `libgcc_eh.a(unwind-dw2-fde-dip.o)` is a concrete case: GCC 14
+/// turned its `pthread_cond_wait`/`pthread_cond_broadcast` cancellation-probe
+/// references from weak to strong, so pairing that object with the driver's
+/// `libc.a` pulls `pthread_cond_{wait,signal,broadcast}.o` and adds their symbols
+/// to the link, where a `cc`-driven link of the same program does not.
+fn driver_dirs() -> Vec<PathBuf> {
+    static DIRS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    DIRS.get_or_init(|| {
+        let driver = std::env::var_os("RNX_CC").or_else(|| std::env::var_os("CC"));
+        let driver = driver.as_deref().unwrap_or(std::ffi::OsStr::new("cc"));
+        let Ok(out) = std::process::Command::new(driver).arg("-print-search-dirs").output() else {
+            return Vec::new();
+        };
+        let Ok(text) = String::from_utf8(out.stdout) else {
+            return Vec::new();
+        };
+        let Some(list) = text.lines().find_map(|l| l.strip_prefix("libraries:")).and_then(|l| l.split_once('=')) else {
+            return Vec::new();
+        };
+        list.1.split(':').filter(|p| !p.is_empty()).map(PathBuf::from).collect()
+    })
+    .clone()
+}
+
 fn cached_system_dirs() -> Vec<PathBuf> {
     static DIRS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
     DIRS.get_or_init(|| {
-        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut dirs: Vec<PathBuf> = driver_dirs();
         for triplet in ["x86_64-pc-linux-gnu", "x86_64-linux-gnu"] {
             let base = PathBuf::from(format!("/usr/lib/gcc/{triplet}"));
             let mut vers: Vec<PathBuf> = Vec::new();
