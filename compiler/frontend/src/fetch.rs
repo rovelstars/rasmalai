@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub const REGISTRY_SPEC: u32 = 1;
 pub const DEFAULT_REGISTRY_DOMAIN: &str = "rasmalai.rovelstars.com";
+const RESOLVE_INLINE_CHUNKS: &str = "resolve-inline-chunks";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CHUNK_BYTES: usize = 1024 * 1024;
@@ -446,6 +447,7 @@ pub struct ResolveNode {
     pub engine_range: String,
     pub deps: Vec<String>,
     pub yanked: bool,
+    pub entries: Option<Vec<ChunkEntry>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1282,6 +1284,7 @@ fn json_string(value: &JsonValue, key: &str) -> String {
 fn resolve_request_body(
     requirements: &BTreeMap<String, String>,
     have: &[HaveEntry],
+    inline_chunks: bool,
 ) -> String {
     let mut out = String::from("{\"requirements\": {");
     for (i, (full, range)) in requirements.iter().enumerate() {
@@ -1302,7 +1305,11 @@ fn resolve_request_body(
             json_escape(&h.integrity)
         ));
     }
-    out.push_str("]}");
+    out.push(']');
+    if inline_chunks {
+        out.push_str(", \"chunks\": true");
+    }
+    out.push('}');
     out
 }
 
@@ -1314,6 +1321,7 @@ pub fn resolve_requirements(
     base: &str,
     requirements: &BTreeMap<String, String>,
     have: &[HaveEntry],
+    inline_chunks: bool,
 ) -> Result<ResolveResponse, Diagnostic> {
     for (name, range) in requirements {
         if !is_valid_range(range) {
@@ -1325,7 +1333,7 @@ pub fn resolve_requirements(
             ));
         }
     }
-    let body = resolve_request_body(requirements, have);
+    let body = resolve_request_body(requirements, have, inline_chunks);
     let url = format!("{}/api/resolve", base.trim_end_matches('/'));
     let reply = http_post_json(&url, &body, "registry resolve")?;
     if reply.status == 200 {
@@ -1409,6 +1417,15 @@ fn parse_node(value: &JsonValue) -> Result<ResolveNode, Diagnostic> {
         .find(|(k, _)| k.as_str() == "yanked")
         .and_then(|(_, v)| v.as_bool())
         .unwrap_or(false);
+    // Unknown to a registry without the capability, so the field is simply
+    // absent and the download path falls back to the chunk manifest.
+    let entries = match obj.iter().find(|(k, _)| k.as_str() == "entries").map(|(_, v)| v) {
+        Some(JsonValue::Array(items)) => Some(parse_entries(
+            items,
+            "registry resolve returned malformed chunk entries",
+        )?),
+        _ => None,
+    };
     Ok(ResolveNode {
         full: req("full")?,
         version: req("version")?,
@@ -1422,6 +1439,7 @@ fn parse_node(value: &JsonValue) -> Result<ResolveNode, Diagnostic> {
             .to_string(),
         deps,
         yanked,
+        entries,
     })
 }
 
@@ -1554,7 +1572,8 @@ fn warn_if_yanked(node: &ResolveNode) {
     }
 }
 
-struct ChunkEntry {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkEntry {
     name: String,
     size: u64,
     dir: bool,
@@ -1595,7 +1614,51 @@ fn decode_chunk_manifest_body(
     ))
 }
 
+fn parse_entries(items: &[JsonValue], bad: &str) -> Result<Vec<ChunkEntry>, Diagnostic> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let obj = match item {
+            JsonValue::Object(fields) => fields,
+            _ => return Err(Diagnostic::new(Code::E108, bad)),
+        };
+        let str_field = |key: &str| {
+            obj.iter()
+                .find(|(k, _)| k == key)
+                .and_then(|(_, v)| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| Diagnostic::new(Code::E108, bad))
+        };
+        let size = obj
+            .iter()
+            .find(|(k, _)| k == "size")
+            .and_then(|(_, v)| v.as_u64())
+            .ok_or_else(|| Diagnostic::new(Code::E108, bad))?;
+        let dir = obj
+            .iter()
+            .find(|(k, _)| k == "dir")
+            .and_then(|(_, v)| v.as_bool())
+            .unwrap_or(false);
+        let hashes = match obj.iter().find(|(k, _)| k == "chunks").map(|(_, v)| v) {
+            Some(JsonValue::Array(hashes)) => {
+                let mut out = Vec::with_capacity(hashes.len());
+                for h in hashes {
+                    out.push(
+                        h.as_str()
+                            .ok_or_else(|| Diagnostic::new(Code::E108, bad))?
+                            .to_string(),
+                    );
+                }
+                out
+            }
+            _ => return Err(Diagnostic::new(Code::E108, bad)),
+        };
+        out.push(ChunkEntry { name: str_field("name")?, size, dir, chunks: hashes });
+    }
+    Ok(out)
+}
+
 fn fetch_chunks_manifest(url: &str, full: &str, version: &str, direct: bool) -> Result<Vec<ChunkEntry>, Diagnostic> {
+    let bad = format!("chunk manifest of `{full}@{version}` is malformed");
     let fetched =
         http_manifest_get(&direct_url(url, direct), &format!("chunk manifest of `{full}@{version}`"))?;
     if fetched.reply.status != 200 {
@@ -1607,67 +1670,12 @@ fn fetch_chunks_manifest(url: &str, full: &str, version: &str, direct: bool) -> 
         full,
         version,
     )?;
-    let value = parse_json(&raw).map_err(|_| {
-        Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
-    })?;
+    let value = parse_json(&raw).map_err(|_| Diagnostic::new(Code::E108, bad.clone()))?;
     let items = value
         .get("entries")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| {
-            Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
-        })?;
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        let obj = match item {
-            JsonValue::Object(fields) => fields,
-            _ => {
-                return Err(Diagnostic::new(
-                    Code::E108,
-                    format!("chunk manifest of `{full}@{version}` is malformed"),
-                ));
-            }
-        };
-        let str_field = |key: &str| {
-            obj.iter()
-                .find(|(k, _)| k == key)
-                .and_then(|(_, v)| v.as_str())
-                .map(|s| s.to_string())
-                .ok_or_else(|| {
-                    Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
-                })
-        };
-        let size = obj
-            .iter()
-            .find(|(k, _)| k == "size")
-            .and_then(|(_, v)| v.as_u64())
-            .ok_or_else(|| {
-                Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
-            })?;
-        let dir = obj
-            .iter()
-            .find(|(k, _)| k == "dir")
-            .and_then(|(_, v)| v.as_bool())
-            .unwrap_or(false);
-        let hashes = match obj.iter().find(|(k, _)| k == "chunks").map(|(_, v)| v) {
-            Some(JsonValue::Array(hashes)) => {
-                let mut out = Vec::with_capacity(hashes.len());
-                for h in hashes {
-                    out.push(h.as_str().ok_or_else(|| {
-                        Diagnostic::new(Code::E108, format!("chunk manifest of `{full}@{version}` is malformed"))
-                    })?.to_string());
-                }
-                out
-            }
-            _ => {
-                return Err(Diagnostic::new(
-                    Code::E108,
-                    format!("chunk manifest of `{full}@{version}` is malformed"),
-                ));
-            }
-        };
-        out.push(ChunkEntry { name: str_field("name")?, size, dir, chunks: hashes });
-    }
-    Ok(out)
+        .ok_or_else(|| Diagnostic::new(Code::E108, bad.clone()))?;
+    parse_entries(items, &bad)
 }
 
 fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str, direct: bool) -> Result<Vec<u8>, Diagnostic> {
@@ -2238,7 +2246,15 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
         // which the guarded retry below re-reads origin-direct.
         let manifest_direct = outer_direct || retry_direct;
         let chunk_direct = retry_direct;
-        let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version, manifest_direct)?;
+        // Inline entries ride along with resolve and cost no request; the
+        // guarded retry always re-reads the chunk manifest origin-direct, so
+        // an entry list from a stale generation still fails into that path
+        // instead of silently installing the wrong bytes.
+        let inlined = if retry_direct { None } else { node.entries.as_ref() };
+        let entries: Vec<ChunkEntry> = match inlined {
+            Some(entries) => entries.clone(),
+            None => fetch_chunks_manifest(&manifest_url, &node.full, &node.version, manifest_direct)?,
+        };
         let mut uniq: BTreeSet<String> = BTreeSet::new();
         for entry in &entries {
             for hash in &entry.chunks {
@@ -2340,8 +2356,16 @@ pub fn ensure_registry_requirements(
     }
     let mut out: BTreeMap<String, FetchedPackage> = BTreeMap::new();
     for (base, reqs) in &by_base {
-        discover(base)?;
-        let response = resolve_requirements(base, reqs, have)?;
+        let discovery = discover(base)?;
+        let inline_chunks = discovery.capabilities.iter().any(|c| c == RESOLVE_INLINE_CHUNKS);
+        let mut response = resolve_requirements(base, reqs, have, inline_chunks)?;
+        if !inline_chunks {
+            for level in &mut response.levels {
+                for node in level {
+                    node.entries = None;
+                }
+            }
+        }
         let api_base = api_base_for(&response.base, base);
         let mut nodes: BTreeMap<(String, String), &ResolveNode> = BTreeMap::new();
         for level in &response.levels {
@@ -2492,8 +2516,18 @@ pub(crate) mod testkit {
         pub body: Vec<u8>,
     }
 
+    pub fn version_body(spec: u32, capabilities: &[&str]) -> String {
+        let list = capabilities
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{{\"spec\": {spec}, \"capabilities\": [{list}], \"registry\": \"test\"}}")
+    }
+
     pub struct MockConfig {
         pub version_spec: u32,
+        pub capabilities: Vec<&'static str>,
         pub resolve_status: u16,
         pub resolve_body: String,
         pub manifest_status: u16,
@@ -2667,10 +2701,7 @@ pub(crate) mod testkit {
                     let spec = config.version_spec.to_string();
                     let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", Box::leak(spec.into_boxed_str()) as &str)];
                     if method == "GET" && route == "/api/version" {
-                        let body = format!(
-                            "{{\"spec\": {}, \"capabilities\": [\"tombstones\"], \"registry\": \"test\"}}",
-                            config.version_spec
-                        );
+                        let body = version_body(config.version_spec, &config.capabilities);
                         respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
                     } else if method == "POST" && route == "/api/resolve" {
                         respond(
@@ -2791,10 +2822,7 @@ pub(crate) mod testkit {
                     let spec = config.version_spec.to_string();
                     let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", Box::leak(spec.into_boxed_str()) as &str)];
                     if method == "GET" && route == "/api/version" {
-                        let body = format!(
-                            "{{\"spec\": {}, \"capabilities\": [\"tombstones\"], \"registry\": \"test\"}}",
-                            config.version_spec
-                        );
+                        let body = version_body(config.version_spec, &config.capabilities);
                         respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
                     } else if method == "POST" && route == "/api/resolve" {
                         respond(
@@ -3058,6 +3086,50 @@ pub(crate) mod testkit {
         node_engine_json(full, version, integrity, yanked, "")
     }
 
+    // A resolve node carrying the chunk list the server would otherwise make
+    // the client fetch from `{path}`. `manifest_json` is the `{entries:[...]}`
+    // document `/chunks` serves; the resolve node carries the bare array.
+    pub fn node_json_inline(
+        full: &str,
+        version: &str,
+        integrity: &str,
+        manifest_json: &str,
+    ) -> String {
+        let entries = inline_entries_json(manifest_json);
+        format!(
+            "{{\"full\": \"{full}\", \"version\": \"{version}\", \"path\": \"{full}@{version}/chunks\", \"integrity\": \"{integrity}\", \"engineRange\": \"\", \"deps\": [], \"yanked\": false, \"entries\": {entries}}}"
+        )
+    }
+
+    // The testkit has no JSON writer, so hand-render the entry objects.
+    fn inline_entries_json(manifest_json: &str) -> String {
+        let value = parse_json(manifest_json.as_bytes()).unwrap();
+        let Some(items) = value.get("entries").and_then(|v| v.as_array()) else {
+            return "null".to_string();
+        };
+        let rendered: Vec<String> = items
+            .iter()
+            .map(|item| {
+                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                let size = item.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                let dir = item.get("dir").and_then(|v| v.as_bool()).unwrap_or(false);
+                let chunks = match item.get("chunks").and_then(|v| v.as_array()) {
+                    Some(list) => list
+                        .iter()
+                        .map(|h| format!("\"{}\"", h.as_str().unwrap_or_default()))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    None => String::new(),
+                };
+                format!(
+                    "{{\"name\":\"{}\",\"size\":{size},\"dir\":{dir},\"chunks\":[{chunks}]}}",
+                    json_escape(name)
+                )
+            })
+            .collect();
+        format!("[{}]", rendered.join(","))
+    }
+
     pub fn node_engine_json(
         full: &str,
         version: &str,
@@ -3071,6 +3143,10 @@ pub(crate) mod testkit {
     }
 
     pub fn resolve_json_static(nodes: &[String]) -> String {
+        resolve_json_chunks(nodes, None)
+    }
+
+    pub fn resolve_json_chunks(nodes: &[String], chunks: Option<&str>) -> String {
         let mut resolved = String::new();
         for node in nodes {
             let value = parse_json(node.as_bytes()).unwrap();
@@ -3081,8 +3157,9 @@ pub(crate) mod testkit {
             }
             resolved.push_str(&format!("\"{full}\": \"{version}\""));
         }
+        let switch = chunks.map(|c| format!(", \"chunks\": \"{c}\"")).unwrap_or_default();
         format!(
-            "{{\"resolved\": {{{resolved}}}, \"base\": \"\", \"levels\": [[{}]]}}",
+            "{{\"resolved\": {{{resolved}}}, \"base\": \"\", \"levels\": [[{}]]{switch}}}",
             nodes.join(", ")
         )
     }
@@ -3218,6 +3295,7 @@ mod tests {
     ) -> MockRegistry {
         MockRegistry::start(MockConfig {
             version_spec,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(nodes),
             manifest_status,
@@ -3306,6 +3384,7 @@ mod tests {
         let (_guard, _dir) = isolate_cache("retry503");
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 503,
             resolve_body: "store unavailable".to_string(),
             manifest_status: 200,
@@ -3333,6 +3412,7 @@ mod tests {
         let node = node_json("@acme/widget", "1.2.0", &sha, false);
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -3407,6 +3487,7 @@ mod tests {
         let node = node_json("@acme/widget", "1.2.0", &tar_sha, false);
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -3443,6 +3524,7 @@ mod tests {
         );
         let config = MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -3533,6 +3615,7 @@ mod tests {
         let node = node_json("@acme/widget", "1.2.0", &sha, false);
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -3585,6 +3668,7 @@ mod tests {
         let node = node_json("@acme/widget", "1.2.0", &"0".repeat(64), false);
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -3625,6 +3709,7 @@ mod tests {
         let node = node_json("test/direct", "1.0.0", integrity, false);
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -3694,6 +3779,7 @@ mod tests {
         );
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -3747,6 +3833,7 @@ mod tests {
         );
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -3794,6 +3881,7 @@ mod tests {
         let node = node_json("test/direct", "1.0.0", &"0".repeat(64), false);
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -3847,6 +3935,7 @@ mod tests {
         let node = node_json("test/direct", "1.0.0", &"0".repeat(64), false);
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
             manifest_status: 200,
@@ -4124,6 +4213,217 @@ mod tests {
         let _ = server;
     }
 
+#[test]
+    fn inline_entries_skip_the_chunk_manifest_get() {
+        let (_guard, _dir) = isolate_cache("inline");
+        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
+        let manifest = fallback_manifest(&gz);
+        let node = node_json_inline("@acme/widget", "1.2.0", &sha, &manifest);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            capabilities: vec!["tombstones", RESOLVE_INLINE_CHUNKS],
+            resolve_status: 200,
+            resolve_body: resolve_json_chunks(&[node], Some("inline")),
+            manifest_status: 200,
+            fallback_tarball: gz.clone(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: None,
+        });
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        // No `/chunks` document was fetched: the resolve body carried it.
+        assert_eq!(server.count_get("/chunks"), 0);
+        let main = std::fs::read_to_string(fetched[0].dir.join("src").join("main.rnx")).unwrap();
+        assert!(main.contains("hello"), "{main}");
+        // The request advertises the opt-in so the server knows to inline.
+        let bodies = server.resolve_bodies();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0].get("chunks").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn no_capability_means_no_inline_opt_in() {
+        let (_guard, _dir) = isolate_cache("nocap");
+        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
+        // The node carries entries, but discovery never advertised the
+        // capability, so the client must ignore them and ask for the document.
+        let manifest = fallback_manifest(&gz);
+        let node = node_json_inline("@acme/widget", "1.2.0", &sha, &manifest);
+        let server = start_ok(1, &[node], gz, 200, "");
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(server.count_get("/chunks"), 1);
+        let bodies = server.resolve_bodies();
+        assert_eq!(bodies[0].get("chunks"), None);
+    }
+
+    #[test]
+    fn links_switch_falls_back_to_the_chunk_manifest_get() {
+        let (_guard, _dir) = isolate_cache("links");
+        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
+        // The server overran its inline cap and said "links": the node has no
+        // entries at all and the client must read the document.
+        let manifest = fallback_manifest(&gz);
+        let node = node_json("@acme/widget", "1.2.0", &sha, false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            capabilities: vec!["tombstones", RESOLVE_INLINE_CHUNKS],
+            resolve_status: 200,
+            resolve_body: resolve_json_chunks(&[node], Some("links")),
+            manifest_status: 200,
+            fallback_tarball: gz.clone(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: None,
+        });
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(server.count_get("/chunks"), 1);
+        let main = std::fs::read_to_string(fetched[0].dir.join("src").join("main.rnx")).unwrap();
+        assert!(main.contains("hello"), "{main}");
+    }
+
+    #[test]
+    fn inline_entries_that_fail_verification_retry_the_manifest() {
+        let (_guard, _dir) = isolate_cache("inlinegen");
+        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
+        // A stale generation: the inlined list names a hash that is not the
+        // tarball, so verification must fail and the guarded retry re-read the
+        // chunk manifest origin-direct.
+        let stale = format!(
+            "{{\"entries\": [{{\"name\": \"\", \"size\": {}, \"dir\": false, \"chunks\": [\"{}\"]}}]}}",
+            gz.len(),
+            "0".repeat(64)
+        );
+        let node = node_json_inline("@acme/widget", "1.2.0", &sha, &stale);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            capabilities: vec!["tombstones", RESOLVE_INLINE_CHUNKS],
+            resolve_status: 200,
+            resolve_body: resolve_json_chunks(&[node], Some("inline")),
+            manifest_status: 200,
+            fallback_tarball: gz.clone(),
+            manifest_error: String::new(),
+            manifest_override: Some(fallback_manifest(&gz)),
+            chunk_override: None,
+        });
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(server.count_get("/chunks"), 1, "retry must re-read the manifest");
+        let main = std::fs::read_to_string(fetched[0].dir.join("src").join("main.rnx")).unwrap();
+        assert!(main.contains("hello"), "{main}");
+    }
+
+    #[test]
+    fn inline_entries_never_install_wrong_bytes() {
+        let (_guard, _dir) = isolate_cache("inlinewrong");
+        let (gz, _sha) = fixture_tarball("@acme/widget", "1.2.0");
+        // integrity and the inlined list both name the good tarball, but the
+        // chunk route serves different bytes: the digest check must abort.
+        let good_sha = Sha256::hexdigest(&gz);
+        let manifest = fallback_manifest(&gz);
+        let node = node_json_inline("@acme/widget", "1.2.0", &good_sha, &manifest);
+        let evil = b"not the tarball".to_vec();
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            capabilities: vec!["tombstones", RESOLVE_INLINE_CHUNKS],
+            resolve_status: 200,
+            resolve_body: resolve_json_chunks(&[node], Some("inline")),
+            manifest_status: 200,
+            fallback_tarball: gz.clone(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(vec![(good_sha.clone(), evil)]),
+        });
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("checksum mismatch") || err.message.contains("integrity check"),
+            "{}",
+            err.message
+        );
+        assert!(scan_cache_have().is_empty());
+    }
+
+    #[test]
+    fn parse_node_ignores_entries_when_absent() {
+        let body = br#"{"resolved": {"a": "1.0.0"}, "base": "", "levels": [[{"full": "a", "version": "1.0.0", "path": "a@1.0.0/chunks", "integrity": "x", "engineRange": "", "deps": [], "yanked": false}]]}"#;
+        let out = parse_resolve(body).unwrap();
+        assert_eq!(out.levels[0][0].entries, None);
+    }
+
+    #[test]
+    fn parse_node_reads_inline_entries() {
+        let body = br#"{"resolved": {"a": "1.0.0"}, "base": "", "levels": [[{"full": "a", "version": "1.0.0", "path": "a@1.0.0/chunks", "integrity": "x", "engineRange": "", "deps": [], "yanked": false, "entries": [{"name": "src/main.rnx", "size": 7, "dir": false, "chunks": ["ab"]}]}]], "chunks": "inline"}"#;
+        let out = parse_resolve(body).unwrap();
+        let entries = out.levels[0][0].entries.as_ref().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "src/main.rnx");
+        assert_eq!(entries[0].size, 7);
+        assert!(!entries[0].dir);
+        assert_eq!(entries[0].chunks, vec!["ab".to_string()]);
+    }
+
+    #[test]
+    fn parse_node_rejects_malformed_inline_entries() {
+        let body = br#"{"resolved": {"a": "1.0.0"}, "base": "", "levels": [[{"full": "a", "version": "1.0.0", "path": "a@1.0.0/chunks", "integrity": "x", "engineRange": "", "deps": [], "yanked": false, "entries": [{"name": "a", "size": "seven", "dir": false, "chunks": []}]}]]}"#;
+        let err = parse_resolve(body).unwrap_err();
+        assert!(err.message.contains("chunk entries"), "{}", err.message);
+    }
+
+    #[test]
+    fn resolve_body_carries_the_inline_flag_only_when_asked() {
+        let reqs = requirements_for("a", "*");
+        let plain = resolve_request_body(&reqs, &[], false);
+        assert!(!plain.contains("chunks"), "{plain}");
+        let opted = resolve_request_body(&reqs, &[], true);
+        assert!(opted.contains("\"chunks\": true"), "{opted}");
+        assert!(parse_json(opted.as_bytes()).is_ok());
+        let with_have = resolve_request_body(
+            &reqs,
+            &[HaveEntry { full: "a".into(), version: "1.0.0".into(), integrity: "s".into() }],
+            true,
+        );
+        let parsed = parse_json(with_have.as_bytes()).unwrap();
+        assert_eq!(parsed.get("chunks").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(parsed.get("have").and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
+    }
+
     #[test]
     fn multipackage_cache_hits_issue_zero_chunk_requests() {
         let (_guard, _dir) = isolate_cache("multihit");
@@ -4352,6 +4652,7 @@ mod tests {
         MockRegistry::start_encoded(
             MockConfig {
                 version_spec: 1,
+                capabilities: vec!["tombstones"],
                 resolve_status: 200,
                 resolve_body: resolve_json_static(&[node.to_string()]),
                 manifest_status: 200,

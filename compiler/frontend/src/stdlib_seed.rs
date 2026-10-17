@@ -390,6 +390,7 @@ mod tests {
         let (gz, sha) = fixture_tarball("@std/seed", version);
         let server = MockRegistry::start(MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&std_nodes(version, &sha)),
             manifest_status: 200,

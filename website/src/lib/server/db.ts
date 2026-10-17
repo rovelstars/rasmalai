@@ -886,9 +886,13 @@ export async function publishPackage(
 					reason: c.reason
 				})
 				.onConflictDoNothing()
-		)
+		),
+		// Appended last: the audit row above reads changes() from the version
+		// insert at index 2, so the generation bump must not land before it.
+		generationBump(db)
 	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 	const created = (applied[2]?.rowsAffected ?? 0) > 0;
+	noteMutation();
 	return { name: parsed.full, version: p.version, created };
 }
 
@@ -1081,8 +1085,10 @@ export async function yankVersion(
 		db.run(
 			sql`INSERT INTO audit_log (action, full_name, version, created_at)
 			      SELECT 'yank', ${parsed.full}, ${version}, ${now} WHERE changes() > 0`
-		)
+		),
+		generationBump(db)
 	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	noteMutation();
 	return (applied[0]?.rowsAffected ?? 0) > 0;
 }
 
@@ -1208,7 +1214,9 @@ export async function transferScope(
 			createdAt: now
 		})
 	);
+	stmts.push(generationBump(db));
 	await db.batch(stmts as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	noteMutation();
 }
 
 export async function putChunk(
@@ -1482,6 +1490,7 @@ export interface ResolveNode {
 	engineRange: string;
 	deps: string[];
 	yanked: boolean;
+	entries?: TarEntryRef[];
 }
 
 export interface HaveEntry {
@@ -1495,25 +1504,364 @@ export function pruneHit(have: HaveEntry[], full: string, version: string, sha: 
 	return have.some((h) => h.full === full && h.version === version && h.integrity === sha);
 }
 
+// Section 16 budgets. A resolve is one HTTP request with a fixed subrequest
+// ceiling, so an unbounded closure has to fail with a named error instead of
+// a hang or a 500.
+export const RESOLVE_MAX_DEPTH = 64;
+export const RESOLVE_MAX_NODES = 512;
+export const RESOLVE_MAX_FRONTIER = 512;
+export const RESOLVE_MAX_CANDIDATES = 4096;
+export const RESOLVE_MAX_INLINE_BYTES = 256 * 1024;
+// SQLite caps bound parameters per statement; OR-expanded name lists are
+// chunked to stay under it (2 params per name, 3 per version pick).
+const RESOLVE_SQL_MAX_PARAMS = 100;
+
+export const GENERATION_KEY = 'registry_generation';
+export const VERSION_INDEX_TTL_MS = 30_000;
+const VERSION_INDEX_MAX = 4096;
+
+// Bumped inside the same batch as every publish, yank, tombstone and
+// transfer, so a mutation invalidates every generation-keyed artifact by
+// construction and correctness never depends on the purge API answering.
+const GENERATION_BUMP_SQL = `INSERT INTO meta (key, value) VALUES ('registry_generation', '1')
+	ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`;
+
+function generationBump(db: Ddb): BatchItem<'sqlite'> {
+	return db.run(sql.raw(GENERATION_BUMP_SQL)) as unknown as BatchItem<'sqlite'>;
+}
+
+export async function readRegistryGeneration(env: Record<string, string | undefined>): Promise<number> {
+	const raw = getClient(env);
+	if (!raw) return 0;
+	try {
+		const rs = await raw.execute({ sql: 'SELECT value FROM meta WHERE key = ?', args: [GENERATION_KEY] });
+		const n = Number(rs.rows[0]?.['value'] ?? 0);
+		return Number.isFinite(n) && n > 0 ? n : 0;
+	} catch {
+		return 0;
+	}
+}
+
+// Isolate-scope memo of candidate version lists, keyed by package name. It
+// cannot serve a stale withdrawal: it stores only the live+yanked version
+// strings, while the chosen row and the tombstones subquery are read fresh on
+// every request. A version yanked inside the TTL is still a candidate, the
+// row read returns its yanked status, and a tombstone inside the TTL is
+// caught by that subquery.
+const versionIndex = new Map<string, { at: number; versions: string[] }>();
+
+export function versionIndexEntries(): number {
+	return versionIndex.size;
+}
+
+export function clearVersionIndex(): void {
+	versionIndex.clear();
+}
+
+function versionIndexGet(full: string): string[] | null {
+	const hit = versionIndex.get(full);
+	if (!hit) return null;
+	if (Date.now() - hit.at >= VERSION_INDEX_TTL_MS) {
+		versionIndex.delete(full);
+		return null;
+	}
+	return hit.versions;
+}
+
+function versionIndexSet(full: string, versions: string[]): void {
+	versionIndex.delete(full);
+	versionIndex.set(full, { at: Date.now(), versions });
+	while (versionIndex.size > VERSION_INDEX_MAX) {
+		const oldest = versionIndex.keys().next();
+		if (oldest.done) break;
+		versionIndex.delete(oldest.value);
+	}
+}
+
+function noteMutation(): void {
+	clearVersionIndex();
+}
+
+function budgetError(what: string): Error {
+	return new Error(`resolve budget exceeded: ${what}`);
+}
+
+interface ResolveRow {
+	version: string;
+	status: string;
+	tarballSha256: string;
+	engineRange: string;
+	manifestJson: string;
+	tarManifestJson: string;
+	withdrawn: boolean;
+}
+
+const CANDIDATE_SQL_HEAD = `SELECT p.scope AS scope, p.name AS name, v.version AS version
+	FROM package_versions v JOIN packages p ON p.id = v.package_id
+	WHERE v.status IN ('live', 'yanked') AND (`;
+const CANDIDATE_SQL_TAIL = `)
+	ORDER BY p.scope, p.name, ${SEMVER_ORDER}`;
+
+function pickedRowSql(inline: boolean): string {
+	// doc_json, guides_json, checksum, request_id and created_at are selected
+	// by getVersionRow for the /api routes and are not read here; dropping them
+	// keeps up to 1 MiB of jsdoc per package off the resolve read.
+	return `SELECT p.scope AS scope, p.name AS name,
+	v.version AS version, v.status AS status, v.tarball_sha256 AS tarball_sha256,
+	v.engine_range AS engine_range, v.manifest_json AS manifest_json,
+	(SELECT 1 FROM tombstones t WHERE t.package_id = p.id AND t.version = v.version) AS withdrawn${
+		inline ? ', v.tar_manifest_json AS tar_manifest_json' : ''
+	}
+	FROM package_versions v JOIN packages p ON p.id = v.package_id
+	WHERE `;
+}
+
+async function resolveCandidates(
+	raw: Client | null,
+	fulls: string[]
+): Promise<Map<string, string[]>> {
+	const out = new Map<string, string[]>();
+	const want: Array<{ full: string; scope: string; name: string }> = [];
+	for (const full of fulls) {
+		const parsed = parsePackageName(full);
+		// An unparseable name has no packages row, which is the same answer as
+		// an empty candidate list and keeps `package X does not exist` intact.
+		if (parsed) want.push({ full, scope: parsed.scope, name: parsed.name });
+		else out.set(full, []);
+	}
+	if (raw === null || want.length === 0) {
+		for (const w of want) out.set(w.full, []);
+		return out;
+	}
+	const groups = chunked(want, Math.max(1, Math.floor(RESOLVE_SQL_MAX_PARAMS / 2)));
+	const results = await raw.batch(
+		groups.map((group) => ({
+			sql: `${CANDIDATE_SQL_HEAD}${group.map(() => '(p.scope = ? AND p.name = ?)').join(' OR ')}${CANDIDATE_SQL_TAIL}`,
+			args: group.flatMap((w) => [w.scope, w.name])
+		}))
+	);
+	for (let i = 0; i < groups.length; i++) {
+		for (const row of results[i].rows) {
+			const scope = String(row['scope'] ?? '');
+			const name = String(row['name'] ?? '');
+			const full = scope ? `@${scope}/${name}` : name;
+			const list = out.get(full) ?? [];
+			list.push(String(row['version']));
+			out.set(full, list);
+		}
+	}
+	for (const w of want) if (!out.has(w.full)) out.set(w.full, []);
+	return out;
+}
+
+async function resolvePickedRows(
+	raw: Client | null,
+	picks: Array<{ full: string; version: string }>,
+	inline: boolean
+): Promise<Map<string, ResolveRow>> {
+	const out = new Map<string, ResolveRow>();
+	if (raw === null || picks.length === 0) return out;
+	const groups = chunked(picks, Math.max(1, Math.floor(RESOLVE_SQL_MAX_PARAMS / 3)));
+	const head = pickedRowSql(inline);
+	const results = await raw.batch(
+		groups.map((group) => ({
+			sql: `${head}${group.map(() => '(p.scope = ? AND p.name = ? AND v.version = ?)').join(' OR ')}`,
+			args: group.flatMap((p) => {
+				const parsed = parsePackageName(p.full);
+				return [parsed?.scope ?? '', parsed?.name ?? p.full, p.version];
+			})
+		}))
+	);
+	for (let i = 0; i < groups.length; i++) {
+		for (const row of results[i].rows) {
+			const scope = String(row['scope'] ?? '');
+			const name = String(row['name'] ?? '');
+			const full = scope ? `@${scope}/${name}` : name;
+			const version = String(row['version'] ?? '');
+			out.set(`${full}@${version}`, {
+				version,
+				status: String(row['status'] ?? 'live'),
+				tarballSha256: String(row['tarball_sha256'] ?? ''),
+				engineRange: String(row['engine_range'] ?? ''),
+				manifestJson: String(row['manifest_json'] ?? '{}'),
+				tarManifestJson: String(row['tar_manifest_json'] ?? '[]'),
+				withdrawn: row['withdrawn'] !== null && row['withdrawn'] !== undefined
+			});
+		}
+	}
+	return out;
+}
+
+function manifestDeps(row: ResolveRow): Array<[string, string]> {
+	const out: Array<[string, string]> = [];
+	let deps: Record<string, unknown> = {};
+	try {
+		const manifest = JSON.parse(row.manifestJson) as Record<string, unknown>;
+		if (manifest['deps'] && typeof manifest['deps'] === 'object') {
+			deps = manifest['deps'] as Record<string, unknown>;
+		}
+	} catch {
+		deps = {};
+	}
+	for (const [name, depRange] of Object.entries(deps)) out.push([name, String(depRange)]);
+	return out;
+}
+
+function resolveEntries(text: string): TarEntryRef[] | null {
+	try {
+		const value = JSON.parse(text) as unknown;
+		return Array.isArray(value) ? (value as TarEntryRef[]) : null;
+	} catch {
+		return null;
+	}
+}
+
+export interface ResolveOptions {
+	inlineChunks?: boolean;
+	advertiseChunks?: boolean;
+}
+
+// Frontier expansion is level-batched: one batched IN-statement for the
+// candidate versions and one for the picked rows per level, so a 17-package
+// resolve costs two store round trips instead of 35. The batched pass only
+// gathers rows; picking, conflict detection, cycle surfacing and node order
+// all run in the same DFS replay the serial version used, so `resolved`,
+// `levels` and every error string are unchanged.
 export async function resolveGraph(
 	env: Record<string, string | undefined>,
 	requirements: Record<string, string>,
-	have: HaveEntry[]
-): Promise<{ resolved: Record<string, string>; levels: ResolveNode[][] }> {
+	have: HaveEntry[],
+	options: ResolveOptions = {}
+): Promise<{ resolved: Record<string, string>; levels: ResolveNode[][]; chunks: string | null }> {
+	const inline = options.inlineChunks === true;
+	await getDdb(env);
+	const raw = getClient(env);
+
+	const roots = Object.entries(requirements).map(([full, range]) => [full, String(range)] as const);
+	for (const [full] of roots) {
+		if (!parsePackageName(full)) throw new Error(`invalid package name: ${full}`);
+	}
+
+	const candidates = new Map<string, string[]>();
+	const rows = new Map<string, ResolveRow>();
+	const depCache = new Map<string, Array<[string, string]>>();
+	const ranges = new Map<string, string[]>();
+	const blocked = new Set<string>();
+
+	const depsOf = (id: string, row: ResolveRow): Array<[string, string]> => {
+		let cached = depCache.get(id);
+		if (!cached) {
+			cached = manifestDeps(row);
+			depCache.set(id, cached);
+		}
+		return cached;
+	};
+
+	const addRange = (full: string, range: string): boolean => {
+		if (blocked.has(full)) return false;
+		const list = ranges.get(full);
+		if (list) {
+			list.push(range);
+			return false;
+		}
+		ranges.set(full, [range]);
+		return true;
+	};
+
+	for (const [full, range] of roots) addRange(full, range);
+	let frontier = [...ranges.keys()].sort();
+	let depth = 0;
+	let visited = 0;
+
+	while (frontier.length > 0) {
+		depth += 1;
+		if (depth > RESOLVE_MAX_DEPTH) throw budgetError(`traversal depth over ${RESOLVE_MAX_DEPTH}`);
+		if (frontier.length > RESOLVE_MAX_FRONTIER) {
+			throw budgetError(`frontier width over ${RESOLVE_MAX_FRONTIER}`);
+		}
+
+		const memoHit: Array<[string, string[]]> = [];
+		const missing: string[] = [];
+		for (const full of frontier) {
+			if (candidates.has(full)) continue;
+			const hit = versionIndexGet(full);
+			if (hit) memoHit.push([full, hit]);
+			else missing.push(full);
+		}
+		if (missing.length > 0) {
+			const fresh = await resolveCandidates(raw, missing);
+			for (const [full, list] of fresh) {
+				candidates.set(full, list);
+				versionIndexSet(full, list);
+			}
+		}
+		for (const [full, list] of memoHit) candidates.set(full, list);
+
+		let candidateCount = 0;
+		for (const full of frontier) candidateCount += candidates.get(full)?.length ?? 0;
+		if (candidateCount > RESOLVE_MAX_CANDIDATES) {
+			throw budgetError(`candidate count over ${RESOLVE_MAX_CANDIDATES}`);
+		}
+
+		// Every accumulated range's pick is loaded, not just the first one:
+		// the replay picks with whichever range it reaches first, and that
+		// range is always already known here because its parent sits one level
+		// closer to the roots.
+		const picksByName = new Map<string, string[]>();
+		const wanted: Array<{ full: string; version: string }> = [];
+		for (const full of frontier) {
+			const versions = candidates.get(full) ?? [];
+			const picked: string[] = [];
+			for (const range of ranges.get(full) ?? []) {
+				const pick = maxSatisfying(versions, range);
+				if (!pick || picked.includes(pick)) continue;
+				picked.push(pick);
+				wanted.push({ full, version: pick });
+			}
+			if (picked.length === 0) blocked.add(full);
+			picksByName.set(full, picked);
+		}
+		for (const [id, row] of await resolvePickedRows(raw, wanted, inline)) rows.set(id, row);
+
+		const next: string[] = [];
+		for (const full of frontier) {
+			visited += 1;
+			if (visited > RESOLVE_MAX_NODES) throw budgetError(`closure over ${RESOLVE_MAX_NODES} nodes`);
+			for (const version of picksByName.get(full) ?? []) {
+				const id = `${full}@${version}`;
+				const row = rows.get(id);
+				if (!row) continue;
+				if (pruneHit(have, full, version, row.tarballSha256)) continue;
+				for (const [name, range] of depsOf(id, row)) {
+					if (addRange(name, range)) next.push(name);
+				}
+			}
+		}
+		frontier = next.sort();
+	}
+
+	const makeNode = (full: string, version: string, row: ResolveRow, deps: string[]): ResolveNode => ({
+		full,
+		version,
+		path: `${full}@${version}/chunks`,
+		integrity: row.tarballSha256,
+		engineRange: row.engineRange,
+		deps,
+		yanked: row.status === 'yanked'
+	});
+
 	const memo = new Map<string, ResolveNode>();
-	const visiting: string[] = [];
 	const resolved: Record<string, string> = {};
 
-	const preloaded = await listLiveVersionsBatch(env, Object.keys(requirements));
-
-	const visit = async (full: string, range: string): Promise<string> => {
-		if (resolved[full]) {
-			if (!satisfiesRange(resolved[full], range)) {
-				throw new Error(`conflicting ranges for ${full}: ${resolved[full]} does not satisfy ${range}`);
+	const visit = (full: string, range: string): string => {
+		const known = resolved[full];
+		if (known) {
+			if (!satisfiesRange(known, range)) {
+				throw new Error(`conflicting ranges for ${full}: ${known} does not satisfy ${range}`);
 			}
-			return resolved[full];
+			return known;
 		}
-		const versions = preloaded.get(full) ?? (await listLiveVersions(env, full));
+		const versions = candidates.get(full) ?? [];
 		const pick = maxSatisfying(versions, range);
 		if (!pick) {
 			throw new Error(
@@ -1525,69 +1873,54 @@ export async function resolveGraph(
 		resolved[full] = pick;
 		const id = `${full}@${pick}`;
 		if (memo.has(id)) return pick;
-		if (visiting.includes(id)) {
-			throw new Error(`dependency cycle: ${[...visiting, id].join(' -> ')}`);
+		const row = rows.get(id);
+		if (!row) throw new Error(`package ${id} does not exist`);
+		if (pruneHit(have, full, pick, row.tarballSha256)) {
+			memo.set(id, makeNode(full, pick, row, []));
+			return pick;
 		}
-		visiting.push(id);
-		try {
-			const found = await getVersionRow(env, full, pick);
-			if (!found) throw new Error(`package ${id} does not exist`);
-			const { row } = found;
-			if (pruneHit(have, full, pick, row.tarballSha256)) {
-				memo.set(id, {
-					full,
-					version: pick,
-					path: `${full}@${pick}/chunks`,
-					integrity: row.tarballSha256,
-					engineRange: row.engineRange,
-					deps: [],
-					yanked: row.status === 'yanked'
-				});
-				visiting.pop();
-				return pick;
-			}
-			let deps: Record<string, string> = {};
-			try {
-				const manifest = JSON.parse(row.manifestJson) as Record<string, unknown>;
-				if (manifest['deps'] && typeof manifest['deps'] === 'object') {
-					deps = manifest['deps'] as Record<string, string>;
-				}
-			} catch {
-				deps = {};
-			}
-			const depIds: string[] = [];
-			for (const [name, depRange] of Object.entries(deps)) {
-				const depVersion = await visit(name, String(depRange));
-				depIds.push(`${name}@${depVersion}`);
-			}
-			memo.set(id, {
-				full,
-				version: pick,
-				path: `${full}@${pick}/chunks`,
-				integrity: row.tarballSha256,
-				engineRange: row.engineRange,
-				deps: depIds.map((d) => d.split('@').slice(0, -1).join('@')),
-				yanked: row.status === 'yanked'
-			});
-		} finally {
-			visiting.pop();
+		const depNames: string[] = [];
+		for (const [name, depRange] of depsOf(id, row)) {
+			depNames.push(name);
+			visit(name, depRange);
 		}
+		memo.set(id, makeNode(full, pick, row, depNames));
 		return pick;
 	};
 
-	for (const [full, range] of Object.entries(requirements)) {
-		if (!parsePackageName(full)) throw new Error(`invalid package name: ${full}`);
-	}
-	for (const [full, range] of Object.entries(requirements)) {
-		await visit(full, String(range));
-	}
+	for (const [full, range] of roots) visit(full, range);
 	const nodes = [...memo.values()];
-	const order = levelize(nodes.map((n) => ({ id: `${n.full}@${n.version}`, deps: n.deps.map((d) => {
-		const v = resolved[d];
-		return v ? `${d}@${v}` : d;
-	}) })));
 	const byId = new Map(nodes.map((n) => [`${n.full}@${n.version}`, n]));
-	return { resolved, levels: order.map((ids) => ids.map((id) => byId.get(id)!)) };
+	const order = levelize(nodes.map((n) => ({
+		id: `${n.full}@${n.version}`,
+		deps: n.deps.map((d) => {
+			const v = resolved[d];
+			return v ? `${d}@${v}` : d;
+		})
+	})));
+
+	// One global switch, decided from the stored rows alone: over the cap the
+	// whole response falls back to links and no node carries entries.
+	let withEntries = inline;
+	if (withEntries) {
+		let total = 0;
+		for (const node of nodes) total += rows.get(`${node.full}@${node.version}`)?.tarManifestJson.length ?? 0;
+		if (total > RESOLVE_MAX_INLINE_BYTES) withEntries = false;
+	}
+	if (withEntries) {
+		for (const node of nodes) {
+			const row = rows.get(`${node.full}@${node.version}`);
+			if (!row) continue;
+			const entries = resolveEntries(row.tarManifestJson);
+			if (entries) node.entries = entries;
+		}
+	}
+
+	return {
+		resolved,
+		levels: order.map((ids) => ids.map((id) => byId.get(id)!)),
+		chunks: options.advertiseChunks === true ? (withEntries ? 'inline' : 'links') : null
+	};
 }
 
 export interface BenchmarkRun {
@@ -1764,6 +2097,8 @@ export async function recordTombstone(
 			version,
 			detailsJson: JSON.stringify({ reason }),
 			createdAt: now
-		})
+		}),
+		generationBump(db)
 	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	noteMutation();
 }

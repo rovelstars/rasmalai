@@ -217,6 +217,7 @@ mod tests {
             .collect();
         let server = testkit::MockRegistry::start(testkit::MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: testkit::resolve_json_static(&nodes),
             manifest_status: 200,

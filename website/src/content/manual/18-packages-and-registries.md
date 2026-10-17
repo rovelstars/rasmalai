@@ -96,6 +96,36 @@ Ranges use a small grammar: `*`, `latest`, an exact `X.Y.Z`, `^X.Y.Z`, `~X.Y.Z`,
 
 Conflicting ranges for one package fail the whole resolve as `unsatisfiable`; a dependency cycle fails as `cycle`.
 
+## Inline chunk lists
+
+A client that sees the `resolve-inline-chunks` capability in `GET /api/version` can add `"chunks": true` to the resolve request. The server then inlines each node's chunk-entry list into the node and names the mode it chose in a top-level `chunks` field:
+
+```json
+{
+  "resolved": { "@std/fs": "0.1.0" },
+  "base": "",
+  "levels": [[{
+    "full": "@std/fs",
+    "version": "0.1.0",
+    "path": "@std/fs@0.1.0/chunks",
+    "integrity": "e554…e148",
+    "engineRange": "",
+    "deps": [],
+    "yanked": false,
+    "entries": [{ "name": "src/main.rnx", "size": 4096, "dir": false, "chunks": ["14ed…2d2"] }]
+  }]],
+  "chunks": "inline"
+}
+```
+
+That removes one `GET .../{version}/chunks` per package from a cold seed. `entries` is the same array the chunks endpoint serves, and the client still verifies chunk hashes and the whole-version digest, so an inlined list is used *in addition to* verification, never instead of it.
+
+Three rules govern it:
+
+- **Opt-in, additive.** A client that sends no `chunks` field gets the byte-for-byte response it got before, with no `entries` and no `chunks` field. Nothing breaks if the server never gains the capability.
+- **`"chunks": "links"` means the server declined.** The inline byte budget (256 KiB across the whole response) was exceeded, so no node carries `entries` and clients read the chunks endpoint as usual. One global switch keeps the response self-consistent, so a client never has to mix the two paths inside one resolve.
+- **A generation error still retries the manifest.** If an inlined list does not verify, the client falls back to reading the chunk manifest origin-direct, exactly as it would without the capability.
+
 Every resolve error response carries a `requestId` (a UUID v4) alongside `code` and `message`. The server logs the failure under `[resolve <id>]`, so paste the id when reporting a 500 `resolve-failed`.
 
 ## Publishing
