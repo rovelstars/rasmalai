@@ -454,9 +454,8 @@ mod tests {
         assert!(!is_pack_version("1.2.3-alpha_beta"));
     }
 
-    fn fixture_dir(tag: &str, readme: Option<(&str, &str)>) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rnx-pack-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn fixture_dir(tag: &str, readme: Option<(&str, &str)>) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("pack-{tag}"));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
             dir.join("Project.config"),
@@ -500,7 +499,6 @@ mod tests {
         for f in &files {
             assert!(text.contains(f.path.as_str()), "tar misses {}", f.path);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -513,19 +511,15 @@ mod tests {
         let tar = build_package_tar(&dir, &manifest).unwrap();
         assert!(!String::from_utf8_lossy(&tar).contains("Project.deplock"));
         assert!(dir.join("Project.deplock").is_file());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn readme_prefers_md_then_plain_then_default() {        let dir = fixture_dir("readme-md", Some(("README.md", "# md\n")));
         assert_eq!(package_readme_text(&dir, "probe"), "# md\n");
-        let _ = std::fs::remove_dir_all(&dir);
         let dir = fixture_dir("readme-plain", Some(("README", "plain\n")));
         assert_eq!(package_readme_text(&dir, "probe"), "plain\n");
-        let _ = std::fs::remove_dir_all(&dir);
         let dir = fixture_dir("readme-none", None);
         assert_eq!(package_readme_text(&dir, "probe"), "# probe\n");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -555,7 +549,6 @@ mod tests {
         assert!(config.windows(2).any(|w| w == b"\n "), "config lost formatting");
         let plain = build_package_tar(&dir, &manifest).unwrap();
         assert!(String::from_utf8_lossy(&plain).contains("// plain comment"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -566,7 +559,6 @@ mod tests {
         let err = build_minified_package_tar(&dir, &manifest).unwrap_err();
         assert_eq!(err.code, diagnostics::Code::E108);
         assert!(err.message.contains("src/main.rnx"), "{}", err.message);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

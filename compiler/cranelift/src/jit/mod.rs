@@ -19,7 +19,6 @@ use self::compile::{check_supported, lower_fn};
 
 use self::instr::FnLower;
 
-
 pub type FunctionSlotId = u32;
 pub type JitError = diagnostics::Diagnostic;
 
@@ -595,7 +594,6 @@ fn array_capturable(inner: &LirType) -> bool {
     )
 }
 
-
 pub fn native_flags() -> settings::Flags {
     settings::Flags::new(settings::builder())
 }
@@ -669,17 +667,8 @@ mod prebuilt_tests {
         lir::lower::lower(&module).unwrap()
     }
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "rnx-cl-prebuilt-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn scratch(name: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("cl-{name}"));
         dir
     }
 

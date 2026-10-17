@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -5,9 +9,8 @@ fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-sec-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("sec-{tag}"));
     std::fs::create_dir_all(dir.join("app/src")).unwrap();
     std::fs::create_dir_all(dir.join("dep/src")).unwrap();
     dir
@@ -77,7 +80,6 @@ fn passing_build_with_matching_lock() {
         &app,
     );
     assert_eq!(build.status.code(), Some(0), "{}", combined(&build));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -108,7 +110,6 @@ fn s101_rejects_unapproved_capability() {
     let text = combined(&build);
     assert!(text.contains("S101"), "{text}");
     assert!(text.contains("fs:read:/tmp/**"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -139,7 +140,6 @@ fn s102_rejects_ceiling_violation() {
     let text = combined(&check);
     assert!(text.contains("S102"), "{text}");
     assert!(text.contains("fs:delegated"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -162,7 +162,6 @@ fn headless_add_denied_with_exit_2() {
         !app.join("Project.deplock").is_file(),
         "lockfile must stay untouched on denial"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -187,7 +186,6 @@ fn headless_add_with_accept_caps_writes_v2() {
     assert!(lock_text.contains("\"fs:delegated\""), "{lock_text}");
     let config = std::fs::read_to_string(app.join("Project.config")).unwrap();
     assert!(config.contains("dep: { path: \"../dep\" }"), "{config}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -206,9 +204,7 @@ fn lockfile_round_trips_through_rnx() {
 #[test]
 fn permissions_section_parses() {
     let text = "export default {\n    project: {\n        name: \"lib\",\n        version: \"0.1.0\"\n    },\n    permissions: [\"fs:delegated\"]\n}\n";
-    let dir = std::env::temp_dir().join(format!("rnx-sec-perm-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("sec");
     std::fs::write(dir.join("Project.config"), text).unwrap();
     let config =
         frontend::project::ProjectConfig::load_from_dir(&dir).unwrap().unwrap();
@@ -219,5 +215,4 @@ fn permissions_section_parses() {
             reason: None
         }])
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

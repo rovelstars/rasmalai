@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use frontend::ast::Decl;
 use frontend::desugar::desugar;
 use frontend::modules::{ModuleFile, ModuleGraph, ModuleKind};
@@ -181,10 +185,8 @@ fn imported_let_binding_is_e112() {
     assert_eq!(err.code.as_str(), "E112");
 }
 
-fn write_tree(tag: &str, files: &[(&str, &str)]) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-tl-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_tree(tag: &str, files: &[(&str, &str)]) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("tl-{tag}"));
     for (name, src) in files {
         std::fs::write(dir.join(name), src).unwrap();
     }
@@ -204,7 +206,6 @@ fn valid_declarative_import_resolves() {
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let diags = desugar(&mut m);
     assert!(!diags.iter().any(|d| d.code.as_str() == "E112"), "{diags:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -215,7 +216,6 @@ fn entry_top_level_survives_build() {
     let diags = desugar(&mut m);
     assert!(diags.is_empty(), "{diags:?}");
     assert!(has_async_main(&m));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn merged(src: &str) -> frontend::ast::Module {

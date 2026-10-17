@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("std_fs_readonly-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -50,12 +50,10 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn fixture_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-fs-e2e-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn fixture_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("fs-{tag}"));
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("zeta.txt"), "z").unwrap();
     std::fs::write(dir.join("a.txt"), "hello").unwrap();
@@ -64,7 +62,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
     dir
 }
 
-fn readonly_src(dir: &PathBuf) -> String {
+fn readonly_src(dir: &std::path::Path) -> String {
     let d = dir.to_string_lossy();
     format!(
         "import fs, {{ FileStat }} from \"@std/fs\";\n\nfn Main(): Int {{\n    if !fs.exists(\"{d}/a.txt\") {{ return 1; }}\n    if !fs.isFile(\"{d}/a.txt\") {{ return 2; }}\n    if fs.isDir(\"{d}/a.txt\") {{ return 3; }}\n    if !fs.isDir(\"{d}/sub\") {{ return 4; }}\n    if fs.exists(\"{d}/missing.txt\") {{ return 5; }}\n    if fs.isFile(\"{d}/missing.txt\") {{ return 6; }}\n    if fs.isDir(\"{d}/missing.txt\") {{ return 7; }}\n    let st = fs.stat(\"{d}/a.txt\");\n    if st.isErr() {{ return 8; }}\n    let s: FileStat = st.unwrap();\n    if s.size != 5 {{ return 9; }}\n    if !s.isFile {{ return 10; }}\n    if s.isDir {{ return 11; }}\n    if s.modified <= 0 {{ return 12; }}\n    if fs.stat(\"{d}/missing.txt\").isOk() {{ return 13; }}\n    let rd = fs.readDir(\"{d}\");\n    if rd.isErr() {{ return 14; }}\n    let names: Array<String> = rd.unwrap();\n    if names.len() != 3 {{ return 15; }}\n    if names[0] != \"a.txt\" {{ return 16; }}\n    if names[1] != \"sub\" {{ return 17; }}\n    if names[2] != \"zeta.txt\" {{ return 18; }}\n    if fs.readDir(\"{d}/missing-dir\").isOk() {{ return 19; }}\n    let hits: Array<String> = fs.glob(\"{d}/*.txt\").unwrap();\n    if hits.len() != 2 {{ return 20; }}\n    if hits[0] != \"{d}/a.txt\" {{ return 21; }}\n    if hits[1] != \"{d}/zeta.txt\" {{ return 22; }}\n    let deep: Array<String> = fs.glob(\"{d}/**/*.rnx\").unwrap();\n    if deep.len() != 2 {{ return 23; }}\n    if deep[0] != \"{d}/sub/b.rnx\" {{ return 24; }}\n    if deep[1] != \"{d}/sub/c.rnx\" {{ return 25; }}\n    if fs.glob(\"\").isOk() {{ return 26; }}\n    if fs.readLink(\"{d}/missing.txt\").isOk() {{ return 27; }}\n    if fs.readLink(\"{d}/a.txt\").isOk() {{ return 28; }}\n    print(\"@std/fs readonly verification success\");\n    return 0;\n}}\n"
@@ -81,7 +79,6 @@ fn test_fs_readonly_all_backends() {
         &["@std/fs readonly verification success".to_string()],
         "fsreadonly",
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[cfg(unix)]
@@ -101,5 +98,4 @@ fn test_fs_readlink_all_backends() {
         &["@std/fs readlink verification success".to_string()],
         "fsreadlink",
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

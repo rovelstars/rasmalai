@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use lir::instr::{CallTarget, Instr, Terminator};
 
 fn lower_src(src: &str) -> lir::instr::Module {
@@ -83,9 +87,7 @@ fn test_deep_recursion_no_stack_overflow() {
     let mut jit = cranelift::jit::Jit::compile(&for_jit).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 0);
     assert_eq!(llvm::codegen::execute(&for_jit, "Main").unwrap(), 0);
-    let dir = std::env::temp_dir().join(format!("rnx-tco-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("tco");
     let src_path = dir.join("deep.rnx");
     std::fs::write(&src_path, DEEP_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -99,7 +101,6 @@ fn test_deep_recursion_no_stack_overflow() {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "tco deep: 1250025000\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const NONTAIL_SRC: &str = "fn fibLike(n: Int): Int {\n    if n <= 0 {\n        return 0;\n    }\n    return 1 + fibLike(n - 1);\n}\nfn Main(): Int {\n    return fibLike(10);\n}\n";

@@ -1,32 +1,24 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use cranelift::jit::Jit;
-
-
-static HARNESS_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static SCRATCH_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // Scratch names must be per-run. A fixed name lets two concurrent runs share
 // one directory, and each run wipes it on entry and exit, so the slower run
 // watches its own files disappear and fails on values it never got wrong.
-fn scratch_dir(tag: &str) -> std::path::PathBuf {
-    let n = SCRATCH_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("rnx-jit-{tag}-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch_dir(tag: &str) -> crate::scratch::Scratch {
+    crate::scratch::dir(&format!("jit-{tag}"))
 }
 
 fn module_of(src: &str, tag: &str) -> lir::instr::Module {
-    let n = HARNESS_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("rnx-harness-{tag}-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir(&format!("harness-{tag}"));
     std::fs::write(dir.join("main.rnx"), src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     let out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
-    let _ = std::fs::remove_dir_all(&dir);
     out
 }
 
@@ -245,9 +237,7 @@ fn jit_enum_str_payload_drops() {
 
 #[test]
 fn jit_thread_spawn_join() {
-    let dir = std::env::temp_dir().join(format!("rnx-jit-thr-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("jit");
     std::fs::write(dir.join("main.rnx"), "fn worker(): Int { let sum = 0 let i = 0 while i < 1000 { sum = sum + 1 i = i + 1 } return sum } fn Main(): Int { let handle = Thread.spawn(worker) let res = handle.join().unwrap() if res == 1000 { return 42 } return 0 }").unwrap();
     let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
@@ -256,7 +246,6 @@ fn jit_thread_spawn_join() {
     let lir = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -294,7 +283,6 @@ fn jit_std_time_virtual_and_mono() {
     let lir = lir::lower::lower(&m).unwrap();
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -308,7 +296,6 @@ fn jit_std_random_determinism() {
     let lir = lir::lower::lower(&m).unwrap();
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -324,7 +311,6 @@ fn jit_std_fs_roundtrip() {
     let lir = lir::lower::lower(&m).unwrap();
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -338,7 +324,6 @@ fn jit_std_env_roundtrip() {
     let lir = lir::lower::lower(&m).unwrap();
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -352,7 +337,6 @@ fn jit_std_math_scalar_and_vec() {
     let lir = lir::lower::lower(&m).unwrap();
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -366,7 +350,6 @@ fn jit_std_collections_map_set() {
     let lir = lir::lower::lower(&m).unwrap();
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -380,7 +363,6 @@ fn jit_std_sync_atomic_channel() {
     let lir = lir::lower::lower(&m).unwrap();
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

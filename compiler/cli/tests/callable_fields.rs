@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-callfield-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("callfield-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -52,7 +52,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

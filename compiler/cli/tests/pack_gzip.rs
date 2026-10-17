@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
 const MAIN_SRC: &str = "fn Main(): Int {\n    print(\"packed ok\");\n    return 0;\n}\n";
 
@@ -8,9 +10,8 @@ fn manifest(name: &str) -> String {
     )
 }
 
-fn write_project(tag: &str, name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-gz-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn write_project(tag: &str, name: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("gz-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("Project.config"), manifest(name)).unwrap();
     std::fs::write(dir.join("src").join("main.rnx"), MAIN_SRC).unwrap();
@@ -49,13 +50,11 @@ fn test_pack_gzip_validity_with_system_tools() {
     assert!(listing.lines().any(|l| l == "src/main.rnx"), "source missing:\n{listing}");
     let check = std::process::Command::new("gzip").arg("-t").arg(&gz).output().unwrap();
     assert!(check.status.success(), "gzip -t failed");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_pack_gzip_byte_determinism() {
-    let base = std::env::temp_dir().join(format!("rnx-gzdet-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    let base = crate::scratch::dir("gzdet");
     for tag in ["a", "b"] {
         let dir = base.join(tag);
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -73,7 +72,6 @@ fn test_pack_gzip_byte_determinism() {
     let b = base.join("b").join("out").join("calc-0.1.0.tar.gz");
     assert_eq!(digest(&a), digest(&b), "digests differ");
     assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -95,7 +93,6 @@ fn test_parallel_unpack_and_run() {
     let run = std::process::Command::new(rnx).arg("run").current_dir(&ext).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "packed ok\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn tar_bytes(name: &str, content: &[u8]) -> Vec<u8> {
@@ -138,5 +135,4 @@ fn test_unpack_path_traversal_safety() {
         + &String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(err.contains("E108"), "missing E108:\n{err}");
     assert!(!dir.join("evil.txt").exists(), "file escaped");
-    let _ = std::fs::remove_dir_all(&dir);
 }

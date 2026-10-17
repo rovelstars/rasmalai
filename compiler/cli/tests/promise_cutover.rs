@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-cutover-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("cutover-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -51,12 +51,10 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn check_src_fails(src: &str, tag: &str) -> (i32, String) {
-    let dir = std::env::temp_dir().join(format!("rnx-cutover-neg-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::scratch::dir(&format!("cutover-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("Project.config"),
@@ -78,7 +76,6 @@ fn check_src_fails(src: &str, tag: &str) -> (i32, String) {
         String::from_utf8_lossy(&out.stderr)
     );
     let code = out.status.code().unwrap_or(-1);
-    let _ = std::fs::remove_dir_all(&dir);
     (code, text)
 }
 

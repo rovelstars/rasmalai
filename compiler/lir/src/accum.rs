@@ -1236,7 +1236,6 @@ fn zero_alloc_span(func: &Function, m: &NestMatch) -> Option<Span> {
     found
 }
 
-
 fn chain_in_block(
     func: &Function,
     local: Local,
@@ -2345,7 +2344,6 @@ mod tests {
         false
     }
 
-
     #[test]
     fn fires_on_matmul_256_lir() {
         let f = lower_src(&matmul_src());
@@ -2365,18 +2363,6 @@ mod tests {
         let pairs = exact_pairs(&work);
         assert_eq!(pairs.len(), 5);
     }
-
-
-
-
-
-
-
-
-
-
-
-
 
     #[test]
     fn garbage_prefilled_small_fires_peel_not_v1() {
@@ -2417,9 +2403,7 @@ mod tests {
     }
 
     fn lower_bench(path: &str) -> Option<crate::instr::Module> {
-        let dir = std::env::temp_dir()
-            .join(format!("rnx-accum-corpus-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::dir("accum");
         std::fs::create_dir_all(&dir).ok()?;
         let src = std::fs::read_to_string(path).ok()?;
         std::fs::write(dir.join("main.rnx"), &src).ok()?;
@@ -2429,7 +2413,6 @@ mod tests {
             return None;
         }
         let out = crate::lower::lower(&m).ok()?;
-        let _ = std::fs::remove_dir_all(&dir);
         Some(out)
     }
 

@@ -1,10 +1,12 @@
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
+use std::path::Path;
 use std::process::Command;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-p1-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("p1-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -54,7 +56,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const ANY_CHURN_SRC: &str = "import { Map } from \"@std/collections\";\nfn hammer(m: Map, n: Int): Int {\n    let i = 0;\n    while i < n {\n        let v: Any = i;\n        m.set(1, v);\n        let g = m.get(1) ?? -1;\n        i = i + 1;\n    }\n    return 0;\n}\nfn Main(): Int {\n    let m = new Map();\n    m.set(1, 0);\n    let h0 = Thread.spawn((): Int => hammer(m, 1500));\n    let h1 = Thread.spawn((): Int => hammer(m, 1500));\n    let h2 = Thread.spawn((): Int => hammer(m, 1500));\n    let h3 = Thread.spawn((): Int => hammer(m, 1500));\n    let r = h0.join().unwrap() + h1.join().unwrap() + h2.join().unwrap() + h3.join().unwrap();\n    if r != 0 {\n        return 3;\n    }\n    if m.len() != 1 {\n        return 1;\n    }\n    print(\"any box churn ok\");\n    return 42;\n}\n";
@@ -90,10 +91,8 @@ fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-p1-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("p1-{tag}"));
     dir
 }
 
@@ -153,5 +152,4 @@ fn test_manifest_typo_emits_w201_warning() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(stderr.contains("W201"), "{stderr}");
     assert!(stderr.contains("project.bogus"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

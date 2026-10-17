@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-esm-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("esm-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -20,7 +21,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
     (out, dir)
 }
 
-fn run_backend(rnx: &str, dir: &PathBuf, backend: &str) -> String {
+fn run_backend(rnx: &str, dir: &std::path::Path, backend: &str) -> String {
     let out = Command::new(rnx)
         .arg("run")
         .arg("--backend")
@@ -59,13 +60,10 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0, "aot {tag} exit");
     assert_eq!(String::from_utf8(run.stdout).unwrap(), want, "aot {tag} stdout");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn check_fails_with(src: &str, want: &[&str], tag: &str) {
-    let dir = std::env::temp_dir().join(format!("rnx-esm-err-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir(&format!("esm-{tag}"));
     std::fs::write(dir.join("main.rnx"), src).unwrap();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rnx"))
         .arg("build")
@@ -80,12 +78,10 @@ fn check_fails_with(src: &str, want: &[&str], tag: &str) {
     for w in want {
         assert!(text.contains(w), "missing `{w}` in: {text}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn write_proj(tag: &str, files: &[(&str, &str)]) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-esm-proj-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn write_proj(tag: &str, files: &[(&str, &str)]) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("esm-{tag}"));
     for (rel, content) in files {
         let p = dir.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -95,7 +91,7 @@ fn write_proj(tag: &str, files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
-fn run_proj(dir: &PathBuf, backend: &str) -> (bool, String) {
+fn run_proj(dir: &std::path::Path, backend: &str) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_rnx"))
         .arg("run")
         .arg("--backend")
@@ -154,7 +150,6 @@ fn esm_relative_and_side_effect() {
         assert!(ok, "{backend} failed: {out}");
         assert_eq!(out, "42\n", "{backend} stdout");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

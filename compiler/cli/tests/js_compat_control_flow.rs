@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
+use std::path::Path;
 use std::process::Command;
 
 // JavaScript-ergonomics pins for control flow: stray semicolons parse as
@@ -49,13 +53,11 @@ const DECL_SRC: &str = "fn Main(): Int {\n\
     return 0;\n\
 }\n";
 
-fn fresh_src(tag: &str, src: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-jscompat-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_src(tag: &str, src: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("jscompat-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
-    main
+    (dir, main)
 }
 
 fn run_backend(main: &Path, backend: &str) -> std::process::Output {
@@ -70,29 +72,28 @@ fn run_backend(main: &Path, backend: &str) -> std::process::Output {
 
 #[test]
 fn js_compat_control_flow_interpreter() {
-    let main = fresh_src("interp", SRC);
+    let (_g, main) = fresh_src("interp", SRC);
     let out = run_backend(&main, "interpreter");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
 fn js_compat_control_flow_cranelift() {
-    let main = fresh_src("cl", SRC);
+    let (_g, main) = fresh_src("cl", SRC);
     let out = run_backend(&main, "cranelift");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
 fn js_compat_control_flow_llvm() {
-    let main = fresh_src("ll", SRC);
+    let (_g, main) = fresh_src("ll", SRC);
     let out = run_backend(&main, "llvm");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
 fn js_compat_control_flow_aot() {
-    let main = fresh_src("aot", SRC);
-    let dir = main.parent().unwrap().to_path_buf();
+    let (_g, main) = fresh_src("aot", SRC);
     let build = Command::new(rnx())
         .arg("build")
         .arg(&main)
@@ -102,12 +103,11 @@ fn js_compat_control_flow_aot() {
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let run = Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0, "aot exit: {}", String::from_utf8_lossy(&run.stderr));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn js_compat_decl_as_single_body_rejected() {
-    let main = fresh_src("decl", DECL_SRC);
+    let (_g, main) = fresh_src("decl", DECL_SRC);
     let out = Command::new(rnx()).arg("check").arg(&main).output().unwrap();
     assert!(!out.status.success(), "declaration as single-statement body must fail");
     let err = String::from_utf8_lossy(&out.stderr);

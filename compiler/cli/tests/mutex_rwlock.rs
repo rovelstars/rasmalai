@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("mutex_rwlock-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -50,7 +50,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const COUNTER_SRC: &str = "import { AtomicInt, Mutex } from \"@std/sync\";\nfn worker(): Int {\n    let c = AtomicInt.byId(511);\n    let m = Mutex.byId(511);\n    let i = 0;\n    while i < 500 {\n        m.lock();\n        c.set(c.get() + 1);\n        m.unlock();\n        i = i + 1;\n    }\n    return 0;\n}\nfn Main(): Int {\n    let c = AtomicInt.byId(511);\n    c.set(0);\n    let h1 = Thread.spawn(worker);\n    let h2 = Thread.spawn(worker);\n    let h3 = Thread.spawn(worker);\n    let h4 = Thread.spawn(worker);\n    h1.join();\n    h2.join();\n    h3.join();\n    h4.join();\n    if c.get() == 2000 {\n        print(\"mutex counter:\", c.get());\n        return 42;\n    }\n    return 0;\n}\n";

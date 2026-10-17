@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use cli::{RunOutcome, run_source};
 use diagnostics::Code;
 use std::path::PathBuf;
@@ -48,9 +52,7 @@ fn write_prog(dir: &std::path::Path, body: &str) -> PathBuf {
 
 #[test]
 fn cli_run_exits_nonzero_on_e205() {
-    let dir = std::env::temp_dir().join(format!("rnx-typesafe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("typesafe");
     let prog = write_prog(&dir, "fn Main(): Int {\n    let a = 2;\n    a = \"hello\";\n    return 0;\n}\n");
     let out = Command::new(rnx())
         .arg("run")
@@ -63,14 +65,11 @@ fn cli_run_exits_nonzero_on_e205() {
     let combined = format!("{stdout}{stderr}");
     assert_ne!(out.status.code(), Some(0), "{combined}");
     assert!(combined.contains("E205"), "{combined}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn cli_run_exits_nonzero_on_e206_const() {
-    let dir = std::env::temp_dir().join(format!("rnx-typesafe206-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("typesafe206");
     let prog = write_prog(&dir, "fn Main(): Int {\n    const b;\n    return 0;\n}\n");
     let out = Command::new(rnx())
         .arg("run")
@@ -83,5 +82,4 @@ fn cli_run_exits_nonzero_on_e206_const() {
     let combined = format!("{stdout}{stderr}");
     assert_ne!(out.status.code(), Some(0), "{combined}");
     assert!(combined.contains("E206"), "{combined}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

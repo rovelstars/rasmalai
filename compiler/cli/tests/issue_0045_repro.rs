@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-issue0045-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("issue0045-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -19,7 +19,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
     (out, dir)
 }
 
-fn run_backend(rnx: &str, dir: &PathBuf, backend: &str) -> String {
+fn run_backend(rnx: &str, dir: &std::path::Path, backend: &str) -> String {
     let out = std::process::Command::new(rnx)
         .arg("run")
         .arg("--backend")
@@ -62,7 +62,6 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         want,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

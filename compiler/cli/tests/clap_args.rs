@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
@@ -17,10 +19,8 @@ fn run(args: &[&str], dir: &std::path::Path) -> (i32, String, String) {
     )
 }
 
-fn proj(tag: &str, files: &[(&str, &str)]) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("rnx-clap-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+fn proj(tag: &str, files: &[(&str, &str)]) -> crate::scratch::Scratch {
+    let root = crate::scratch::dir(&format!("clap-{tag}"));
     std::fs::write(
         root.join("Project.config"),
         "export default {\n    project: {\n        name: \"clap\",\n        version: \"0.1.0\"\n    }\n}\n",

@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use lir::instr::Instr;
 
 fn lower_src(src: &str) -> lir::instr::Module {
@@ -73,9 +77,7 @@ fn test_cross_backend_arc_opt_execution() {
     let mut jit = cranelift::jit::Jit::compile(&for_jit).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
     assert_eq!(llvm::codegen::execute(&for_jit, "Main").unwrap(), 42);
-    let dir = std::env::temp_dir().join(format!("rnx-arc-bin-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("arc");
     let src_path = dir.join("arc.rnx");
     std::fs::write(&src_path, LOOP_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -89,7 +91,6 @@ fn test_cross_backend_arc_opt_execution() {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "arc success: 42\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -103,9 +104,7 @@ fn test_opt_0_preserves_arc_instructions() {
         format!("{:?}", level_zero.functions),
         format!("{:?}", fresh.functions)
     );
-    let dir = std::env::temp_dir().join(format!("rnx-arc-zero-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("arc");
     let src_path = dir.join("main.rnx");
     std::fs::write(&src_path, src).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -122,5 +121,4 @@ fn test_opt_0_preserves_arc_instructions() {
         cli::RunOutcome::Value(runtime::value::Value::Int(2)) => {}
         other => panic!("{other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }

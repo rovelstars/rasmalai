@@ -1,11 +1,13 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use diagnostics;
 use frontend::ast::Decl;
 use frontend::modules::ModuleGraph;
 
-fn tree(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-fe-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn tree(tag: &str, files: &[(&str, &str)]) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("fe-{tag}"));
     for (name, src) in files {
         let p = dir.join(name);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -34,7 +36,6 @@ fn graph_orders_deps_first() {
     assert_eq!(g.files.len(), 3);
     assert_eq!(g.files[0].key, "math");
     assert!(g.files[1].path.ends_with("main.rnx"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -50,7 +51,6 @@ fn resolve_mangles_and_rewrites_calls() {
     assert!(names.contains(&"math.add".to_string()));
     assert!(names.contains(&"math.local".to_string()));
     assert!(!names.contains(&"add".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -62,7 +62,6 @@ fn wildcard_and_alias_imports() {
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     let m = g.resolve().unwrap();
     assert!(fn_names(&m).contains(&"lib.thing".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -74,7 +73,6 @@ fn nested_keys_use_path() {
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     let m = g.resolve().unwrap();
     assert!(fn_names(&m).contains(&"util.vec.v".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -87,7 +85,6 @@ fn local_variable_shadows_import() {
     let m = g.resolve().unwrap();
     let src = format!("{m:?}");
     assert!(src.contains("return add + 2") || !src.contains("math.add + 2"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -98,7 +95,6 @@ fn default_visibility_imports_across_files() {
     ]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     assert!(g.resolve().is_ok());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -119,7 +115,6 @@ fn mutual_imports_resolve() {
         })
         .collect();
     assert!(names.contains(&"Main".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -131,7 +126,6 @@ fn private_import_fails_e203() {
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     let e = g.resolve().expect_err("must fail");
     assert_eq!(e.code, diagnostics::Code::E203);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -148,7 +142,6 @@ fn std_virtual_module_resolves() {
         Decl::Fn(f) => f.name == "std.time.Clock.mono" || f.name == "std.time.Clock.virtual",
         _ => false,
     }));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -163,7 +156,6 @@ fn unknown_std_module_errors() {
     };
     assert_eq!(e.code, diagnostics::Code::E108);
     assert!(e.message.contains("unknown standard library module"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -180,7 +172,6 @@ fn std_env_module_resolves() {
         Decl::Fn(f) => f.name == "std.env.Env.args",
         _ => false,
     }));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -191,7 +182,6 @@ fn std_math_module_resolves() {
     )]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     assert!(g.files.iter().any(|f| f.key == "std.math"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -202,7 +192,6 @@ fn std_collections_module_resolves() {
     )]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     assert!(g.files.iter().any(|f| f.key == "std.collections"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -213,12 +202,10 @@ fn std_sync_module_resolves() {
     )]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     assert!(g.files.iter().any(|f| f.key == "std.sync"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn pkg_tree(tag: &str, pkgs: &[(&str, &str, &[(&str, &str)])]) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-fe-pkg-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn pkg_tree(tag: &str, pkgs: &[(&str, &str, &[(&str, &str)])]) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("fe-{tag}"));
     for (pkg, config, files) in pkgs {
         let root = dir.join(pkg);
         std::fs::create_dir_all(&root).unwrap();
@@ -253,7 +240,6 @@ fn packages_resolve_entry_and_submodule() {
     assert!(names.contains(&"dep_math.src.lib.add".to_string()), "{names:?}");
     assert!(names.contains(&"dep_math.src.util.double".to_string()), "{names:?}");
     assert!(names.contains(&"Main".to_string()), "{names:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -276,7 +262,6 @@ fn packages_diamond_parsed_once() {
     let shared = g.files.iter().filter(|f| f.key == "shared.src.lib").count();
     assert_eq!(shared, 1);
     assert!(g.resolve().is_ok());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -296,7 +281,6 @@ fn packages_transitive_resolution() {
     assert_eq!(g.files.len(), 4);
     let m = g.resolve().unwrap();
     assert!(fn_names(&m).contains(&"leaf.src.lib.base".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -314,7 +298,6 @@ fn packages_cycle_is_e107() {
         Err(e) => e,
     };
     assert_eq!(e.code, diagnostics::Code::E107);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -330,7 +313,6 @@ fn packages_unknown_is_e108() {
     };
     assert_eq!(e.code, diagnostics::Code::E108);
     assert!(e.message.contains("unknown package dependency `ghost`"), "{}", e.message);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -348,7 +330,6 @@ fn packages_workspace_sibling_needs_no_explicit_path() {
     assert_eq!(g.files.len(), 3);
     let m = g.resolve().unwrap();
     assert!(fn_names(&m).contains(&"calc.src.lib.score".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -369,7 +350,6 @@ fn scheme_prefix_is_e108_with_scoped_hint() {
         assert!(e.message.contains(&format!("cannot resolve module `{spec}`")), "{}", e.message);
         let h = e.hint.unwrap_or_default();
         assert!(h.contains(hint), "{spec}: {h}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -384,7 +364,6 @@ fn relative_probes_mod_and_index() {
     assert_eq!(g.files.len(), 4);
     let m = g.resolve().unwrap();
     assert!(fn_names(&m).contains(&"Main".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -401,7 +380,6 @@ fn relative_missing_lists_probed_paths() {
     assert!(e.message.contains("ghost.rnx"), "{}", e.message);
     assert!(e.message.contains("mod.rnx"), "{}", e.message);
     assert!(e.message.contains("index.rnx"), "{}", e.message);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -412,7 +390,6 @@ fn std_prelude_resolves_through_sysroot() {
     )]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     assert!(g.files.iter().any(|f| f.key == "std.prelude"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -432,7 +409,6 @@ fn scoped_package_submodule_resolves() {
     let names = fn_names(&m);
     assert!(names.iter().any(|n| n.ends_with("render")), "{names:?}");
     assert!(names.iter().any(|n| n.ends_with("dark")), "{names:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -451,7 +427,6 @@ fn resolve_renames_module_const_used_in_own_fn() {
     assert!(!consts.contains(&"K".to_string()), "stale short const decl: {consts:?}");
     let diags = frontend::semantic::check(&m);
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -470,7 +445,6 @@ fn namespace_as_value_becomes_new() {
     }));
     let diags = frontend::semantic::check(&m);
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -490,7 +464,6 @@ fn missing_import_in_dep_fails_despite_user_import() {
         let f = x.file.as_ref().expect("isolation errors carry the offending file");
         assert!(f.ends_with("liba.rnx"), "error must point at liba, got {}", f.display());
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -511,7 +484,6 @@ fn sibling_type_use_without_import_fails() {
         let f = x.file.as_ref().expect("isolation errors carry the offending file");
         assert!(f.ends_with("a.rnx"), "error must point at a.rnx, got {}", f.display());
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -546,7 +518,6 @@ fn std_nested_submodule_file_build() {
     assert!(g.files.iter().any(|f| f.key == "std.net.http"), "{:?}", g.files.iter().map(|f| &f.key).collect::<Vec<_>>());
     let m = g.resolve().unwrap();
     assert!(fn_names(&m).contains(&"std.net.http.statusCode".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -561,7 +532,6 @@ fn std_unknown_nested_is_e108() {
     };
     assert_eq!(e.code, diagnostics::Code::E108);
     assert!(e.message.contains("@std/net/bogus"), "{}", e.message);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -586,7 +556,6 @@ fn packages_deep_nested_submodule() {
     assert!(names.contains(&"dep_math.src.lib.add".to_string()), "{names:?}");
     let diags = frontend::semantic::check(&m);
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -605,6 +574,5 @@ fn packages_subpath_traversal_is_e108() {
             Err(e) => e,
         };
         assert_eq!(e.code, diagnostics::Code::E108, "{spec}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,13 +1,11 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use cranelift::jit::emit_object;
 
-static CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn scratch(tag: &str) -> std::path::PathBuf {
-    let n = CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("rnx-clobj-{tag}-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(tag: &str) -> crate::scratch::Scratch {
+    crate::scratch::dir(&format!("clobj-{tag}"))
 }
 
 fn lower_src(src: &str, tag: &str) -> lir::instr::Module {
@@ -18,7 +16,6 @@ fn lower_src(src: &str, tag: &str) -> lir::instr::Module {
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     let out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
-    let _ = std::fs::remove_dir_all(&dir);
     out
 }
 
@@ -46,7 +43,7 @@ fn cc_parts() -> (String, Option<String>) {
     (cc.to_string(), ld)
 }
 
-fn link_cc(obj: &[u8], tag: &str) -> std::path::PathBuf {
+fn link_cc(obj: &[u8], tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
     let dir = scratch(&format!("link-{tag}"));
     std::fs::write(dir.join("user.o"), obj).unwrap();
     std::fs::write(dir.join("rt.a"), runtime::archive::BYTES).unwrap();
@@ -64,7 +61,7 @@ fn link_cc(obj: &[u8], tag: &str) -> std::path::PathBuf {
         .output()
         .unwrap_or_else(|e| panic!("spawn {cc}: {e}"));
     assert!(out.status.success(), "cc link failed: {}", String::from_utf8_lossy(&out.stderr));
-    exe
+    (dir, exe)
 }
 
 fn run_exe(exe: &std::path::Path) -> (i32, String) {
@@ -73,13 +70,13 @@ fn run_exe(exe: &std::path::Path) -> (i32, String) {
     (code, String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn cl_exe(src: &str, tag: &str, entry: &str) -> std::path::PathBuf {
+fn cl_exe(src: &str, tag: &str, entry: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
     let lir = lower_src(src, tag);
     let obj = emit_object(&lir, "rnx_module", entry).unwrap_or_else(|e| panic!("{e}"));
     link_cc(&obj, tag)
 }
 
-fn llvm_exe(src: &str, tag: &str) -> std::path::PathBuf {
+fn llvm_exe(src: &str, tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
     let lir = lower_src(src, tag);
     let obj = llvm::codegen::emit_object(&lir, "rnx_module", "Main", llvm::codegen::OptLevel::Dev, None)
         .unwrap_or_else(|e| panic!("{e}"));
@@ -94,38 +91,46 @@ const CLOSURE_SRC: &str = "fn Main(): Int { let f = (): Int => 42; let factor = 
 
 #[test]
 fn object_int_math_calls() {
-    let (code, out) = run_exe(&cl_exe(MATH_SRC, "math", "Main"));
+    let (_g, exe) = cl_exe(MATH_SRC, "math", "Main");
+    let (code, out) = run_exe(&exe);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("6765"), "{out}");
     assert!(out.contains("19"), "{out}");
-    let (lcode, lout) = run_exe(&llvm_exe(MATH_SRC, "math-llvm"));
+    let (_g, exe) = llvm_exe(MATH_SRC, "math-llvm");
+    let (lcode, lout) = run_exe(&exe);
     assert_eq!((lcode, lout), (code, out));
 }
 
 #[test]
 fn object_strings_arrays() {
-    let (code, out) = run_exe(&cl_exe(STRARR_SRC, "strarr", "Main"));
+    let (_g, exe) = cl_exe(STRARR_SRC, "strarr", "Main");
+    let (code, out) = run_exe(&exe);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("Hello, World!"), "{out}");
     assert!(out.contains("100"), "{out}");
-    let (lcode, lout) = run_exe(&llvm_exe(STRARR_SRC, "strarr-llvm"));
+    let (_g, exe) = llvm_exe(STRARR_SRC, "strarr-llvm");
+    let (lcode, lout) = run_exe(&exe);
     assert_eq!((lcode, lout), (code, out));
 }
 
 #[test]
 fn object_closures() {
-    let (code, out) = run_exe(&cl_exe(CLOSURE_SRC, "clo", "Main"));
+    let (_g, exe) = cl_exe(CLOSURE_SRC, "clo", "Main");
+    let (code, out) = run_exe(&exe);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("92"), "{out}");
-    let (lcode, lout) = run_exe(&llvm_exe(CLOSURE_SRC, "clo-llvm"));
+    let (_g, exe) = llvm_exe(CLOSURE_SRC, "clo-llvm");
+    let (lcode, lout) = run_exe(&exe);
     assert_eq!((lcode, lout), (code, out));
 }
 
 #[test]
 fn object_backend_parity_mixed() {
     let src = "class Point { let x: Int; let y: Int; init(x: Int, y: Int) { this.x = x; this.y = y; } fn sum(): Int { return this.x + this.y; } } fn Fib(n: Int): Int { if n < 2 { return n; } return Fib(n - 1) + Fib(n - 2); } fn Main(): Int { let pt = new Point(10, 32); let s = pt.sum() + Fib(15); print(s); let t = [1, 2, 3]; print(t.len()); let f = (x: Int): Int => x * 2; if f(21) != 42 { return 1; } print(42); return 0; }";
-    let (ccode, cout) = run_exe(&cl_exe(src, "parity", "Main"));
-    let (lcode, lout) = run_exe(&llvm_exe(src, "parity-llvm"));
+    let (_g, exe) = cl_exe(src, "parity", "Main");
+    let (ccode, cout) = run_exe(&exe);
+    let (_g, exe) = llvm_exe(src, "parity-llvm");
+    let (lcode, lout) = run_exe(&exe);
     assert_eq!(ccode, 0, "{cout}");
     assert_eq!(lcode, 0, "{lout}");
     assert_eq!(cout, lout, "cranelift-object vs llvm-object stdout diverged");
@@ -136,7 +141,8 @@ fn object_backend_parity_mixed() {
 
 #[test]
 fn object_lowercase_main_entry() {
-    let (code, out) = run_exe(&cl_exe("fn main(): Int { print(7) return 0 }", "entrymain", "main"));
+    let (_g, exe) = cl_exe("fn main(): Int { print(7) return 0 }", "entrymain", "main");
+    let (code, out) = run_exe(&exe);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains('7'), "{out}");
 }
@@ -175,6 +181,7 @@ fn object_native_link_runs() {
     )
     .unwrap_or_else(|e| panic!("native link failed: {e}"));
     let (ncode, nout) = run_exe(&exe);
-    let (ccode, cout) = run_exe(&cl_exe(MATH_SRC, "native-cc", "Main"));
+    let (_g, exe) = cl_exe(MATH_SRC, "native-cc", "Main");
+    let (ccode, cout) = run_exe(&exe);
     assert_eq!((ncode, nout), (ccode, cout));
 }

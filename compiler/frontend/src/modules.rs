@@ -4091,10 +4091,8 @@ mod tests {
     use super::*;
     use crate::fetch::testkit;
 
-    fn registry_app(tag: &str, registry_url: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rnx-modreg-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let root = dir.join("app");
+    fn registry_app(tag: &str, registry_url: &str) -> crate::scratch::Scratch {
+        let root = crate::scratch::dir(&format!("modreg-{tag}"));
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
             root.join("Project.config"),
@@ -4187,8 +4185,10 @@ mod tests {
         })
     }
 
+    // A registry path that resolves to nothing. No directory is created, so
+    // there is nothing to clean up.
     fn dead_from() -> PathBuf {
-        std::env::temp_dir().join(format!("rnx-nostd-{}", std::process::id()))
+        std::env::temp_dir().join(format!("rnx-nostd-{}-missing", std::process::id()))
     }
 
     fn plant_prelude_cache(base: &str) {
@@ -4419,9 +4419,8 @@ mod tests {
         }
     }
 
-    fn depcache_fixture(tag: &str, dep_version: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let base = std::env::temp_dir().join(format!("rnx-depcache-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+    fn depcache_fixture(tag: &str, dep_version: &str) -> (crate::scratch::Scratch, PathBuf, PathBuf, PathBuf) {
+        let base = crate::scratch::dir(&format!("depcache-{tag}"));
         let app = base.join("app");
         let dep = base.join("libs").join("utils");
         std::fs::create_dir_all(app.join("src")).unwrap();
@@ -4453,7 +4452,7 @@ mod tests {
             "import { helper } from \"utils\";\nfn Main(): Int { return helper(); }\n",
         )
         .unwrap();
-        (app.join("src").join("main.rnx"), app, dep)
+        (base, app.join("src").join("main.rnx"), app, dep)
     }
 
     fn plant_default_prelude() {
@@ -4480,7 +4479,7 @@ mod tests {
         let (_guard, _cache) = testkit::isolate_cache("dephit");
         crate::depcache::reset_stats();
         plant_default_prelude();
-        let (entry, app, _dep) = depcache_fixture("hit", "1.0.0");
+        let (_g, entry, app, _dep) = depcache_fixture("hit", "1.0.0");
         let first = merged_debug(&entry);
         assert!(first.contains("Int(1)"), "{first}");
         let (_, _, populated) = crate::depcache::stats();
@@ -4506,7 +4505,7 @@ mod tests {
         let (_guard, _cache) = testkit::isolate_cache("depedit");
         crate::depcache::reset_stats();
         plant_default_prelude();
-        let (entry, app, dep) = depcache_fixture("edit", "1.0.0");
+        let (_g, entry, app, dep) = depcache_fixture("edit", "1.0.0");
         let first = merged_debug(&entry);
         assert!(first.contains("Int(1)"), "{first}");
         assert_eq!(merged_debug(&entry), first);
@@ -4531,7 +4530,7 @@ mod tests {
         let (_guard, _cache) = testkit::isolate_cache("depver");
         crate::depcache::reset_stats();
         plant_default_prelude();
-        let (entry, app, dep) = depcache_fixture("ver", "1.0.0");
+        let (_g, entry, app, dep) = depcache_fixture("ver", "1.0.0");
         let first = merged_debug(&entry);
         assert!(dep_product_file(&app, "1.0.0").is_file());
         let prof = crate::depcache::DepProfile {
@@ -4572,7 +4571,7 @@ mod tests {
         let (_guard, _cache) = testkit::isolate_cache("depcorrupt");
         crate::depcache::reset_stats();
         plant_default_prelude();
-        let (entry, app, _dep) = depcache_fixture("corrupt", "1.0.0");
+        let (_g, entry, app, _dep) = depcache_fixture("corrupt", "1.0.0");
         let first = merged_debug(&entry);
         let path = dep_product_file(&app, "1.0.0");
         assert!(path.is_file());
@@ -4926,10 +4925,8 @@ mod tests {
         StdInstallServer { base, log }
     }
 
-    fn std_install_app(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rnx-stdapp-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let root = dir.join("app");
+    fn std_install_app(tag: &str) -> crate::scratch::Scratch {
+        let root = crate::scratch::dir(&format!("stdapp-{tag}"));
         std::fs::create_dir_all(root.join("src")).unwrap();
         let pin = env!("CARGO_PKG_VERSION");
         std::fs::write(
@@ -5092,8 +5089,7 @@ mod tests {
         let (_guard, _cache) = testkit::isolate_cache("deptime");
         crate::depcache::reset_stats();
         plant_default_prelude();
-        let base = std::env::temp_dir().join(format!("rnx-deptime-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::scratch::dir("deptime");
         let app = base.join("app");
         let dep = base.join("libs").join("wide");
         std::fs::create_dir_all(app.join("src")).unwrap();
@@ -5143,23 +5139,17 @@ mod tests {
             miss.as_millis(),
             hit.as_millis()
         );
-        let _ = std::fs::remove_dir_all(&base);
     }
 
-    fn par_fixture(tag: &str, files: &[(&str, &str)]) -> PathBuf {
-        let base = std::env::temp_dir().join(format!("rnx-parmod-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+    fn par_fixture(tag: &str, files: &[(&str, &str)]) -> (crate::scratch::Scratch, PathBuf) {
+        let base = crate::scratch::dir(&format!("parmod-{tag}"));
         for (name, src) in files {
             let p = base.join(name);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, src).unwrap();
         }
-        base.join("main.rnx")
-    }
-
-    fn par_cleanup(tag: &str) {
-        let base = std::env::temp_dir().join(format!("rnx-parmod-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let entry = base.join("main.rnx");
+        (base, entry)
     }
 
     fn collected(entry: &Path, jobs: Option<usize>) -> Result<String, String> {
@@ -5182,7 +5172,7 @@ mod tests {
     fn assert_parallel_matches_sequential(tag: &str, files: &[(&str, &str)]) {
         let (_guard, _cache) = testkit::isolate_cache(&format!("parmod-{tag}"));
         plant_default_prelude();
-        let entry = par_fixture(tag, files);
+        let (_g, entry) = par_fixture(tag, files);
         let expect = collected(&entry, None);
         for jobs in [0, 1, 2, 8] {
             assert_eq!(collected(&entry, Some(jobs)), expect, "tag={tag} jobs={jobs}");
@@ -5191,7 +5181,6 @@ mod tests {
             "dia" | "cyc" => assert!(expect.is_ok(), "tag={tag}: {expect:?}"),
             _ => assert!(expect.is_err(), "tag={tag}: {expect:?}"),
         }
-        par_cleanup(tag);
     }
 
     #[test]
@@ -5252,7 +5241,7 @@ mod tests {
         );
         let (_guard, _cache) = testkit::isolate_cache("parmod-errtwo");
         plant_default_prelude();
-        let entry = par_fixture(
+        let (_g, entry) = par_fixture(
             "errtwo",
             &[
                 (
@@ -5274,17 +5263,13 @@ mod tests {
         for jobs in [0, 1, 2, 8] {
             assert_eq!(collected(&entry, Some(jobs)), expect, "jobs={jobs}");
         }
-        par_cleanup("errtwo");
     }
 
     #[test]
     fn parallel_parse_timing() {
         let (_guard, _cache) = testkit::isolate_cache("parmod-time");
         plant_default_prelude();
-        let tag = "time";
-        let base = std::env::temp_dir().join(format!("rnx-parmod-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
+        let base = crate::scratch::dir("parmod");
         let n = 48;
         let per = 20;
         let mut imports = String::new();
@@ -5324,6 +5309,5 @@ mod tests {
             par2_ms.as_millis(),
             par_ms.as_millis()
         );
-        par_cleanup(tag);
     }
 }

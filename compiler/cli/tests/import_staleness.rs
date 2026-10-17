@@ -1,11 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn fresh_script_dir(tag: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("rnx-stale-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn fresh_script_dir(tag: &str) -> crate::scratch::Scratch {
+    crate::scratch::dir(&format!("stale-{tag}"))
 }
 
 fn build(main: &std::path::Path) -> (bool, String) {
@@ -59,7 +57,6 @@ fn edited_relative_import_invalidates_build() {
     let (fresh, bin) = build(&main);
     assert!(fresh, "no-op rebuild must stay fresh");
     assert_eq!(run_bin(&bin), (2, "2\n".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -81,7 +78,6 @@ fn edited_entry_still_invalidates_build() {
     let (fresh, bin) = build(&main);
     assert!(!fresh, "editing the entry file must invalidate the build");
     assert_eq!(run_bin(&bin), (11, "11\n".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -120,5 +116,4 @@ fn edited_nested_import_outside_src_invalidates_build() {
     let (fresh, bin) = build(&main);
     assert!(!fresh, "editing an imported file outside src/ must invalidate");
     assert_eq!(run_bin(&bin), (2, "2\n".to_string()));
-    let _ = std::fs::remove_dir_all(&dir);
 }

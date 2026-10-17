@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 struct UreqTransport {
     agent: ureq::Agent,
 }
@@ -147,7 +151,6 @@ mod tests {
     use std::sync::{Arc, Mutex, OnceLock};
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    static TAG_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     struct EnvGuard {
         lock: Option<std::sync::MutexGuard<'static, ()>>,
@@ -181,22 +184,16 @@ mod tests {
         }
     }
 
-    fn isolate(tag: &str) -> (EnvGuard, std::path::PathBuf) {
+    fn isolate(tag: &str) -> (EnvGuard, crate::scratch::Scratch) {
         let lock = ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let n = TAG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "rnx-docgen-{tag}-{n}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch::dir(&format!("docgen-{tag}"));
         let prev_cache = std::env::var("RNX_CACHE_HOME").ok();
         let prev_registry = std::env::var("RNX_REGISTRY").ok();
         unsafe {
-            std::env::set_var("RNX_CACHE_HOME", &dir);
+            std::env::set_var("RNX_CACHE_HOME", dir.path());
             std::env::remove_var("RNX_REGISTRY");
         }
         let mut prev_proxies = Vec::new();

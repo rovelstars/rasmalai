@@ -1,11 +1,13 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::path::PathBuf;
 
 const FIB_SRC: &str = "fn Fib(n: Int): Int {\n    if n < 2 {\n        return n;\n    }\n    return Fib(n - 1) + Fib(n - 2);\n}\n\nfn Main(): Int {\n    return Fib(10);\n}\n";
 
-fn write_src(tag: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-profdbg-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_src(tag: &str) -> (crate::scratch::Scratch, PathBuf) {
+    let dir = crate::scratch::dir(&format!("profdbg-{tag}"));
     let src = dir.join("main.rnx");
     std::fs::write(&src, FIB_SRC).unwrap();
     (dir, src)
@@ -27,7 +29,7 @@ fn readelf_sections(path: &std::path::Path) -> String {
 
 #[test]
 fn test_time_passes_output() {
-    let (dir, src) = write_src("time");
+    let (_g, src) = write_src("time");
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--time-passes")
@@ -40,7 +42,6 @@ fn test_time_passes_output() {
         assert!(stderr.contains(pass), "missing {pass}:\n{stderr}");
     }
     assert!(stderr.contains("lines/sec"), "missing throughput:\n{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -90,12 +91,11 @@ fn test_perfetto_trace_json_validity() {
         }
     }
     assert!(events >= 4, "too few events: {events}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_perf_map_generation() {
-    let (dir, src) = write_src("perfmap");
+    let (_g, src) = write_src("perfmap");
     let out = std::process::Command::new(rnx())
         .arg("run")
         .arg("--backend")
@@ -135,12 +135,11 @@ fn test_perf_map_generation() {
     }
     assert!(saw_main, "no Main entry:\n{text}");
     let _ = std::fs::remove_file(&map_path);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_dwarf_debug_symbols_present() {
-    let (dir, src) = write_src("dwarf");
+    let (_g, src) = write_src("dwarf");
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--emit-obj")
@@ -166,12 +165,11 @@ fn test_dwarf_debug_symbols_present() {
     assert!(sections.contains(".debug_line"), "no .debug_line:\n{sections}");
     let run = std::process::Command::new(&app_bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 55);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_release_omits_debug_info() {
-    let (dir, src) = write_src("release");
+    let (_g, src) = write_src("release");
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--emit-obj")
@@ -196,5 +194,4 @@ fn test_release_omits_debug_info() {
     let sections = readelf_sections(std::path::Path::new(&app_bin));
     assert!(!sections.contains(".debug_info"), "leaked .debug_info:\n{sections}");
     assert!(!sections.contains(".debug_line"), "leaked .debug_line:\n{sections}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

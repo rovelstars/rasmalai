@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 pub mod machine;
 pub mod native;
 pub use native::guard;

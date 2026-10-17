@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 mod cmd;
 use clap::{CommandFactory, FromArgMatches};
 

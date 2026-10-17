@@ -1,12 +1,14 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use linker::{LinkInput, native};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn fixture_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-native-diff-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fixture_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("native-{tag}"));
     dir
 }
 
@@ -709,7 +711,7 @@ fn native_rejects_cross_target() {
         entry: "_start".to_string(),
         icf: true,
         target: "x86_64-pc-windows-msvc".to_string(),
-        lib_dirs: vec![dir.clone()],
+        lib_dirs: vec![dir.to_path_buf()],
         libs: vec![],
         runpath: None,
         strip: false,

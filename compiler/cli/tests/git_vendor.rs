@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 const EXPECTED: &str = "Git dep success: 42\n";
 
 fn git(args: &[&str], cwd: &std::path::Path) {
@@ -9,10 +13,8 @@ fn git(args: &[&str], cwd: &std::path::Path) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
-fn base(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-git-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn base(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("git-{tag}"));
     dir
 }
 
@@ -84,7 +86,6 @@ fn test_git_dep_fetch_and_run() {
     let (code, text) = rnx(&["run"], &app);
     assert_eq!(code, 0, "{text}");
     assert!(text.contains(EXPECTED), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -104,7 +105,6 @@ fn test_rnx_vendor_offline() {
     let (code, text) = rnx(&["run"], &app);
     assert_eq!(code, 0, "{text}");
     assert!(text.contains(EXPECTED), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -116,5 +116,4 @@ fn test_unpinned_git_dep_rejected() {
     assert_ne!(code, 0);
     assert!(text.contains("E108"), "{text}");
     assert!(text.contains("rev"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

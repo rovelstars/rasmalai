@@ -1,13 +1,15 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn proj(tag: &str, src: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("rnx-perfdeny-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+fn proj(tag: &str, src: &str) -> crate::scratch::Scratch {
+    let root = crate::scratch::dir(&format!("perfdeny-{tag}"));
     std::fs::write(root.join("main.rnx"), src).unwrap();
     root
 }

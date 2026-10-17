@@ -461,8 +461,7 @@ mod tests {
 
     #[test]
     fn src_tree_hash_covers_sources_only() {
-        let dir = std::env::temp_dir().join(format!("rnx-src-tree-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::dir("src");
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
         let first = hash_src_tree(&dir);
@@ -473,13 +472,11 @@ mod tests {
         assert_eq!(hash_src_tree(&dir), first);
         std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 1; }\n").unwrap();
         assert_ne!(hash_src_tree(&dir), first);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn src_tree_hash_skips_build_dirs() {
-        let dir = std::env::temp_dir().join(format!("rnx-src-skip-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::dir("src");
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
         let first = hash_src_tree(&dir);
@@ -489,7 +486,6 @@ mod tests {
             std::fs::write(nested.join("junk.rnx"), "fn Junk(): Int { return 9; }\n").unwrap();
         }
         assert_eq!(hash_src_tree(&dir), first);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn src_tree_fixture(dir: &Path) {
@@ -512,7 +508,7 @@ mod tests {
 
     #[test]
     fn src_tree_files_digest_matches_legacy_fold() {
-        let dir = std::env::temp_dir().join(format!("rnx-src-files-{}", std::process::id()));
+        let dir = crate::scratch::dir("src-files");
         src_tree_fixture(&dir);
         let (digest, files) = hash_src_tree_files(&dir);
         assert_eq!(digest.len(), 32);
@@ -542,12 +538,11 @@ mod tests {
             entry.update(&bytes);
             assert_eq!(h, &entry.finalize().to_vec());
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn src_tree_files_edit_changes_single_entry() {
-        let dir = std::env::temp_dir().join(format!("rnx-src-files-edit-{}", std::process::id()));
+        let dir = crate::scratch::dir("src-files-edit");
         src_tree_fixture(&dir);
         let (before_digest, before_files) = hash_src_tree_files(&dir);
         std::fs::write(dir.join("src").join("lib").join("util.rnx"), "fn Util(): Int { return 2; }\n")
@@ -564,13 +559,11 @@ mod tests {
             file_entry(&before_files, "src/lib/util.rnx"),
             file_entry(&after_files, "src/lib/util.rnx")
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn src_tree_files_ignores_non_rnx() {
-        let dir =
-            std::env::temp_dir().join(format!("rnx-src-files-ignore-{}", std::process::id()));
+        let dir = crate::scratch::dir("src-files-ignore");
         src_tree_fixture(&dir);
         let (before_digest, before_files) = hash_src_tree_files(&dir);
         std::fs::write(dir.join("src").join("extra.txt"), "ignored").unwrap();
@@ -579,29 +572,24 @@ mod tests {
         assert_eq!(before_digest, after_digest);
         assert_eq!(before_files, after_files);
         assert!(after_files.iter().all(|(r, _)| r.ends_with(".rnx")));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
     #[test]
     fn src_tree_files_skips_symlinks() {
         use std::os::unix::fs::symlink;
-        let dir =
-            std::env::temp_dir().join(format!("rnx-src-files-link-{}", std::process::id()));
+        let dir = crate::scratch::dir("src-files-link");
         src_tree_fixture(&dir);
         let (before_digest, before_files) = hash_src_tree_files(&dir);
         symlink(dir.join("src").join("main.rnx"), dir.join("src").join("alias.rnx")).unwrap();
         let (after_digest, after_files) = hash_src_tree_files(&dir);
         assert_eq!(before_digest, after_digest);
         assert_eq!(before_files, after_files);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn src_tree_files_cover_sibling_imports_outside_src() {
-        let dir = std::env::temp_dir().join(format!("rnx-src-sibling-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch::dir("src");
         std::fs::write(dir.join("main.rnx"), "import { helper } from \"./m2\";\nfn Main(): Int { return helper(); }\n").unwrap();
         std::fs::write(dir.join("m2.rnx"), "export fn helper(): Int { return 1; }\n").unwrap();
         let (before_digest, before_files) = hash_src_tree_files(&dir);
@@ -620,13 +608,11 @@ mod tests {
             file_entry(&before_files, "m2.rnx"),
             file_entry(&after_files, "m2.rnx")
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn src_tree_files_cover_lib_imports_outside_src_at_depth() {
-        let dir = std::env::temp_dir().join(format!("rnx-src-libdepth-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::dir("src");
         std::fs::create_dir_all(dir.join("src").join("a").join("b")).unwrap();
         std::fs::create_dir_all(dir.join("lib")).unwrap();
         std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
@@ -644,14 +630,11 @@ mod tests {
         std::fs::write(dir.join("src").join("a").join("b").join("deep.rnx"), "fn Deep(): Int { return 2; }\n").unwrap();
         let (third_digest, _) = hash_src_tree_files(&dir);
         assert_ne!(after_digest, third_digest);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn prune_and_clean_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("rnx-cache-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch::dir("cache");
         std::fs::write(dir.join("aaa.bin"), b"hello world").unwrap();
         assert_eq!(cache_usage_bytes(&dir), 11);
         assert_eq!(prune_lru(&dir, 100).unwrap(), 0);
@@ -661,13 +644,11 @@ mod tests {
         std::fs::write(dir.join("ccc.bin"), b"hello").unwrap();
         assert_eq!(clean_dir(&dir).unwrap(), 5);
         assert_eq!(cache_usage_bytes(&dir), 0);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn nested_bin_files_count_toward_lru() {
-        let dir = std::env::temp_dir().join(format!("rnx-cache-nested-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::dir("cache");
         let deep = dir.join("deps").join("pkg").join("1.0.0").join("tool");
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::write(deep.join("product.bin"), b"1234567").unwrap();
@@ -679,6 +660,5 @@ mod tests {
         let rest = cache_usage_bytes(&dir);
         assert!(rest <= 5, "usage after prune is {rest}");
         assert_eq!(freed + rest, 10);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

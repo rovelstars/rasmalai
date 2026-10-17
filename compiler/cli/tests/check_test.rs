@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
+use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
@@ -6,10 +10,8 @@ fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-check-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("check-{tag}"));
     dir
 }
 
@@ -45,7 +47,6 @@ fn test_check_valid_package() {
     assert!(stderr.contains("Checked"), "{stderr}");
     assert!(stderr.contains("checkpkg"), "{stderr}");
     assert!(stderr.contains("(ok)"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -63,7 +64,6 @@ fn test_check_type_error_detection() {
     assert!(stderr.contains("E109"), "{stderr}");
     assert!(stderr.contains(":1:"), "{stderr}");
     assert!(stderr.contains("fn Main(): Int {"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -94,7 +94,6 @@ fn test_check_json_output() {
     assert_eq!(item["severity"], serde_json::Value::String("error".to_string()), "{stdout}");
     assert!(item["file"].as_str().unwrap_or("").ends_with("main.rnx"), "{stdout}");
     assert!(item["message"].as_str().unwrap_or("").contains("foo"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn has_artifacts(dir: &Path) -> bool {
@@ -132,7 +131,6 @@ fn test_check_skips_codegen_and_artifacts() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(!has_artifacts(&dir), "check created build artifacts");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -162,7 +160,6 @@ fn test_check_latency_comparison() {
         check_elapsed < build_elapsed,
         "check {check_elapsed:?} not faster than build {build_elapsed:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -186,7 +183,6 @@ fn test_check_manifest_warnings() {
     assert!(stderr.contains("project.bogus"), "{stderr}");
     assert!(stderr.contains("unrecognized field `zzz`"), "{stderr}");
     assert!(stderr.contains("0.1"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -203,7 +199,6 @@ fn test_check_manifest_file_directly() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(stderr.contains("E108"), "{stderr}");
     assert!(stderr.contains("version"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -220,7 +215,6 @@ fn test_check_rejects_non_source_files_cleanly() {
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(stderr.contains("not a checkable file"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const MAIN_IMPORTS_BAD: &str = "import { helper } from \"./util\";\n\nfn Main(): Int {\n    return helper();\n}\n";
@@ -242,7 +236,6 @@ fn test_check_parse_error_attributes_owning_file() {
     assert!(stderr.contains("util.rnx"), "{stderr}");
     assert!(stderr.contains("fn helper(): Int => 41;"), "{stderr}");
     assert!(!stderr.contains("main.rnx:1:"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const MAIN_TWO_BAD: &str = "import { a } from \"./a\";\nimport { b } from \"./b\";\n\nfn Main(): Int {\n    return a() + b();\n}\n";
@@ -270,5 +263,4 @@ fn test_check_reports_errors_across_files() {
     assert_eq!(stderr.matches("E105").count(), 2, "{stderr}");
     assert!(stderr.contains("a.rnx"), "{stderr}");
     assert!(stderr.contains("b.rnx"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

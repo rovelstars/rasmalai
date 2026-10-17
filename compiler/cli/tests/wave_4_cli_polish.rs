@@ -1,18 +1,19 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-wave4-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("wave4-{tag}"));
     dir
 }
 
-fn write_file(path: &PathBuf, contents: &str) {
+fn write_file(path: &std::path::Path, contents: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
@@ -23,7 +24,7 @@ fn manifest(name: &str) -> String {
     format!("export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.1.0\"\n    }}\n}}\n")
 }
 
-fn run_backend(file: &PathBuf, backend: &str, args: &[&str]) -> std::process::Output {
+fn run_backend(file: &std::path::Path, backend: &str, args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(rnx());
     cmd.arg("run").arg("--backend").arg(backend).arg(file);
     if !args.is_empty() {
@@ -87,7 +88,6 @@ fn argv_forwards_identically_on_all_backends() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     let user: Vec<&str> = stdout.lines().skip(2).collect();
     assert_eq!(user, USER_ARGS, "aot: user argv must match jit/interpreter");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const EXIT_SRC: &str = "import { Process } from \"@std/process\";\nfn Main(): Int {\n    print(\"before exit\");\n    Process.exit(3);\n    print(\"after exit\");\n    return 0;\n}\n";
@@ -117,7 +117,6 @@ fn process_exit_flushes_stdout_on_all_backends() {
     let out = Command::new(&bin).output().unwrap();
     assert_eq!(out.status.code(), Some(3), "aot: exit code");
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "before exit\n", "aot: prior output");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const CEILING_CONFIG: &str = "export default {\n    project: {\n        name: \"t3\",\n        version: \"0.1.0\"\n    },\n    permissions: [\"fs:read:/data\"]\n}\n";
@@ -154,7 +153,6 @@ fn permissions_ceiling_enforced_without_lockfile() {
         "{}",
         String::from_utf8_lossy(&locked.stderr)
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const TOPLEVEL_FS_SRC: &str = "import { File, OpenMode } from \"@std/fs\";\nfn Main(): Int {\n    let f = File.open(\"/tmp/rnx-notes.txt\", OpenMode.Read);\n    let t = f.readText().unwrapOr(\"\");\n    f.close();\n    print(t.length());\n    return 0;\n}\n";
@@ -192,7 +190,6 @@ fn audit_attributes_file_capability_and_exports_manifest() {
         exported["capabilities"].as_array().unwrap().iter().any(|c| c == "fs:read:/tmp/**"),
         "exported manifest must carry the scanned capability: {exported}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const TOPLEVEL_STMT_SRC: &str = "import { File, OpenMode } from \"@std/fs\";\nlet f = File.open(\"/tmp/rnx-notes.txt\", OpenMode.Read);\nlet t = f.readText().unwrapOr(\"\");\nf.close();\nprint(t.length());\n";
@@ -215,5 +212,4 @@ fn audit_sees_top_level_statements() {
         report["capabilities"].as_array().unwrap().iter().any(|c| c == "fs:read:/tmp/**"),
         "{report}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

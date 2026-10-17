@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use lir::instr::Instr;
 
 fn lower_src(src: &str) -> lir::instr::Module {
@@ -84,9 +88,7 @@ fn test_bce_cross_backend_execution() {
     let mut jit = cranelift::jit::Jit::compile(&for_jit).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
     assert_eq!(llvm::codegen::execute(&for_jit, "Main").unwrap(), 42);
-    let dir = std::env::temp_dir().join(format!("rnx-bce-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("bce");
     let src_path = dir.join("acc.rnx");
     std::fs::write(&src_path, &src).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -100,7 +102,6 @@ fn test_bce_cross_backend_execution() {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "bce success: 4950\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -144,9 +145,7 @@ fn test_bce_short_array_still_traps() {
         cli::RunOutcome::Thrown(_) | cli::RunOutcome::Fatal { .. } => {}
         other => panic!("interpreter: {other:?}"),
     }
-    let dir = std::env::temp_dir().join(format!("rnx-bce-trap-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("bce");
     let src_path = dir.join("short.rnx");
     std::fs::write(&src_path, SHORT_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -172,5 +171,4 @@ fn test_bce_short_array_still_traps() {
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let run = std::process::Command::new(&bin).output().unwrap();
     assert!(!run.status.success(), "aot read past the end without trapping");
-    let _ = std::fs::remove_dir_all(&dir);
 }

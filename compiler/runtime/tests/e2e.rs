@@ -1,34 +1,26 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use runtime::machine::{ExecError, Machine};
 
 use runtime::value::Value;
 
-
-static HARNESS_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static SCRATCH_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 // Scratch names must be per-run. A fixed name lets two concurrent runs share
 // one directory, and each run wipes it on entry and exit, so the slower run
 // watches its own files disappear and fails on values it never got wrong.
-fn scratch_dir(tag: &str) -> std::path::PathBuf {
-    let n = SCRATCH_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("rnx-rt-{tag}-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch_dir(tag: &str) -> crate::scratch::Scratch {
+    crate::scratch::dir(&format!("rt-{tag}"))
 }
 
 fn module_of(src: &str, tag: &str) -> lir::instr::Module {
-    let n = HARNESS_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("rnx-harness-{tag}-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir(&format!("harness-{tag}"));
     std::fs::write(dir.join("main.rnx"), src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     let out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
-    let _ = std::fs::remove_dir_all(&dir);
     out
 }
 
@@ -450,9 +442,7 @@ fn enum_owned_payload_no_leak() {
 
 #[test]
 fn thread_spawn_join_e2e() {
-    let dir = std::env::temp_dir().join(format!("rnx-rt-thr-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("rt");
     std::fs::write(dir.join("main.rnx"), "fn worker(): Int { let sum = 0 let i = 0 while i < 1000 { sum = sum + 1 i = i + 1 } return sum } fn Main(): Int { let handle = Thread.spawn(worker) let res = handle.join().unwrap() if res == 1000 { print(\"Thread execution success:\", res) return 42 } return 0 }").unwrap();
     let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
@@ -467,7 +457,6 @@ fn thread_spawn_join_e2e() {
         Ok(v) => assert_eq!(v, Value::Int(42)),
         Err(e) => panic!("Main: {e:?}"),
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -501,7 +490,6 @@ fn std_time_virtual_clock_e2e() {
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(out));
     let mut machine = Machine::new(leaked);
     assert_eq!(machine.call("Main", vec![]).unwrap(), Value::Int(42));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -517,7 +505,6 @@ fn std_random_determinism_e2e() {
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(out));
     let mut machine = Machine::new(leaked);
     assert_eq!(machine.call("Main", vec![]).unwrap(), Value::Int(42));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -535,7 +522,6 @@ fn std_fs_roundtrip_e2e() {
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(out));
     let mut machine = Machine::new(leaked);
     assert_eq!(machine.call("Main", vec![]).unwrap(), Value::Int(42));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -551,7 +537,6 @@ fn std_env_roundtrip_e2e() {
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(out));
     let mut machine = Machine::new(leaked);
     assert_eq!(machine.call("Main", vec![]).unwrap(), Value::Int(42));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -567,7 +552,6 @@ fn std_math_scalar_e2e() {
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(out));
     let mut machine = Machine::new(leaked);
     assert_eq!(machine.call("Main", vec![]).unwrap(), Value::Int(42));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -583,7 +567,6 @@ fn std_collections_map_e2e() {
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(out));
     let mut machine = Machine::new(leaked);
     assert_eq!(machine.call("Main", vec![]).unwrap(), Value::Int(42));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -599,13 +582,10 @@ fn std_sync_atomic_channel_e2e() {
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(out));
     let mut machine = Machine::new(leaked);
     assert_eq!(machine.call("Main", vec![]).unwrap(), Value::Int(42));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn ns_tree(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-ns-{tag}-{}-{}", std::process::id(), HARNESS_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn ns_tree(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("ns-{tag}"));
     std::fs::write(dir.join("lib.rnx"), "const K: Int = 42;\nclass Widget { let v: Int init(v: Int) { this.v = v; } }\nenum Shape { Circle(Int), Square }\nfn helper(x: Int): Int { return x * 2; }\n").unwrap();
     dir
 }
@@ -624,7 +604,6 @@ fn ns_run(main_src: &str, tag: &str) -> (Result<Value, ExecError>, Vec<String>) 
     let mut machine = Machine::new(leaked);
     let r = machine.call("Main", vec![]);
     let out = machine.output.clone();
-    let _ = std::fs::remove_dir_all(&dir);
     (r, out)
 }
 
@@ -655,5 +634,4 @@ fn namespace_field_assign_fails() {
     let mut m = g.resolve().unwrap();
     assert!(frontend::desugar::desugar(&mut m).is_empty());
     assert!(lir::lower::lower(&m).is_err());
-    let _ = std::fs::remove_dir_all(&dir);
 }

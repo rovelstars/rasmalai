@@ -1625,16 +1625,11 @@ mod clock_tests {
 mod io_tests {
     use super::*;
 
-    static SCRATCH_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
     // Scratch names must be per-run. A fixed name lets two concurrent runs share
     // one directory, so each run finds the other's files already there and fails
     // on filesystem state it never got wrong.
-    fn scratch_dir(tag: &str) -> std::path::PathBuf {
-        let n = SCRATCH_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("rnx-io-native-{tag}-{}-{n}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        dir
+    fn scratch_dir(tag: &str) -> crate::scratch::Scratch {
+        crate::scratch::dir(&format!("io-native-{tag}"))
     }
 
     #[test]
@@ -1673,7 +1668,6 @@ mod io_tests {
             rnx_file_close(std::ptr::null_mut());
             rnx_file_flush(std::ptr::null_mut());
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1697,7 +1691,6 @@ mod io_tests {
             assert!(!file_read_text_err_impl(w).is_empty());
             rnx_file_close(w);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1741,7 +1734,6 @@ mod io_tests {
             rnx_file_close(w);
             rnx_file_close(w);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

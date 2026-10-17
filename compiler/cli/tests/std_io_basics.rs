@@ -1,11 +1,12 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("std_io_basics-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -52,7 +53,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn basics_src() -> String {
@@ -150,7 +150,6 @@ fn std_io_basics_all_backends() {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0, "aot iobasics exit");
     assert_eq!(String::from_utf8(run.stdout).unwrap(), want, "aot iobasics stdout");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn piped_src() -> String {
@@ -233,9 +232,7 @@ fn run_piped_capture(tag: &str, prog: &str, input: &[u8]) -> (i32, String, Strin
 
 #[test]
 fn std_io_piped_stdin_stdout() {
-    let dir = std::env::temp_dir().join(format!("rnx-iopiped-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("iopiped");
     let main = dir.join("main.rnx");
     std::fs::write(&main, piped_src()).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -263,5 +260,4 @@ fn std_io_piped_stdin_stdout() {
     assert_eq!(code, 0, "aot exit, stderr was {stderr}");
     assert_eq!(stdout, "done\npiped-ok\n", "aot stdout");
     assert_eq!(stderr, "edone\n", "aot stderr");
-    let _ = std::fs::remove_dir_all(&dir);
 }

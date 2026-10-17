@@ -212,8 +212,7 @@ mod tests {
 
     #[test]
     fn package_checksum_is_deterministic_and_sensitive() {
-        let base = std::env::temp_dir().join(format!("rnx-sum-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::scratch::dir("sum");
         std::fs::create_dir_all(base.join("src")).unwrap();
         std::fs::write(base.join("Project.config"), "[project]\nname = \"s\"\nversion = \"1\"\n").unwrap();
         std::fs::write(base.join("src").join("main.rnx"), "fn Main(): Int { return 1; }\n").unwrap();
@@ -222,6 +221,5 @@ mod tests {
         assert_eq!(compute_package_checksum(&base).unwrap(), first);
         std::fs::write(base.join("src").join("main.rnx"), "fn Main(): Int { return 2; }\n").unwrap();
         assert_ne!(compute_package_checksum(&base).unwrap(), first);
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

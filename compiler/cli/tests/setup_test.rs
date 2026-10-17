@@ -1,9 +1,11 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::path::PathBuf;
 
-fn fresh_home(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-setup-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_home(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("setup-{tag}"));
     dir
 }
 
@@ -22,10 +24,8 @@ fn setup_cmd(home: &std::path::Path, args: &[&str], path: Option<&std::path::Pat
     cmd.output().unwrap()
 }
 
-fn empty_path() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-setup-empty-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn empty_path() -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir("setup");
     dir
 }
 

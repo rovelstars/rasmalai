@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 pub mod args;
 pub mod audit;
 pub mod check;
@@ -1439,7 +1443,6 @@ fn build_files_staged_units(
     Ok(BuildOutput { objects: out, stages, native_libs: prog.native_libs, perf_diags: prog.perf_diags })
 }
 
-
 pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::PathBuf, String> {
     if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
         return Err(format!("invalid project name `{name}`"));
@@ -2390,12 +2393,8 @@ pub fn apply_locked_spawn_gate(scope_root: Option<&std::path::Path>) {
 mod tests {
     use super::*;
 
-    fn scratch(tag: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("rnx-gitignore-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(tag: &str) -> crate::scratch::Scratch {
+        crate::scratch::dir(&format!("gitignore-{tag}"))
     }
 
     #[test]
@@ -2404,7 +2403,6 @@ mod tests {
         let path = dir.join(".gitignore");
         ensure_gitignore_entry(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), ".rnx-cache/\n");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2422,7 +2420,6 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "target/\n*.log\n.rnx-cache/\n"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2435,7 +2432,6 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "target/\n.rnx-cache/\n"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2448,7 +2444,6 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "target/\n/.rnx-cache/\n"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2466,7 +2461,6 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "target/\r\n*.log\r\n.rnx-cache/\r\n"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2479,6 +2473,5 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "target/\n .rnx-cache/\n.rnx-cache/\n"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

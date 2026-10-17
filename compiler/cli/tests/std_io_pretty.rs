@@ -1,11 +1,12 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("std_io_pretty-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -46,7 +47,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), want as i32, "aot {tag} exit");
     assert_eq!(String::from_utf8(run.stdout).unwrap(), want_text, "aot {tag} stdout");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Byte-faithful stdout: the interpreter captures raw output chunks, so
@@ -168,9 +168,7 @@ fn Main(): Int {
 
 #[test]
 fn std_io_pretty_piped_no_escapes() {
-    let dir = std::env::temp_dir().join(format!("rnx-iopretty2-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("iopretty2");
     let main = dir.join("main.rnx");
     std::fs::write(&main, err_src()).unwrap();
     std::fs::write(&dir.join("pretty.rnx"), pretty_src()).unwrap();
@@ -211,7 +209,6 @@ fn std_io_pretty_piped_no_escapes() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(stderr, "boom\n[1, 2]\n", "writeError(stderr) got {stderr:?}");
     assert!(!stderr.contains('\x1b'), "no ESC bytes on piped stderr");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn color_src() -> String {
@@ -227,9 +224,7 @@ fn Main(): Int {
 
 #[test]
 fn std_io_pretty_tty_color() {
-    let dir = std::env::temp_dir().join(format!("rnx-iopretty3-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("iopretty3");
     let main = dir.join("main.rnx");
     std::fs::write(&main, color_src()).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -271,5 +266,4 @@ fn std_io_pretty_tty_color() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains('\x1b'), "NO_COLOR strips escapes on a TTY, got {stdout:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

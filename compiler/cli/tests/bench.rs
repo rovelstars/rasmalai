@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
 const SUM_SRC: &str = "import { blackBox } from \"@std/testing\";\n\nbench \"sum_1000\" {\n    let s = 0;\n    let i = 0;\n    while i < 1000 {\n        s = s + i;\n        i = i + 1;\n    }\n    blackBox(s);\n}\n\nfn Main(): Int {\n    return 0;\n}\n";
 
@@ -10,9 +12,8 @@ fn manifest(name: &str) -> String {
     )
 }
 
-fn write_project(tag: &str, name: &str, src: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-bench-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn write_project(tag: &str, name: &str, src: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("bench-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("Project.config"), manifest(name)).unwrap();
     std::fs::write(dir.join("src").join("main.rnx"), src).unwrap();
@@ -42,7 +43,6 @@ fn test_bench_execution_and_output() {
     let line = line_with(&stdout, "sum_1000").expect(format!("no line:\n{stdout}").as_str());
     assert!(line.contains("ns/iter"), "bad line: {line}");
     assert!(line.contains("iters]"), "bad line: {line}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -53,7 +53,6 @@ fn test_bench_filter() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(line_with(&stdout, "fast_op").is_some(), "fast missing:\n{stdout}");
     assert!(line_with(&stdout, "slow_op").is_none(), "slow leaked:\n{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -67,7 +66,6 @@ fn test_bench_cross_backend() {
             .expect(format!("{backend} no line:\n{stdout}").as_str());
         assert!(line.contains("ns/iter"), "{backend} bad line: {line}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -89,5 +87,4 @@ fn test_bench_stripped_in_regular_build() {
     assert!(!text.contains("__rnx_bench_"), "bench symbol leaked:\n{text}");
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
-    let _ = std::fs::remove_dir_all(&dir);
 }

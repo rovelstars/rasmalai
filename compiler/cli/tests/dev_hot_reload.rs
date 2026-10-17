@@ -1,17 +1,15 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use cli::dev::{DevEvent, DevRunner};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-static HARNESS_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn fresh_file(tag: &str, src: &str) -> PathBuf {
-    let n = HARNESS_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("rnx-devtest-{tag}-{n}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_file(tag: &str, src: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("devtest-{tag}"));
     let f = dir.join("main.rnx");
     std::fs::write(&f, src).unwrap();
-    f
+    (dir, f)
 }
 
 fn wait_event(runner: &mut DevRunner, deadline: Duration) -> Option<DevEvent> {
@@ -30,7 +28,7 @@ const V3: &str = "fn getValue(): Int { return 3; }\nfn Main(): Int { return getV
 
 #[test]
 fn test_body_swap_under_watcher() {
-    let f = fresh_file("swap", V1);
+    let (_g, f) = fresh_file("swap", V1);
     let mut runner = DevRunner::new(&f, "Main", true).unwrap_or_else(|e| panic!("{e:?}"));
     assert_eq!(runner.call("Main", &[]).unwrap(), 1);
     std::fs::write(&f, V2).unwrap();
@@ -44,7 +42,7 @@ fn test_body_swap_under_watcher() {
 
 #[test]
 fn test_diagnostic_tolerance() {
-    let f = fresh_file("diag", V2);
+    let (_g, f) = fresh_file("diag", V2);
     let mut runner = DevRunner::new(&f, "Main", true).unwrap_or_else(|e| panic!("{e:?}"));
     assert_eq!(runner.call("Main", &[]).unwrap(), 2);
     std::fs::write(&f, "fn getValue(): Int { return ").unwrap();
@@ -64,7 +62,7 @@ fn test_diagnostic_tolerance() {
 
 #[test]
 fn test_structural_change_restarts() {
-    let f = fresh_file("struct", V1);
+    let (_g, f) = fresh_file("struct", V1);
     let mut runner = DevRunner::new(&f, "Main", true).unwrap_or_else(|e| panic!("{e:?}"));
     assert_eq!(runner.call("Main", &[]).unwrap(), 1);
     std::fs::write(&f, "fn getValue(x: Int): Int { return x; }\nfn Main(): Int { return getValue(7); }\n").unwrap();
@@ -101,10 +99,7 @@ fn test_delta_classify_unit() {
 }
 
 fn module_of_src(src: &str) -> frontend::ast::Module {
-    let n = HARNESS_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("rnx-devunit-{n}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("devunit");
     std::fs::write(dir.join("main.rnx"), src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
@@ -112,6 +107,5 @@ fn module_of_src(src: &str) -> frontend::ast::Module {
     frontend::harness::strip_benches(&mut m);
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
-    let _ = std::fs::remove_dir_all(&dir);
     m
 }

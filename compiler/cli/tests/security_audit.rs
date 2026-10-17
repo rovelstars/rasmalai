@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
@@ -5,9 +9,8 @@ fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_pkg(tag: &str, name: &str, version: &str, lib_src: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-secaudit-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn fresh_pkg(tag: &str, name: &str, version: &str, lib_src: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("secaudit-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("Project.config"),
@@ -47,7 +50,6 @@ fn audit_terminal_delegated() {
     assert!(text.contains("fs:delegated"), "{text}");
     assert!(text.contains("File.open"), "{text}");
     assert!(text.contains("loadData"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -68,7 +70,6 @@ fn audit_json_flag() {
     assert!(chain.len() >= 2);
     assert_eq!(chain[0]["symbol"], "loadData");
     assert_eq!(chain.last().unwrap()["symbol"], "File.open");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -79,7 +80,6 @@ fn audit_pure_package() {
     let text = combined(&out);
     assert!(text.contains("[TIER 1: PURE]"), "{text}");
     assert!(text.contains("100% verified pure computation"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -94,7 +94,6 @@ fn audit_export_manifest() {
     assert_eq!(v["tier"], "delegated");
     assert_eq!(v["capabilities"], serde_json::json!(["fs:delegated"]));
     assert!(v.get("traces").is_none(), "manifest stays minimal");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 struct McpSession {
@@ -180,5 +179,4 @@ fn mcp_inspect_package_capabilities() {
     let traces = payload["traces"].as_array().expect("traces");
     assert_eq!(traces.len(), 1);
     assert_eq!(traces[0]["nodes"][0]["symbol"], "loadData");
-    let _ = std::fs::remove_dir_all(&dir);
 }

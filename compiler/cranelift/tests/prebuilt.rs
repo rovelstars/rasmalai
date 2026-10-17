@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use cranelift::jit::{prebuilt_stdlib_status_in, PrebuiltStatus};
 
 fn lowered(src: &str) -> lir::instr::Module {
@@ -9,21 +13,11 @@ fn lowered(src: &str) -> lir::instr::Module {
 #[test]
 fn missing_prebuilt_stdlib_falls_back_to_inline() {
     let lir = lowered("fn Main(): Int { return 42; }");
-    let root = std::env::temp_dir().join(format!(
-        "rnx-cl-prebuilt-it-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = crate::scratch::dir("cl");
     assert!(matches!(
         prebuilt_stdlib_status_in(&lir, &root),
         PrebuiltStatus::Fallback(_)
     ));
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

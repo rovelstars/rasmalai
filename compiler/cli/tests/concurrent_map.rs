@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-conmap-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("conmap-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -53,7 +53,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const CHURN_SRC: &str = "import { Map } from \"@std/collections\";\nfn churn(m: Map, iters: Int): Int {\n    let i = 0;\n    while i < iters {\n        m.set(7, i);\n        let v = m.get(7) ?? -1;\n        if v < 0 {\n            return 99;\n        }\n        i = i + 1;\n    }\n    return 0;\n}\nfn Main(): Int {\n    let m = new Map();\n    m.set(7, 1);\n    let h0 = Thread.spawn((): Int => churn(m, 2000));\n    let h1 = Thread.spawn((): Int => churn(m, 2000));\n    let h2 = Thread.spawn((): Int => churn(m, 2000));\n    let h3 = Thread.spawn((): Int => churn(m, 2000));\n    let r0 = h0.join().unwrap();\n    let r1 = h1.join().unwrap();\n    let r2 = h2.join().unwrap();\n    let r3 = h3.join().unwrap();\n    if r0 + r1 + r2 + r3 != 0 {\n        return 3;\n    }\n    if m.len() != 1 {\n        return 1;\n    }\n    let v = m.get(7) ?? -1;\n    if v < 0 {\n        return 2;\n    }\n    print(\"map churn ok\");\n    return 42;\n}\n";

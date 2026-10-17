@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-promise-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("promise-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -51,7 +51,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -235,8 +234,7 @@ fn wait_blocks_until_settlement() {
 }
 
 fn check_src_fails(src: &str, tag: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("rnx-promise-neg-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::scratch::dir(&format!("promise-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("Project.config"),
@@ -257,7 +255,6 @@ fn check_src_fails(src: &str, tag: &str) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out.status.code(), Some(1), "{text}");
     text
 }

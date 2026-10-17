@@ -1,12 +1,15 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 const EXPECTED: &str = "Multi-package resolution success: 42\n";
 
-fn fixture_tree(tag: &str) -> std::path::PathBuf {
-    let base = std::env::temp_dir().join(format!("rnx-deplock-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+fn fixture_tree(tag: &str) -> crate::scratch::Scratch {
+    let base = crate::scratch::dir(&format!("deplock-{tag}"));
     let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_package");
     copy_dir(&src.join("app"), &base.join("app"));
     copy_dir(&src.join("dep_math"), &base.join("dep_math"));
-    base.join("app")
+    base
 }
 
 fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
@@ -42,7 +45,8 @@ fn valid_hex64(s: &str) -> bool {
 
 #[test]
 fn test_rnx_lock_generation() {
-    let app = fixture_tree("gen");
+    let base = fixture_tree("gen");
+    let app = base.join("app");
     lock(&app);
     let text = std::fs::read_to_string(app.join("Project.deplock")).unwrap();
     assert!(text.contains("version: 2"), "{text}");
@@ -66,7 +70,8 @@ fn test_rnx_lock_generation() {
 
 #[test]
 fn test_locked_run_success() {
-    let app = fixture_tree("run");
+    let base = fixture_tree("run");
+    let app = base.join("app");
     lock(&app);
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx)
@@ -82,7 +87,8 @@ fn test_locked_run_success() {
 
 #[test]
 fn test_locked_checksum_tamper_detection() {
-    let app = fixture_tree("tamper");
+    let base = fixture_tree("tamper");
+    let app = base.join("app");
     lock(&app);
     let lib = app.parent().unwrap().join("dep_math").join("src").join("lib.rnx");
     let before = std::fs::read_to_string(&lib).unwrap();
@@ -104,7 +110,8 @@ fn test_locked_checksum_tamper_detection() {
 
 #[test]
 fn test_missing_deplock_error() {
-    let app = fixture_tree("missing");
+    let base = fixture_tree("missing");
+    let app = base.join("app");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx)
         .arg("run")

@@ -1,6 +1,9 @@
-fn proj(tag: &str, name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
-    let base = std::env::temp_dir().join(format!("rnx-test-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
+fn proj(tag: &str, name: &str, files: &[(&str, &str)]) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let base = crate::scratch::dir(&format!("test-{tag}"));
     let root = base.join(name);
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
@@ -13,7 +16,7 @@ fn proj(tag: &str, name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, src).unwrap();
     }
-    root
+    (base, root)
 }
 
 fn rnx_test(dir: &std::path::Path, args: &[&str]) -> (i32, String) {
@@ -34,7 +37,7 @@ const MAIN: &str = "fn Main(): Int {\n    return 0;\n}\n";
 
 #[test]
 fn test_rnx_test_passing() {
-    let root = proj(
+    let (_g, root) = proj(
         "pass",
         "calc",
         &[
@@ -51,12 +54,11 @@ fn test_rnx_test_passing() {
     assert!(text.contains("✓ test_add"), "{text}");
     assert!(text.contains("✓ test_sub"), "{text}");
     assert!(text.contains("tests: 2 passed, 0 failed in "), "{text}");
-    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
 #[test]
 fn test_rnx_test_failing() {
-    let root = proj(
+    let (_g, root) = proj(
         "fail",
         "calc",
         &[
@@ -73,12 +75,11 @@ fn test_rnx_test_failing() {
     assert!(text.contains("math broken"), "{text}");
     assert!(text.contains("failure in tests/math.rnx > test_math"), "{text}");
     assert!(text.contains("tests: 0 passed, 1 failed in "), "{text}");
-    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
 #[test]
 fn test_rnx_test_filter() {
-    let root = proj(
+    let (_g, root) = proj(
         "filter",
         "calc",
         &[
@@ -95,12 +96,11 @@ fn test_rnx_test_filter() {
     assert!(text.contains("✓ test_beta"), "{text}");
     assert!(!text.contains("test_alpha"), "{text}");
     assert!(!text.contains("test_gamma"), "{text}");
-    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
 #[test]
 fn test_rnx_test_backends() {
-    let root = proj(
+    let (_g, root) = proj(
         "backends",
         "calc",
         &[
@@ -119,13 +119,11 @@ fn test_rnx_test_backends() {
             "{backend}: {text}"
         );
     }
-    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
 #[test]
 fn test_workspace_test_p_flag() {
-    let base = std::env::temp_dir().join(format!("rnx-test-ws-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    let base = crate::scratch::dir("test");
     std::fs::create_dir_all(base.join("calc").join("src")).unwrap();
     std::fs::create_dir_all(base.join("calc").join("tests")).unwrap();
     std::fs::create_dir_all(base.join("plain").join("src")).unwrap();
@@ -160,12 +158,11 @@ fn test_workspace_test_p_flag() {
     assert!(text.contains("tests/calc.rnx\n"), "{text}");
     assert!(text.contains("✓ test_add"), "{text}");
     assert!(text.contains("tests: 1 passed, 0 failed in "), "{text}");
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
 fn test_run_error_attributes_owning_file() {
-    let root = proj(
+    let (_g, root) = proj(
         "attr",
         "calc",
         &[
@@ -184,12 +181,11 @@ fn test_run_error_attributes_owning_file() {
     assert!(text.contains("src/util.rnx"), "wrong file:\n{text}");
     assert!(text.contains("fix:"), "missing fix footer:\n{text}");
     assert!(!text.contains("(63.."), "raw span leaked:\n{text}");
-    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
 #[test]
 fn test_run_fatal_shows_source_context() {
-    let root = proj(
+    let (_g, root) = proj(
         "fatalctx",
         "calc",
         &[(
@@ -209,5 +205,4 @@ fn test_run_fatal_shows_source_context() {
     assert!(text.contains("src/main.rnx:2:12"), "{text}");
     assert!(text.contains("▲"), "{text}");
     assert!(!text.contains("(63.."), "{text}");
-    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }

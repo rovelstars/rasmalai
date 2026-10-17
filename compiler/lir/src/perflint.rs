@@ -1603,8 +1603,7 @@ mod tests {
     }
 
     fn lower_bench(path: &str) -> Option<Module> {
-        let dir = std::env::temp_dir().join(format!("rnx-perflint-corpus-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::dir("perflint");
         std::fs::create_dir_all(&dir).ok()?;
         let src = std::fs::read_to_string(path).ok()?;
         std::fs::write(dir.join("main.rnx"), &src).ok()?;
@@ -1615,7 +1614,6 @@ mod tests {
         }
         let mut out = crate::lower::lower(&m).ok()?;
         crate::opt::optimize_lir(&mut out, 1, "Main");
-        let _ = std::fs::remove_dir_all(&dir);
         Some(out)
     }
 

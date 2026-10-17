@@ -890,10 +890,8 @@ mod fs_tests {
         out
     }
 
-    fn case_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("rnx-fs-native-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn case_dir(tag: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("fs-{tag}"));
         dir
     }
 
@@ -927,7 +925,6 @@ mod fs_tests {
         assert!(fs_exists_impl(&file));
         assert!(!fs_is_file_impl(&sub));
         assert!(fs_is_dir_impl(&sub));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -952,7 +949,6 @@ mod fs_tests {
             assert_eq!(rnx_array_len(rnx_fs_stat(p)), 6);
             assert_eq!(rnx_array_get(rnx_fs_stat(p), 0, 8), 8);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -974,7 +970,6 @@ mod fs_tests {
             assert!(!str_bytes(rnx_fs_read_dir_err(q)).is_empty());
             assert_eq!(rnx_array_len(rnx_fs_read_dir(q)), 0);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1006,7 +1001,6 @@ mod fs_tests {
             assert_eq!(str_bytes(rnx_fs_glob_err(p)), b"");
             assert_eq!(rnx_array_len(rnx_fs_glob(p)), 2);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1025,7 +1019,6 @@ mod fs_tests {
             assert_eq!(str_bytes(rnx_fs_mkdir_err(p, 0)), b"");
             assert!(!str_bytes(rnx_fs_mkdir_err(p, 0)).is_empty());
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1054,7 +1047,6 @@ mod fs_tests {
             assert_eq!(str_bytes(rnx_fs_remove_err(p)), b"");
             assert_eq!(str_bytes(rnx_fs_remove_all_err(p)), b"");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1085,7 +1077,6 @@ mod fs_tests {
             assert_eq!(str_bytes(rnx_fs_move_err(b, a, )), b"");
             assert_eq!(str_bytes(rnx_fs_rename_err(a, b)), b"");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1111,7 +1102,6 @@ mod fs_tests {
             assert_eq!(str_bytes(rnx_fs_chmod_err(p, 0o644)), b"");
             assert_eq!(str_bytes(rnx_fs_fsync_err(p)), b"");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1127,7 +1117,6 @@ mod fs_tests {
         unsafe {
             assert_eq!(str_bytes(rnx_fs_symlink_err(a, b)), b"");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1164,7 +1153,6 @@ mod fs_tests {
             assert_eq!(str_bytes(rnx_fs_write_bytes_err(q, buf, 2)), b"");
             bytes_free_impl(buf);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1227,7 +1215,6 @@ mod fs_tests {
             rnx_fs_mmap_flush(std::ptr::null_mut());
             rnx_fs_mmap_close(std::ptr::null_mut());
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1248,7 +1235,6 @@ mod fs_tests {
         fs_mmap_close_impl(anon);
         assert_eq!(fs_mmap_addr_impl(anon), 0);
         assert_eq!(fs_mmap_len_impl(anon), 0);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1298,6 +1284,5 @@ mod fs_tests {
             assert_eq!(str_bytes(rnx_fs_read_link(p)), b"");
             assert!(!str_bytes(rnx_fs_read_link_err(p)).is_empty());
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

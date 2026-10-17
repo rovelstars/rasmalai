@@ -29,9 +29,6 @@ fn grand_tour_interpreter_and_native_binary() {
     assert!(stdout.contains(EXPECTED.trim()), "{stdout}");
     tour_tmp_gone();
 
-    let dir = std::env::temp_dir().join(format!("rnx-grand-tour-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
     let build = std::process::Command::new(rnx)
         .arg("build")
         .arg(fixture())
@@ -46,6 +43,5 @@ fn grand_tour_interpreter_and_native_binary() {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), EXPECTED);
-    let _ = std::fs::remove_dir_all(&dir);
     tour_tmp_gone();
 }

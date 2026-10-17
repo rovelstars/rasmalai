@@ -1,18 +1,19 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-llvmasync-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("llvmasync-{tag}"));
     dir
 }
 
-fn run_jit(dir: &PathBuf, src: &str) -> std::process::Output {
+fn run_jit(dir: &std::path::Path, src: &str) -> std::process::Output {
     let prog = dir.join("main.rnx");
     std::fs::write(&prog, src).unwrap();
     Command::new(rnx())
@@ -32,7 +33,6 @@ fn expect_ok(dir_label: &str, src: &str, want: &str) {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "jit failed: {stderr}");
     assert_eq!(stdout, want, "stdout mismatch");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

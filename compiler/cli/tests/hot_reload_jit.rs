@@ -1,19 +1,17 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use cranelift::jit::{FunctionSlotId, Jit};
 
-static HARNESS_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 fn module_of(src: &str, tag: &str) -> lir::instr::Module {
-    let n = HARNESS_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("rnx-hotreload-{tag}-{n}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir(&format!("hotreload-{tag}"));
     std::fs::write(dir.join("main.rnx"), src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     let out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
-    let _ = std::fs::remove_dir_all(&dir);
     out
 }
 

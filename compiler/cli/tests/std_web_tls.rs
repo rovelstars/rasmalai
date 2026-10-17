@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -8,10 +12,8 @@ fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-tls-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("tls-{tag}"));
     dir
 }
 
@@ -97,7 +99,7 @@ fn serve_one(tls: &mut rustls::Stream<'_, rustls::ServerConnection, std::net::Tc
 }
 
 struct TlsFixture {
-    dir: PathBuf,
+    dir: crate::scratch::Scratch,
     port: u16,
     server: Option<std::thread::JoinHandle<()>>,
 }
@@ -135,7 +137,6 @@ impl TlsFixture {
         if let Some(srv) = self.server.take() {
             srv.join().unwrap();
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -202,5 +203,4 @@ fn fetch_https_online_example_com() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "online fetch failed: {stderr}");
     assert_eq!(stdout, "200\ntrue\n", "online stdout mismatch: {stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

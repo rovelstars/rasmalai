@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use lir::instr::Instr;
 
 fn lower_src(src: &str) -> lir::instr::Module {
@@ -46,18 +50,16 @@ fn has_arc(func: &lir::instr::Function) -> bool {
 
 const VEC2_SRC: &str = "import { Vec2 } from \"@std/math\";\nfn Main(): Int {\n    let v1 = new Vec2(3.0, 4.0);\n    let len = v1.length();\n    return Int(len);\n}\n";
 
-fn fixture(tag: &str, rel: &str, src: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-escape-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fixture(tag: &str, rel: &str, src: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("escape-{tag}"));
     let path = dir.join(rel);
     std::fs::write(&path, src).unwrap();
-    path
+    (dir, path)
 }
 
 #[test]
 fn test_vec2_stack_promotion() {
-    let path = fixture("vec2", "main.rnx", VEC2_SRC);
+    let (_g, path) = fixture("vec2", "main.rnx", VEC2_SRC);
     let mut module = lower_file(&path);
     lir::opt::optimize_lir(&mut module, 1, "Main");
     let main = fn_by_name(&module, "Main");
@@ -90,7 +92,7 @@ const LOOP_SRC: &str = "import { Vec2 } from \"@std/math\";\nfn Main(): Int {\n 
 
 #[test]
 fn test_cross_backend_stack_alloc() {
-    let path = fixture("loop", "loop.rnx", LOOP_SRC);
+    let (_g, path) = fixture("loop", "loop.rnx", LOOP_SRC);
     let mut module = lower_file(&path);
     lir::opt::optimize_lir(&mut module, 1, "Main");
     let main = fn_by_name(&module, "Main");

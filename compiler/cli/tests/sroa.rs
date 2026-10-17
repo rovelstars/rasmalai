@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use lir::instr::Instr;
 
 fn lower_file(path: &std::path::Path) -> lir::instr::Module {
@@ -44,20 +48,18 @@ fn has_field_access(func: &lir::instr::Function) -> bool {
     })
 }
 
-fn fixture(tag: &str, rel: &str, src: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-sroa-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fixture(tag: &str, rel: &str, src: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("sroa-{tag}"));
     let path = dir.join(rel);
     std::fs::write(&path, src).unwrap();
-    path
+    (dir, path)
 }
 
 const VEC_XY: &str = "import { Vec2 } from \"@std/math\";\nfn Main(): Int {\n    let v = new Vec2(10.0, 20.0);\n    let x = v.x;\n    let y = v.y;\n    return Int(x + y);\n}\n";
 
 #[test]
 fn test_sroa_eliminates_stack_alloc() {
-    let path = fixture("xy", "main.rnx", VEC_XY);
+    let (_g, path) = fixture("xy", "main.rnx", VEC_XY);
     let mut module = lower_file(&path);
     lir::opt::optimize_lir(&mut module, 1, "Main");
     let main = fn_by_name(&module, "Main");
@@ -93,7 +95,7 @@ const LOOP_SRC: &str = "import { Vec2 } from \"@std/math\";\nfn Main(): Int {\n 
 
 #[test]
 fn test_cross_backend_sroa_execution() {
-    let path = fixture("loop", "main.rnx", LOOP_SRC);
+    let (_g, path) = fixture("loop", "main.rnx", LOOP_SRC);
     let out = cli::run_files(path.to_str().unwrap(), "Main", vec![]);
     assert_eq!(out.output, vec!["sroa success: 42".to_string()]);
     match out.outcome {

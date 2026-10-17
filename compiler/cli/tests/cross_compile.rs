@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
 const MINI_SRC: &str = "fn Main(): Int { return 42; }\n";
 
-fn write_src(src: &str, tag: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-cross-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn write_src(src: &str, tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("cross-{tag}"));
     std::fs::create_dir_all(dir.join("target")).unwrap();
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
@@ -31,7 +32,7 @@ fn sha256(path: &std::path::Path) -> String {
 
 #[test]
 fn test_emit_obj_x86_64() {
-    let (dir, main) = write_src(MINI_SRC, "x86");
+    let (_g, main) = write_src(MINI_SRC, "x86");
     let build = build(&[
         main.to_str().unwrap(),
         "--emit-obj",
@@ -42,12 +43,11 @@ fn test_emit_obj_x86_64() {
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     assert!(std::path::Path::new(&bin).is_file(), "object missing");
     assert_eq!(machine_of(std::path::Path::new(&bin)), 62, "expected EM_X86_64");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_emit_obj_aarch64() {
-    let (dir, main) = write_src(MINI_SRC, "arm");
+    let (_g, main) = write_src(MINI_SRC, "arm");
     let build = build(&[
         main.to_str().unwrap(),
         "--emit-obj",
@@ -58,12 +58,11 @@ fn test_emit_obj_aarch64() {
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     assert!(std::path::Path::new(&bin).is_file(), "object missing");
     assert_eq!(machine_of(std::path::Path::new(&bin)), 183, "expected EM_AARCH64");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_unsupported_target_rejected() {
-    let (dir, main) = write_src(MINI_SRC, "bad");
+    let (_g, main) = write_src(MINI_SRC, "bad");
     let build = build(&[
         main.to_str().unwrap(),
         "--target",
@@ -73,7 +72,6 @@ fn test_unsupported_target_rejected() {
     let err = String::from_utf8_lossy(&build.stdout).into_owned()
         + &String::from_utf8_lossy(&build.stderr).into_owned();
     assert!(err.contains("E108"), "missing E108:\n{err}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -95,5 +93,4 @@ fn test_cross_target_determinism() {
     }
     assert_eq!(sha256(&a), sha256(&b), "cross digests differ");
     assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
-    let _ = std::fs::remove_dir_all(&dir);
 }

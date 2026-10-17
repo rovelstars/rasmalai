@@ -1,12 +1,15 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_pkg(tag: &str, name: &str, lib_src: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-waveb-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn fresh_pkg(tag: &str, name: &str, lib_src: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("waveb-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("Project.config"),
@@ -46,7 +49,6 @@ fn s201_fires_on_mutated_delegated_sink() {
     assert!(text.contains("fs"), "{text}");
     assert!(text.contains("File.open"), "{text}");
     assert!(text.contains("untrusted path mutation"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -57,13 +59,10 @@ fn passthrough_delegated_stays_clean() {
     let text = combined(&out);
     assert!(text.contains("fs:delegated"), "{text}");
     assert!(!text.contains("S201"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn lock_project(tag: &str, app_deps: &str, app_main: &str, dep_lib: &str) -> std::path::PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("rnx-waveb-lock-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn lock_project(tag: &str, app_deps: &str, app_main: &str, dep_lib: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("waveb-lock-{tag}"));
     std::fs::create_dir_all(dir.join("app").join("src")).unwrap();
     std::fs::create_dir_all(dir.join("dep").join("src")).unwrap();
     std::fs::write(
@@ -98,7 +97,6 @@ fn lock_records_scanned_capabilities() {
     let lock = std::fs::read_to_string(dir.join("app").join("Project.deplock")).unwrap();
     assert!(lock.contains("fs:delegated"), "lock must carry scanned caps, got: {lock}");
     assert!(lock.contains("delegated"), "lock must carry scanned tier, got: {lock}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -120,5 +118,4 @@ fn lock_rejects_s201_dependency() {
         !dir.join("app").join("Project.deplock").exists(),
         "no clean lockfile may be written"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

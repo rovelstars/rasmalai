@@ -1,12 +1,14 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
-fn write_case(tag: &str, body: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-assert-exit-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_case(tag: &str, body: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("assert-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, body).unwrap();
-    main
+    (dir, main)
 }
 
 fn run_rnx(main: &std::path::Path, backend: &str) -> std::process::Output {
@@ -26,7 +28,7 @@ const PASS_SRC: &str = "fn Main(): Int {\n    assert(1 == 1, \"all good\");\n   
 
 #[test]
 fn interpreter_failing_assert_exits_1_with_location() {
-    let main = write_case("interp-fail", FAIL_SRC);
+    let (_g, main) = write_case("interp-fail", FAIL_SRC);
     let out = run_rnx(&main, "interpreter");
     assert_eq!(out.status.code(), Some(1), "exit code");
     assert!(out.stdout.is_empty(), "stdout stays clean: {out:?}");
@@ -38,7 +40,7 @@ fn interpreter_failing_assert_exits_1_with_location() {
 
 #[test]
 fn cranelift_failing_assert_exits_1_on_stderr() {
-    let main = write_case("jit-fail", FAIL_SRC);
+    let (_g, main) = write_case("jit-fail", FAIL_SRC);
     let out = run_rnx(&main, "cranelift");
     assert_eq!(out.status.code(), Some(1), "exit code");
     assert!(out.stdout.is_empty(), "stdout stays clean: {out:?}");
@@ -49,7 +51,7 @@ fn cranelift_failing_assert_exits_1_on_stderr() {
 
 #[test]
 fn llvm_failing_assert_exits_1_on_stderr() {
-    let main = write_case("llvm-fail", FAIL_SRC);
+    let (_g, main) = write_case("llvm-fail", FAIL_SRC);
     let out = run_rnx(&main, "llvm");
     assert_eq!(out.status.code(), Some(1), "exit code");
     assert!(out.stdout.is_empty(), "stdout stays clean: {out:?}");
@@ -60,7 +62,7 @@ fn llvm_failing_assert_exits_1_on_stderr() {
 
 #[test]
 fn aot_failing_assert_exits_1_on_stderr() {
-    let main = write_case("aot-fail", FAIL_SRC);
+    let (_g, main) = write_case("aot-fail", FAIL_SRC);
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = Command::new(rnx)
         .arg("build")
@@ -81,7 +83,7 @@ fn aot_failing_assert_exits_1_on_stderr() {
 #[test]
 fn passing_assert_stays_exit_0() {
     for backend in ["interpreter", "cranelift"] {
-        let main = write_case(&format!("pass-{backend}"), PASS_SRC);
+        let (_g, main) = write_case(&format!("pass-{backend}"), PASS_SRC);
         let out = run_rnx(&main, backend);
         assert_eq!(out.status.code(), Some(0), "{backend} exit code");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());

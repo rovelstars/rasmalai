@@ -1,18 +1,19 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-dns-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("dns-{tag}"));
     dir
 }
 
-fn run_backend(dir: &PathBuf, src: &str, backend: Option<&str>) -> std::process::Output {
+fn run_backend(dir: &std::path::Path, src: &str, backend: Option<&str>) -> std::process::Output {
     let prog = dir.join("main.rnx");
     std::fs::write(&prog, src).unwrap();
     let mut cmd = Command::new(rnx());
@@ -32,7 +33,6 @@ fn expect_backends(tag: &str, src: &str, want: &str) {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{tag} {:?} failed: {stderr}", backend);
         assert_eq!(stdout, want, "{tag} {:?} stdout mismatch", backend);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -49,7 +49,6 @@ fn expect_failure_everywhere(tag: &str, src: &str, want_err: &str) {
             "{tag} {:?} missing `{want_err}` in: {combined}",
             backend
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

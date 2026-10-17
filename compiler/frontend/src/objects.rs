@@ -140,17 +140,8 @@ pub fn prune_objects_lru(root: &Path, keep_bytes: u64) -> u64 {
 mod tests {
     use super::*;
 
-    fn root(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "rnx-objects-{}-{}-{}",
-            std::process::id(),
-            name,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn root(name: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("objects-{name}"));
         dir
     }
 
@@ -170,7 +161,6 @@ mod tests {
         assert!(delete_object(&dir, "dev/ab12/cd34"));
         assert_eq!(read_object(&dir, "dev/ab12/cd34"), None);
         assert!(!delete_object(&dir, "dev/ab12/cd34"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -183,7 +173,6 @@ mod tests {
         assert_eq!(read_object(&dir, "dev/aa/bad"), None);
         std::fs::write(&dest, vec![0x7f, b'E', b'L', b'F']).unwrap();
         assert_eq!(read_object(&dir, "dev/aa/bad"), None);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -194,7 +183,6 @@ mod tests {
         assert_eq!(object_path(&dir, ""), None);
         assert_eq!(read_object(&dir, "../evil"), None);
         assert!(!write_object(&dir, "a/../../evil", b"x"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -209,6 +197,5 @@ mod tests {
         let freed = prune_objects_lru(&dir, usage - 1);
         assert!(freed > 0);
         assert!(objects_usage_bytes(&dir) <= usage - 1);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

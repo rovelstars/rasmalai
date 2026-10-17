@@ -1,18 +1,19 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-asyloop-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("asyloop-{tag}"));
     dir
 }
 
-fn run_backend(dir: &PathBuf, src: &str, backend: Option<&str>) -> std::process::Output {
+fn run_backend(dir: &std::path::Path, src: &str, backend: Option<&str>) -> std::process::Output {
     let prog = dir.join("main.rnx");
     std::fs::write(&prog, src).unwrap();
     let mut cmd = Command::new(rnx());
@@ -32,7 +33,6 @@ fn expect_backends(tag: &str, src: &str, want: &str) {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{tag} {:?} failed: {stderr}", backend);
         assert_eq!(stdout, want, "{tag} {:?} stdout mismatch", backend);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -120,7 +120,6 @@ fn await_in_loop_condition_still_rejected() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let combined = format!("{stdout}{stderr}");
     assert!(combined.contains("await is only supported"), "{combined}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const AWAIT_RESULT_INLINE: &str = r#"async fn fetch(): Result<String, String> {
@@ -152,5 +151,4 @@ fn await_promise_result_inline_unwrap_or() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "await-result interp failed: {stderr}");
     assert_eq!(stdout, "live\nlive\n", "await-result stdout mismatch");
-    let _ = std::fs::remove_dir_all(&dir);
 }

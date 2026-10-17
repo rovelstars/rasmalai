@@ -939,9 +939,7 @@ mod tests {
 
     #[test]
     fn ambiguous_span_falls_back_to_entry() {
-        let dir = std::env::temp_dir().join(format!("rnx-attr-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch::dir("attr");
         let src = "fn Main(): Int {\n    return 0;\n}\n";
         let a_path = dir.join("a.rnx");
         let b_path = dir.join("b.rnx");
@@ -953,7 +951,6 @@ mod tests {
         let out = render_runtime_error(&theme, "fatal: boom", &b_path, Some(span), None);
         assert!(out.contains("b.rnx"), "{out}");
         assert!(!out.contains("a.rnx"), "{out}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1004,13 +1001,11 @@ mod tests {
         assert!(err.is_empty());
     }
 
-    fn write_perf_case(tag: &str, src: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rnx-perf-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn write_perf_case(tag: &str, src: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+        let dir = crate::scratch::dir(&format!("perf-{tag}"));
         let main = dir.join("main.rnx");
         std::fs::write(&main, src).unwrap();
-        main
+        (dir, main)
     }
 
     fn perf_diag(code: Code, src: &str, needle: &str) -> Diagnostic {
@@ -1025,7 +1020,7 @@ mod tests {
 
     #[test]
     fn allow_on_item_suppresses_span_inside() {
-        let main = write_perf_case("allow", ALLOW_SRC);
+        let (_g, main) = write_perf_case("allow", ALLOW_SRC);
         let theme = diagnostics::theme::AuraTheme::plain();
         let in_main = perf_diag(Code::P201, ALLOW_SRC, "return x;");
         let in_other = perf_diag(Code::P201, ALLOW_SRC, "return 2;");
@@ -1044,7 +1039,7 @@ mod tests {
     #[test]
     fn file_allow_suppresses_and_denies_only_unsuppressed() {
         let src = "#![Allow(PerfAll)]\nfn Main(): Int {\n    return 0;\n}\n";
-        let main = write_perf_case("fileallow", src);
+        let (_g, main) = write_perf_case("fileallow", src);
         let theme = diagnostics::theme::AuraTheme::plain();
         let diag = perf_diag(Code::P201, src, "return 0;");
         let deny = parse_deny_perf(&["ALL".to_string()]).unwrap();
@@ -1057,7 +1052,7 @@ mod tests {
     #[test]
     fn denied_renders_as_error() {
         let src = "fn Main(): Int {\n    return 0;\n}\n";
-        let main = write_perf_case("deny", src);
+        let (_g, main) = write_perf_case("deny", src);
         let theme = diagnostics::theme::AuraTheme::plain();
         let diag = perf_diag(Code::P201, src, "return 0;");
         let deny = parse_deny_perf(&["P201".to_string()]).unwrap();
@@ -1074,7 +1069,7 @@ mod tests {
     #[test]
     fn notes_hidden_unless_shown() {
         let src = "fn Main(): Int {\n    return 0;\n}\n";
-        let main = write_perf_case("notegate", src);
+        let (_g, main) = write_perf_case("notegate", src);
         let theme = diagnostics::theme::AuraTheme::plain();
         let note = perf_diag(Code::P101, src, "return 0;");
         let warn = perf_diag(Code::P201, src, "return 0;");
@@ -1090,7 +1085,7 @@ mod tests {
     #[test]
     fn unknown_perf_allow_warns() {
         let src = "#[Allow(PerfP999)]\nfn Main(): Int {\n    return 0;\n}\n";
-        let main = write_perf_case("unknown", src);
+        let (_g, main) = write_perf_case("unknown", src);
         let theme = diagnostics::theme::AuraTheme::plain();
         let diag = perf_diag(Code::P201, src, "return 0;");
         let out = render_perf_stream(&theme, &main, &[diag], &DenyPerf::empty(), false);

@@ -543,9 +543,8 @@ pub fn verify_workspace_lock(
 mod tests {
     use super::*;
 
-    fn tree(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rnx-lock-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn tree(tag: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("lock-{tag}"));
         std::fs::create_dir_all(dir.join("dep").join("src")).unwrap();
         std::fs::create_dir_all(dir.join("app").join("src")).unwrap();
         std::fs::write(
@@ -582,7 +581,6 @@ mod tests {
         let parsed = ProjectDepLock::parse(&text).unwrap();
         assert_eq!(parsed, lock);
         verify_lock(&root, &cfg, &parsed).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -602,8 +600,7 @@ mod tests {
                 chunk_override: None,
             },
         );
-        let dir = std::env::temp_dir().join(format!("rnx-lock-reg-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::dir("lock");
         let root = dir.join("app");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
@@ -623,7 +620,6 @@ mod tests {
         assert_eq!(widget.source, "registry:@acme/widget@1.2.0");
         assert_eq!(widget.checksum.len(), 64);
         verify_lock(&root, &cfg, &lock).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -638,6 +634,5 @@ mod tests {
         lock.packages.retain(|p| p.name != "dep");
         let e = verify_lock(&root, &cfg, &lock).unwrap_err();
         assert!(e.message.contains("not found in Project.deplock"), "{}", e.message);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

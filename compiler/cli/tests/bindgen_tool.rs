@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -55,15 +59,13 @@ fn Main(): Int {
 
 #[test]
 fn bindgen_sort_orders_json_derived_names() {
-    let dir = std::env::temp_dir().join(format!("rnx-bindgen-sort-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::scratch::dir("bindgen");
     let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("tools")
         .join("rnx-bindgen")
         .join("src");
-    std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("sort_driver.rnx"), SORT_DRIVER).unwrap();
     std::fs::write(
         dir.join("emit.rnx"),
@@ -94,5 +96,4 @@ fn bindgen_sort_orders_json_derived_names() {
             "{backend}"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }

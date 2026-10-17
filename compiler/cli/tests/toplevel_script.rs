@@ -1,10 +1,11 @@
-use cli::{RunOutcome, Value};
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-toplevel-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+use cli::{RunOutcome, Value};
+
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("toplevel-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -53,7 +54,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn run_binary(path: &std::path::Path, extra: &[&str]) -> std::process::Output {
@@ -93,14 +93,11 @@ fn fallthrough_defaults_to_zero() {
 
 #[test]
 fn run_propagates_top_level_exit_code() {
-    let dir = std::env::temp_dir().join(format!("rnx-tl-exit-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("tl");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "if true {\n    return 7;\n}\n").unwrap();
     let out = run_binary(&main, &[]);
     assert_eq!(out.status.code().unwrap(), 7);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -115,9 +112,7 @@ fn explicit_main_keeps_parity() {
 
 #[test]
 fn e112_on_imported_print() {
-    let dir = std::env::temp_dir().join(format!("rnx-tl-e112-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("tl");
     std::fs::write(dir.join("helpers.rnx"), "fn helper(): Int {\n    return 1;\n}\n\nprint(\"leak\");\n").unwrap();
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { helper } from \"./helpers\";\n\nfn Main(): Int {\n    print(helper());\n    return 0;\n}\n").unwrap();
@@ -128,28 +123,22 @@ fn e112_on_imported_print() {
     let check = std::process::Command::new(rnx).arg("check").arg(&main).output().unwrap();
     assert!(!check.status.success());
     assert!(String::from_utf8(check.stderr).unwrap().contains("E112"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn e112_on_imported_let() {
-    let dir = std::env::temp_dir().join(format!("rnx-tl-e112l-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("tl");
     std::fs::write(dir.join("helpers.rnx"), "let x = 1 + 2;\n").unwrap();
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import \"./helpers\";\n\nfn Main(): Int {\n    return 0;\n}\n").unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e:?}"));
     let err = g.resolve().expect_err("expected E112");
     assert_eq!(err.code.as_str(), "E112");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn valid_declarative_import_runs() {
-    let dir = std::env::temp_dir().join(format!("rnx-tl-decl-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("tl");
     std::fs::write(
         dir.join("helpers.rnx"),
         "class Foo {\n    let x: Int;\n    init(x: Int) {\n        this.x = x;\n    }\n}\n\nfn bar(): Int {\n    return 41;\n}\n\nconst MAX = 100;\n",
@@ -164,7 +153,6 @@ fn valid_declarative_import_runs() {
     let out = run_binary(&main, &[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "42\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -185,34 +173,26 @@ fn rnx_global_version_and_cwd() {
 
 #[test]
 fn rnx_global_args_skip_script_path() {
-    let dir = std::env::temp_dir().join(format!("rnx-tl-args-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("tl");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "print(rnx.args.length());\nprint(rnx.args[0]);\n").unwrap();
     let out = run_binary(&main, &["--", "alpha"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\nalpha\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn rnx_exit_terminates_with_code() {
-    let dir = std::env::temp_dir().join(format!("rnx-tl-exit3-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("tl");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "rnx.exit(3);\n").unwrap();
     let out = run_binary(&main, &[]);
     assert_eq!(out.status.code().unwrap(), 3);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn lowercase_main_check_build_run_agree() {
-    let dir = std::env::temp_dir().join(format!("rnx-lowmain-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("lowmain");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "fn main(): Int {\n    print(\"lower\");\n    return 3;\n}\n").unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -232,5 +212,4 @@ fn lowercase_main_check_build_run_agree() {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code(), Some(3));
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "lower\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
