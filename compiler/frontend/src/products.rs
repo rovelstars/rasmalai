@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::depcache::DepProduct;
+use crate::depcache::{DepEdge, DepProduct};
 
 pub const PRODUCTS_DIR: &str = "products";
 pub const GLOBAL_OBJECTS_DIR: &str = "objects";
@@ -212,7 +213,10 @@ pub fn mirror_product(product: &DepProduct) -> bool {
             return true;
         }
     }
-    if !write_atomic(&path, &crate::depcache::encode_product(product)) {
+    if !write_atomic(
+        &path,
+        &crate::depcache::encode_product(&scrub_scratch_edges(product, &std_scaffold_dir())),
+    ) {
         return false;
     }
     write_manifest(&dir, product);
@@ -414,9 +418,47 @@ pub fn empty_precompile_report() -> PrecompileReport {
 
 pub const STD_PRECOMPILE_PROJECT: &str = "std-precompile";
 pub const STD_PRECOMPILE_VERSION: &str = "0.0.0";
+pub const STD_PRECOMPILE_ENTRY: &str = "<std-precompile>/src/main.rnx";
 
 pub fn std_scaffold_dir() -> PathBuf {
     std::env::temp_dir().join(format!("rnx-std-precompile-{}", std::process::id()))
+}
+
+fn stable_edge_path(value: &str, scratch: &Path) -> String {
+    if Path::new(value).starts_with(scratch) {
+        STD_PRECOMPILE_ENTRY.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+// The scaffold is per-process scratch, and `DepProduct` records edge importer
+// paths verbatim, so mirroring a scaffold-built std product embedded the pid in
+// `edges[].from` and identical stdlib inputs minted byte-different products on
+// every run. Records now carry STD_PRECOMPILE_ENTRY in its place; the scratch
+// stays pid-scoped so concurrent precompiles never share it.
+fn scrub_scratch_edges<'a>(product: &'a DepProduct, scratch: &Path) -> Cow<'a, DepProduct> {
+    let mut changed = false;
+    let mut edges: Vec<DepEdge> = Vec::with_capacity(product.edges.len());
+    for e in &product.edges {
+        let from = stable_edge_path(&e.from, &scratch);
+        let target = stable_edge_path(&e.target, &scratch);
+        let dep_root = e.dep_root.as_deref().map(|r| stable_edge_path(r, &scratch));
+        changed |= from != e.from
+            || target != e.target
+            || dep_root.as_deref() != e.dep_root.as_deref();
+        edges.push(DepEdge {
+            from,
+            source: e.source.clone(),
+            target,
+            dep_root,
+            meta: e.meta.clone(),
+        });
+    }
+    if !changed {
+        return Cow::Borrowed(product);
+    }
+    Cow::Owned(DepProduct { edges, ..product.clone() })
 }
 
 fn std_scaffold_entry() -> String {
@@ -576,6 +618,13 @@ mod tests {
         out.resize(64, 0);
         out.extend_from_slice(payload);
         out
+    }
+
+    fn mentions(haystack: &[u8], needle: &str) -> bool {
+        let needle = needle.as_bytes();
+        !needle.is_empty()
+            && haystack.len() >= needle.len()
+            && haystack.windows(needle.len()).any(|w| w == needle)
     }
 
     #[test]
@@ -767,5 +816,174 @@ mod tests {
         let odd = sample("path", "1.0.0");
         assert!(!mirror_product(&odd));
         assert_eq!(product_file(Path::new("/x"), ""), None);
+    }
+
+    #[test]
+    fn scratch_identity_does_not_depend_on_the_process_id() {
+        let one = Path::new("/tmp/rnx-std-precompile-1");
+        let two = Path::new("/tmp/rnx-std-precompile-2");
+        assert_eq!(
+            stable_edge_path("/tmp/rnx-std-precompile-1/src/main.rnx", one),
+            STD_PRECOMPILE_ENTRY
+        );
+        assert_eq!(
+            stable_edge_path("/tmp/rnx-std-precompile-2/src/main.rnx", two),
+            STD_PRECOMPILE_ENTRY,
+            "the recorded identity must not carry the scratch pid"
+        );
+        assert_eq!(
+            stable_edge_path("/tmp/rnx-std-precompile-11/src/main.rnx", one),
+            "/tmp/rnx-std-precompile-11/src/main.rnx",
+            "a pid-shaped neighbour directory is not the scratch root"
+        );
+        for kept in [
+            "/home/dev/app/src/main.rnx",
+            "@std/time",
+            "",
+            "relative/src/main.rnx",
+        ] {
+            assert_eq!(stable_edge_path(kept, one), kept);
+        }
+    }
+
+    #[test]
+    fn mirrored_products_never_record_the_scratch_path() {
+        let (_guard, _dir) = crate::fetch::testkit::isolate_cache("pscrub");
+        reset_stats();
+        let scratch = std_scaffold_dir();
+        let mut product = sample(KIND_STD, "1.0.0");
+        product.pkg = "@std/time".to_string();
+        product.spec = "std".to_string();
+        product.base = "https://reg.example.com".to_string();
+        product.root = products_root()
+            .join("seeded")
+            .to_string_lossy()
+            .into_owned();
+        product.edges = vec![
+            DepEdge {
+                from: scratch.join("src").join("main.rnx").to_string_lossy().into_owned(),
+                source: "@std/time".to_string(),
+                target: "@std/time".to_string(),
+                dep_root: Some(scratch.join("deps").to_string_lossy().into_owned()),
+                meta: Some(("@std/time".to_string(), KIND_STD.to_string())),
+            },
+            DepEdge {
+                from: "/home/dev/app/src/main.rnx".to_string(),
+                source: "@std/fs".to_string(),
+                target: "@std/fs".to_string(),
+                dep_root: None,
+                meta: Some(("@std/fs".to_string(), KIND_STD.to_string())),
+            },
+        ];
+        assert!(mirror_product(&product));
+        let dir = product_dir(KIND_STD, &product.base, &product.pkg, "1.0.0", "abc123").unwrap();
+        let path = scan_product_files(&dir).pop().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let scratch_text = scratch.to_string_lossy().into_owned();
+        assert!(
+            !mentions(&bytes, &scratch_text),
+            "mirrored product still records `{scratch_text}`"
+        );
+        let back = read_product_file(&path).expect("decode");
+        let scrubbed = back
+            .edges
+            .iter()
+            .find(|e| e.source == "@std/time")
+            .expect("scaffold edge");
+        assert_eq!(scrubbed.from, STD_PRECOMPILE_ENTRY);
+        assert_eq!(scrubbed.dep_root.as_deref(), Some(STD_PRECOMPILE_ENTRY));
+        assert_eq!(scrubbed.target, "@std/time");
+        let kept = back
+            .edges
+            .iter()
+            .find(|e| e.source == "@std/fs")
+            .expect("project edge");
+        assert_eq!(kept.from, "/home/dev/app/src/main.rnx");
+        assert_eq!(kept.dep_root, None);
+        assert_eq!(back.root, product.root, "root stays a live path for restore");
+    }
+
+    // A scaffold-built std product, shaped exactly as precompile_scope sees it:
+    // every std import in the scaffold entry becomes an edge whose `from` is
+    // the scratch entry path.
+    fn scaffold_product(scratch: &Path) -> DepProduct {
+        let mut product = sample(KIND_STD, "1.0.0");
+        product.pkg = "@std/time".to_string();
+        product.spec = "std".to_string();
+        product.base = "https://reg.example.com".to_string();
+        product.root = products_root()
+            .join("registry")
+            .join("@std/time/1.0.0")
+            .to_string_lossy()
+            .into_owned();
+        product.edges = vec![DepEdge {
+            from: scratch.join("src").join("main.rnx").to_string_lossy().into_owned(),
+            source: "@std/time".to_string(),
+            target: "@std/time".to_string(),
+            dep_root: None,
+            meta: Some(("@std/time".to_string(), KIND_STD.to_string())),
+        }];
+        product
+    }
+
+    #[test]
+    fn mirrored_bytes_do_not_depend_on_the_scratch_pid() {
+        let (_guard, _dir) = crate::fetch::testkit::isolate_cache("pscrubpid");
+        let one = Path::new("/tmp/rnx-std-precompile-1");
+        let two = Path::new("/tmp/rnx-std-precompile-2");
+        let left = crate::depcache::encode_product(&scrub_scratch_edges(&scaffold_product(one), one));
+        let right =
+            crate::depcache::encode_product(&scrub_scratch_edges(&scaffold_product(two), two));
+        assert_eq!(
+            left, right,
+            "two processes precompiling the same stdlib must mint identical bytes"
+        );
+        let decoded = crate::depcache::decode_product(&left).expect("decode");
+        assert_eq!(decoded.edges[0].from, STD_PRECOMPILE_ENTRY);
+        assert!(!mentions(&left, "rnx-std-precompile"));
+    }
+
+    #[test]
+    fn scrubbed_products_still_change_with_their_inputs() {
+        let (_guard, _dir) = crate::fetch::testkit::isolate_cache("pscrubkey");
+        let scratch = Path::new("/tmp/rnx-std-precompile-7");
+        let base = scaffold_product(scratch);
+        let mut changed = base.clone();
+        changed.content = "f".repeat(64);
+        assert_ne!(
+            crate::depcache::encode_product(&scrub_scratch_edges(&base, scratch)),
+            crate::depcache::encode_product(&scrub_scratch_edges(&changed, scratch)),
+            "scrubbing must not freeze a product against real input changes"
+        );
+        let mut sources = base.clone();
+        sources.edges[0].source = "@std/fs".to_string();
+        sources.edges[0].target = "@std/fs".to_string();
+        assert_ne!(
+            crate::depcache::encode_product(&scrub_scratch_edges(&base, scratch)),
+            crate::depcache::encode_product(&scrub_scratch_edges(&sources, scratch))
+        );
+        let cached = crate::depcache::decode_product(
+            &crate::depcache::encode_product(&scrub_scratch_edges(&base, scratch)),
+        )
+        .expect("decode");
+        assert_eq!(cached.dep_set, base.dep_set);
+        assert_eq!(cached.toolchain, base.toolchain);
+        assert_eq!(cached.content, base.content);
+    }
+
+    #[test]
+    fn std_precompile_is_reentrant_and_leaves_no_scratch_behind() {
+        let (_guard, _dir) = crate::fetch::testkit::isolate_cache("pscratchgone");
+        match precompile_std() {
+            Err(reason) => assert!(
+                reason.contains("pin"),
+                "precompile without a seeded pin fails open with `{reason}`"
+            ),
+            Ok(report) => assert_eq!(report, empty_precompile_report()),
+        }
+        assert!(
+            !std_scaffold_dir().exists(),
+            "the scratch workspace must be removed on both paths"
+        );
     }
 }
