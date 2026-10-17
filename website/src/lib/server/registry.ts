@@ -1,5 +1,12 @@
 export const SPEC_VERSION = 1;
-export const CAPABILITIES = ['tombstones', 'guides', 'jsdoc', 'yank', 'transfer'];
+export const CAPABILITIES = [
+	'tombstones',
+	'guides',
+	'jsdoc',
+	'yank',
+	'transfer',
+	'resolve-inline-chunks'
+];
 
 export function specHeaders(): Record<string, string> {
 	// Public read APIs are cross-origin fetchable (ACAO:*) so browser

@@ -591,6 +591,7 @@ mod tests {
         let server = crate::fetch::testkit::MockRegistry::start(
             crate::fetch::testkit::MockConfig {
                 version_spec: 1,
+                capabilities: vec!["tombstones"],
                 resolve_status: 200,
                 resolve_body: crate::fetch::testkit::resolve_json_static(&[node]),
                 manifest_status: 200,

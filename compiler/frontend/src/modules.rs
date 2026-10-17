@@ -4114,6 +4114,7 @@ mod tests {
         let node = testkit::node_json("@acme/widget", "1.2.0", &sha, false);
         testkit::MockRegistry::start(testkit::MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: testkit::resolve_json_static(&[node]),
             manifest_status: 200,
@@ -4175,6 +4176,7 @@ mod tests {
         let node = testkit::node_json("@std/fs", pin, &sha, false);
         testkit::MockRegistry::start(testkit::MockConfig {
             version_spec: 1,
+            capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: testkit::resolve_json_static(&[node]),
             manifest_status: 200,

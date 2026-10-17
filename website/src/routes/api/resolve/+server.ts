@@ -42,15 +42,27 @@ export async function POST({ request, url, platform }) {
 			})
 		: [];
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
+	// `chunks` in the request body is the opt-in for inline chunk lists. A
+	// client that never learned the capability sends nothing and gets the
+	// byte-for-byte response it got before, entries and `chunks` switch
+	// included absent.
+	const wantChunks = body['chunks'];
+	const inlineChunks = wantChunks === true;
 	try {
-		const { resolved, levels } = await resolveGraph(env, requirements, have);
+		const { resolved, levels, chunks } = await resolveGraph(env, requirements, have, {
+			inlineChunks,
+			advertiseChunks: wantChunks !== undefined
+		});
 		// base omitted: clients default to the request origin + /api/packages.
 		// A future multi-registry response may send an absolute URL (other
 		// host) or a path (same host, other prefix) instead.
-		return json({ resolved, base: '', levels }, { headers: specHeaders() });
+		const payload: Record<string, unknown> = { resolved, base: '', levels };
+		if (chunks) payload['chunks'] = chunks;
+		return json(payload, { headers: specHeaders() });
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		console.error(`[resolve ${requestId}] ${msg}`);
+		if (msg.startsWith('resolve budget exceeded')) return err('budget-exceeded', msg, 422, requestId);
 		if (msg.startsWith('dependency cycle')) return err('cycle', msg, 422, requestId);
 		if (msg.includes('does not exist')) return err('not-found', msg, 404, requestId);
 		if (msg.includes('satisfies') || msg.includes('conflicting')) {
