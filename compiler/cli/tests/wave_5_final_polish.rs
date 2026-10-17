@@ -1,25 +1,26 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-wave5-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("wave5-{tag}"));
     dir
 }
 
-fn write_file(path: &PathBuf, contents: &str) {
+fn write_file(path: &std::path::Path, contents: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(path, contents).unwrap();
 }
 
-fn run_backend(file: &PathBuf, backend: &str, extra: &[&str]) -> std::process::Output {
+fn run_backend(file: &std::path::Path, backend: &str, extra: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(rnx());
     cmd.arg("run").arg("--backend").arg(backend).arg(file);
     for a in extra {
@@ -49,7 +50,6 @@ fn module_const_visible_in_named_fn_on_all_backends() {
             "{backend}: const reads identically"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const TOPLET_SRC: &str = "let n = 3;\nfn f(): Int { return n; }\nprint(f());\n";
@@ -67,7 +67,6 @@ fn cross_function_let_read_names_sharing() {
         text.contains("share the value with `const`"),
         "hint must name the sharing fix, got:\n{text}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const RANGE_METHOD_SRC: &str = "fn Main(): Int {\n    for i in 0 .. 4 {\n        print(i.toString());\n    }\n    return 0;\n}\n";
@@ -91,7 +90,6 @@ fn range_loop_binding_has_int_methods_on_all_backends() {
             "{backend}: i.toString() output"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const BRACE_JSON_SRC: &str =
@@ -113,7 +111,6 @@ fn brace_escape_writes_json_and_bare_brace_guides() {
         + &String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(text.contains("{...}"), "message must name interpolation, got:\n{text}");
     assert!(text.contains("\\{"), "message must name the brace escape, got:\n{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const NULL_LEN_SRC: &str = "let s: String? = null;\nprint(s.length());\n";
@@ -143,7 +140,6 @@ fn null_method_fatal_is_human_with_span() {
             text.contains("nullstr.rnx:2:7"),
             "span must survive sibling files, got:\n{text}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -159,7 +155,6 @@ fn question_on_throws_names_the_fix() {
     let text = String::from_utf8_lossy(&out.stderr).into_owned()
         + &String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(text.contains("remove the `?`"), "got:\n{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -175,5 +170,4 @@ fn typed_catch_names_bare_identifier_rule() {
     let text = String::from_utf8_lossy(&out.stderr).into_owned()
         + &String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(text.contains("bare identifier"), "got:\n{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

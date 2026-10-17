@@ -1,14 +1,16 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use linker::{LinkInput, native, plan};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const MATH: &str = "fn Main(): Int {\n  let a = 40;\n  let b = 2;\n  let c = a + b;\n  return c * 3 - 84;\n}\n";
 
 const MATH_EDIT: &str = "fn Main(): Int {\n  let a = 40;\n  let b = 2;\n  let c = a + b;\n  return c * 3 - 83;\n}\n";
 
-fn fixture_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-incr-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fixture_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("incr-{tag}"));
     dir
 }
 

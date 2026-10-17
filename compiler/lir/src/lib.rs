@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 pub mod accum;
 pub mod arc_opt;
 pub mod bce;

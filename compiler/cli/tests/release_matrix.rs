@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
 const MANIFEST: &str = "export default {\n    project: {\n        name: \"matrix\",\n        version: \"0.1.0\",\n        description: \"Toolchain audit package.\"\n    }\n}\n";
 
@@ -8,9 +10,8 @@ const LIB_SRC: &str = "/// Adds two ints.\npub fn add(a: Int, b: Int): Int {\n  
 
 const HOST_C: &str = "#include <stdio.h>\n#include \"libcalc.h\"\nint main(void) {\n    if (add(40, 2) != 42) { return 1; }\n    double m = mulAdd(2.0, 3.0, 4.0);\n    if (m < 9.99 || m > 10.01) { return 2; }\n    printf(\"host ok\\n\");\n    return 0;\n}\n";
 
-fn write_matrix(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-matrix-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn write_matrix(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("matrix-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("Project.config"), MANIFEST).unwrap();
     std::fs::write(dir.join("src").join("main.rnx"), MAIN_SRC).unwrap();
@@ -40,7 +41,6 @@ fn test_full_subcommand_matrix_across_backends() {
             "{backend} stdout"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -53,7 +53,6 @@ fn test_matrix_runner_green() {
     assert!(text.contains("✓ test_accum_fresh"), "accum:\n{text}");
     assert!(text.contains("✓ test_pub_add"), "add:\n{text}");
     assert!(text.contains("tests: 2 passed, 0 failed in "), "summary:\n{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -68,7 +67,6 @@ fn test_matrix_bench_stats() {
         .expect(format!("no bench line:\n{text}").as_str());
     assert!(line.contains("ns/iter"), "no stats:\n{line}");
     assert!(line.contains("iters]"), "no iters:\n{line}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -81,7 +79,6 @@ fn test_matrix_doc_site() {
     assert!(doc.join("style.css").is_file(), "css missing");
     let index = std::fs::read_to_string(doc.join("index.html")).unwrap();
     assert!(index.contains("matrix"), "package name:\n{index}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -103,7 +100,6 @@ fn test_matrix_pack_unpack_run() {
     let run = run_rnx(&ext, &["run"]);
     assert_eq!(run.status.code().unwrap(), 0, "{}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "matrix ok xa-b\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -125,14 +121,11 @@ fn test_matrix_release_build() {
     let run = std::process::Command::new(&app).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "matrix ok xa-b\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_matrix_static_lib_c_link() {
-    let dir = std::env::temp_dir().join(format!("rnx-matrix-lib-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("matrix");
     let src = dir.join("calc.rnx");
     std::fs::write(&src, LIB_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -167,7 +160,6 @@ fn test_matrix_static_lib_c_link() {
     let run = std::process::Command::new(libdir.join("host_app")).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "host ok\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -190,5 +182,4 @@ fn test_matrix_cross_compile_aarch64() {
     assert!(bytes.len() > 20, "object too small");
     assert_eq!(&bytes[0..4], b"\x7fELF", "not an ELF object");
     assert_eq!(u16::from_le_bytes([bytes[18], bytes[19]]), 183, "expected EM_AARCH64");
-    let _ = std::fs::remove_dir_all(&dir);
 }

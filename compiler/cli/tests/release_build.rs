@@ -1,12 +1,12 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn write_src(src: &str, tag: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-rel-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_src(src: &str, tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("rel-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
-    (dir.clone(), main)
+    (dir, main)
 }
 
 fn build_release(main: &std::path::Path) -> String {
@@ -42,12 +42,11 @@ const EXEC_SRC: &str = "import { AtomicInt } from \"@std/sync\";\n\nfn Main(): I
 
 #[test]
 fn test_release_build_execution() {
-    let (dir, main) = write_src(EXEC_SRC, "exec");
+    let (_g, main) = write_src(EXEC_SRC, "exec");
     let bin = build_release(&main);
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "release: 42\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const MINI_SRC: &str = "fn Main(): Int { return 42; }\n";
@@ -60,7 +59,7 @@ fn ldd_needed(path: &std::path::Path) -> String {
 
 #[test]
 fn test_dev_dynamic_release_static() {
-    let (dir, main) = write_src(MINI_SRC, "size");
+    let (_g, main) = write_src(MINI_SRC, "size");
     let dbg = build_debug(&main);
     let rel = build_release(&main);
     let dbg_size = std::fs::metadata(&dbg).unwrap().len();
@@ -81,7 +80,6 @@ fn test_dev_dynamic_release_static() {
     assert_eq!(run.status.code().unwrap(), 42);
     let run_dbg = std::process::Command::new(&dbg).output().unwrap();
     assert_eq!(run_dbg.status.code().unwrap(), 42);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -98,17 +96,15 @@ fn test_bit_identical_reproducibility() {
     let hb = sha256(&b);
     assert_eq!(ha, hb, "release digests differ");
     assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const MATRIX_SRC: &str = "import { AtomicInt, Mutex } from \"@std/sync\";\nimport { Vec4f } from \"@std/simd\";\n\nfn task() {\n    let m = Mutex.byId(801);\n    m.lock();\n    AtomicInt.byId(800).fetchAdd(1);\n    m.unlock();\n}\n\nfn Main(): Int {\n    let d = Int(new Vec4f(1.0, 2.0, 3.0, 4.0).dot(new Vec4f(2.0, 3.0, 4.0, 5.0)));\n    let pool = ThreadPool.byId(806, 4);\n    let i = 0;\n    while i < 8 {\n        pool.submit(task);\n        i = i + 1;\n    }\n    pool.join();\n    pool.shutdown();\n    let n = AtomicInt.byId(800).get();\n    print(\"release matrix:\", d, n);\n    if d == 40 && n == 8 {\n        return 0;\n    }\n    return 1;\n}\n";
 
 #[test]
 fn test_release_runtime_matrix() {
-    let (dir, main) = write_src(MATRIX_SRC, "matrix");
+    let (_g, main) = write_src(MATRIX_SRC, "matrix");
     let bin = build_release(&main);
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "release matrix: 40 8\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }

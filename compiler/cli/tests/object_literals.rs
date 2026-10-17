@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-objlit-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("objlit-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -52,7 +52,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const PRELUDE: &str = "import { Map } from \"@std/collections\";\n";
@@ -100,9 +99,7 @@ fn ident_only_braces_stay_records() {
 #[test]
 fn map_literal_without_import_fails_with_hint() {
     let src = "fn Main(): Int {\n    let m = { \"a\": 1 };\n    return 0;\n}\n";
-    let dir = std::env::temp_dir().join(format!("rnx-objlit-noimp-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("objlit");
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -113,5 +110,4 @@ fn map_literal_without_import_fails_with_hint() {
     assert!(c.iter().all(|x| x.code.is_warning()), "{c:?}");
     let err = lir::lower::lower(&m).expect_err("expected missing-import error");
     assert!(err.message.contains("need `import { Map }"), "{err:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

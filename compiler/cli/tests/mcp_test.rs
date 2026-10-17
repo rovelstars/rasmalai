@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
@@ -135,8 +139,7 @@ fn mcp_hot_reload_without_dev_reports_error() {
 
 #[test]
 fn mcp_dev_mcp_serves_reload() {
-    let dir = std::env::temp_dir().join(format!("rnx-mcp-dev-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::scratch::dir("mcp");
     std::fs::create_dir_all(&dir).expect("tempdir");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "fn Main(): Int {\n    return 1;\n}\n").expect("write");
@@ -146,13 +149,11 @@ fn mcp_dev_mcp_serves_reload() {
     let text = Session::content_text(&resp);
     let report: serde_json::Value = serde_json::from_str(&text).expect("hot reload returns JSON");
     assert_eq!(report["status"], "no_change", "{report:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn mcp_get_diagnostics_on_file() {
-    let dir = std::env::temp_dir().join(format!("rnx-mcp-diag-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::scratch::dir("mcp");
     std::fs::create_dir_all(&dir).expect("tempdir");
     let bad = dir.join("bad.rnx");
     std::fs::write(&bad, "fn Main(): Int {\n    return nope;\n}\n").expect("write");
@@ -170,5 +171,4 @@ fn mcp_get_diagnostics_on_file() {
     let out: serde_json::Value =
         serde_json::from_str(&Session::content_text(&ok)).expect("diagnostics JSON");
     assert!(out["errors"].as_array().expect("errors").is_empty(), "{out:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

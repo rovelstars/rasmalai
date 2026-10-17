@@ -1,14 +1,16 @@
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
+use std::path::Path;
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-diag-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("diag-{tag}"));
     dir
 }
 
@@ -59,7 +61,6 @@ fn test_return_type_mismatch_reports_e304() {
     assert!(stderr.contains("E304"), "{stderr}");
     assert!(stderr.contains("expected `Int`, got `String`"), "{stderr}");
     assert!(stderr.contains("1:"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -76,7 +77,6 @@ fn test_undefined_variable_reports_e303() {
     assert!(stderr.contains("E303"), "{stderr}");
     assert!(stderr.contains("undefined variable `undefined_var`"), "{stderr}");
     assert!(stderr.contains("1:"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -89,7 +89,6 @@ fn test_matching_return_type_passes_check() {
     );
     let out = run_check(&dir);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -102,7 +101,6 @@ fn test_coalesce_non_nullable_is_noop_value() {
     );
     let out = run_build(&dir);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -120,7 +118,6 @@ fn test_option_type_reports_e303_with_hint() {
     assert!(text.contains("E303"), "{text}");
     assert!(text.contains("has been removed"), "{text}");
     assert!(text.contains("T?"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -137,7 +134,6 @@ fn test_some_none_values_report_e303() {
     text.push_str(&String::from_utf8_lossy(&out.stdout));
     assert!(text.contains("E303"), "{text}");
     assert!(text.contains("has been removed"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -161,7 +157,6 @@ fn test_uninit_let_parses_and_const_still_e206() {
     let mut text = String::from_utf8_lossy(&out2.stderr).into_owned();
     text.push_str(&String::from_utf8_lossy(&out2.stdout));
     assert!(text.contains("E206"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&dir2);
 }
 
@@ -178,7 +173,6 @@ fn test_coalesce_mismatched_fallback_reports_e108() {
     let stderr = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(stderr.contains("E108"), "{stderr}");
     assert!(stderr.contains("`??` fallback must match"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -193,7 +187,6 @@ fn test_optchain_non_option_method_reports_e108() {
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
     let stderr = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(stderr.contains("E108"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -209,7 +202,6 @@ fn test_operator_undefined_reports_e108() {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(stdout.contains("E108"), "{stdout}");
     assert!(stdout.contains("operator `+` is not defined for type `P`"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -225,7 +217,6 @@ fn test_for_non_iterable_reports_e108() {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(stdout.contains("E108"), "{stdout}");
     assert!(stdout.contains("must implement `Iterable`"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -242,7 +233,6 @@ fn test_indexof_arity_reports_e108() {
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         assert!(stdout.contains("E108"), "{stdout}");
         assert!(stdout.contains("takes 1..2 args"), "{stdout}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -260,7 +250,6 @@ fn test_switch_arms_type_mismatch_reports_e108() {
     assert!(stdout.contains("E108"), "{stdout}");
     assert!(stdout.contains("`switch` arms yield `Int` and `String`"), "{stdout}");
     assert!(stdout.contains("2:"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -277,7 +266,6 @@ fn test_string_sub_reports_e108() {
     assert!(stdout.contains("E108"), "{stdout}");
     assert!(stdout.contains("strings support `+` only"), "{stdout}");
     assert!(stdout.contains("2:"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -294,7 +282,6 @@ fn test_bitwise_float_reports_e108() {
     assert!(stdout.contains("E108"), "{stdout}");
     assert!(stdout.contains("bitwise operations need `Int` operands"), "{stdout}");
     assert!(stdout.contains("2:"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -311,5 +298,4 @@ fn test_unreachable_statement_reports_e108() {
     assert!(stdout.contains("E108"), "{stdout}");
     assert!(stdout.contains("unreachable statement"), "{stdout}");
     assert!(stdout.contains("3:"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

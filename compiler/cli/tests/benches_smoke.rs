@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -15,10 +19,8 @@ fn benches_dir() -> PathBuf {
         .join("benches")
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-benchsmoke-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("benchsmoke-{tag}"));
     dir
 }
 
@@ -34,7 +36,6 @@ fn run_bench(bench: &str, backend: Option<&str>) -> std::process::Output {
     }
     cmd.arg(&prog);
     let out = cmd.output().unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
     out
 }
 

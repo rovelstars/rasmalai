@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use frontend::modules::ModuleGraph;
 use frontend::parser::Parser;
 use frontend::semantic;
@@ -11,10 +15,8 @@ fn errors(src: &str) -> Vec<diagnostics::Diagnostic> {
     check_src(src).into_iter().filter(|d| !d.code.is_warning()).collect()
 }
 
-fn tree(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-fe-prelude-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn tree(tag: &str, files: &[(&str, &str)]) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("fe-{tag}"));
     for (name, src) in files {
         let p = dir.join(name);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -123,5 +125,4 @@ fn merged_graph_carries_zero_prelude_bloat() {
     assert!(fn_names.contains(&"Main".to_string()), "{fn_names:?}");
     assert!(ty_names.iter().any(|n| n == "std.prelude.Result"), "{ty_names:?}");
     assert!(!ty_names.iter().any(|n| n == "std.prelude.Option"), "{ty_names:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

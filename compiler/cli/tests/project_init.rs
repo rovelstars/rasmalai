@@ -1,11 +1,13 @@
-fn base(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-init-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
+fn base(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("init-{tag}"));
     dir
 }
 
-fn scaffold(tag: &str) -> std::path::PathBuf {
+fn scaffold(tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
     let dir = base(tag);
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let init = std::process::Command::new(rnx)
@@ -15,7 +17,8 @@ fn scaffold(tag: &str) -> std::path::PathBuf {
         .output()
         .unwrap();
     assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
-    dir.join("sample_project")
+    let root = dir.join("sample_project");
+    (dir, root)
 }
 
 #[test]
@@ -63,12 +66,11 @@ fn test_init_scaffold() {
         .unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Hello from sample_project!\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_bare_run_from_root() {
-    let root = scaffold("run-root");
+    let (_g, root) = scaffold("run-root");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx)
         .arg("run")
@@ -77,12 +79,11 @@ fn test_bare_run_from_root() {
         .unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Hello from sample_project!\n");
-    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
 #[test]
 fn test_bare_run_from_nested_subdir() {
-    let root = scaffold("run-nested");
+    let (_g, root) = scaffold("run-nested");
     let nested = root.join("src").join("nested");
     std::fs::create_dir_all(&nested).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -93,12 +94,11 @@ fn test_bare_run_from_nested_subdir() {
         .unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Hello from sample_project!\n");
-    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
 #[test]
 fn test_bare_build_native_binary() {
-    let root = scaffold("build");
+    let (_g, root) = scaffold("build");
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
@@ -111,5 +111,4 @@ fn test_bare_build_native_binary() {
     let run = std::process::Command::new(&exe).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Hello from sample_project!\n");
-    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }

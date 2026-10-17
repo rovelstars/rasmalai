@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-ptrderef-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("ptrderef-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -20,9 +20,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
 }
 
 fn lower_err(src: &str, tag: &str) -> diagnostics::Diagnostic {
-    let dir = std::env::temp_dir().join(format!("rnx-ptrderef-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir(&format!("ptrderef-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -30,7 +28,6 @@ fn lower_err(src: &str, tag: &str) -> diagnostics::Diagnostic {
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     let err = lir::lower::lower(&m).expect_err("expected lowering error");
-    let _ = std::fs::remove_dir_all(&dir);
     err
 }
 
@@ -67,7 +64,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const PRELUDE: &str = "import { ByteBuffer } from \"@std/bytes\";\n";

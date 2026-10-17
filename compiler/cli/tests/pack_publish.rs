@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn write_project(tag: &str, name: &str, version: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-pub-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn write_project(tag: &str, name: &str, version: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("pub-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("Project.config"),
@@ -38,7 +39,6 @@ fn test_pack_embeds_no_generated_doc_json() {
     let text = String::from_utf8_lossy(&tar);
     assert!(!text.contains(".rnx/doc.json"), "generated doc.json still embedded");
     assert!(text.contains("Project.config"), "config missing from archive");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -53,7 +53,6 @@ fn test_pack_rejects_bad_manifest() {
     let dir = write_project("badver", "probe", "1.2");
     let out = rnx(&dir, &["pack", "-z"]);
     assert!(!out.status.success(), "non-semver accepted");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -64,5 +63,4 @@ fn test_publish_requires_token() {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(stdout.contains("error[E501]"), "{stdout}");
     assert!(stdout.contains("RNX_TOKEN"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

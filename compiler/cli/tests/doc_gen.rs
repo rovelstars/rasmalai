@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::path::PathBuf;
 
 const LIB_SRC: &str = "/** Adds two numbers together. */\npub fn add(a: Int, b: Int): Int { return a + b; }\n\n/** Represents a 2D coordinate. */\npub class Point {\n    let x: Float;\n    let y: Float;\n    init(x: Float, y: Float) { this.x = x; this.y = y; }\n}\n\nfn privateHelper(): Void {}\n";
@@ -8,9 +12,8 @@ fn manifest(name: &str, _entry: &str) -> String {
     )
 }
 
-fn write_project(tag: &str, name: &str, src: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-doc-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn write_project(tag: &str, name: &str, src: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("doc-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("Project.config"), manifest(name, "src/main.rnx")).unwrap();
     std::fs::write(dir.join("src").join("main.rnx"), src).unwrap();
@@ -62,7 +65,6 @@ fn test_doc_generation_structure() {
     }
     assert!(found_add, "add undocumented");
     assert!(found_point, "Point undocumented");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -79,7 +81,6 @@ fn test_private_items_excluded() {
         }
     }
     assert!(!all.contains("privateHelper"), "private item leaked");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn doc_tree_hashes(root: &std::path::Path) -> Vec<(String, String)> {
@@ -102,8 +103,7 @@ fn doc_tree_hashes(root: &std::path::Path) -> Vec<(String, String)> {
 
 #[test]
 fn test_doc_output_determinism() {
-    let base = std::env::temp_dir().join(format!("rnx-docdet-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    let base = crate::scratch::dir("docdet");
     for tag in ["a", "b"] {
         let dir = base.join(tag);
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -118,14 +118,11 @@ fn test_doc_output_determinism() {
     let hb = doc_tree_hashes(&base.join("b").join("target").join("doc"));
     assert_eq!(ha, hb, "doc trees differ");
     assert!(!ha.is_empty(), "empty doc tree");
-    let _ = std::fs::remove_dir_all(&base);
 }
 #[test]
 fn test_workspace_doc_generation() {
 
-    let dir = std::env::temp_dir().join(format!("rnx-docws-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("docws");
     std::fs::write(
         dir.join("Project.config"),
         "export default {\n    workspace: {\n        members: [\"alpha\", \"beta\"]\n    }\n}\n",
@@ -147,7 +144,6 @@ fn test_workspace_doc_generation() {
     assert!(index.contains("beta"), "beta missing:\n{index}");
     assert!(dir.join("target").join("doc").join("alpha").join("index.html").is_file());
     assert!(dir.join("target").join("doc").join("beta").join("index.html").is_file());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -169,7 +165,6 @@ fn test_jsdoc_tags_render() {
     assert!(all.contains("<dt><code>demand</code></dt><dd>buyer pressure count.</dd>"), "param missing");
     assert!(all.contains("<dt>Returns</dt><dd>pressure-scaled quote.</dd>"), "returns missing");
     assert!(all.contains("<pre><code>quote(2.0, 3, 1)</code></pre>"), "example missing");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -198,5 +193,4 @@ fn test_doc_all_includes_private_items() {
     }
     assert!(all.contains("Internal helper."), "plain fn missing from --all docs:\n{all}");
     assert!(all.contains("Private helper."), "private fn missing from --all docs");
-    let _ = std::fs::remove_dir_all(&dir);
 }

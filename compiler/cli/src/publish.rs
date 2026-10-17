@@ -355,9 +355,8 @@ mod tests {
         assert!(request.contains("gzip"), "{request}");
     }
 
-    fn fixture_project(tag: &str, readme: Option<&str>) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("rnx-meta-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn fixture_project(tag: &str, readme: Option<&str>) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("meta-{tag}"));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
             dir.join("Project.config"),
@@ -412,7 +411,6 @@ mod tests {
             .map(|f| f["path"].as_str().unwrap())
             .collect();
         assert!(file_paths.contains(&"src/main.rnx"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -423,13 +421,11 @@ mod tests {
         assert_eq!(meta.readme, "# probe\n");
         let json = meta_json(&meta);
         assert!(json.contains("# probe\\n"), "{json}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn meta_manifest_carries_declared_permissions() {
-        let dir = std::env::temp_dir().join(format!("rnx-meta-perm-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::dir("meta");
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
             dir.join("Project.config"),
@@ -445,7 +441,6 @@ mod tests {
             parsed["manifest"]["permissions"],
             serde_json::json!([{ "perm": "fs:read:/data", "reason": "seed" }, "term:write"])
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn gate_manifest(dir: &std::path::Path) -> frontend::project::Manifest {
@@ -458,7 +453,6 @@ mod tests {
         let dir = fixture_project("gate-ok", None);
         let manifest = gate_manifest(&dir);
         gate_formatted(&dir, &manifest).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -470,7 +464,6 @@ mod tests {
         assert_eq!(err.code, diagnostics::Code::E108);
         assert!(err.message.contains("unformatted"), "{}", err.message);
         assert!(err.message.contains("main.rnx"), "{}", err.message);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -484,8 +477,7 @@ mod tests {
         let cfg = fixture_cfg(&dir);
         let manifest =
             frontend::project::Manifest { project: Some(cfg.clone()), workspace: None };
-        let out = std::env::temp_dir().join(format!("rnx-pub-min-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&out);
+        let out = crate::scratch::dir("pub");
         let (_, _, sizes) =
             frontend::pack::pack_package_gz_minified(&dir, &manifest, &out).unwrap();
         let meta =
@@ -499,8 +491,6 @@ mod tests {
         let config = meta.files.iter().find(|f| f.path == "Project.config").unwrap();
         let disk_config = disk.files.iter().find(|f| f.path == "Project.config").unwrap();
         assert_eq!(config.size, disk_config.size);
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
@@ -511,6 +501,5 @@ mod tests {
             package_meta_minified(&dir, &cfg, "abc".to_string(), "{\"modules\":[]}".to_string(), &[])
                 .unwrap_err();
         assert_eq!(err.code, diagnostics::Code::E108);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

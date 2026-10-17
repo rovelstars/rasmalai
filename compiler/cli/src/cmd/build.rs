@@ -641,8 +641,7 @@ mod tests {
 
     #[test]
     fn build_key_tracks_path_dep_sources() {
-        let root = std::env::temp_dir().join(format!("rnx-build-key-pathdep-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::scratch::dir("build");
         let dep = root.join("libs").join("mydep");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(dep.join("src")).unwrap();
@@ -662,6 +661,5 @@ mod tests {
         std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 2;\n}\n").unwrap();
         let key_after = build_key(&input, &root, "Main", false, 1, None, false, 1, 0);
         assert_ne!(key_before, key_after);
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

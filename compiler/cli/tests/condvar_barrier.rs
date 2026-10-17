@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("condvar_barrier-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -50,7 +50,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const PRODCONS_SRC: &str = "import { AtomicInt, Mutex, Condvar } from \"@std/sync\";\nfn worker(): Int {\n    let m = Mutex.byId(601);\n    let cv = Condvar.byId(601);\n    let produced = AtomicInt.byId(601);\n    let consumed = AtomicInt.byId(602);\n    let ready = AtomicInt.byId(603);\n    let my = 0;\n    m.lock();\n    ready.set(1);\n    while produced.get() == 0 {\n        cv.wait(m);\n    }\n    m.unlock();\n    while my < 5 {\n        m.lock();\n        while consumed.get() >= produced.get() {\n            cv.wait(m);\n        }\n        consumed.fetchAdd(1);\n        my = my + 1;\n        m.unlock();\n    }\n    return 0;\n}\nfn Main(): Int {\n    let m = Mutex.byId(601);\n    let cv = Condvar.byId(601);\n    let produced = AtomicInt.byId(601);\n    let consumed = AtomicInt.byId(602);\n    let ready = AtomicInt.byId(603);\n    produced.set(0);\n    consumed.set(0);\n    ready.set(0);\n    let h = Thread.spawn(worker);\n    while ready.get() == 0 {\n    }\n    let i = 0;\n    while i < 5 {\n        m.lock();\n        produced.fetchAdd(1);\n        cv.notifyOne();\n        m.unlock();\n        i = i + 1;\n    }\n    h.join();\n    if produced.get() == 5 && consumed.get() == 5 {\n        print(\"condvar ok\");\n        return 42;\n    }\n    return 0;\n}\n";
@@ -91,9 +90,7 @@ fn test_barrier_cyclic_reset() {
 #[test]
 fn test_barrier_zero_and_negative_rejected() {
     for (tag, count) in [("barzero", 0), ("barneg", -2)] {
-        let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch::dir("condvar_barrier");
         let main = dir.join("main.rnx");
         let src = format!("import {{ Barrier }} from \"@std/sync\";\nfn Main(): Int {{\n    let b = Barrier.byId(941, {count});\n    print(b.wait());\n    return 0;\n}}\n");
         std::fs::write(&main, src).unwrap();
@@ -111,7 +108,6 @@ fn test_barrier_zero_and_negative_rejected() {
             text.contains("Barrier parties must be greater than 0, got"),
             "{tag}: expected parties validation, got {text:?}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

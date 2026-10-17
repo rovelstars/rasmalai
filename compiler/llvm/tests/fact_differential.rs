@@ -1,9 +1,11 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use inkwell::context::Context;
 
 fn opt_module(src: &str, tag: &str, entry: &str) -> lir::instr::Module {
-    let dir = std::env::temp_dir().join(format!("rnx-factdiff-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir(&format!("factdiff-{tag}"));
     std::fs::write(dir.join("main.rnx"), src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
@@ -12,7 +14,6 @@ fn opt_module(src: &str, tag: &str, entry: &str) -> lir::instr::Module {
     let mut out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     let diags = runtime::lir_pipeline::optimize_for_release(&mut out, entry);
     assert!(diags.is_empty(), "{diags:?}");
-    let _ = std::fs::remove_dir_all(&dir);
     out
 }
 

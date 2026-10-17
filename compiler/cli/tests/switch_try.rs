@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-switchtry-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("switchtry-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -19,7 +19,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
     (out, dir)
 }
 
-fn run_backend(rnx: &str, dir: &PathBuf, backend: &str) -> String {
+fn run_backend(rnx: &str, dir: &std::path::Path, backend: &str) -> String {
     let out = std::process::Command::new(rnx)
         .arg("run")
         .arg("--backend")
@@ -58,12 +58,10 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0, "aot {tag} exit");
     assert_eq!(String::from_utf8(run.stdout).unwrap(), want, "aot {tag} stdout");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn check_fails_with(src: &str, want: &[&str], tag: &str) {
-    let dir = std::env::temp_dir().join(format!("rnx-switchtry-err-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::scratch::dir(&format!("switchtry-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("Project.config"), "export default {\n    project: {\n        name: \"m\",\n        version: \"0.1.0\"\n    }\n}\n").unwrap();
     std::fs::write(dir.join("src/main.rnx"), src).unwrap();
@@ -80,7 +78,6 @@ fn check_fails_with(src: &str, want: &[&str], tag: &str) {
     for w in want {
         assert!(text.contains(w), "missing `{w}` in: {text}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

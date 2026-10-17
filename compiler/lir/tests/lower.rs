@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use lir::{lower, verify};
 
 fn compile(src: &str) -> lir::instr::Module {
@@ -408,9 +412,7 @@ fn float_field_arith_stays_float() {
 #[test]
 fn thread_spawn_join_lower() {
     use lir::instr::Instr;
-    let dir = std::env::temp_dir().join(format!("rnx-lir-thr-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("lir");
     std::fs::write(dir.join("main.rnx"), "fn worker(): Int { return 1; } fn Main(): Int { let h = Thread.spawn(worker); return h.join().unwrap(); }").unwrap();
     let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
@@ -434,7 +436,6 @@ fn thread_spawn_join_lower() {
         }
     }
     assert!(saw_spawn && saw_enum);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

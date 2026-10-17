@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("std_fs_async-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -50,7 +50,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const ASYNC_SRC: &str = r#"import fs, { FileStat } from "@std/fs";
@@ -138,9 +137,7 @@ fn Main(): Int {
 
 #[test]
 fn test_fs_async_all_backends() {
-    let dir = std::env::temp_dir().join(format!("rnx-fs-e2e-async-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("fs");
     let src = ASYNC_SRC.replace("__BASE__", &dir.to_string_lossy());
     check_all_backends(
         &src,
@@ -148,5 +145,4 @@ fn test_fs_async_all_backends() {
         &["@std/fs async verification success".to_string()],
         "fsasync",
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

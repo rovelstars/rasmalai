@@ -181,17 +181,8 @@ mod tests {
         assert_eq!(stdlib_cache_key(), direct);
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "rnx-stdlib-cache-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn scratch(name: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("stdlib-{name}"));
         dir
     }
 

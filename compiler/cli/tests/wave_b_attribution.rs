@@ -1,14 +1,16 @@
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
+use std::path::Path;
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-waveb-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("waveb-{tag}"));
     dir
 }
 

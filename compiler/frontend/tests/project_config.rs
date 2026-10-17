@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use frontend::project::eval::{ConfigTarget, ConfigValue, eval_module};
 use frontend::project::{self, DependencySpec};
 use frontend::parser::Parser;
@@ -23,12 +27,9 @@ fn eval_err(src: &str) -> diagnostics::Diagnostic {
 const BASIC: &str = "export default {\n    project: {\n        name: \"my_app\",\n        version: \"0.1.0\",\n        description: \"High-performance app with native FFI\"\n    },\n    entries: { main: \"src/main.rnx\" },\n    dependencies: {\n        utils: { path: \"../utils\" },\n        algo: { git: \"https://github.com/example/algo\", branch: \"main\" }\n    },\n    permissions: [{ perm: \"fs:read:/data\", reason: \"seed\" }, \"term:write\"]\n}\n";
 
 fn load(src: &str) -> project::ProjectConfig {
-    let dir = std::env::temp_dir().join(format!("rnx-pcfg-{}-{}", std::process::id(), src.len()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("pcfg");
     std::fs::write(dir.join("Project.config"), src).unwrap();
     let cfg = project::ProjectConfig::load_from_dir(&dir).unwrap().unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
     cfg
 }
 

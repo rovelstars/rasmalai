@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -6,10 +10,8 @@ fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-wave3-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("wave3-{tag}"));
     dir
 }
 
@@ -46,7 +48,6 @@ fn e303_caret_points_at_offending_token() {
         token_off, caret_off,
         "caret must sit under the token:\n{excerpt}\n{caret}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 struct Session {
@@ -213,5 +214,4 @@ fn init_scaffold_check_and_run_clean() {
         format!("Hello from {name}!\n"),
         "first run prints the documented line"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

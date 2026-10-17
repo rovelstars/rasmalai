@@ -1,13 +1,13 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-nested-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("nested-{tag}"));
     dir
 }
 
@@ -35,7 +35,6 @@ fn nested_std_submodule_runs() {
     assert!(stdout.contains("404"), "{stdout}");
     assert!(stdout.contains("true"), "{stdout}");
     assert!(stdout.contains("false"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -67,7 +66,6 @@ fn nested_package_submodule_runs() {
     let run = std::process::Command::new(rnx()).arg("run").current_dir(&app).output().unwrap();
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "42\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -98,7 +96,6 @@ fn nested_doc_json_carries_slash_paths() {
     let api = std::fs::read_to_string(dir.join("target").join("doc").join("api.json")).unwrap();
     assert!(api.contains("\"name\":\"util.vec\""), "{api}");
     assert!(api.contains("\"path\":\"util/vec\""), "{api}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -117,5 +114,4 @@ fn stdlib_doc_json_lists_nested_module() {
     let api = std::fs::read_to_string(dir.join("api").join("api.json")).unwrap();
     assert!(api.contains("\"name\":\"net/http\""), "{api}");
     assert!(api.contains("\"name\":\"net\""), "{api}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

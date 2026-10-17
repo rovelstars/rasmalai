@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-incdec-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("incdec-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -20,9 +20,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
 }
 
 fn sem_err(src: &str, tag: &str) -> diagnostics::Diagnostic {
-    let dir = std::env::temp_dir().join(format!("rnx-incdec-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("incdec");
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -33,7 +31,6 @@ fn sem_err(src: &str, tag: &str) -> diagnostics::Diagnostic {
         .into_iter()
         .filter(|x| !x.code.is_warning())
         .collect();
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(!errs.is_empty(), "{tag}: expected a semantic error");
     errs.into_iter().next().unwrap()
 }
@@ -91,7 +88,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
             "aot {tag} stdout"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -1,7 +1,10 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use cli::Value;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
 
 static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -60,10 +63,8 @@ fn closed_loopback_port() -> u16 {
     panic!("could not obtain a closed loopback port after 10 attempts");
 }
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-net-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("net-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -80,7 +81,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
 }
 
 fn run_interpreter(src: &str, want_out: &[String], tag: &str) {
-    let (module, dir) = resolve_src(src, tag);
+    let (module, _g) = resolve_src(src, tag);
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(module));
     let mut machine = runtime::machine::Machine::new(leaked);
     let r = machine.call("Main", vec![]).unwrap_or_else(|e| panic!("interpreter {tag}: {e:?}"));
@@ -90,7 +91,6 @@ fn run_interpreter(src: &str, want_out: &[String], tag: &str) {
     }
     let got: Vec<String> = machine.output.clone();
     assert_eq!(got, want_out, "interpreter {tag} stdout");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn run_all_backends(src: &str, want_out: &[String], tag: &str) {
@@ -201,7 +201,6 @@ async fn drain(s: TcpStream, want: Int, acc: Array<Int>): Promise<Array<Int>> {
     return await drain(s, want, acc);
 }
 
-
 let s: TcpStream = await TcpStream.connect("127.0.0.1", __PORT__);
 let msg: Array<Int> = [104, 105];
 let sent: Int = await s.write(msg);
@@ -241,7 +240,6 @@ async fn drain(s: TcpStream, want: Int, acc: Array<Int>): Promise<Array<Int>> {
     }
     return await drain(s, want, acc);
 }
-
 
 async fn reader(port: Int): Promise<Int> {
     let s: TcpStream = await TcpStream.connect("127.0.0.1", port);

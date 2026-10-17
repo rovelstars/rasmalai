@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::path::PathBuf;
 
 const BYTE_SRC: &str = "import { ByteBuffer } from \"@std/bytes\";\nfn Main(): Int {\n    let buf = ByteBuffer.allocate(16);\n    let i = 0;\n    while i < 16 { buf.writeUInt8(i, 10 + i); i = i + 1; }\n    unsafe {\n        let p = Pointer.fromAddress<Byte>(buf.address());\n        p.write(99);\n        assert(p.read() == 99, \"byte 0\");\n        assert(buf.readUInt8(0) == 99, \"buf 0\");\n        assert(buf.readUInt8(1) == 11, \"neighbour 1\");\n        assert(buf.readUInt8(7) == 17, \"neighbour 7\");\n        assert(buf.readUInt8(15) == 25, \"tail\");\n    }\n    print(\"byte-ok\");\n    return 0;\n}\n";
@@ -6,9 +10,8 @@ const LIBC_SRC: &str = "import { ByteBuffer } from \"@std/bytes\";\nimport {\n  
 
 const ZLIB_SRC: &str = "import {\n    fn compressBound(sourceLen: Int): Int\n} from native \"z\"\nfn Main(): Int {\n    let bound = compressBound(100);\n    print(bound);\n    assert(bound > 100, \"bound grows\");\n    return 0;\n}\n";
 
-fn write_proj(src: &str, tag: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-ffi-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn write_proj(src: &str, tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("ffi-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("Project.config"),
@@ -61,7 +64,7 @@ fn build(main: &std::path::Path, release: bool) -> String {
 
 #[test]
 fn byte_store_writes_one_byte_on_all_backends() {
-    let (dir, main) = write_proj(BYTE_SRC, "byte");
+    let (_g, main) = write_proj(BYTE_SRC, "byte");
     for backend in ["interpreter", "cranelift", "llvm"] {
         assert_eq!(run_ok(&main, backend), "byte-ok\n", "{backend}");
     }
@@ -71,12 +74,11 @@ fn byte_store_writes_one_byte_on_all_backends() {
         assert!(run.status.success());
         assert_eq!(String::from_utf8(run.stdout).unwrap(), "byte-ok\n");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn libc_strlen_puts_on_all_backends() {
-    let (dir, main) = write_proj(LIBC_SRC, "libc");
+    let (_g, main) = write_proj(LIBC_SRC, "libc");
     for backend in ["interpreter", "cranelift", "llvm"] {
         assert_eq!(
             run_ok(&main, backend),
@@ -93,12 +95,11 @@ fn libc_strlen_puts_on_all_backends() {
             "20\nHello from Native C!\n"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn zlib_compress_bound_links_libz() {
-    let (dir, main) = write_proj(ZLIB_SRC, "zlib");
+    let (_g, main) = write_proj(ZLIB_SRC, "zlib");
     for backend in ["interpreter", "cranelift", "llvm"] {
         let stdout = run_ok(&main, backend);
         let bound: i64 = stdout.trim().parse().expect("bound");
@@ -115,5 +116,4 @@ fn zlib_compress_bound_links_libz() {
         let text = String::from_utf8_lossy(&ldd.stdout).into_owned();
         assert!(text.contains("libz.so"), "libz linked:\n{text}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("simd-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -18,9 +18,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
 }
 
 fn lower_only(src: &str, tag: &str) -> lir::instr::Module {
-    let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir(&format!("simd-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -28,7 +26,6 @@ fn lower_only(src: &str, tag: &str) -> lir::instr::Module {
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     let out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
-    let _ = std::fs::remove_dir_all(&dir);
     out
 }
 
@@ -65,7 +62,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const ARITH_SRC: &str = "import { Vec4f, Vec4i } from \"@std/simd\";\n\nfn Main(): Int {\n    let v = new Vec4f(1.0, 2.0, 3.0, 4.0) + new Vec4f(10.0, 20.0, 30.0, 40.0);\n    let a = Int(v.x());\n    let b = Int(v.y());\n    let c = Int(v.get(2));\n    let d = Int(v.w());\n    let w = new Vec4i(1, 2, 3, 4) * new Vec4i(2, 2, 2, 2);\n    let e = w.get(0) + w.get(3);\n    print(\"lanes:\", a, b, c, d, e);\n    if a == 11 && b == 22 && c == 33 && d == 44 && e == 10 {\n        return 42;\n    }\n    return 1;\n}\n";
@@ -155,9 +151,7 @@ fn check_oob_traps(src: &str, tag: &str) {
         cli::RunOutcome::Fatal { message, .. } => assert!(message.contains("out of range"), "{message}"),
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let dir = std::env::temp_dir().join(format!("rnx-vecoob-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("vecoob");
     let src_path = dir.join("oob.rnx");
     std::fs::write(&src_path, src).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -184,7 +178,6 @@ fn check_oob_traps(src: &str, tag: &str) {
     assert!(!run.status.success(), "aot {tag} read past the end without trapping");
     let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
     assert!(stderr.contains("vector lane out of range"), "aot {tag}: {stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

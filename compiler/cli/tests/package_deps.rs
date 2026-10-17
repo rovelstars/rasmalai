@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 const EXPECTED: &str = "Multi-package resolution success: 42\n";
 
 fn app_dir() -> std::path::PathBuf {
@@ -21,9 +25,6 @@ fn package_bare_run_interpreter() {
 
 #[test]
 fn package_bare_build_native_binary() {
-    let dir = std::env::temp_dir().join(format!("rnx-pkg-build-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
@@ -35,13 +36,11 @@ fn package_bare_build_native_binary() {
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), EXPECTED);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn package_missing_dependency_is_e108() {
-    let dir = std::env::temp_dir().join(format!("rnx-pkg-missing-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::scratch::dir("pkg");
     let src = dir.join("src");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(
@@ -62,5 +61,4 @@ fn package_missing_dependency_is_e108() {
         String::from_utf8(out.stdout).unwrap() + &String::from_utf8(out.stderr).unwrap();
     assert!(text.contains("E108"), "{text}");
     assert!(text.contains("unknown package dependency `ghost`"), "{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

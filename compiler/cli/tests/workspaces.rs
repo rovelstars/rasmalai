@@ -1,8 +1,11 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 const EXPECTED: &str = "Workspace run success: 42\n";
 
-fn workspace_tree(tag: &str) -> std::path::PathBuf {
-    let base = std::env::temp_dir().join(format!("rnx-ws-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+fn workspace_tree(tag: &str) -> crate::scratch::Scratch {
+    let base = crate::scratch::dir(&format!("ws-{tag}"));
     let src =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace_monorepo");
     copy_dir(&src, &base);
@@ -141,9 +144,7 @@ fn test_bare_run_from_workspace_root_needs_package_flag() {
 
 #[test]
 fn test_clean_package_flag_scopes_to_member() {
-    let base = std::env::temp_dir().join(format!("rnx-ws-clean-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
+    let base = crate::scratch::dir("ws");
     std::fs::write(
         base.join("Project.config"),
         "export default {\n    workspace: {\n        members: [\"alpha\", \"beta\"]\n    }\n}\n",
@@ -184,5 +185,4 @@ fn test_clean_package_flag_scopes_to_member() {
         base.join("beta").join(".rnx-cache").join("stale.bin").is_file(),
         "beta cache must survive clean -p alpha"
     );
-    let _ = std::fs::remove_dir_all(&base);
 }

@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
+use std::path::Path;
 use std::process::Command;
 
 // Regression pin for the loop-carried ternary ARC bug (fixed).
@@ -54,13 +58,11 @@ const REPRO: &str = "fn Main(): Int {\n\
     return 0;\n\
 }\n";
 
-fn fresh_src(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-looptern-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_src(tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("looptern-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, REPRO).unwrap();
-    main
+    (dir, main)
 }
 
 fn run_backend(main: &Path, backend: &str) -> std::process::Output {
@@ -75,29 +77,28 @@ fn run_backend(main: &Path, backend: &str) -> std::process::Output {
 
 #[test]
 fn loop_ternary_release_interpreter() {
-    let main = fresh_src("interp");
+    let (_g, main) = fresh_src("interp");
     let out = run_backend(&main, "interpreter");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
 fn loop_ternary_release_cranelift() {
-    let main = fresh_src("cl");
+    let (_g, main) = fresh_src("cl");
     let out = run_backend(&main, "cranelift");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
 fn loop_ternary_release_llvm() {
-    let main = fresh_src("ll");
+    let (_g, main) = fresh_src("ll");
     let out = run_backend(&main, "llvm");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
 fn loop_ternary_release_aot() {
-    let main = fresh_src("aot");
-    let dir = main.parent().unwrap().to_path_buf();
+    let (_g, main) = fresh_src("aot");
     let build = Command::new(rnx())
         .arg("build")
         .arg(&main)
@@ -107,5 +108,4 @@ fn loop_ternary_release_aot() {
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let run = Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0, "aot exit: {}", String::from_utf8_lossy(&run.stderr));
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-wave1-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("wave1-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -53,7 +53,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const SELF_ASSIGN_SRC: &str = "fn id(x: Array<Int>): Array<Int> { return x; }\nfn add(notes: Array<Int>, body: Int): Array<Int> {\n    notes.push(body);\n    return notes;\n}\nfn Main(): Int {\n    let a: Array<Int> = [1];\n    a = id(a);\n    if a.len() != 1 {\n        return 1;\n    }\n    a = add(a, 5);\n    if a.len() != 2 {\n        return 2;\n    }\n    print(a.len());\n    return 0;\n}\n";

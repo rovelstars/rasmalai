@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-bound-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("bound-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -21,7 +21,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
 }
 
 fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
-    let (module, dir) = resolve_src(src, tag);
+    let (module, _g) = resolve_src(src, tag);
     let leaked: &'static lir::instr::Module = Box::leak(Box::new(module));
     let mut machine = runtime::machine::Machine::new(leaked);
     let r = machine.call("Main", vec![]).unwrap_or_else(|e| panic!("interpreter {tag}: {e:?}"));
@@ -36,7 +36,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
     assert_eq!(llvm::codegen::execute(leaked, "Main").unwrap(), want, "llvm {tag}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const PARAM_SRC: &str = "import { Vec4f } from \"@std/simd\";\n\nfn dbl(v: Vec4f): Vec4f {\n    return v * Vec4f.splat(2.0);\n}\n\nfn Main(): Int {\n    let got = Int(dbl(new Vec4f(1.0, 2.0, 3.0, 4.0)).get(2));\n    print(\"param:\", got);\n    if got == 6 {\n        return 42;\n    }\n    return 1;\n}\n";

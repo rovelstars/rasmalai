@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use llvm::codegen::{OptLevel, stdlib_prebuilt};
 
 fn lowered(src: &str) -> lir::instr::Module {
@@ -6,17 +10,8 @@ fn lowered(src: &str) -> lir::instr::Module {
     lir::lower::lower(&module).unwrap()
 }
 
-fn scratch(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rnx-llvm-pipeline-{name}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn scratch(name: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("llvm-{name}"));
     dir
 }
 

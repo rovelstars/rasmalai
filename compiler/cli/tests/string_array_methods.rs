@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-strarr-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("strarr-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -52,7 +52,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const SCRIPT: &str = "fn Main(): Int {\n\
@@ -87,7 +86,6 @@ fn string_methods_print_output() {
         "print",
     );
 }
-
 
 const SPLIT_LINEAR_SRC: &str = "import { Clock } from \"@std/time\";\nfn timeSplit(s: String, delim: String): Int {\n    let t0 = Clock.mono().toMillis();\n    let parts = s.split(delim);\n    let ms = Clock.mono().toMillis() - t0;\n    return parts.length() * 1000000 + ms;\n}\nfn Main(): Int {\n    let line = \"abcdefghij\\n\";\n    let small = line.repeat(8000);\n    let big = line.repeat(32000);\n    let r0 = timeSplit(small, \"\\n\");\n    assert(r0 / 1000000 == 8001, \"small split count\");\n    let r1 = timeSplit(big, \"\\n\");\n    assert(r1 / 1000000 == 32001, \"big split count\");\n    let ms_small = r0 % 1000000;\n    let ms_big = r1 % 1000000;\n    assert(ms_big <= ms_small * 10 + 3000, \"8x input must not take 10x the small time\");\n    let uni = \"h\u{e9}llo\u{25c6}world\".split(\"\u{25c6}\");\n    assert(uni.length() == 2 && uni[0] == \"h\u{e9}llo\", \"multibyte split\");\n    let chars = \"hey\".split(\"\");\n    assert(chars.length() == 3 && chars[1] == \"e\", \"empty delimiter splits chars\");\n    print(\"split linear ok\");\n    return 0;\n}\n";
 

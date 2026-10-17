@@ -605,10 +605,8 @@ impl LivePlan {
 mod tests {
     use super::*;
 
-    fn tmpdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rnx-plan-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn tmpdir(tag: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("plan-{tag}"));
         dir
     }
 
@@ -649,7 +647,6 @@ mod tests {
         assert_eq!(back.members[1].name, "bar/baz.o");
         assert_eq!(back.user_defined, vec!["_start".to_string(), "main".to_string()]);
         assert_eq!(back.user_unresolved, vec!["printf".to_string()]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -660,13 +657,12 @@ mod tests {
         assert!(read_manifest(&dir).is_err());
         std::fs::write(dir.join(MANIFEST_NAME), b"{\"magic\":\"NOPE\",\"version\":2}").unwrap();
         assert!(read_manifest(&dir).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn live_plan_roundtrip_through_flush() {
         let dir = tmpdir("live");
-        let ctx = CacheCtx { dir: dir.clone(), toolchain: "t".to_string(), allow_write: true };
+        let ctx = CacheCtx { dir: dir.to_path_buf(), toolchain: "t".to_string(), allow_write: true };
         let mut defined: BTreeSet<String> = BTreeSet::new();
         defined.insert("main".to_string());
         let mut unresolved: BTreeSet<String> = BTreeSet::new();
@@ -692,6 +688,5 @@ mod tests {
         other.insert("extra".to_string());
         assert!(LivePlan::load(&ctx, "o", &blank.archives, &defined, &other).is_none());
         assert!(LivePlan::load(&ctx, "other-opts", &blank.archives, &defined, &unresolved).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

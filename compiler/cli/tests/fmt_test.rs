@@ -1,13 +1,13 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
 fn fmt(src: &str) -> String {
     frontend::fmt::format_source(src).unwrap_or_else(|e| panic!("format failed: {e}"))
 }
 
-fn write_tmp(tag: &str, name: &str, src: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-fmt-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_tmp(tag: &str, name: &str, src: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+    let dir = crate::scratch::dir(&format!("fmt-{tag}"));
     let file = dir.join(name);
     std::fs::write(&file, src).unwrap();
     (dir, file)
@@ -63,7 +63,7 @@ const UNFORMATTED_SRC: &str = "fn Main():Int{\nlet x=1+2;\nreturn x;\n}\n";
 
 #[test]
 fn test_fmt_check_flag_exit_codes() {
-    let (dir, file) = write_tmp("check", "main.rnx", UNFORMATTED_SRC);
+    let (_g, file) = write_tmp("check", "main.rnx", UNFORMATTED_SRC);
     let name = file.to_string_lossy().into_owned();
     let check = run_fmt(&["--check", &name]);
     assert_eq!(check.status.code(), Some(1), "expected exit 1");
@@ -75,19 +75,17 @@ fn test_fmt_check_flag_exit_codes() {
     assert!(fix.status.success(), "{}", String::from_utf8_lossy(&fix.stderr));
     let recheck = run_fmt(&["--check", &name]);
     assert_eq!(recheck.status.code(), Some(0), "expected exit 0");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_fmt_diff_output() {
-    let (dir, file) = write_tmp("diff", "main.rnx", UNFORMATTED_SRC);
+    let (_g, file) = write_tmp("diff", "main.rnx", UNFORMATTED_SRC);
     let name = file.to_string_lossy().into_owned();
     let out = run_fmt(&["--diff", &name]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(text.contains('-') && text.contains('+'), "no diff markers in:\n{text}");
     assert!(text.contains("let x = 1 + 2;"), "missing formatted line in:\n{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const BRACE_SRC: &str = "fn add(a:Int,b:Int):Int{\nlet x=a+b*2;\nif(x>0){\nreturn x;}\nreturn 0;\n}\n";
@@ -121,7 +119,7 @@ const MANIFEST_SRC: &str = "// sample\nexport default {\n    project: {\n       
 
 #[test]
 fn test_fmt_manifest_normalizes() {
-    let (dir, file) = write_tmp("manifest", "Project.config", MANIFEST_SRC);
+    let (_g, file) = write_tmp("manifest", "Project.config", MANIFEST_SRC);
     let out = run_fmt(&[file.to_str().unwrap()]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = std::fs::read_to_string(&file).unwrap();
@@ -131,7 +129,6 @@ fn test_fmt_manifest_normalizes() {
     assert!(text.contains("// inline"), "{text}");
     let check = run_fmt(&["--check", file.to_str().unwrap()]);
     assert!(check.status.success(), "not idempotent: {}", String::from_utf8_lossy(&check.stderr));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const ARROW_SRC: &str = "fn F():Int{\nlet a=(x)=>x*2;\nlet b=x=>x+1;\nlet c=(a: Int,b: Int):Int=>a+b;\nlet d=()=>{return 42;};\n}\n";

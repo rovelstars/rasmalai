@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
 const MAIN_SRC: &str = "fn Main(): Int {\n    print(\"packed ok\");\n    return 0;\n}\n";
 
@@ -8,9 +10,8 @@ fn manifest(name: &str) -> String {
     )
 }
 
-fn write_project(tag: &str, name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-pack-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn write_project(tag: &str, name: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("pack-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("Project.config"), manifest(name)).unwrap();
     std::fs::write(dir.join("src").join("main.rnx"), MAIN_SRC).unwrap();
@@ -43,13 +44,11 @@ fn test_pack_generates_archive_and_digest() {
     assert!(sha.is_file(), "digest missing");
     let text = std::fs::read_to_string(&sha).unwrap();
     assert_eq!(text, format!("{}  calc-0.1.0.tar\n", digest(&tar)), "digest mismatch");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_pack_deterministic_bytes() {
-    let base = std::env::temp_dir().join(format!("rnx-packdet-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    let base = crate::scratch::dir("packdet");
     for tag in ["a", "b"] {
         let dir = base.join(tag);
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -67,7 +66,6 @@ fn test_pack_deterministic_bytes() {
     let b = base.join("b").join("out").join("calc-0.1.0.tar");
     assert_eq!(digest(&a), digest(&b), "digests differ");
     assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -90,7 +88,6 @@ fn test_pack_extract_and_run() {
     let run = std::process::Command::new(rnx).arg("run").current_dir(&ext).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "packed ok\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -126,5 +123,4 @@ fn test_excluded_paths_not_in_tar() {
     assert!(!text.lines().any(|l| l == ".rnx/doc.json"), "generated doc.json packed");
     assert!(text.lines().any(|l| l == "Project.config"), "config missing:\n{text}");
     assert!(text.lines().any(|l| l == "src/main.rnx"), "source missing:\n{text}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

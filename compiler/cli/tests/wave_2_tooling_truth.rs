@@ -1,25 +1,26 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::process::Command;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-wave2-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("wave2-{tag}"));
     dir
 }
 
-fn write_file(path: &PathBuf, contents: &str) {
+fn write_file(path: &std::path::Path, contents: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(path, contents).unwrap();
 }
 
-fn run_backend(file: &PathBuf, backend: &str) -> std::process::Output {
+fn run_backend(file: &std::path::Path, backend: &str) -> std::process::Output {
     Command::new(rnx())
         .arg("run")
         .arg("--backend")
@@ -46,7 +47,6 @@ fn check_matches_run_on_lowering_failure() {
         String::from_utf8_lossy(&run.stdout),
         "check and run must report the identical diagnostic"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const RECURSE_SRC: &str =
@@ -70,7 +70,6 @@ fn recursion_traps_cleanly_on_all_backends() {
             "{backend}: stderr must name stack exhaustion, got: {stderr}"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const THROW_SRC: &str = "fn boom(): String throws {\n    throw \"fatal error\";\n}\nfn Main(): Int {\n    print(\"before\");\n    boom();\n    print(\"after\");\n    return 0;\n}\n";
@@ -107,7 +106,6 @@ fn uncaught_throw_renders_identically() {
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let out = Command::new(&bin).output().unwrap();
     assert_uncaught_shape(&out, "aot");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const FS_MAIN_SRC: &str = "fn loadData(path: String): Int {\n    File.open(path, FileMode.Read);\n    return 0;\n}\nfn Main(): Int {\n    return loadData(\"/tmp/a\");\n}\n";
@@ -132,5 +130,4 @@ fn lock_records_scanned_capabilities() {
         text.lines().any(|l| l.contains("fs:read")),
         "capabilities must list the scanned file read:\n{text}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -5,10 +9,8 @@ fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
-fn fresh_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rnx-secrun-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fresh_dir(tag: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("secrun-{tag}"));
     dir
 }
 
@@ -56,7 +58,6 @@ fn s301_direct_write_rejected() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("panic [S301]"), "{stderr}");
     assert!(stderr.contains("Project.deplock"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -73,7 +74,6 @@ fn s301_traversal_rejected() {
     assert_ne!(out.status.code(), Some(0), "{}", combined(&out));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("panic [S301]"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -90,7 +90,6 @@ fn s301_vcs_tree_rejected() {
     assert_ne!(out.status.code(), Some(0), "{}", combined(&out));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("panic [S301]"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -105,7 +104,6 @@ fn s301_remove_rejected() {
     assert_ne!(out.status.code(), Some(0), "{}", combined(&out));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("panic [S301]"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -131,7 +129,6 @@ fn s301_legit_write_allowed() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
     assert_eq!(std::fs::read_to_string(dir.join("notes.txt")).unwrap(), "fine");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -159,7 +156,6 @@ fn s301_direct_write_rejected_aot() {
     assert_ne!(run.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(stderr.contains("panic [S301]"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -188,7 +184,6 @@ fn child_env_isolated_but_forwarding_works() {
     assert!(!stdout.contains("super_secret"), "ambient leak: {stdout}");
     assert!(stdout.contains("MARKER::END"), "scrubbed child: {stdout}");
     assert!(stdout.contains("kid_42"), "explicit forward: {stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -261,7 +256,6 @@ fn s401_locked_spawn_denied_and_allowed() {
         .output()
         .unwrap();
     assert_eq!(allowed_again.status.code(), Some(0), "{}", combined(&allowed_again));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -294,5 +288,4 @@ fn open_fds_do_not_leak_into_child() {
         !stdout.contains("marker_fd_test"),
         "fd leaked into child: {stdout}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

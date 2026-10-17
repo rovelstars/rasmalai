@@ -73,7 +73,6 @@ pub fn fetch_git_dependency(
     if dir.join(project::MANIFEST_FILE).is_file() && marker_matches(&dir, git_url, rev) {
         return Ok(dir);
     }
-    let _ = std::fs::remove_dir_all(&dir);
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
@@ -85,10 +84,8 @@ pub fn fetch_git_dependency(
         .output()
         .map_err(|_| Diagnostic::new(Code::E108, "git is not installed or not in PATH"))?;
     if !shallow.status.success() {
-        let _ = std::fs::remove_dir_all(&dir);
         git_cmd(&["clone", git_url, &dir.to_string_lossy()], cache_dir)?;
         git_cmd(&["checkout", rev], &dir).map_err(|e| {
-            let _ = std::fs::remove_dir_all(&dir);
             Diagnostic::new(
                 Code::E108,
                 format!("cannot reach revision `{rev}` of `{git_url}`: {}", e.message),
@@ -96,7 +93,6 @@ pub fn fetch_git_dependency(
         })?;
     }
     if !dir.join(project::MANIFEST_FILE).is_file() {
-        let _ = std::fs::remove_dir_all(&dir);
         return Err(Diagnostic::new(
             Code::E108,
             format!("package `{name}` from `{git_url}` has no Project.config"),
@@ -2296,12 +2292,10 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
     };
     let downloaded = match download(false) {
         Err(first) if is_generation_error(&first) => {
-            let _ = std::fs::remove_dir_all(&dir);
             download(true)
         }
         other => other,
     }?;
-    let _ = std::fs::remove_dir_all(&dir);
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
@@ -2515,7 +2509,6 @@ pub(crate) mod testkit {
     }
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    static TAG_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn env_lock() -> &'static Mutex<()> {
         ENV_LOCK.get_or_init(|| Mutex::new(()))
@@ -2547,18 +2540,12 @@ pub(crate) mod testkit {
         }
     }
 
-    pub fn isolate_cache(tag: &str) -> (EnvGuard, PathBuf) {
+    pub fn isolate_cache(tag: &str) -> (EnvGuard, crate::scratch::Scratch) {
         let lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let n = TAG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "rnx-reg-{tag}-{n}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch::dir(&format!("reg-{tag}"));
         let prev_cache = std::env::var("RNX_CACHE_HOME").ok();
         unsafe {
-            std::env::set_var("RNX_CACHE_HOME", &dir);
+            std::env::set_var("RNX_CACHE_HOME", dir.path());
         }
         let mut prev_proxies = Vec::new();
         for key in [

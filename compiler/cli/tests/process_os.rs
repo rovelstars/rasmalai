@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-procos-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("procos-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -52,13 +52,10 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn check_aot_only(src: &str, want: i64, tag: &str) {
-    let dir = std::env::temp_dir().join(format!("rnx-procos-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("procos");
     std::fs::write(dir.join("main.rnx"), src).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
@@ -70,7 +67,6 @@ fn check_aot_only(src: &str, want: i64, tag: &str) {
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let run = std::process::Command::new(&bin).output().unwrap();
     assert_eq!(run.status.code().unwrap(), want as i32, "aot {tag} exit: {}", String::from_utf8_lossy(&run.stderr));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const SCRIPT: &str = "import { Process, Stdio, SpawnOptions } from \"@std/process\";\n\

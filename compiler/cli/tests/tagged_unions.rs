@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-tagunion-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("tagunion-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -52,13 +52,10 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn check_lower_error(src: &str, want_msg: &str, tag: &str) {
-    let dir = std::env::temp_dir().join(format!("rnx-tagunion-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir(&format!("tagunion-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -67,7 +64,6 @@ fn check_lower_error(src: &str, want_msg: &str, tag: &str) {
     assert!(d.is_empty(), "{d:?}");
     let err = lir::lower::lower(&m).expect_err("expected lowering error");
     assert!(err.message.contains(want_msg), "{err:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const EXPR: &str = "enum Expr {\n\
@@ -299,9 +295,7 @@ fn contextual_member_literals_in_call_args() {
 
 #[test]
 fn unknown_implicit_variant_in_arg_rejected() {
-    let dir = std::env::temp_dir().join(format!("rnx-tagunion-implicit-neg-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("tagunion");
     std::fs::write(
         dir.join("main.rnx"),
         "enum Color {\n    Red,\n    Green,\n    Blue\n    }\n\
@@ -316,5 +310,4 @@ fn unknown_implicit_variant_in_arg_rejected() {
     let err = lir::lower::lower(&m).expect_err("expected lowering error");
     assert!(err.message.contains("unknown variant"), "{err:?}");
     assert!(!err.message.contains("pending"), "{err:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

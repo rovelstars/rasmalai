@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-castidx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("castidx-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -55,7 +55,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const CAST_CHAIN_SRC: &str = "import { Channel } from \"@std/sync\";\nconst CH_ID: Int = 6201;\nfn Main(): Int {\n    let ch = Channel.byId(CH_ID);\n    ch.send(7);\n    let v = Channel.byId(CH_ID).recv() as Int;\n    print(v);\n    return 0;\n}\n";
@@ -76,9 +75,7 @@ const ANY_INDEX_SRC: &str = "class Task {\n    let id: Int;\n    init(id: Int) {
 
 #[test]
 fn test_untyped_array_element_call_reports_true_span() {
-    let dir = std::env::temp_dir().join(format!("rnx-castidx-anyspan-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::dir("castidx");
     let main = dir.join("main.rnx");
     std::fs::write(&main, ANY_INDEX_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -95,5 +92,4 @@ fn test_untyped_array_element_call_reports_true_span() {
     assert!(stderr.contains("`run`"), "diagnostic must name the method: {stderr}");
     assert!(stderr.contains("10:13"), "diagnostic must point at the call, not 1:1: {stderr}");
     assert!(!stderr.contains("1:1"), "stale import-line span: {stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

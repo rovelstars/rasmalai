@@ -1,14 +1,14 @@
-use std::path::PathBuf;
+#[cfg(test)]
+#[path = "../../testkit/scratch.rs"]
+mod scratch;
 
 // Serializes this binary's tests: two of them assert on the
 // process-global allocator live count, which concurrent sibling tests
 // would perturb. Not a race workaround.
 static LIVE_COUNT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rnx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    let dir = crate::scratch::dir(&format!("thread_arc-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e}"));
@@ -56,7 +56,6 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const HANDOFF_SRC: &str = "import { Channel } from \"@std/sync\";\n\nclass Message {\n    let text: String;\n    let code: Int;\n    init(t: String, c: Int) {\n        this.text = t;\n        this.code = c;\n    }\n}\n\nfn worker(): Int {\n    let chan = Channel.byId(101);\n    let msg = chan.recv() as Message;\n    print(\"Worker received:\", msg.text, msg.code);\n    return msg.code;\n}\n\nfn Main(): Int {\n    let chan = Channel.byId(101);\n    let th = Thread.spawn(worker);\n    let payload = new Message(\"ping\", 42);\n    chan.send(payload);\n    th.join();\n    return 42;\n}\n";
