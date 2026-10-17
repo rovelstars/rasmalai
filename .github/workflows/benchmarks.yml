@@ -46,6 +46,20 @@ jobs:
           shared-key: workspace-release
           save-if: false
 
+      # ubuntu-24.04 ships clang, go, node and a JDK but no dart, so the
+      # harness detects it as absent and drops the whole dart column. The
+      # SDK zip is pinned by version *and* digest: a re-uploaded archive at
+      # the same version URL would silently move every dart number, the
+      # same drift that keeps the wasm-pack installer out of ci.yml's cache.
+      - name: Install Dart 3.13
+        run: |
+          sdk="https://storage.googleapis.com/dart-archive/channels/stable/release/3.13.5/sdk/dartsdk-linux-x64-release.zip"
+          curl -fsSL -o "$RUNNER_TEMP/dartsdk.zip" "$sdk"
+          echo "ea864bc64df30a6b8bdf30b2e32550f7717d9a890de8f40293aeabb924fe232b  $RUNNER_TEMP/dartsdk.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/dartsdk.zip" -d "$RUNNER_TEMP/dart"
+          echo "$RUNNER_TEMP/dart/dart-sdk/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/dart/dart-sdk/bin/dart" --version
+
       - name: Build rnx (release)
         run: |
           ulimit -c 0
