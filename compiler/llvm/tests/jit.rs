@@ -4,6 +4,18 @@ use llvm::codegen::Jit;
 
 
 static HARNESS_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SCRATCH_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// Scratch names must be per-run. A fixed name lets two concurrent runs share
+// one directory, and each run wipes it on entry and exit, so the slower run
+// watches its own files disappear and fails on values it never got wrong.
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    let n = SCRATCH_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("rnx-llvm-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
 
 fn module_of(src: &str, tag: &str) -> lir::instr::Module {
     let n = HARNESS_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -300,9 +312,7 @@ fn llvm_async_recursion_with_await() {
 
 #[test]
 fn llvm_std_time_virtual_and_mono() {
-    let dir = std::env::temp_dir().join("rnx-llvm-stdtime");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdtime");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Clock } from \"@std/time\";\nfn Main(): Int { let v = Clock.virtual(1000000); v.tick(500000); let d = v.now(); let t0 = Clock.mono(); let t1 = Clock.mono(); if d.nanos == 1500000 && d.toMillis() == 1 && t1.nanos >= t0.nanos { return 42; } return 0; }\n").unwrap();
     let context = Context::create();
@@ -317,9 +327,7 @@ fn llvm_std_time_virtual_and_mono() {
 
 #[test]
 fn llvm_std_random_determinism() {
-    let dir = std::env::temp_dir().join("rnx-llvm-stdrandom");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdrandom");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Rng, CryptoRng } from \"@std/random\";\nfn Main(): Int { let r1 = Rng.seeded(1337); let r2 = Rng.seeded(1337); if r1.next() != r2.next() { return 0; } if r1.next() != r2.next() { return 0; } let b = r1.int(10, 20); if b < 10 || b > 20 { return 0; } let c = CryptoRng.int(); let d = c == c; if d { return 42; } return 0; }\n").unwrap();
     let context = Context::create();
@@ -334,9 +342,7 @@ fn llvm_std_random_determinism() {
 
 #[test]
 fn llvm_std_fs_roundtrip() {
-    let dir = std::env::temp_dir().join("rnx-llvm-stdfs");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdfs");
     let main = dir.join("main.rnx");
     let target = dir.join("t.txt");
     let src = format!("import fs, {{ File, OpenMode, Path }} from \"@std/fs\";\nfn Main(): Int {{ let p = \"{}\"; let w = File.open(p, OpenMode.Write); w.writeText(\"abc\"); w.close(); if !Path.exists(p) {{ return 0; }} let r = File.open(p, OpenMode.Read); let c = r.readText().unwrapOr(\"\"); r.close(); let j = Path.join(\"a\", \"b\"); if c == \"abc\" && j == \"a/b\" && fs.remove(p).unwrapOr(false) && !Path.exists(p) {{ return 42; }} return 0; }}\n", target.to_string_lossy());
@@ -353,9 +359,7 @@ fn llvm_std_fs_roundtrip() {
 
 #[test]
 fn llvm_std_env_roundtrip() {
-    let dir = std::env::temp_dir().join("rnx-llvm-stdenv");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdenv");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Env } from \"@std/env\";\nfn Main(): Int { Env.set(\"RNX_LLVM_ENV_KEY\", \"v42\"); let v = Env.get(\"RNX_LLVM_ENV_KEY\"); let c = Env.cwd(); let n = Env.args().length; if v == \"v42\" && c != \"\" && n >= 1 { return 42; } return 0; }\n").unwrap();
     let context = Context::create();
@@ -370,9 +374,7 @@ fn llvm_std_env_roundtrip() {
 
 #[test]
 fn llvm_std_math_scalar_and_vec() {
-    let dir = std::env::temp_dir().join("rnx-llvm-stdmath");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdmath");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Math, Vec2 } from \"@std/math\";\nfn Main(): Int { if Math.sqrt(16.0) != 4.0 { return 0; } if Math.ceil(2.3) != 3.0 { return 0; } if Math.cos(0.0) != 1.0 { return 0; } let v = new Vec2(3.0, 4.0); if v.dot(new Vec2(2.0, 3.0)) != 18.0 { return 0; } if Int(Math.E() * 1000000.0) != 2718281 { return 0; } return 42; }\n").unwrap();
     let context = Context::create();
@@ -387,9 +389,7 @@ fn llvm_std_math_scalar_and_vec() {
 
 #[test]
 fn llvm_std_collections_map_set() {
-    let dir = std::env::temp_dir().join("rnx-llvm-stdcol");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdcol");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Map, Set } from \"@std/collections\";\nfn Main(): Int { let m = new Map(); m.set(\"a\", 1); m.set(\"b\", 2); if !m.has(\"a\") { return 0; } if (m.get(\"b\") ?? -1) != 2 { return 0; } m.delete(\"a\"); if m.len() != 1 { return 0; } let k = m.keys(); if k.length != 1 || k[0] != \"b\" { return 0; } let v = m.values(); let vv: Int = v[0]; if vv != 2 { return 0; } m.clear(); if m.len() != 0 { return 0; } let s = new Set(); s.add(\"x\"); if !s.has(\"x\") || s.len() != 1 { return 0; } if s.delete(\"x\") != true { return 0; } s.clear(); return 42; }\n").unwrap();
     let context = Context::create();
@@ -404,9 +404,7 @@ fn llvm_std_collections_map_set() {
 
 #[test]
 fn llvm_std_sync_atomic_channel() {
-    let dir = std::env::temp_dir().join("rnx-llvm-stdsync");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdsync");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { AtomicInt, Channel } from \"@std/sync\";\nfn worker(): Int { let c = AtomicInt.byId(42); c.fetchAdd(10); let ch = Channel.byId(42); ch.send(32); return 0; }\nfn Main(): Int { let c = AtomicInt.byId(42); c.set(0); let ch = Channel.byId(42); if ch.tryRecv() != -1 { return 0; } if !c.cas(0, 0) { return 0; } let h = Thread.spawn(worker); let r = ch.recv(); h.join(); if ch.len() != 0 { return 0; } if r + c.get() == 42 { return 42; } return 0; }\n").unwrap();
     let context = Context::create();
