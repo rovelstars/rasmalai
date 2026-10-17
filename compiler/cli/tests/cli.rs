@@ -1,6 +1,19 @@
 use cli::{check_source, is_ok, run_source, RunOutcome};
 use runtime::value::Value;
 
+static SCRATCH_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// Scratch names must be per-run. A fixed name lets two concurrent runs share
+// one directory, and each run wipes it on entry and exit, so the slower run
+// watches its own files disappear and fails on values it never got wrong.
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    let n = SCRATCH_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("rnx-cli-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 #[test]
 fn check_accepts_self_contained() {
     for src in [
@@ -440,9 +453,7 @@ const STD_TIME_SRC: &str = "import { Clock } from \"@std/time\";\n\nfn Main(): I
 
 #[test]
 fn build_std_time_native_binary() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdtime-{tag}", tag = "bin"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdtime-bin");
     std::fs::write(dir.join("main.rnx"), STD_TIME_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
@@ -460,9 +471,7 @@ fn build_std_time_native_binary() {
 
 #[test]
 fn run_std_time_interpreter() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdtime-{tag}", tag = "run"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdtime-run");
     std::fs::write(dir.join("main.rnx"), STD_TIME_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
@@ -473,9 +482,7 @@ fn run_std_time_interpreter() {
 
 #[test]
 fn unknown_std_module_is_e108() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdtime-{tag}", tag = "bad"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdtime-bad");
     std::fs::write(dir.join("main.rnx"), "import { X } from \"@std/bogus\";\nfn Main(): Int { return 0; }\n").unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let out = std::process::Command::new(rnx).arg("check").arg(dir.join("main.rnx")).output().unwrap();
@@ -489,9 +496,7 @@ const STD_RANDOM_SRC: &str = "import { Rng, CryptoRng } from \"@std/random\";\n\
 
 #[test]
 fn build_std_random_native_binary() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdrandom-{tag}", tag = "bin"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdrandom-bin");
     std::fs::write(dir.join("main.rnx"), STD_RANDOM_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
@@ -510,9 +515,7 @@ fn build_std_random_native_binary() {
 
 #[test]
 fn run_std_random_interpreter() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdrandom-{tag}", tag = "run"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdrandom-run");
     std::fs::write(dir.join("main.rnx"), STD_RANDOM_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
@@ -528,9 +531,7 @@ fn std_fs_src(path: &str) -> String {
 
 #[test]
 fn build_std_fs_native_binary() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdfs-{tag}", tag = "bin"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdfs-bin");
     let target = dir.join("tmp_io_test.txt");
     std::fs::write(dir.join("main.rnx"), std_fs_src(&target.to_string_lossy())).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -552,9 +553,7 @@ fn build_std_fs_native_binary() {
 
 #[test]
 fn run_std_fs_interpreter() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdfs-{tag}", tag = "run"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdfs-run");
     let target = dir.join("tmp_io_test.txt");
     std::fs::write(dir.join("main.rnx"), std_fs_src(&target.to_string_lossy())).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -569,9 +568,7 @@ const STD_ENV_SRC: &str = "import { Env } from \"@std/env\";\n\nfn Main(): Int {
 
 #[test]
 fn build_std_env_native_binary() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdenv-{tag}", tag = "bin"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdenv-bin");
     std::fs::write(dir.join("main.rnx"), STD_ENV_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
@@ -592,9 +589,7 @@ fn build_std_env_native_binary() {
 
 #[test]
 fn run_std_env_interpreter() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdenv-{tag}", tag = "run"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdenv-run");
     std::fs::write(dir.join("main.rnx"), STD_ENV_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
@@ -608,9 +603,7 @@ const STD_MATH_SRC: &str = "import { Math, Vec2 } from \"@std/math\";\n\nfn Main
 
 #[test]
 fn build_std_math_native_binary() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdmath-{tag}", tag = "bin"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdmath-bin");
     std::fs::write(dir.join("main.rnx"), STD_MATH_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
@@ -631,9 +624,7 @@ fn build_std_math_native_binary() {
 
 #[test]
 fn run_std_math_interpreter() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdmath-{tag}", tag = "run"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdmath-run");
     std::fs::write(dir.join("main.rnx"), STD_MATH_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
@@ -647,9 +638,7 @@ const STD_COLLECTIONS_SRC: &str = "import { Map, Set } from \"@std/collections\"
 
 #[test]
 fn build_std_collections_native_binary() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdcol-{tag}", tag = "bin"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdcol-bin");
     std::fs::write(dir.join("main.rnx"), STD_COLLECTIONS_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
@@ -670,9 +659,7 @@ fn build_std_collections_native_binary() {
 
 #[test]
 fn run_std_collections_interpreter() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdcol-{tag}", tag = "run"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdcol-run");
     std::fs::write(dir.join("main.rnx"), STD_COLLECTIONS_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();
@@ -686,9 +673,7 @@ const STD_SYNC_SRC: &str = "import { AtomicInt, Channel } from \"@std/sync\";\n\
 
 #[test]
 fn build_std_sync_native_binary() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdsync-{tag}", tag = "bin"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdsync-bin");
     std::fs::write(dir.join("main.rnx"), STD_SYNC_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
@@ -709,9 +694,7 @@ fn build_std_sync_native_binary() {
 
 #[test]
 fn run_std_sync_interpreter() {
-    let dir = std::env::temp_dir().join(format!("rnx-stdsync-{tag}", tag = "run"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdsync-run");
     std::fs::write(dir.join("main.rnx"), STD_SYNC_SRC).unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let run = std::process::Command::new(rnx).arg("run").arg("--backend").arg("interpreter").arg(dir.join("main.rnx")).output().unwrap();

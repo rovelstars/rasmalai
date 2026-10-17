@@ -4,6 +4,18 @@ use runtime::value::Value;
 
 
 static HARNESS_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SCRATCH_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// Scratch names must be per-run. A fixed name lets two concurrent runs share
+// one directory, and each run wipes it on entry and exit, so the slower run
+// watches its own files disappear and fails on values it never got wrong.
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    let n = SCRATCH_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("rnx-rt-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
 
 fn module_of(src: &str, tag: &str) -> lir::instr::Module {
     let n = HARNESS_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -478,9 +490,7 @@ fn async_recursion_with_await_e2e() {
 
 #[test]
 fn std_time_virtual_clock_e2e() {
-    let dir = std::env::temp_dir().join("rnx-rt-stdtime");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdtime");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Clock } from \"@std/time\";\nfn Main(): Int { let v = Clock.virtual(1000000); v.tick(500000); let d = v.now(); if d.nanos == 1500000 && d.toMillis() == 1 { return 42; } return 0; }\n").unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap();
@@ -496,9 +506,7 @@ fn std_time_virtual_clock_e2e() {
 
 #[test]
 fn std_random_determinism_e2e() {
-    let dir = std::env::temp_dir().join("rnx-rt-stdrandom");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdrandom");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Rng } from \"@std/random\";\nfn Main(): Int { let r1 = Rng.seeded(99); let r2 = Rng.seeded(99); if r1.next() != r2.next() { return 0; } let b = r1.bool(); if b == r1.bool() && b == r1.bool() { return 0; } return 42; }\n").unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap();
@@ -514,9 +522,7 @@ fn std_random_determinism_e2e() {
 
 #[test]
 fn std_fs_roundtrip_e2e() {
-    let dir = std::env::temp_dir().join("rnx-rt-stdfs");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdfs");
     let main = dir.join("main.rnx");
     let target = dir.join("t.txt");
     let src = format!("import fs, {{ File, OpenMode }} from \"@std/fs\";\nfn Main(): Int {{ let p = \"{}\"; let w = File.open(p, OpenMode.Write); w.writeText(\"abc\"); w.flush(); w.close(); let r = File.open(p, OpenMode.Read); let c = r.readText().unwrapOr(\"\"); r.close(); if c == \"abc\" && fs.remove(p).unwrapOr(false) {{ return 42; }} return 0; }}\n", target.to_string_lossy());
@@ -534,9 +540,7 @@ fn std_fs_roundtrip_e2e() {
 
 #[test]
 fn std_env_roundtrip_e2e() {
-    let dir = std::env::temp_dir().join("rnx-rt-stdenv");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdenv");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Env } from \"@std/env\";\nfn Main(): Int { Env.set(\"RNX_RT_ENV_KEY\", \"v42\"); let v = Env.get(\"RNX_RT_ENV_KEY\"); if v == \"v42\" && Env.get(\"RNX_RT_ENV_MISSING_XYZ\") == \"\" { return 42; } return 0; }\n").unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap();
@@ -552,9 +556,7 @@ fn std_env_roundtrip_e2e() {
 
 #[test]
 fn std_math_scalar_e2e() {
-    let dir = std::env::temp_dir().join("rnx-rt-stdmath");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdmath");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Math } from \"@std/math\";\nfn Main(): Int { if Math.max(3.0, 4.0) != 4.0 { return 0; } if Math.min(3.0, 4.0) != 3.0 { return 0; } if Math.abs(0.0 - 5.0) != 5.0 { return 0; } if Math.round(2.5) != 3.0 { return 0; } if Math.atan2(1.0, 1.0) <= 0.78 { return 0; } if Math.tan(0.0) != 0.0 { return 0; } return 42; }\n").unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap();
@@ -570,9 +572,7 @@ fn std_math_scalar_e2e() {
 
 #[test]
 fn std_collections_map_e2e() {
-    let dir = std::env::temp_dir().join("rnx-rt-stdcol");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdcol");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { Map } from \"@std/collections\";\nfn Main(): Int { let m = new Map(); m.set(\"a\", 5); m.set(\"a\", 6); if (m.get(\"a\") ?? -1) != 6 { return 0; } if (m.get(\"missing\") ?? 0) != 0 { return 0; } if m.len() != 1 { return 0; } m.clear(); if m.has(\"a\") { return 0; } return 42; }\n").unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap();
@@ -588,9 +588,7 @@ fn std_collections_map_e2e() {
 
 #[test]
 fn std_sync_atomic_channel_e2e() {
-    let dir = std::env::temp_dir().join("rnx-rt-stdsync");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("stdsync");
     let main = dir.join("main.rnx");
     std::fs::write(&main, "import { AtomicInt, Channel } from \"@std/sync\";\nfn worker(): Int { let c = AtomicInt.byId(43); c.fetchAdd(5); let ch = Channel.byId(43); ch.send(37); return 0; }\nfn Main(): Int { let c = AtomicInt.byId(43); c.set(0); let ch = Channel.byId(43); let h = Thread.spawn(worker); let r = ch.recv(); h.join(); if !c.cas(5, 6) { return 0; } if r + c.get() == 43 { return 42; } return 0; }\n").unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap();

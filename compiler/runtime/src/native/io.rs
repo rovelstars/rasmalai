@@ -1625,10 +1625,21 @@ mod clock_tests {
 mod io_tests {
     use super::*;
 
+    static SCRATCH_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    // Scratch names must be per-run. A fixed name lets two concurrent runs share
+    // one directory, so each run finds the other's files already there and fails
+    // on filesystem state it never got wrong.
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let n = SCRATCH_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("rnx-io-native-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
     #[test]
     fn file_write_read_remove_roundtrip() {
-        let dir = std::env::temp_dir().join("rnx-io-native-test");
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = scratch_dir("test");
         let path = dir.join("t.txt");
         let path_str = path.to_string_lossy().into_owned();
         let make_str = |text: &str| {
@@ -1672,8 +1683,7 @@ mod io_tests {
             assert!(!file_read_text_err_impl(std::ptr::null_mut()).is_empty());
             assert!(file_read_impl(std::ptr::null_mut()).is_err());
         }
-        let dir = std::env::temp_dir().join("rnx-io-native-read-err");
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = scratch_dir("read-err");
         let path = dir.join("w.txt");
         let path_str = path.to_string_lossy().into_owned();
         let out = str_alloc(path_str.len());
@@ -1715,8 +1725,7 @@ mod io_tests {
 
     #[test]
     fn double_close_of_live_handle_is_noop() {
-        let dir = std::env::temp_dir().join("rnx-io-native-double-close");
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = scratch_dir("double-close");
         let path = dir.join("d.txt");
         let path_str = path.to_string_lossy().into_owned();
         let out = str_alloc(path_str.len());
