@@ -398,6 +398,31 @@ struct Prepared {
     ast_fns: Vec<String>,
 }
 
+/// The scratch directory a single parse reads its source from.
+///
+/// The parse has `?` exits for every write and frontend failure, and the mcp
+/// server catches an unwind out of `eval`, so the removal has to ride on drop:
+/// a trailing `remove_dir_all` never runs on the paths that fail.
+struct ScratchDir {
+    path: std::path::PathBuf,
+}
+
+impl ScratchDir {
+    fn new(path: std::path::PathBuf) -> Self {
+        // The pid, session, and file index already keep concurrent sessions
+        // apart, but a recycled pid can still name a tree an earlier run left.
+        let _ = std::fs::remove_dir_all(&path);
+        ScratchDir { path }
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        // A failed removal must not replace the diagnostic that got us here.
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 impl ReplSession {
     pub fn new() -> Self {
         static SESSION_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -421,29 +446,38 @@ impl ReplSession {
         self.globals.clear();
     }
 
-    fn parse_pre_desugar(&mut self, source: &str) -> Result<(A::Module, usize), Vec<diagnostics::Diagnostic>> {
-        let dir = std::env::temp_dir().join(format!("rnx-repl-{}-{}-{}", std::process::id(), self.session_id, self.file_idx));
+    fn parse_pre_desugar(&mut self, source: &str) -> Result<(A::Module, usize), Vec<String>> {
+        let dir = ScratchDir::new(std::env::temp_dir().join(format!(
+            "rnx-repl-{}-{}-{}",
+            std::process::id(),
+            self.session_id,
+            self.file_idx
+        )));
         self.file_idx += 1;
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|e| vec![err(format!("repl tempdir: {e}"))])?;
-        let file = dir.join("repl.rnx");
-        std::fs::write(&file, source).map_err(|e| vec![err(format!("repl write: {e}"))])?;
-        let g = frontend::modules::ModuleGraph::build(&file).map_err(|e| vec![e])?;
+        std::fs::create_dir_all(&dir.path)
+            .map_err(|e| vec![err(format!("repl tempdir: {e}"))])
+            .map_err(|e| self.render_errors(&e))?;
+        let file = dir.path.join("repl.rnx");
+        // `render_compile_errors` reads the source back off disk to point at
+        // the offending line, so the diagnostics have to be rendered here,
+        // while `dir` is still on disk. Callers get lines, not diagnostics.
+        let fail = |errs: Vec<diagnostics::Diagnostic>| self.render_errors(&errs);
+        std::fs::write(&file, source).map_err(|e| vec![err(format!("repl write: {e}"))]).map_err(fail)?;
+        let g = frontend::modules::ModuleGraph::build(&file).map_err(|e| vec![e]).map_err(fail)?;
         let root_count = g.files.iter().find(|f| f.path == g.root).map(|f| f.module.decls.len()).unwrap_or(0);
-        let mut m = g.resolve().map_err(|e| vec![e])?;
+        let mut m = g.resolve().map_err(|e| vec![e]).map_err(fail)?;
         frontend::harness::strip_tests(&mut m);
         frontend::harness::strip_benches(&mut m);
-        let _ = std::fs::remove_dir_all(&dir);
         Ok((m, root_count))
     }
 
-    fn parse_raw(&mut self, source: &str) -> Result<A::Module, Vec<diagnostics::Diagnostic>> {
+    fn parse_raw(&mut self, source: &str) -> Result<A::Module, Vec<String>> {
         let (mut m, _) = self.parse_pre_desugar(source)?;
         let desugar_errs = frontend::desugar::desugar(&mut m);
         if desugar_errs.is_empty() {
             Ok(m)
         } else {
-            Err(desugar_errs)
+            Err(self.render_errors(&desugar_errs))
         }
     }
 
@@ -475,7 +509,7 @@ impl ReplSession {
         };
         let mut module = match self.parse_pre_desugar(&candidate) {
             Ok((m, _)) => m,
-            Err(errs) => return ReplOut::Lines(self.render_errors(&errs)),
+            Err(lines) => return ReplOut::Lines(lines),
         };
         if module.decls.len() < self.def_decls {
             self.def_decls = 0;
@@ -577,7 +611,7 @@ impl ReplSession {
         };
         let mut module = match self.parse_pre_desugar(&candidate) {
             Ok((m, _)) => m,
-            Err(errs) => return self.render_errors(&errs),
+            Err(lines) => return lines,
         };
         let new_start = self.def_decls.min(module.decls.len());
         let block_len = format!("({expr});").len();
@@ -1126,5 +1160,71 @@ pub fn run_interactive() {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_dirs() -> Vec<String> {
+        let prefix = format!("rnx-repl-{}-", std::process::id());
+        let temp = std::env::temp_dir();
+        let entries = std::fs::read_dir(&temp).unwrap_or_else(|e| panic!("{}: {e}", temp.display()));
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(&prefix))
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn lines_of(session: &mut ReplSession, input: &str) -> Vec<String> {
+        match session.eval(input) {
+            ReplOut::Lines(lines) => lines,
+            ReplOut::Exit => panic!("unexpected exit for {input:?}"),
+        }
+    }
+
+    // A single test: `eval` owns its scratch directory for the length of the
+    // parse, so tests running in parallel would count each other's live
+    // directory instead of a leak.
+    #[test]
+    fn scratch_dirs_do_not_outlive_a_session() {
+        let mut s = ReplSession::new();
+        assert!(scratch_dirs().is_empty(), "stray before: {:?}", scratch_dirs());
+
+        // ModuleGraph::build rejects the source.
+        let out = lines_of(&mut s, "let bad = {");
+        assert!(!out.is_empty(), "diagnostic expected");
+
+        // ModuleGraph::build rejects the import.
+        let out = lines_of(&mut s, "import { missing } from \"./nope\";");
+        assert!(!out.is_empty(), "diagnostic expected");
+
+        // A clean parse, then the :type path, which parses a second time.
+        let out = lines_of(&mut s, "let a = 2;");
+        assert!(out.iter().any(|l| l.contains("variable a")), "{out:?}");
+        let out = lines_of(&mut s, "a + 4");
+        assert!(out.iter().any(|l| l.contains("6")), "{out:?}");
+        let out = lines_of(&mut s, ":type a");
+        assert!(!out.is_empty(), "type line expected");
+
+        assert!(scratch_dirs().is_empty(), "stray after: {:?}", scratch_dirs());
+    }
+
+    #[test]
+    fn scratch_dir_is_removed_while_unwinding() {
+        // Named apart from `rnx-repl-<pid>-` so the count above stays meaningful.
+        let path = std::env::temp_dir().join(format!("rnx-replguard-{}", std::process::id()));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let dir = ScratchDir::new(path.clone());
+            std::fs::create_dir_all(&dir.path).unwrap();
+            std::fs::write(dir.path.join("repl.rnx"), "let bad = {").unwrap();
+            panic!("frontend panic from inside the parse");
+        }));
+        assert!(outcome.is_err(), "the probe was meant to unwind");
+        assert!(!path.exists(), "{} survived the unwind", path.display());
     }
 }
