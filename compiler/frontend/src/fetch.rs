@@ -2229,8 +2229,20 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
         .to_string();
     let outer_direct = origin_direct();
     let download = |retry_direct: bool| -> Result<Downloaded, Diagnostic> {
-        let direct = outer_direct || retry_direct;
-        let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version, direct)?;
+        // The chunk manifest is the generation-sensitive read: a stale edge
+        // copy lists chunk hashes from a generation that no longer matches
+        // the integrity resolve just returned, so it always follows the
+        // origin-direct guard. Chunk bodies are not generation-sensitive:
+        // each is addressed by its own SHA-256, so any cached copy of
+        // `{base}/chunk/{hash}` is byte-identical to the origin row and
+        // `fetch_chunk` rejects anything that is not. Reading them through
+        // the edge namespace keeps them on the immutable cache instead of
+        // paying a no-store origin read per chunk, which is most of a cold
+        // seed. A wrong or missing edge chunk still fails the hash check,
+        // which the guarded retry below re-reads origin-direct.
+        let manifest_direct = outer_direct || retry_direct;
+        let chunk_direct = retry_direct;
+        let entries = fetch_chunks_manifest(&manifest_url, &node.full, &node.version, manifest_direct)?;
         let mut uniq: BTreeSet<String> = BTreeSet::new();
         for entry in &entries {
             for hash in &entry.chunks {
@@ -2238,7 +2250,7 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
             }
         }
         let ordered: Vec<String> = uniq.into_iter().collect();
-        let by_hash = fetch_chunks_parallel(&chunk_base, &ordered, &node.full, &node.version, direct, share)?;
+        let by_hash = fetch_chunks_parallel(&chunk_base, &ordered, &node.full, &node.version, chunk_direct, share)?;
         if entries.len() == 1 && entries[0].name.is_empty() && !entries[0].dir {
             let mut bytes = Vec::new();
             for h in &entries[0].chunks {
@@ -3427,6 +3439,67 @@ mod tests {
         assert_eq!(fetched.len(), 1);
         let main = std::fs::read(fetched[0].dir.join("src").join("main.rnx")).unwrap();
         assert_eq!(main, b"export fn hello(): Int { return 1; }\n");
+    }
+
+    // Chunk bodies are read through the edge namespace, so a cached body that
+    // does not hash to the hash it was requested under must be rejected, and a
+    // guarded run must still salt the generation-sensitive manifest.
+    #[test]
+    fn edge_chunk_that_fails_its_hash_never_reaches_the_cache() {
+        let (_guard, _dir) = isolate_cache("edgechunkhash");
+        let good = b"export fn hello(): Int { return 1; }\n".to_vec();
+        let hash = Sha256::hexdigest(&good);
+        let node = node_json("@acme/widget", "1.0.0", &hash, false);
+        let manifest = format!(
+            "{{\"entries\": [{{\"name\": \"\", \"size\": {}, \"dir\": false, \"chunks\": [\"{hash}\"]}}]}}",
+            good.len()
+        );
+        let config = MockConfig {
+            version_spec: 1,
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest),
+            chunk_override: Some(vec![(hash.clone(), b"tampered body".to_vec())]),
+        };
+        let server = MockRegistry::start(config);
+        let default = registry_cfg(&server.base);
+        let _guard = origin_direct_guard();
+        let err = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("failed its integrity check"),
+            "{}",
+            err.message
+        );
+        assert!(!cached_package_dir(&default.url, "@acme/widget", "1.0.0")
+            .join(crate::project::MANIFEST_FILE)
+            .is_file());
+        let logged = server.requests();
+        let chunks: Vec<_> = logged
+            .iter()
+            .filter(|(m, p, _)| m == "GET" && p.contains("/chunk/"))
+            .collect();
+        let manifests: Vec<_> = logged
+            .iter()
+            .filter(|(m, p, _)| m == "GET" && p.ends_with("/chunks?origin-direct=1"))
+            .collect();
+        assert!(
+            chunks.iter().any(|(_, p, _)| !p.contains("origin-direct=1")),
+            "a guarded run must read chunk bodies from the edge namespace"
+        );
+        assert!(
+            manifests.iter().all(|(_, p, _)| p.contains("origin-direct=1"))
+                && !manifests.is_empty(),
+            "the generation-sensitive manifest must stay origin-direct"
+        );
     }
 
     #[test]
