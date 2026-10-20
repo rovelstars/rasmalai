@@ -32,7 +32,13 @@ import {
 	scanTarballCapabilities,
 	type DeclaredPermission
 } from '$lib/server/permissions';
-import { chunkTarball, rebuildTarball, sha256Hex } from '$lib/server/chunks';
+import {
+	chunkTarball,
+	rebuildTarball,
+	sha256Hex,
+	validateTarballEntryNames,
+	UnsafeEntryNameError
+} from '$lib/server/chunks';
 import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 
 const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
@@ -241,6 +247,17 @@ export async function POST({ request, platform, url }) {
 		if (checksum && checksum !== tarballSha256) {
 			return json({ success: false, error: 'checksum does not match tarball bytes' }, { status: 400, headers: specHeaders() });
 		}
+		// The entry names of a tarball are the paths the client writes to
+		// disk, so a name that escapes the destination directory is refused
+		// here, before the version is written. The rule is the one the
+		// client applies to the same names.
+		const names = validateTarballEntryNames(tarball);
+		if (!names.ok) {
+			return json(
+				{ success: false, error: `unsafe tar entry name \`${names.name}\`: ${names.reason}` },
+				{ status: 400, headers: specHeaders() }
+			);
+		}
 	}
 	const keywords = validateKeywords(meta['keywords'] ?? []);
 	if (!keywords) {
@@ -329,6 +346,9 @@ export async function POST({ request, platform, url }) {
 		}
 		return json({ success: true, url: `/packages/${parsed.full}`, version }, { status: 201, headers: specHeaders() });
 	} catch (e) {
+		if (e instanceof UnsafeEntryNameError) {
+			return json({ success: false, error: e.message }, { status: 400, headers: specHeaders() });
+		}
 		const msg = e instanceof Error ? e.message : String(e);
 		if (msg.includes('UNIQUE') || msg.includes('already published')) {
 			return json(

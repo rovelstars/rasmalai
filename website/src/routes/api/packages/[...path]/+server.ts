@@ -184,27 +184,38 @@ export async function GET({ params, platform, setHeaders, url }) {
 		} catch {
 			entries = null;
 		}
-		if (!Array.isArray(entries)) {
+		// A version that was published without a tarball has no file index
+		// at all: the stored column is the empty array. Saying so is what
+		// keeps the client from reporting a checksum mismatch for a package
+		// that never shipped one.
+		if (!Array.isArray(entries) || entries.length === 0) {
 			return json(
 				{ code: 'no-file-index', message: `package ${full}@${version} ships no file index` },
 				{ status: 404, headers: headers({ 'Cache-Control': 'public, max-age=600, s-maxage=600' }) }
 			);
 		}
 		setHeaders({ ...immutable, ...specHeaders() });
-		return json({ entries }, { headers: headers() });
+		// The body is served compressed to a client that asks for it, so the
+		// cache has to key on the encoding it stored.
+		return json({ entries }, { headers: headers({ Vary: 'accept-encoding' }) });
 	}
 
 	if (sub === 'chunk' && rest.length === 3) {
-		if (!slug || !/^[0-9a-f]{64}$/.test(slug)) return notFound('invalid chunk hash');
+		// The client accepts a digest in either case (it lowercases before
+		// comparing), so the route accepts the same set and normalizes the
+		// digest before the lookup: an uppercase digest is a valid digest,
+		// not a missing chunk.
+		if (!slug || !/^[0-9a-fA-F]{64}$/.test(slug)) return notFound('invalid chunk hash');
+		const hash = slug.toLowerCase();
 		let bytes: Uint8Array | null;
 		try {
-			bytes = await getChunkBytes(env, slug);
+			bytes = await getChunkBytes(env, hash);
 		} catch (e) {
 			const integrity = e instanceof Error && e.message.includes('failed integrity check');
 			return json(
 				integrity
-					? { code: 'integrity-failed', message: `chunk ${slug} failed its integrity check` }
-					: { code: 'chunk-read-failed', message: `chunk ${slug} is temporarily unreadable` },
+					? { code: 'integrity-failed', message: `chunk ${hash} failed its integrity check` }
+					: { code: 'chunk-read-failed', message: `chunk ${hash} is temporarily unreadable` },
 				{ status: 500, headers: headers({ 'Cache-Control': 'no-store' }) }
 			);
 		}

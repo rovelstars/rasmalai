@@ -21,6 +21,76 @@ export interface ChunkedTarball {
 	entries: TarEntryRef[];
 }
 
+const NAME_ENCODER = new TextEncoder();
+
+// Accepted manifest entry names.
+//
+// This is the contract between the server and the Rust client
+// (`compiler/frontend/src/fetch.rs::tar_safe_rel`). The two are written in
+// different languages, so the rule is spelled out here and repeated there
+// verbatim; the two implementations must stay textually identical.
+//
+// A manifest entry name is accepted when, after dropping at most one
+// trailing `/`, all of the following hold:
+//   1. it is not empty;
+//   2. it holds no `\` (a separator on Windows, where joining it onto the
+//      destination directory would escape that directory);
+//   3. it does not start with `/`;
+//   4. it carries no drive prefix (`C:`);
+//   5. every `/`-separated component is non-empty and is neither `.` nor
+//      `..`;
+//   6. it holds no control character, NUL included;
+//   7. it is at most 255 bytes long.
+//
+// The one name that is not a path is the protocol sentinel: a manifest of
+// exactly one entry whose name is the empty string and which is not a
+// directory means "this package is one opaque tarball blob".
+export const MAX_ENTRY_NAME_BYTES = 255;
+
+export class UnsafeEntryNameError extends Error {
+	readonly entryName: string;
+
+	constructor(entryName: string, reason: string) {
+		super(`unsafe tar entry name \`${entryName}\`: ${reason}`);
+		this.entryName = entryName;
+	}
+}
+
+// The reason a name is refused, or null when the name is accepted.
+export function checkManifestEntryName(name: string): string | null {
+	const trimmed = name.endsWith('/') ? name.slice(0, -1) : name;
+	if (trimmed.length === 0) return 'the name is empty';
+	if (NAME_ENCODER.encode(trimmed).length > MAX_ENTRY_NAME_BYTES) {
+		return `the name is longer than ${MAX_ENTRY_NAME_BYTES} bytes`;
+	}
+	if (trimmed.includes('\\')) return 'the name holds a backslash';
+	if (trimmed.startsWith('/')) return 'the name is absolute';
+	if (/^[A-Za-z]:/.test(trimmed)) return 'the name carries a drive prefix';
+	if (/[\u0000-\u001f\u007f-\u009f]/.test(trimmed)) return 'the name holds a control character';
+	for (const part of trimmed.split('/')) {
+		if (part.length === 0) return 'the name holds an empty path component';
+		if (part === '.' || part === '..') return `the name holds a \`${part}\` path component`;
+	}
+	return null;
+}
+
+// The same rule applied to a whole manifest. The empty name is the
+// sentinel, so it is accepted only as the single entry of the manifest.
+export function checkManifestEntries(entries: TarEntryRef[]): { name: string; reason: string } | null {
+	const sentinel = entries.length === 1 && entries[0].name === '' && !entries[0].dir;
+	for (const e of entries) {
+		if (e.name === '' && !e.dir) {
+			if (!sentinel) {
+				return { name: e.name, reason: 'the empty name is reserved for the opaque tarball sentinel' };
+			}
+			continue;
+		}
+		const reason = checkManifestEntryName(e.name);
+		if (reason) return { name: e.name, reason };
+	}
+	return null;
+}
+
 export function parseTarEntries(tar: Uint8Array): TarEntry[] {
 	const entries: TarEntry[] = [];
 	const dec = new TextDecoder();
@@ -147,7 +217,22 @@ export async function chunkTarball(tar: Uint8Array): Promise<ChunkedTarball> {
 		}
 		entries.push({ name: f.name, size: f.bytes.length, dir: false, chunks });
 	}
+	const unsafe = checkManifestEntries(entries);
+	if (unsafe) throw new UnsafeEntryNameError(unsafe.name, unsafe.reason);
 	return { units, entries };
+}
+
+// The entry names of a tarball, checked against the accepted-name rule
+// before the tarball is accepted. The publish path calls this first, so an
+// unsafe name is refused before anything is written.
+export function validateTarballEntryNames(
+	tar: Uint8Array
+): { ok: true } | { ok: false; name: string; reason: string } {
+	for (const e of parseTarEntriesWithDirs(tar).entries) {
+		const reason = checkManifestEntryName(e.name);
+		if (reason) return { ok: false, name: e.name, reason };
+	}
+	return { ok: true };
 }
 
 interface ParsedEntry {
