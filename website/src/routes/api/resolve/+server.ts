@@ -68,6 +68,9 @@ export async function POST({ request, url, platform }) {
 		console.error(`[resolve ${requestId}] ${msg}`);
 		if (msg.startsWith('resolve budget exceeded')) return err('budget-exceeded', msg, 422, requestId);
 		if (msg.startsWith('dependency cycle')) return err('cycle', msg, 422, requestId);
+		if (msg.includes('resolve raced')) {
+			return err('unavailable', 'resolution raced with a mutation, retry', 503, requestId);
+		}
 		if (msg.includes('does not exist')) return err('not-found', msg, 404, requestId);
 		if (msg.includes('satisfies') || msg.includes('conflicting')) {
 			return err('unsatisfiable', msg, 422, requestId);

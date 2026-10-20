@@ -141,4 +141,21 @@ describe('resolve route errors', () => {
 		assert.equal(typeof body['message'], 'string');
 		assert.equal(typeof body['requestId'], 'string');
 	});
+
+	it('answers a race with a retryable status instead of a wrong answer', async () => {
+		await publishPackage(fake.env, payload('@acme/raceroute', '1.0.0'));
+		clearVersionIndex();
+		await call({ requirements: { '@acme/raceroute': '*' } });
+		// A tombstone that reached the version while the row still says live:
+		// every repair picks the same withdrawn version again.
+		fake.db
+			.prepare('INSERT INTO tombstones (package_id, version, reason, created_at) VALUES (?, ?, ?, ?)')
+			.run('pkg_@acme/raceroute', '1.0.0', 'policy', 0);
+		const res = await call({ requirements: { '@acme/raceroute': '*' } });
+		assert.equal(res.status, 503);
+		const body = (await res.json()) as Record<string, unknown>;
+		assert.equal(body['code'], 'unavailable');
+		assert.match(String(body['message']), /raced/);
+		assert.equal(typeof body['requestId'], 'string');
+	});
 });

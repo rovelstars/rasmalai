@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS packages (
     keywords TEXT DEFAULT '',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    mutation_count INTEGER NOT NULL DEFAULT 0,
     UNIQUE(scope, name)
 );
 
@@ -357,7 +358,7 @@ export async function ensureSchema(db: Client): Promise<void> {
 	return schemaPromise;
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 async function checkSchemaVersion(db: Client): Promise<boolean> {
 	try {
@@ -428,6 +429,12 @@ async function migrateSchema(db: Client): Promise<void> {
 	if (!names.has('license_id')) {
 		await db.execute('ALTER TABLE packages ADD COLUMN license_id INTEGER REFERENCES licenses(id)');
 	}
+	if (!names.has('mutation_count')) {
+		await db.execute('ALTER TABLE packages ADD COLUMN mutation_count INTEGER NOT NULL DEFAULT 0');
+	}
+	// The global generation counter is gone: the per-package mutation count
+	// supersedes it and nothing reads it. The row is dropped once, here.
+	await db.execute("DELETE FROM meta WHERE key = 'registry_generation'");
 	await db.execute("UPDATE packages SET owner = 'org' WHERE owner = ''");
 	// License normalization: keep the TEXT column during transition, but
 	// point every row at its licenses FK entry.
@@ -834,7 +841,6 @@ export async function publishPackage(
 		sql`INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
 		      SELECT 'publish', ${parsed.full}, ${p.version}, ${auditJson}, ${p.requestId ?? ''}, ${now} WHERE changes() > 0`
 	);
-	const generation = generationBump(db);
 	const batch: unknown[] = [
 		db
 			.insert(s.scopes)
@@ -862,14 +868,18 @@ export async function publishPackage(
 				tags: p.tags.join(','),
 				keywords,
 				createdAt: now,
-				updatedAt: now
+				updatedAt: now,
+				mutationCount: 1
 			})
 			.onConflictDoUpdate({
 				target: [s.packages.scope, s.packages.name],
 				set: {
 					description: sql`excluded.description`,
 					keywords: sql`excluded.keywords`,
-					updatedAt: sql`excluded.updated_at`
+					updatedAt: sql`excluded.updated_at`,
+					// The publish already writes this row, so the candidate-set
+					// counter rides along: no extra row is written.
+					mutationCount: sql`${s.packages.mutationCount} + 1`
 				}
 			}),
 		versionInsert,
@@ -890,21 +900,15 @@ export async function publishPackage(
 					reason: c.reason
 				})
 				.onConflictDoNothing()
-		),
-		// Appended last: the audit row above reads changes() from the version
-		// insert, so the generation bump must not land before it.
-		generation
+		)
 	];
 	// The batch order is the publish idempotency contract, so it is checked
 	// instead of being remembered: the audit statement reads the version
-	// insert, and the generation bump runs after the audit row.
+	// insert, so nothing may land between the two.
 	const versionIndex = batch.indexOf(versionInsert);
 	const auditIndex = batch.indexOf(publishAudit);
 	if (versionIndex < 0 || auditIndex !== versionIndex + 1) {
 		throw new Error('publish batch: the audit row must follow the version insert');
-	}
-	if (batch[batch.length - 1] !== generation) {
-		throw new Error('publish batch: the generation bump must be the last statement');
 	}
 	const applied = await db.batch(batch as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 	const created = (applied[versionIndex]?.rowsAffected ?? 0) > 0;
@@ -1101,9 +1105,11 @@ export async function yankVersion(
 		db.run(
 			sql`INSERT INTO audit_log (action, full_name, version, created_at)
 			      SELECT 'yank', ${parsed.full}, ${version}, ${now} WHERE changes() > 0`
-		),
-		generationBump(db)
+		)
 	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	// A yank does not change the candidate set: a yanked version stays a
+	// candidate, and the picked row is read fresh on every resolve. The
+	// per-package mutation count therefore does not move.
 	noteMutation();
 	return (applied[0]?.rowsAffected ?? 0) > 0;
 }
@@ -1194,7 +1200,14 @@ export async function transferScope(
 		stmts.push(
 			db
 				.update(p)
-				.set({ id: r.newId, scope: newOwner, updatedAt: now })
+				.set({
+					id: r.newId,
+					scope: newOwner,
+					updatedAt: now,
+					// The scope move takes the versions out of the old name's
+					// candidate set, so the counter moves with the row.
+					mutationCount: sql`${p.mutationCount} + 1`
+				})
 				.where(eq(p.id, r.oldId))
 		);
 	}
@@ -1230,7 +1243,6 @@ export async function transferScope(
 			createdAt: now
 		})
 	);
-	stmts.push(generationBump(db));
 	await db.batch(stmts as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 	noteMutation();
 }
@@ -1428,10 +1440,58 @@ export interface PurgeResult {
 	verified: boolean;
 }
 
+export interface PurgeOptions {
+	fullName?: string;
+	prefixes?: string[];
+	// The URL the edge is checked on, and what the edge has to answer with.
+	// Without it the purge is accepted on the API answer alone, which is not
+	// a verification: the edge may keep serving the old copy.
+	verify?: { url: string; status?: number; bodyStatus?: string };
+}
+
+// The edge states that mean "no stored copy was served for this request".
+const EDGE_FRESH_STATES = new Set(['MISS', 'BYPASS', 'EXPIRED', 'DYNAMIC', 'REVALIDATED', 'UPDATED']);
+
+// The purge is verified by reading the affected URL back through the edge.
+// A `HIT` means the edge still holds the old copy, which is the one thing
+// the purge exists to prevent. The body is checked too: a withdrawn version
+// has to answer 410, a yanked version has to say so.
+async function verifyPurgeEdge(verify: NonNullable<PurgeOptions['verify']>): Promise<boolean> {
+	let res: Response;
+	try {
+		res = await fetch(verify.url, { signal: AbortSignal.timeout(10000) });
+	} catch {
+		return false;
+	}
+	const state = String(res.headers.get('cf-cache-status') ?? '').toUpperCase();
+	if (state === 'HIT') return false;
+	if (verify.status !== undefined && res.status !== verify.status) return false;
+	if (verify.bodyStatus !== undefined) {
+		let status = '';
+		try {
+			const body = (await res.json()) as { status?: unknown };
+			status = typeof body.status === 'string' ? body.status : '';
+		} catch {
+			status = '';
+		}
+		if (status !== verify.bodyStatus) return false;
+	}
+	// No edge header at all and no 410 to read: there is nothing that says
+	// the copy is gone, so the purge is not verified.
+	if (!EDGE_FRESH_STATES.has(state) && res.status !== 410) return false;
+	return true;
+}
+
+// The purge is configured when the zone and the token are both set. Without
+// them nothing is purged and the origin stays the only authority.
+export function purgeConfigured(env: Record<string, string | undefined>): boolean {
+	return Boolean(env['CF_ZONE_ID'] && env['CF_PURGE_TOKEN']);
+}
+
 export async function purgeUrls(
 	env: Record<string, string | undefined>,
 	urls: string[],
-	options?: { fullName?: string; prefixes?: string[] }
+	options?: PurgeOptions
 ): Promise<PurgeResult> {
 	if (urls.length === 0 && !(options?.prefixes?.length)) return { ok: true, verified: false };
 	const zone = env['CF_ZONE_ID'];
@@ -1448,7 +1508,13 @@ export async function purgeUrls(
 					signal: AbortSignal.timeout(10000)
 				});
 				const data = (await res.json().catch(() => null)) as { success?: boolean } | null;
-				if (res.ok && data?.success === true) return { ok: true, verified: true };
+				if (res.ok && data?.success === true) {
+					// The API answer is not the proof. The edge is read back
+					// and has to answer with the new state.
+					if (!options?.verify || (await verifyPurgeEdge(options.verify))) {
+						return { ok: true, verified: true };
+					}
+				}
 			} catch {
 				// retried on the next attempt; the origin stays authoritative
 			}
@@ -1460,7 +1526,12 @@ export async function purgeUrls(
 				action: 'purge-failed',
 				fullName: options?.fullName ?? '',
 				version: '',
-				detailsJson: JSON.stringify({ urls, prefixes: options?.prefixes ?? [] }),
+				detailsJson: JSON.stringify({
+					urls,
+					prefixes: options?.prefixes ?? [],
+					verified: false,
+					verify: options?.verify ?? null
+				}),
 				createdAt: Math.floor(Date.now() / 1000)
 			});
 		} catch {
@@ -1475,7 +1546,12 @@ export async function purgeUrls(
 			action: 'purge-skipped',
 			fullName: options?.fullName ?? '',
 			version: '',
-			detailsJson: JSON.stringify({ urls, prefixes: options?.prefixes ?? [] }),
+			detailsJson: JSON.stringify({
+				urls,
+				prefixes: options?.prefixes ?? [],
+				verified: false,
+				reason: 'no purge credentials configured'
+			}),
 			createdAt: Math.floor(Date.now() / 1000)
 		});
 		return { ok: true, verified: false };
@@ -1527,6 +1603,10 @@ export const RESOLVE_MAX_DEPTH = 64;
 export const RESOLVE_MAX_NODES = 512;
 export const RESOLVE_MAX_FRONTIER = 512;
 export const RESOLVE_MAX_CANDIDATES = 4096;
+// How often a resolve may re-read the candidates of a package whose answer
+// could not be trusted: a stale memo list, a missing row, a withdrawn row.
+// The bound is what turns an endless race into a named failure.
+export const RESOLVE_REPAIR_ROUNDS = 2;
 export const RESOLVE_MAX_INLINE_BYTES = 256 * 1024;
 // A closure bigger than this is not an inline candidate. The file index of
 // every package in the closure has to be read to answer an inline request,
@@ -1537,65 +1617,66 @@ export const RESOLVE_MAX_INLINE_NODES = 256;
 // chunked to stay under it (2 params per name, 3 per version pick).
 const RESOLVE_SQL_MAX_PARAMS = 100;
 
-export const GENERATION_KEY = 'registry_generation';
-export const VERSION_INDEX_TTL_MS = 30_000;
-const VERSION_INDEX_MAX = 4096;
+export const VERSION_INDEX_TTL_MS = 600_000;
+// The memo is a memory bound, not a correctness mechanism: an entry is
+// evicted once the total number of memoized version strings passes this
+// cap, and its age only decides when it is dropped.
+const VERSION_INDEX_MAX_VERSION_STRINGS = 50_000;
 
-// Bumped inside the same batch as every publish, yank, tombstone and
-// transfer, so a mutation invalidates every generation-keyed artifact by
-// construction and correctness never depends on the purge API answering.
-const GENERATION_BUMP_SQL = `INSERT INTO meta (key, value) VALUES ('registry_generation', '1')
-	ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`;
-
-function generationBump(db: Ddb): BatchItem<'sqlite'> {
-	return db.run(sql.raw(GENERATION_BUMP_SQL)) as unknown as BatchItem<'sqlite'>;
+// Isolate-scope memo of candidate version lists, keyed by package name.
+//
+// An entry is only a cache of a read, never a source of truth: it carries
+// the per-package mutation count that was observed when the list was read,
+// and a resolve may use the list only when the counter it reads back from
+// the picked row still matches. A counter that moved means the candidate
+// set changed, and the list is re-read.
+interface VersionIndexEntry {
+	at: number;
+	token: number;
+	versions: string[];
 }
 
-export async function readRegistryGeneration(env: Record<string, string | undefined>): Promise<number> {
-	const raw = getClient(env);
-	if (!raw) return 0;
-	try {
-		const rs = await raw.execute({ sql: 'SELECT value FROM meta WHERE key = ?', args: [GENERATION_KEY] });
-		const n = Number(rs.rows[0]?.['value'] ?? 0);
-		return Number.isFinite(n) && n > 0 ? n : 0;
-	} catch {
-		return 0;
-	}
-}
-
-// Isolate-scope memo of candidate version lists, keyed by package name. It
-// cannot serve a stale withdrawal: it stores only the live+yanked version
-// strings, while the chosen row and the tombstones subquery are read fresh on
-// every request. A version yanked inside the TTL is still a candidate, the
-// row read returns its yanked status, and a tombstone inside the TTL is
-// caught by that subquery.
-const versionIndex = new Map<string, { at: number; versions: string[] }>();
+const versionIndex = new Map<string, VersionIndexEntry>();
+let versionIndexVersionStrings = 0;
 
 export function versionIndexEntries(): number {
 	return versionIndex.size;
 }
 
-export function clearVersionIndex(): void {
-	versionIndex.clear();
+export function versionIndexSize(): number {
+	return versionIndexVersionStrings;
 }
 
-function versionIndexGet(full: string): string[] | null {
+export function clearVersionIndex(): void {
+	versionIndex.clear();
+	versionIndexVersionStrings = 0;
+}
+
+function versionIndexGet(full: string): VersionIndexEntry | null {
 	const hit = versionIndex.get(full);
 	if (!hit) return null;
 	if (Date.now() - hit.at >= VERSION_INDEX_TTL_MS) {
-		versionIndex.delete(full);
+		versionIndexDrop(full);
 		return null;
 	}
-	return hit.versions;
+	return hit;
 }
 
-function versionIndexSet(full: string, versions: string[]): void {
+function versionIndexDrop(full: string): void {
+	const hit = versionIndex.get(full);
+	if (!hit) return;
+	versionIndexVersionStrings -= hit.versions.length;
 	versionIndex.delete(full);
-	versionIndex.set(full, { at: Date.now(), versions });
-	while (versionIndex.size > VERSION_INDEX_MAX) {
+}
+
+function versionIndexSet(full: string, versions: string[], token: number): void {
+	versionIndexDrop(full);
+	versionIndex.set(full, { at: Date.now(), token, versions });
+	versionIndexVersionStrings += versions.length;
+	while (versionIndexVersionStrings > VERSION_INDEX_MAX_VERSION_STRINGS) {
 		const oldest = versionIndex.keys().next();
 		if (oldest.done) break;
-		versionIndex.delete(oldest.value);
+		versionIndexDrop(oldest.value);
 	}
 }
 
@@ -1614,6 +1695,9 @@ interface ResolveRow {
 	engineRange: string;
 	manifestJson: string;
 	withdrawn: boolean;
+	// The per-package mutation count read with the row: the proof that the
+	// candidate list this pick was made from still describes the package.
+	mutationCount: number;
 }
 
 // A version that a takedown reached is never served, not through a stale
@@ -1622,7 +1706,8 @@ function isWithdrawn(row: ResolveRow): boolean {
 	return row.withdrawn || row.status === 'tombstoned';
 }
 
-const CANDIDATE_SQL_HEAD = `SELECT p.scope AS scope, p.name AS name, v.version AS version
+const CANDIDATE_SQL_HEAD = `SELECT p.scope AS scope, p.name AS name, v.version AS version,
+	p.mutation_count AS mutation_count
 	FROM package_versions v JOIN packages p ON p.id = v.package_id
 	WHERE v.status IN ('live', 'yanked') AND (`;
 const CANDIDATE_SQL_TAIL = `)
@@ -1639,26 +1724,38 @@ function pickedRowSql(): string {
 	return `SELECT p.scope AS scope, p.name AS name,
 	v.version AS version, v.status AS status, v.tarball_sha256 AS tarball_sha256,
 	v.engine_range AS engine_range, v.manifest_json AS manifest_json,
+	p.mutation_count AS mutation_count,
 	(SELECT 1 FROM tombstones t WHERE t.package_id = p.id AND t.version = v.version) AS withdrawn
 	FROM package_versions v JOIN packages p ON p.id = v.package_id
 	WHERE `;
 }
 
+// The candidate list of one package, with the mutation count observed while
+// reading it. The count is the proof that the list is still current.
+interface CandidateList {
+	versions: string[];
+	token: number;
+}
+
+// A package with no row carries no count: the list is empty and the answer
+// for it is always read fresh.
+const NO_TOKEN = -1;
+
 async function resolveCandidates(
 	raw: Client | null,
 	fulls: string[]
-): Promise<Map<string, string[]>> {
-	const out = new Map<string, string[]>();
+): Promise<Map<string, CandidateList>> {
+	const out = new Map<string, CandidateList>();
 	const want: Array<{ full: string; scope: string; name: string }> = [];
 	for (const full of fulls) {
 		const parsed = parsePackageName(full);
 		// An unparseable name has no packages row, which is the same answer as
 		// an empty candidate list and keeps `package X does not exist` intact.
 		if (parsed) want.push({ full, scope: parsed.scope, name: parsed.name });
-		else out.set(full, []);
+		else out.set(full, { versions: [], token: NO_TOKEN });
 	}
 	if (raw === null || want.length === 0) {
-		for (const w of want) out.set(w.full, []);
+		for (const w of want) out.set(w.full, { versions: [], token: NO_TOKEN });
 		return out;
 	}
 	const groups = chunked(want, Math.max(1, Math.floor(RESOLVE_SQL_MAX_PARAMS / 2)));
@@ -1673,12 +1770,14 @@ async function resolveCandidates(
 			const scope = String(row['scope'] ?? '');
 			const name = String(row['name'] ?? '');
 			const full = scope ? `@${scope}/${name}` : name;
-			const list = out.get(full) ?? [];
-			list.push(String(row['version']));
-			out.set(full, list);
+			const entry = out.get(full) ?? { versions: [], token: NO_TOKEN };
+			entry.versions.push(String(row['version']));
+			// Every row of a package carries the count of its packages row.
+			entry.token = Number(row['mutation_count'] ?? 0);
+			out.set(full, entry);
 		}
 	}
-	for (const w of want) if (!out.has(w.full)) out.set(w.full, []);
+	for (const w of want) if (!out.has(w.full)) out.set(w.full, { versions: [], token: NO_TOKEN });
 	return out;
 }
 
@@ -1711,7 +1810,8 @@ async function resolvePickedRows(
 				tarballSha256: String(row['tarball_sha256'] ?? ''),
 				engineRange: String(row['engine_range'] ?? ''),
 				manifestJson: String(row['manifest_json'] ?? '{}'),
-				withdrawn: row['withdrawn'] !== null && row['withdrawn'] !== undefined
+				withdrawn: row['withdrawn'] !== null && row['withdrawn'] !== undefined,
+				mutationCount: Number(row['mutation_count'] ?? 0)
 			});
 		}
 	}
@@ -1928,7 +2028,11 @@ export async function resolveGraph(
 			throw budgetError(`frontier width over ${RESOLVE_MAX_FRONTIER}`);
 		}
 
-		const memoHit: Array<[string, string[]]> = [];
+		// The candidate lists of this level. A list comes either from the
+		// memo or from a read in this request. The memo carries the mutation
+		// count it was built with, and that count is what makes the list
+		// usable: a list is only trusted while the count still matches.
+		const memoHit: Array<[string, VersionIndexEntry]> = [];
 		const missing: string[] = [];
 		for (const full of frontier) {
 			if (candidates.has(full)) continue;
@@ -1936,16 +2040,24 @@ export async function resolveGraph(
 			if (hit) memoHit.push([full, hit]);
 			else missing.push(full);
 		}
+		const tokens = new Map<string, number>();
+		const fromMemo = new Set<string>();
 		if (missing.length > 0) {
 			const fresh = await resolveCandidates(raw, missing);
 			for (const [full, list] of fresh) {
-				// The candidate list is copied: a takedown drops a version from
-				// the list of this request, and the memo keeps its own copy.
-				candidates.set(full, [...list]);
-				versionIndexSet(full, list);
+				// The candidate list is copied: the memo keeps its own copy.
+				candidates.set(full, [...list.versions]);
+				tokens.set(full, list.token);
+				// An empty list is not memoized. It is the answer for a name
+				// that does not exist, and that answer is always read fresh.
+				if (list.versions.length > 0) versionIndexSet(full, list.versions, list.token);
 			}
 		}
-		for (const [full, list] of memoHit) candidates.set(full, [...list]);
+		for (const [full, hit] of memoHit) {
+			candidates.set(full, [...hit.versions]);
+			tokens.set(full, hit.token);
+			fromMemo.add(full);
+		}
 
 		let candidateCount = 0;
 		for (const full of frontier) candidateCount += candidates.get(full)?.length ?? 0;
@@ -1959,53 +2071,110 @@ export async function resolveGraph(
 		// closer to the roots.
 		const picksByName = new Map<string, string[]>();
 		const wanted: Array<{ full: string; version: string }> = [];
-		for (const full of frontier) {
+		const pickFor = (full: string): string[] => {
 			const versions = candidates.get(full) ?? [];
 			const picked: string[] = [];
 			for (const range of ranges.get(full) ?? []) {
 				const pick = maxSatisfying(versions, range);
 				if (!pick || picked.includes(pick)) continue;
 				picked.push(pick);
-				wanted.push({ full, version: pick });
 			}
-			if (picked.length === 0) blocked.add(full);
+			return picked;
+		};
+		for (const full of frontier) {
+			const picked = pickFor(full);
 			picksByName.set(full, picked);
+			for (const version of picked) wanted.push({ full, version });
 		}
+
+		// A package that produced no pick is answered from a fresh read: the
+		// memo is never the source of "does not exist" or "no version
+		// satisfies". A list that was read in this request is already fresh,
+		// so only a memo list is re-read.
+		const unpicked = frontier.filter(
+			(full) => fromMemo.has(full) && (picksByName.get(full) ?? []).length === 0
+		);
+		if (unpicked.length > 0) {
+			const fresh = await resolveCandidates(raw, unpicked);
+			for (const [full, list] of fresh) {
+				candidates.set(full, [...list.versions]);
+				tokens.set(full, list.token);
+				fromMemo.delete(full);
+				if (list.versions.length > 0) versionIndexSet(full, list.versions, list.token);
+				else versionIndexDrop(full);
+			}
+			for (const full of unpicked) {
+				const picked = pickFor(full);
+				picksByName.set(full, picked);
+				for (const version of picked) wanted.push({ full, version });
+			}
+		}
+		for (const full of frontier) {
+			if ((picksByName.get(full) ?? []).length === 0) blocked.add(full);
+		}
+
 		const picked = await resolvePickedRows(raw, wanted);
 		for (const [id, row] of picked) rows.set(id, row);
 
-		// A version that a takedown reached is not a candidate any more. The
-		// candidate list can still name it when that list was cached before the
-		// takedown, so the version is dropped here and the package is picked
-		// again. A client `have` entry naming it does not keep it alive
-		// either: it is not in the candidate list any more.
-		const repick: string[] = [];
+		// The repair set holds the packages whose answer cannot be trusted
+		// yet: a pick whose row is gone (a delete or a transfer moved it), a
+		// pick that a takedown reached, and a memo list whose package changed
+		// since the list was read (the mutation count moved).
+		const repair = new Set<string>();
 		for (const w of wanted) {
 			const row = picked.get(`${w.full}@${w.version}`);
-			if (!row || !isWithdrawn(row)) continue;
-			const list = candidates.get(w.full);
-			if (!list) continue;
-			const at = list.indexOf(w.version);
-			if (at >= 0) list.splice(at, 1);
-			if (!repick.includes(w.full)) repick.push(w.full);
+			if (!row || isWithdrawn(row)) {
+				repair.add(w.full);
+				continue;
+			}
+			if (fromMemo.has(w.full) && row.mutationCount !== tokens.get(w.full)) repair.add(w.full);
 		}
-		if (repick.length > 0) {
+
+		// The repair re-reads the candidates of the affected packages, picks
+		// again and reads the rows again. It is bounded: a registry that
+		// keeps racing answers "resolve raced" instead of a wrong version.
+		let pending = [...repair].sort();
+		for (let round = 0; round < RESOLVE_REPAIR_ROUNDS && pending.length > 0; round++) {
+			const fresh = await resolveCandidates(raw, pending);
 			const again: Array<{ full: string; version: string }> = [];
-			const repicked = new Map<string, string[]>();
-			for (const full of repick) {
-				const versions = candidates.get(full) ?? [];
-				const chosen: string[] = [];
-				for (const range of ranges.get(full) ?? []) {
-					const pick = maxSatisfying(versions, range);
-					if (!pick || chosen.includes(pick)) continue;
-					chosen.push(pick);
-					if (!rows.has(`${full}@${pick}`)) again.push({ full, version: pick });
-				}
-				if (chosen.length === 0) blocked.add(full);
-				repicked.set(full, chosen);
+			for (const full of pending) {
+				const list = fresh.get(full) ?? { versions: [], token: NO_TOKEN };
+				candidates.set(full, [...list.versions]);
+				tokens.set(full, list.token);
+				fromMemo.delete(full);
+				if (list.versions.length > 0) versionIndexSet(full, list.versions, list.token);
+				else versionIndexDrop(full);
+				const pickedAgain = pickFor(full);
+				picksByName.set(full, pickedAgain);
+				for (const version of pickedAgain) again.push({ full, version });
 			}
 			for (const [id, row] of await resolvePickedRows(raw, again)) rows.set(id, row);
-			for (const [full, chosen] of repicked) picksByName.set(full, chosen);
+			const still: string[] = [];
+			for (const full of pending) {
+				const versions = picksByName.get(full) ?? [];
+				if (versions.length === 0) {
+					// The package has no version left. The answer is an
+					// honest "does not exist" or "no version satisfies".
+					blocked.add(full);
+					continue;
+				}
+				for (const version of versions) {
+					const row = rows.get(`${full}@${version}`);
+					if (!row || isWithdrawn(row)) {
+						still.push(full);
+						break;
+					}
+				}
+			}
+			pending = still;
+		}
+		if (pending.length > 0) throw new Error('resolve raced with a mutation');
+		// A repair may have read a longer candidate list than the one the
+		// budget was checked against.
+		let repairedCount = 0;
+		for (const full of frontier) repairedCount += candidates.get(full)?.length ?? 0;
+		if (repairedCount > RESOLVE_MAX_CANDIDATES) {
+			throw budgetError(`candidate count over ${RESOLVE_MAX_CANDIDATES}`);
 		}
 
 		const next: string[] = [];
@@ -2280,7 +2449,13 @@ export async function recordTombstone(
 			detailsJson: JSON.stringify({ reason }),
 			createdAt: now
 		}),
-		generationBump(db)
+		// A takedown takes the version out of the candidate set, so the
+		// counter of this package moves with it. The row is written in the
+		// same batch, so no resolve can see one without the other.
+		db
+			.update(s.packages)
+			.set({ mutationCount: sql`${s.packages.mutationCount} + 1` })
+			.where(eq(s.packages.id, id))
 	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 	noteMutation();
 }

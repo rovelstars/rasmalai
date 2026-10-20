@@ -22,7 +22,11 @@ export const packages = sqliteTable('packages', {
 	tags: text('tags').notNull(),
 	keywords: text('keywords').default(''),
 	createdAt: integer('created_at').notNull(),
-	updatedAt: integer('updated_at').notNull()
+	updatedAt: integer('updated_at').notNull(),
+	// Monotonic per-package counter of the mutations that change the
+	// candidate set of this package. The resolve memo carries the value it
+	// was built with and revalidates it against the row it reads.
+	mutationCount: integer('mutation_count').notNull().default(0)
 });
 
 export const packageVersions = sqliteTable('package_versions', {
