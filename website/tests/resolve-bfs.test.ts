@@ -11,6 +11,7 @@ import {
 	pruneHit,
 	versionIndexEntries,
 	RESOLVE_MAX_INLINE_BYTES,
+	RESOLVE_MAX_INLINE_NODES,
 	RESOLVE_MAX_NODES,
 	GENERATION_KEY,
 	type HaveEntry,
@@ -275,6 +276,82 @@ describe('resolveGraph have-pruning', () => {
 	});
 });
 
+// A client that caches a version and is then offline for a while can send a
+// `have` entry for a version the registry has since yanked or taken down.
+// The entry may skip the dependencies, but it must not hide the status.
+describe('resolveGraph have-pruning against a status change', () => {
+	it('reports a yanked version to a client that already has it', async () => {
+		await publishMany([{ full: '@acme/hy', version: '1.0.0' }]);
+		await yankVersion(fake.env, '@acme/hy', '1.0.0');
+		clearVersionIndex();
+		const have: HaveEntry[] = [
+			{ full: '@acme/hy', version: '1.0.0', integrity: 'sha-@acme/hy-1.0.0' }
+		];
+		const out = await resolveGraph(fake.env, { '@acme/hy': '*' }, have);
+		assert.equal(out.levels.length, 1);
+		assert.equal(out.levels[0][0].version, '1.0.0');
+		assert.equal(out.levels[0][0].yanked, true, 'the yank must not be hidden by the have entry');
+		// The entry still skips the dependencies.
+		assert.equal(out.levels[0][0].deps.length, 0);
+	});
+
+	it('does not serve a taken down version to a client that already has it', async () => {
+		await publishMany([{ full: '@acme/ht', version: '1.0.0' }]);
+		await recordTombstone(fake.env, '@acme/ht', '1.0.0', 'policy');
+		clearVersionIndex();
+		const have: HaveEntry[] = [
+			{ full: '@acme/ht', version: '1.0.0', integrity: 'sha-@acme/ht-1.0.0' }
+		];
+		await assert.rejects(
+			() => resolveGraph(fake.env, { '@acme/ht': '*' }, have),
+			/^Error: package @acme\/ht does not exist$/
+		);
+	});
+
+	it('does not serve a version a takedown reached after the candidate list was cached', async () => {
+		await publishMany([{ full: '@acme/hs', version: '1.0.0' }]);
+		clearVersionIndex();
+		// The candidate list of the package is cached now.
+		await resolveGraph(fake.env, { '@acme/hs': '*' }, []);
+		// A takedown lands in another isolate: the row and the tombstone are
+		// written, but the cached candidate list still names the version.
+		fake.db
+			.prepare(
+				'INSERT INTO tombstones (package_id, version, reason, created_at) VALUES (?, ?, ?, ?)'
+			)
+			.run('pkg_@acme/hs', '1.0.0', 'policy', 0);
+		fake.db
+			.prepare("UPDATE package_versions SET status = 'tombstoned' WHERE package_id = ? AND version = ?")
+			.run('pkg_@acme/hs', '1.0.0');
+		const have: HaveEntry[] = [
+			{ full: '@acme/hs', version: '1.0.0', integrity: 'sha-@acme/hs-1.0.0' }
+		];
+		await assert.rejects(
+			() => resolveGraph(fake.env, { '@acme/hs': '*' }, have),
+			/^Error: package @acme\/hs does not exist$/
+		);
+	});
+
+	it('picks the next live version when the newest one was taken down', async () => {
+		await publishMany([
+			{ full: '@acme/hn', version: '1.0.0' },
+			{ full: '@acme/hn', version: '2.0.0' }
+		]);
+		clearVersionIndex();
+		await resolveGraph(fake.env, { '@acme/hn': '*' }, []);
+		fake.db
+			.prepare(
+				'INSERT INTO tombstones (package_id, version, reason, created_at) VALUES (?, ?, ?, ?)'
+			)
+			.run('pkg_@acme/hn', '2.0.0', 'policy', 0);
+		fake.db
+			.prepare("UPDATE package_versions SET status = 'tombstoned' WHERE package_id = ? AND version = ?")
+			.run('pkg_@acme/hn', '2.0.0');
+		const out = await resolveGraph(fake.env, { '@acme/hn': '*' }, []);
+		assert.equal(out.resolved['@acme/hn'], '1.0.0');
+	});
+});
+
 describe('resolveGraph withdrawal and yank', () => {
 	it('excludes tombstoned versions from candidates', async () => {
 		await publishMany([
@@ -332,6 +409,7 @@ describe('resolveGraph inline entries', () => {
 		await publishMany([{ full: '@acme/inl', version: '1.0.0' }]);
 		const out = await resolveGraph(fake.env, { '@acme/inl': '*' }, []);
 		assert.equal(out.chunks, null);
+		assert.equal(out.chunksDeclined, null);
 		assert.equal(out.levels[0][0].entries, undefined);
 		// The route drops a null switch, so the wire body is the historical one.
 		const payload: Record<string, unknown> = { resolved: out.resolved, base: '', levels: out.levels };
@@ -348,8 +426,9 @@ describe('resolveGraph inline entries', () => {
 			advertiseChunks: true
 		});
 		assert.equal(out.chunks, 'inline');
+		assert.equal(out.chunksDeclined, null);
 		assert.equal(out.levels[0][0].entries?.[1].name, 'src/main.rnx');
-		// tar_manifest_json is selected only for the inline projection.
+		// tar_manifest_json is selected only for the inline answer.
 		assert.ok(fake.statements.some((s) => s.includes('tar_manifest_json')));
 	});
 
@@ -395,6 +474,7 @@ describe('resolveGraph inline entries', () => {
 			advertiseChunks: true
 		});
 		assert.equal(out.chunks, 'links');
+		assert.equal(out.chunksDeclined, 'size-cap-exceeded');
 		for (const level of out.levels) for (const n of level) assert.equal(n.entries, undefined);
 	});
 
@@ -412,6 +492,99 @@ describe('resolveGraph inline entries', () => {
 		// back to the links path the client already knows.
 		assert.equal(out.chunks, 'inline');
 		assert.equal(out.levels[0][0].entries, undefined);
+	});
+});
+
+// An inline request that cannot fit the cap must not pay for the file
+// indexes it would have to throw away: the closure is resolved first, the
+// indexes are measured, and only a closure that fits is read.
+describe('resolveGraph inline cost', () => {
+	const oversized = (): string =>
+		JSON.stringify(
+			Array.from({ length: 4000 }, (_, i) => ({
+				name: `src/f${i}.rnx`,
+				size: 1,
+				dir: false,
+				chunks: ['c'.repeat(64)]
+			}))
+		);
+
+	it('never reads the file index of a closure that cannot fit', async () => {
+		const entries = oversized();
+		assert.ok(entries.length > RESOLVE_MAX_INLINE_BYTES);
+		await publishMany([{ full: '@acme/cost', version: '1.0.0', entries }]);
+		clearVersionIndex();
+		fake.reset();
+		const out = await resolveGraph(fake.env, { '@acme/cost': '*' }, [], {
+			inlineChunks: true,
+			advertiseChunks: true
+		});
+		assert.equal(out.chunks, 'links');
+		assert.equal(out.chunksDeclined, 'size-cap-exceeded');
+		// The index itself was never selected, only measured.
+		assert.equal(fake.statements.filter((s) => s.includes('AS tar_manifest_json')).length, 0);
+		assert.equal(fake.statements.filter((s) => s.includes('manifest_size')).length, 1);
+		// The bytes the store sent back are the length probe, not the index.
+		assert.ok(
+			fake.counters.bytesRead < 1024,
+			`store sent ${fake.counters.bytesRead} bytes for a ${entries.length} byte index`
+		);
+	});
+
+	it('keeps the refusal proportional to the closure, not to the index size', async () => {
+		const entries = oversized();
+		const names: string[] = [];
+		for (let i = 0; i < 5; i++) {
+			const full = `@acme/cost${i}`;
+			names.push(full);
+			await publishMany([{ full, version: '1.0.0', entries }]);
+		}
+		clearVersionIndex();
+		fake.reset();
+		const reqs: Record<string, string> = {};
+		for (const full of names) reqs[full] = '*';
+		const out = await resolveGraph(fake.env, reqs, [], {
+			inlineChunks: true,
+			advertiseChunks: true
+		});
+		assert.equal(out.chunksDeclined, 'size-cap-exceeded');
+		assert.equal(fake.statements.filter((s) => s.includes('AS tar_manifest_json')).length, 0);
+		assert.ok(
+			fake.counters.bytesRead < 1024,
+			`store sent ${fake.counters.bytesRead} bytes for ${entries.length * 5} bytes of index`
+		);
+	});
+
+	it('refuses a closure that is too large before any index is measured', async () => {
+		for (let i = 0; i <= RESOLVE_MAX_INLINE_NODES; i++) {
+			await publishMany([{ full: `@acme/wide${i}`, version: '1.0.0' }]);
+		}
+		clearVersionIndex();
+		fake.reset();
+		const reqs: Record<string, string> = {};
+		for (let i = 0; i <= RESOLVE_MAX_INLINE_NODES; i++) reqs[`@acme/wide${i}`] = '*';
+		const out = await resolveGraph(fake.env, reqs, [], {
+			inlineChunks: true,
+			advertiseChunks: true
+		});
+		assert.equal(out.chunks, 'links');
+		assert.equal(out.chunksDeclined, 'closure-too-large');
+		// Not even the length probe ran.
+		assert.equal(fake.statements.filter((s) => s.includes('manifest_size')).length, 0);
+		assert.equal(fake.statements.filter((s) => s.includes('tar_manifest_json')).length, 0);
+	});
+
+	it('reads the index of a closure that fits', async () => {
+		await publishMany([{ full: '@acme/fits', version: '1.0.0' }]);
+		clearVersionIndex();
+		fake.reset();
+		const out = await resolveGraph(fake.env, { '@acme/fits': '*' }, [], {
+			inlineChunks: true,
+			advertiseChunks: true
+		});
+		assert.equal(out.chunks, 'inline');
+		assert.equal(out.chunksDeclined, null);
+		assert.equal(fake.statements.filter((s) => s.includes('AS tar_manifest_json')).length, 1);
 	});
 });
 
@@ -495,6 +668,65 @@ describe('publish idempotency (changes() idiom)', () => {
 			.prepare("SELECT count(*) AS c FROM package_versions WHERE version = '1.0.0' AND package_id = 'pkg_@acme/idem4'")
 			.all() as Array<{ c: number }>;
 		assert.equal(Number(rows[0].c), 1);
+	});
+});
+
+// The audit row of a publish reads changes() from the version insert, so the
+// two statements have to stay neighbours in the batch and the generation
+// bump has to stay last. The order is the idempotency contract.
+describe('publish batch order', () => {
+	const versionIndex = (stmts: string[]): number =>
+		stmts.findIndex((s) => s.includes('insert into "package_versions"'));
+	const auditIndex = (stmts: string[]): number =>
+		stmts.findIndex((s) => s.includes("'publish'") && s.includes('changes() > 0'));
+	const bumpIndex = (stmts: string[]): number => stmts.findIndex((s) => s.includes(GENERATION_KEY));
+	// The batch runs inside a transaction, so the commit closes the statement
+	// list: the bump has to be the last statement of the batch itself.
+	const commitIndex = (stmts: string[]): number => stmts.lastIndexOf('COMMIT');
+
+	it('reads the version insert and bumps the generation last', async () => {
+		clearVersionIndex();
+		fake.reset();
+		await publishPackage(fake.env, payload('@acme/order', '1.0.0', {
+			manifestJson: JSON.stringify({ deps: { '@acme/orderdep': '*' } })
+		}));
+		const stmts = fake.statements;
+		const version = versionIndex(stmts);
+		const audit = auditIndex(stmts);
+		const bump = bumpIndex(stmts);
+		assert.ok(version >= 0 && audit >= 0 && bump >= 0, stmts.join(' | '));
+		assert.equal(audit, version + 1, 'the audit row must read changes() from the version insert');
+		assert.ok(bump > audit, 'the generation bump must follow the audit row');
+		assert.equal(bump, commitIndex(stmts) - 1, 'the generation bump must be the last statement');
+	});
+
+	it('keeps the order with trailing dependency and capability inserts', async () => {
+		clearVersionIndex();
+		fake.reset();
+		await publishPackage(fake.env, payload('@acme/order2', '1.0.0', {
+			manifestJson: JSON.stringify({ deps: { '@acme/orderdep2': '*' } }),
+			capabilities: [{ domain: 'fs.read', arg: '/tmp', reason: null }]
+		}));
+		const stmts = fake.statements;
+		const version = versionIndex(stmts);
+		const audit = auditIndex(stmts);
+		const bump = bumpIndex(stmts);
+		assert.equal(audit, version + 1);
+		assert.equal(bump, commitIndex(stmts) - 1);
+		// The trailing inserts must not disturb the changes() reading.
+		const rows = fake.db
+			.prepare("SELECT count(*) AS c FROM audit_log WHERE action = 'publish' AND full_name = '@acme/order2'")
+			.all() as Array<{ c: number }>;
+		assert.equal(Number(rows[0].c), 1);
+		const again = await publishPackage(fake.env, payload('@acme/order2', '1.0.0', {
+			manifestJson: JSON.stringify({ deps: { '@acme/orderdep2': '*' } }),
+			capabilities: [{ domain: 'fs.read', arg: '/tmp', reason: null }]
+		}));
+		assert.equal(again.created, false);
+		const after = fake.db
+			.prepare("SELECT count(*) AS c FROM audit_log WHERE action = 'publish' AND full_name = '@acme/order2'")
+			.all() as Array<{ c: number }>;
+		assert.equal(Number(after[0].c), 1, 'a republish must not write a second audit row');
 	});
 });
 

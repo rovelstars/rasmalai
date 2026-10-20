@@ -86,6 +86,8 @@ Every response carries an `rnx-registry-spec: 1` header. A client meeting a spec
 
 The server picks the highest satisfying version for each requirement, walks manifests transitively, and returns `resolved` plus depth-leveled `levels`. Each node carries its chunk-manifest `path`, `integrity` digest, engine range, and a `yanked` flag. Clients fetch the manifest, pull content chunks in parallel, reassemble the tarball bytes locally, and verify against `integrity`. Entries in `have` whose integrity still matches skip dependency expansion, so repeated resolves only fetch the delta.
 
+A `have` entry never hides a status change. A version that was yanked after the client cached it is still reported with `yanked` set, and a version that was taken down is not served at all, not even when the client's cache still names it.
+
 Ranges use a small grammar: `*`, `latest`, an exact `X.Y.Z`, `^X.Y.Z`, `~X.Y.Z`, or `>=X.Y.Z`. Anything else is a 400 `bad-range`. The semantics:
 
 - `*` and `latest` match any stable version, never a prerelease.
@@ -123,10 +125,12 @@ That removes one `GET .../{version}/chunks` per package from a cold seed. `entri
 Three rules govern it:
 
 - **Opt-in, additive.** A client that sends no `chunks` field gets the byte-for-byte response it got before, with no `entries` and no `chunks` field. Nothing breaks if the server never gains the capability.
-- **`"chunks": "links"` means the server declined.** The inline byte budget (256 KiB across the whole response) was exceeded, so no node carries `entries` and clients read the chunks endpoint as usual. One global switch keeps the response self-consistent, so a client never has to mix the two paths inside one resolve.
+- **`"chunks": "links"` means the server declined.** No node carries `entries` and clients read the chunks endpoint as usual. One global switch keeps the response self-consistent, so a client never has to mix the two paths inside one resolve. The refusal is named in a top-level `chunksDeclined` field, either `size-cap-exceeded` when the inline byte budget (256 KiB across the whole response) was exceeded, or `closure-too-large` when the closure holds too many packages to be worth inlining. The server measures the file indexes before reading them, so a refused request never pays for an index it would have to drop.
 - **A generation error still retries the manifest.** If an inlined list does not verify, the client falls back to reading the chunk manifest origin-direct, exactly as it would without the capability.
 
 Every resolve error response carries a `requestId` (a UUID v4) alongside `code` and `message`. The server logs the failure under `[resolve <id>]`, so paste the id when reporting a 500 `resolve-failed`.
+
+A resolve failure answers with a status the client can act on: 400 `bad-request` or `bad-range`, 404 `not-found`, 422 `budget-exceeded`, `cycle` or `unsatisfiable`, 503 `unavailable` while the store is briefly down, and 500 `resolve-failed` for anything else. A client that meets a status it does not know prints that status and says its own version is out of date, instead of failing with a parse error.
 
 ## Publishing
 

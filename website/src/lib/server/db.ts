@@ -804,10 +804,38 @@ export async function publishPackage(
 		licenseId = lrow?.id ?? null;
 	}
 	const versionId = `ver_${id}_${p.version}`;
-	// changes() reads the version insert directly above, so the audit row
-	// lands only when this publish actually minted the version. The dep
-	// inserts trail the audit row to keep that reading intact.
-	const applied = await db.batch([
+	const versionInsert = db
+		.insert(s.packageVersions)
+		.values({
+			id: versionId,
+			packageId: id,
+			version: p.version,
+			readmeMarkdown: p.readme,
+			docJson: p.docJson,
+			checksum: p.checksum,
+			status: 'live',
+			createdAt: now,
+			semverMajor: sem.major,
+			semverMinor: sem.minor,
+			semverPatch: sem.patch,
+			prerelease: sem.prerelease,
+			engineRange: p.engineRange ?? '',
+			manifestJson: p.manifestJson ?? '{}',
+			guidesJson: p.guidesJson ?? '[]',
+			tarballSha256: p.tarballSha256 ?? '',
+			requestId: p.requestId ?? ''
+		})
+		.onConflictDoNothing();
+	// The audit row is the statement right after the version insert: it reads
+	// changes() from that insert, so it lands only when this publish minted
+	// the version. Anything between the two would change what changes()
+	// reports and turn every republish into a second audit row.
+	const publishAudit = db.run(
+		sql`INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
+		      SELECT 'publish', ${parsed.full}, ${p.version}, ${auditJson}, ${p.requestId ?? ''}, ${now} WHERE changes() > 0`
+	);
+	const generation = generationBump(db);
+	const batch: unknown[] = [
 		db
 			.insert(s.scopes)
 			.values({
@@ -844,32 +872,8 @@ export async function publishPackage(
 					updatedAt: sql`excluded.updated_at`
 				}
 			}),
-		db
-			.insert(s.packageVersions)
-			.values({
-				id: versionId,
-				packageId: id,
-				version: p.version,
-				readmeMarkdown: p.readme,
-				docJson: p.docJson,
-				checksum: p.checksum,
-				status: 'live',
-				createdAt: now,
-				semverMajor: sem.major,
-				semverMinor: sem.minor,
-				semverPatch: sem.patch,
-				prerelease: sem.prerelease,
-				engineRange: p.engineRange ?? '',
-				manifestJson: p.manifestJson ?? '{}',
-				guidesJson: p.guidesJson ?? '[]',
-				tarballSha256: p.tarballSha256 ?? '',
-				requestId: p.requestId ?? ''
-			})
-			.onConflictDoNothing(),
-		db.run(
-			sql`INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
-			      SELECT 'publish', ${parsed.full}, ${p.version}, ${auditJson}, ${p.requestId ?? ''}, ${now} WHERE changes() > 0`
-		),
+		versionInsert,
+		publishAudit,
 		...depNames.map((dep) =>
 			db
 				.insert(s.packageDeps)
@@ -888,10 +892,22 @@ export async function publishPackage(
 				.onConflictDoNothing()
 		),
 		// Appended last: the audit row above reads changes() from the version
-		// insert at index 2, so the generation bump must not land before it.
-		generationBump(db)
-	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
-	const created = (applied[2]?.rowsAffected ?? 0) > 0;
+		// insert, so the generation bump must not land before it.
+		generation
+	];
+	// The batch order is the publish idempotency contract, so it is checked
+	// instead of being remembered: the audit statement reads the version
+	// insert, and the generation bump runs after the audit row.
+	const versionIndex = batch.indexOf(versionInsert);
+	const auditIndex = batch.indexOf(publishAudit);
+	if (versionIndex < 0 || auditIndex !== versionIndex + 1) {
+		throw new Error('publish batch: the audit row must follow the version insert');
+	}
+	if (batch[batch.length - 1] !== generation) {
+		throw new Error('publish batch: the generation bump must be the last statement');
+	}
+	const applied = await db.batch(batch as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	const created = (applied[versionIndex]?.rowsAffected ?? 0) > 0;
 	noteMutation();
 	return { name: parsed.full, version: p.version, created };
 }
@@ -1512,6 +1528,11 @@ export const RESOLVE_MAX_NODES = 512;
 export const RESOLVE_MAX_FRONTIER = 512;
 export const RESOLVE_MAX_CANDIDATES = 4096;
 export const RESOLVE_MAX_INLINE_BYTES = 256 * 1024;
+// A closure bigger than this is not an inline candidate. The file index of
+// every package in the closure has to be read to answer an inline request,
+// and a client that gets nothing inlined falls back to one manifest read
+// per package, so a huge closure is refused before any index is read.
+export const RESOLVE_MAX_INLINE_NODES = 256;
 // SQLite caps bound parameters per statement; OR-expanded name lists are
 // chunked to stay under it (2 params per name, 3 per version pick).
 const RESOLVE_SQL_MAX_PARAMS = 100;
@@ -1592,8 +1613,13 @@ interface ResolveRow {
 	tarballSha256: string;
 	engineRange: string;
 	manifestJson: string;
-	tarManifestJson: string;
 	withdrawn: boolean;
+}
+
+// A version that a takedown reached is never served, not through a stale
+// candidate list and not through a client `have` entry that names it.
+function isWithdrawn(row: ResolveRow): boolean {
+	return row.withdrawn || row.status === 'tombstoned';
 }
 
 const CANDIDATE_SQL_HEAD = `SELECT p.scope AS scope, p.name AS name, v.version AS version
@@ -1602,16 +1628,18 @@ const CANDIDATE_SQL_HEAD = `SELECT p.scope AS scope, p.name AS name, v.version A
 const CANDIDATE_SQL_TAIL = `)
 	ORDER BY p.scope, p.name, ${SEMVER_ORDER}`;
 
-function pickedRowSql(inline: boolean): string {
+function pickedRowSql(): string {
 	// doc_json, guides_json, checksum, request_id and created_at are selected
 	// by getVersionRow for the /api routes and are not read here; dropping them
 	// keeps up to 1 MiB of jsdoc per package off the resolve read.
+	//
+	// tar_manifest_json is not selected here either: the file index is only
+	// needed for an inline answer, and it is read in a second, bounded phase
+	// once the closure is known (see attachInlineEntries).
 	return `SELECT p.scope AS scope, p.name AS name,
 	v.version AS version, v.status AS status, v.tarball_sha256 AS tarball_sha256,
 	v.engine_range AS engine_range, v.manifest_json AS manifest_json,
-	(SELECT 1 FROM tombstones t WHERE t.package_id = p.id AND t.version = v.version) AS withdrawn${
-		inline ? ', v.tar_manifest_json AS tar_manifest_json' : ''
-	}
+	(SELECT 1 FROM tombstones t WHERE t.package_id = p.id AND t.version = v.version) AS withdrawn
 	FROM package_versions v JOIN packages p ON p.id = v.package_id
 	WHERE `;
 }
@@ -1656,13 +1684,12 @@ async function resolveCandidates(
 
 async function resolvePickedRows(
 	raw: Client | null,
-	picks: Array<{ full: string; version: string }>,
-	inline: boolean
+	picks: Array<{ full: string; version: string }>
 ): Promise<Map<string, ResolveRow>> {
 	const out = new Map<string, ResolveRow>();
 	if (raw === null || picks.length === 0) return out;
 	const groups = chunked(picks, Math.max(1, Math.floor(RESOLVE_SQL_MAX_PARAMS / 3)));
-	const head = pickedRowSql(inline);
+	const head = pickedRowSql();
 	const results = await raw.batch(
 		groups.map((group) => ({
 			sql: `${head}${group.map(() => '(p.scope = ? AND p.name = ? AND v.version = ?)').join(' OR ')}`,
@@ -1684,9 +1711,84 @@ async function resolvePickedRows(
 				tarballSha256: String(row['tarball_sha256'] ?? ''),
 				engineRange: String(row['engine_range'] ?? ''),
 				manifestJson: String(row['manifest_json'] ?? '{}'),
-				tarManifestJson: String(row['tar_manifest_json'] ?? '[]'),
 				withdrawn: row['withdrawn'] !== null && row['withdrawn'] !== undefined
 			});
+		}
+	}
+	return out;
+}
+
+// The file index of a version is read in two steps: a length probe first, so
+// a closure that cannot fit the response cap is refused without the index
+// ever leaving the database, and the index itself only for a closure that
+// fits.
+//
+// The probe is `length(index)`, which SQLite answers from the record header
+// alone (the column is read with the length argument flag, so the index
+// pages are never touched). Casting the index to a blob would give a byte
+// count, but it would also make SQLite read every byte of it, which is the
+// cost this probe exists to avoid.
+const MANIFEST_SIZE_SQL = `SELECT p.scope AS scope, p.name AS name, v.version AS version,
+	length(v.tar_manifest_json) AS manifest_size
+	FROM package_versions v JOIN packages p ON p.id = v.package_id
+	WHERE `;
+
+const MANIFEST_JSON_SQL = `SELECT p.scope AS scope, p.name AS name, v.version AS version,
+	v.tar_manifest_json AS tar_manifest_json
+	FROM package_versions v JOIN packages p ON p.id = v.package_id
+	WHERE `;
+
+function manifestPicksSql(
+	picks: Array<{ full: string; version: string }>
+): Array<{ sql: string; args: string[] }> {
+	return chunked(picks, Math.max(1, Math.floor(RESOLVE_SQL_MAX_PARAMS / 3))).map((group) => ({
+		sql: group.map(() => '(p.scope = ? AND p.name = ? AND v.version = ?)').join(' OR '),
+		args: group.flatMap((p) => {
+			const parsed = parsePackageName(p.full);
+			return [parsed?.scope ?? '', parsed?.name ?? p.full, p.version];
+		})
+	}));
+}
+
+function pickedFull(row: Record<string, unknown>): string {
+	const scope = String(row['scope'] ?? '');
+	const name = String(row['name'] ?? '');
+	return scope ? `@${scope}/${name}` : name;
+}
+
+async function resolveManifestSizes(
+	raw: Client | null,
+	picks: Array<{ full: string; version: string }>
+): Promise<Map<string, number>> {
+	const out = new Map<string, number>();
+	if (raw === null || picks.length === 0) return out;
+	const groups = manifestPicksSql(picks);
+	const results = await raw.batch(
+		groups.map((group) => ({ sql: `${MANIFEST_SIZE_SQL}${group.sql}`, args: group.args }))
+	);
+	for (const result of results) {
+		for (const row of result.rows) {
+			const full = pickedFull(row);
+			out.set(`${full}@${String(row['version'] ?? '')}`, Number(row['manifest_size'] ?? 0));
+		}
+	}
+	return out;
+}
+
+async function resolveManifestJson(
+	raw: Client | null,
+	picks: Array<{ full: string; version: string }>
+): Promise<Map<string, string>> {
+	const out = new Map<string, string>();
+	if (raw === null || picks.length === 0) return out;
+	const groups = manifestPicksSql(picks);
+	const results = await raw.batch(
+		groups.map((group) => ({ sql: `${MANIFEST_JSON_SQL}${group.sql}`, args: group.args }))
+	);
+	for (const result of results) {
+		for (const row of result.rows) {
+			const full = pickedFull(row);
+			out.set(`${full}@${String(row['version'] ?? '')}`, String(row['tar_manifest_json'] ?? '[]'));
 		}
 	}
 	return out;
@@ -1721,6 +1823,47 @@ export interface ResolveOptions {
 	advertiseChunks?: boolean;
 }
 
+// Why an inline answer was refused. The client falls back to one manifest
+// read per package, so it has to know that the refusal was a decision and
+// not a registry without file indexes.
+export type InlineDecline = 'closure-too-large' | 'size-cap-exceeded';
+
+// The inline answer is decided from the closure, not from the rows that were
+// read for it. The closure is resolved first with the cheap projection, then
+// the file indexes are measured, and only a closure that fits the cap is
+// read. A request that cannot fit therefore never pays for an index it
+// would have to throw away.
+async function attachInlineEntries(
+	raw: Client | null,
+	nodes: ResolveNode[]
+): Promise<InlineDecline | null> {
+	if (nodes.length > RESOLVE_MAX_INLINE_NODES) return 'closure-too-large';
+	const picks = nodes.map((n) => ({ full: n.full, version: n.version }));
+	const sizes = await resolveManifestSizes(raw, picks);
+	let total = 0;
+	for (const p of picks) total += sizes.get(`${p.full}@${p.version}`) ?? 0;
+	if (total > RESOLVE_MAX_INLINE_BYTES) return 'size-cap-exceeded';
+	const manifests = await resolveManifestJson(raw, picks);
+	// The second line of defence: the index is measured again now that it is
+	// in hand, in bytes, because the response carries bytes and the probe
+	// counts characters.
+	const encoder = new TextEncoder();
+	let exact = 0;
+	for (const p of picks) {
+		const text = manifests.get(`${p.full}@${p.version}`);
+		if (text === undefined) continue;
+		exact += encoder.encode(text).length;
+	}
+	if (exact > RESOLVE_MAX_INLINE_BYTES) return 'size-cap-exceeded';
+	for (const node of nodes) {
+		const text = manifests.get(`${node.full}@${node.version}`);
+		if (text === undefined) continue;
+		const entries = resolveEntries(text);
+		if (entries) node.entries = entries;
+	}
+	return null;
+}
+
 // Frontier expansion is level-batched: one batched IN-statement for the
 // candidate versions and one for the picked rows per level, so a 17-package
 // resolve costs two store round trips instead of 35. The batched pass only
@@ -1732,7 +1875,12 @@ export async function resolveGraph(
 	requirements: Record<string, string>,
 	have: HaveEntry[],
 	options: ResolveOptions = {}
-): Promise<{ resolved: Record<string, string>; levels: ResolveNode[][]; chunks: string | null }> {
+): Promise<{
+	resolved: Record<string, string>;
+	levels: ResolveNode[][];
+	chunks: string | null;
+	chunksDeclined: InlineDecline | null;
+}> {
 	const inline = options.inlineChunks === true;
 	await getDdb(env);
 	const raw = getClient(env);
@@ -1791,11 +1939,13 @@ export async function resolveGraph(
 		if (missing.length > 0) {
 			const fresh = await resolveCandidates(raw, missing);
 			for (const [full, list] of fresh) {
-				candidates.set(full, list);
+				// The candidate list is copied: a takedown drops a version from
+				// the list of this request, and the memo keeps its own copy.
+				candidates.set(full, [...list]);
 				versionIndexSet(full, list);
 			}
 		}
-		for (const [full, list] of memoHit) candidates.set(full, list);
+		for (const [full, list] of memoHit) candidates.set(full, [...list]);
 
 		let candidateCount = 0;
 		for (const full of frontier) candidateCount += candidates.get(full)?.length ?? 0;
@@ -1821,7 +1971,42 @@ export async function resolveGraph(
 			if (picked.length === 0) blocked.add(full);
 			picksByName.set(full, picked);
 		}
-		for (const [id, row] of await resolvePickedRows(raw, wanted, inline)) rows.set(id, row);
+		const picked = await resolvePickedRows(raw, wanted);
+		for (const [id, row] of picked) rows.set(id, row);
+
+		// A version that a takedown reached is not a candidate any more. The
+		// candidate list can still name it when that list was cached before the
+		// takedown, so the version is dropped here and the package is picked
+		// again. A client `have` entry naming it does not keep it alive
+		// either: it is not in the candidate list any more.
+		const repick: string[] = [];
+		for (const w of wanted) {
+			const row = picked.get(`${w.full}@${w.version}`);
+			if (!row || !isWithdrawn(row)) continue;
+			const list = candidates.get(w.full);
+			if (!list) continue;
+			const at = list.indexOf(w.version);
+			if (at >= 0) list.splice(at, 1);
+			if (!repick.includes(w.full)) repick.push(w.full);
+		}
+		if (repick.length > 0) {
+			const again: Array<{ full: string; version: string }> = [];
+			const repicked = new Map<string, string[]>();
+			for (const full of repick) {
+				const versions = candidates.get(full) ?? [];
+				const chosen: string[] = [];
+				for (const range of ranges.get(full) ?? []) {
+					const pick = maxSatisfying(versions, range);
+					if (!pick || chosen.includes(pick)) continue;
+					chosen.push(pick);
+					if (!rows.has(`${full}@${pick}`)) again.push({ full, version: pick });
+				}
+				if (chosen.length === 0) blocked.add(full);
+				repicked.set(full, chosen);
+			}
+			for (const [id, row] of await resolvePickedRows(raw, again)) rows.set(id, row);
+			for (const [full, chosen] of repicked) picksByName.set(full, chosen);
+		}
 
 		const next: string[] = [];
 		for (const full of frontier) {
@@ -1899,27 +2084,24 @@ export async function resolveGraph(
 		})
 	})));
 
-	// One global switch, decided from the stored rows alone: over the cap the
-	// whole response falls back to links and no node carries entries.
-	let withEntries = inline;
-	if (withEntries) {
-		let total = 0;
-		for (const node of nodes) total += rows.get(`${node.full}@${node.version}`)?.tarManifestJson.length ?? 0;
-		if (total > RESOLVE_MAX_INLINE_BYTES) withEntries = false;
-	}
-	if (withEntries) {
-		for (const node of nodes) {
-			const row = rows.get(`${node.full}@${node.version}`);
-			if (!row) continue;
-			const entries = resolveEntries(row.tarManifestJson);
-			if (entries) node.entries = entries;
-		}
+	// Inline is a second, bounded phase. The closure above was resolved with
+	// the cheap projection, so a request that cannot fit the cap never paid
+	// for the file indexes it would have had to throw away. The client is
+	// told that the inline answer was declined, so it can fall back to one
+	// manifest read per package instead of wondering why the body changed.
+	let chunks: string | null = options.advertiseChunks === true ? 'links' : null;
+	let chunksDeclined: InlineDecline | null = null;
+	if (inline) {
+		const declined = await attachInlineEntries(raw, nodes);
+		if (declined) chunksDeclined = declined;
+		else if (options.advertiseChunks === true) chunks = 'inline';
 	}
 
 	return {
 		resolved,
 		levels: order.map((ids) => ids.map((id) => byId.get(id)!)),
-		chunks: options.advertiseChunks === true ? (withEntries ? 'inline' : 'links') : null
+		chunks,
+		chunksDeclined
 	};
 }
 
