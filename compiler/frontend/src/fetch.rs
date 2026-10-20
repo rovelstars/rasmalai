@@ -1317,6 +1317,41 @@ pub fn resolve_retry_delay_ms(attempt: u32) -> u64 {
     150 * 2u64.saturating_pow(attempt.min(4))
 }
 
+// Statuses this client can explain. The registry answers with a structured
+// body (code plus message) for every one of them, so a failure is read as
+// the failure it is.
+const RESOLVE_KNOWN_STATUSES: &[u16] = &[400, 404, 409, 410, 422, 429, 500, 502, 503, 504];
+
+// A status outside that list is a dialect this client version does not
+// know. The raw status is printed and the client is named as out of date,
+// because a client that cannot read the answer has to say so instead of
+// failing with a parse or transport error.
+fn resolve_status_error(status: u16, body: &[u8]) -> Diagnostic {
+    let value = parse_json(body).unwrap_or(JsonValue::Null);
+    let code = json_string(&value, "code");
+    let message = json_string(&value, "message");
+    if !RESOLVE_KNOWN_STATUSES.contains(&status) {
+        let mut text = format!(
+            "registry replied HTTP {status}, which this client version does not understand - update the client"
+        );
+        if !message.is_empty() {
+            text.push_str(": ");
+            text.push_str(&message);
+        } else if !code.is_empty() {
+            text.push_str(&format!(" (code {code})"));
+        }
+        return Diagnostic::new(Code::E108, text);
+    }
+    let text = if !message.is_empty() {
+        message
+    } else if !code.is_empty() {
+        format!("registry resolve failed ({code})")
+    } else {
+        format!("registry resolve failed with HTTP {status}")
+    };
+    Diagnostic::new(Code::E108, text)
+}
+
 pub fn resolve_requirements(
     base: &str,
     requirements: &BTreeMap<String, String>,
@@ -1339,14 +1374,7 @@ pub fn resolve_requirements(
     if reply.status == 200 {
         return parse_resolve(&reply.body);
     }
-    let value = parse_json(&reply.body).unwrap_or(JsonValue::Null);
-    let message = json_string(&value, "message");
-    let message = if message.is_empty() {
-        format!("registry resolve failed with HTTP {}", reply.status)
-    } else {
-        message
-    };
-    Err(Diagnostic::new(Code::E108, message))
+    Err(resolve_status_error(reply.status, &reply.body))
 }
 
 fn parse_resolve(body: &[u8]) -> Result<ResolveResponse, Diagnostic> {
@@ -3403,6 +3431,151 @@ mod tests {
         .unwrap_err();
         assert!(err.message.contains("503"), "{}", err.message);
         assert_eq!(server.resolve_bodies().len(), 4);
+    }
+
+    // A registry that answers with a status this client does not know must
+    // not turn into a parse or transport error: the raw status is printed and
+    // the client is named as out of date.
+    #[test]
+    fn resolve_unknown_status_prints_the_status_and_names_the_outdated_client() {
+        let (_guard, _dir) = isolate_cache("unknownstatus");
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            capabilities: vec!["tombstones"],
+            resolve_status: 599,
+            resolve_body: "{\"code\": \"teapot\", \"message\": \"the registry is a teapot\"}"
+                .to_string(),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
+        });
+        let err = resolve_requirements(
+            &server.base,
+            &requirements_for("@acme/widget", "*"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("599"), "{}", err.message);
+        assert!(
+            err.message.contains("does not understand"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("update the client"),
+            "{}",
+            err.message
+        );
+        // The structured body of the server rides along.
+        assert!(
+            err.message.contains("the registry is a teapot"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains("malformed"), "{}", err.message);
+        assert!(!err.message.contains("failed with HTTP"), "{}", err.message);
+    }
+
+    #[test]
+    fn resolve_unknown_status_without_a_body_still_names_the_status() {
+        let (_guard, _dir) = isolate_cache("unknownstatusbare");
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            capabilities: vec!["tombstones"],
+            resolve_status: 460,
+            resolve_body: String::new(),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
+        });
+        let err = resolve_requirements(
+            &server.base,
+            &requirements_for("@acme/widget", "*"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("460"), "{}", err.message);
+        assert!(
+            err.message.contains("update the client"),
+            "{}",
+            err.message
+        );
+    }
+
+    // 422 is a status this client knows: the registry explains the failure
+    // in the body and the client reports that, not an outdated client.
+    #[test]
+    fn resolve_422_budget_is_reported_as_the_registry_explained_it() {
+        let (_guard, _dir) = isolate_cache("known422");
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            capabilities: vec!["tombstones"],
+            resolve_status: 422,
+            resolve_body: "{\"code\": \"budget-exceeded\", \"message\": \"resolve budget exceeded: closure over 512 nodes\", \"requestId\": \"r-1\"}".to_string(),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
+        });
+        let err = resolve_requirements(
+            &server.base,
+            &requirements_for("@acme/widget", "*"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("resolve budget exceeded"),
+            "{}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("does not understand"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains("update the client"), "{}", err.message);
+    }
+
+    #[test]
+    fn resolve_404_not_found_is_reported_as_the_registry_explained_it() {
+        let (_guard, _dir) = isolate_cache("known404");
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            capabilities: vec!["tombstones"],
+            resolve_status: 404,
+            resolve_body: "{\"code\": \"not-found\", \"message\": \"package @acme/widget does not exist\"}"
+                .to_string(),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
+        });
+        let err = resolve_requirements(
+            &server.base,
+            &requirements_for("@acme/widget", "*"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("package @acme/widget does not exist"),
+            "{}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("does not understand"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

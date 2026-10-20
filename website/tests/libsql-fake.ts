@@ -16,6 +16,7 @@ export interface FakeCounters {
 	statements: number;
 	roundTrips: number;
 	rowsRead: number;
+	bytesRead: number;
 }
 
 export interface FakeLibsql {
@@ -57,7 +58,7 @@ export async function startFakeLibsql(): Promise<FakeLibsql> {
 		const sql = stmt.trim();
 		if (sql) db.exec(sql);
 	}
-	const counters: FakeCounters = { statements: 0, roundTrips: 0, rowsRead: 0 };
+	const counters: FakeCounters = { statements: 0, roundTrips: 0, rowsRead: 0, bytesRead: 0 };
 	const statements: string[] = [];
 	const sqlIds = new Map<number, string>();
 	let inAutocommit = true;
@@ -79,6 +80,17 @@ export async function startFakeLibsql(): Promise<FakeLibsql> {
 		if (cols.length > 0) {
 			rowObjects = prepared.all(...args) as Record<string, unknown>[];
 			counters.rowsRead += rowObjects.length;
+			// Bytes the client actually receives for the row values. A
+			// statement that selects a large text column pays for it here,
+			// which is what makes the cost of a wide projection visible.
+			for (const row of rowObjects) {
+				for (const col of cols) {
+					const value = row[col];
+					if (typeof value === 'string') counters.bytesRead += Buffer.byteLength(value);
+					else if (value instanceof Uint8Array) counters.bytesRead += value.byteLength;
+					else if (typeof value === 'bigint' || typeof value === 'number') counters.bytesRead += 8;
+				}
+			}
 		} else {
 			// node:sqlite only reports `changes` from run(); all() leaves it
 			// undefined, and publish idempotency reads affected_row_count.
@@ -212,6 +224,7 @@ export async function startFakeLibsql(): Promise<FakeLibsql> {
 			counters.statements = 0;
 			counters.roundTrips = 0;
 			counters.rowsRead = 0;
+			counters.bytesRead = 0;
 			statements.length = 0;
 		},
 		async close() {

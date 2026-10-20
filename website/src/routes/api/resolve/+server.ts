@@ -49,7 +49,7 @@ export async function POST({ request, url, platform }) {
 	const wantChunks = body['chunks'];
 	const inlineChunks = wantChunks === true;
 	try {
-		const { resolved, levels, chunks } = await resolveGraph(env, requirements, have, {
+		const { resolved, levels, chunks, chunksDeclined } = await resolveGraph(env, requirements, have, {
 			inlineChunks,
 			advertiseChunks: wantChunks !== undefined
 		});
@@ -58,6 +58,10 @@ export async function POST({ request, url, platform }) {
 		// host) or a path (same host, other prefix) instead.
 		const payload: Record<string, unknown> = { resolved, base: '', levels };
 		if (chunks) payload['chunks'] = chunks;
+		// An inline answer that was refused is named, so the client can fall
+		// back to one manifest read per package instead of reading the body
+		// switch and wondering why the file lists are missing.
+		if (chunks && chunksDeclined) payload['chunksDeclined'] = chunksDeclined;
 		return json(payload, { headers: specHeaders() });
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
