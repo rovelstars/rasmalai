@@ -7,18 +7,22 @@ import type { Handle } from '@sveltejs/kit';
 //
 // No purge credentials exist, so lifetimes follow row mutability instead:
 // versioned rows are write-once (a publish inserts a new row; only the
-// yank status can flip, which the route headers already bound to a day),
-// while the latest-pointer (unpinned package pages, catalog listing)
-// moves on every publish and stays short at 5 minutes. First match wins,
-// so the pinned-version rule precedes the /packages/ prefix. POST/PUT/
-// DELETE and preview tokens bypass (no match).
+// yank status can flip), while the latest-pointer (unpinned package pages,
+// catalog listing) moves on every publish and stays short at 5 minutes.
+// First match wins, so the pinned-version rule precedes the /packages/
+// prefix. POST/PUT/DELETE and preview tokens bypass (no match).
+//
+// The pinned version page shows the status of the version, so it is not
+// write-once: a yank or a takedown has to show up there. A zone purge
+// does not reach the Cache API entries, so the page is bounded by its own
+// lifetime: 5 minutes, like the pointer.
 //
 // No stale-while-revalidate: the Cache API has no SWR primitive, and
 // background revalidation would need waitUntil, which is not available in
 // every runtime this handle runs in (prerender, dev). Tiered TTLs give
 // the same shape: immutable rows cache long, pointers revalidate fast.
 const TTL: Array<[RegExp, number]> = [
-	[/^\/packages\/.+\/\d+\.\d+\.\d+($|\/)/, 86400],
+	[/^\/packages\/.+\/\d+\.\d+\.\d+($|\/)/, 300],
 	[/^\/packages\//, 300],
 	[/^\/api\/packages(\?|$)/, 300],
 	[/^\/api\/benchmarks(\?|$)/, 3600],

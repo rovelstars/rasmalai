@@ -10,6 +10,7 @@ import {
 	recordTombstone,
 	checkPublishToken,
 	purgeUrls,
+	purgeConfigured,
 	packagePointerUrls
 } from '$lib/server/db';
 import { safeEqual, sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
@@ -275,7 +276,19 @@ export async function POST({ params, request, platform, url }) {
 		if (!ok) {
 			return json({ code: 'conflict', message: `version ${version} is not live` }, { status: 409, headers: headers() });
 		}
-		await purgeUrls(env, packagePointerUrls(url.origin, full, version), { fullName: full });
+		const purge = await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
+			fullName: full,
+			verify: { url: `${url.origin}/api/packages/${full}@${version}`, bodyStatus: 'yanked' }
+		});
+		if (purgeConfigured(env) && !purge.verified) {
+			// The yank is committed, but the edge still serves the copy that
+			// says the version is live. The mutation is not reported as
+			// complete until the purge is verified.
+			return json(
+				{ code: 'unavailable', message: 'the edge still serves the old copy, retry the purge' },
+				{ status: 503, headers: headers() }
+			);
+		}
 		return json({ success: true, version, status: 'yanked' }, { headers: headers() });
 	}
 
@@ -293,9 +306,21 @@ export async function POST({ params, request, platform, url }) {
 		reason = '';
 	}
 	await recordTombstone(env, full, version, reason);
-	await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
+	const purge = await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
 		fullName: full,
-		prefixes: [`${url.origin}/api/packages/${full}@${version}`]
+		prefixes: [`${url.origin}/api/packages/${full}@${version}`],
+		// A withdrawn version has to answer 410 through the edge, or the
+		// edge is still serving the copy that says it is live.
+		verify: { url: `${url.origin}/api/packages/${full}@${version}`, status: 410 }
 	});
+	if (purgeConfigured(env) && !purge.verified) {
+		// The takedown is committed, but the edge still serves the copy
+		// that says the version is live. The mutation is not reported as
+		// complete until the purge is verified.
+		return json(
+			{ code: 'unavailable', message: 'the edge still serves the old copy, retry the purge' },
+			{ status: 503, headers: headers() }
+		);
+	}
 	return json({ success: true, version, status: 'tombstoned' }, { headers: headers() });
 }

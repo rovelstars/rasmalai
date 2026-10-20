@@ -53,7 +53,7 @@ The fixed paths are:
 | `GET .../<version>/chunk/<sha256>` | one content chunk by hash, immutable — browsers fetch these in parallel and unpack locally |
 | `GET .../<name>@<version>/guides[/<slug>]` | guide index or one guide, 404 when the package ships none |
 
-Version metadata and content chunks cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410. Tooling that must see one consistent generation (stdlib seeding, stdlib docs, the playground) reads transport payloads under a fixed `?origin-direct=1` namespace instead of the bare URL; the server answers that namespace `no-store`, so it always reflects origin live truth and can never hold a stale generation.
+Version metadata and content chunks cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410. The status of a version is the one part of that metadata that changes after the publish, so the server purges the version URLs when a yank or a takedown lands, and then reads the edge back: the purge counts as done only when the edge answers with the new state instead of the old copy. Without the purge credentials (`CF_ZONE_ID` and `CF_PURGE_TOKEN`) nothing is purged, and the one-year lifetime of the metadata route is the bound. Tooling that must see one consistent generation (stdlib seeding, stdlib docs, the playground) reads transport payloads under a fixed `?origin-direct=1` namespace instead of the bare URL; the server answers that namespace `no-store`, so it always reflects origin live truth and can never hold a stale generation.
 
 ### Playground stdlib prefetch
 
@@ -70,6 +70,7 @@ The web playground carries no standard library inside its wasm engine either: en
 | `404` | missing name, version, or guide | JSON error |
 | `409` | version reuse or bad yank | `version <v> already published (versions are immutable)`, `version <v> is not live` |
 | `410` | tombstoned version | `{ code: "withdrawn", reason }`, cached immutably for a year |
+| `503` | the registry changed while the answer was computed | `resolution raced with a mutation, retry` |
 
 Every response carries an `rnx-registry-spec: 1` header. A client meeting a spec it does not support is a hard error naming both numbers, and calls needing a capability the server lacks fail closed naming it.
 
@@ -87,6 +88,18 @@ Every response carries an `rnx-registry-spec: 1` header. A client meeting a spec
 The server picks the highest satisfying version for each requirement, walks manifests transitively, and returns `resolved` plus depth-leveled `levels`. Each node carries its chunk-manifest `path`, `integrity` digest, engine range, and a `yanked` flag. Clients fetch the manifest, pull content chunks in parallel, reassemble the tarball bytes locally, and verify against `integrity`. Entries in `have` whose integrity still matches skip dependency expansion, so repeated resolves only fetch the delta.
 
 A `have` entry never hides a status change. A version that was yanked after the client cached it is still reported with `yanked` set, and a version that was taken down is not served at all, not even when the client's cache still names it.
+
+### What a resolve answer means
+
+A resolve answer is a snapshot of the registry taken while the request runs. The server keeps a short-lived memo of the candidate versions of each package so that a repeat resolve does not read them again, and every memo entry carries the mutation count of the package it was built from. Before the answer is written, that count is checked against the row the server reads for the picked version. If it moved, another publish, takedown or transfer changed the package, and the candidate list is read again instead of being trusted.
+
+The rules that follow from that:
+
+- The pick is the highest version in the range that exists right now. A version another server published a moment ago is picked up by the next resolve.
+- A taken down version is never resolved. The answer is the remaining version, or `package <name> does not exist` when no version is left.
+- A yanked version may still be resolved, and the node carries `"yanked": true`.
+- A package that does not exist, and a range that no version satisfies, are answered from the current state of the registry, never from a cached list.
+- A registry that changes while the answer is being computed answers 503 `unavailable` with `resolution raced with a mutation, retry`. The client retries and never receives a wrong answer.
 
 Ranges use a small grammar: `*`, `latest`, an exact `X.Y.Z`, `^X.Y.Z`, `~X.Y.Z`, or `>=X.Y.Z`. Anything else is a 400 `bad-range`. The semantics:
 
@@ -130,7 +143,7 @@ Three rules govern it:
 
 Every resolve error response carries a `requestId` (a UUID v4) alongside `code` and `message`. The server logs the failure under `[resolve <id>]`, so paste the id when reporting a 500 `resolve-failed`.
 
-A resolve failure answers with a status the client can act on: 400 `bad-request` or `bad-range`, 404 `not-found`, 422 `budget-exceeded`, `cycle` or `unsatisfiable`, 503 `unavailable` while the store is briefly down, and 500 `resolve-failed` for anything else. A client that meets a status it does not know prints that status and says its own version is out of date, instead of failing with a parse error.
+A resolve failure answers with a status the client can act on: 400 `bad-request` or `bad-range`, 404 `not-found`, 422 `budget-exceeded`, `cycle` or `unsatisfiable`, 503 `unavailable` while the store is briefly down or while a mutation races the answer, and 500 `resolve-failed` for anything else. A client that meets a status it does not know prints that status and says its own version is out of date, instead of failing with a parse error.
 
 ## Publishing
 
