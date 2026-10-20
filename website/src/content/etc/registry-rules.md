@@ -67,6 +67,12 @@ The entries manifest fails closed in both directions:
 - Every path named in `entries.*` must exist in the archive. The client checks this before sending anything — a missing `entries.main` stops the publish with `E108`.
 - The file list in the `X-RNX-Meta` header must match the archive exactly. A file that is listed but missing, or shipped but unlisted, fails the publish. The server repeats this check on accept, so a hand-built upload cannot smuggle past the client.
 
+## Entry names are paths
+
+Every file name in the archive becomes a path the client writes to disk, so the server checks each name on accept and refuses the whole publish when a name could escape the destination directory. A name is accepted when, after dropping at most one trailing `/`, it is not empty, holds no `\`, does not start with `/`, carries no drive prefix (`C:`), has no empty, `.` or `..` path component, holds no control character, and is at most 255 bytes long.
+
+A publish that carries such a name is rejected with 400 and a message naming the entry. The client applies the same rule to the same names, so a manifest written elsewhere is refused at install time too.
+
 ## The 512KB cap
 
 Each version caps at 512KB of stored snapshot bytes. Oversize uploads are rejected no matter the tier — split the package or drop the weight before retrying. Retries are safe: repeat a publish with the same `X-RNX-Request-ID` and the server answers success with `duplicate: true` instead of writing a second row.

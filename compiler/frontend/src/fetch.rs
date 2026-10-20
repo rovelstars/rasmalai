@@ -752,7 +752,7 @@ impl RegistryTransport for StdTransport {
     }
 
     fn manifest_get(&self, url: &str) -> Result<ManifestReply, Diagnostic> {
-        std_request_full("GET", url, None)
+        std_request_full("GET", url, None, true)
             .map(|(reply, content_encoding)| ManifestReply { reply, content_encoding })
     }
 }
@@ -762,20 +762,21 @@ fn std_request(
     url: &str,
     body: Option<&[u8]>,
 ) -> Result<RegistryReply, Diagnostic> {
-    std_request_full(method, url, body).map(|(reply, _)| reply)
+    std_request_full(method, url, body, false).map(|(reply, _)| reply)
 }
 
 fn std_request_full(
     method: &str,
     url: &str,
     body: Option<&[u8]>,
+    accept_gzip: bool,
 ) -> Result<(RegistryReply, Option<String>), Diagnostic> {
     let (host, port, path) = split_http_url(url)?;
     let mut stream = match pool_take(&host, port) {
         Some(reused) => reused,
         None => connect_new(&host, port)?,
     };
-    match exchange_once(method, &host, &path, body, &mut stream) {
+    match exchange_once(method, &host, &path, body, accept_gzip, &mut stream) {
         Ok((reply, reusable, content_encoding)) => {
             if reusable {
                 pool_put(&host, port, stream);
@@ -786,7 +787,7 @@ fn std_request_full(
             drop(stream);
             let mut fresh = connect_new(&host, port).map_err(|_| dead)?;
             let (reply, reusable, content_encoding) =
-                exchange_once(method, &host, &path, body, &mut fresh)?;
+                exchange_once(method, &host, &path, body, accept_gzip, &mut fresh)?;
             if reusable {
                 pool_put(&host, port, fresh);
             }
@@ -836,6 +837,7 @@ fn exchange_once(
     host: &str,
     path: &str,
     body: Option<&[u8]>,
+    accept_gzip: bool,
     stream: &mut std::net::TcpStream,
 ) -> Result<(RegistryReply, bool, Option<String>), Diagnostic> {
     use std::io::Write;
@@ -850,6 +852,13 @@ fn exchange_once(
         head.push_str("Content-Type: application/json\r\nAccept: application/json\r\n");
     } else {
         head.push_str("Accept: application/json\r\n");
+    }
+    // The chunk manifest is served compressed to a client that asks for it,
+    // and the manifest read is the only read that decodes a compressed
+    // body, so only it asks for one. Every other read stays on the
+    // identity encoding.
+    if accept_gzip {
+        head.push_str("Accept-Encoding: gzip\r\n");
     }
     let len = body.map(|b| b.len()).unwrap_or(0);
     head.push_str(&format!("Content-Length: {len}\r\n\r\n"));
@@ -1851,10 +1860,19 @@ fn fetch_chunks_parallel(
 
 fn chunk_fetch_error(status: u16, body: &[u8], full: &str, version: &str) -> Diagnostic {
     match status {
-        404 => Diagnostic::new(
-            Code::E108,
-            format!("package `{full}@{version}` does not exist"),
-        ),
+        404 => {
+            let value = parse_json(body).unwrap_or(JsonValue::Null);
+            if json_string(&value, "code") == "no-file-index" {
+                return Diagnostic::new(
+                    Code::E108,
+                    format!("package `{full}@{version}` ships no file index"),
+                );
+            }
+            Diagnostic::new(
+                Code::E108,
+                format!("package `{full}@{version}` does not exist"),
+            )
+        }
         410 => {
             let value = parse_json(body).unwrap_or(JsonValue::Null);
             let reason = json_string(&value, "reason");
@@ -2095,14 +2113,56 @@ fn tar_name(bytes: &[u8]) -> Result<String, Diagnostic> {
         .map_err(|_| Diagnostic::new(Code::E108, "bad tar name".to_string()))
 }
 
+// Accepted manifest entry names.
+//
+// This is the contract between the Rust client and the registry server
+// (`website/src/lib/server/chunks.ts::checkManifestEntryName`). The two are
+// written in different languages, so the rule is spelled out here and
+// repeated there verbatim; the two implementations must stay textually
+// identical.
+//
+// A manifest entry name is accepted when, after dropping at most one
+// trailing `/`, all of the following hold:
+//   1. it is not empty;
+//   2. it holds no `\` (a separator on Windows, where joining it onto the
+//      destination directory would escape that directory);
+//   3. it does not start with `/`;
+//   4. it carries no drive prefix (`C:`);
+//   5. every `/`-separated component is non-empty and is neither `.` nor
+//      `..`;
+//   6. it holds no control character, NUL included;
+//   7. it is at most 255 bytes long.
+//
+// The one name that is not a path is the protocol sentinel: a manifest of
+// exactly one entry whose name is the empty string and which is not a
+// directory means "this package is one opaque tarball blob".
+const MAX_ENTRY_NAME_BYTES: usize = 255;
+
 fn tar_safe_rel(name: &str) -> Result<String, Diagnostic> {
     let trimmed = name.strip_suffix('/').unwrap_or(name);
-    if trimmed.is_empty() || trimmed.starts_with('/') {
-        return Err(Diagnostic::new(Code::E108, format!("unsafe tar path `{name}`")));
+    let unsafe_path = || Diagnostic::new(Code::E108, format!("unsafe tar path `{name}`"));
+    if trimmed.is_empty() {
+        return Err(unsafe_path());
+    }
+    if trimmed.len() > MAX_ENTRY_NAME_BYTES {
+        return Err(unsafe_path());
+    }
+    if trimmed.contains('\\') {
+        return Err(unsafe_path());
+    }
+    if trimmed.starts_with('/') {
+        return Err(unsafe_path());
+    }
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Err(unsafe_path());
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err(unsafe_path());
     }
     for part in trimmed.split('/') {
         if part.is_empty() || part == "." || part == ".." {
-            return Err(Diagnostic::new(Code::E108, format!("unsafe tar path `{name}`")));
+            return Err(unsafe_path());
         }
     }
     Ok(trimmed.to_string())
@@ -2283,6 +2343,15 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
             Some(entries) => entries.clone(),
             None => fetch_chunks_manifest(&manifest_url, &node.full, &node.version, manifest_direct)?,
         };
+        // A version with no file index is not a broken download: the
+        // registry never shipped one. Saying that keeps it apart from the
+        // checksum error a corrupt body would produce.
+        if entries.is_empty() {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("package `{}@{}` ships no file index", node.full, node.version),
+            ));
+        }
         let mut uniq: BTreeSet<String> = BTreeSet::new();
         for entry in &entries {
             for hash in &entry.chunks {
@@ -4839,13 +4908,24 @@ mod tests {
         )
     }
 
-    fn assert_no_accept_encoding(server: &MockRegistry) {
-        for (_, _, headers, _) in server.requests_with_headers() {
-            assert!(
-                !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("accept-encoding")),
-                "{headers:?}"
-            );
+    fn assert_accept_encoding_gzip(server: &MockRegistry) {
+        let mut manifests = 0;
+        for (method, path, headers, _) in server.requests_with_headers() {
+            let asks_gzip = headers.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case("accept-encoding") && v.trim().eq_ignore_ascii_case("gzip")
+            });
+            let route = path.split('?').next().unwrap_or_default();
+            if method == "GET" && route.ends_with("/chunks") {
+                assert!(asks_gzip, "the chunk manifest read must ask for gzip: {headers:?}");
+                manifests += 1;
+            } else {
+                assert!(
+                    !asks_gzip,
+                    "only the chunk manifest read asks for gzip: {method} {path} {headers:?}"
+                );
+            }
         }
+        assert!(manifests > 0, "no chunk manifest read was made");
     }
 
     #[test]
@@ -4871,7 +4951,7 @@ mod tests {
             std::fs::read(fetched[0].dir.join("src").join("main.rnx")).unwrap(),
             INTEROP_MAIN
         );
-        assert_no_accept_encoding(&server);
+        assert_accept_encoding_gzip(&server);
     }
 
     #[test]
@@ -4899,11 +4979,11 @@ mod tests {
             std::fs::read(fetched[0].dir.join("src").join("main.rnx")).unwrap(),
             INTEROP_MAIN
         );
-        assert_no_accept_encoding(&server);
+        assert_accept_encoding_gzip(&server);
     }
 
     #[test]
-    fn manifest_identity_through_manifest_path_sends_no_accept_encoding() {
+    fn manifest_identity_through_manifest_path_asks_for_gzip() {
         let (_guard, _dir) = isolate_cache("mzident");
         let (entries, by_hash) = interop_entries();
         let digest =
@@ -4922,7 +5002,7 @@ mod tests {
         .unwrap();
         assert_eq!(fetched.len(), 1);
         assert_eq!(std::fs::read(fetched[0].dir.join("Project.config")).unwrap(), INTEROP_PC);
-        assert_no_accept_encoding(&server);
+        assert_accept_encoding_gzip(&server);
     }
 
     #[test]
@@ -4989,5 +5069,144 @@ mod tests {
             .filter(|(m, p, _)| m == "GET" && p.split('?').next().unwrap_or_default().contains("/chunk/"))
             .count();
         assert_eq!(chunk_gets, 0);
+    }
+
+    // The accepted-name rule, as the client applies it. The server applies
+    // the same rule to the same names; see
+    // `website/src/lib/server/chunks.ts::checkManifestEntryName`.
+    const UNSAFE_NAMES: &[&str] =
+        &["../../etc/passwd", "..\\..\\evil", "C:\\evil", "/abs/path", "a/../../b"];
+
+    #[test]
+    fn tar_paths_refuse_every_escaping_name() {
+        for name in UNSAFE_NAMES {
+            let err = tar_safe_rel(name).unwrap_err();
+            assert_eq!(err.code, Code::E108, "{name}");
+            assert!(err.message.contains("unsafe tar path"), "{}", err.message);
+        }
+        for name in ["a.txt", "src/main.rnx", "src/", "a/b/c.txt", "Project.config"] {
+            assert!(tar_safe_rel(name).is_ok(), "{name}");
+        }
+    }
+
+    fn manifest_with_name(name: &str, hash: &str, size: usize) -> Vec<u8> {
+        let escaped = name.replace('\\', "\\\\");
+        format!(
+            "{{\"entries\": [{{\"name\": \"{escaped}\", \"size\": {size}, \"dir\": false, \"chunks\": [\"{hash}\"]}}]}}"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn manifest_with_an_escaping_name_is_refused() {
+        for unsafe_name in UNSAFE_NAMES {
+            let (_guard, _dir) = isolate_cache("mzescape");
+            let hash = Sha256::hexdigest(INTEROP_PC);
+            let manifest = manifest_with_name(unsafe_name, &hash, INTEROP_PC.len());
+            let node = node_json("test/interop", "1.0.0", &"0".repeat(64), false);
+            let bodies = vec![(hash, INTEROP_PC.to_vec())];
+            let server = start_interop(manifest, None, &node, bodies);
+            let default = registry_cfg(&server.base);
+            let err = ensure_registry_requirements(
+                &requirements_for("test/interop", "1.0.0"),
+                Some(&default),
+                &BTreeMap::new(),
+                &[],
+            )
+            .unwrap_err();
+            assert_eq!(err.code, Code::E108, "{unsafe_name}");
+            assert!(err.message.contains("unsafe file path"), "{}", err.message);
+            assert!(err.message.contains(unsafe_name), "{}", err.message);
+            // Nothing was written: the name is refused before the tree is
+            // assembled.
+            assert!(scan_cache_have().is_empty(), "{unsafe_name}");
+        }
+    }
+
+    #[test]
+    fn a_version_with_no_file_index_is_not_a_checksum_error() {
+        let (_guard, _dir) = isolate_cache("mznoindex");
+        let node = node_json("test/interop", "1.0.0", &"0".repeat(64), false);
+        // The registry answers 200 with an empty file index.
+        let server = start_interop(b"{\"entries\": []}".to_vec(), None, &node, Vec::new());
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("test/interop", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("ships no file index"), "{}", err.message);
+        assert!(!err.message.contains("checksum mismatch"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_version_with_no_file_index_is_named_by_the_registry() {
+        let (_guard, _dir) = isolate_cache("mznoindex404");
+        let node = node_json("test/interop", "1.0.0", &"0".repeat(64), false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 1,
+            capabilities: vec!["tombstones"],
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 404,
+            fallback_tarball: Vec::new(),
+            manifest_error:
+                "{\"code\":\"no-file-index\",\"message\":\"package test/interop@1.0.0 ships no file index\"}"
+                    .to_string(),
+            manifest_override: None,
+            chunk_override: None,
+        });
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("test/interop", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("ships no file index"), "{}", err.message);
+        assert!(!err.message.contains("does not exist"), "{}", err.message);
+        assert!(scan_cache_have().is_empty());
+    }
+
+    #[test]
+    fn a_chunk_digest_in_upper_case_is_accepted() {
+        let (_guard, _dir) = isolate_cache("mzupper");
+        let (entries, by_hash) = interop_entries();
+        let digest =
+            assemble_direct_tree(&entries, &by_hash, "test/interop", "1.0.0").unwrap().digest;
+        let node = node_json("test/interop", "1.0.0", &digest, false);
+        // The manifest carries the digest in upper case, and the registry
+        // answers the chunk under that spelling.
+        let upper: Vec<(String, Vec<u8>)> =
+            by_hash.into_iter().map(|(h, b)| (h.to_ascii_uppercase(), b)).collect();
+        let mut rendered = String::from("{\"entries\": [");
+        for (i, (h, _)) in upper.iter().enumerate() {
+            if i > 0 {
+                rendered.push_str(", ");
+            }
+            rendered.push_str(&format!(
+                "{{\"name\": \"{}\", \"size\": {}, \"dir\": false, \"chunks\": [\"{}\"]}}",
+                entries[i].name,
+                entries[i].size,
+                h
+            ));
+        }
+        rendered.push_str("]}");
+        let server = start_interop(rendered.into_bytes(), None, &node, upper);
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("test/interop", "1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(std::fs::read(fetched[0].dir.join("Project.config")).unwrap(), INTEROP_PC);
     }
 }

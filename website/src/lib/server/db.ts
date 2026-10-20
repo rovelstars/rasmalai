@@ -1935,33 +1935,56 @@ export type InlineDecline = 'closure-too-large' | 'size-cap-exceeded';
 // would have to throw away.
 async function attachInlineEntries(
 	raw: Client | null,
-	nodes: ResolveNode[]
+	nodes: ResolveNode[],
+	levels: ResolveNode[][],
+	resolved: Record<string, string>,
+	acceptedChunks: string | null
 ): Promise<InlineDecline | null> {
 	if (nodes.length > RESOLVE_MAX_INLINE_NODES) return 'closure-too-large';
 	const picks = nodes.map((n) => ({ full: n.full, version: n.version }));
 	const sizes = await resolveManifestSizes(raw, picks);
 	let total = 0;
 	for (const p of picks) total += sizes.get(`${p.full}@${p.version}`) ?? 0;
+	// The stored index is a lower bound of the response: the response also
+	// carries the per-node wrapper and every node's metadata, so a closure
+	// whose stored index alone is over the cap cannot fit and is refused
+	// here, before the index is read.
 	if (total > RESOLVE_MAX_INLINE_BYTES) return 'size-cap-exceeded';
 	const manifests = await resolveManifestJson(raw, picks);
-	// The second line of defence: the index is measured again now that it is
-	// in hand, in bytes, because the response carries bytes and the probe
-	// counts characters.
-	const encoder = new TextEncoder();
-	let exact = 0;
-	for (const p of picks) {
-		const text = manifests.get(`${p.full}@${p.version}`);
-		if (text === undefined) continue;
-		exact += encoder.encode(text).length;
-	}
-	if (exact > RESOLVE_MAX_INLINE_BYTES) return 'size-cap-exceeded';
 	for (const node of nodes) {
 		const text = manifests.get(`${node.full}@${node.version}`);
 		if (text === undefined) continue;
 		const entries = resolveEntries(text);
 		if (entries) node.entries = entries;
 	}
+	// The exact measurement, and the one the cap is about: the size of the
+	// resolve body the client receives, with the inline entries in it.
+	if (resolveResponseBytes(resolved, levels, acceptedChunks) > RESOLVE_MAX_INLINE_BYTES) {
+		for (const node of nodes) node.entries = undefined;
+		return 'size-cap-exceeded';
+	}
 	return null;
+}
+
+// The inline budget is measured against the response the client receives,
+// not against the stored file indexes.
+//
+// The stored index (`tar_manifest_json`) is what the server kept; the
+// response is what crosses the wire, and it carries the per-node
+// `{"entries": ...}` wrapper and every node's metadata on top of the index
+// bytes. Measuring the stored strings undercounted the response by about
+// 44 %, so the cap did not mean what it said. The measurement is now the
+// serialized size of the whole resolve body, byte for byte, with the inline
+// entries in it - the same body `api/resolve/+server.ts` sends, so the two
+// must stay in step.
+function resolveResponseBytes(
+	resolved: Record<string, string>,
+	levels: ResolveNode[][],
+	chunks: string | null
+): number {
+	const payload: Record<string, unknown> = { resolved, base: '', levels };
+	if (chunks) payload['chunks'] = chunks;
+	return new TextEncoder().encode(JSON.stringify(payload)).length;
 }
 
 // Frontier expansion is level-batched: one batched IN-statement for the
@@ -2260,15 +2283,22 @@ export async function resolveGraph(
 	// manifest read per package instead of wondering why the body changed.
 	let chunks: string | null = options.advertiseChunks === true ? 'links' : null;
 	let chunksDeclined: InlineDecline | null = null;
+	const levels = order.map((ids) => ids.map((id) => byId.get(id)!));
 	if (inline) {
-		const declined = await attachInlineEntries(raw, nodes);
+		const declined = await attachInlineEntries(
+			raw,
+			nodes,
+			levels,
+			resolved,
+			options.advertiseChunks === true ? 'inline' : null
+		);
 		if (declined) chunksDeclined = declined;
 		else if (options.advertiseChunks === true) chunks = 'inline';
 	}
 
 	return {
 		resolved,
-		levels: order.map((ids) => ids.map((id) => byId.get(id)!)),
+		levels,
 		chunks,
 		chunksDeclined
 	};

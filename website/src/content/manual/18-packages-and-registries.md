@@ -49,11 +49,31 @@ The fixed paths are:
 | `GET .../<name>@<version>` | metadata: status, checksums, engine range, api/manifest/chunks/guides links |
 | `GET .../<version>/api` | the jsdoc snapshot JSON |
 | `GET .../<version>/manifest` | the stored dependency manifest (deps, homepage) |
-| `GET .../<version>/chunks` | chunk entry manifest (file names, sizes, content hashes) for browser-side reassembly |
-| `GET .../<version>/chunk/<sha256>` | one content chunk by hash, immutable — browsers fetch these in parallel and unpack locally |
+| `GET .../<version>/chunks` | chunk entry manifest (file names, sizes, content hashes) for browser-side reassembly; 404 `no-file-index` when the version ships no file index |
+| `GET .../<version>/chunk/<sha256>` | one content chunk by hash, immutable — browsers fetch these in parallel and unpack locally; the digest is accepted in either case |
 | `GET .../<name>@<version>/guides[/<slug>]` | guide index or one guide, 404 when the package ships none |
 
 Version metadata and content chunks cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410. The status of a version is the one part of that metadata that changes after the publish, so the server purges the version URLs when a yank or a takedown lands, and then reads the edge back: the purge counts as done only when the edge answers with the new state instead of the old copy. Without the purge credentials (`CF_ZONE_ID` and `CF_PURGE_TOKEN`) nothing is purged, and the one-year lifetime of the metadata route is the bound. Tooling that must see one consistent generation (stdlib seeding, stdlib docs, the playground) reads transport payloads under a fixed `?origin-direct=1` namespace instead of the bare URL; the server answers that namespace `no-store`, so it always reflects origin live truth and can never hold a stale generation.
+
+The chunk manifest is served compressed to a client that asks for it, and the route answers with `Vary: accept-encoding` so the cache never hands one encoding to a client that asked for the other. A chunk digest is accepted in either case: an upper case digest is the same digest, not a missing chunk.
+
+### Entry names in a chunk manifest
+
+Every entry name in a chunk manifest is a path the client writes to disk, so the server checks the names when the tarball is published and refuses the publish when a name could escape the destination directory. A name is accepted when, after dropping at most one trailing `/`, all of the following hold:
+
+- it is not empty;
+- it holds no `\` (a separator on Windows, where joining it onto the destination directory would leave that directory);
+- it does not start with `/`;
+- it carries no drive prefix (`C:`);
+- every `/`-separated component is non-empty and is neither `.` nor `..`;
+- it holds no control character, NUL included;
+- it is at most 255 bytes long.
+
+A publish that carries such a name is rejected with 400 and a message naming the entry. The client applies the same rule to the same names, so a manifest that came from somewhere else is refused at install time as well.
+
+One name is not a path. A manifest of exactly one entry whose name is empty and which is not a directory means the package is one opaque tarball blob, and it is the only shape that may carry the empty name.
+
+A version that ships no file index at all answers 404 `no-file-index` on the chunks route, and the client reports that as a package with no file index, never as a broken download.
 
 ### Playground stdlib prefetch
 
@@ -67,7 +87,7 @@ The web playground carries no standard library inside its wasm engine either: en
 | `302` | name without version | redirect to the latest versioned URL, never content |
 | `400` | bad input | `invalid package name`, `bad-range` |
 | `403` | not the owner | `package <name> is owned by someone else`, `scope @<scope> is not yours` |
-| `404` | missing name, version, or guide | JSON error |
+| `404` | missing name, version, guide, or file index | JSON error |
 | `409` | version reuse or bad yank | `version <v> already published (versions are immutable)`, `version <v> is not live` |
 | `410` | tombstoned version | `{ code: "withdrawn", reason }`, cached immutably for a year |
 | `503` | the registry changed while the answer was computed | `resolution raced with a mutation, retry` |
@@ -138,7 +158,7 @@ That removes one `GET .../{version}/chunks` per package from a cold seed. `entri
 Three rules govern it:
 
 - **Opt-in, additive.** A client that sends no `chunks` field gets the byte-for-byte response it got before, with no `entries` and no `chunks` field. Nothing breaks if the server never gains the capability.
-- **`"chunks": "links"` means the server declined.** No node carries `entries` and clients read the chunks endpoint as usual. One global switch keeps the response self-consistent, so a client never has to mix the two paths inside one resolve. The refusal is named in a top-level `chunksDeclined` field, either `size-cap-exceeded` when the inline byte budget (256 KiB across the whole response) was exceeded, or `closure-too-large` when the closure holds too many packages to be worth inlining. The server measures the file indexes before reading them, so a refused request never pays for an index it would have to drop.
+- **`"chunks": "links"` means the server declined.** No node carries `entries` and clients read the chunks endpoint as usual. One global switch keeps the response self-consistent, so a client never has to mix the two paths inside one resolve. The refusal is named in a top-level `chunksDeclined` field, either `size-cap-exceeded` when the inline byte budget (256 KiB) was exceeded, or `closure-too-large` when the closure holds too many packages to be worth inlining. The budget is measured on the resolve body itself, byte for byte, with the inline lists in it, so the number means what it says: the whole response, not only the file indexes. The server measures the file indexes before reading them, so a refused request never pays for an index it would have to drop.
 - **A generation error still retries the manifest.** If an inlined list does not verify, the client falls back to reading the chunk manifest origin-direct, exactly as it would without the capability.
 
 Every resolve error response carries a `requestId` (a UUID v4) alongside `code` and `message`. The server logs the failure under `[resolve <id>]`, so paste the id when reporting a 500 `resolve-failed`.
@@ -169,6 +189,8 @@ Publishing minifies on the client before upload. `rnx publish` first refuses unf
 The server stores the submitted API snapshot after checking it: the payload must parse as docgen JSON (`{"modules":[...]}` with typed entries per module), fit the same 1 MiB cap as storage, and carry no pre-rendered HTML — unknown fields are dropped before the row is written, and anything misshapen fails with 400 (oversize with 413). The stored snapshot is what `GET .../{version}/api` serves, so the package page and the registry API always agree.
 
 Declarations are checked against the shipped code. The server scans the tarball sources for the same capability sinks the compiler tracks (`File.open`, `fetch`, `Process.spawn`, `Env.get`, `print`, `unsafe`, and the rest of the `sink_for` table) and rejects the publish with 400 when the code uses a domain head the manifest does not declare — the message names the symbol, the file, and the `Project.config` permission entry that would cover it. Declaring a wider ceiling than the code uses is fine; only undeclared use is rejected. Publishes without tarball bytes carry no code to scan, so they store declarations unchecked.
+
+The entry names of the tarball are checked too. A name that could escape the destination directory on the client (`../`, a Windows separator, a drive prefix, an absolute path) fails the publish with 400 and a message naming the entry, before the version is written. The rule is the one in "Entry names in a chunk manifest" above.
 
 Server-side auth is an exact match against the configured org token. A local server without one accepts `preview-` tokens and logs a warning — a deliberate hole for local development, not for deployment. Browser sessions can publish too: then the username owns the package and scope membership is checked per scope.
 
