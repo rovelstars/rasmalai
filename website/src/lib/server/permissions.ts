@@ -9,7 +9,7 @@
 // entry point (check/run/tokenize only), so the server cannot shell out
 // to the real pass. Under-declaration is rejected; over-declaration (a
 // wider ceiling than the code uses) stays allowed.
-import { parseTarEntries } from '$lib/server/chunks';
+import { parseTarball, type ParsedTarball } from '$lib/server/chunks';
 
 export const CAPABILITY_DOMAINS = [
 	'fs:read',
@@ -173,6 +173,31 @@ function escRe(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// The sink patterns are compiled once per isolate. The scan runs them over
+// every file of every published package, and rebuilding them per symbol
+// per file was the single biggest cost of the publish path.
+//
+// Each group carries one combined alternation, which answers "does this
+// group match at all" in one test, and the per-symbol patterns, which
+// name the symbol. The combined pattern uses the same negative lookbehind
+// as the per-symbol ones, so it matches exactly when one of them does:
+// it is a prefilter, never a different rule.
+interface SinkGroup {
+	head: CapabilityHead;
+	names: string[];
+	any: RegExp;
+	perName: RegExp[];
+}
+
+const SINK_LOOKBEHIND = '(?<![A-Za-z0-9_.])';
+
+const SINK_GROUPS: SinkGroup[] = [...DOTTED_SINKS, ...BARE_SINKS].map((group) => ({
+	head: group.head,
+	names: group.names,
+	any: new RegExp(`${SINK_LOOKBEHIND}(?:${group.names.map(escRe).join('|')})\\s*\\(`),
+	perName: group.names.map((name) => new RegExp(`${SINK_LOOKBEHIND}${escRe(name)}\\s*\\(`))
+}));
+
 export function detectCapabilityUse(
 	files: Array<{ name: string; text: string }>
 ): CapabilityEvidence[] {
@@ -187,16 +212,15 @@ export function detectCapabilityUse(
 	for (const f of files) {
 		if (!f.name.endsWith('.rnx')) continue;
 		const code = stripToCode(f.text);
-		for (const group of DOTTED_SINKS) {
-			for (const name of group.names) {
-				const re = new RegExp(`(?<![A-Za-z0-9_.])${escRe(name)}\\s*\\(`);
-				if (re.test(code)) push(group.head, name, f.name);
-			}
-		}
-		for (const group of BARE_SINKS) {
-			for (const name of group.names) {
-				const re = new RegExp(`(?<![A-Za-z0-9_.])${escRe(name)}\\s*\\(`);
-				if (re.test(code)) push(group.head, name, f.name);
+		for (const group of SINK_GROUPS) {
+			if (!group.any.test(code)) continue;
+			// The group matches: name the first symbol of the group that
+			// matches, in the order the group lists them.
+			for (let i = 0; i < group.names.length; i++) {
+				if (group.perName[i].test(code)) {
+					push(group.head, group.names[i], f.name);
+					break;
+				}
 			}
 		}
 		if (TERM_SUFFIX_RE.test(code)) {
@@ -250,16 +274,34 @@ async function inflateBounded(bytes: Uint8Array): Promise<Uint8Array | null> {
 	}
 }
 
+// How many tarballs were scanned. The publish path counts the scans it
+// paid for, so a test can prove that a refused publish never reached the
+// scan.
+let scanCount = 0;
+
+export function capabilityScanCount(): number {
+	return scanCount;
+}
+
+export function resetCapabilityScanCount(): void {
+	scanCount = 0;
+}
+
 export async function scanTarballCapabilities(tarball: Uint8Array): Promise<CapabilityEvidence[]> {
-	let bytes = tarball;
-	if (isGzipTarball(bytes)) {
-		const inflated = await inflateBounded(bytes);
-		if (!inflated) return [];
-		bytes = inflated;
-	}
+	if (!isGzipTarball(tarball)) return scanParsedCapabilities(parseTarball(tarball));
+	const inflated = await inflateBounded(tarball);
+	if (!inflated) return [];
+	return scanParsedCapabilities(parseTarball(inflated));
+}
+
+// The scan over an already parsed tarball. The publish path parses the
+// upload once and scans the entries it already has.
+export function scanParsedCapabilities(parsed: ParsedTarball): CapabilityEvidence[] {
+	scanCount += 1;
 	const files: Array<{ name: string; text: string }> = [];
 	const dec = new TextDecoder();
-	for (const e of parseTarEntries(bytes)) {
+	for (const e of parsed.entries) {
+		if (e.dir) continue;
 		if (!e.name.endsWith('.rnx')) continue;
 		files.push({ name: e.name, text: dec.decode(e.bytes) });
 	}

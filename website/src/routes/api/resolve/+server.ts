@@ -1,27 +1,90 @@
 import { json } from '@sveltejs/kit';
 import { resolveGraph, type HaveEntry } from '$lib/server/db';
-import { specHeaders, isValidRange, isTransientStoreError } from '$lib/server/registry';
+import {
+	specHeaders,
+	isValidRange,
+	isTransientStoreError,
+	MAX_RESOLVE_BODY_BYTES,
+	MAX_RESOLVE_REQUIREMENTS,
+	MAX_RESOLVE_HAVE
+} from '$lib/server/registry';
 import { newRequestId } from '$lib/server/requestId';
 
 function err(code: string, message: string, status: number, requestId: string) {
 	return json({ code, message, requestId }, { status, headers: specHeaders() });
 }
 
+// The body, read with a hard byte ceiling. The declared length is checked
+// first, so an oversized upload is refused without being read at all, and
+// the stream is cut off at the ceiling for the bodies that arrive without
+// a length.
+async function readBody(
+	request: Request,
+	maxBytes: number
+): Promise<{ ok: true; text: string } | { ok: false }> {
+	const declared = Number(request.headers.get('Content-Length') ?? '');
+	if (Number.isFinite(declared) && declared > maxBytes) return { ok: false };
+	const body = request.body;
+	if (!body) {
+		const text = await request.text();
+		if (new TextEncoder().encode(text).length > maxBytes) return { ok: false };
+		return { ok: true, text };
+	}
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel().catch(() => undefined);
+			return { ok: false };
+		}
+		chunks.push(value);
+	}
+	const merged = new Uint8Array(total);
+	let off = 0;
+	for (const chunk of chunks) {
+		merged.set(chunk, off);
+		off += chunk.byteLength;
+	}
+	return { ok: true, text: new TextDecoder().decode(merged) };
+}
+
 // One round trip, depth-leveled, with a have-list for deltas. Pinned
 // requirement sets resolve deterministically; ranged sets re-resolve live.
 export async function POST({ request, url, platform }) {
 	const requestId = newRequestId();
-	let body: Record<string, unknown>;
+	const raw = await readBody(request, MAX_RESOLVE_BODY_BYTES);
+	if (!raw.ok) {
+		return err('payload-too-large', `request body over ${MAX_RESOLVE_BODY_BYTES} bytes`, 413, requestId);
+	}
+	let parsed: unknown;
 	try {
-		body = (await request.json()) as Record<string, unknown>;
+		parsed = JSON.parse(raw.text);
 	} catch {
 		return err('bad-request', 'invalid JSON body', 400, requestId);
 	}
+	if (parsed === null) {
+		return err('bad-request', 'invalid JSON body', 400, requestId);
+	}
+	const body = parsed as Record<string, unknown>;
 	const reqs = body['requirements'];
 	if (!reqs || typeof reqs !== 'object' || Object.keys(reqs).length === 0) {
 		return err('bad-request', 'missing requirements map', 400, requestId);
 	}
 	const requirements = reqs as Record<string, string>;
+	// The count is checked before every name is parsed: validating 100k
+	// names is the cost the cap exists to avoid.
+	if (Object.keys(requirements).length > MAX_RESOLVE_REQUIREMENTS) {
+		return err(
+			'payload-too-large',
+			`requirements map over ${MAX_RESOLVE_REQUIREMENTS} entries`,
+			413,
+			requestId
+		);
+	}
 	for (const [name, range] of Object.entries(requirements)) {
 		if (typeof range !== 'string') {
 			return err('bad-request', `requirement for ${name} must be a version range string`, 400, requestId);
@@ -30,8 +93,12 @@ export async function POST({ request, url, platform }) {
 			return err('bad-range', `requirement for ${name} is not a valid range (*, latest, X.Y.Z, ^, ~, >=)`, 400, requestId);
 		}
 	}
-	const have: HaveEntry[] = Array.isArray(body['have'])
-		? (body['have'] as unknown[]).flatMap((h) => {
+	const rawHave = body['have'];
+	if (Array.isArray(rawHave) && rawHave.length > MAX_RESOLVE_HAVE) {
+		return err('payload-too-large', `have list over ${MAX_RESOLVE_HAVE} entries`, 413, requestId);
+	}
+	const have: HaveEntry[] = Array.isArray(rawHave)
+		? rawHave.flatMap((h) => {
 				if (h && typeof h === 'object') {
 					const o = h as Record<string, unknown>;
 					if (typeof o['full'] === 'string' && typeof o['version'] === 'string') {

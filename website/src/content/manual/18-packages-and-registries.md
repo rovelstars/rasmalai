@@ -92,6 +92,7 @@ The web playground carries no standard library inside its wasm engine either: en
 | `404` | missing name, version, guide, or file index | JSON error |
 | `409` | version reuse or bad yank | `version <v> already published (versions are immutable)`, `version <v> is not live` |
 | `410` | tombstoned version | `{ code: "withdrawn", reason }`, cached immutably for a year |
+| `413` | the request is larger than the server accepts | `payload-too-large` |
 | `503` | the registry changed while the answer was computed | `resolution raced with a mutation, retry` |
 
 Every response carries an `rnx-registry-spec: 1` header. A client meeting a spec it does not support is a hard error naming both numbers, and calls needing a capability the server lacks fail closed naming it.
@@ -165,7 +166,21 @@ Three rules govern it:
 
 Every resolve error response carries a `requestId` (a UUID v4) alongside `code` and `message`. The server logs the failure under `[resolve <id>]`, so paste the id when reporting a 500 `resolve-failed`.
 
-A resolve failure answers with a status the client can act on: 400 `bad-request` or `bad-range`, 404 `not-found`, 422 `budget-exceeded`, `cycle` or `unsatisfiable`, 503 `unavailable` while the store is briefly down or while a mutation races the answer, and 500 `resolve-failed` for anything else. A client that meets a status it does not know prints that status and says its own version is out of date, instead of failing with a parse error.
+A resolve failure answers with a status the client can act on: 400 `bad-request` or `bad-range`, 404 `not-found`, 413 `payload-too-large`, 422 `budget-exceeded`, `cycle` or `unsatisfiable`, 503 `unavailable` while the store is briefly down or while a mutation races the answer, and 500 `resolve-failed` for anything else. A client that meets a status it does not know prints that status and says its own version is out of date, instead of failing with a parse error.
+
+### The shape of a resolve request
+
+The resolve endpoint is anonymous, so it caps what a request may cost before it reads it:
+
+| Limit | Value | Refusal |
+|---|---|---|
+| Request body | 64 KiB | 413 `payload-too-large` |
+| Entries in `requirements` | 512 | 413 `payload-too-large` |
+| Entries in `have` | 256 | 413 `payload-too-large` |
+
+An oversized body is refused on its declared length, before a byte of it is read, and the stream is cut off at the same ceiling for a body that arrives without one. The counts are checked before the names are parsed, so a request with a hundred thousand requirements never pays for validating them.
+
+A resolve also has a runtime budget: the traversal stops at 64 levels, 512 packages, 512 packages in one level and 4096 candidate versions, and the request may spend 50 calls to the store. A closure that needs more answers 422 `budget-exceeded` with the reason in the message. The last limit is the platform's own: one request may make 50 external calls on the free plan, so the resolver counts them and refuses itself rather than being cut off mid-answer.
 
 ## Publishing
 

@@ -20,16 +20,13 @@ export function chunkKey(hash: string): string {
 	return `chunks/${h.slice(0, 2)}/${h.slice(2, 4)}/${h}`;
 }
 
-export async function r2Has(bucket: R2BucketLike, hash: string): Promise<boolean> {
-	return (await bucket.head(chunkKey(hash))) !== null;
-}
-
-export async function r2PutIfMissing(bucket: R2BucketLike, hash: string, bytes: Uint8Array): Promise<boolean> {
-	if (await r2Has(bucket, hash)) return false;
+// The chunk object is keyed by its own digest, so the put is idempotent
+// and needs no existence probe: the probe was one extra subrequest per
+// chunk on every publish.
+export async function r2Put(bucket: R2BucketLike, hash: string, bytes: Uint8Array): Promise<void> {
 	await bucket.put(chunkKey(hash), bytes, {
 		httpMetadata: { contentType: 'application/octet-stream' }
 	});
-	return true;
 }
 
 export async function r2Get(bucket: R2BucketLike, hash: string): Promise<Uint8Array | null> {

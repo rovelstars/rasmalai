@@ -6,13 +6,14 @@ import {
 	parsePackageName,
 	packageId,
 	getPackageOwner,
-	getVersionRow,
+	getVersionIndexRow,
 	versionReuseBlocked,
 	recentVersionCount,
-	putChunk,
+	putChunks,
 	linkVersionChunks,
 	storeTarManifest,
-	enforceStorageQuota,
+	checkStorageQuota,
+	chargeStorageQuota,
 	purgeUrls,
 	packagePointerUrls,
 	extractDepNames,
@@ -29,14 +30,20 @@ import { normalizeGuideEntry, normalizeDocJson } from '$lib/server/guides';
 import {
 	parseManifestPermissions,
 	checkCapabilityCoverage,
+	scanParsedCapabilities,
 	scanTarballCapabilities,
+	isGzipTarball,
 	type DeclaredPermission
 } from '$lib/server/permissions';
 import {
 	chunkTarball,
-	rebuildTarball,
+	chunkCountBound,
+	parseTarball,
+	rebuildMatchesTarball,
 	sha256Hex,
 	validateTarballEntryNames,
+	MAX_CHUNKS,
+	TooManyChunksError,
 	UnsafeEntryNameError
 } from '$lib/server/chunks';
 import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
@@ -45,8 +52,51 @@ const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 const MAX_GUIDES_BYTES = 400 * 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024;
 
+// The metadata body of a JSON publish. The stored snapshot is capped at
+// 512 KiB, but the request carries the same payload plus its JSON
+// framing, and a doc payload of up to 1 MiB, so the body gets its own
+// ceiling. A body over it is refused before it is read.
+const MAX_META_BODY_BYTES = 2 * 1024 * 1024;
+
 function unauthorized(message: string) {
 	return json({ success: false, error: message }, { status: 401, headers: specHeaders() });
+}
+
+// The upload body, read with a hard byte ceiling. The declared length is
+// checked first: an oversized upload is refused without being read, so a
+// hostile body costs nothing instead of filling the isolate.
+async function readBody(
+	request: Request,
+	maxBytes: number
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false }> {
+	const declared = Number(request.headers.get('Content-Length') ?? '');
+	if (Number.isFinite(declared) && declared > maxBytes) return { ok: false };
+	const body = request.body;
+	if (!body) {
+		const buf = await request.arrayBuffer().catch(() => new ArrayBuffer(0));
+		if (buf.byteLength > maxBytes) return { ok: false };
+		return { ok: true, bytes: new Uint8Array(buf) };
+	}
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel().catch(() => undefined);
+			return { ok: false };
+		}
+		chunks.push(value);
+	}
+	const merged = new Uint8Array(total);
+	let off = 0;
+	for (const chunk of chunks) {
+		merged.set(chunk, off);
+		off += chunk.byteLength;
+	}
+	return { ok: true, bytes: merged };
 }
 
 // Public catalog for search and listings. Metadata only, never doc payloads.
@@ -149,18 +199,28 @@ export async function POST({ request, platform, url }) {
 	let tarball: Uint8Array | null = null;
 	const contentType = request.headers.get('Content-Type') ?? '';
 	if (contentType.includes('application/json')) {
+		const body = await readBody(request, MAX_META_BODY_BYTES);
+		if (!body.ok) {
+			return json(
+				{ success: false, error: 'metadata body exceeds 2 MiB' },
+				{ status: 413, headers: specHeaders() }
+			);
+		}
 		try {
-			meta = (await request.json()) as Record<string, unknown>;
+			meta = JSON.parse(new TextDecoder().decode(body.bytes)) as Record<string, unknown>;
 		} catch {
 			return json({ success: false, error: 'invalid JSON metadata' }, { status: 400, headers: specHeaders() });
 		}
 	} else {
-		const buf = await request.arrayBuffer().catch(() => new ArrayBuffer(0));
-		if (buf.byteLength > 0) {
-			if (buf.byteLength > MAX_TARBALL_BYTES) {
-				return json({ success: false, error: 'tarball exceeds 512 KiB' }, { status: 413, headers: specHeaders() });
-			}
-			tarball = new Uint8Array(buf);
+		const body = await readBody(request, MAX_TARBALL_BYTES);
+		if (!body.ok) {
+			return json(
+				{ success: false, error: 'tarball exceeds 512 KiB' },
+				{ status: 413, headers: specHeaders() }
+			);
+		}
+		if (body.bytes.length > 0) {
+			tarball = body.bytes;
 		}
 		try {
 			meta = JSON.parse(request.headers.get('X-RNX-Meta') ?? '{}') as Record<string, unknown>;
@@ -211,7 +271,7 @@ export async function POST({ request, platform, url }) {
 	}
 
 	if (await versionReuseBlocked(env, parsed.full, version)) {
-		const existing = await getVersionRow(env, parsed.full, version);
+		const existing = await getVersionIndexRow(env, parsed.full, version);
 		if (existing && requestId && existing.row.requestId === requestId) {
 			return json({ success: true, url: `/packages/${parsed.full}`, version, duplicate: true }, { headers: specHeaders() });
 		}
@@ -242,7 +302,10 @@ export async function POST({ request, platform, url }) {
 	if (!tarball && tarballSha256) {
 		return json({ success: false, error: 'tarballSha256 requires tarball bytes' }, { status: 400, headers: specHeaders() });
 	}
-	if (tarball) {
+	// The upload is parsed once: the name check, the capability scan and
+	// the chunking all read this result.
+	let parsedTar = tarball ? parseTarball(tarball) : null;
+	if (tarball && parsedTar) {
 		tarballSha256 = await sha256Hex(tarball);
 		if (checksum && checksum !== tarballSha256) {
 			return json({ success: false, error: 'checksum does not match tarball bytes' }, { status: 400, headers: specHeaders() });
@@ -251,11 +314,24 @@ export async function POST({ request, platform, url }) {
 		// disk, so a name that escapes the destination directory is refused
 		// here, before the version is written. The rule is the one the
 		// client applies to the same names.
-		const names = validateTarballEntryNames(tarball);
+		const names = validateTarballEntryNames(parsedTar);
 		if (!names.ok) {
 			return json(
 				{ success: false, error: `unsafe tar entry name \`${names.name}\`: ${names.reason}` },
 				{ status: 400, headers: specHeaders() }
+			);
+		}
+		// The chunk count is bounded before anything is written: every
+		// chunk is one stored object, and the plan allows a fixed number of
+		// external subrequests per request.
+		const chunkBound = chunkCountBound(parsedTar);
+		if (chunkBound > MAX_CHUNKS) {
+			return json(
+				{
+					success: false,
+					error: `package needs ${chunkBound} chunks, over the ${MAX_CHUNKS} chunk limit`
+				},
+				{ status: 413, headers: specHeaders() }
 			);
 		}
 	}
@@ -273,12 +349,32 @@ export async function POST({ request, platform, url }) {
 		const msg = e instanceof Error ? e.message : String(e);
 		return json({ success: false, error: `invalid permissions: ${msg}` }, { status: 400, headers: specHeaders() });
 	}
+	// The storage quota is enforced before the capability scan and before
+	// the publish, so a publish that cannot be stored costs a quota check
+	// and nothing else: no scan, no version row, no audit row. The bytes
+	// are charged once the version is stored, so a refused or failed
+	// publish costs nothing.
+	if (tarball) {
+		try {
+			await checkStorageQuota(env, tarball.byteLength);
+		} catch (e) {
+			if (e instanceof Error && e.message.startsWith('quota-exceeded')) {
+				return json({ success: false, error: 'storage quota exceeded' }, { status: 507, headers: specHeaders() });
+			}
+			throw e;
+		}
+	}
 	// Code-against-declaration check: the shipped tarball is scanned for
 	// capability sinks (compiler `sink_for` table, domain-head granularity)
 	// and every used head must be declared. Tarball-less JSON publishes
 	// carry no code to scan, so they store declarations unchecked.
-	if (tarball) {
-		const coverage = checkCapabilityCoverage(capabilities, await scanTarballCapabilities(tarball));
+	if (tarball && parsedTar) {
+		// A gzipped upload is scanned through its inflated bytes; a plain
+		// tarball is scanned from the entries that were already parsed.
+		const used = isGzipTarball(tarball)
+			? await scanTarballCapabilities(tarball)
+			: scanParsedCapabilities(parsedTar);
+		const coverage = checkCapabilityCoverage(capabilities, used);
 		if (!coverage.ok) {
 			return json(
 				{ success: false, error: `undeclared capabilities: ${coverage.error}` },
@@ -316,29 +412,21 @@ export async function POST({ request, platform, url }) {
 				{ status: 409, headers: specHeaders() }
 			);
 		}
-		if (tarball) {
-			try {
-				await enforceStorageQuota(env, tarball.byteLength);
-			} catch (e) {
-				if (e instanceof Error && e.message.startsWith('quota-exceeded')) {
-					return json({ success: false, error: 'storage quota exceeded' }, { status: 507, headers: specHeaders() });
-				}
-				throw e;
-			}
+		if (tarball && parsedTar) {
 			const rowId = `ver_${packageId(parsed.scope, parsed.name)}_${version}`;
-			const chunked = await chunkTarball(tarball);
+			const chunked = await chunkTarball(parsedTar);
 			const verifyMap = new Map(chunked.units.map((u) => [u.hash, u.bytes] as const));
-			if ((await sha256Hex(rebuildTarball(chunked.entries, verifyMap))) !== tarballSha256) {
+			if (!rebuildMatchesTarball(chunked.entries, verifyMap, tarball)) {
 				return json(
 					{ success: false, error: 'tarball failed round-trip verification (not canonical)' },
 					{ status: 400, headers: specHeaders() }
 				);
 			}
-			for (const u of chunked.units) {
-				await putChunk(env, u.hash, u.size, u.bytes);
-			}
+			await putChunks(env, chunked.units);
 			await linkVersionChunks(env, rowId, chunked.units.map((u) => u.hash));
 			await storeTarManifest(env, rowId, chunked.entries);
+			// The version is stored, so its bytes count against the budget.
+			chargeStorageQuota(env, tarball.byteLength);
 		}
 		await purgeUrls(env, packagePointerUrls(url.origin, parsed.full, version), { fullName: parsed.full });
 		for (const dep of extractDepNames(manifestJson)) {
@@ -348,6 +436,9 @@ export async function POST({ request, platform, url }) {
 	} catch (e) {
 		if (e instanceof UnsafeEntryNameError) {
 			return json({ success: false, error: e.message }, { status: 400, headers: specHeaders() });
+		}
+		if (e instanceof TooManyChunksError) {
+			return json({ success: false, error: e.message }, { status: 413, headers: specHeaders() });
 		}
 		const msg = e instanceof Error ? e.message : String(e);
 		if (msg.includes('UNIQUE') || msg.includes('already published')) {

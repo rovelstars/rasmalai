@@ -8,6 +8,17 @@ export const CAPABILITIES = [
 	'resolve-inline-chunks'
 ];
 
+// The shape a resolve request may have.
+//
+// The resolve endpoint is anonymous, so these are denial-of-service
+// guards: a request that is refused costs the server a header check and
+// nothing else. The body cap is the one that matters, because parsing a
+// large body and validating every name in it costs more CPU than the
+// whole rest of the request.
+export const MAX_RESOLVE_BODY_BYTES = 64 * 1024;
+export const MAX_RESOLVE_REQUIREMENTS = 512;
+export const MAX_RESOLVE_HAVE = 256;
+
 export function specHeaders(): Record<string, string> {
 	// Public read APIs are cross-origin fetchable (ACAO:*) so browser
 	// clients (playground, localhost dev) can read them. This grants

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { r2Bucket, chunkKey, r2PutIfMissing, r2Get, r2Delete } from '../src/lib/server/r2.ts';
+import { r2Bucket, chunkKey, r2Put, r2Get, r2Delete } from '../src/lib/server/r2.ts';
 import {
 	sampleProbability,
 	freshQuotaState,
@@ -57,19 +57,22 @@ describe('r2Bucket', () => {
 });
 
 describe('r2 byte round-trip', () => {
-	it('puts once and dedups on conflict', async () => {
+	it('puts without a probe and reads back', async () => {
 		const b = memBucket();
 		const bytes = new TextEncoder().encode('hello');
-		assert.equal(await r2PutIfMissing(b, H, bytes), true);
-		assert.equal(await r2PutIfMissing(b, H, bytes), false);
-		assert.equal(b.puts(), 1);
+		await r2Put(b, H, bytes);
+		// The object is keyed by its digest, so the put is idempotent and
+		// needs no existence probe.
+		await r2Put(b, H, bytes);
+		assert.equal(b.puts(), 2);
+		assert.equal(b.heads(), 0);
 		const back = await r2Get(b, H);
 		assert.deepEqual(back, bytes);
 	});
 
 	it('deletes', async () => {
 		const b = memBucket();
-		await r2PutIfMissing(b, H, new Uint8Array([1]));
+		await r2Put(b, H, new Uint8Array([1]));
 		await r2Delete(b, H);
 		assert.equal(await r2Get(b, H), null);
 	});
