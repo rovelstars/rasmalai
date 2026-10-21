@@ -549,6 +549,32 @@ pub fn set_registry_transport(transport: std::sync::Arc<dyn RegistryTransport>) 
     *slot = Some(transport);
 }
 
+/// Installs the built-in HTTP/2 client. The registry answers ALPN with
+/// h2, so one session per host carries the whole chunk burst of a cold
+/// seed: the streams multiplex over it instead of every request paying
+/// its own handshake.
+pub fn install_http2_transport() {
+    set_registry_transport(http2_transport());
+}
+
+fn http2_transport() -> std::sync::Arc<dyn RegistryTransport> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static CLIENT: std::sync::OnceLock<std::sync::Arc<dyn RegistryTransport>> =
+            std::sync::OnceLock::new();
+        CLIENT
+            .get_or_init(|| match H2Transport::new() {
+                Ok(client) => std::sync::Arc::new(client),
+                Err(_) => std::sync::Arc::new(StdTransport),
+            })
+            .clone()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::sync::Arc::new(StdTransport)
+    }
+}
+
 fn transport() -> std::sync::Arc<dyn RegistryTransport> {
     let slot = TRANSPORT.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(active) = slot.clone() {
@@ -754,6 +780,94 @@ impl RegistryTransport for StdTransport {
     fn manifest_get(&self, url: &str) -> Result<ManifestReply, Diagnostic> {
         std_request_full("GET", url, None, true)
             .map(|(reply, content_encoding)| ManifestReply { reply, content_encoding })
+    }
+}
+
+// One session per host, many streams on it: the chunk reads of a cold
+// seed share one handshake instead of paying one per request.
+#[cfg(not(target_arch = "wasm32"))]
+struct H2Transport {
+    client: reqwest::blocking::Client,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl H2Transport {
+    fn new() -> Result<H2Transport, Diagnostic> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .user_agent("rnx")
+            .build()
+            .map_err(|e| {
+                Diagnostic::new(Code::E108, format!("cannot start the registry client: {e}"))
+            })?;
+        Ok(H2Transport { client })
+    }
+
+    fn reply(
+        what: &str,
+        result: Result<reqwest::blocking::Response, reqwest::Error>,
+    ) -> Result<(RegistryReply, Option<String>), Diagnostic> {
+        use std::io::Read;
+        let response = result.map_err(|e| {
+            if e.is_timeout() {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("{what} timed out after {REQUEST_TIMEOUT_SECS}s"),
+                )
+            } else {
+                Diagnostic::new(Code::E108, format!("{what} failed: {e}"))
+            }
+        })?;
+        let status = response.status().as_u16();
+        let spec_header = response
+            .headers()
+            .get("rnx-registry-spec")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let content_encoding = response
+            .headers()
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.trim().to_string());
+        let mut body = Vec::new();
+        response
+            .take((MAX_DOWNLOAD_BYTES + 1) as u64)
+            .read_to_end(&mut body)
+            .map_err(|e| Diagnostic::new(Code::E108, format!("{what} failed: {e}")))?;
+        if body.len() > MAX_DOWNLOAD_BYTES {
+            return Err(Diagnostic::new(Code::E108, "registry response too large"));
+        }
+        Ok((RegistryReply { status, spec_header, body }, content_encoding))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RegistryTransport for H2Transport {
+    fn get(&self, url: &str) -> Result<RegistryReply, Diagnostic> {
+        let result = self.client.get(url).header("Accept", "application/json").send();
+        Self::reply("registry request", result).map(|(reply, _)| reply)
+    }
+
+    fn post_json(&self, url: &str, body: &str) -> Result<RegistryReply, Diagnostic> {
+        let result = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .body(body.to_string())
+            .send();
+        Self::reply("registry request", result).map(|(reply, _)| reply)
+    }
+
+    fn manifest_get(&self, url: &str) -> Result<ManifestReply, Diagnostic> {
+        let result = self
+            .client
+            .get(url)
+            .header("Accept", "application/json")
+            .header("Accept-Encoding", "gzip")
+            .send();
+        let (reply, content_encoding) = Self::reply("registry request", result)?;
+        Ok(ManifestReply { reply, content_encoding })
     }
 }
 
@@ -5208,5 +5322,67 @@ mod tests {
         .unwrap();
         assert_eq!(fetched.len(), 1);
         assert_eq!(std::fs::read(fetched[0].dir.join("Project.config")).unwrap(), INTEROP_PC);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_http2_transport_speaks_the_registry_protocol() {
+        let node = node_json("test/interop", "1.0.0", &"0".repeat(64), false);
+        let server = MockRegistry::start_encoded(
+            MockConfig {
+                version_spec: 1,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: resolve_json_static(&[node]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: None,
+                chunk_override: None,
+            },
+            crate::gzip::compress_gzip(br#"{"entries": []}"#),
+            Some("gzip"),
+        );
+        let transport = H2Transport::new().unwrap();
+
+        let version = transport.get(&format!("{}/api/version", server.base)).unwrap();
+        assert_eq!(version.status, 200);
+        assert_eq!(version.spec_header.as_deref(), Some("1"));
+        assert!(String::from_utf8_lossy(&version.body).contains("\"spec\": 1"));
+
+        let resolved = transport.post_json(&format!("{}/api/resolve", server.base), "{}").unwrap();
+        assert_eq!(resolved.status, 200);
+
+        let manifest = transport
+            .manifest_get(&format!("{}/api/packages/test/interop@1.0.0/chunks", server.base))
+            .unwrap();
+        assert_eq!(manifest.reply.status, 200);
+        assert_eq!(manifest.content_encoding.as_deref(), Some("gzip"));
+        let decoded = decode_chunk_manifest_body(
+            &manifest.reply.body,
+            manifest.content_encoding.as_deref(),
+            "test/interop",
+            "1.0.0",
+        )
+        .unwrap();
+        assert_eq!(decoded, br#"{"entries": []}"#);
+
+        let mut manifests = 0;
+        for (method, path, headers, _) in server.requests_with_headers() {
+            let asks_gzip = headers.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case("accept-encoding") && v.trim().eq_ignore_ascii_case("gzip")
+            });
+            let route = path.split('?').next().unwrap_or_default();
+            if method == "GET" && route.ends_with("/chunks") {
+                assert!(asks_gzip, "the chunk manifest read must ask for gzip: {headers:?}");
+                manifests += 1;
+            } else {
+                assert!(
+                    !asks_gzip,
+                    "only the chunk manifest read asks for gzip: {method} {path} {headers:?}"
+                );
+            }
+        }
+        assert_eq!(manifests, 1);
     }
 }
