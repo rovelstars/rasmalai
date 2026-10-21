@@ -2,75 +2,8 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
-struct UreqTransport {
-    agent: ureq::Agent,
-}
-
-impl UreqTransport {
-    fn new() -> UreqTransport {
-        let config = ureq::config::Config::builder()
-            .timeout_global(Some(std::time::Duration::from_secs(30)))
-            .http_status_as_error(false)
-            .build();
-        UreqTransport { agent: config.into() }
-    }
-
-    fn reply(
-        what: &str,
-        result: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
-    ) -> Result<frontend::fetch::RegistryReply, diagnostics::Diagnostic> {
-        let mut response = result.map_err(|e| match e {
-            ureq::Error::Timeout(_) => diagnostics::Diagnostic::new(
-                diagnostics::Code::E108,
-                format!("{what} timed out after 30s"),
-            ),
-            other => diagnostics::Diagnostic::new(
-                diagnostics::Code::E108,
-                format!("{what} failed: {other}"),
-            ),
-        })?;
-        let status = response.status().as_u16();
-        let spec_header = response
-            .headers()
-            .get("rnx-registry-spec")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let body = response.body_mut().read_to_vec().map_err(|e| {
-            diagnostics::Diagnostic::new(
-                diagnostics::Code::E108,
-                format!("{what} failed: {e}"),
-            )
-        })?;
-        Ok(frontend::fetch::RegistryReply { status, spec_header, body })
-    }
-}
-
-impl frontend::fetch::RegistryTransport for UreqTransport {
-    fn get(&self, url: &str) -> Result<frontend::fetch::RegistryReply, diagnostics::Diagnostic> {
-        Self::reply(
-            "registry request",
-            self.agent.get(url).header("Accept", "application/json").call(),
-        )
-    }
-
-    fn post_json(
-        &self,
-        url: &str,
-        body: &str,
-    ) -> Result<frontend::fetch::RegistryReply, diagnostics::Diagnostic> {
-        Self::reply(
-            "registry request",
-            self.agent
-                .post(url)
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .send(body.as_bytes()),
-        )
-    }
-}
-
 pub fn install_registry_transport() {
-    frontend::fetch::set_registry_transport(std::sync::Arc::new(UreqTransport::new()));
+    frontend::fetch::install_http2_transport();
 }
 
 pub fn ensure_stdlib_seeded() -> Result<bool, diagnostics::Diagnostic> {

@@ -57,6 +57,8 @@ Version metadata and content chunks cache as immutable for a year; a missing nam
 
 The chunk manifest is served compressed to a client that asks for it, and the route answers with `Vary: accept-encoding` so the cache never hands one encoding to a client that asked for the other. A chunk digest is accepted in either case: an upper case digest is the same digest, not a missing chunk.
 
+The command line client speaks HTTP/2 to the registry. One TLS session per host carries the whole download, so the chunk reads of a cold seed run as parallel streams on that one session instead of opening a session each. A server that only speaks HTTP/1.1 still works: the client falls back to it and keeps the connection alive between reads.
+
 ### Entry names in a chunk manifest
 
 Every entry name in a chunk manifest is a path the client writes to disk, so the server checks the names when the tarball is published and refuses the publish when a name could escape the destination directory. A name is accepted when, after dropping at most one trailing `/`, all of the following hold:
