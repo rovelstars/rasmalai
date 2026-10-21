@@ -76,3 +76,16 @@ A publish that carries such a name is rejected with 400 and a message naming the
 ## The 512KB cap
 
 Each version caps at 512KB of stored snapshot bytes. Oversize uploads are rejected no matter the tier — split the package or drop the weight before retrying. Retries are safe: repeat a publish with the same `X-RNX-Request-ID` and the server answers success with `duplicate: true` instead of writing a second row.
+
+## What the server refuses before it reads
+
+The upload body is checked before it is read. The server looks at the declared length first, and a body that claims more than the cap is refused with 413 without a byte of it reaching the worker; a body that arrives without a declared length is cut off at the same ceiling while it streams. A hostile upload therefore costs the server a header check instead of filling its memory.
+
+The archive itself is capped at 512KB, the same cap the stored snapshot has. A JSON publish carries the metadata instead of an archive, and its body is capped at 2 MiB, which is the doc payload and the snapshot the server stores plus their JSON framing.
+
+## The chunk limit
+
+A package is stored as chunks: one chunk per file, and more for a file over 128 KiB, which is split further. The server counts the chunks before it hashes anything and refuses a package that would need more than 32 of them, with 413 and a message naming the count.
+
+The number is not arbitrary. Every chunk is one stored object and one call to the object store, and the platform allows 50 such calls per request on the free plan. A package that needs more chunks than that cannot be stored on the free plan at all, so the server says so instead of failing halfway through the upload. A package that stays under the limit is stored in one batch, whatever its size.
+

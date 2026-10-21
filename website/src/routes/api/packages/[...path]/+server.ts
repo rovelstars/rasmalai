@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import {
 	parsePackageName,
 	getVersionRow,
+	getVersionIndexRow,
 	getLatestVersion,
 	getChunkBytes,
 	getPackageOwner,
@@ -104,7 +105,13 @@ export async function GET({ params, platform, setHeaders, url }) {
 	}
 
 	const [version, sub, slug] = rest;
-	const found = await getVersionRow(env, full, version);
+	// The doc payload is up to 1 MiB per version row, and only the api
+	// sub-resource reads it. Every other read here takes the narrow
+	// projection and never pays for the doc payload.
+	const found =
+		sub === 'api'
+			? await getVersionRow(env, full, version)
+			: await getVersionIndexRow(env, full, version);
 	if (!found) return notFound(`package ${full}@${version} does not exist`);
 	if (found.withdrawn) {
 		return withdrawn(version, readWithdrawReason(found.row.manifestJson));
@@ -141,8 +148,10 @@ export async function GET({ params, platform, setHeaders, url }) {
 
 	if (sub === 'api') {
 		setHeaders({ ...immutable, ...specHeaders() });
+		const docJson =
+			'docJson' in row && typeof row.docJson === 'string' ? row.docJson : '{"modules":[]}';
 		try {
-			return json(JSON.parse(row.docJson), { headers: headers() });
+			return json(JSON.parse(docJson), { headers: headers() });
 		} catch {
 			return json({ modules: [] }, { headers: headers() });
 		}
@@ -266,7 +275,7 @@ export async function POST({ params, request, platform, url }) {
 				return json({ code: 'bad-origin', message: 'bad origin' }, { status: 403, headers: headers() });
 			}
 		}
-		const found = await getVersionRow(env, full, version);
+		const found = await getVersionIndexRow(env, full, version);
 		if (!found) return notFound(`package ${full}@${version} does not exist`);
 		if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
 		if (!tokenOk) {
@@ -306,7 +315,7 @@ export async function POST({ params, request, platform, url }) {
 	if (!adminToken(env, token)) {
 		return json({ code: 'unauthorized', message: 'invalid admin token' }, { status: 401, headers: headers() });
 	}
-	const found = await getVersionRow(env, full, version);
+	const found = await getVersionIndexRow(env, full, version);
 	if (!found) return notFound(`package ${full}@${version} does not exist`);
 	if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
 	let reason = '';

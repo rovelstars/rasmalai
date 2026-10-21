@@ -1,6 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chunkTarball, rebuildTarball, sha256Hex } from '../src/lib/server/chunks.js';
+import {
+	chunkTarball,
+	rebuildTarball,
+	rebuildMatchesTarball,
+	chunkCountBound,
+	parseTarball,
+	sha256Hex,
+	MAX_CHUNKS,
+	TooManyChunksError
+} from '../src/lib/server/chunks.js';
 
 function tarEntry(name: string, data: Uint8Array): Uint8Array {
 	const header = new Uint8Array(512);
@@ -112,5 +121,52 @@ describe('chunk store', () => {
 		const rebuilt = rebuildTarball(entries, byHash);
 		assert.deepEqual(rebuilt, gz);
 		assert.equal(await sha256Hex(rebuilt), await sha256Hex(gz));
+	});
+});
+
+describe('chunk bounds', () => {
+	it('refuses a package over the chunk limit before it chunks', async () => {
+		const files = Array.from({ length: MAX_CHUNKS + 4 }, (_, i) => ({
+			name: `f${i}.txt`,
+			bytes: new TextEncoder().encode(`file ${i}`)
+		}));
+		const tar = concat([...files.map((f) => tarEntry(f.name, f.bytes)), new Uint8Array(1024)]);
+		const parsed = parseTarball(tar);
+		assert.ok(chunkCountBound(parsed) > MAX_CHUNKS);
+		await assert.rejects(() => chunkTarball(parsed), TooManyChunksError);
+	});
+
+	it('counts the chunks of a package before any byte is hashed', () => {
+		const tar = concat([tarEntry('a.txt', new Uint8Array(10)), new Uint8Array(1024)]);
+		assert.equal(chunkCountBound(parseTarball(tar)), 1);
+	});
+
+	it('splits a large file on word boundaries', async () => {
+		const big = new Uint8Array(200 * 1024);
+		for (let off = 0; off < big.length; off += 65536) {
+			crypto.getRandomValues(big.subarray(off, Math.min(off + 65536, big.length)));
+		}
+		const tar = concat([tarEntry('big.bin', big), new Uint8Array(1024)]);
+		const { units } = await chunkTarball(tar);
+		assert.ok(units.length > 1);
+		// Every part but the last ends on a word boundary.
+		for (const unit of units.slice(0, -1)) {
+			assert.equal(unit.size % 4, 0);
+		}
+	});
+});
+
+describe('round-trip comparison', () => {
+	it('matches the uploaded bytes and refuses a tampered tarball', async () => {
+		const a = new TextEncoder().encode('hello world');
+		const tar = concat([tarEntry('a.txt', a), new Uint8Array(1024)]);
+		const { units, entries } = await chunkTarball(tar);
+		const byHash = new Map(units.map((u) => [u.hash, u.bytes] as [string, Uint8Array]));
+		assert.equal(rebuildMatchesTarball(entries, byHash, tar), true);
+		const tampered = tar.slice();
+		tampered[600] = tampered[600] ^ 0xff;
+		assert.equal(rebuildMatchesTarball(entries, byHash, tampered), false);
+		const short = tar.slice(0, tar.length - 10);
+		assert.equal(rebuildMatchesTarball(entries, byHash, short), false);
 	});
 });

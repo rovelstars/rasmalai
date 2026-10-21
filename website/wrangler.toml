@@ -1,0 +1,33 @@
+# Cloudflare configuration for the registry site.
+#
+# The site runs as a Pages project (see README.md, "Deployment"), so this
+# file is the Pages flavour of the Wrangler configuration. It carries the
+# runtime limits the API routes are written against, and nothing else:
+# the production project keeps its bindings and secrets in the dashboard.
+#
+# The limits are the Free plan's, and they are the budgets the code in
+# `src/lib/server` enforces before the platform would have to:
+#
+#   cpu_ms = 10        the CPU one request may spend
+#   subrequests = 50   the external calls one request may make
+#
+# Every store round trip, every R2 object read and every R2 object write
+# is one subrequest, so a resolve that needs a deeper closure than the
+# budget allows refuses itself with a 422 `budget-exceeded` instead of
+# being killed by the platform. A deployment on a bigger plan raises the
+# ceiling with `RESOLVE_MAX_SUBREQUESTS` and with the dashboard CPU limit.
+#
+# This file has no `pages_build_output_dir`, so it stays a local
+# development configuration and the dashboard keeps owning the production
+# project. Adding the key makes this file the source of truth for the
+# deployment, which would drop the dashboard bindings and secrets unless
+# they are all carried over here.
+name = "rasmalai-website"
+# The production project keeps its own compatibility date in the
+# dashboard; this one only applies to the local development runtime.
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[limits]
+cpu_ms = 10
+subrequests = 50

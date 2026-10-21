@@ -6,7 +6,7 @@ import { and, asc, count, desc, eq, gte, inArray, lt, notExists, or, sql, sum } 
 import * as s from './schema.js';
 import { maxSatisfying, parseSemver, levelize, satisfiesRange, selectLatestVersion } from './registry.js';
 import { sha256Hex, type TarEntryRef } from './chunks.js';
-import { r2Bucket, r2PutIfMissing, r2Get } from './r2.js';
+import { r2Bucket, r2Put, r2Get } from './r2.js';
 import { freshQuotaState, shouldSample, effectiveUsage, quotaBudgetBytes, quotaGuardEnabled } from './quota.js';
 
 // Temporary ownership model (no account system yet): a single org owner.
@@ -954,8 +954,29 @@ export interface VersionRow {
 	createdAt: number;
 }
 
+// The version row without the doc payload. The doc payload is up to 1 MiB
+// per row, and the file index, manifest and guide routes never read it, so
+// they select the narrow projection instead.
+export type VersionIndexRow = Omit<VersionRow, 'docJson'>;
+
 export const SEMVER_ORDER = `semver_major DESC, semver_minor DESC, semver_patch DESC,
 	CASE WHEN prerelease = '' THEN 1 ELSE 0 END DESC, prerelease DESC, v.created_at DESC`;
+
+function versionIndexColumns(v: typeof s.packageVersions) {
+	return {
+		id: v.id,
+		version: v.version,
+		status: v.status,
+		checksum: v.checksum,
+		tarballSha256: v.tarballSha256,
+		tarManifestJson: v.tarManifestJson,
+		engineRange: v.engineRange,
+		manifestJson: v.manifestJson,
+		guidesJson: v.guidesJson,
+		requestId: v.requestId,
+		createdAt: v.createdAt
+	};
+}
 
 export async function getVersionRow(
 	env: Record<string, string | undefined>,
@@ -969,18 +990,8 @@ export async function getVersionRow(
 	const p = s.packages;
 	const r = await db
 		.select({
-			id: v.id,
-			version: v.version,
-			status: v.status,
-			checksum: v.checksum,
-			tarballSha256: v.tarballSha256,
-			tarManifestJson: v.tarManifestJson,
-			engineRange: v.engineRange,
-			docJson: v.docJson,
-			manifestJson: v.manifestJson,
-			guidesJson: v.guidesJson,
-			requestId: v.requestId,
-			createdAt: v.createdAt
+			...versionIndexColumns(v),
+			docJson: v.docJson
 		})
 		.from(v)
 		.innerJoin(p, eq(p.id, v.packageId))
@@ -996,6 +1007,41 @@ export async function getVersionRow(
 		tarManifestJson: r.tarManifestJson ?? '[]',
 		engineRange: r.engineRange ?? '',
 		docJson: r.docJson ?? '{"modules":[]}',
+		manifestJson: r.manifestJson ?? '{}',
+		guidesJson: r.guidesJson ?? '[]',
+		requestId: r.requestId ?? '',
+		createdAt: r.createdAt ?? 0
+	};
+	const withdrawn = row.status === 'tombstoned' || (await isVersionWithdrawn(env, full, version));
+	return { row, withdrawn };
+}
+
+// The same row without the doc payload, for the routes that never read it.
+export async function getVersionIndexRow(
+	env: Record<string, string | undefined>,
+	full: string,
+	version: string
+): Promise<{ row: VersionIndexRow; withdrawn: boolean } | null> {
+	const parsed = parsePackageName(full);
+	const db = await getDdb(env);
+	if (!parsed || !db) return null;
+	const v = s.packageVersions;
+	const p = s.packages;
+	const r = await db
+		.select(versionIndexColumns(v))
+		.from(v)
+		.innerJoin(p, eq(p.id, v.packageId))
+		.where(and(eq(p.scope, parsed.scope), eq(p.name, parsed.name), eq(v.version, version)))
+		.get();
+	if (!r) return null;
+	const row: VersionIndexRow = {
+		id: r.id,
+		version: r.version,
+		status: r.status ?? 'live',
+		checksum: r.checksum ?? '',
+		tarballSha256: r.tarballSha256 ?? '',
+		tarManifestJson: r.tarManifestJson ?? '[]',
+		engineRange: r.engineRange ?? '',
 		manifestJson: r.manifestJson ?? '{}',
 		guidesJson: r.guidesJson ?? '[]',
 		requestId: r.requestId ?? '',
@@ -1247,30 +1293,35 @@ export async function transferScope(
 	noteMutation();
 }
 
-export async function putChunk(
+// The chunk rows of one publish, written in a single batch. One round trip
+// per chunk would be one external subrequest per chunk, and the platform
+// allows 50 per invocation.
+export async function putChunks(
 	env: Record<string, string | undefined>,
-	hash: string,
-	sizeBytes: number,
-	bytes: Uint8Array
+	units: Array<{ hash: string; size: number; bytes: Uint8Array }>
 ): Promise<void> {
+	if (units.length === 0) return;
 	const db = await getDdb(env);
 	if (!db) throw new Error('missing database');
 	const bucket = r2Bucket(env);
 	const now = Math.floor(Date.now() / 1000);
-	if (bucket) {
-		await db.run(
-			sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
-			      VALUES (${hash}, ${sizeBytes}, x'', ${now})
-			      ON CONFLICT(hash) DO NOTHING`
-		);
-		await r2PutIfMissing(bucket, hash, bytes);
-		return;
-	}
-	await db.run(
-		sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
-		      VALUES (${hash}, ${sizeBytes}, ${bytes}, ${now})
-		      ON CONFLICT(hash) DO NOTHING`
+	await db.batch(
+		units.map((unit) =>
+			bucket
+				? db.run(sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
+				             VALUES (${unit.hash}, ${unit.size}, x'', ${now})
+				             ON CONFLICT(hash) DO NOTHING`)
+				: db.run(sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
+				             VALUES (${unit.hash}, ${unit.size}, ${unit.bytes}, ${now})
+				             ON CONFLICT(hash) DO NOTHING`)
+		) as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]
 	);
+	if (!bucket) return;
+	for (const unit of units) {
+		// The object is keyed by its own digest, so the put is idempotent
+		// and the existence probe the old path did is not needed.
+		await r2Put(bucket, unit.hash, unit.bytes);
+	}
 }
 
 let quotaState = freshQuotaState();
@@ -1308,7 +1359,12 @@ export async function storedChunkBytes(
 	return Number(row?.n ?? 0);
 }
 
-export async function enforceStorageQuota(
+// The storage quota of one upload. The check refuses an upload that does
+// not fit the budget, and the charge counts the bytes of an upload that
+// was accepted. They are two steps because the check runs before the
+// expensive work of a publish: a refused upload costs the check and
+// nothing else, while only a stored version counts against the budget.
+export async function checkStorageQuota(
 	env: Record<string, string | undefined>,
 	incomingBytes: number
 ): Promise<void> {
@@ -1322,7 +1378,14 @@ export async function enforceStorageQuota(
 	if (projected >= 1) {
 		throw new Error('quota-exceeded: R2 storage budget reached');
 	}
-	quotaState.localBytes += incomingBytes;
+}
+
+export function chargeStorageQuota(
+	env: Record<string, string | undefined>,
+	acceptedBytes: number
+): void {
+	if (!quotaGuardEnabled(env)) return;
+	quotaState.localBytes += acceptedBytes;
 }
 
 export async function linkVersionChunks(
@@ -1591,8 +1654,52 @@ export interface HaveEntry {
 	integrity: string;
 }
 
-export function pruneHit(have: HaveEntry[], full: string, version: string, sha: string): boolean {
+// The `have` list is indexed by name and version. The linear scan it
+// replaces cost one pass over the list per node, so the cost of a resolve
+// grew with nodes times list length; the index makes it one pass over the
+// list and one lookup per node.
+export type HaveIndex = Map<string, Set<string>>;
+
+export function indexHave(have: HaveEntry[]): HaveIndex {
+	const index: HaveIndex = new Map();
+	for (const h of have) {
+		const key = `${h.full}@${h.version}`;
+		let digests = index.get(key);
+		if (!digests) {
+			digests = new Set<string>();
+			index.set(key, digests);
+		}
+		digests.add(h.integrity);
+	}
+	return index;
+}
+
+// The counters of the last resolve. They exist so a test can assert the
+// shape of the work a resolve did: how many `have` entries it compared
+// and how many store round trips it spent.
+export const resolveCounters = {
+	haveComparisons: 0,
+	subrequests: 0
+};
+
+export function resetResolveCounters(): void {
+	resolveCounters.haveComparisons = 0;
+	resolveCounters.subrequests = 0;
+}
+
+export function pruneHit(
+	have: HaveEntry[] | HaveIndex,
+	full: string,
+	version: string,
+	sha: string
+): boolean {
 	if (!sha) return false;
+	if (have instanceof Map) {
+		resolveCounters.haveComparisons += 1;
+		const digests = have.get(`${full}@${version}`);
+		return digests !== undefined && digests.has(sha);
+	}
+	resolveCounters.haveComparisons += have.length;
 	return have.some((h) => h.full === full && h.version === version && h.integrity === sha);
 }
 
@@ -1603,6 +1710,11 @@ export const RESOLVE_MAX_DEPTH = 64;
 export const RESOLVE_MAX_NODES = 512;
 export const RESOLVE_MAX_FRONTIER = 512;
 export const RESOLVE_MAX_CANDIDATES = 4096;
+// The external subrequests one resolve may spend. Every store round trip is
+// one, and the platform allows 50 per invocation on the Free plan, so a
+// resolve that needs more refuses itself before the platform would kill
+// the request. A deployment on a bigger plan raises the ceiling.
+export const RESOLVE_MAX_SUBREQUESTS = 50;
 // How often a resolve may re-read the candidates of a package whose answer
 // could not be trusted: a stale memo list, a missing row, a withdrawn row.
 // The bound is what turns an endless race into a named failure.
@@ -1688,6 +1800,30 @@ function budgetError(what: string): Error {
 	return new Error(`resolve budget exceeded: ${what}`);
 }
 
+// The subrequest budget of one resolve. A store round trip is one
+// subrequest, and the platform kills an invocation that spends more than
+// the plan allows. Spending the budget here means the refusal is a named
+// error the route can answer, instead of a dead request.
+class SubrequestBudget {
+	private used = 0;
+
+	constructor(private readonly limit: number) {}
+
+	spend(count: number, what: string): void {
+		if (this.used + count > this.limit) {
+			throw budgetError(`external subrequests over ${this.limit} (${what})`);
+		}
+		this.used += count;
+		resolveCounters.subrequests += count;
+	}
+}
+
+function resolveSubrequestLimit(env: Record<string, string | undefined>): number {
+	const raw = Number(env['RESOLVE_MAX_SUBREQUESTS'] ?? '');
+	if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+	return RESOLVE_MAX_SUBREQUESTS;
+}
+
 interface ResolveRow {
 	version: string;
 	status: string;
@@ -1743,7 +1879,8 @@ const NO_TOKEN = -1;
 
 async function resolveCandidates(
 	raw: Client | null,
-	fulls: string[]
+	fulls: string[],
+	budget: SubrequestBudget
 ): Promise<Map<string, CandidateList>> {
 	const out = new Map<string, CandidateList>();
 	const want: Array<{ full: string; scope: string; name: string }> = [];
@@ -1759,6 +1896,7 @@ async function resolveCandidates(
 		return out;
 	}
 	const groups = chunked(want, Math.max(1, Math.floor(RESOLVE_SQL_MAX_PARAMS / 2)));
+	budget.spend(1, 'candidate list');
 	const results = await raw.batch(
 		groups.map((group) => ({
 			sql: `${CANDIDATE_SQL_HEAD}${group.map(() => '(p.scope = ? AND p.name = ?)').join(' OR ')}${CANDIDATE_SQL_TAIL}`,
@@ -1783,12 +1921,14 @@ async function resolveCandidates(
 
 async function resolvePickedRows(
 	raw: Client | null,
-	picks: Array<{ full: string; version: string }>
+	picks: Array<{ full: string; version: string }>,
+	budget: SubrequestBudget
 ): Promise<Map<string, ResolveRow>> {
 	const out = new Map<string, ResolveRow>();
 	if (raw === null || picks.length === 0) return out;
 	const groups = chunked(picks, Math.max(1, Math.floor(RESOLVE_SQL_MAX_PARAMS / 3)));
 	const head = pickedRowSql();
+	budget.spend(1, 'picked rows');
 	const results = await raw.batch(
 		groups.map((group) => ({
 			sql: `${head}${group.map(() => '(p.scope = ? AND p.name = ? AND v.version = ?)').join(' OR ')}`,
@@ -1858,11 +1998,13 @@ function pickedFull(row: Record<string, unknown>): string {
 
 async function resolveManifestSizes(
 	raw: Client | null,
-	picks: Array<{ full: string; version: string }>
+	picks: Array<{ full: string; version: string }>,
+	budget: SubrequestBudget
 ): Promise<Map<string, number>> {
 	const out = new Map<string, number>();
 	if (raw === null || picks.length === 0) return out;
 	const groups = manifestPicksSql(picks);
+	budget.spend(1, 'file index sizes');
 	const results = await raw.batch(
 		groups.map((group) => ({ sql: `${MANIFEST_SIZE_SQL}${group.sql}`, args: group.args }))
 	);
@@ -1877,11 +2019,13 @@ async function resolveManifestSizes(
 
 async function resolveManifestJson(
 	raw: Client | null,
-	picks: Array<{ full: string; version: string }>
+	picks: Array<{ full: string; version: string }>,
+	budget: SubrequestBudget
 ): Promise<Map<string, string>> {
 	const out = new Map<string, string>();
 	if (raw === null || picks.length === 0) return out;
 	const groups = manifestPicksSql(picks);
+	budget.spend(1, 'file index');
 	const results = await raw.batch(
 		groups.map((group) => ({ sql: `${MANIFEST_JSON_SQL}${group.sql}`, args: group.args }))
 	);
@@ -1938,11 +2082,12 @@ async function attachInlineEntries(
 	nodes: ResolveNode[],
 	levels: ResolveNode[][],
 	resolved: Record<string, string>,
-	acceptedChunks: string | null
+	acceptedChunks: string | null,
+	budget: SubrequestBudget
 ): Promise<InlineDecline | null> {
 	if (nodes.length > RESOLVE_MAX_INLINE_NODES) return 'closure-too-large';
 	const picks = nodes.map((n) => ({ full: n.full, version: n.version }));
-	const sizes = await resolveManifestSizes(raw, picks);
+	const sizes = await resolveManifestSizes(raw, picks, budget);
 	let total = 0;
 	for (const p of picks) total += sizes.get(`${p.full}@${p.version}`) ?? 0;
 	// The stored index is a lower bound of the response: the response also
@@ -1950,7 +2095,7 @@ async function attachInlineEntries(
 	// whose stored index alone is over the cap cannot fit and is refused
 	// here, before the index is read.
 	if (total > RESOLVE_MAX_INLINE_BYTES) return 'size-cap-exceeded';
-	const manifests = await resolveManifestJson(raw, picks);
+	const manifests = await resolveManifestJson(raw, picks, budget);
 	for (const node of nodes) {
 		const text = manifests.get(`${node.full}@${node.version}`);
 		if (text === undefined) continue;
@@ -2005,8 +2150,14 @@ export async function resolveGraph(
 	chunksDeclined: InlineDecline | null;
 }> {
 	const inline = options.inlineChunks === true;
+	const budget = new SubrequestBudget(resolveSubrequestLimit(env));
+	// The schema check of a cold isolate is one round trip of its own.
+	budget.spend(1, 'schema check');
 	await getDdb(env);
 	const raw = getClient(env);
+	// The have list is indexed once: the prune lookup is then one map read
+	// per node instead of one pass over the list per node.
+	const haveIndex = indexHave(have);
 
 	const roots = Object.entries(requirements).map(([full, range]) => [full, String(range)] as const);
 	for (const [full] of roots) {
@@ -2066,7 +2217,7 @@ export async function resolveGraph(
 		const tokens = new Map<string, number>();
 		const fromMemo = new Set<string>();
 		if (missing.length > 0) {
-			const fresh = await resolveCandidates(raw, missing);
+			const fresh = await resolveCandidates(raw, missing, budget);
 			for (const [full, list] of fresh) {
 				// The candidate list is copied: the memo keeps its own copy.
 				candidates.set(full, [...list.versions]);
@@ -2118,7 +2269,7 @@ export async function resolveGraph(
 			(full) => fromMemo.has(full) && (picksByName.get(full) ?? []).length === 0
 		);
 		if (unpicked.length > 0) {
-			const fresh = await resolveCandidates(raw, unpicked);
+			const fresh = await resolveCandidates(raw, unpicked, budget);
 			for (const [full, list] of fresh) {
 				candidates.set(full, [...list.versions]);
 				tokens.set(full, list.token);
@@ -2136,7 +2287,7 @@ export async function resolveGraph(
 			if ((picksByName.get(full) ?? []).length === 0) blocked.add(full);
 		}
 
-		const picked = await resolvePickedRows(raw, wanted);
+		const picked = await resolvePickedRows(raw, wanted, budget);
 		for (const [id, row] of picked) rows.set(id, row);
 
 		// The repair set holds the packages whose answer cannot be trusted
@@ -2158,7 +2309,7 @@ export async function resolveGraph(
 		// keeps racing answers "resolve raced" instead of a wrong version.
 		let pending = [...repair].sort();
 		for (let round = 0; round < RESOLVE_REPAIR_ROUNDS && pending.length > 0; round++) {
-			const fresh = await resolveCandidates(raw, pending);
+			const fresh = await resolveCandidates(raw, pending, budget);
 			const again: Array<{ full: string; version: string }> = [];
 			for (const full of pending) {
 				const list = fresh.get(full) ?? { versions: [], token: NO_TOKEN };
@@ -2171,7 +2322,7 @@ export async function resolveGraph(
 				picksByName.set(full, pickedAgain);
 				for (const version of pickedAgain) again.push({ full, version });
 			}
-			for (const [id, row] of await resolvePickedRows(raw, again)) rows.set(id, row);
+			for (const [id, row] of await resolvePickedRows(raw, again, budget)) rows.set(id, row);
 			const still: string[] = [];
 			for (const full of pending) {
 				const versions = picksByName.get(full) ?? [];
@@ -2208,7 +2359,7 @@ export async function resolveGraph(
 				const id = `${full}@${version}`;
 				const row = rows.get(id);
 				if (!row) continue;
-				if (pruneHit(have, full, version, row.tarballSha256)) continue;
+				if (pruneHit(haveIndex, full, version, row.tarballSha256)) continue;
 				for (const [name, range] of depsOf(id, row)) {
 					if (addRange(name, range)) next.push(name);
 				}
@@ -2252,7 +2403,7 @@ export async function resolveGraph(
 		if (memo.has(id)) return pick;
 		const row = rows.get(id);
 		if (!row) throw new Error(`package ${id} does not exist`);
-		if (pruneHit(have, full, pick, row.tarballSha256)) {
+		if (pruneHit(haveIndex, full, pick, row.tarballSha256)) {
 			memo.set(id, makeNode(full, pick, row, []));
 			return pick;
 		}
@@ -2290,7 +2441,8 @@ export async function resolveGraph(
 			nodes,
 			levels,
 			resolved,
-			options.advertiseChunks === true ? 'inline' : null
+			options.advertiseChunks === true ? 'inline' : null,
+			budget
 		);
 		if (declined) chunksDeclined = declined;
 		else if (options.advertiseChunks === true) chunks = 'inline';

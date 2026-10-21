@@ -14,7 +14,7 @@ import {
 	packageId,
 	parsePackageName,
 	publishPackage,
-	putChunk,
+	putChunks,
 	resolveGraph,
 	storeTarManifest,
 	RESOLVE_MAX_INLINE_BYTES,
@@ -266,7 +266,7 @@ describe('the chunk manifest route', () => {
 		await publishPackage(fake.env, payload('@acme/upper', '1.0.0'));
 		const bytes = new TextEncoder().encode('chunk body');
 		const hash = await sha256Hex(bytes);
-		await putChunk(fake.env, hash, bytes.length, bytes);
+		await putChunks(fake.env, [{ hash, size: bytes.length, bytes }]);
 		const res = await get(`@acme/upper@1.0.0/chunk/${hash.toUpperCase()}`);
 		assert.equal(res.status, 200);
 		assert.deepEqual(new Uint8Array(await res.arrayBuffer()), bytes);
