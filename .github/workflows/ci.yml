@@ -116,7 +116,9 @@ jobs:
           cache-dependency-path: website/package-lock.json
 
       - run: npm ci
+      # Publish tests exercise the server canonicalize/analyze path, which
+      # reads the vendored wasm from disk: it must be built before npm test.
+      - run: npm run build:wasm
       - run: npm run check:content
       - run: npm test
-      - run: npm run build:wasm
       - run: npm run build
