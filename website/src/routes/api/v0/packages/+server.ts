@@ -254,7 +254,7 @@ export async function POST({ request, platform, url }) {
 	const configText = sources['Project.config'];
 	let facts: Awaited<ReturnType<typeof configFacts>>;
 	try {
-		facts = await configFacts(env, configText ?? '');
+		facts = await configFacts(env, configText ?? '', url.origin);
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		return frameError(400, msg);
@@ -285,7 +285,7 @@ export async function POST({ request, platform, url }) {
 	// bytes under any path.
 	let canonical: Record<string, string>;
 	try {
-		canonical = (await canonicalizeTree(env, sources)).files;
+		canonical = (await canonicalizeTree(env, sources, url.origin)).files;
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		return frameError(400, msg);
@@ -350,7 +350,7 @@ export async function POST({ request, platform, url }) {
 			analysis = await analyzeTree(env, rnxFiles, {
 				main: facts.entries.main,
 				bins: facts.entries.bins
-			});
+			}, url.origin);
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
 			return frameError(400, msg);
