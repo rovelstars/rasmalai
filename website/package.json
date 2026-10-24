@@ -11,7 +11,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test": "tsx --test \"tests/*.test.ts\"",
-		"build:wasm": "wasm-pack build ../compiler/wasm_playground --target web --out-dir ../../website/src/lib/wasm",
+		"build:wasm": "wasm-pack build ../compiler/wasm_playground --target web --out-dir ../../website/src/lib/wasm && mkdir -p static/wasm && cp src/lib/wasm/wasm_playground_bg.wasm static/wasm/wasm_playground_bg.wasm",
 		"build:docs": "node scripts/build-docs.mjs",
 		"check:content": "node scripts/check-content.mjs",
 		"db:seed": "tsx scripts/seed-turso.ts",

@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-// Publishes every @std/* module as a full registry package (tarball +
-// metadata), so chunks-fetch, jsdoc, and the code browser work for stdlib.
-// Idempotent: already-published versions come back 409 and are skipped.
-// Re-run after every release; new versions publish, old ones skip.
+// Publishes every @std/* module as a full registry package through the
+// protocol-0 source-tree frame (the server canonicalizes, redacts, chunks
+// and analyses the upload), so chunks-fetch, jsdoc, and the code browser
+// work for stdlib. Idempotent: already-published versions come back 409
+// and are skipped. Re-run after every release; new versions publish, old
+// ones skip.
 //
 //   RNX_BIN=/path/to/rnx SITE_URL=https://... PUBLISH_TOKEN=... node scripts/publish-std.mjs
 // RNX_BIN defaults to `cargo run -q -p cli` from the repo root.
@@ -94,6 +96,7 @@ for (const name of modules) {
 		cpSync(join(stdDir, name, sub), join(dir, 'src', sub));
 	}
 	writeFileSync(join(dir, 'README.md'), `# ${full}\n\n${moduleBlurb(name)}\n`);
+	cpSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'));
 	writeFileSync(
 		join(dir, 'Project.config'),
 		`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))}\n    },\n    entries: {\n        main: "src/lib.rnx"\n    }${renderPermissions(name)}\n}\n`
@@ -112,12 +115,10 @@ for (const name of modules) {
 	}
 	const outDir = join(dir, 'dist');
 	mkdirSync(outDir, { recursive: true });
-	rnx(['pack', '--out-dir', outDir], dir);
-	const tars = readdirSync(outDir).filter((f) => /\.tar(\.gz)?$|\.rnxpkg$/.test(f));
-	if (tars.length === 0) throw new Error(`no archive produced for ${full}`);
-	const tarball = join(outDir, tars[0]);
+	// Protocol 0 publishes the staged source tree itself; the server
+	// derives the stored bytes, so there is no tarball step.
 	try {
-		rnx(['publish', tarball, '--registry', `${SITE}/api/packages`, '--token', TOKEN], dir);
+		rnx(['publish', '--registry', SITE, '--token', TOKEN], dir);
 		published++;
 		console.log(`publish-std: published ${full}@${cliVersion}`);
 	} catch (e) {

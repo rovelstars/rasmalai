@@ -43,9 +43,13 @@ async function readVendoredWasm(): Promise<Uint8Array | null> {
 // The registry server canonicalizes and analyses with the same Rust code
 // the client packs with, compiled to WASM. Under Node (tests, local dev)
 // the vendored bytes are read from disk; in the Worker they are fetched
-// once per isolate from the emitted asset URL and cached.
+// once per isolate from the emitted static asset, resolved against the
+// requesting origin the route passes as `base`. A relative asset without
+// a base is unusable in the Worker, so it fails closed instead of
+// guessing an origin.
 export async function serverWasm(
-	env: Record<string, string | undefined>
+	env: Record<string, string | undefined>,
+	base?: string
 ): Promise<ServerWasm> {
 	if (loaded) return loaded;
 	if (loading) return loading;
@@ -53,7 +57,12 @@ export async function serverWasm(
 		let bytes = await readVendoredWasm();
 		if (!bytes) {
 			const asset = env['WASM_ASSET_URL'] ?? '/wasm/wasm_playground_bg.wasm';
-			const res = await fetch(asset);
+			let target = asset;
+			if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(asset)) {
+				if (!base) throw new Error('analysis unavailable (wasm asset needs an absolute URL)');
+				target = new URL(asset, base).href;
+			}
+			const res = await fetch(target);
 			if (!res.ok) throw new Error(`analysis unavailable (wasm fetch ${res.status})`);
 			bytes = new Uint8Array(await res.arrayBuffer());
 		}
@@ -100,18 +109,20 @@ function parseWasmOut(raw: string, entry: string): Record<string, unknown> {
 
 export async function canonicalizeTree(
 	env: Record<string, string | undefined>,
-	files: Record<string, string>
+	files: Record<string, string>,
+	base?: string
 ): Promise<CanonicalTree> {
-	const wasm = await serverWasm(env);
+	const wasm = await serverWasm(env, base);
 	const out = parseWasmOut(wasm.canonicalize_project(JSON.stringify(files)), 'canonicalize_project');
 	return { files: out['files'] as Record<string, string> };
 }
 
 export async function configFacts(
 	env: Record<string, string | undefined>,
-	text: string
+	text: string,
+	base?: string
 ): Promise<ConfigFacts> {
-	const wasm = await serverWasm(env);
+	const wasm = await serverWasm(env, base);
 	const out = parseWasmOut(wasm.publish_config_facts(text), 'publish_config_facts');
 	const entries = out['entries'] as ConfigFacts['entries'];
 	const rawPermissions = (out['permissions'] ?? []) as Array<string | { perm: string; reason?: string }>;
@@ -130,9 +141,10 @@ export async function configFacts(
 export async function analyzeTree(
 	env: Record<string, string | undefined>,
 	files: Record<string, string>,
-	entries: { main: string; bins: Record<string, string> }
+	entries: { main: string; bins: Record<string, string> },
+	base?: string
 ): Promise<TreeAnalysis> {
-	const wasm = await serverWasm(env);
+	const wasm = await serverWasm(env, base);
 	const out = parseWasmOut(
 		wasm.analyze_project(JSON.stringify(files), JSON.stringify(entries)),
 		'analyze_project'
