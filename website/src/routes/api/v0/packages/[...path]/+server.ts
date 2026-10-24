@@ -87,7 +87,7 @@ export async function GET({ params, platform, setHeaders, url }) {
 		return new Response(null, {
 			status: 302,
 			headers: {
-				Location: `/api/packages/${full}/${latest}`,
+				Location: `/api/v0/packages/${full}/${latest}`,
 				'Cache-Control': 'public, max-age=300, s-maxage=300',
 				...specHeaders()
 			}
@@ -136,10 +136,10 @@ export async function GET({ params, platform, setHeaders, url }) {
 				tarballSha256: row.tarballSha256,
 				engineRange: row.engineRange,
 				links: {
-					api: `/api/packages/${full}@${version}/api`,
-					manifest: `/api/packages/${full}@${version}/manifest`,
-					chunks: `/api/packages/${full}@${version}/chunks`,
-					guides: `/api/packages/${full}@${version}/guides`
+					api: `/api/v0/packages/${full}@${version}/api`,
+					manifest: `/api/v0/packages/${full}@${version}/manifest`,
+					chunks: `/api/v0/packages/${full}@${version}/chunks`,
+					guides: `/api/v0/packages/${full}@${version}/guides`
 				}
 			},
 			{ headers: headers() }
@@ -298,7 +298,7 @@ export async function POST({ params, request, platform, url }) {
 		}
 		const purge = await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
 			fullName: full,
-			verify: { url: `${url.origin}/api/packages/${full}@${version}`, bodyStatus: 'yanked' }
+			verify: { url: `${url.origin}/api/v0/packages/${full}@${version}`, bodyStatus: 'yanked' }
 		});
 		if (purgeConfigured(env) && !purge.verified) {
 			// The yank is committed, but the edge still serves the copy that
@@ -328,10 +328,10 @@ export async function POST({ params, request, platform, url }) {
 	await recordTombstone(env, full, version, reason);
 	const purge = await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
 		fullName: full,
-		prefixes: [`${url.origin}/api/packages/${full}@${version}`],
+		prefixes: [`${url.origin}/api/v0/packages/${full}@${version}`],
 		// A withdrawn version has to answer 410 through the edge, or the
 		// edge is still serving the copy that says it is live.
-		verify: { url: `${url.origin}/api/packages/${full}@${version}`, status: 410 }
+		verify: { url: `${url.origin}/api/v0/packages/${full}@${version}`, status: 410 }
 	});
 	if (purgeConfigured(env) && !purge.verified) {
 		// The takedown is committed, but the edge still serves the copy

@@ -213,12 +213,8 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
             } => {
                 run_pack(package, out_dir, gzip);
             }
-            cli::args::Command::Publish {
-                tarball,
-                registry,
-                token,
-            } => {
-                run_publish(tarball, registry, token);
+            cli::args::Command::Publish { registry, token } => {
+                run_publish(registry, token);
             }
             cli::args::Command::Unpack { archive, out_dir } => {
                 run_unpack(archive, out_dir);

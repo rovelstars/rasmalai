@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS package_versions (
     checksum TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'live',
     created_at INTEGER NOT NULL,
+    manifest_digest TEXT NOT NULL DEFAULT '',
+    verdict_key TEXT NOT NULL DEFAULT '',
     UNIQUE(package_id, version)
 );
 
@@ -132,13 +134,21 @@ CREATE TABLE IF NOT EXISTS chunks (
     first_seen_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS manifest_chunks (
-    chunk_hash TEXT NOT NULL REFERENCES chunks(hash),
-    version_id TEXT NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
-    ord INTEGER NOT NULL,
-    PRIMARY KEY (version_id, ord)
+CREATE TABLE IF NOT EXISTS canonical_facts (
+    canonical_hash TEXT PRIMARY KEY,
+    chunk_list TEXT NOT NULL DEFAULT '[]',
+    import_list TEXT NOT NULL DEFAULT '[]',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    first_seen_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_mc_hash ON manifest_chunks(chunk_hash);
+
+CREATE TABLE IF NOT EXISTS package_edges (
+    package_id TEXT PRIMARY KEY,
+    edge_list TEXT NOT NULL DEFAULT '[]',
+    perms_digest TEXT NOT NULL DEFAULT '',
+    file_list TEXT NOT NULL DEFAULT '[]',
+    updated_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS package_deps (
     package_id TEXT NOT NULL REFERENCES packages(id),
@@ -358,7 +368,7 @@ export async function ensureSchema(db: Client): Promise<void> {
 	return schemaPromise;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 async function checkSchemaVersion(db: Client): Promise<boolean> {
 	try {
@@ -408,6 +418,8 @@ async function migrateSchema(db: Client): Promise<void> {
 		['guides_json', "TEXT NOT NULL DEFAULT '[]'"],
 		['tarball_sha256', "TEXT NOT NULL DEFAULT ''"],
 		['tar_manifest_json', "TEXT NOT NULL DEFAULT '[]'"],
+		['manifest_digest', "TEXT NOT NULL DEFAULT ''"],
+		['verdict_key', "TEXT NOT NULL DEFAULT ''"],
 		['request_id', "TEXT NOT NULL DEFAULT ''"]
 	];
 	for (const [col, ddl] of backfill) {
@@ -415,6 +427,23 @@ async function migrateSchema(db: Client): Promise<void> {
 			await db.execute(`ALTER TABLE package_versions ADD COLUMN ${col} ${ddl}`);
 		}
 	}
+	await db.execute(`CREATE TABLE IF NOT EXISTS canonical_facts (
+	    canonical_hash TEXT PRIMARY KEY,
+	    chunk_list TEXT NOT NULL DEFAULT '[]',
+	    import_list TEXT NOT NULL DEFAULT '[]',
+	    evidence TEXT NOT NULL DEFAULT '[]',
+	    first_seen_at INTEGER NOT NULL
+	)`);
+	await db.execute(`CREATE TABLE IF NOT EXISTS package_edges (
+	    package_id TEXT PRIMARY KEY,
+	    edge_list TEXT NOT NULL DEFAULT '[]',
+	    perms_digest TEXT NOT NULL DEFAULT '',
+	    file_list TEXT NOT NULL DEFAULT '[]',
+	    updated_at INTEGER NOT NULL
+	)`);
+	// The per-version chunk mapping table is gone: liveness derives from
+	// the version rows' manifests, so the mapping is never written.
+	await db.execute('DROP TABLE IF EXISTS manifest_chunks');
 	const acols = await db.execute('SELECT name FROM pragma_table_info(?)', ['audit_log']);
 	const anames = new Set(acols.rows.map((r) => String(r['name'])));
 	if (!anames.has('request_id')) {
@@ -444,21 +473,8 @@ async function migrateSchema(db: Client): Promise<void> {
 	await db.execute(
 		'UPDATE packages SET license_id = (SELECT id FROM licenses WHERE spdx = packages.license) WHERE license_id IS NULL'
 	);
-	const mdef = await db.execute("SELECT sql FROM sqlite_master WHERE name = 'manifest_chunks'");
-	if (String(mdef.rows[0]?.['sql'] ?? '').includes('PRIMARY KEY (chunk_hash, version_id)')) {
-		await db.execute('ALTER TABLE manifest_chunks RENAME TO manifest_chunks_legacy');
-		await db.execute(`CREATE TABLE manifest_chunks (
-		    chunk_hash TEXT NOT NULL REFERENCES chunks(hash),
-		    version_id TEXT NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
-		    ord INTEGER NOT NULL,
-		    PRIMARY KEY (version_id, ord)
-		)`);
-		await db.execute(`INSERT INTO manifest_chunks (chunk_hash, version_id, ord)
-		    SELECT chunk_hash, version_id, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY ord) - 1
-		    FROM manifest_chunks_legacy`);
-		await db.execute('DROP TABLE manifest_chunks_legacy');
-		await db.execute('CREATE INDEX IF NOT EXISTS idx_mc_hash ON manifest_chunks(chunk_hash)');
-	}
+	// The mapping table is dropped above; an old-shape survivor is
+	// dropped here rather than migrated, since nothing reads it.
 	await stampSchemaVersion(db);
 }
 
@@ -754,18 +770,44 @@ export interface PublishResult {
 	created: boolean;
 }
 
+export interface CanonicalUnit {
+	hash: string;
+	size: number;
+	bytes: Uint8Array;
+}
+
+export interface CanonicalFact {
+	canonicalHash: string;
+	chunks: string[];
+	imports: string[];
+	evidence: string[];
+}
+
+export interface CanonicalEdges {
+	edges: string[];
+	permsDigest: string;
+	files: Array<{ path: string; hash: string }>;
+}
+
+export interface CanonicalPublishPayload extends PublishPayload {
+	entries: TarEntryRef[];
+	manifestDigest: string;
+	verdictKey: string;
+	units: CanonicalUnit[];
+	facts: CanonicalFact[];
+	edges: CanonicalEdges;
+}
+
 // Abuse guards (free-tier survival): hard caps enforced before any write.
 // - Payload caps keep single publishes small.
 // - MAX_VERSIONS_PER_WEEK bounds churn per package on a rolling window.
-// - Tarball bytes (R2, when the upload endpoint lands) cap at 512 KiB.
 export const MAX_DOC_JSON_BYTES = 1024 * 1024;
 export const MAX_README_BYTES = 200 * 1024;
 export const MAX_VERSIONS_PER_WEEK = 20;
-export const MAX_TARBALL_BYTES = 512 * 1024;
 
-export async function publishPackage(
+export async function publishCanonicalVersion(
 	env: Record<string, string | undefined>,
-	p: PublishPayload
+	p: CanonicalPublishPayload
 ): Promise<PublishResult> {
 	const parsed = parsePackageName(p.name);
 	const db = await getDdb(env);
@@ -774,42 +816,13 @@ export async function publishPackage(
 	if (!sem) throw new Error('invalid package version (expected X.Y.Z)');
 	const now = Math.floor(Date.now() / 1000);
 	const id = packageId(parsed.scope, parsed.name);
-	const auditJson = JSON.stringify({ checksum: p.checksum });
+	const auditJson = JSON.stringify({ manifestDigest: p.manifestDigest });
 	const keywords = (p.keywords ?? []).join(',');
 	// Dependents reflect ever-depending packages (npm shows all): rows are
 	// derived from manifests at publish time and are never deleted on
 	// yank or tombstone, so no counter can desync under retries.
 	const depNames = extractDepNames(p.manifestJson ?? '{}');
 	const capabilities = p.capabilities ?? [];
-	// Capability domains are static reference rows: ensure them first so the
-	// version insert and its capability rows can land in one batch below.
-	const domainIds = new Map<string, number>();
-	if (capabilities.length > 0) {
-		const names = [...new Set(capabilities.map((c) => c.domain))].sort();
-		await db.batch(
-			names.map((name) =>
-				db.insert(s.capabilityDomains).values({ name }).onConflictDoNothing()
-			) as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]
-		);
-		const drows = await db
-			.select({ id: s.capabilityDomains.id, name: s.capabilityDomains.name })
-			.from(s.capabilityDomains)
-			.where(inArray(s.capabilityDomains.name, names));
-		for (const r of drows) domainIds.set(r.name, r.id);
-	}
-	let licenseId: number | null = null;
-	if (p.license) {
-		await db
-			.insert(s.licenses)
-			.values({ spdx: p.license })
-			.onConflictDoNothing();
-		const lrow = await db
-			.select({ id: s.licenses.id })
-			.from(s.licenses)
-			.where(eq(s.licenses.spdx, p.license))
-			.get();
-		licenseId = lrow?.id ?? null;
-	}
 	const versionId = `ver_${id}_${p.version}`;
 	const versionInsert = db
 		.insert(s.packageVersions)
@@ -819,7 +832,7 @@ export async function publishPackage(
 			version: p.version,
 			readmeMarkdown: p.readme,
 			docJson: p.docJson,
-			checksum: p.checksum,
+			checksum: p.manifestDigest,
 			status: 'live',
 			createdAt: now,
 			semverMajor: sem.major,
@@ -829,7 +842,10 @@ export async function publishPackage(
 			engineRange: p.engineRange ?? '',
 			manifestJson: p.manifestJson ?? '{}',
 			guidesJson: p.guidesJson ?? '[]',
-			tarballSha256: p.tarballSha256 ?? '',
+			tarballSha256: '',
+			tarManifestJson: JSON.stringify(p.entries),
+			manifestDigest: p.manifestDigest,
+			verdictKey: p.verdictKey,
 			requestId: p.requestId ?? ''
 		})
 		.onConflictDoNothing();
@@ -841,6 +857,8 @@ export async function publishPackage(
 		sql`INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
 		      SELECT 'publish', ${parsed.full}, ${p.version}, ${auditJson}, ${p.requestId ?? ''}, ${now} WHERE changes() > 0`
 	);
+	const domainNames = [...new Set(capabilities.map((c) => c.domain))].sort();
+	const bucket = r2Bucket(env);
 	const batch: unknown[] = [
 		db
 			.insert(s.scopes)
@@ -851,6 +869,17 @@ export async function publishPackage(
 				createdAt: now
 			})
 			.onConflictDoNothing(),
+		...(p.license
+			? [
+					db
+						.insert(s.licenses)
+						.values({ spdx: p.license })
+						.onConflictDoNothing()
+				]
+			: []),
+		...domainNames.map((name) =>
+			db.insert(s.capabilityDomains).values({ name }).onConflictDoNothing()
+		),
 		db
 			.insert(s.packages)
 			.values({
@@ -862,7 +891,9 @@ export async function publishPackage(
 				author: p.author,
 				repository: '',
 				license: p.license,
-				licenseId,
+				licenseId: p.license
+					? sql`(SELECT id FROM licenses WHERE spdx = ${p.license})`
+					: null,
 				downloads: 0,
 				stars: 0,
 				tags: p.tags.join(','),
@@ -895,12 +926,55 @@ export async function publishPackage(
 				.insert(s.versionCapabilities)
 				.values({
 					versionId,
-					domainId: domainIds.get(c.domain) ?? -1,
+					domainId: sql`(SELECT id FROM capability_domains WHERE name = ${c.domain})`,
 					arg: c.arg,
 					reason: c.reason
 				})
 				.onConflictDoNothing()
-		)
+		),
+		// Chunk rows land in the same batch as the version row, and only
+		// after their R2 PUTs succeeded (the route PUTs first). A chunk row
+		// therefore means the bytes exist: the chunks table is the
+		// existence oracle, and no R2 probe is ever needed.
+		...p.units.map((unit) =>
+			bucket
+				? db.run(sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
+				             VALUES (${unit.hash}, ${unit.size}, x'', ${now})
+				             ON CONFLICT(hash) DO NOTHING`)
+				: db.run(sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
+				             VALUES (${unit.hash}, ${unit.size}, ${unit.bytes}, ${now})
+				             ON CONFLICT(hash) DO NOTHING`)
+		),
+		...p.facts.map((fact) =>
+			db
+				.insert(s.canonicalFacts)
+				.values({
+					canonicalHash: fact.canonicalHash,
+					chunkList: JSON.stringify(fact.chunks),
+					importList: JSON.stringify(fact.imports),
+					evidence: JSON.stringify(fact.evidence),
+					firstSeenAt: now
+				})
+				.onConflictDoNothing()
+		),
+		db
+			.insert(s.packageEdges)
+			.values({
+				packageId: id,
+				edgeList: JSON.stringify(p.edges.edges),
+				permsDigest: p.edges.permsDigest,
+				fileList: JSON.stringify(p.edges.files),
+				updatedAt: now
+			})
+			.onConflictDoUpdate({
+				target: s.packageEdges.packageId,
+				set: {
+					edgeList: sql`excluded.edge_list`,
+					permsDigest: sql`excluded.perms_digest`,
+					fileList: sql`excluded.file_list`,
+					updatedAt: sql`excluded.updated_at`
+				}
+			})
 	];
 	// The batch order is the publish idempotency contract, so it is checked
 	// instead of being remembered: the audit statement reads the version
@@ -945,6 +1019,8 @@ export interface VersionRow {
 	status: string;
 	checksum: string;
 	tarballSha256: string;
+	manifestDigest: string;
+	verdictKey: string;
 	engineRange: string;
 	docJson: string;
 	manifestJson: string;
@@ -969,6 +1045,8 @@ function versionIndexColumns(v: typeof s.packageVersions) {
 		status: v.status,
 		checksum: v.checksum,
 		tarballSha256: v.tarballSha256,
+		manifestDigest: v.manifestDigest,
+		verdictKey: v.verdictKey,
 		tarManifestJson: v.tarManifestJson,
 		engineRange: v.engineRange,
 		manifestJson: v.manifestJson,
@@ -1004,6 +1082,8 @@ export async function getVersionRow(
 		status: r.status ?? 'live',
 		checksum: r.checksum ?? '',
 		tarballSha256: r.tarballSha256 ?? '',
+		manifestDigest: r.manifestDigest ?? '',
+		verdictKey: r.verdictKey ?? '',
 		tarManifestJson: r.tarManifestJson ?? '[]',
 		engineRange: r.engineRange ?? '',
 		docJson: r.docJson ?? '{"modules":[]}',
@@ -1040,6 +1120,8 @@ export async function getVersionIndexRow(
 		status: r.status ?? 'live',
 		checksum: r.checksum ?? '',
 		tarballSha256: r.tarballSha256 ?? '',
+		manifestDigest: r.manifestDigest ?? '',
+		verdictKey: r.verdictKey ?? '',
 		tarManifestJson: r.tarManifestJson ?? '[]',
 		engineRange: r.engineRange ?? '',
 		manifestJson: r.manifestJson ?? '{}',
@@ -1049,6 +1131,36 @@ export async function getVersionIndexRow(
 	};
 	const withdrawn = row.status === 'tombstoned' || (await isVersionWithdrawn(env, full, version));
 	return { row, withdrawn };
+}
+
+export async function getPackageEdges(
+	env: Record<string, string | undefined>,
+	full: string
+): Promise<{ edges: string[]; permsDigest: string; files: Array<{ path: string; hash: string }> } | null> {
+	const parsed = parsePackageName(full);
+	const db = await getDdb(env);
+	if (!parsed || !db) return null;
+	const row = await db
+		.select({
+			edgeList: s.packageEdges.edgeList,
+			permsDigest: s.packageEdges.permsDigest,
+			fileList: s.packageEdges.fileList
+		})
+		.from(s.packageEdges)
+		.where(eq(s.packageEdges.packageId, packageId(parsed.scope, parsed.name)))
+		.get();
+	if (!row) return null;
+	try {
+		const edges = JSON.parse(String(row.edgeList ?? '[]')) as unknown;
+		const files = JSON.parse(String(row.fileList ?? '[]')) as unknown;
+		return {
+			edges: Array.isArray(edges) ? edges.filter((e): e is string => typeof e === 'string') : [],
+			permsDigest: String(row.permsDigest ?? ''),
+			files: Array.isArray(files) ? (files as Array<{ path: string; hash: string }>) : []
+		};
+	} catch {
+		return null;
+	}
 }
 
 export async function listLiveVersionsBatch(
@@ -1293,29 +1405,33 @@ export async function transferScope(
 	noteMutation();
 }
 
-// The chunk rows of one publish, written in a single batch. One round trip
-// per chunk would be one external subrequest per chunk, and the platform
-// allows 50 per invocation.
-export async function putChunks(
+// The skip-known check: chunk hashes the store already holds need no
+// R2 PUT. The chunks table is the existence oracle (a row is written only
+// after a successful PUT, in the same atomic batch as the version row),
+// so no R2 existence probe is ever needed.
+export async function existingChunkHashes(
+	env: Record<string, string | undefined>,
+	hashes: string[]
+): Promise<Set<string>> {
+	const db = await getDdb(env);
+	const out = new Set<string>();
+	if (!db || hashes.length === 0) return out;
+	const uniq = [...new Set(hashes)];
+	for (const batch of chunked(uniq, 900)) {
+		const rows = await db
+			.select({ hash: s.chunks.hash })
+			.from(s.chunks)
+			.where(inArray(s.chunks.hash, batch));
+		for (const r of rows) out.add(r.hash);
+	}
+	return out;
+}
+
+export async function r2PutChunks(
 	env: Record<string, string | undefined>,
 	units: Array<{ hash: string; size: number; bytes: Uint8Array }>
 ): Promise<void> {
-	if (units.length === 0) return;
-	const db = await getDdb(env);
-	if (!db) throw new Error('missing database');
 	const bucket = r2Bucket(env);
-	const now = Math.floor(Date.now() / 1000);
-	await db.batch(
-		units.map((unit) =>
-			bucket
-				? db.run(sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
-				             VALUES (${unit.hash}, ${unit.size}, x'', ${now})
-				             ON CONFLICT(hash) DO NOTHING`)
-				: db.run(sql`INSERT INTO chunks (hash, size_bytes, bytes, first_seen_at)
-				             VALUES (${unit.hash}, ${unit.size}, ${unit.bytes}, ${now})
-				             ON CONFLICT(hash) DO NOTHING`)
-		) as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]
-	);
 	if (!bucket) return;
 	for (const unit of units) {
 		// The object is keyed by its own digest, so the put is idempotent
@@ -1388,32 +1504,40 @@ export function chargeStorageQuota(
 	quotaState.localBytes += acceptedBytes;
 }
 
-export async function linkVersionChunks(
-	env: Record<string, string | undefined>,
-	versionRowId: string,
-	hashes: string[]
-): Promise<void> {
+// A chunk is live while a non-tombstoned, non-audit-only version row
+// references it in its manifest. Liveness derives from the version rows
+// directly: there is no mapping table to desync under retries.
+export async function liveChunkHashes(env: Record<string, string | undefined>): Promise<Set<string>> {
 	const db = await getDdb(env);
-	if (!db) throw new Error('missing database');
-	if (hashes.length === 0) return;
-	await db.batch(
-		hashes.map((hash, ord) =>
-			db.insert(s.manifestChunks).values({ chunkHash: hash, versionId: versionRowId, ord })
-		) as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]
-	);
-}
-
-export async function storeTarManifest(
-	env: Record<string, string | undefined>,
-	versionRowId: string,
-	entries: TarEntryRef[]
-): Promise<void> {
-	const db = await getDdb(env);
-	if (!db) throw new Error('missing database');
-	await db
-		.update(s.packageVersions)
-		.set({ tarManifestJson: JSON.stringify(entries) })
-		.where(eq(s.packageVersions.id, versionRowId));
+	const live = new Set<string>();
+	if (!db) return live;
+	let offset = 0;
+	for (;;) {
+		const rows = await db
+			.select({ manifest: s.packageVersions.tarManifestJson })
+			.from(s.packageVersions)
+			.where(inArray(s.packageVersions.status, ['live', 'yanked']))
+			.limit(500)
+			.offset(offset);
+		if (rows.length === 0) break;
+		for (const row of rows) {
+			try {
+				const entries = JSON.parse(String(row.manifest ?? '[]')) as Array<{ chunks?: unknown }>;
+				if (!Array.isArray(entries)) continue;
+				for (const entry of entries) {
+					if (!entry || !Array.isArray(entry.chunks)) continue;
+					for (const hash of entry.chunks) {
+						if (typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)) live.add(hash);
+					}
+				}
+			} catch {
+				continue;
+			}
+		}
+		offset += rows.length;
+		if (rows.length < 500) break;
+	}
+	return live;
 }
 
 export async function findOrphanChunks(
@@ -1423,47 +1547,39 @@ export async function findOrphanChunks(
 ): Promise<string[]> {
 	const db = await getDdb(env);
 	if (!db) return [];
-	const c = s.chunks;
-	const mc = s.manifestChunks;
-	const v = s.packageVersions;
-	const rows = await db
-		.select({ hash: c.hash })
-		.from(c)
-		.where(
-			and(
-				lt(c.firstSeenAt, beforeUnix),
-				notExists(
-					db
-						.select({ one: sql`1` })
-						.from(mc)
-						.innerJoin(v, eq(v.id, mc.versionId))
-						.where(and(eq(mc.chunkHash, c.hash), inArray(v.status, ['live', 'yanked'])))
-				)
-			)
-		)
-		.limit(Math.max(1, Math.min(1000, limit)));
-	return rows.map((r) => r.hash);
+	const live = await liveChunkHashes(env);
+	const out: string[] = [];
+	let offset = 0;
+	const want = Math.max(1, Math.min(1000, limit));
+	for (;;) {
+		const rows = await db
+			.select({ hash: s.chunks.hash })
+			.from(s.chunks)
+			.where(lt(s.chunks.firstSeenAt, beforeUnix))
+			.limit(500)
+			.offset(offset);
+		if (rows.length === 0) break;
+		for (const r of rows) {
+			if (!live.has(r.hash)) {
+				out.push(r.hash);
+				if (out.length >= want) return out;
+			}
+		}
+		offset += rows.length;
+		if (rows.length < 500) break;
+	}
+	return out;
 }
 
 export async function reverifyChunks(
 	env: Record<string, string | undefined>,
 	hashes: string[]
 ): Promise<Set<string>> {
-	const db = await getDdb(env);
-	if (!db || hashes.length === 0) return new Set();
-	const mc = s.manifestChunks;
-	const v = s.packageVersions;
-	const live = new Set<string>();
-	for (const batch of chunked(hashes, 50)) {
-		const rows = await db
-			.select({ hash: mc.chunkHash })
-			.from(mc)
-			.innerJoin(v, eq(v.id, mc.versionId))
-			.where(and(inArray(mc.chunkHash, batch), inArray(v.status, ['live', 'yanked'])))
-			.groupBy(mc.chunkHash);
-		for (const r of rows) live.add(r.hash);
-	}
-	return live;
+	if (hashes.length === 0) return new Set();
+	const live = await liveChunkHashes(env);
+	const out = new Set<string>();
+	for (const h of hashes) if (live.has(h)) out.add(h);
+	return out;
 }
 
 function chunked<T>(xs: T[], n: number): T[][] {
@@ -1625,14 +1741,13 @@ export async function purgeUrls(
 
 export function packagePointerUrls(origin: string, full: string, version?: string): string[] {
 	const base = origin.replace(/\/$/, '');
-	const urls = [`${base}/api/packages`, `${base}/api/packages/${full}`, `${base}/packages`, `${base}/packages/${full}`];
+	const urls = [`${base}/api/v0/packages`, `${base}/api/v0/packages/${full}`];
 	if (version) {
-		urls.push(`${base}/api/packages/${full}@${version}`);
-		urls.push(`${base}/api/packages/${full}@${version}/api`);
-		urls.push(`${base}/api/packages/${full}@${version}/manifest`);
-		urls.push(`${base}/api/packages/${full}@${version}/chunks`);
-		urls.push(`${base}/api/packages/${full}@${version}/guides`);
-		urls.push(`${base}/packages/${full}@${version}`);
+		urls.push(`${base}/api/v0/packages/${full}@${version}`);
+		urls.push(`${base}/api/v0/packages/${full}@${version}/api`);
+		urls.push(`${base}/api/v0/packages/${full}@${version}/manifest`);
+		urls.push(`${base}/api/v0/packages/${full}@${version}/chunks`);
+		urls.push(`${base}/api/v0/packages/${full}@${version}/guides`);
 	}
 	return urls;
 }
@@ -1725,9 +1840,12 @@ export const RESOLVE_MAX_INLINE_BYTES = 256 * 1024;
 // and a client that gets nothing inlined falls back to one manifest read
 // per package, so a huge closure is refused before any index is read.
 export const RESOLVE_MAX_INLINE_NODES = 256;
-// SQLite caps bound parameters per statement; OR-expanded name lists are
-// chunked to stay under it (2 params per name, 3 per version pick).
-const RESOLVE_SQL_MAX_PARAMS = 100;
+// Bound parameters per statement are capped at 900. SQLite's
+// SQLITE_MAX_VARIABLE_NUMBER defaults to 32766 since 3.32.0, and Turso
+// runs a modern SQLite, so 900 is far inside the real limit; the old 100
+// was a self-imposed constant with a wrong comment. OR-expanded name
+// lists are chunked to stay under it (2 params per name, 3 per pick).
+const RESOLVE_SQL_MAX_PARAMS = 900;
 
 export const VERSION_INDEX_TTL_MS = 600_000;
 // The memo is a memory bound, not a correctness mechanism: an entry is
@@ -1827,7 +1945,7 @@ function resolveSubrequestLimit(env: Record<string, string | undefined>): number
 interface ResolveRow {
 	version: string;
 	status: string;
-	tarballSha256: string;
+	manifestDigest: string;
 	engineRange: string;
 	manifestJson: string;
 	withdrawn: boolean;
@@ -1858,7 +1976,7 @@ function pickedRowSql(): string {
 	// needed for an inline answer, and it is read in a second, bounded phase
 	// once the closure is known (see attachInlineEntries).
 	return `SELECT p.scope AS scope, p.name AS name,
-	v.version AS version, v.status AS status, v.tarball_sha256 AS tarball_sha256,
+	v.version AS version, v.status AS status, v.manifest_digest AS manifest_digest,
 	v.engine_range AS engine_range, v.manifest_json AS manifest_json,
 	p.mutation_count AS mutation_count,
 	(SELECT 1 FROM tombstones t WHERE t.package_id = p.id AND t.version = v.version) AS withdrawn
@@ -1947,7 +2065,7 @@ async function resolvePickedRows(
 			out.set(`${full}@${version}`, {
 				version,
 				status: String(row['status'] ?? 'live'),
-				tarballSha256: String(row['tarball_sha256'] ?? ''),
+				manifestDigest: String(row['manifest_digest'] ?? ''),
 				engineRange: String(row['engine_range'] ?? ''),
 				manifestJson: String(row['manifest_json'] ?? '{}'),
 				withdrawn: row['withdrawn'] !== null && row['withdrawn'] !== undefined,
@@ -2120,7 +2238,7 @@ async function attachInlineEntries(
 // bytes. Measuring the stored strings undercounted the response by about
 // 44 %, so the cap did not mean what it said. The measurement is now the
 // serialized size of the whole resolve body, byte for byte, with the inline
-// entries in it - the same body `api/resolve/+server.ts` sends, so the two
+// entries in it - the same body `api/v0/resolve/+server.ts` sends, so the two
 // must stay in step.
 function resolveResponseBytes(
 	resolved: Record<string, string>,
@@ -2359,7 +2477,7 @@ export async function resolveGraph(
 				const id = `${full}@${version}`;
 				const row = rows.get(id);
 				if (!row) continue;
-				if (pruneHit(haveIndex, full, version, row.tarballSha256)) continue;
+				if (pruneHit(haveIndex, full, version, row.manifestDigest)) continue;
 				for (const [name, range] of depsOf(id, row)) {
 					if (addRange(name, range)) next.push(name);
 				}
@@ -2372,7 +2490,7 @@ export async function resolveGraph(
 		full,
 		version,
 		path: `${full}@${version}/chunks`,
-		integrity: row.tarballSha256,
+		integrity: row.manifestDigest,
 		engineRange: row.engineRange,
 		deps,
 		yanked: row.status === 'yanked'
@@ -2403,7 +2521,7 @@ export async function resolveGraph(
 		if (memo.has(id)) return pick;
 		const row = rows.get(id);
 		if (!row) throw new Error(`package ${id} does not exist`);
-		if (pruneHit(haveIndex, full, pick, row.tarballSha256)) {
+		if (pruneHit(haveIndex, full, pick, row.manifestDigest)) {
 			memo.set(id, makeNode(full, pick, row, []));
 			return pick;
 		}

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { startFakeLibsql, type FakeLibsql } from './libsql-fake.js';
 import {
 	resolveGraph,
-	publishPackage,
 	yankVersion,
 	recordTombstone,
 	transferScope,
@@ -18,9 +17,9 @@ import {
 	RESOLVE_MAX_NODES,
 	RESOLVE_REPAIR_ROUNDS,
 	type HaveEntry,
-	type ResolveNode,
-	type PublishPayload
+	type ResolveNode
 } from '../src/lib/server/db.js';
+import { seedPackage, seedPayload, type CanonicalPublishPayload } from './publish-helpers.js';
 import { levelize, CAPABILITIES } from '../src/lib/server/registry.js';
 
 // resolveGraph runs against the real drizzle/libsql code path over a local
@@ -32,22 +31,9 @@ let fake: FakeLibsql;
 function payload(
 	name: string,
 	version: string,
-	overrides: Partial<PublishPayload> = {}
-): PublishPayload {
-	return {
-		name,
-		version,
-		description: 'fixture',
-		author: 'test',
-		license: 'MIT',
-		tags: [],
-		readme: '',
-		docJson: '{"modules":[]}',
-		checksum: `c-${name}-${version}`,
-		manifestJson: '{}',
-		tarballSha256: `sha-${name}-${version}`,
-		...overrides
-	};
+	overrides: Partial<CanonicalPublishPayload> = {}
+): CanonicalPublishPayload {
+	return seedPayload(name, version, overrides);
 }
 
 function entriesFor(version: string): string {
@@ -57,26 +43,18 @@ function entriesFor(version: string): string {
 	]);
 }
 
-// tar_manifest_json is written after publish by the chunk-upload path, not by
-// the publish batch, so the fixture has to set it explicitly.
-async function setEntries(full: string, version: string, json: string): Promise<void> {
-	const { storeTarManifest } = await import('../src/lib/server/db.js');
-	const { packageId, parsePackageName } = await import('../src/lib/server/db.js');
-	const parsed = parsePackageName(full)!;
-	await storeTarManifest(fake.env, `ver_${packageId(parsed.scope, parsed.name)}_${version}`, JSON.parse(json));
-}
-
 async function publishMany(specs: Array<{ full: string; version: string; deps?: Record<string, string>; entries?: string; yanked?: boolean }>) {
 	for (const s of specs) {
-		await publishPackage(
+		await seedPackage(
 			fake.env,
-			payload(s.full, s.version, {
+			s.full,
+			s.version,
+			{
 				manifestJson: JSON.stringify(s.deps ? { deps: s.deps } : {}),
-				tarballSha256: `sha-${s.full}-${s.version}`
-			})
+				manifestDigest: `sha-${s.full}-${s.version}`,
+				entries: JSON.parse(s.entries ?? entriesFor(s.version))
+			}
 		);
-		if (s.entries !== undefined) await setEntries(s.full, s.version, s.entries);
-		else await setEntries(s.full, s.version, entriesFor(s.version));
 		if (s.yanked) await yankVersion(fake.env, s.full, s.version);
 	}
 }
@@ -117,8 +95,8 @@ function otherIsolatePublish(full: string, version: string): void {
 		.prepare(
 			`INSERT INTO package_versions (id, package_id, version, readme_markdown, doc_json, checksum,
 				status, created_at, semver_major, semver_minor, semver_patch, prerelease, engine_range,
-				manifest_json, guides_json, tarball_sha256, tar_manifest_json, request_id)
-			 VALUES (?, ?, ?, '', '{}', ?, 'live', ?, ?, ?, ?, ?, '', '{}', '[]', ?, '[]', '')`
+				manifest_json, guides_json, tarball_sha256, tar_manifest_json, manifest_digest, verdict_key, request_id)
+			 VALUES (?, ?, ?, '', '{}', ?, 'live', ?, ?, ?, ?, ?, '', '{}', '[]', ?, '[]', ?, '', '')`
 		)
 		.run(
 			`ver_${id}_${version}`,
@@ -130,6 +108,7 @@ function otherIsolatePublish(full: string, version: string): void {
 			Number(sem[2]),
 			Number(sem[3]),
 			sem[4] ?? '',
+			'',
 			`sha-${full}-${version}`
 		);
 	fake.db.prepare('UPDATE packages SET mutation_count = mutation_count + 1 WHERE id = ?').run(id);
@@ -276,9 +255,10 @@ describe('resolveGraph cost', () => {
 		clearVersionIndex();
 		fake.reset();
 		await assert.rejects(() => resolveGraph(fake.env, reqs, []), /does not exist/);
-		// 200 names are 4 candidate chunks of 50, and no picked rows.
+		// 200 names are one candidate chunk of 450 (900 bound params, two
+		// per name), and no picked rows.
 		assert.equal(fake.counters.roundTrips, 1);
-		assert.equal(fake.counters.statements, 6, fake.statements.join(' | '));
+		assert.equal(fake.counters.statements, 3, fake.statements.join(' | '));
 		assert.equal(fake.counters.rowsRead, 0);
 	});
 
@@ -505,11 +485,11 @@ describe('resolveGraph withdrawal and yank', () => {
 		clearVersionIndex();
 		fake.reset();
 		await resolveGraph(fake.env, { '@acme/ts': '*' }, []);
-		const picked = fake.statements.find((s) => s.includes('tarball_sha256'));
+		const picked = fake.statements.find((s) => s.includes('manifest_digest'));
 		assert.ok(picked, 'picked-row statement must exist');
 		assert.ok(picked!.includes('FROM tombstones t'), 'picked-row statement must carry the tombstone check');
 		// No standalone tombstone probe anywhere in the resolve.
-		assert.equal(fake.statements.filter((s) => s.includes('FROM tombstones') && !s.includes('tarball_sha256')).length, 0);
+		assert.equal(fake.statements.filter((s) => s.includes('FROM tombstones') && !s.includes('manifest_digest')).length, 0);
 	});
 
 	it('never selects doc_json on the resolve path', async () => {
@@ -598,7 +578,7 @@ describe('resolveGraph inline entries', () => {
 	});
 
 	it('omits entries for a version with no file index', async () => {
-		await publishPackage(fake.env, payload('@acme/nofile', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/nofile', '1.0.0'));
 		fake.db
 			.prepare('UPDATE package_versions SET tar_manifest_json = ? WHERE package_id = ?')
 			.run('not json', 'pkg_@acme/nofile');
@@ -709,28 +689,28 @@ describe('resolveGraph inline cost', () => {
 
 describe('package mutation token', () => {
 	it('starts at one on the first publish and moves on every publish', async () => {
-		await publishPackage(fake.env, payload('@acme/tok1', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/tok1', '1.0.0'));
 		assert.equal(mutationToken('@acme/tok1'), 1);
-		await publishPackage(fake.env, payload('@acme/tok1', '1.1.0'));
+		await seedPackage(fake.env, payload('@acme/tok1', '1.1.0'));
 		assert.equal(mutationToken('@acme/tok1'), 2);
 	});
 
 	it('does not move on a yank', async () => {
-		await publishPackage(fake.env, payload('@acme/tok2', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/tok2', '1.0.0'));
 		const before = mutationToken('@acme/tok2');
 		await yankVersion(fake.env, '@acme/tok2', '1.0.0');
 		assert.equal(mutationToken('@acme/tok2'), before, 'a yank does not change the candidate set');
 	});
 
 	it('moves on a takedown', async () => {
-		await publishPackage(fake.env, payload('@acme/tok3', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/tok3', '1.0.0'));
 		const before = mutationToken('@acme/tok3');
 		await recordTombstone(fake.env, '@acme/tok3', '1.0.0', 'policy');
 		assert.equal(mutationToken('@acme/tok3'), before + 1);
 	});
 
 	it('moves on a scope transfer', async () => {
-		await publishPackage(fake.env, payload('@tr/tok4', '1.0.0'));
+		await seedPackage(fake.env, payload('@tr/tok4', '1.0.0'));
 		const before = mutationToken('@tr/tok4');
 		// Turso does not enforce foreign keys by default, and the transfer
 		// moves the child rows before the parent key. The fake enforces them,
@@ -747,7 +727,7 @@ describe('package mutation token', () => {
 	it('rides on the packages upsert without an extra statement', async () => {
 		clearVersionIndex();
 		fake.reset();
-		await publishPackage(fake.env, payload('@acme/tok5', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/tok5', '1.0.0'));
 		const upserts = fake.statements.filter((s) => s.includes('insert into "packages"'));
 		assert.equal(upserts.length, 1, 'the publish writes the package row once');
 		assert.ok(upserts[0].includes('"mutation_count"'), upserts[0]);
@@ -756,7 +736,7 @@ describe('package mutation token', () => {
 	it('leaves no global generation counter behind', async () => {
 		clearVersionIndex();
 		fake.reset();
-		await publishPackage(fake.env, payload('@acme/tok6', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/tok6', '1.0.0'));
 		await yankVersion(fake.env, '@acme/tok6', '1.0.0');
 		await recordTombstone(fake.env, '@acme/tok6', '1.0.0', 'policy');
 		assert.equal(
@@ -945,14 +925,14 @@ describe('resolveGraph repair bound', () => {
 
 describe('publish idempotency (changes() idiom)', () => {
 	it('reports created only for the publish that minted the version', async () => {
-		const first = await publishPackage(fake.env, payload('@acme/idem', '1.0.0'));
+		const first = await seedPackage(fake.env, payload('@acme/idem', '1.0.0'));
 		assert.equal(first.created, true);
-		const again = await publishPackage(fake.env, payload('@acme/idem', '1.0.0'));
+		const again = await seedPackage(fake.env, payload('@acme/idem', '1.0.0'));
 		assert.equal(again.created, false, 'republish must not report created');
 	});
 
 	it('writes exactly one audit publish row across repeated publishes', async () => {
-		for (let i = 0; i < 4; i++) await publishPackage(fake.env, payload('@acme/idem2', '1.0.0'));
+		for (let i = 0; i < 4; i++) await seedPackage(fake.env, payload('@acme/idem2', '1.0.0'));
 		const rows = fake.db
 			.prepare("SELECT count(*) AS c FROM audit_log WHERE action = 'publish' AND full_name = '@acme/idem2'")
 			.all() as Array<{ c: number }>;
@@ -960,17 +940,17 @@ describe('publish idempotency (changes() idiom)', () => {
 	});
 
 	it('mints a version once but still bumps the mutation counter on a republish', async () => {
-		await publishPackage(fake.env, payload('@acme/idem3', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/idem3', '1.0.0'));
 		const token = mutationToken('@acme/idem3');
-		const again = await publishPackage(fake.env, payload('@acme/idem3', '1.0.0'));
+		const again = await seedPackage(fake.env, payload('@acme/idem3', '1.0.0'));
 		assert.equal(again.created, false);
 		assert.equal(mutationToken('@acme/idem3'), token + 1);
 	});
 
 	it('keeps version rows unique across a mixed publish set', async () => {
-		await publishPackage(fake.env, payload('@acme/idem4', '1.0.0', { manifestJson: '{"deps":{"@acme/dep":"*"}}' }));
-		await publishPackage(fake.env, payload('@acme/dep', '1.0.0'));
-		const dup = await publishPackage(fake.env, payload('@acme/idem4', '1.0.0', { manifestJson: '{"deps":{"@acme/dep":"*"}}' }));
+		await seedPackage(fake.env, payload('@acme/idem4', '1.0.0', { manifestJson: '{"deps":{"@acme/dep":"*"}}' }));
+		await seedPackage(fake.env, payload('@acme/dep', '1.0.0'));
+		const dup = await seedPackage(fake.env, payload('@acme/idem4', '1.0.0', { manifestJson: '{"deps":{"@acme/dep":"*"}}' }));
 		assert.equal(dup.created, false);
 		const rows = fake.db
 			.prepare("SELECT count(*) AS c FROM package_versions WHERE version = '1.0.0' AND package_id = 'pkg_@acme/idem4'")
@@ -993,7 +973,7 @@ describe('publish batch order', () => {
 	it('reads the version insert and writes the package row before it', async () => {
 		clearVersionIndex();
 		fake.reset();
-		await publishPackage(fake.env, payload('@acme/order', '1.0.0', {
+		await seedPackage(fake.env, payload('@acme/order', '1.0.0', {
 			manifestJson: JSON.stringify({ deps: { '@acme/orderdep': '*' } })
 		}));
 		const stmts = fake.statements;
@@ -1010,7 +990,7 @@ describe('publish batch order', () => {
 	it('keeps the order with trailing dependency and capability inserts', async () => {
 		clearVersionIndex();
 		fake.reset();
-		await publishPackage(fake.env, payload('@acme/order2', '1.0.0', {
+		await seedPackage(fake.env, payload('@acme/order2', '1.0.0', {
 			manifestJson: JSON.stringify({ deps: { '@acme/orderdep2': '*' } }),
 			capabilities: [{ domain: 'fs.read', arg: '/tmp', reason: null }]
 		}));
@@ -1023,7 +1003,7 @@ describe('publish batch order', () => {
 			.prepare("SELECT count(*) AS c FROM audit_log WHERE action = 'publish' AND full_name = '@acme/order2'")
 			.all() as Array<{ c: number }>;
 		assert.equal(Number(rows[0].c), 1);
-		const again = await publishPackage(fake.env, payload('@acme/order2', '1.0.0', {
+		const again = await seedPackage(fake.env, payload('@acme/order2', '1.0.0', {
 			manifestJson: JSON.stringify({ deps: { '@acme/orderdep2': '*' } }),
 			capabilities: [{ domain: 'fs.read', arg: '/tmp', reason: null }]
 		}));

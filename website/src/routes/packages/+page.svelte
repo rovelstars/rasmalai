@@ -37,7 +37,7 @@
 
 	async function refreshExtended() {
 		try {
-			const res = await fetch('/api/packages');
+			const res = await fetch('/api/v0/packages');
 			if (!res.ok) return;
 			const body = (await res.json()) as { packages?: Array<Record<string, unknown>> };
 			if (!Array.isArray(body.packages)) return;

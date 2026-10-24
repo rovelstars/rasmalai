@@ -25,32 +25,32 @@ Retries are safe. Publish accepts an `X-RNX-Request-ID` idempotency key; repeati
 
 Yank is reversible-looking but one-way, and takedown is forever. Both keep the number burned per the rule above.
 
-`POST /api/packages/<name>@<version>/yank` flips a live version to `yanked`. The metadata still serves, now with `"status": "yanked"`. Pinned requirements keep resolving — yanked versions stay in the candidate set — but the latest pointer and the catalog skip them, so new floating ranges move past. Yanking a version that is not live fails with 409 (`version <v> is not live`).
+`POST /api/v0/packages/<name>@<version>/yank` flips a live version to `yanked`. The metadata still serves, now with `"status": "yanked"`. Pinned requirements keep resolving — yanked versions stay in the candidate set — but the latest pointer and the catalog skip them, so new floating ranges move past. Yanking a version that is not live fails with 409 (`version <v> is not live`).
 
-`POST /api/packages/<name>@<version>/takedown` needs the admin token. It writes a tombstone row carrying the reason and every later read of that version answers 410 `{ code: "withdrawn", reason }` with a one-year immutable cache. The number never comes back.
+`POST /api/v0/packages/<name>@<version>/takedown` needs the admin token. It writes a tombstone row carrying the reason and every later read of that version answers 410 `{ code: "withdrawn", reason }` with a one-year immutable cache. The number never comes back.
 
 Only the `@std/*` scope has a further carve-out, `DELETE /api/scopes/{scope}/{name}@{version}`, which needs the org admin plus a second approval. It has no CLI path.
 
 ## Reading from the registry
 
-Reads take no credentials. Every response carries an `rnx-registry-spec: 1` header. `GET /api/version` reports the contract in one place:
+Reads take no credentials. Every response carries an `rnx-registry-spec: 0` header. `GET /api/version` reports the contract in one place:
 
 ```json
-{ "spec": 1, "capabilities": ["tombstones", "guides", "jsdoc", "yank", "transfer"], "registry": "rasmalai.rovelstars.com" }
+{ "spec": 0, "capabilities": ["tombstones", "guides", "jsdoc", "yank", "transfer"], "registry": "rasmalai.rovelstars.com" }
 ```
 
 The fixed paths are:
 
 | Request | Result |
 |---|---|
-| `GET /api/packages` | catalog of package summaries |
-| `GET /api/packages/<name>` (or `@<scope>/<name>`) | 302 to the latest versioned URL, never content |
+| `GET /api/v0/packages` | catalog of package summaries |
+| `GET /api/v0/packages/<name>` (or `@<scope>/<name>`) | 302 to the latest versioned URL, never content |
 | `GET .../<name>@<version>` | pinned version; older `/<name>/<version>` path form 308-redirects here |
 | `GET .../<name>@<version>` | metadata: status, checksums, engine range, api/manifest/chunks/guides links |
 | `GET .../<version>/api` | the jsdoc snapshot JSON |
 | `GET .../<version>/manifest` | the stored dependency manifest (deps, homepage) |
-| `GET .../<version>/chunks` | chunk entry manifest (file names, sizes, content hashes) for browser-side reassembly; 404 `no-file-index` when the version ships no file index |
-| `GET .../<version>/chunk/<sha256>` | one content chunk by hash, immutable — browsers fetch these in parallel and unpack locally; the digest is accepted in either case |
+| `GET .../<version>/chunks` | chunk entry manifest (file names, sizes, content hashes) describing canonical bytes; 404 `no-file-index` when the version ships no file index |
+| `GET .../<version>/chunk/<sha256>` | one content chunk by hash, immutable — clients fetch these in parallel and write files straight to disk; the digest is accepted in either case |
 | `GET .../<name>@<version>/guides[/<slug>]` | guide index or one guide, 404 when the package ships none |
 
 Version metadata and content chunks cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410. The status of a version is the one part of that metadata that changes after the publish, so the server purges the version URLs when a yank or a takedown lands, and then reads the edge back: the purge counts as done only when the edge answers with the new state instead of the old copy. Without the purge credentials (`CF_ZONE_ID` and `CF_PURGE_TOKEN`) nothing is purged, and the one-year lifetime of the metadata route is the bound. Tooling that must see one consistent generation (stdlib seeding, stdlib docs, the playground) reads transport payloads under a fixed `?origin-direct=1` namespace instead of the bare URL; the server answers that namespace `no-store`, so it always reflects origin live truth and can never hold a stale generation.
@@ -61,7 +61,7 @@ The command line client speaks HTTP/2 to the registry. One TLS session per host 
 
 ### Entry names in a chunk manifest
 
-Every entry name in a chunk manifest is a path the client writes to disk, so the server checks the names when the tarball is published and refuses the publish when a name could escape the destination directory. A name is accepted when, after dropping at most one trailing `/`, all of the following hold:
+Every entry name in a chunk manifest is a path the client writes to disk, so the server checks the names at publish and refuses the publish when a name could escape the destination directory. A name is accepted when, after dropping at most one trailing `/`, all of the following hold:
 
 - it is not empty;
 - it holds no `\` (a separator on Windows, where joining it onto the destination directory would leave that directory);
@@ -73,8 +73,6 @@ Every entry name in a chunk manifest is a path the client writes to disk, so the
 
 A publish that carries such a name is rejected with 400 and a message naming the entry. The client applies the same rule to the same names, so a manifest that came from somewhere else is refused at install time as well.
 
-One name is not a path. A manifest of exactly one entry whose name is empty and which is not a directory means the package is one opaque tarball blob, and it is the only shape that may carry the empty name.
-
 A version that ships no file index at all answers 404 `no-file-index` on the chunks route, and the client reports that as a package with no file index, never as a broken download.
 
 ### Playground stdlib prefetch
@@ -85,7 +83,7 @@ The web playground carries no standard library inside its wasm engine either: en
 
 | Status | Meaning | Body |
 |---|---|---|
-| `200` / `201` | version is live | metadata or tarball bytes |
+| `200` / `201` | version is live | metadata or stored manifest digest |
 | `302` | name without version | redirect to the latest versioned URL, never content |
 | `400` | bad input | `invalid package name`, `bad-range` |
 | `403` | not the owner | `package <name> is owned by someone else`, `scope @<scope> is not yours` |
@@ -95,11 +93,11 @@ The web playground carries no standard library inside its wasm engine either: en
 | `413` | the request is larger than the server accepts | `payload-too-large` |
 | `503` | the registry changed while the answer was computed | `resolution raced with a mutation, retry` |
 
-Every response carries an `rnx-registry-spec: 1` header. A client meeting a spec it does not support is a hard error naming both numbers, and calls needing a capability the server lacks fail closed naming it.
+Every response carries an `rnx-registry-spec: 0` header. A client meeting a spec it does not support is a hard error naming both numbers, and calls needing a capability the server lacks fail closed naming it.
 
 ## Resolving a dependency graph
 
-`POST /api/resolve` takes one request with a `requirements` map and a `have` list of already-fetched versions:
+`POST /api/v0/resolve` takes one request with a `requirements` map and a `have` list of already-fetched versions:
 
 ```json
 {
@@ -108,7 +106,7 @@ Every response carries an `rnx-registry-spec: 1` header. A client meeting a spec
 }
 ```
 
-The server picks the highest satisfying version for each requirement, walks manifests transitively, and returns `resolved` plus depth-leveled `levels`. Each node carries its chunk-manifest `path`, `integrity` digest, engine range, and a `yanked` flag. Clients fetch the manifest, pull content chunks in parallel, reassemble the tarball bytes locally, and verify against `integrity`. Entries in `have` whose integrity still matches skip dependency expansion, so repeated resolves only fetch the delta.
+The server picks the highest satisfying version for each requirement, walks manifests transitively, and returns `resolved` plus depth-leveled `levels`. Each node carries its chunk-manifest `path`, `integrity` digest, engine range, and a `yanked` flag. Clients fetch the manifest, pull content chunks in parallel, write files straight to disk, verify the manifest digest, and rehydrate `Project.config` to the resolved version. Installed `.rnx` bytes are canonical minified form, not author formatting. Entries in `have` whose integrity still matches skip dependency expansion, so repeated resolves only fetch the delta.
 
 A `have` entry never hides a status change. A version that was yanked after the client cached it is still reported with `yanked` set, and a version that was taken down is not served at all, not even when the client's cache still names it.
 
@@ -156,7 +154,7 @@ A client that sees the `resolve-inline-chunks` capability in `GET /api/version` 
 }
 ```
 
-That removes one `GET .../{version}/chunks` per package from a cold seed. `entries` is the same array the chunks endpoint serves, and the client still verifies chunk hashes and the whole-version digest, so an inlined list is used *in addition to* verification, never instead of it.
+That removes one `GET .../{version}/chunks` per package from a cold seed. `entries` is the same array the chunks endpoint serves, and the client still verifies chunk hashes and the manifest digest, so an inlined list is used *in addition to* verification, never instead of it.
 
 Three rules govern it:
 
@@ -184,30 +182,29 @@ A resolve also has a runtime budget: the traversal stops at 64 levels, 512 packa
 
 ## Publishing
 
-`rnx pack` builds the deterministic archive (ustar plus SHA-256, `--gzip` for the compressed form). `rnx publish` ships it:
+`rnx publish` ships the current project as a source tree. `rnx pack` stays for local archives but plays no part in publishing: the server derives the stored bytes itself.
 
 ```sh
-rnx pack --gzip
-rnx publish ./colony-0.4.0.tar.gz --registry https://rasmalai.rovelstars.com/api/packages --token <token>
+rnx publish --registry https://rasmalai.rovelstars.com --token <token>
 ```
 
-Omit the tarball and `rnx publish` packs the current project into a temporary directory first. `--registry` defaults to `https://rasmalai.rovelstars.com/api/packages` and `--token` falls back to the `RNX_TOKEN` environment variable. Without either, the command stops with `E501` and the hint `pass --token <token> or set RNX_TOKEN in your environment`.
+`--registry` defaults to `https://rasmalai.rovelstars.com` and `--token` falls back to the `RNX_TOKEN` environment variable. Without a token, the command stops with `E501` and the hint `pass --token <token> or set RNX_TOKEN in your environment`. The project must be formatted (`rnx fmt`); unformatted files refuse the publish before anything is sent.
 
-The CLI posts the raw bytes with exactly these headers:
+The CLI posts one JSON frame with exactly these headers:
 
 - `Authorization: Bearer <token>`
-- `Content-Type: application/octet-stream`
-- `X-RNX-Package-Name`, `X-RNX-Package-Version`, `X-RNX-Checksum`
+- `Content-Type: application/json`
+- `X-RNX-Protocol: 0`
 
-The server also honors `X-RNX-Meta` (readme, docs, guides, manifest JSON) and `X-RNX-Request-ID` for idempotent retries. A 200 or 201 means the version is live; anything else prints the rejection status and message with the hint to check the token and the version.
+The frame carries the package name, the requested version, every file as text, and the readme, docs, engine range, keywords, and license. The server reads the package identity out of `Project.config` itself, checks the frame against it, minifies what it stores, redacts the published version, and analyses the whole tree before storing. A 201 means the version is live and names the stored manifest digest; anything else prints the rejection status and message with the hint to check the token and the version.
 
-Publishing minifies on the client before upload. `rnx publish` first refuses unformatted trees with `E108` naming the files (run `rnx fmt` and retry), then extracts the API docs so doc comments survive in `X-RNX-Meta` (`metaVersion` 3), then ships minified `.rnx` sources — comments stripped, `Project.config` sent formatted as-is — and fails closed if the minified output does not re-parse to the same token stream. Checksums cover the minified bytes.
+Publishing canonicalizes on the server. `rnx publish` first refuses unformatted trees with `E108` naming the files (run `rnx fmt` and retry; the gate is UX only, the server trusts nothing), then extracts the API docs so doc comments survive in the payload, then ships the source tree as text. The server minifies `.rnx` sources itself — comments stripped — stores `Project.config` with its version redacted, and fails the publish closed if anything does not parse. The manifest digest covers the canonical bytes.
 
 The server stores the submitted API snapshot after checking it: the payload must parse as docgen JSON (`{"modules":[...]}` with typed entries per module), fit the same 1 MiB cap as storage, and carry no pre-rendered HTML — unknown fields are dropped before the row is written, and anything misshapen fails with 400 (oversize with 413). The stored snapshot is what `GET .../{version}/api` serves, so the package page and the registry API always agree.
 
-Declarations are checked against the shipped code. The server scans the tarball sources for the same capability sinks the compiler tracks (`File.open`, `fetch`, `Process.spawn`, `Env.get`, `print`, `unsafe`, and the rest of the `sink_for` table) and rejects the publish with 400 when the code uses a domain head the manifest does not declare — the message names the symbol, the file, and the `Project.config` permission entry that would cover it. Declaring a wider ceiling than the code uses is fine; only undeclared use is rejected. Publishes without tarball bytes carry no code to scan, so they store declarations unchecked.
+Declarations are checked against the shipped code. The server analyses the whole canonical tree with the real capability analyzer (cross-file call-graph walk, entry-anchored) plus a textual sink scan over files no entry root reaches, and rejects the publish with 400 when the code uses a domain head the manifest does not declare — the message names the symbol, the file, and the `Project.config` permission entry that would cover it. Declaring a wider ceiling than the code uses is fine; only undeclared use is rejected. Analysis failures (unparseable files, unresolvable imports) reject the publish too: never silently unscanned.
 
-The entry names of the tarball are checked too. A name that could escape the destination directory on the client (`../`, a Windows separator, a drive prefix, an absolute path) fails the publish with 400 and a message naming the entry, before the version is written. The rule is the one in "Entry names in a chunk manifest" above.
+The entry names of the tree are checked too. A name that could escape the destination directory on the client (`../`, a Windows separator, a drive prefix, an absolute path) fails the publish with 400 and a message naming the entry, before the version is written. The rule is the one in "Entry names in a chunk manifest" above.
 
 Server-side auth is an exact match against the configured org token. A local server without one accepts `preview-` tokens and logs a warning — a deliberate hole for local development, not for deployment. Browser sessions can publish too: then the username owns the package and scope membership is checked per scope.
 
@@ -219,11 +216,11 @@ A manifest can name its own registry and per-scope overrides:
 export default {
     project: { name: "colony", version: "0.4.0" },
     registry: {
-        url: "https://rasmalai.rovelstars.com/api/packages",
+        url: "https://rasmalai.rovelstars.com",
         token_env: "RNX_TOKEN"
     },
     registries: {
-        "@acme": { url: "https://rnx.acme.internal/api/packages" }
+        "@acme": { url: "https://rnx.acme.internal" }
     }
 }
 ```

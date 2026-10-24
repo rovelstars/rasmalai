@@ -4110,18 +4110,18 @@ mod tests {
     }
 
     fn start_widget_server() -> testkit::MockRegistry {
-        let (gz, sha) = testkit::fixture_tarball("@acme/widget", "1.2.0");
-        let node = testkit::node_json("@acme/widget", "1.2.0", &sha, false);
+        let (manifest, pairs, digest, _, _) = testkit::fixture_tree("@acme/widget", "1.2.0");
+        let node = testkit::node_json("@acme/widget", "1.2.0", &digest, false);
         testkit::MockRegistry::start(testkit::MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: testkit::resolve_json_static(&[node]),
             manifest_status: 200,
-            fallback_tarball: gz,
+            fallback_tarball: Vec::new(),
             manifest_error: String::new(),
-            manifest_override: None,
-            chunk_override: None,
+            manifest_override: Some(manifest),
+            chunk_override: Some(pairs),
         })
     }
 
@@ -4172,18 +4172,18 @@ mod tests {
 
     fn start_std_server() -> testkit::MockRegistry {
         let pin = env!("CARGO_PKG_VERSION");
-        let (gz, sha) = testkit::fixture_tarball("@std/fs", pin);
-        let node = testkit::node_json("@std/fs", pin, &sha, false);
+        let (manifest, pairs, digest, _, _) = testkit::fixture_tree("@std/fs", pin);
+        let node = testkit::node_json("@std/fs", pin, &digest, false);
         testkit::MockRegistry::start(testkit::MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: testkit::resolve_json_static(&[node]),
             manifest_status: 200,
-            fallback_tarball: gz,
+            fallback_tarball: Vec::new(),
             manifest_error: String::new(),
-            manifest_override: None,
-            chunk_override: None,
+            manifest_override: Some(manifest),
+            chunk_override: Some(pairs),
         })
     }
 
@@ -4806,20 +4806,14 @@ mod tests {
         }
     }
 
-    fn std_install_tarball(full: &str, version: &str, main_rnx: &str) -> (Vec<u8>, String) {
-        let manifest = format!(
-            "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }}\n}}\n"
-        );
-        let mut buf = Vec::new();
-        {
-            let mut tar = crate::tar::TarWriter::new(&mut buf);
-            tar.add_file("Project.config", manifest.as_bytes()).unwrap();
-            tar.add_file("src/main.rnx", main_rnx.as_bytes()).unwrap();
-            tar.finish().unwrap();
-        }
-        let gz = crate::gzip::compress_gzip(&buf);
-        let sha = crate::checksum::Sha256::hexdigest(&gz);
-        (gz, sha)
+    fn std_install_tree(
+        full: &str,
+        version: &str,
+        main_rnx: &str,
+    ) -> (String, Vec<(String, Vec<u8>)>, String) {
+        let (manifest, pairs, digest, _, _) =
+            testkit::fixture_tree_with_main(full, version, main_rnx.as_bytes());
+        (manifest, pairs, digest)
     }
 
     struct StdInstallServer {
@@ -4836,7 +4830,8 @@ mod tests {
     fn start_std_install_server() -> StdInstallServer {
         use std::io::{Read, Write};
         let pin = env!("CARGO_PKG_VERSION");
-        let mut balls: BTreeMap<(String, String), (Vec<u8>, String)> = BTreeMap::new();
+        let mut balls: BTreeMap<(String, String), (String, Vec<(String, Vec<u8>)>, String)> =
+            BTreeMap::new();
         for full in crate::stdlib_seed::std_package_names() {
             let top = full.strip_prefix("@std/").unwrap_or(&full);
             let main = if top == "time" {
@@ -4844,12 +4839,12 @@ mod tests {
             } else {
                 "export fn hello(): Int { return 1; }\n"
             };
-            let (gz, sha) = std_install_tarball(&full, pin, main);
-            balls.insert((full, pin.to_string()), (gz, sha));
+            let (manifest, pairs, digest) = std_install_tree(&full, pin, main);
+            balls.insert((full, pin.to_string()), (manifest, pairs, digest));
         }
         let nodes: Vec<String> = balls
             .iter()
-            .map(|((full, version), (_, sha))| testkit::node_json(full, version, sha, false))
+            .map(|((full, version), (_, _, digest))| testkit::node_json(full, version, digest, false))
             .collect();
         let resolve_body = testkit::resolve_json_static(&nodes);
         let balls = std::sync::Arc::new(balls);
@@ -4897,8 +4892,8 @@ mod tests {
                     let _ = stream.flush();
                 };
                 if method == "GET" && route == "/api/version" {
-                    respond(200, b"{\"spec\": 1}", true);
-                } else if method == "POST" && route == "/api/resolve" {
+                    respond(200, b"{\"spec\": 0}", true);
+                } else if method == "POST" && route == "/api/v0/resolve" {
                     respond(200, resolve_body.as_bytes(), true);
                 } else if method == "GET" && route.ends_with("/chunks") {
                     let hit = route.find("@std/").and_then(|i| {
@@ -4909,14 +4904,14 @@ mod tests {
                         })
                     });
                     match hit {
-                        Some((gz, _)) => respond(200, testkit::fallback_manifest(&gz).as_bytes(), true),
+                        Some((manifest, _, _)) => respond(200, manifest.as_bytes(), true),
                         None => respond(404, b"{}", true),
                     }
                 } else if method == "GET" && route.contains("/chunk/") {
                     let hash = route.rsplit('/').next().unwrap_or_default();
-                    let hit = balls.values().find(|(_, sha)| sha == hash).map(|(gz, _)| gz.clone());
+                    let hit = balls.values().flat_map(|(_, pairs, _)| pairs).find(|(h, _)| h == hash).map(|(_, b)| b.clone());
                     match hit {
-                        Some(gz) => respond(200, &gz, false),
+                        Some(bytes) => respond(200, &bytes, false),
                         None => respond(404, b"{}", true),
                     }
                 } else {

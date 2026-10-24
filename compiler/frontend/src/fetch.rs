@@ -4,7 +4,7 @@ use diagnostics::{Code, Diagnostic};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-pub const REGISTRY_SPEC: u32 = 1;
+pub const REGISTRY_SPEC: u32 = 0;
 pub const DEFAULT_REGISTRY_DOMAIN: &str = "rasmalai.rovelstars.com";
 const RESOLVE_INLINE_CHUNKS: &str = "resolve-inline-chunks";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
@@ -239,12 +239,20 @@ fn registry_scope(full: &str) -> Option<&str> {
 }
 
 pub fn expand_registry_base(raw: &str) -> String {
-    let trimmed = raw.trim().trim_end_matches('/');
+    let mut trimmed = raw.trim().trim_end_matches('/').to_string();
     if trimmed.is_empty() {
         return format!("https://{DEFAULT_REGISTRY_DOMAIN}");
     }
+    // The registry value is a host base. Older setups carried the packages
+    // path (`/api/packages`); strip it so those values keep working.
+    for suffix in ["/api/v0/packages", "/api/packages"] {
+        if let Some(base) = trimmed.strip_suffix(suffix) {
+            trimmed = base.trim_end_matches('/').to_string();
+            break;
+        }
+    }
     if trimmed.contains("://") {
-        return trimmed.to_string();
+        return trimmed;
     }
     format!("https://{trimmed}")
 }
@@ -1492,7 +1500,7 @@ pub fn resolve_requirements(
         }
     }
     let body = resolve_request_body(requirements, have, inline_chunks);
-    let url = format!("{}/api/resolve", base.trim_end_matches('/'));
+    let url = format!("{}/api/v0/resolve", base.trim_end_matches('/'));
     let reply = http_post_json(&url, &body, "registry resolve")?;
     if reply.status == 200 {
         return parse_resolve(&reply.body);
@@ -2087,6 +2095,56 @@ fn feed_capped(
     Ok(())
 }
 
+fn verify_manifest_digest(entries: &[ChunkEntry], node: &ResolveNode) -> Result<(), Diagnostic> {
+    let digest_entries: Vec<crate::checksum::DigestEntry> = entries
+        .iter()
+        .map(|e| crate::checksum::DigestEntry {
+            name: e.name.clone(),
+            size: e.size,
+            dir: e.dir,
+            chunks: e.chunks.clone(),
+        })
+        .collect();
+    let digest = crate::checksum::manifest_digest_hex(&digest_entries).map_err(|_| {
+        Diagnostic::new(
+            Code::E108,
+            format!(
+                "chunk manifest of `{}@{}` carries a malformed chunk hash",
+                node.full, node.version
+            ),
+        )
+    })?;
+    if !digest.eq_ignore_ascii_case(&node.integrity) {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!(
+                "checksum mismatch for package `{}@{}`: download does not match registry integrity",
+                node.full, node.version
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn rehydrate_manifest_version(dir: &Path, full: &str, version: &str) -> Result<(), Diagnostic> {
+    let path = dir.join(crate::project::MANIFEST_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", path.display()))
+    })?;
+    let rehydrated =
+        crate::project::redact::rehydrate_project_version(&text, version).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("package `{full}` ships a Project.config without the published version marker"),
+            )
+            .with_hint(e.message.clone())
+        })?;
+    std::fs::write(&path, rehydrated).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", path.display()))
+    })?;
+    Ok(())
+}
+
 fn assemble_direct_tree(
     entries: &[ChunkEntry],
     by_hash: &BTreeMap<String, Vec<u8>>,
@@ -2195,192 +2253,42 @@ fn write_direct_tree(tree: &DirectTree, full: &str, dest: &Path) -> Result<(), D
     Ok(())
 }
 
-enum Downloaded {
-    Tarball(Vec<u8>),
-    Tree(DirectTree),
-}
-
-fn tar_octal(bytes: &[u8]) -> Result<u64, Diagnostic> {
-    let mut text = Vec::new();
-    for b in bytes {
-        if *b == 0 || *b == b' ' {
-            break;
-        }
-        if !b.is_ascii_digit() || *b == b'8' || *b == b'9' {
-            return Err(Diagnostic::new(Code::E108, "bad tar number".to_string()));
-        }
-        text.push(*b);
-    }
-    if text.is_empty() {
-        return Ok(0);
-    }
-    let s = String::from_utf8(text)
-        .map_err(|_| Diagnostic::new(Code::E108, "bad tar number".to_string()))?;
-    u64::from_str_radix(&s, 8)
-        .map_err(|_| Diagnostic::new(Code::E108, "bad tar number".to_string()))
-}
-
-fn tar_name(bytes: &[u8]) -> Result<String, Diagnostic> {
-    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    std::str::from_utf8(&bytes[..end])
-        .map(|s| s.to_string())
-        .map_err(|_| Diagnostic::new(Code::E108, "bad tar name".to_string()))
-}
-
-// Accepted manifest entry names.
-//
-// This is the contract between the Rust client and the registry server
-// (`website/src/lib/server/chunks.ts::checkManifestEntryName`). The two are
-// written in different languages, so the rule is spelled out here and
-// repeated there verbatim; the two implementations must stay textually
+// The accepted-name rule, as the client applies it. The server applies the
+// same rule to the same names (`website/src/lib/server/chunks.ts::
+// checkManifestEntryName`); the two implementations must stay textually
 // identical.
-//
-// A manifest entry name is accepted when, after dropping at most one
-// trailing `/`, all of the following hold:
-//   1. it is not empty;
-//   2. it holds no `\` (a separator on Windows, where joining it onto the
-//      destination directory would escape that directory);
-//   3. it does not start with `/`;
-//   4. it carries no drive prefix (`C:`);
-//   5. every `/`-separated component is non-empty and is neither `.` nor
-//      `..`;
-//   6. it holds no control character, NUL included;
-//   7. it is at most 255 bytes long.
-//
-// The one name that is not a path is the protocol sentinel: a manifest of
-// exactly one entry whose name is the empty string and which is not a
-// directory means "this package is one opaque tarball blob".
-const MAX_ENTRY_NAME_BYTES: usize = 255;
-
 fn tar_safe_rel(name: &str) -> Result<String, Diagnostic> {
+    let bad = |reason: &str| {
+        Diagnostic::new(Code::E108, format!("unsafe tar path `{name}`: {reason}"))
+    };
     let trimmed = name.strip_suffix('/').unwrap_or(name);
-    let unsafe_path = || Diagnostic::new(Code::E108, format!("unsafe tar path `{name}`"));
     if trimmed.is_empty() {
-        return Err(unsafe_path());
+        return Err(bad("the name is empty"));
     }
-    if trimmed.len() > MAX_ENTRY_NAME_BYTES {
-        return Err(unsafe_path());
+    if trimmed.len() > 255 {
+        return Err(bad("the name is longer than 255 bytes"));
     }
     if trimmed.contains('\\') {
-        return Err(unsafe_path());
+        return Err(bad("the name holds a backslash"));
     }
     if trimmed.starts_with('/') {
-        return Err(unsafe_path());
+        return Err(bad("the name is absolute"));
     }
-    let bytes = trimmed.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return Err(unsafe_path());
+    if trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':' && trimmed.as_bytes()[0].is_ascii_alphabetic() {
+        return Err(bad("the name carries a drive prefix"));
     }
     if trimmed.chars().any(|c| c.is_control()) {
-        return Err(unsafe_path());
+        return Err(bad("the name holds a control character"));
     }
     for part in trimmed.split('/') {
-        if part.is_empty() || part == "." || part == ".." {
-            return Err(unsafe_path());
+        if part.is_empty() {
+            return Err(bad("the name holds an empty path component"));
+        }
+        if part == "." || part == ".." {
+            return Err(bad(&format!("the name holds a `{part}` path component")));
         }
     }
     Ok(trimmed.to_string())
-}
-
-struct TarFile {
-    path: String,
-    data: Vec<u8>,
-}
-
-fn parse_download_tar(data: &[u8]) -> Result<(Vec<String>, Vec<TarFile>), Diagnostic> {
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    let mut pos = 0usize;
-    while pos + 512 <= data.len() {
-        let head = &data[pos..pos + 512];
-        if head.iter().all(|b| *b == 0) {
-            break;
-        }
-        if head.len() < 262 || &head[257..262] != b"ustar" {
-            return Err(Diagnostic::new(Code::E108, "bad tar magic".to_string()));
-        }
-        let stored = tar_octal(&head[148..156])?;
-        let mut sum = 0u64;
-        for (i, b) in head.iter().enumerate() {
-            sum += if (148..156).contains(&i) { b' ' as u64 } else { *b as u64 };
-        }
-        if sum != stored {
-            return Err(Diagnostic::new(Code::E108, "tar checksum mismatch".to_string()));
-        }
-        let mut name = tar_name(&head[0..100])?;
-        let prefix = tar_name(&head[345..394])?;
-        if !prefix.is_empty() {
-            name = format!("{prefix}/{name}");
-        }
-        let size = tar_octal(&head[124..136])?;
-        let flag = head[156];
-        if flag == b'L' || flag == b'K' {
-            return Err(Diagnostic::new(Code::E108, "long tar names unsupported".to_string()));
-        }
-        let dir = flag == b'5';
-        if !dir && flag != b'0' && flag != 0 {
-            return Err(Diagnostic::new(Code::E108, "unsupported tar entry".to_string()));
-        }
-        let path = tar_safe_rel(&name)?;
-        let blocks = size.div_ceil(512) as usize;
-        if pos + 512 + blocks * 512 > data.len() {
-            return Err(Diagnostic::new(Code::E108, "truncated tar archive".to_string()));
-        }
-        if dir {
-            dirs.push(path);
-        } else {
-            files.push(TarFile {
-                path,
-                data: data[pos + 512..pos + 512 + size as usize].to_vec(),
-            });
-        }
-        pos += 512 + blocks * 512;
-    }
-    Ok((dirs, files))
-}
-
-fn extract_download(bytes: &[u8], full: &str, dest: &Path) -> Result<(), Diagnostic> {
-    let tar = if bytes.len() >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
-        crate::gzip::decompress_gzip(bytes)?
-    } else {
-        bytes.to_vec()
-    };
-    let (dirs, mut files) = parse_download_tar(&tar)?;
-    let mut ordered = dirs;
-    ordered.sort();
-    for dir in &ordered {
-        std::fs::create_dir_all(dest.join(dir)).map_err(|e| {
-            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dest.display()))
-        })?;
-    }
-    let mut parents: Vec<&str> = files
-        .iter()
-        .filter_map(|f| f.path.rsplit_once('/').map(|(p, _)| p))
-        .collect();
-    parents.sort();
-    parents.dedup();
-    for parent in parents {
-        std::fs::create_dir_all(dest.join(parent)).map_err(|e| {
-            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dest.display()))
-        })?;
-    }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    for file in &files {
-        std::fs::write(dest.join(&file.path), &file.data).map_err(|e| {
-            Diagnostic::new(
-                Code::E108,
-                format!("cannot write `{}`: {e}", dest.join(&file.path).display()),
-            )
-        })?;
-    }
-    if !dest.join(crate::project::MANIFEST_FILE).is_file() {
-        let _ = std::fs::remove_dir_all(dest);
-        return Err(Diagnostic::new(
-            Code::E108,
-            format!("package `{full}` from the registry has no Project.config"),
-        ));
-    }
-    Ok(())
 }
 
 fn origin_of(url: &str) -> String {
@@ -2396,7 +2304,7 @@ fn origin_of(url: &str) -> String {
 fn api_base_for(response_base: &str, request_base: &str) -> String {
     let b = response_base.trim();
     if b.is_empty() {
-        return format!("{}/api/packages", request_base.trim_end_matches('/'));
+        return format!("{}/api/v0/packages", request_base.trim_end_matches('/'));
     }
     if let Some(path) = b.strip_prefix('/') {
         return format!(
@@ -2434,7 +2342,7 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
         })?
         .to_string();
     let outer_direct = origin_direct();
-    let download = |retry_direct: bool| -> Result<Downloaded, Diagnostic> {
+    let download = |retry_direct: bool| -> Result<DirectTree, Diagnostic> {
         // The chunk manifest is the generation-sensitive read: a stale edge
         // copy lists chunk hashes from a generation that no longer matches
         // the integrity resolve just returned, so it always follows the
@@ -2474,48 +2382,9 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
         }
         let ordered: Vec<String> = uniq.into_iter().collect();
         let by_hash = fetch_chunks_parallel(&chunk_base, &ordered, &node.full, &node.version, chunk_direct, share)?;
-        if entries.len() == 1 && entries[0].name.is_empty() && !entries[0].dir {
-            let mut bytes = Vec::new();
-            for h in &entries[0].chunks {
-                match by_hash.get(h) {
-                    Some(chunk) => bytes.extend_from_slice(chunk),
-                    None => {
-                        return Err(Diagnostic::new(
-                            Code::E108,
-                            format!("chunk {h} of `{}@{}` is missing", node.full, node.version),
-                        ));
-                    }
-                }
-            }
-            if bytes.len() > MAX_DOWNLOAD_BYTES {
-                return Err(Diagnostic::new(
-                    Code::E108,
-                    format!("download of `{}@{}` exceeds size limits", node.full, node.version),
-                ));
-            }
-            let digest = Sha256::hexdigest(&bytes);
-            if !digest.eq_ignore_ascii_case(&node.integrity) {
-                return Err(Diagnostic::new(
-                    Code::E108,
-                    format!(
-                        "checksum mismatch for package `{}@{}`: download does not match registry integrity",
-                        node.full, node.version
-                    ),
-                ));
-            }
-            return Ok(Downloaded::Tarball(bytes));
-        }
+        verify_manifest_digest(&entries, node)?;
         let tree = assemble_direct_tree(&entries, &by_hash, &node.full, &node.version)?;
-        if !tree.digest.eq_ignore_ascii_case(&node.integrity) {
-            return Err(Diagnostic::new(
-                Code::E108,
-                format!(
-                    "checksum mismatch for package `{}@{}`: download does not match registry integrity",
-                    node.full, node.version
-                ),
-            ));
-        }
-        Ok(Downloaded::Tree(tree))
+        Ok(tree)
     };
     let downloaded = match download(false) {
         Err(first) if is_generation_error(&first) => {
@@ -2528,10 +2397,8 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
             Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
         })?;
     }
-    match &downloaded {
-        Downloaded::Tarball(bytes) => extract_download(bytes, &node.full, &dir)?,
-        Downloaded::Tree(tree) => write_direct_tree(tree, &node.full, &dir)?,
-    }
+    write_direct_tree(&downloaded, &node.full, &dir)?;
+    rehydrate_manifest_version(&dir, &node.full, &node.version)?;
     std::fs::write(integrity_path(&dir), format!("{}\n{}\n{}\n", node.full, node.version, node.integrity))
         .map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dir.display()))
@@ -2914,7 +2781,7 @@ pub(crate) mod testkit {
                     if method == "GET" && route == "/api/version" {
                         let body = version_body(config.version_spec, &config.capabilities);
                         respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
-                    } else if method == "POST" && route == "/api/resolve" {
+                    } else if method == "POST" && route == "/api/v0/resolve" {
                         respond(
                             &mut stream,
                             config.resolve_status,
@@ -3035,7 +2902,7 @@ pub(crate) mod testkit {
                     if method == "GET" && route == "/api/version" {
                         let body = version_body(config.version_spec, &config.capabilities);
                         respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
-                    } else if method == "POST" && route == "/api/resolve" {
+                    } else if method == "POST" && route == "/api/v0/resolve" {
                         respond(
                             &mut stream,
                             200,
@@ -3117,7 +2984,7 @@ pub(crate) mod testkit {
         pub fn resolve_bodies(&self) -> Vec<JsonValue> {
             self.requests()
                 .iter()
-                .filter(|(m, p, _)| m == "POST" && p == "/api/resolve")
+                .filter(|(m, p, _)| m == "POST" && p == "/api/v0/resolve")
                 .filter_map(|(_, _, b)| parse_json(b).ok())
                 .collect()
         }
@@ -3154,7 +3021,7 @@ pub(crate) mod testkit {
                                 config.version_spec
                             );
                             respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
-                        } else if method == "POST" && route == "/api/resolve" {
+                        } else if method == "POST" && route == "/api/v0/resolve" {
                             respond(
                                 &mut stream,
                                 200,
@@ -3255,17 +3122,17 @@ pub(crate) mod testkit {
     }
 
     pub fn routed_fixture(full: &str, version: &str, latency_ms: u64) -> (RoutedPackage, String) {
-        let (tarball, sha) = fixture_tarball(full, version);
+        let (manifest, pairs, digest, _, _) = fixture_tree(full, version);
         (
             RoutedPackage {
                 full: full.to_string(),
                 version: version.to_string(),
-                tarball,
-                manifest_override: None,
-                chunk_override: None,
+                tarball: Vec::new(),
+                manifest_override: Some(manifest),
+                chunk_override: Some(pairs),
                 latency_ms,
             },
-            sha,
+            digest,
         )
     }
 
@@ -3295,6 +3162,72 @@ pub(crate) mod testkit {
 
     pub fn node_json(full: &str, version: &str, integrity: &str, yanked: bool) -> String {
         node_engine_json(full, version, integrity, yanked, "")
+    }
+
+    // A publish-shaped file tree: the stored Project.config carries the
+    // published version placeholder, exactly as the registry stores it.
+    // Installs rehydrate it back to the resolved version. Returns the
+    // served manifest, the chunk pairs, the manifest digest, and the
+    // installed config and main bytes.
+    pub fn fixture_tree(
+        full: &str,
+        version: &str,
+    ) -> (String, Vec<(String, Vec<u8>)>, String, Vec<u8>, Vec<u8>) {
+        fixture_tree_with_main(full, version, b"export fn hello(): Int { return 1; }\n")
+    }
+
+    pub fn fixture_tree_with_main(
+        full: &str,
+        version: &str,
+        main: &[u8],
+    ) -> (String, Vec<(String, Vec<u8>)>, String, Vec<u8>, Vec<u8>) {
+        let original = format!(
+            "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }}\n}}\n"
+        );
+        let stored = original.replace(
+            &format!("version: \"{version}\""),
+            "version: \"0.0.0-published\"",
+        );
+        let main = main.to_vec();
+        let files = vec![
+            ("Project.config".to_string(), stored.into_bytes()),
+            ("src/main.rnx".to_string(), main.clone()),
+        ];
+        let mut entries = Vec::new();
+        let mut pairs = Vec::new();
+        for (name, bytes) in &files {
+            let h = Sha256::hexdigest(bytes);
+            entries.push(format!(
+                "{{\"name\": \"{name}\", \"size\": {}, \"dir\": false, \"chunks\": [\"{h}\"]}}",
+                bytes.len()
+            ));
+            pairs.push((h, bytes.clone()));
+        }
+        let manifest = format!("{{\"entries\": [{}]}}", entries.join(", "));
+        let digest = manifest_digest_of(&manifest);
+        let installed = original.into_bytes();
+        (manifest, pairs, digest, installed, main)
+    }
+
+    pub fn manifest_digest_of(manifest_json: &str) -> String {
+        let value = parse_json(manifest_json.as_bytes()).unwrap();
+        let items = value.get("entries").and_then(|v| v.as_array()).unwrap();
+        let entries: Vec<crate::checksum::DigestEntry> = items
+            .iter()
+            .map(|item| crate::checksum::DigestEntry {
+                name: item.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                size: item.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+                dir: item.get("dir").and_then(|v| v.as_bool()).unwrap_or(false),
+                chunks: item
+                    .get("chunks")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter().map(|h| h.as_str().unwrap_or_default().to_string()).collect()
+                    })
+                    .unwrap_or_default(),
+            })
+            .collect();
+        crate::checksum::manifest_digest_hex(&entries).unwrap()
     }
 
     // A resolve node carrying the chunk list the server would otherwise make
@@ -3517,6 +3450,20 @@ mod tests {
         })
     }
 
+    fn start_tree(nodes: &[String], manifest: &str, pairs: Vec<(String, Vec<u8>)>) -> MockRegistry {
+        MockRegistry::start(MockConfig {
+            version_spec: 0,
+            capabilities: vec!["tombstones"],
+            resolve_status: 200,
+            resolve_body: resolve_json_static(nodes),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(manifest.to_string()),
+            chunk_override: Some(pairs),
+        })
+    }
+
     fn requirement(body: &JsonValue, full: &str) -> String {
         body.get("requirements")
             .and_then(|r| r.get(full))
@@ -3594,7 +3541,7 @@ mod tests {
     fn resolve_503_retries_before_failing() {
         let (_guard, _dir) = isolate_cache("retry503");
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 503,
             resolve_body: "store unavailable".to_string(),
@@ -3623,7 +3570,7 @@ mod tests {
     fn resolve_unknown_status_prints_the_status_and_names_the_outdated_client() {
         let (_guard, _dir) = isolate_cache("unknownstatus");
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 599,
             resolve_body: "{\"code\": \"teapot\", \"message\": \"the registry is a teapot\"}"
@@ -3666,7 +3613,7 @@ mod tests {
     fn resolve_unknown_status_without_a_body_still_names_the_status() {
         let (_guard, _dir) = isolate_cache("unknownstatusbare");
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 460,
             resolve_body: String::new(),
@@ -3697,7 +3644,7 @@ mod tests {
     fn resolve_422_budget_is_reported_as_the_registry_explained_it() {
         let (_guard, _dir) = isolate_cache("known422");
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 422,
             resolve_body: "{\"code\": \"budget-exceeded\", \"message\": \"resolve budget exceeded: closure over 512 nodes\", \"requestId\": \"r-1\"}".to_string(),
@@ -3731,7 +3678,7 @@ mod tests {
     fn resolve_404_not_found_is_reported_as_the_registry_explained_it() {
         let (_guard, _dir) = isolate_cache("known404");
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 404,
             resolve_body: "{\"code\": \"not-found\", \"message\": \"package @acme/widget does not exist\"}"
@@ -3764,19 +3711,9 @@ mod tests {
     #[test]
     fn pinned_cache_hit_skips_network() {
         let (_guard, _dir) = isolate_cache("pinhit");
-        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
-        let node = node_json("@acme/widget", "1.2.0", &sha, false);
-        let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
-            capabilities: vec!["tombstones"],
-            resolve_status: 200,
-            resolve_body: resolve_json_static(&[node]),
-            manifest_status: 200,
-            fallback_tarball: gz,
-            manifest_error: String::new(),
-            manifest_override: None,
-            chunk_override: None,
-        });
+        let (manifest, pairs, digest, _pc, _main) = fixture_tree("@acme/widget", "1.2.0");
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
+        let server = start_tree(&[node], &manifest, pairs);
         let default = registry_cfg(&server.base);
         let empty = BTreeMap::new();
         let (dir, _, ver) =
@@ -3796,15 +3733,15 @@ mod tests {
     fn api_base_prefers_omitted_and_relative() {
         assert_eq!(
             api_base_for("", "https://r.example.com"),
-            "https://r.example.com/api/packages"
+            "https://r.example.com/api/v0/packages"
         );
         assert_eq!(
             api_base_for("   ", "https://r.example.com/"),
-            "https://r.example.com/api/packages"
+            "https://r.example.com/api/v0/packages"
         );
         assert_eq!(
-            api_base_for("/api/v1/custom", "https://r.example.com/api/packages"),
-            "https://r.example.com/api/v1/custom"
+            api_base_for("/api/v0/custom", "https://r.example.com/api/v0/packages"),
+            "https://r.example.com/api/v0/custom"
         );
         assert_eq!(
             api_base_for("https://mirror.example.net/x", "https://r.example.com"),
@@ -3826,7 +3763,10 @@ mod tests {
         }
         let tar_sha = Sha256::hexdigest(&buf);
         let files = vec![
-            ("Project.config", b"export default {}\n".to_vec()),
+            (
+                "Project.config",
+                b"export default {\n    project: {\n        name: \"@acme/widget\",\n        version: \"0.0.0-published\"\n    }\n}\n".to_vec(),
+            ),
             ("src/main.rnx", b"export fn hello(): Int { return 1; }\n".to_vec()),
         ];
         let mut manifest_entries = Vec::new();
@@ -3840,9 +3780,9 @@ mod tests {
             bodies.push((h, bytes.clone()));
         }
         let manifest = format!("{{\"entries\": [{}]}}", manifest_entries.join(", "));
-        let node = node_json("@acme/widget", "1.2.0", &tar_sha, false);
+        let node = node_json("@acme/widget", "1.2.0", &manifest_digest_of(&manifest), false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -3879,7 +3819,7 @@ mod tests {
             good.len()
         );
         let config = MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -3932,7 +3872,7 @@ mod tests {
         let (_guard, _dir) = isolate_cache("parachunks");
         let mut files: Vec<(String, Vec<u8>)> = vec![(
             "Project.config".to_string(),
-            b"export default {}\n".to_vec(),
+            b"export default {\n    project: {\n        name: \"@acme/widget\",\n        version: \"0.0.0-published\"\n    }\n}\n".to_vec(),
         )];
         for i in 0..12u32 {
             files.push((
@@ -3956,7 +3896,18 @@ mod tests {
         for (h, b) in &bodies {
             by_hash.insert(h.clone(), b.clone());
         }
-        let sha = assemble_direct_tree(&entries, &by_hash, "@acme/widget", "1.2.0").unwrap().digest;
+        let sha = crate::checksum::manifest_digest_hex(
+            &entries
+                .iter()
+                .map(|e| crate::checksum::DigestEntry {
+                    name: e.name.clone(),
+                    size: e.size,
+                    dir: e.dir,
+                    chunks: e.chunks.clone(),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
         let manifest = format!(
             "{{\"entries\": [{}]}}",
             entries
@@ -3970,7 +3921,7 @@ mod tests {
         );
         let node = node_json("@acme/widget", "1.2.0", &sha, false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -4023,7 +3974,7 @@ mod tests {
         let manifest = format!("{{\"entries\": [{}]}}", manifest_entries.join(", "));
         let node = node_json("@acme/widget", "1.2.0", &"0".repeat(64), false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -4046,25 +3997,42 @@ mod tests {
         let _ = server;
     }
 
-    fn direct_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, String) {
-        let pc = b"export default {\n    project: {\n        name: \"test/direct\",\n        version: \"1.0.0\"\n    }\n}\n".to_vec();
+    fn direct_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, String, String) {
+        let installed =
+            b"export default {\n    project: {\n        name: \"test/direct\",\n        version: \"1.0.0\"\n    }\n}\n".to_vec();
+        let stored = crate::project::redact::redact_project_version(
+            std::str::from_utf8(&installed).unwrap(),
+        )
+        .unwrap()
+        .into_bytes();
         let main_a = b"export fn main(): Int {\n".to_vec();
         let main_b = b"    return 40 + 2;\n}\n".to_vec();
         let util = b"export fn util(): Int { return 2; }\n".to_vec();
-        let manifest = "{\"entries\": [{\"name\": \"src/lib/util.rnx\", \"size\": 36, \"dir\": false, \"chunks\": [\"2f8af1e91c09e64e5192906fb40a356174bf7b7d3c08f97595776b47a153fda3\"]}, {\"name\": \"assets\", \"size\": 0, \"dir\": true, \"chunks\": []}, {\"name\": \"Project.config\", \"size\": 94, \"dir\": false, \"chunks\": [\"d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c\"]}, {\"name\": \"src/main.rnx\", \"size\": 45, \"dir\": false, \"chunks\": [\"6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046\", \"6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4\"]}, {\"name\": \"src/lib\", \"size\": 0, \"dir\": true, \"chunks\": []}]}".to_string();
-        (pc, main_a, main_b, util, manifest)
+        let pc_hash = Sha256::hexdigest(&stored);
+        let main_a_hash = Sha256::hexdigest(&main_a);
+        let main_b_hash = Sha256::hexdigest(&main_b);
+        let util_hash = Sha256::hexdigest(&util);
+        let mut main = main_a.clone();
+        main.extend_from_slice(&main_b);
+        let manifest = format!(
+            "{{\"entries\": [{{\"name\": \"src/lib/util.rnx\", \"size\": {}, \"dir\": false, \"chunks\": [\"{util_hash}\"]}}, {{\"name\": \"assets\", \"size\": 0, \"dir\": true, \"chunks\": []}}, {{\"name\": \"Project.config\", \"size\": {}, \"dir\": false, \"chunks\": [\"{pc_hash}\"]}}, {{\"name\": \"src/main.rnx\", \"size\": {}, \"dir\": false, \"chunks\": [\"{main_a_hash}\", \"{main_b_hash}\"]}}, {{\"name\": \"src/lib\", \"size\": 0, \"dir\": true, \"chunks\": []}}]}}",
+            util.len(),
+            stored.len(),
+            main.len()
+        );
+        let digest = manifest_digest_of(&manifest);
+        (installed, stored, main_a, main_b, util, manifest, digest)
     }
 
     #[test]
     fn direct_write_matches_reassembled_tree() {
         let (_guard, _dir) = isolate_cache("directident");
-        let (pc, main_a, main_b, util, manifest) = direct_fixture();
+        let (pc, stored, main_a, main_b, util, manifest, digest) = direct_fixture();
         let mut main = main_a.clone();
         main.extend_from_slice(&main_b);
-        let integrity = "8253b121105d1737a76421667e4d5b1794959702399b2d6f65de7513fd8db942";
-        let node = node_json("test/direct", "1.0.0", integrity, false);
+        let node = node_json("test/direct", "1.0.0", &digest, false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -4073,10 +4041,7 @@ mod tests {
             manifest_error: String::new(),
             manifest_override: Some(manifest),
             chunk_override: Some(vec![
-                (
-                    "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c".to_string(),
-                    pc.clone(),
-                ),
+                (Sha256::hexdigest(&stored), stored.clone()),
                 (
                     "6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046".to_string(),
                     main_a.clone(),
@@ -4106,7 +4071,7 @@ mod tests {
         assert_eq!(std::fs::read(root.join("src").join("lib").join("util.rnx")).unwrap(), util);
         assert_eq!(
             Sha256::hexdigest(&std::fs::read(root.join("Project.config")).unwrap()),
-            "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c"
+            Sha256::hexdigest(&pc)
         );
         assert_eq!(
             Sha256::hexdigest(&std::fs::read(root.join("src").join("main.rnx")).unwrap()),
@@ -4120,21 +4085,16 @@ mod tests {
         assert!(root.join("src").join("lib").is_dir());
         let have = scan_cache_have();
         assert_eq!(have.len(), 1);
-        assert_eq!(have[0].integrity, integrity);
+        assert_eq!(have[0].integrity, digest);
     }
 
     #[test]
     fn direct_write_rejects_tampered_chunk() {
         let (_guard, _dir) = isolate_cache("directtamper");
-        let (pc, _main_a, main_b, util, manifest) = direct_fixture();
-        let node = node_json(
-            "test/direct",
-            "1.0.0",
-            "8253b121105d1737a76421667e4d5b1794959702399b2d6f65de7513fd8db942",
-            false,
-        );
+        let (_pc, stored, _main_a, main_b, util, manifest, digest) = direct_fixture();
+        let node = node_json("test/direct", "1.0.0", &digest, false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -4143,10 +4103,7 @@ mod tests {
             manifest_error: String::new(),
             manifest_override: Some(manifest),
             chunk_override: Some(vec![
-                (
-                    "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c".to_string(),
-                    pc,
-                ),
+                (Sha256::hexdigest(&stored), stored),
                 (
                     "6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046".to_string(),
                     b"export fn MAIN(): Int {\n".to_vec(),
@@ -4178,17 +4135,12 @@ mod tests {
     #[test]
     fn direct_write_rejects_truncated_chunk() {
         let (_guard, _dir) = isolate_cache("directtrunc");
-        let (pc, main_a, main_b, util, manifest) = direct_fixture();
+        let (_pc, stored, main_a, main_b, util, manifest, digest) = direct_fixture();
         let mut cut = main_b.clone();
         cut.pop();
-        let node = node_json(
-            "test/direct",
-            "1.0.0",
-            "8253b121105d1737a76421667e4d5b1794959702399b2d6f65de7513fd8db942",
-            false,
-        );
+        let node = node_json("test/direct", "1.0.0", &digest, false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -4197,10 +4149,7 @@ mod tests {
             manifest_error: String::new(),
             manifest_override: Some(manifest),
             chunk_override: Some(vec![
-                (
-                    "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c".to_string(),
-                    pc,
-                ),
+                (Sha256::hexdigest(&stored), stored),
                 (
                     "6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046".to_string(),
                     main_a,
@@ -4232,11 +4181,18 @@ mod tests {
     #[test]
     fn direct_write_rejects_entry_size_mismatch() {
         let (_guard, _dir) = isolate_cache("directsize");
-        let (pc, main_a, main_b, util, _) = direct_fixture();
-        let manifest = "{\"entries\": [{\"name\": \"Project.config\", \"size\": 94, \"dir\": false, \"chunks\": [\"d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c\"]}, {\"name\": \"src/main.rnx\", \"size\": 44, \"dir\": false, \"chunks\": [\"6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046\", \"6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4\"]}]}".to_string();
-        let node = node_json("test/direct", "1.0.0", &"0".repeat(64), false);
+        let (_installed, stored, main_a, main_b, util, _, _) = direct_fixture();
+        let stored_hash = Sha256::hexdigest(&stored);
+        let mut main = main_a.clone();
+        main.extend_from_slice(&main_b);
+        let manifest = format!(
+            "{{\"entries\": [{{\"name\": \"Project.config\", \"size\": {}, \"dir\": false, \"chunks\": [\"{stored_hash}\"]}}, {{\"name\": \"src/main.rnx\", \"size\": {}, \"dir\": false, \"chunks\": [\"6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046\", \"6a83441593b09c0667afc4db47a86bd12244442c9cd8fb8f43bd7728d3f525e4\"]}}]}}",
+            stored.len(),
+            main.len() - 1
+        );
+        let node = node_json("test/direct", "1.0.0", &manifest_digest_of(&manifest), false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -4245,10 +4201,7 @@ mod tests {
             manifest_error: String::new(),
             manifest_override: Some(manifest),
             chunk_override: Some(vec![
-                (
-                    "d3a18b5352cb4c062139681dfbef3a452842c24f3a2d2828fafe51d4f757900c".to_string(),
-                    pc,
-                ),
+                (stored_hash, stored),
                 (
                     "6799733ffc2c5698ee41581f27ca21cba32a36f8a0aa0806f8669b5efd287046".to_string(),
                     main_a,
@@ -4288,9 +4241,9 @@ mod tests {
         let manifest = format!(
             "{{\"entries\": [{{\"name\": \"../evil.rnx\", \"size\": 1, \"dir\": false, \"chunks\": [\"{evil_hash}\"]}}, {{\"name\": \"Project.config\", \"size\": 17, \"dir\": false, \"chunks\": [\"{evil_hash}\"]}}]}}"
         );
-        let node = node_json("test/direct", "1.0.0", &"0".repeat(64), false);
+        let node = node_json("test/direct", "1.0.0", &manifest_digest_of(&manifest), false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -4329,14 +4282,15 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.message.contains("spec 2"), "{}", err.message);
-        assert!(err.message.contains("supports 1"), "{}", err.message);
+        assert!(err.message.contains("supports 0"), "{}", err.message);
     }
 
     #[test]
     fn resolve_then_fetch_roundtrip() {
         let (_guard, _dir) = isolate_cache("roundtrip");
-        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
-        let server = start_ok(1, &[node_json("@acme/widget", "1.2.0", &sha, false)], gz, 200, "");
+        let (manifest, pairs, digest, installed_pc, _installed_main) = fixture_tree("@acme/widget", "1.2.0");
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
+        let server = start_tree(&[node], &manifest, pairs);
         let default = registry_cfg(&server.base);
         let fetched = ensure_registry_requirements(
             &requirements_for("@acme/widget", "^1.0.0"),
@@ -4355,7 +4309,7 @@ mod tests {
         let have = scan_cache_have();
         assert_eq!(have.len(), 1);
         assert_eq!(have[0].full, "@acme/widget");
-        assert_eq!(have[0].integrity, sha);
+        assert_eq!(have[0].integrity, digest);
         let bodies = server.resolve_bodies();
         assert_eq!(bodies.len(), 1);
         assert_eq!(requirement(&bodies[0], "@acme/widget"), "^1.0.0");
@@ -4364,9 +4318,9 @@ mod tests {
     #[test]
     fn have_skips_redownload() {
         let (_guard, _dir) = isolate_cache("delta");
-        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
-        let node = node_json("@acme/widget", "1.2.0", &sha, false);
-        let server = start_ok(1, &[node], gz, 200, "");
+        let (manifest, pairs, digest, _pc, _main) = fixture_tree("@acme/widget", "1.2.0");
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
+        let server = start_tree(&[node], &manifest, pairs);
         let default = registry_cfg(&server.base);
         let reqs = requirements_for("@acme/widget", "^1.0.0");
         ensure_registry_requirements(&reqs, Some(&default), &BTreeMap::new(), &[]).unwrap();
@@ -4379,7 +4333,7 @@ mod tests {
         assert_eq!(bodies.len(), 2);
         assert_eq!(
             have_entry(&bodies[1], 0),
-            ("@acme/widget".to_string(), "1.2.0".to_string(), sha)
+            ("@acme/widget".to_string(), "1.2.0".to_string(), digest)
         );
     }
 
@@ -4387,7 +4341,7 @@ mod tests {
     fn manifest_404_maps_to_does_not_exist() {
         let (_guard, _dir) = isolate_cache("notfound");
         let server = start_ok(
-            1,
+            0,
             &[node_json("@acme/widget", "9.9.9", &"0".repeat(64), false)],
             Vec::new(),
             404,
@@ -4409,7 +4363,7 @@ mod tests {
     fn manifest_410_maps_to_withdrawn() {
         let (_guard, _dir) = isolate_cache("withdrawn");
         let server = start_ok(
-            1,
+            0,
             &[node_json("@acme/widget", "1.2.0", &"0".repeat(64), false)],
             Vec::new(),
             410,
@@ -4432,7 +4386,7 @@ mod tests {
         let (_guard, _dir) = isolate_cache("integrity");
         let (_gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
         let server = start_ok(
-            1,
+            0,
             &[node_json("@acme/widget", "1.2.0", &sha, false)],
             b"corrupt bytes".to_vec(),
             200,
@@ -4455,7 +4409,7 @@ mod tests {
         let (_guard, _dir) = isolate_cache("engine");
         let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
         let server = start_ok(
-            1,
+            0,
             &[node_engine_json("@acme/widget", "1.2.0", &sha, false, ">=99.0.0")],
             gz,
             200,
@@ -4485,7 +4439,7 @@ mod tests {
             pkgs.push(pkg);
         }
         let server = MockRegistry::start_routed(RoutedConfig {
-            version_spec: 1,
+            version_spec: 0,
             resolve_body: resolve_json_static(&nodes),
             packages: pkgs,
         });
@@ -4498,6 +4452,20 @@ mod tests {
             .iter()
             .filter(|(m, p, _)| m == "GET" && p.split('?').next().unwrap_or_default().contains("chunk"))
             .count()
+    }
+
+    fn chunk_body_hashes(server: &MockRegistry) -> std::collections::BTreeSet<String> {
+        server
+            .requests()
+            .iter()
+            .filter_map(|(m, p, _)| {
+                if m != "GET" {
+                    return None;
+                }
+                let path = p.split('?').next().unwrap_or_default();
+                path.rsplit_once("/chunk/").map(|(_, h)| h.to_string())
+            })
+            .collect()
     }
 
     #[test]
@@ -4529,7 +4497,8 @@ mod tests {
                 "{full}"
             );
         }
-        assert_eq!(chunk_route_gets(&server), 34);
+        assert_eq!(server.count_get("/chunks"), 17);
+        assert_eq!(chunk_body_hashes(&server).len(), 18);
     }
 
     #[test]
@@ -4554,7 +4523,7 @@ mod tests {
             pkgs.push(pkg);
         }
         let server = MockRegistry::start_routed(RoutedConfig {
-            version_spec: 1,
+            version_spec: 0,
             resolve_body: resolve_json_static(&nodes),
             packages: pkgs,
         });
@@ -4572,19 +4541,18 @@ mod tests {
 #[test]
     fn inline_entries_skip_the_chunk_manifest_get() {
         let (_guard, _dir) = isolate_cache("inline");
-        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
-        let manifest = fallback_manifest(&gz);
-        let node = node_json_inline("@acme/widget", "1.2.0", &sha, &manifest);
+        let (manifest, pairs, digest, _pc, _main) = fixture_tree("@acme/widget", "1.2.0");
+        let node = node_json_inline("@acme/widget", "1.2.0", &digest, &manifest);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones", RESOLVE_INLINE_CHUNKS],
             resolve_status: 200,
             resolve_body: resolve_json_chunks(&[node], Some("inline")),
             manifest_status: 200,
-            fallback_tarball: gz.clone(),
+            fallback_tarball: Vec::new(),
             manifest_error: String::new(),
             manifest_override: Some(manifest),
-            chunk_override: None,
+            chunk_override: Some(pairs),
         });
         let default = registry_cfg(&server.base);
         let fetched = ensure_registry_requirements(
@@ -4608,12 +4576,11 @@ mod tests {
     #[test]
     fn no_capability_means_no_inline_opt_in() {
         let (_guard, _dir) = isolate_cache("nocap");
-        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
+        let (manifest, pairs, digest, _pc, _main) = fixture_tree("@acme/widget", "1.2.0");
         // The node carries entries, but discovery never advertised the
         // capability, so the client must ignore them and ask for the document.
-        let manifest = fallback_manifest(&gz);
-        let node = node_json_inline("@acme/widget", "1.2.0", &sha, &manifest);
-        let server = start_ok(1, &[node], gz, 200, "");
+        let node = node_json_inline("@acme/widget", "1.2.0", &digest, &manifest);
+        let server = start_tree(&[node], &manifest, pairs);
         let default = registry_cfg(&server.base);
         let fetched = ensure_registry_requirements(
             &requirements_for("@acme/widget", "^1.0.0"),
@@ -4631,21 +4598,20 @@ mod tests {
     #[test]
     fn links_switch_falls_back_to_the_chunk_manifest_get() {
         let (_guard, _dir) = isolate_cache("links");
-        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
+        let (manifest, pairs, digest, _pc, _main) = fixture_tree("@acme/widget", "1.2.0");
         // The server overran its inline cap and said "links": the node has no
         // entries at all and the client must read the document.
-        let manifest = fallback_manifest(&gz);
-        let node = node_json("@acme/widget", "1.2.0", &sha, false);
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones", RESOLVE_INLINE_CHUNKS],
             resolve_status: 200,
             resolve_body: resolve_json_chunks(&[node], Some("links")),
             manifest_status: 200,
-            fallback_tarball: gz.clone(),
+            fallback_tarball: Vec::new(),
             manifest_error: String::new(),
             manifest_override: Some(manifest),
-            chunk_override: None,
+            chunk_override: Some(pairs),
         });
         let default = registry_cfg(&server.base);
         let fetched = ensure_registry_requirements(
@@ -4664,26 +4630,22 @@ mod tests {
     #[test]
     fn inline_entries_that_fail_verification_retry_the_manifest() {
         let (_guard, _dir) = isolate_cache("inlinegen");
-        let (gz, sha) = fixture_tarball("@acme/widget", "1.2.0");
-        // A stale generation: the inlined list names a hash that is not the
-        // tarball, so verification must fail and the guarded retry re-read the
-        // chunk manifest origin-direct.
-        let stale = format!(
-            "{{\"entries\": [{{\"name\": \"\", \"size\": {}, \"dir\": false, \"chunks\": [\"{}\"]}}]}}",
-            gz.len(),
-            "0".repeat(64)
-        );
-        let node = node_json_inline("@acme/widget", "1.2.0", &sha, &stale);
+        let (manifest, pairs, digest, _pc, _main) = fixture_tree("@acme/widget", "1.2.0");
+        // A stale generation: the inlined list names bytes that are not the
+        // manifest, so verification must fail and the guarded retry re-read
+        // the chunk manifest origin-direct.
+        let stale = manifest.replace("src/main.rnx", "src/stale.rnx");
+        let node = node_json_inline("@acme/widget", "1.2.0", &digest, &stale);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones", RESOLVE_INLINE_CHUNKS],
             resolve_status: 200,
             resolve_body: resolve_json_chunks(&[node], Some("inline")),
             manifest_status: 200,
-            fallback_tarball: gz.clone(),
+            fallback_tarball: Vec::new(),
             manifest_error: String::new(),
-            manifest_override: Some(fallback_manifest(&gz)),
-            chunk_override: None,
+            manifest_override: Some(manifest),
+            chunk_override: Some(pairs),
         });
         let default = registry_cfg(&server.base);
         let fetched = ensure_registry_requirements(
@@ -4702,23 +4664,29 @@ mod tests {
     #[test]
     fn inline_entries_never_install_wrong_bytes() {
         let (_guard, _dir) = isolate_cache("inlinewrong");
-        let (gz, _sha) = fixture_tarball("@acme/widget", "1.2.0");
-        // integrity and the inlined list both name the good tarball, but the
+        let (manifest, mut pairs, digest, _pc, _main) = fixture_tree("@acme/widget", "1.2.0");
+        // integrity and the inlined list both name the good manifest, but the
         // chunk route serves different bytes: the digest check must abort.
-        let good_sha = Sha256::hexdigest(&gz);
-        let manifest = fallback_manifest(&gz);
-        let node = node_json_inline("@acme/widget", "1.2.0", &good_sha, &manifest);
-        let evil = b"not the tarball".to_vec();
+        let node = node_json_inline("@acme/widget", "1.2.0", &digest, &manifest);
+        let evil = b"not the package".to_vec();
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones", RESOLVE_INLINE_CHUNKS],
             resolve_status: 200,
             resolve_body: resolve_json_chunks(&[node], Some("inline")),
             manifest_status: 200,
-            fallback_tarball: gz.clone(),
+            fallback_tarball: Vec::new(),
             manifest_error: String::new(),
             manifest_override: Some(manifest),
-            chunk_override: Some(vec![(good_sha.clone(), evil)]),
+            chunk_override: Some({
+                for pair in pairs.iter_mut() {
+                    if pair.0.len() == 64 {
+                        pair.1 = evil.clone();
+                        break;
+                    }
+                }
+                pairs
+            }),
         });
         let default = registry_cfg(&server.base);
         let err = ensure_registry_requirements(
@@ -4791,7 +4759,7 @@ mod tests {
             ensure_registry_requirements(&reqs, Some(&default), &BTreeMap::new(), &[]).unwrap();
         assert_eq!(first.len(), 17);
         let before = chunk_route_gets(&server);
-        assert_eq!(before, 34);
+        assert_eq!(chunk_body_hashes(&server).len(), 18);
         let have = scan_cache_have();
         assert_eq!(have.len(), 17);
         let second =
@@ -4896,19 +4864,17 @@ mod tests {
     const INTEROP_PC: &[u8] = b"export default {\n    project: {\n        name: \"test/interop\",\n        version: \"1.0.0\"\n    }\n}\n";
     const INTEROP_MAIN: &[u8] = b"export fn hello(): Int { return 1; }\n";
     const INTEROP_MANIFEST_GZ: &[u8] = &[
-        31, 139, 8, 8, 20, 198, 209, 106, 2, 3, 105, 110, 116, 101, 114, 111, 112, 95, 109,
-        97, 110, 105, 102, 101, 115, 116, 46, 106, 115, 111, 110, 0, 117, 205, 49, 110, 195,
-        48, 12, 133, 225, 187, 112, 54, 18, 73, 164, 100, 210, 167, 232, 94, 100, 160, 40,
-        169, 117, 219, 40, 128, 156, 2, 69, 130, 220, 189, 238, 146, 173, 227, 251, 129,
-        135, 239, 14, 181, 95, 199, 90, 55, 88, 94, 239, 208, 245, 92, 97, 129, 151, 113,
-        249, 168, 118, 61, 216, 165, 183, 245, 13, 38, 216, 214, 219, 222, 37, 78, 80, 214,
-        1, 75, 211, 175, 173, 78, 96, 239, 223, 253, 243, 239, 8, 213, 103, 137, 197, 145,
-        42, 206, 88, 201, 19, 161, 186, 192, 190, 102, 113, 232, 57, 25, 146, 205, 89, 178,
-        115, 209, 167, 196, 202, 33, 69, 110, 45, 178, 82, 51, 196, 0, 167, 199, 244, 212,
-        183, 97, 199, 179, 174, 253, 48, 250, 207, 211, 198, 249, 63, 187, 213, 198, 18, 74,
-        201, 164, 57, 250, 194, 222, 133, 150, 130, 101, 81, 37, 44, 226, 72, 216, 147, 5,
-        107, 104, 196, 44, 89, 101, 95, 200, 141, 115, 228, 76, 226, 118, 251, 244, 248, 5,
-        136, 34, 143, 96, 7, 1, 0, 0,
+        31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 125, 142, 193, 78, 3, 49, 12, 68, 127, 101, 149,
+        115, 213, 58, 137, 119, 155, 240, 21, 220, 81, 15, 182, 99, 211, 20, 154, 74, 217, 34,
+        33, 170, 254, 59, 129, 11, 61, 113, 155, 167, 145, 102, 222, 205, 105, 187, 246, 170,
+        171, 123, 154, 94, 110, 174, 209, 89, 71, 114, 207, 253, 114, 82, 185, 110, 229, 210,
+        172, 190, 186, 205, 228, 214, 250, 245, 211, 120, 152, 7, 148, 218, 71, 54, 122, 95,
+        117, 144, 28, 63, 218, 219, 239, 128, 43, 128, 166, 70, 0, 144, 67, 33, 13, 172, 132,
+        76, 201, 207, 230, 197, 22, 70, 89, 152, 80, 195, 30, 22, 46, 193, 71, 207, 130, 26,
+        163, 80, 64, 159, 51, 152, 184, 195, 125, 51, 253, 105, 172, 93, 118, 103, 170, 109,
+        219, 219, 231, 131, 68, 220, 255, 231, 48, 4, 210, 120, 47, 140, 196, 179, 47, 201,
+        67, 176, 37, 8, 103, 34, 140, 37, 3, 230, 228, 81, 130, 88, 20, 76, 41, 51, 229, 65,
+        49, 89, 226, 57, 49, 102, 24, 14, 135, 251, 55, 213, 37, 5, 127, 24, 1, 0, 0,
     ];
 
     #[test]
@@ -4962,12 +4928,18 @@ mod tests {
     }
 
     fn interop_entries() -> (Vec<ChunkEntry>, BTreeMap<String, Vec<u8>>) {
-        let pc_hash = Sha256::hexdigest(INTEROP_PC);
+        let stored = crate::project::redact::redact_project_version(
+            std::str::from_utf8(INTEROP_PC).unwrap(),
+        )
+        .unwrap()
+        .into_bytes();
+        let pc_hash = Sha256::hexdigest(&stored);
+        let stored_len = stored.len() as u64;
         let main_hash = Sha256::hexdigest(INTEROP_MAIN);
         let entries = vec![
             ChunkEntry {
                 name: "Project.config".to_string(),
-                size: INTEROP_PC.len() as u64,
+                size: stored_len,
                 dir: false,
                 chunks: vec![pc_hash.clone()],
             },
@@ -4979,7 +4951,7 @@ mod tests {
             },
         ];
         let mut by_hash = BTreeMap::new();
-        by_hash.insert(pc_hash, INTEROP_PC.to_vec());
+        by_hash.insert(pc_hash, stored);
         by_hash.insert(main_hash, INTEROP_MAIN.to_vec());
         (entries, by_hash)
     }
@@ -5007,7 +4979,7 @@ mod tests {
     ) -> MockRegistry {
         MockRegistry::start_encoded(
             MockConfig {
-                version_spec: 1,
+                version_spec: 0,
                 capabilities: vec!["tombstones"],
                 resolve_status: 200,
                 resolve_body: resolve_json_static(&[node.to_string()]),
@@ -5046,9 +5018,12 @@ mod tests {
     fn manifest_gzip_end_to_end_with_system_gzip_bytes() {
         let (_guard, _dir) = isolate_cache("mzgzip");
         let (entries, by_hash) = interop_entries();
-        let digest =
-            assemble_direct_tree(&entries, &by_hash, "test/interop", "1.0.0").unwrap().digest;
-        let node = node_json("test/interop", "1.0.0", &digest, false);
+        let node = node_json(
+            "test/interop",
+            "1.0.0",
+            &manifest_digest_of(&String::from_utf8_lossy(&interop_manifest_json(&entries))),
+            false,
+        );
         let bodies: Vec<(String, Vec<u8>)> = by_hash.into_iter().collect();
         let server = start_interop(INTEROP_MANIFEST_GZ.to_vec(), Some("gzip"), &node, bodies);
         let default = registry_cfg(&server.base);
@@ -5072,9 +5047,12 @@ mod tests {
     fn manifest_gzip_end_to_end_with_intree_bytes() {
         let (_guard, _dir) = isolate_cache("mzintree");
         let (entries, by_hash) = interop_entries();
-        let digest =
-            assemble_direct_tree(&entries, &by_hash, "test/interop", "1.0.0").unwrap().digest;
-        let node = node_json("test/interop", "1.0.0", &digest, false);
+        let node = node_json(
+            "test/interop",
+            "1.0.0",
+            &manifest_digest_of(&String::from_utf8_lossy(&interop_manifest_json(&entries))),
+            false,
+        );
         let manifest = interop_manifest_json(&entries);
         let gz = crate::gzip::compress_gzip(&manifest);
         let bodies: Vec<(String, Vec<u8>)> = by_hash.into_iter().collect();
@@ -5100,9 +5078,12 @@ mod tests {
     fn manifest_identity_through_manifest_path_asks_for_gzip() {
         let (_guard, _dir) = isolate_cache("mzident");
         let (entries, by_hash) = interop_entries();
-        let digest =
-            assemble_direct_tree(&entries, &by_hash, "test/interop", "1.0.0").unwrap().digest;
-        let node = node_json("test/interop", "1.0.0", &digest, false);
+        let node = node_json(
+            "test/interop",
+            "1.0.0",
+            &manifest_digest_of(&String::from_utf8_lossy(&interop_manifest_json(&entries))),
+            false,
+        );
         let manifest = interop_manifest_json(&entries);
         let bodies: Vec<(String, Vec<u8>)> = by_hash.into_iter().collect();
         let server = start_interop(manifest, None, &node, bodies);
@@ -5217,7 +5198,12 @@ mod tests {
             let (_guard, _dir) = isolate_cache("mzescape");
             let hash = Sha256::hexdigest(INTEROP_PC);
             let manifest = manifest_with_name(unsafe_name, &hash, INTEROP_PC.len());
-            let node = node_json("test/interop", "1.0.0", &"0".repeat(64), false);
+            let node = node_json(
+                "test/interop",
+                "1.0.0",
+                &manifest_digest_of(&String::from_utf8_lossy(&manifest)),
+                false,
+            );
             let bodies = vec![(hash, INTEROP_PC.to_vec())];
             let server = start_interop(manifest, None, &node, bodies);
             let default = registry_cfg(&server.base);
@@ -5261,7 +5247,7 @@ mod tests {
         let (_guard, _dir) = isolate_cache("mznoindex404");
         let node = node_json("test/interop", "1.0.0", &"0".repeat(64), false);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: resolve_json_static(&[node]),
@@ -5291,9 +5277,6 @@ mod tests {
     fn a_chunk_digest_in_upper_case_is_accepted() {
         let (_guard, _dir) = isolate_cache("mzupper");
         let (entries, by_hash) = interop_entries();
-        let digest =
-            assemble_direct_tree(&entries, &by_hash, "test/interop", "1.0.0").unwrap().digest;
-        let node = node_json("test/interop", "1.0.0", &digest, false);
         // The manifest carries the digest in upper case, and the registry
         // answers the chunk under that spelling.
         let upper: Vec<(String, Vec<u8>)> =
@@ -5311,6 +5294,7 @@ mod tests {
             ));
         }
         rendered.push_str("]}");
+        let node = node_json("test/interop", "1.0.0", &manifest_digest_of(&rendered), false);
         let server = start_interop(rendered.into_bytes(), None, &node, upper);
         let default = registry_cfg(&server.base);
         let fetched = ensure_registry_requirements(
@@ -5330,7 +5314,7 @@ mod tests {
         let node = node_json("test/interop", "1.0.0", &"0".repeat(64), false);
         let server = MockRegistry::start_encoded(
             MockConfig {
-                version_spec: 1,
+                version_spec: 0,
                 capabilities: vec!["tombstones"],
                 resolve_status: 200,
                 resolve_body: resolve_json_static(&[node]),
@@ -5347,14 +5331,14 @@ mod tests {
 
         let version = transport.get(&format!("{}/api/version", server.base)).unwrap();
         assert_eq!(version.status, 200);
-        assert_eq!(version.spec_header.as_deref(), Some("1"));
-        assert!(String::from_utf8_lossy(&version.body).contains("\"spec\": 1"));
+        assert_eq!(version.spec_header.as_deref(), Some("0"));
+        assert!(String::from_utf8_lossy(&version.body).contains("\"spec\": 0"));
 
-        let resolved = transport.post_json(&format!("{}/api/resolve", server.base), "{}").unwrap();
+        let resolved = transport.post_json(&format!("{}/api/v0/resolve", server.base), "{}").unwrap();
         assert_eq!(resolved.status, 200);
 
         let manifest = transport
-            .manifest_get(&format!("{}/api/packages/test/interop@1.0.0/chunks", server.base))
+            .manifest_get(&format!("{}/api/v0/packages/test/interop@1.0.0/chunks", server.base))
             .unwrap();
         assert_eq!(manifest.reply.status, 200);
         assert_eq!(manifest.content_encoding.as_deref(), Some("gzip"));

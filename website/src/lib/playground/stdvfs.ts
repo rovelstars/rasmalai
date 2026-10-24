@@ -341,7 +341,7 @@ async function fetchStdModuleFrom(
 	fetchImpl: typeof fetch
 ): Promise<string> {
 	const full = stdPackageOf(rest);
-	const base = `${origin}/api/packages/${full}@${version}`;
+	const base = `${origin}/api/v0/packages/${full}@${version}`;
 	// Tooling reads under a fixed `?origin-direct=1` namespace instead of
 	// the bare URL. Shared edge caches can hold manifest generations
 	// whose chunks no longer match resolve integrity, and client

@@ -31,7 +31,7 @@ export default {
         main: "src/main.rnx"
     },
     registry: {
-        url: "https://rasmalai.rovelstars.com/api/packages",
+        url: "https://rasmalai.rovelstars.com",
         token_env: "RNX_TOKEN"
     },
     dependencies: {
@@ -238,7 +238,7 @@ print(quote(2.0));
 | `rnx lint` | static checks over sources | `[paths...]`, `-p`, `--sarif`, `--json`, `--deny-warnings`, `--fix` |
 | `rnx fmt` | format `.rnx` sources | `[paths...]`, `--check`, `--diff` |
 | `rnx add` | add a local path dependency with capability approval | `<package>`, `--path <dir>`, `--accept-caps <list>`, `--accept-all-caps` |
-| `rnx publish` | publish a package archive to the registry | `[tarball]`, `--registry <url>`, `--token <token>` |
+| `rnx publish` | publish the current project to the registry | `--registry <url>`, `--token <token>` |
 | `rnx lsp` | Language Server Protocol over stdio | none |
 | `rnx mcp` | Model Context Protocol server over stdio | none |
 | `rnx explain` | diagnostic text plus fix | `<code>` |

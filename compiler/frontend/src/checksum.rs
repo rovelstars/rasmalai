@@ -120,6 +120,55 @@ pub fn hex_of(digest: &[u8; 32]) -> String {
     out
 }
 
+pub struct DigestEntry {
+    pub name: String,
+    pub size: u64,
+    pub dir: bool,
+    pub chunks: Vec<String>,
+}
+
+fn hex_byte(hi: u8, lo: u8) -> Result<u8, Diagnostic> {
+    let digit = |b: u8| -> Result<u8, Diagnostic> {
+        match b {
+            b'0'..=b'9' => Ok(b - b'0'),
+            b'a'..=b'f' => Ok(b - b'a' + 10),
+            b'A'..=b'F' => Ok(b - b'A' + 10),
+            _ => Err(Diagnostic::new(Code::E108, "manifest digest holds a non-hex chunk hash")),
+        }
+    };
+    Ok((digit(hi)? << 4) | digit(lo)?)
+}
+
+// The version identity: sha256 over the canonical entry bytes, one entry
+// after the other in stored order. Byte-identical with the registry
+// server's `manifestDigestBytes` (`website/src/lib/server/chunks.ts`);
+// the golden vectors in both test suites pin the encoding.
+pub fn manifest_digest_bytes(entries: &[DigestEntry]) -> Result<Vec<u8>, Diagnostic> {
+    let mut out = Vec::new();
+    for e in entries {
+        let name = e.name.as_bytes();
+        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        out.extend_from_slice(name);
+        out.extend_from_slice(&e.size.to_le_bytes());
+        out.push(if e.dir { 1 } else { 0 });
+        out.extend_from_slice(&(e.chunks.len() as u32).to_le_bytes());
+        for h in &e.chunks {
+            let raw = h.as_bytes();
+            if raw.len() != 64 {
+                return Err(Diagnostic::new(Code::E108, "manifest digest holds a malformed chunk hash"));
+            }
+            for i in 0..32 {
+                out.push(hex_byte(raw[2 * i], raw[2 * i + 1])?);
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn manifest_digest_hex(entries: &[DigestEntry]) -> Result<String, Diagnostic> {
+    Ok(Sha256::hexdigest(&manifest_digest_bytes(entries)?))
+}
+
 fn rel_unix(root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(root).ok()?;
     let mut parts: Vec<String> = Vec::new();
@@ -222,4 +271,46 @@ mod tests {
         std::fs::write(base.join("src").join("main.rnx"), "fn Main(): Int { return 2; }\n").unwrap();
         assert_ne!(compute_package_checksum(&base).unwrap(), first);
     }
+
+    #[test]
+    fn manifest_digest_matches_server_golden() {
+        let entries = vec![
+            DigestEntry { name: "Project.config".to_string(), size: 7, dir: false, chunks: vec!["ab".repeat(32)] },
+            DigestEntry {
+                name: "src/main.rnx".to_string(),
+                size: 3,
+                dir: false,
+                chunks: vec!["cd".repeat(32), "ef".repeat(32)],
+            },
+        ];
+        let bytes = manifest_digest_bytes(&entries).unwrap();
+        assert_eq!(
+            bytes[..32].iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "0e00000050726f6a6563742e636f6e66696707000000000000000001000000ab"
+        );
+        assert_eq!(
+            manifest_digest_hex(&entries).unwrap(),
+            "ca56370c89bc36239f29b98d936594fa3ddb6558ae693343511f3bfe8025b1e6"
+        );
+    }
+
+    #[test]
+    fn manifest_digest_order_and_case() {
+        let fwd = manifest_digest_hex(&[one_data(), two_data()]).unwrap();
+        let rev = manifest_digest_hex(&[two_data(), one_data()]).unwrap();
+        assert_ne!(fwd, rev);
+        let upper = DigestEntry { name: "a.txt".to_string(), size: 5, dir: false, chunks: vec!["AB".repeat(32)] };
+        let lower = DigestEntry { name: "a.txt".to_string(), size: 5, dir: false, chunks: vec!["ab".repeat(32)] };
+        assert_eq!(manifest_digest_hex(&[upper]).unwrap(), manifest_digest_hex(&[lower]).unwrap());
+        let bad = DigestEntry { name: "a.txt".to_string(), size: 5, dir: false, chunks: vec!["zz".repeat(32)] };
+        assert!(manifest_digest_hex(&[bad]).is_err());
+    }
+}
+
+fn one_data() -> DigestEntry {
+    DigestEntry { name: "a.txt".to_string(), size: 5, dir: false, chunks: vec!["00".repeat(32)] }
+}
+
+fn two_data() -> DigestEntry {
+    DigestEntry { name: "b/".to_string(), size: 0, dir: true, chunks: vec![] }
 }

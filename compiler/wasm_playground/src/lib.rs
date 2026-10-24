@@ -832,6 +832,309 @@ pub fn test_project(files_json: &str, entry: &str) -> String {
     out
 }
 
+// Server publish entries. The registry server canonicalizes and analyses
+// every publish with these instead of trusting client bytes: the client
+// sends source, the server derives canonical bytes and verdicts.
+//
+// The caps on `project_files` (64 files, 256 KiB per file) shape the
+// interactive playground. The server enforces its own plan caps before
+// calling in, so these entries take generous hard ceilings only: a hostile
+// frame must fail closed, never OOM the worker.
+const SERVER_MAX_FILES: usize = 8192;
+const SERVER_MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
+const SERVER_MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+
+fn server_files(files_json: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let value: serde_json::Value = serde_json::from_str(files_json)
+        .map_err(|e| format!("E108: project files are not valid JSON: {e}"))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "E108: project files must be a JSON object of path to source".to_string())?;
+    if obj.is_empty() {
+        return Err("E108: project has no files".to_string());
+    }
+    if obj.len() > SERVER_MAX_FILES {
+        return Err(format!("E108: project exceeds {SERVER_MAX_FILES} files"));
+    }
+    let mut out = std::collections::BTreeMap::new();
+    let mut total = 0usize;
+    for (key, val) in obj {
+        let src = val
+            .as_str()
+            .ok_or_else(|| format!("E108: file `{key}` source must be a string"))?;
+        if src.len() > SERVER_MAX_FILE_BYTES {
+            return Err(format!("E108: file `{key}` exceeds 8 MiB"));
+        }
+        total += src.len();
+        if total > SERVER_MAX_TOTAL_BYTES {
+            return Err("E108: project exceeds 32 MiB".to_string());
+        }
+        let norm = normalize_project_path(key)
+            .ok_or_else(|| format!("E108: cannot resolve module `{key}`"))?;
+        if out.contains_key(&norm) {
+            return Err(format!("E108: duplicate file `{norm}`"));
+        }
+        out.insert(norm, src.to_string());
+    }
+    Ok(out)
+}
+
+fn server_err(message: impl std::fmt::Display) -> String {
+    serde_json::json!({"ok": false, "error": message.to_string()}).to_string()
+}
+
+// One batched canonicalization per publish. `.rnx` files go through the
+// same minifier the client packs with; every other file is stored
+// verbatim, so license text is never rewritten.
+#[wasm_bindgen]
+pub fn canonicalize_project(files_json: &str) -> String {
+    let files = match server_files(files_json) {
+        Ok(f) => f,
+        Err(e) => return server_err(e),
+    };
+    let mut canonical = serde_json::Map::new();
+    for (path, src) in &files {
+        if path.ends_with(".rnx") {
+            match frontend::minify::minify_source(src) {
+                Ok(min) => {
+                    canonical.insert(path.clone(), serde_json::Value::String(min));
+                }
+                Err(e) => {
+                    return server_err(format!("cannot canonicalize {path}: {}", e.message));
+                }
+            }
+        } else {
+            canonical.insert(path.clone(), serde_json::Value::String(src.clone()));
+        }
+    }
+    serde_json::json!({"ok": true, "files": canonical}).to_string()
+}
+
+// The publish facts of a Project.config: name, requested version, entries
+// and declared permissions, plus the redacted config the server stores.
+// Redaction is surgical (the version literal only) and verified by
+// re-parse: the redacted text must parse with the placeholder version and
+// an unchanged name, entries and permissions.
+#[wasm_bindgen]
+pub fn publish_config_facts(text: &str) -> String {
+    let facts = match frontend::project::redact::publish_facts(text) {
+        Ok(f) => f,
+        Err(e) => return server_err(format!("invalid Project.config: {}", e.message)),
+    };
+    let (project, _) = match frontend::project::parse_manifest_for_publish(text) {
+        Ok(p) => p,
+        Err(e) => return server_err(format!("invalid Project.config: {e}")),
+    };
+    let cfg = match project {
+        Some(c) => c,
+        None => return server_err("invalid Project.config: no `project` table"),
+    };
+    let mut bins = serde_json::Map::new();
+    for (k, v) in &cfg.entries.bins {
+        bins.insert(k.clone(), serde_json::Value::String(v.clone()));
+    }
+    let mut permissions = Vec::new();
+    for decl in cfg.permissions.clone().unwrap_or_default() {
+        match decl.reason {
+            Some(reason) => permissions.push(serde_json::json!({"perm": decl.perm, "reason": reason})),
+            None => permissions.push(serde_json::Value::String(decl.perm)),
+        }
+    }
+    let mut dependencies = serde_json::Map::new();
+    for (name, spec) in &facts.registry_deps {
+        dependencies.insert(name.clone(), serde_json::Value::String(spec.clone()));
+    }
+    serde_json::json!({
+        "ok": true,
+        "name": cfg.name,
+        "version": facts.version,
+        "redacted": facts.redacted,
+        "entries": {
+            "main": cfg.entries.main,
+            "lib": cfg.entries.lib,
+            "docs": cfg.entries.docs,
+            "bins": bins,
+        },
+        "permissions": permissions,
+        "dependencies": dependencies,
+    })
+    .to_string()
+}
+
+fn is_server_std(path: &std::path::Path) -> bool {
+    path.to_string_lossy().starts_with("@std/")
+}
+
+// Whole-tree capability facts for one publish. Every file parses (any
+// failure rejects the publish), the module graph resolves over the entry
+// roots, and the real capability analyzer runs over the merged non-std
+// tree plus once per file for attribution. Unresolvable imports and
+// analyzer fuel exhaustion reject the publish: never silently unscanned.
+#[wasm_bindgen]
+pub fn analyze_project(files_json: &str, entries_json: &str) -> String {
+    let files = match server_files(files_json) {
+        Ok(f) => f,
+        Err(e) => return server_err(e),
+    };
+    let entries: serde_json::Value = match serde_json::from_str(entries_json) {
+        Ok(v) => v,
+        Err(e) => return server_err(format!("E108: entries are not valid JSON: {e}")),
+    };
+    let main = entries
+        .get("main")
+        .and_then(|v| v.as_str())
+        .unwrap_or("src/main.rnx");
+    let main_norm = match normalize_project_path(main) {
+        Some(n) => n,
+        None => return server_err(format!("E108: cannot resolve entry `{main}`")),
+    };
+    let mut bin_roots = Vec::new();
+    if let Some(bins) = entries.get("bins").and_then(|v| v.as_object()) {
+        let mut targets: Vec<&str> = bins.values().filter_map(|v| v.as_str()).collect();
+        targets.sort();
+        for target in targets {
+            match normalize_project_path(target) {
+                Some(n) => bin_roots.push(std::path::PathBuf::from(format!("project/{n}"))),
+                None => return server_err(format!("E108: cannot resolve entry `{target}`")),
+            }
+        }
+    }
+    frontend::modules::project_unmount_all();
+    for (path, src) in &files {
+        frontend::modules::project_mount(
+            &std::path::Path::new("project").join(path),
+            src.clone(),
+        );
+    }
+    let mut parsed: std::collections::BTreeMap<String, frontend::ast::Module> =
+        std::collections::BTreeMap::new();
+    for (path, src) in &files {
+        match frontend::parser::Parser::parse_module(src) {
+            Ok(module) => {
+                parsed.insert(path.clone(), module);
+            }
+            Err(e) => {
+                return server_err(format!("cannot parse {path}: {}", e.message));
+            }
+        }
+    }
+    let root = std::path::PathBuf::from(format!("project/{main_norm}"));
+    let graph = match frontend::modules::ModuleGraph::build_collecting_extra(&root, &bin_roots) {
+        Ok(g) => g,
+        Err(mut errs) => {
+            let entry_src = files.get(&main_norm).map(|s| s.as_str()).unwrap_or("");
+            let diag = errs.remove(0);
+            return server_err(project_hook(&files, entry_src, &diag));
+        }
+    };
+    let merged = match graph.resolve() {
+        Ok(m) => m,
+        Err(e) => {
+            let entry_src = files.get(&main_norm).map(|s| s.as_str()).unwrap_or("");
+            return server_err(project_hook(&files, entry_src, &e));
+        }
+    };
+    let reachable: std::collections::BTreeSet<String> = graph
+        .files
+        .iter()
+        .map(|f| project_display(&f.path))
+        .collect();
+    let decl_files = frontend::modules::merged_decl_files(&graph);
+    let mut tree_decls = Vec::new();
+    for decl in &merged.decls {
+        let key = (decl.span.start, decl.span.end);
+        let std = decl_files
+            .get(&key)
+            .map(|p| is_server_std(p))
+            .unwrap_or(false);
+        if !std {
+            tree_decls.push(decl.clone());
+        }
+    }
+    let tree = frontend::ast::Module {
+        inner_attrs: merged.inner_attrs.clone(),
+        decls: tree_decls,
+        docs: String::new(),
+        warnings: Vec::new(),
+    };
+    let merged_src = files.values().cloned().collect::<Vec<_>>().join("\n");
+    let mut capabilities = std::collections::BTreeSet::new();
+    match frontend::capabilities::analyze_with_fuel(&tree, &merged_src, "project", 4_000_000) {
+        Ok(report) => {
+            for cap in &report.capabilities {
+                capabilities.insert(cap.to_string());
+            }
+        }
+        Err(e) => {
+            return server_err(format!("cannot analyse project: {}", e.message()));
+        }
+    }
+    let mut per_file = serde_json::Map::new();
+    let mut unreachable = Vec::new();
+    for (path, src) in &files {
+        if path.starts_with("@std/") {
+            continue;
+        }
+        let module = match parsed.get(path) {
+            Some(m) => m,
+            None => continue,
+        };
+        let display = path.clone();
+        match frontend::capabilities::analyze(module, src, &display) {
+            Ok(report) => {
+                let mut local: Vec<String> =
+                    report.capabilities.iter().map(|c| c.to_string()).collect();
+                local.sort();
+                local.dedup();
+                for cap in &local {
+                    capabilities.insert(cap.clone());
+                }
+                let mut imports = Vec::new();
+                for decl in &module.decls {
+                    match &decl.node {
+                        frontend::ast::Decl::Import(d) => match &d.source {
+                            frontend::ast::ImportSource::Module(p) => {
+                                imports.push(format!("mod:{p}"));
+                            }
+                            frontend::ast::ImportSource::Native(lib) => {
+                                imports.push(format!("native:{lib}"));
+                            }
+                        },
+                        frontend::ast::Decl::ExportFrom(d) => {
+                            if let frontend::ast::ImportSource::Native(lib) = &d.source {
+                                imports.push(format!("native:{lib}"));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                imports.sort();
+                imports.dedup();
+                per_file.insert(
+                    path.clone(),
+                    serde_json::json!({"capabilities": local, "imports": imports}),
+                );
+            }
+            Err(e) => {
+                return server_err(format!("cannot analyse {path}: {}", e.message()));
+            }
+        }
+        if !reachable.contains(path) {
+            unreachable.push(path.clone());
+        }
+    }
+    unreachable.sort();
+    let mut caps: Vec<String> = capabilities.into_iter().collect();
+    caps.sort();
+    serde_json::json!({
+        "ok": true,
+        "capabilities": caps,
+        "perFile": per_file,
+        "unreachable": unreachable,
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1089,6 +1392,100 @@ mod tests {
             "util.rnx": "export fn double(x: Int): Int { return x * 2; }\n",
         });
         (files.to_string(), "main.rnx")
+    }
+
+    #[test]
+    fn canonicalize_minifies_rnx_and_keeps_text_verbatim() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "src/main.rnx": "fn Main(): Int {\n    // a comment\n    return 0;\n}\n",
+            "LICENSE": "line one\n",
+        })
+        .to_string();
+        let out: serde_json::Value = serde_json::from_str(&canonicalize_project(&files)).unwrap();
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["files"]["src/main.rnx"], "fn Main():Int{return 0;}");
+        assert_eq!(out["files"]["LICENSE"], "line one\n");
+    }
+
+    #[test]
+    fn canonicalize_rejects_unlexable_rnx() {
+        let _serial = serial();
+        let files = serde_json::json!({"src/main.rnx": "fn Main(): Int { return \"abc; }\n"}).to_string();
+        let out: serde_json::Value = serde_json::from_str(&canonicalize_project(&files)).unwrap();
+        assert_eq!(out["ok"], false);
+    }
+
+    #[test]
+    fn config_facts_redact_and_report() {
+        let _serial = serial();
+        let text = "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    },\n    entries: { main: \"src/main.rnx\" },\n    dependencies: { utils: { version: \"^1.0.0\" } },\n    permissions: [\"term:write\"]\n}\n";
+        let out: serde_json::Value = serde_json::from_str(&publish_config_facts(text)).unwrap();
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["name"], "probe");
+        assert_eq!(out["version"], "1.2.3");
+        assert!(out["redacted"].as_str().unwrap().contains("version: \"0.0.0-published\""));
+        assert_eq!(out["entries"]["main"], "src/main.rnx");
+        assert_eq!(out["permissions"][0], "term:write");
+        assert_eq!(out["dependencies"]["utils"], "^1.0.0");
+    }
+
+    #[test]
+    fn analyze_reports_direct_sink_and_imports() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "import { helper } from \"./util\";\nfn Main(): Int { print(helper()); return 0; }\n",
+            "util.rnx": "export fn helper(): Int { return 1; }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let caps = out["capabilities"].as_array().unwrap();
+        assert!(caps.iter().any(|c| c == "term:write"), "{out}");
+        assert_eq!(out["perFile"]["util.rnx"]["imports"].as_array().unwrap().len(), 0);
+        assert_eq!(out["unreachable"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn analyze_catches_cross_file_sink() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "import { helper } from \"./util\";\nfn Main(): Int { return helper(); }\n",
+            "util.rnx": "export fn helper(): Int { print(41); return 41; }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let caps = out["capabilities"].as_array().unwrap();
+        assert!(caps.iter().any(|c| c == "term:write"), "{out}");
+    }
+
+    #[test]
+    fn analyze_rejects_undeclared_native() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "import { fn run(): Int } from native \"tool\";\nfn Main(): Int { return 0; }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let caps = out["capabilities"].as_array().unwrap();
+        assert!(caps.iter().any(|c| c == "unsafe:ffi"), "{out}");
+    }
+
+    #[test]
+    fn analyze_rejects_bad_import() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "import { missing } from \"./nowhere\";\nfn Main(): Int { return 0; }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], false, "{out}");
     }
 
     #[test]

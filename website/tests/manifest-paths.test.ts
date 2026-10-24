@@ -4,22 +4,13 @@ import { startFakeLibsql, type FakeLibsql } from './libsql-fake.js';
 import {
 	checkManifestEntries,
 	checkManifestEntryName,
-	chunkTarball,
-	rebuildTarball,
+	chunkCanonicalFiles,
 	sha256Hex
 } from '../src/lib/server/chunks.js';
-import { POST as publishRoute } from '../src/routes/api/packages/+server.ts';
-import { GET as packageRoute } from '../src/routes/api/packages/[...path]/+server.ts';
-import {
-	packageId,
-	parsePackageName,
-	publishPackage,
-	putChunks,
-	resolveGraph,
-	storeTarManifest,
-	RESOLVE_MAX_INLINE_BYTES,
-	type PublishPayload
-} from '../src/lib/server/db.js';
+import { POST as publishRoute } from '../src/routes/api/v0/packages/+server.ts';
+import { GET as packageRoute } from '../src/routes/api/v0/packages/[...path]/+server.ts';
+import { resolveGraph, RESOLVE_MAX_INLINE_BYTES } from '../src/lib/server/db.js';
+import { seedPackage } from './publish-helpers.js';
 
 // The manifest entry names are the paths a client writes to disk. The
 // server refuses an unsafe name at publish, and the client refuses the same
@@ -40,50 +31,6 @@ beforeEach(() => {
 	fake.reset();
 });
 
-function tarEntry(name: string, data: Uint8Array): Uint8Array {
-	const header = new Uint8Array(512);
-	header.set(new TextEncoder().encode(name.slice(0, 100)));
-	const oct = (off: number, len: number, value: number) => {
-		const digits = value.toString(8);
-		const pad = len - 1 - digits.length;
-		for (let i = 0; i < pad; i++) header[off + i] = 48;
-		for (let i = 0; i < digits.length; i++) header[off + pad + i] = digits.charCodeAt(i);
-		header[off + len - 1] = 0;
-	};
-	oct(100, 8, 0o644);
-	oct(108, 8, 0);
-	oct(116, 8, 0);
-	oct(124, 12, data.length);
-	oct(136, 12, 0);
-	for (let i = 148; i < 156; i++) header[i] = 32;
-	header[156] = 48;
-	header.set(new TextEncoder().encode('ustar\0'), 257);
-	header.set(new TextEncoder().encode('00'), 263);
-	header.set(new TextEncoder().encode('rnx'), 265);
-	header.set(new TextEncoder().encode('rnx'), 297);
-	let sum = 0;
-	for (let i = 0; i < 512; i++) sum += header[i];
-	const sumText = sum.toString(8).padStart(6, '0');
-	for (let i = 0; i < 6; i++) header[148 + i] = sumText.charCodeAt(i);
-	header[154] = 0;
-	header[155] = 32;
-	const blocks = Math.ceil(data.length / 512);
-	const out = new Uint8Array(512 + blocks * 512);
-	out.set(header);
-	out.set(data, 512);
-	return out;
-}
-
-const concat = (xs: Uint8Array[]): Uint8Array => {
-	const out = new Uint8Array(xs.reduce((n, x) => n + x.length, 0));
-	let off = 0;
-	for (const x of xs) {
-		out.set(x, off);
-		off += x.length;
-	}
-	return out;
-};
-
 const UNSAFE_NAMES = [
 	'../../etc/passwd',
 	'..\\..\\evil',
@@ -92,9 +39,13 @@ const UNSAFE_NAMES = [
 	'a/../../b'
 ];
 
+function config(name: string, version: string, main = 'src/main.rnx'): string {
+	return `export default {\n    project: {\n        name: "${name}",\n        version: "${version}"\n    },\n    entries: { main: "${main}" }\n}\n`;
+}
+
 describe('accepted manifest entry names', () => {
-	it('accepts the ordinary names a tarball carries', () => {
-		for (const name of ['a.txt', 'src/main.rnx', 'src/', 'a/b/c.txt', 'Project.config']) {
+	it('accepts the ordinary names a publish carries', () => {
+		for (const name of ['a.txt', 'src/main.rnx', 'a/b/c.txt', 'Project.config']) {
 			assert.equal(checkManifestEntryName(name), null, name);
 		}
 	});
@@ -127,17 +78,10 @@ describe('accepted manifest entry names', () => {
 		}
 	});
 
-	it('keeps the empty name as the opaque tarball sentinel only', () => {
-		assert.equal(
-			checkManifestEntries([{ name: '', size: 10, dir: false, chunks: [] }]),
-			null
-		);
-		const mixed = checkManifestEntries([
-			{ name: '', size: 10, dir: false, chunks: [] },
-			{ name: 'a.txt', size: 1, dir: false, chunks: [] }
-		]);
-		assert.ok(mixed);
-		assert.equal(mixed.name, '');
+	it('refuses the empty name: there is no opaque-blob sentinel', () => {
+		const alone = checkManifestEntries([{ name: '', size: 10, dir: false, chunks: [] }]);
+		assert.ok(alone);
+		assert.equal(alone.name, '');
 	});
 
 	it('refuses a manifest that carries an unsafe name', () => {
@@ -151,25 +95,30 @@ describe('accepted manifest entry names', () => {
 	});
 });
 
-async function publishTarball(
-	name: string,
-	version: string,
-	tar: Uint8Array
-): Promise<Response> {
-	const request = new Request('https://registry.test/api/packages', {
+async function publishFrame(name: string, version: string, files: Array<{ path: string; content: string }>): Promise<Response> {
+	const request = new Request('https://registry.test/api/v0/packages', {
 		method: 'POST',
 		headers: {
 			authorization: 'Bearer preview-token',
-			'content-type': 'application/octet-stream',
-			'x-rnx-package-name': name,
-			'x-rnx-package-version': version,
-			'x-rnx-meta': JSON.stringify({ manifest: { deps: {} } })
+			'content-type': 'application/json',
+			'x-rnx-protocol': '0'
 		},
-		body: tar as BodyInit
+		body: JSON.stringify({
+			name,
+			version,
+			files: [
+				{ path: 'Project.config', content: config(name, version) },
+				{ path: 'LICENSE', content: 'MIT License\n' },
+				...files
+			],
+			description: 'fixture',
+			readme: `# ${name}\n`,
+			license: 'MIT'
+		})
 	});
 	return publishRoute({
 		request,
-		url: new URL('https://registry.test/api/packages'),
+		url: new URL('https://registry.test/api/v0/packages'),
 		platform: { env: fake.env }
 	} as never);
 }
@@ -177,7 +126,7 @@ async function publishTarball(
 function get(path: string): Promise<Response> {
 	return packageRoute({
 		params: { path },
-		url: new URL(`https://registry.test/api/packages/${path}`),
+		url: new URL(`https://registry.test/api/v0/packages/${path}`),
 		platform: { env: fake.env },
 		setHeaders: () => {}
 	} as never);
@@ -186,15 +135,10 @@ function get(path: string): Promise<Response> {
 describe('publish refuses an unsafe entry name', () => {
 	it('rejects every escaping name and writes nothing', async () => {
 		for (const unsafe of UNSAFE_NAMES) {
-			const tar = concat([
-				tarEntry('Project.config', new TextEncoder().encode('project: x\n')),
-				tarEntry(unsafe, new TextEncoder().encode('pwned\n')),
-				new Uint8Array(1024)
-			]);
-			const res = await publishTarball('@acme/unsafe', '1.0.0', tar);
+			const res = await publishFrame('@acme/unsafe', '1.0.0', [{ path: unsafe, content: 'pwned\n' }]);
 			assert.equal(res.status, 400, unsafe);
 			const body = (await res.json()) as Record<string, unknown>;
-			assert.match(String(body['error']), /unsafe tar entry name/);
+			assert.match(String(body['error']), /unsafe entry name/);
 			assert.ok(String(body['error']).includes(unsafe), String(body['error']));
 			// Nothing was written: the name is refused before the version is
 			// stored.
@@ -206,42 +150,23 @@ describe('publish refuses an unsafe entry name', () => {
 	});
 
 	it('accepts an ordinary name and serves the manifest it stored', async () => {
-		const tar = concat([
-			tarEntry('Project.config', new TextEncoder().encode('project: x\n')),
-			tarEntry('src/main.rnx', new TextEncoder().encode('export fn main(): Int { return 1; }\n')),
-			new Uint8Array(1024)
+		const res = await publishFrame('@acme/safe', '1.0.0', [
+			{ path: 'src/main.rnx', content: 'export fn main(): Int { return 1; }\n' }
 		]);
-		const res = await publishTarball('@acme/safe', '1.0.0', tar);
 		assert.equal(res.status, 201);
 		const chunks = await get('@acme/safe@1.0.0/chunks');
 		assert.equal(chunks.status, 200);
 		const body = (await chunks.json()) as { entries: Array<{ name: string }> };
 		assert.deepEqual(
 			body.entries.map((e) => e.name),
-			['Project.config', 'src/main.rnx']
+			['LICENSE', 'Project.config', 'src/main.rnx']
 		);
 	});
 });
 
 describe('the chunk manifest route', () => {
-	function payload(name: string, version: string): PublishPayload {
-		return {
-			name,
-			version,
-			description: 'fixture',
-			author: 'test',
-			license: 'MIT',
-			tags: [],
-			readme: '',
-			docJson: '{"modules":[]}',
-			checksum: `c-${name}-${version}`,
-			manifestJson: '{}',
-			tarballSha256: `sha-${name}-${version}`
-		};
-	}
-
 	it('names a version with no file index instead of serving an empty one', async () => {
-		await publishPackage(fake.env, payload('@acme/nofile', '1.0.0'));
+		await seedPackage(fake.env, '@acme/nofile', '1.0.0');
 		const res = await get('@acme/nofile@1.0.0/chunks');
 		assert.equal(res.status, 404);
 		const body = (await res.json()) as Record<string, unknown>;
@@ -250,23 +175,22 @@ describe('the chunk manifest route', () => {
 	});
 
 	it('varies on the encoding it serves', async () => {
-		await publishPackage(fake.env, payload('@acme/vary', '1.0.0'));
-		const parsed = parsePackageName('@acme/vary')!;
-		await storeTarManifest(
-			fake.env,
-			`ver_${packageId(parsed.scope, parsed.name)}_1.0.0`,
-			[{ name: 'a.txt', size: 1, dir: false, chunks: [] }]
-		);
+		await seedPackage(fake.env, '@acme/vary', '1.0.0', {
+			entries: [{ name: 'a.txt', size: 1, dir: false, chunks: [] }]
+		});
 		const res = await get('@acme/vary@1.0.0/chunks');
 		assert.equal(res.status, 200);
 		assert.equal(res.headers.get('vary'), 'accept-encoding');
 	});
 
 	it('serves a chunk whose digest is written in upper case', async () => {
-		await publishPackage(fake.env, payload('@acme/upper', '1.0.0'));
 		const bytes = new TextEncoder().encode('chunk body');
 		const hash = await sha256Hex(bytes);
-		await putChunks(fake.env, [{ hash, size: bytes.length, bytes }]);
+		await seedPackage(fake.env, '@acme/upper', '1.0.0', {
+			entries: [{ name: 'a.txt', size: bytes.length, dir: false, chunks: [hash] }],
+			units: [{ hash, size: bytes.length, bytes }],
+			manifestDigest: hash
+		});
 		const res = await get(`@acme/upper@1.0.0/chunk/${hash.toUpperCase()}`);
 		assert.equal(res.status, 200);
 		assert.deepEqual(new Uint8Array(await res.arrayBuffer()), bytes);
@@ -276,7 +200,7 @@ describe('the chunk manifest route', () => {
 	});
 
 	it('still refuses a digest that is not a digest', async () => {
-		await publishPackage(fake.env, payload('@acme/badhash', '1.0.0'));
+		await seedPackage(fake.env, '@acme/badhash', '1.0.0');
 		const res = await get('@acme/badhash@1.0.0/chunk/not-a-hash');
 		assert.equal(res.status, 404);
 	});
@@ -286,25 +210,7 @@ describe('the inline budget', () => {
 	const chunk = 'c'.repeat(64);
 
 	async function publishClosure(full: string, entries: string): Promise<void> {
-		await publishPackage(fake.env, {
-			name: full,
-			version: '1.0.0',
-			description: 'fixture',
-			author: 'test',
-			license: 'MIT',
-			tags: [],
-			readme: '',
-			docJson: '{"modules":[]}',
-			checksum: 'c',
-			manifestJson: '{}',
-			tarballSha256: 'sha'
-		});
-		const parsed = parsePackageName(full)!;
-		await storeTarManifest(
-			fake.env,
-			`ver_${packageId(parsed.scope, parsed.name)}_1.0.0`,
-			JSON.parse(entries)
-		);
+		await seedPackage(fake.env, full, '1.0.0', { entries: JSON.parse(entries) });
 	}
 
 	it('counts the response bytes, not the stored index', async () => {
@@ -366,12 +272,25 @@ describe('the inline budget', () => {
 	});
 });
 
-describe('the chunk store still round-trips', () => {
-	it('keeps the digest of a tarball with an ordinary name', async () => {
-		const body = new TextEncoder().encode('hello world');
-		const tar = concat([tarEntry('a.txt', body), new Uint8Array(1024)]);
-		const { units, entries } = await chunkTarball(tar);
+describe('canonical chunking still round-trips', () => {
+	it('reassembles a large file from its content-defined parts', async () => {
+		const big = new Uint8Array(200 * 1024);
+		for (let off = 0; off < big.length; off += 65536) {
+			crypto.getRandomValues(big.subarray(off, Math.min(off + 65536, big.length)));
+		}
+		const { units, entries } = await chunkCanonicalFiles([{ name: 'big.bin', bytes: big }]);
+		assert.ok(units.length > 1);
 		const byHash = new Map(units.map((u) => [u.hash, u.bytes] as [string, Uint8Array]));
-		assert.deepEqual(rebuildTarball(entries, byHash), tar);
+		const parts: Uint8Array[] = [];
+		for (const h of entries[0].chunks) parts.push(byHash.get(h)!);
+		const total = parts.reduce((n, p) => n + p.length, 0);
+		assert.equal(total, big.length);
+		const out = new Uint8Array(total);
+		let at = 0;
+		for (const p of parts) {
+			out.set(p, at);
+			at += p.length;
+		}
+		assert.deepEqual(out, big);
 	});
 });

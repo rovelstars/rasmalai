@@ -47,6 +47,8 @@ export const packageVersions = sqliteTable('package_versions', {
 	guidesJson: text('guides_json').notNull().default('[]'),
 	tarballSha256: text('tarball_sha256').notNull().default(''),
 	tarManifestJson: text('tar_manifest_json').notNull().default('[]'),
+	manifestDigest: text('manifest_digest').notNull().default(''),
+	verdictKey: text('verdict_key').notNull().default(''),
 	requestId: text('request_id').notNull().default('')
 });
 
@@ -85,16 +87,6 @@ export const chunks = sqliteTable('chunks', {
 	bytes: blob('bytes', { mode: 'buffer' }).notNull(),
 	firstSeenAt: integer('first_seen_at').notNull()
 });
-
-export const manifestChunks = sqliteTable(
-	'manifest_chunks',
-	{
-		chunkHash: text('chunk_hash').notNull(),
-		versionId: text('version_id').notNull(),
-		ord: integer('ord').notNull()
-	},
-	(t) => [primaryKey({ columns: [t.versionId, t.ord] })]
-);
 
 export const packageDeps = sqliteTable(
 	'package_deps',
@@ -170,4 +162,28 @@ export const versionCapabilities = sqliteTable(
 export const licenses = sqliteTable('licenses', {
 	id: integer('id').primaryKey(),
 	spdx: text('spdx').notNull().unique()
+});
+
+// Per-file analysis facts, keyed by the canonical content id the server
+// itself derived. Content-addressed: a reindent produces the same
+// canonical bytes, the same hash, and the same facts. GC'd with the
+// chunks (a fact whose canonical bytes are gone is unreachable).
+export const canonicalFacts = sqliteTable('canonical_facts', {
+	canonicalHash: text('canonical_hash').primaryKey(),
+	chunkList: text('chunk_list').notNull().default('[]'),
+	importList: text('import_list').notNull().default('[]'),
+	evidence: text('evidence').notNull().default('[]'),
+	firstSeenAt: integer('first_seen_at').notNull()
+});
+
+// One row per package: the resolved import edge list, the declared
+// permission digest and the per-file canonical hashes of the latest live
+// version. Replaced on every publish; the diff against it decides whether
+// a republish can skip re-analysis.
+export const packageEdges = sqliteTable('package_edges', {
+	packageId: text('package_id').primaryKey(),
+	edgeList: text('edge_list').notNull().default('[]'),
+	permsDigest: text('perms_digest').notNull().default(''),
+	fileList: text('file_list').notNull().default('[]'),
+	updatedAt: integer('updated_at').notNull()
 });

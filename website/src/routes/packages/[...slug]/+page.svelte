@@ -142,7 +142,7 @@ import { importSnippet } from '$lib/docs/stdlib';
 	async function fetchChunk(hash: string): Promise<Uint8Array> {
 		const hit = chunkCache.get(hash);
 		if (hit) return hit;
-		const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/chunk/${hash}`);
+		const res = await fetch(`/api/v0/packages/${pkg.name}@${activeVersion.version}/chunk/${hash}`);
 		if (!res.ok) throw new Error(`chunk ${hash.slice(0, 12)} failed to load`);
 		const bytes = new Uint8Array(await res.arrayBuffer());
 		chunkCache.set(hash, bytes);
@@ -168,7 +168,7 @@ import { importSnippet } from '$lib/docs/stdlib';
 		manifestEntries = null;
 		untarred = null;
 		try {
-			const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/chunks`);
+			const res = await fetch(`/api/v0/packages/${pkg.name}@${activeVersion.version}/chunks`);
 			if (!res.ok) {
 				treeError = res.status === 404 ? 'No file listing for this version yet.' : 'Could not load the file listing.';
 				return;
@@ -234,7 +234,7 @@ import { importSnippet } from '$lib/docs/stdlib';
 		if (dependents !== null || dependentsError !== null || dependentsInflight) return;
 		dependentsInflight = true;
 		try {
-			const res = await fetch(`/api/packages/${pkg.name}/dependents`);
+			const res = await fetch(`/api/v0/packages/${pkg.name}/dependents`);
 			if (!res.ok) {
 				dependentsError = res.status === 404 ? 'No dependents data for this package yet.' : 'Could not load dependents.';
 				return;
@@ -261,7 +261,7 @@ import { importSnippet } from '$lib/docs/stdlib';
 			return;
 		}
 		try {
-			const res = await fetch(`/api/packages/${pkg.name}@${activeVersion.version}/manifest`);
+			const res = await fetch(`/api/v0/packages/${pkg.name}@${activeVersion.version}/manifest`);
 			if (!res.ok) {
 				manifestDeps = [];
 				return;

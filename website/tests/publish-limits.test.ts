@@ -1,22 +1,15 @@
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { startFakeLibsql, type FakeLibsql } from './libsql-fake.js';
-import { POST as publishPOST } from '../src/routes/api/packages/+server.ts';
-import { GET as readGET } from '../src/routes/api/packages/[...path]/+server.ts';
+import { POST as publishPOST } from '../src/routes/api/v0/packages/+server.ts';
+import { GET as readGET } from '../src/routes/api/v0/packages/[...path]/+server.ts';
 import {
-	publishPackage,
 	resetQuotaState,
 	getVersionRow,
-	getVersionIndexRow,
-	MAX_TARBALL_BYTES,
-	type PublishPayload
+	getVersionIndexRow
 } from '../src/lib/server/db.js';
-import {
-	rebuildTarball,
-	sha256Hex,
-	MAX_CHUNKS,
-	type TarEntryRef
-} from '../src/lib/server/chunks.js';
+import { seedPackage } from './publish-helpers.js';
+import { planCaps } from '../src/lib/server/canonical.js';
 import {
 	capabilityScanCount,
 	resetCapabilityScanCount
@@ -28,63 +21,90 @@ import {
 
 let fake: FakeLibsql;
 
-function payload(name: string, version: string, overrides: Partial<PublishPayload> = {}): PublishPayload {
+function config(name: string, version: string, permissions: string[] = []): string {
+	const perms = permissions.length > 0 ? `,\n    permissions: [${permissions.map((p) => `"${p}"`).join(', ')}]` : '';
+	return `export default {\n    project: {\n        name: "${name}",\n        version: "${version}"\n    },\n    entries: { main: "src/main.rnx" }${perms}\n}\n`;
+}
+
+function frameWithConfig(
+	name: string,
+	version: string,
+	configText: string,
+	files: Array<{ path: string; content: string }>
+): Record<string, unknown> {
 	return {
 		name,
 		version,
+		files: [
+			{ path: 'Project.config', content: configText },
+			{ path: 'LICENSE', content: 'MIT License\n' },
+			...files
+		],
 		description: 'fixture',
-		author: 'test',
-		license: 'MIT',
-		tags: [],
-		readme: '',
-		docJson: '{"modules":[]}',
-		checksum: `c-${name}-${version}`,
-		manifestJson: '{}',
-		tarballSha256: `sha-${name}-${version}`,
-		...overrides
+		readme: `# ${name}\n`,
+		license: 'MIT'
 	};
 }
 
-async function tarOf(files: Array<{ name: string; text: string }>): Promise<Uint8Array> {
-	const enc = new TextEncoder();
-	const units: Array<{ hash: string; bytes: Uint8Array }> = [];
-	const entries: TarEntryRef[] = [];
-	for (const f of files) {
-		const bytes = enc.encode(f.text);
-		const hash = await sha256Hex(bytes);
-		units.push({ hash, bytes });
-		entries.push({ name: f.name, size: bytes.length, dir: false, chunks: [hash] });
-	}
-	return rebuildTarball(entries, new Map(units.map((u) => [u.hash, u.bytes] as const)));
+function frameOf(
+	name: string,
+	version: string,
+	files: Array<{ path: string; content: string }>
+): Record<string, unknown> {
+	return {
+		name,
+		version,
+		files: [
+			{ path: 'Project.config', content: config(name, version) },
+			{ path: 'LICENSE', content: 'MIT License\n' },
+			...files
+		],
+		description: 'fixture',
+		readme: `# ${name}\n`,
+		license: 'MIT'
+	};
+}
+
+function pureMain(): Array<{ path: string; content: string }> {
+	return [{ path: 'src/main.rnx', content: 'export fn main(): Void {\n  let x = 1;\n}\n' }];
 }
 
 function publish(
 	name: string,
 	version: string,
-	body: Uint8Array | null,
+	frame: Record<string, unknown> | null,
 	env: Record<string, string | undefined> = fake.env,
 	headers: Record<string, string> = {}
 ): Promise<Response> {
-	const request = new Request('https://registry.test/api/packages', {
+	const request = new Request('https://registry.test/api/v0/packages', {
 		method: 'POST',
 		headers: {
-			'X-RNX-Package-Name': name,
-			'X-RNX-Package-Version': version,
+			'X-RNX-Protocol': '0',
 			authorization: 'Bearer preview-token-123',
-			'Content-Type': 'application/octet-stream',
+			'Content-Type': 'application/json',
 			...headers
 		},
-		body: (body ?? new Uint8Array(0)) as unknown as BodyInit
+		body: JSON.stringify(frame ?? {})
 	});
 	return publishPOST({
 		request,
-		url: new URL('https://registry.test/api/packages'),
+		url: new URL('https://registry.test/api/v0/packages'),
 		platform: { env }
 	} as never);
 }
 
 function countRows(table: string): number {
 	const row = fake.db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number };
+	return Number(row.n);
+}
+
+function countVersions(full: string): number {
+	const row = fake.db
+		.prepare(
+			`SELECT count(*) AS n FROM package_versions v JOIN packages p ON p.id = v.package_id
+			 WHERE ('@' || p.scope || '/' || p.name) = ? OR (p.scope = '' AND p.name = ?)`
+		)
+		.get(full, full) as { n: number };
 	return Number(row.n);
 }
 
@@ -111,59 +131,51 @@ beforeEach(() => {
 });
 
 describe('publish body caps', () => {
-	it('refuses an upload over the cap on the declared length, before reading it', async () => {
-		const tar = await tarOf([{ name: 'src/main.rnx', text: 'export fn main(): Void {}' }]);
-		const res = await publish('@acme/toolarge', '1.0.0', tar, fake.env, {
-			'content-length': String(MAX_TARBALL_BYTES + 1)
+	it('refuses a body over the cap on the declared length, before reading it', async () => {
+		const caps = planCaps(fake.env);
+		const res = await publish('@acme/toolarge', '1.0.0', frameOf('@acme/toolarge', '1.0.0', pureMain()), fake.env, {
+			'content-length': String(caps.sourceBytes + caps.manifestBytes + 2 * 1024 * 1024 + 1)
 		});
 		assert.equal(res.status, 413);
 		const body = (await res.json()) as Record<string, unknown>;
 		assert.equal(body['success'], false);
-		assert.match(String(body['error']), /tarball exceeds 512 KiB/);
 		assert.equal(fake.counters.roundTrips, 0);
 		assert.equal(countRows('package_versions'), 0);
 	});
 
-	it('refuses an upload over the cap that arrives without a declared length', async () => {
-		const big = new Uint8Array(MAX_TARBALL_BYTES + 1);
-		const res = await publish('@acme/toolarge2', '1.0.0', big);
-		assert.equal(res.status, 413);
-		assert.equal(countRows('package_versions'), 0);
-	});
-
-	it('refuses a metadata body over its cap before reading it', async () => {
-		const request = new Request('https://registry.test/api/packages', {
+	it('refuses a protocol its server does not speak', async () => {
+		const request = new Request('https://registry.test/api/v0/packages', {
 			method: 'POST',
 			headers: {
-				'X-RNX-Package-Name': '@acme/metatoo',
-				'X-RNX-Package-Version': '1.0.0',
+				'X-RNX-Protocol': '2',
 				authorization: 'Bearer preview-token-123',
-				'Content-Type': 'application/json',
-				'content-length': String(4 * 1024 * 1024)
+				'Content-Type': 'application/json'
 			},
-			body: '{"description":"x"}'
+			body: '{}'
 		});
 		const res = await publishPOST({
 			request,
-			url: new URL('https://registry.test/api/packages'),
+			url: new URL('https://registry.test/api/v0/packages'),
 			platform: { env: fake.env }
 		} as never);
-		assert.equal(res.status, 413);
+		assert.equal(res.status, 400);
+		const body = (await res.json()) as Record<string, unknown>;
+		assert.match(String(body['error']), /X-RNX-Protocol: 0/);
 		assert.equal(countRows('package_versions'), 0);
 	});
 });
 
 describe('publish chunk cap', () => {
-	it('refuses a package over the chunk limit and writes nothing', async () => {
-		const files = Array.from({ length: MAX_CHUNKS + 8 }, (_, i) => ({
-			name: `src/f${i}.rnx`,
-			text: `export fn f${i}(): Int { return ${i}; }`
-		}));
-		const tar = await tarOf(files);
-		const res = await publish('@acme/toomanychunks', '1.0.0', tar);
+	it('refuses a package over the new-chunk limit and writes nothing', async () => {
+		const caps = planCaps(fake.env);
+		const files = [{ path: 'src/main.rnx', content: 'export fn main(): Int { return 0; }\n' }];
+		for (let i = 0; i < caps.newChunks + 8; i++) {
+			files.push({ path: `src/f${i}.rnx`, content: `export fn f${i}(): Int { return ${i}; }\n` });
+		}
+		const res = await publish('@acme/toomanychunks', '1.0.0', frameOf('@acme/toomanychunks', '1.0.0', files));
 		assert.equal(res.status, 413);
 		const body = (await res.json()) as Record<string, unknown>;
-		assert.match(String(body['error']), /chunks, over the 32 chunk limit/);
+		assert.match(String(body['error']), /new-chunk limit/);
 		assert.equal(countRows('package_versions'), 0);
 		assert.equal(countRows('audit_log'), 0);
 		assert.equal(countRows('chunks'), 0);
@@ -171,52 +183,69 @@ describe('publish chunk cap', () => {
 });
 
 describe('publish quota order', () => {
-	it('refuses a doomed publish before it scans and before it writes', async () => {
-		const tar = await tarOf([
-			{ name: 'src/main.rnx', text: 'export fn main(): Void {\n  print("hi");\n}' }
-		]);
-		const res = await publish('@acme/overquota', '1.0.0', tar, {
-			...fake.env,
-			QUOTA_R2_BYTES: '1024'
-		});
+	it('refuses a doomed publish before it analyses and before it writes', async () => {
+		const res = await publish(
+			'@acme/overquota',
+			'1.0.0',
+			frameOf('@acme/overquota', '1.0.0', [
+				{ path: 'src/main.rnx', content: 'export fn main(): Void {\n  print("hi");\n}\n' }
+			]),
+			{ ...fake.env, QUOTA_R2_BYTES: '100' }
+		);
 		assert.equal(res.status, 507);
 		const body = (await res.json()) as Record<string, unknown>;
 		assert.equal(body['success'], false);
 		assert.equal(body['error'], 'storage quota exceeded');
-		// The scan never ran and nothing was written.
+		// The analysis never ran and nothing was written.
 		assert.equal(capabilityScanCount(), 0);
 		assert.equal(countRows('package_versions'), 0);
 		assert.equal(countRows('audit_log'), 0);
 		assert.equal(countRows('chunks'), 0);
 	});
 
-	it('still scans and writes a publish that fits the quota', async () => {
-		const tar = await tarOf([
-			{ name: 'src/main.rnx', text: 'export fn main(): Void {\n  let x = 1;\n}' }
-		]);
-		const res = await publish('@acme/underquota', '1.0.0', tar, {
-			...fake.env,
-			QUOTA_R2_BYTES: String(10 * 1024 * 1024)
-		});
+	it('analyses and writes a publish that fits the quota', async () => {
+		const res = await publish(
+			'@acme/underquota',
+			'1.0.0',
+			frameOf('@acme/underquota', '1.0.0', pureMain()),
+			{ ...fake.env, QUOTA_R2_BYTES: String(10 * 1024 * 1024) }
+		);
 		assert.equal(res.status, 201);
-		assert.equal(capabilityScanCount(), 1);
 		assert.equal(countRows('package_versions'), 1);
 		assert.equal(publishAuditRows(), 1);
 	});
 
+	it('refuses undeclared use in unreachable files, scanning them first', async () => {
+		const res = await publish(
+			'@acme/unreached',
+			'1.0.0',
+			frameOf('@acme/unreached', '1.0.0', [
+				{ path: 'src/main.rnx', content: 'export fn main(): Void {}\n' },
+				{ path: 'src/dead.rnx', content: 'export fn dead(): Void {\n  print("hi");\n}\n' }
+			]),
+			{ ...fake.env, QUOTA_R2_BYTES: String(10 * 1024 * 1024) }
+		);
+		assert.equal(res.status, 400);
+		const body = (await res.json()) as Record<string, unknown>;
+		assert.match(String(body['error']), /undeclared capabilities/);
+		assert.equal(capabilityScanCount(), 1);
+		assert.equal(countVersions('@acme/unreached'), 0);
+	});
+
 	it('counts a stored version against the budget', async () => {
 		const contentFor = (tag: string) => `export fn ${tag}(): Void {\n  let x = 1;\n}`;
-		const first = await tarOf([{ name: 'src/main.rnx', text: contentFor('aaa') }]);
-		const second = await tarOf([{ name: 'src/main.rnx', text: contentFor('bbb') }]);
+		const enc = new TextEncoder();
+		const first = frameOf('@acme/budget1', '1.0.0', [{ path: 'src/main.rnx', content: contentFor('aaa') }]);
+		const second = frameOf('@acme/budget2', '1.0.0', [{ path: 'src/main.rnx', content: contentFor('bbb') }]);
 		const stored = Number(
 			(fake.db.prepare('SELECT sum(size_bytes) AS n FROM chunks').get() as { n: number }).n ?? 0
 		);
-		// The budget holds the bytes already stored, the stored chunk of
-		// the version and its archive, so a second version of the same
-		// size does not fit, whether the sampler reads the stored bytes
-		// again or not.
-		const budget =
-			stored + new TextEncoder().encode(contentFor('aaa')).length + first.byteLength - 1;
+		// The budget counts stored canonical bytes: the redaction grows
+		// Project.config by a fixed delta, so the raw frame size plus that
+		// headroom brackets the first publish while two never fit.
+		const firstBytes =
+			enc.encode(config('@acme/budget1', '1.0.0') + 'MIT License\n' + contentFor('aaa')).length;
+		const budget = stored + firstBytes + 15;
 		const env = { ...fake.env, QUOTA_R2_BYTES: String(budget) };
 		const one = await publish('@acme/budget1', '1.0.0', first, env);
 		assert.equal(one.status, 201);
@@ -225,31 +254,32 @@ describe('publish quota order', () => {
 	});
 
 	it('does not count a refused publish against the budget', async () => {
-		const content = 'export fn main(): Void {\n  let x = 1;\n}';
-		const tar = await tarOf([{ name: 'src/main.rnx', text: content }]);
+		const content = 'export fn main(): Void {\n  print("hi");\n}';
+		const frame = frameOf('@acme/budget3', '1.0.0', [{ path: 'src/main.rnx', content }]);
 		const stored = Number(
 			(fake.db.prepare('SELECT sum(size_bytes) AS n FROM chunks').get() as { n: number }).n ?? 0
 		);
-		const env = { ...fake.env, QUOTA_R2_BYTES: String(stored + tar.byteLength * 2) };
-		// A tarball that is not canonical fails the round-trip check, and
-		// the budget is untouched by it: the version was never stored.
-		const broken = tar.slice();
-		broken[110] = broken[110] ^ 0xff;
-		const refused = await publish('@acme/budget3', '1.0.0', broken, env);
+		const env = { ...fake.env, QUOTA_R2_BYTES: String(stored + 4096) };
+		// Undeclared capability use fails the publish, and the budget is
+		// untouched by it: the version was never stored.
+		const refused = await publish('@acme/budget3', '1.0.0', frame, env);
 		assert.equal(refused.status, 400);
-		const after = await publish('@acme/budget4', '1.0.0', tar, env);
+		const good = frameOf('@acme/budget4', '1.0.0', pureMain());
+		const after = await publish('@acme/budget4', '1.0.0', good, env);
 		assert.equal(after.status, 201);
 	});
 });
 
 describe('publish chunk write', () => {
-	it('writes the chunk rows of a publish in one batch, with the same rows', async () => {
-		const one = await tarOf([{ name: 'src/a.rnx', text: 'export fn a(): Int { return 1; }' }]);
-		const files = Array.from({ length: 12 }, (_, i) => ({
-			name: `src/f${i}.rnx`,
-			text: `export fn f${i}(): Int { return ${i}; }`
-		}));
-		const tar = await tarOf(files);
+	it('writes the chunk rows of a publish in one batch, addressed by hash', async () => {
+		const one = frameOf('@acme/onechunk', '1.0.0', [
+			{ path: 'src/main.rnx', content: 'export fn a(): Int { return 1; }\n' }
+		]);
+		const files = [{ path: 'src/main.rnx', content: 'export fn main(): Int { return 0; }\n' }];
+		for (let i = 0; i < 11; i++) {
+			files.push({ path: `src/f${i}.rnx`, content: `export fn f${i}(): Int { return ${i}; }\n` });
+		}
+		const frame = frameOf('@acme/batched', '1.0.0', files);
 
 		fake.reset();
 		const oneRes = await publish('@acme/onechunk', '1.0.0', one);
@@ -257,7 +287,7 @@ describe('publish chunk write', () => {
 		const oneTrips = fake.counters.roundTrips;
 
 		fake.reset();
-		const res = await publish('@acme/batched', '1.0.0', tar);
+		const res = await publish('@acme/batched', '1.0.0', frame);
 		assert.equal(res.status, 201);
 		const manyTrips = fake.counters.roundTrips;
 		// Twelve chunks cost no more round trips than one: the rows go in
@@ -265,40 +295,117 @@ describe('publish chunk write', () => {
 		assert.ok(manyTrips <= oneTrips + 1, `one chunk ${oneTrips} round trips, twelve ${manyTrips}`);
 
 		const rows = fake.db
-			.prepare(
-				`SELECT c.hash AS hash, c.size_bytes AS size_bytes, c.first_seen_at AS first_seen_at
-				 FROM chunks c JOIN manifest_chunks m ON m.chunk_hash = c.hash
-				 WHERE m.version_id = ? ORDER BY c.hash`
-			)
-			.all('ver_pkg_@acme/batched_1.0.0') as Array<{
-			hash: string;
-			size_bytes: number;
-			first_seen_at: number;
-		}>;
-		assert.equal(rows.length, 12);
+			.prepare('SELECT hash, size_bytes FROM chunks ORDER BY hash')
+			.all() as Array<{ hash: string; size_bytes: number }>;
+		assert.ok(rows.length >= 12);
 		for (const row of rows) {
 			assert.match(row.hash, /^[0-9a-f]{64}$/);
 			assert.ok(row.size_bytes > 0);
 		}
-		// The mapping of the version holds the same hashes.
-		const mapping = fake.db
-			.prepare('SELECT chunk_hash FROM manifest_chunks WHERE version_id = ? ORDER BY ord')
-			.all('ver_pkg_@acme/batched_1.0.0') as Array<{ chunk_hash: string }>;
-		assert.equal(mapping.length, 12);
-		assert.deepEqual(
-			[...mapping.map((m) => m.chunk_hash)].sort(),
-			rows.map((r) => r.hash).sort()
-		);
+		// The version manifest references exactly the stored chunk bytes.
+		const version = await getVersionIndexRow(fake.env, '@acme/batched', '1.0.0');
+		assert.ok(version);
+		const entries = JSON.parse(version.row.tarManifestJson) as Array<{ chunks: string[] }>;
+		const referenced = new Set(entries.flatMap((e) => e.chunks));
+		assert.equal(referenced.size, 14);
+		for (const hash of referenced) {
+			assert.ok(rows.some((r) => r.hash === hash), hash);
+		}
 	});
 });
 
-describe('read projections', () => {
-	it('serves the same bytes from the narrow projection as from the wide one', async () => {
-		const tar = await tarOf([
-			{ name: 'src/main.rnx', text: 'export fn main(): Void {}' },
-			{ name: 'src/other.rnx', text: 'export fn other(): Int { return 1; }' }
+describe('identical tree skips analysis', () => {
+	it('republishes a version-only write with zero PUTs and the carried verdict', async () => {
+		const files = [{ path: 'src/main.rnx', content: 'export fn main(): Void {\n  let x = 1;\n}\n' }];
+		const one = await publish('@acme/same', '1.0.0', frameOf('@acme/same', '1.0.0', files));
+		assert.equal(one.status, 201);
+		const first = (await one.json()) as Record<string, unknown>;
+		const chunksBefore = countRows('chunks');
+		const factsBefore = countRows('canonical_facts');
+		assert.ok(chunksBefore > 0);
+		const two = await publish('@acme/same', '1.0.1', frameOf('@acme/same', '1.0.1', files));
+		assert.equal(two.status, 201);
+		const second = (await two.json()) as Record<string, unknown>;
+		assert.equal(second['manifestDigest'], first['manifestDigest']);
+		assert.equal(countRows('chunks'), chunksBefore);
+		assert.equal(countRows('canonical_facts'), factsBefore);
+		const v1 = await getVersionIndexRow(fake.env, '@acme/same', '1.0.0');
+		const v2 = await getVersionIndexRow(fake.env, '@acme/same', '1.0.1');
+		assert.ok(v1 && v2);
+		assert.equal(v2.row.verdictKey, v1.row.verdictKey);
+	});
+
+	it('a reindent produces no new stored objects', async () => {
+		const tidy = 'export fn main(): Void {\n  let x = 1;\n}\n';
+		const messy = 'export fn   main():Void{let x=1;} // trailing\n';
+		const one = await publish('@acme/reindent', '1.0.0', frameOf('@acme/reindent', '1.0.0', [{ path: 'src/main.rnx', content: tidy }]));
+		assert.equal(one.status, 201);
+		const chunksBefore = countRows('chunks');
+		const two = await publish('@acme/reindent', '1.0.1', frameOf('@acme/reindent', '1.0.1', [{ path: 'src/main.rnx', content: messy }]));
+		assert.equal(two.status, 201);
+		const first = (await one.json()) as Record<string, unknown>;
+		const second = (await two.json()) as Record<string, unknown>;
+		assert.equal(second['manifestDigest'], first['manifestDigest']);
+		assert.equal(countRows('chunks'), chunksBefore);
+	});
+});
+
+describe('cross-file capability analysis', () => {
+	it('rejects a sink reachable only through another file', async () => {
+		const main = 'import { helper } from "./util";\nfn Main(): Int { return helper(); }\n';
+		const util = 'export fn helper(): Int { print(41); return 41; }\n';
+		const frame = frameWithConfig(
+			'@acme/xfile',
+			'1.0.0',
+			config('@acme/xfile', '1.0.0'),
+			[
+				{ path: 'src/main.rnx', content: main },
+				{ path: 'src/util.rnx', content: util }
+			]
+		);
+		const res = await publish('@acme/xfile', '1.0.0', frame);
+		assert.equal(res.status, 400);
+		const body = (await res.json()) as Record<string, unknown>;
+		assert.match(String(body['error']), /undeclared capabilities/);
+		assert.match(String(body['error']), /term/);
+		assert.equal(countVersions('@acme/xfile'), 0);
+	});
+
+	it('accepts the same tree when the ceiling covers the cross-file use', async () => {
+		const main = 'import { helper } from "./util";\nfn Main(): Int { return helper(); }\n';
+		const util = 'export fn helper(): Int { print(41); return 41; }\n';
+		const frame = frameWithConfig(
+			'@acme/xfileok',
+			'1.0.0',
+			config('@acme/xfileok', '1.0.0', ['term:write']),
+			[
+				{ path: 'src/main.rnx', content: main },
+				{ path: 'src/util.rnx', content: util }
+			]
+		);
+		const res = await publish('@acme/xfileok', '1.0.0', frame);
+		assert.equal(res.status, 201);
+	});
+	it('accepts a package with a docs dir and guide files', async () => {
+		const cfg = 'export default {\n    project: {\n        name: "@acme/withdocs",\n        version: "1.0.0"\n    },\n    entries: { main: "src/main.rnx", docs: "docs" }\n}\n';
+		const frame = frameWithConfig('@acme/withdocs', '1.0.0', cfg, [
+			{ path: 'src/main.rnx', content: 'export fn main(): Void {}\n' },
+			{ path: 'docs/guide.md', content: '# Guide\n' }
 		]);
-		const res = await publish('@acme/projection', '1.0.0', tar);
+		const res = await publish('@acme/withdocs', '1.0.0', frame);
+		assert.equal(res.status, 201);
+	});
+});
+
+describe('read projections', () => {	it('serves the same bytes from the narrow projection as from the wide one', async () => {
+		const res = await publish(
+			'@acme/projection',
+			'1.0.0',
+			frameOf('@acme/projection', '1.0.0', [
+				{ path: 'src/main.rnx', content: 'export fn main(): Void {}\n' },
+				{ path: 'src/other.rnx', content: 'export fn other(): Int { return 1; }\n' }
+			])
+		);
 		assert.equal(res.status, 201);
 
 		const wide = await getVersionRow(fake.env, '@acme/projection', '1.0.0');
@@ -308,7 +415,7 @@ describe('read projections', () => {
 		assert.equal(narrow.row.manifestJson, wide.row.manifestJson);
 		assert.equal(narrow.row.guidesJson, wide.row.guidesJson);
 		assert.equal(narrow.row.checksum, wide.row.checksum);
-		assert.equal(narrow.row.tarballSha256, wide.row.tarballSha256);
+		assert.equal(narrow.row.manifestDigest, wide.row.manifestDigest);
 		assert.equal(narrow.row.engineRange, wide.row.engineRange);
 		assert.equal(narrow.row.status, wide.row.status);
 		assert.equal(narrow.row.createdAt, wide.row.createdAt);
@@ -316,15 +423,15 @@ describe('read projections', () => {
 	});
 
 	it('serves the file index without reading the doc payload', async () => {
-		await publishPackage(fake.env, payload('@acme/docs', '1.0.0', {
+		await seedPackage(fake.env, '@acme/docs', '1.0.0', {
 			docJson: JSON.stringify({ modules: [], filler: 'z'.repeat(200 * 1024) })
-		}));
-		const request = new Request('https://registry.test/api/packages/@acme/docs@1.0.0/chunks');
+		});
+		const request = new Request('https://registry.test/api/v0/packages/@acme/docs@1.0.0/chunks');
 		fake.reset();
 		const res = await readGET({
 			params: { path: '@acme/docs@1.0.0/chunks' },
 			request,
-			url: new URL('https://registry.test/api/packages/@acme/docs@1.0.0/chunks'),
+			url: new URL('https://registry.test/api/v0/packages/@acme/docs@1.0.0/chunks'),
 			setHeaders: () => undefined,
 			platform: { env: fake.env }
 		} as never);

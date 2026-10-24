@@ -2,17 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { gzipSync } from 'node:zlib';
 import { normalizeDocJson, normalizeGuideEntry, parseStoredGuides, parseApiModules } from '../src/lib/server/guides.js';
 import { MAX_DOC_JSON_BYTES } from '../src/lib/server/db.js';
 import {
 	parseManifestPermissions,
 	detectCapabilityUse,
-	scanTarballCapabilities,
+	scanCanonicalCapabilities,
 	checkCapabilityCoverage
 } from '../src/lib/server/permissions.js';
-import { rebuildTarball } from '../src/lib/server/chunks.js';
-import { sha256Hex } from '../src/lib/server/chunks.js';
 
 function sampleDocs(): Record<string, unknown> {
 	return {
@@ -231,44 +228,20 @@ describe('checkCapabilityCoverage', () => {
 	});
 });
 
-describe('scanTarballCapabilities', () => {
-	async function tarOf(files: Array<{ name: string; text: string }>, gzip: boolean): Promise<Uint8Array> {
+describe('scanCanonicalCapabilities', () => {
+	it('scans canonical files, skipping non-rnx entries', () => {
 		const enc = new TextEncoder();
-		const units: Array<{ hash: string; bytes: Uint8Array }> = [];
-		const entries = [];
-		for (const f of files) {
-			const bytes = enc.encode(f.text);
-			const hash = await sha256Hex(bytes);
-			units.push({ hash, bytes });
-			entries.push({ name: f.name, size: bytes.length, dir: false, chunks: [hash] });
-		}
-		const byHash = new Map(units.map((u) => [u.hash, u.bytes] as const));
-		const tar = rebuildTarball(entries, byHash);
-		return gzip ? gzipSync(tar) : tar;
-	}
-
-	it('scans plain and gzipped tarballs, skipping non-rnx entries', async () => {
-		const files = [
-			{ name: 'src/lib.rnx', text: 'export fn main(): Void {\n  print("hi");\n}' },
-			{ name: 'README.md', text: 'fetch("https://x");' }
-		];
-		for (const gzip of [false, true]) {
-			const out = await scanTarballCapabilities(await tarOf(files, gzip));
-			assert.deepEqual(out.map((e) => `${e.file}:${e.head}`), ['src/lib.rnx:term']);
-		}
+		const out = scanCanonicalCapabilities([
+			{ name: 'src/lib.rnx', bytes: enc.encode('export fn main(): Void {\n  print("hi");\n}') },
+			{ name: 'README.md', bytes: enc.encode('fetch("https://x");') }
+		]);
+		assert.deepEqual(out.map((e) => `${e.file}:${e.head}`), ['src/lib.rnx:term']);
 	});
 
-	it('returns no evidence for pure tarballs', async () => {
-		const out = await scanTarballCapabilities(
-			await tarOf([{ name: 'src/lib.rnx', text: 'export fn add(a: Int, b: Int): Int { return a + b; }' }], false)
-		);
-		assert.deepEqual(out, []);
-	});
-
-	it('skips the scan instead of inflating a gzip bomb', async () => {
-		const bomb = gzipSync(Buffer.alloc(5 * 1024 * 1024, 'a'));
-		assert.ok(bomb.length <= 512 * 1024);
-		const out = await scanTarballCapabilities(new Uint8Array(bomb));
+	it('returns no evidence for pure files', () => {
+		const out = scanCanonicalCapabilities([
+			{ name: 'src/lib.rnx', bytes: new TextEncoder().encode('export fn add(a: Int, b: Int): Int { return a + b; }') }
+		]);
 		assert.deepEqual(out, []);
 	});
 });

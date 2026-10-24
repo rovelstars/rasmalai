@@ -120,7 +120,7 @@ export async function POST({ request, url, platform }) {
 			inlineChunks,
 			advertiseChunks: wantChunks !== undefined
 		});
-		// base omitted: clients default to the request origin + /api/packages.
+		// base omitted: clients default to the request origin + /api/v0/packages.
 		// A future multi-registry response may send an absolute URL (other
 		// host) or a path (same host, other prefix) instead.
 		const payload: Record<string, unknown> = { resolved, base: '', levels };

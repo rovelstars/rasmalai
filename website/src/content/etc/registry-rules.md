@@ -1,6 +1,6 @@
 ---
 title: "Registry Upload Rules"
-description: "What an upload may contain, the 512KB cap, and what the server rejects."
+description: "What an upload may contain, the plan-shaped caps, and what the server rejects."
 section: "Registry"
 order: "1"
 icon: "Package"
@@ -8,7 +8,7 @@ icon: "Package"
 
 # Registry Upload Rules
 
-An upload is source, manifest, readme, and license — nothing else. The client packs exactly that set, and the server re-checks it on accept. Anything outside the set fails the publish.
+An upload is the source tree plus readme, docs, and license — nothing else. The client sends exactly that set as a JSON frame, and the server re-checks it on accept. Anything outside the set fails the publish.
 
 ## The allowlist
 
@@ -35,7 +35,7 @@ With that manifest the upload holds `Project.config`, the two entry files, the r
 
 ## What never ships
 
-`target/`, `.git/`, `.rnx/`, `.rnx-cache/`, and `tests/` are excluded even when they hold matching files. `Project.deplock` never ships either — the lockfile pins your build and stays on your machine; publishing it would pin everyone else's. There are no wasm blobs, no compiled binaries, and no generated output in uploads: if a file is not source, manifest, readme, guide, or license text, it does not belong in the archive.
+`target/`, `.git/`, `.rnx/`, `.rnx-cache/`, and `tests/` are excluded even when they hold matching files. `Project.deplock` never ships either — the lockfile pins your build and stays on your machine; publishing it would pin everyone else's. There are no wasm blobs, no compiled binaries, and no generated output in uploads: if a file is not source, manifest, readme, guide, or license text, it does not belong in the upload.
 
 ## Native binaries and wasm live outside source packages
 
@@ -64,28 +64,28 @@ Rejections fail the publish with `E108` and a message naming the offending file;
 
 The entries manifest fails closed in both directions:
 
-- Every path named in `entries.*` must exist in the archive. The client checks this before sending anything — a missing `entries.main` stops the publish with `E108`.
-- The file list in the `X-RNX-Meta` header must match the archive exactly. A file that is listed but missing, or shipped but unlisted, fails the publish. The server repeats this check on accept, so a hand-built upload cannot smuggle past the client.
+- Every path named in `entries.*` must exist in the upload. The client checks this before sending anything — a missing `entries.main` stops the publish with `E108`.
+- The frame's file list must match the packaged tree exactly. A file that is listed but missing, or shipped but unlisted, fails the publish. The server repeats this check on accept, so a hand-built upload cannot smuggle past the client.
 
 ## Entry names are paths
 
-Every file name in the archive becomes a path the client writes to disk, so the server checks each name on accept and refuses the whole publish when a name could escape the destination directory. A name is accepted when, after dropping at most one trailing `/`, it is not empty, holds no `\`, does not start with `/`, carries no drive prefix (`C:`), has no empty, `.` or `..` path component, holds no control character, and is at most 255 bytes long.
+Every file name in the upload becomes a path the client writes to disk, so the server checks each name on accept and refuses the whole publish when a name could escape the destination directory. A name is accepted when, after dropping at most one trailing `/`, it is not empty, holds no `\`, does not start with `/`, carries no drive prefix (`C:`), has no empty, `.` or `..` path component, holds no control character, and is at most 255 bytes long.
 
 A publish that carries such a name is rejected with 400 and a message naming the entry. The client applies the same rule to the same names, so a manifest written elsewhere is refused at install time too.
 
-## The 512KB cap
+## The caps
 
-Each version caps at 512KB of stored snapshot bytes. Oversize uploads are rejected no matter the tier — split the package or drop the weight before retrying. Retries are safe: repeat a publish with the same `X-RNX-Request-ID` and the server answers success with `duplicate: true` instead of writing a second row.
+Source bytes are capped per plan: 16 KiB on Free, 4 MiB on Paid. The stored snapshot (readme, docs, guides) caps at 512 KiB on every tier. Oversize uploads are rejected — split the package or drop the weight before retrying. Retries are safe: repeat a publish with the same `requestId` and the server answers success with `duplicate: true` instead of writing a second row.
 
 ## What the server refuses before it reads
 
 The upload body is checked before it is read. The server looks at the declared length first, and a body that claims more than the cap is refused with 413 without a byte of it reaching the worker; a body that arrives without a declared length is cut off at the same ceiling while it streams. A hostile upload therefore costs the server a header check instead of filling its memory.
 
-The archive itself is capped at 512KB, the same cap the stored snapshot has. A JSON publish carries the metadata instead of an archive, and its body is capped at 2 MiB, which is the doc payload and the snapshot the server stores plus their JSON framing.
+The request body is capped at source bytes plus manifest headroom plus 2 MiB. The stored form is canonical: `.rnx` files are minified on the server, so installs carry minified bytes, and `Project.config` is stored with its version redacted to `0.0.0-published` (rehydrated to the resolved version at install).
 
 ## The chunk limit
 
-A package is stored as chunks: one chunk per file, and more for a file over 128 KiB, which is split further. The server counts the chunks before it hashes anything and refuses a package that would need more than 32 of them, with 413 and a message naming the count.
+A package is stored as chunks: one chunk per file, and more for a file over 128 KiB, which is split further. The server counts the chunks before it hashes anything and refuses a package that would need more than the plan's new-chunk limit (32 Free, 512 Paid), with 413 and a message naming the count. No version holds more than 4096 chunks.
 
 The number is not arbitrary. Every chunk is one stored object and one call to the object store, and the platform allows 50 such calls per request on the free plan. A package that needs more chunks than that cannot be stored on the free plan at all, so the server says so instead of failing halfway through the upload. A package that stays under the limit is stored in one batch, whatever its size.
 
