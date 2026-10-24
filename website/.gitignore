@@ -10,9 +10,6 @@ static/og/
 src/lib/wasm/wasm_playground.js
 src/lib/wasm/wasm_playground_bg.wasm
 src/lib/wasm/package.json
-# The server fetches its analyzer binary from the site's own static assets
-# (see analysis.ts); copied there by `npm run build:wasm`, never committed.
-static/wasm/
 
 # Output
 .output

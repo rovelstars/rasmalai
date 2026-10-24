@@ -18,6 +18,17 @@ async function initFromBytes(bytes: Uint8Array): Promise<ServerWasm> {
 	return glue;
 }
 
+async function initFromModule(module: WebAssembly.Module): Promise<ServerWasm> {
+	const glue = (await import('../wasm/wasm_playground.js')) as {
+		default: (init: { module_or_path: WebAssembly.Module }) => Promise<unknown>;
+		canonicalize_project: (files_json: string) => string;
+		publish_config_facts: (text: string) => string;
+		analyze_project: (files_json: string, entries_json: string) => string;
+	};
+	await glue.default({ module_or_path: module });
+	return glue;
+}
+
 async function readVendoredWasm(): Promise<Uint8Array | null> {
 	try {
 		const path = (await import('node:path')) as unknown as {
@@ -42,31 +53,30 @@ async function readVendoredWasm(): Promise<Uint8Array | null> {
 
 // The registry server canonicalizes and analyses with the same Rust code
 // the client packs with, compiled to WASM. Under Node (tests, local dev)
-// the vendored bytes are read from disk; in the Worker they are fetched
-// once per isolate from the emitted static asset, resolved against the
-// requesting origin the route passes as `base`. A relative asset without
-// a base is unusable in the Worker, so it fails closed instead of
-// guessing an origin.
-export async function serverWasm(
-	env: Record<string, string | undefined>,
-	base?: string
-): Promise<ServerWasm> {
+// the vendored bytes are read from disk; in the Worker they arrive as the
+// deploy-time precompiled module below. workerd forbids compiling Wasm
+// from bytes at runtime, so fetching the binary and instantiating it in
+// the Worker can never work: the static import must survive the build for
+// the deploy bundler to precompile, never a URL plus fetch plus compile.
+async function loadPrecompiledModule(): Promise<WebAssembly.Module> {
+	let module: unknown;
+	try {
+		module = (await import('./wasm-module')).default;
+	} catch {
+		throw new Error('analysis unavailable (wasm module could not be loaded)');
+	}
+	if (!(module instanceof WebAssembly.Module)) {
+		throw new Error('analysis unavailable (wasm module is not precompiled)');
+	}
+	return module;
+}
+
+export async function serverWasm(): Promise<ServerWasm> {
 	if (loaded) return loaded;
 	if (loading) return loading;
 	loading = (async () => {
-		let bytes = await readVendoredWasm();
-		if (!bytes) {
-			const asset = env['WASM_ASSET_URL'] ?? '/wasm/wasm_playground_bg.wasm';
-			let target = asset;
-			if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(asset)) {
-				if (!base) throw new Error('analysis unavailable (wasm asset needs an absolute URL)');
-				target = new URL(asset, base).href;
-			}
-			const res = await fetch(target);
-			if (!res.ok) throw new Error(`analysis unavailable (wasm fetch ${res.status})`);
-			bytes = new Uint8Array(await res.arrayBuffer());
-		}
-		loaded = await initFromBytes(bytes);
+		const bytes = await readVendoredWasm();
+		loaded = bytes ? await initFromBytes(bytes) : await initFromModule(await loadPrecompiledModule());
 		return loaded;
 	})();
 	try {
@@ -107,22 +117,14 @@ function parseWasmOut(raw: string, entry: string): Record<string, unknown> {
 	return out;
 }
 
-export async function canonicalizeTree(
-	env: Record<string, string | undefined>,
-	files: Record<string, string>,
-	base?: string
-): Promise<CanonicalTree> {
-	const wasm = await serverWasm(env, base);
+export async function canonicalizeTree(files: Record<string, string>): Promise<CanonicalTree> {
+	const wasm = await serverWasm();
 	const out = parseWasmOut(wasm.canonicalize_project(JSON.stringify(files)), 'canonicalize_project');
 	return { files: out['files'] as Record<string, string> };
 }
 
-export async function configFacts(
-	env: Record<string, string | undefined>,
-	text: string,
-	base?: string
-): Promise<ConfigFacts> {
-	const wasm = await serverWasm(env, base);
+export async function configFacts(text: string): Promise<ConfigFacts> {
+	const wasm = await serverWasm();
 	const out = parseWasmOut(wasm.publish_config_facts(text), 'publish_config_facts');
 	const entries = out['entries'] as ConfigFacts['entries'];
 	const rawPermissions = (out['permissions'] ?? []) as Array<string | { perm: string; reason?: string }>;
@@ -139,12 +141,10 @@ export async function configFacts(
 }
 
 export async function analyzeTree(
-	env: Record<string, string | undefined>,
 	files: Record<string, string>,
-	entries: { main: string; bins: Record<string, string> },
-	base?: string
+	entries: { main: string; bins: Record<string, string> }
 ): Promise<TreeAnalysis> {
-	const wasm = await serverWasm(env, base);
+	const wasm = await serverWasm();
 	const out = parseWasmOut(
 		wasm.analyze_project(JSON.stringify(files), JSON.stringify(entries)),
 		'analyze_project'
