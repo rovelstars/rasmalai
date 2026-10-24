@@ -123,15 +123,32 @@ pub fn attribute(
         .iter()
         .map(|f| (&f.path, &f.module))
         .collect();
+    // Bare spans from whole-program codegen are entry-file coordinates, so
+    // raw offsets must never be compared across files: minified stdlib
+    // decls sit at small offsets and would steal every enclosure test.
+    // Exact hits still route genuinely-std spans; otherwise only project
+    // files compete, falling back to the entry itself.
+    let is_std = |p: &PathBuf| p.starts_with("@std/");
     let file_idx = match span.and_then(|s| exact_span(&modules, s)) {
         Some(i) => i,
-        None => match tightest_span(&modules, offset) {
-            Some((i, _)) => i,
-            None => sources
+        None => {
+            let local: Vec<(&PathBuf, &frontend::ast::Module)> = modules
                 .iter()
-                .position(|(_, src)| (offset as usize) <= src.len())
-                .unwrap_or(0),
-        },
+                .filter(|(p, _)| !is_std(p))
+                .copied()
+                .collect();
+            let offset = span.map(|s| s.start).unwrap_or(0);
+            match tightest_span(&local, offset) {
+                Some((i, _)) => modules
+                    .iter()
+                    .position(|(p, _)| *p == local[i].0)
+                    .unwrap_or(0),
+                None => sources
+                    .iter()
+                    .position(|(p, _)| p == &graph.root)
+                    .unwrap_or(0),
+            }
+        }
     };
     let (path, src) = match sources.get(file_idx) {
         Some(entry) => entry.clone(),
