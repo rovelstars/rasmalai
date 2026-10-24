@@ -347,7 +347,7 @@ export async function POST({ request, platform, url }) {
 			for (const [path, text] of Object.entries(canonical)) {
 				if (path.endsWith('.rnx')) rnxFiles[path] = text;
 			}
-			analysis = await analyzeTree(rnxFiles, {
+			analysis = await analyzeTree(env, rnxFiles, {
 				main: facts.entries.main,
 				bins: facts.entries.bins
 			});

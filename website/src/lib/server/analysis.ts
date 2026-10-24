@@ -1,7 +1,10 @@
+import { getPublishedPackageSources } from './db.js';
+
 interface ServerWasm {
 	canonicalize_project(files_json: string): string;
 	publish_config_facts(text: string): string;
 	analyze_project(files_json: string, entries_json: string): string;
+	std_provide(name: string, source: string): string;
 }
 
 let loaded: ServerWasm | null = null;
@@ -13,6 +16,7 @@ async function initFromBytes(bytes: Uint8Array): Promise<ServerWasm> {
 		canonicalize_project: (files_json: string) => string;
 		publish_config_facts: (text: string) => string;
 		analyze_project: (files_json: string, entries_json: string) => string;
+		std_provide: (name: string, source: string) => string;
 	};
 	await glue.default({ module_or_path: bytes });
 	return glue;
@@ -24,6 +28,7 @@ async function initFromModule(module: WebAssembly.Module): Promise<ServerWasm> {
 		canonicalize_project: (files_json: string) => string;
 		publish_config_facts: (text: string) => string;
 		analyze_project: (files_json: string, entries_json: string) => string;
+		std_provide: (name: string, source: string) => string;
 	};
 	await glue.default({ module_or_path: module });
 	return glue;
@@ -141,17 +146,42 @@ export async function configFacts(text: string): Promise<ConfigFacts> {
 }
 
 export async function analyzeTree(
+	env: Record<string, string | undefined>,
 	files: Record<string, string>,
 	entries: { main: string; bins: Record<string, string> }
 ): Promise<TreeAnalysis> {
 	const wasm = await serverWasm();
-	const out = parseWasmOut(
-		wasm.analyze_project(JSON.stringify(files), JSON.stringify(entries)),
-		'analyze_project'
-	);
-	return {
-		capabilities: (out['capabilities'] ?? []) as string[],
-		perFile: (out['perFile'] ?? {}) as TreeAnalysis['perFile'],
-		unreachable: (out['unreachable'] ?? []) as string[]
-	};
+	// @std/* imports resolve from provided sources, mirroring the
+	// playground two-phase flow. Deps come from R2 (hash-verified), never
+	// the client. Provide-then-analyze has no await between the two, so a
+	// round is atomic; sources are re-provided every publish because the
+	// isolate VFS is unversioned and must never serve stale dep bytes.
+	const provided = new Set<string>();
+	for (let round = 0; round < 10; round++) {
+		try {
+			const out = parseWasmOut(
+				wasm.analyze_project(JSON.stringify(files), JSON.stringify(entries)),
+				'analyze_project'
+			);
+			return {
+				capabilities: (out['capabilities'] ?? []) as string[],
+				perFile: (out['perFile'] ?? {}) as TreeAnalysis['perFile'],
+				unreachable: (out['unreachable'] ?? []) as string[]
+			};
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			const missing = /standard library module `(@std\/[^`]+)` is not preloaded/.exec(msg)?.[1];
+			if (!missing) throw e;
+			const rest = missing.replace(/^@std\//, '');
+			if (provided.has(rest)) throw e;
+			provided.add(rest);
+			const dep = await getPublishedPackageSources(env, `@std/${rest.split('/')[0]}`);
+			if (!dep) throw new Error(`${msg} (hint: @std/${rest.split('/')[0]} is not published; publish it first)`);
+			for (const [name, source] of Object.entries(dep.files)) {
+				parseWasmOut(wasm.std_provide(name, source), 'std_provide');
+				provided.add(name);
+			}
+		}
+	}
+	throw new Error('analysis unavailable (dependency resolution did not converge)');
 }

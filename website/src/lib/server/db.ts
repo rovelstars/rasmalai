@@ -1475,6 +1475,52 @@ export async function storedChunkBytes(
 	return Number(row?.n ?? 0);
 }
 
+// The sources of a published package for analysis: reassembled from the
+// version manifest through the chunks table, keyed by module rest
+// (`bytes`, `net/http`) for std_provide. Only @std/* packages resolve
+// this way; anything else is the publisher's own tree.
+const MAX_DEP_SOURCES_BYTES = 4 * 1024 * 1024;
+
+export async function getPublishedPackageSources(
+	env: Record<string, string | undefined>,
+	full: string
+): Promise<{ version: string; files: Record<string, string> } | null> {
+	const parsed = parsePackageName(full);
+	if (!parsed || !/^[A-Za-z][A-Za-z0-9_]*$/.test(parsed.name)) return null;
+	const top = parsed.name;
+	const latest = await getLatestVersion(env, full);
+	if (!latest) return null;
+	const found = await getVersionRow(env, full, latest);
+	if (!found || found.withdrawn) return null;
+	let entries: TarEntryRef[];
+	try {
+		entries = JSON.parse(found.row.tarManifestJson) as TarEntryRef[];
+		if (!Array.isArray(entries)) return null;
+	} catch {
+		return null;
+	}
+	const files: Record<string, string> = {};
+	let total = 0;
+	for (const e of entries) {
+		if (!e || e.dir || !e.name.endsWith('.rnx')) continue;
+		const stem = e.name.split('/').pop()?.replace(/\.rnx$/, '') ?? '';
+		if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(stem)) continue;
+		const rest = stem === 'lib' ? top : `${top}/${stem}`;
+		const parts: number[] = [];
+		for (const h of e.chunks ?? []) {
+			const bytes = await getChunkBytes(env, h);
+			if (!bytes) return null;
+			for (const b of bytes) parts.push(b);
+		}
+		const text = new TextDecoder().decode(new Uint8Array(parts));
+		total += text.length;
+		if (total > MAX_DEP_SOURCES_BYTES) throw new Error(`dependency @std/${top} sources exceed the analysis budget`);
+		files[rest] = text;
+	}
+	if (Object.keys(files).length === 0) return null;
+	return { version: latest, files };
+}
+
 // The storage quota of one upload. The check refuses an upload that does
 // not fit the budget, and the charge counts the bytes of an upload that
 // was accepted. They are two steps because the check runs before the
