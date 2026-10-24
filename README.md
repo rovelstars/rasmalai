@@ -28,7 +28,9 @@ compatibility: CLI flags, manifest keys, registry API paths, file
 layouts, and language semantics can all change. Pin your toolchain
 (`rnx --version`, lockfiles, pinned container images) and read release
 notes before upgrading. Do not build production systems on 0.x without
-accepting that upgrades may require code and workflow changes.
+accepting that upgrades may require code and workflow changes. The
+public registry is a development environment: its stored packages may
+be wiped and republished from scratch at any time with no migration.
 
 ## What is Rasmalai?
 

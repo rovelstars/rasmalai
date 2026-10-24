@@ -3,13 +3,10 @@
 // Capability grammar mirror. Source of truth is the compiler:
 // compiler/frontend/src/capabilities.rs (`Capability::from_str`).
 // Keep CAPABILITY_DOMAINS and splitPermission in sync when that grammar
-// changes. Usage scanning below mirrors the compiler `sink_for` table in
-// the same file at domain-head granularity: it is a textual heuristic,
-// not the taint analyzer, and the wasm playground exports no analysis
-// entry point (check/run/tokenize only), so the server cannot shell out
-// to the real pass. Under-declaration is rejected; over-declaration (a
-// wider ceiling than the code uses) stays allowed.
-import { parseTarball, type ParsedTarball } from '$lib/server/chunks';
+// changes. The publish gate is the real analyzer (WASM
+// `analyze_project`, whole merged tree); the textual scan below is the
+// backstop for files no entry root reaches, never the verdict.
+import type { CanonicalFile } from '$lib/server/chunks';
 
 export const CAPABILITY_DOMAINS = [
 	'fs:read',
@@ -235,48 +232,8 @@ export function detectCapabilityUse(
 	return out;
 }
 
-export function isGzipTarball(bytes: Uint8Array): boolean {
-	return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
-}
-
-// Bounded inflate for scanning only: gunzips at most SCAN_MAX_TARBALL_BYTES
-// of output, then gives up and reports nothing. The tarball itself is
-// already capped at 512 KiB on the wire, but a hostile gzip bomb would
-// expand far past that in memory; skipping the scan (declarations stored
-// unchecked) beats OOMing the worker, and storage caps still apply.
-const SCAN_MAX_TARBALL_BYTES = 4 * 1024 * 1024;
-
-async function inflateBounded(bytes: Uint8Array): Promise<Uint8Array | null> {
-	try {
-		const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('gzip'));
-		const reader = stream.getReader();
-		const parts: Uint8Array[] = [];
-		let total = 0;
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			total += value.byteLength;
-			if (total > SCAN_MAX_TARBALL_BYTES) {
-				await reader.cancel().catch(() => undefined);
-				return null;
-			}
-			parts.push(value);
-		}
-		const out = new Uint8Array(total);
-		let off = 0;
-		for (const p of parts) {
-			out.set(p, off);
-			off += p.byteLength;
-		}
-		return out;
-	} catch {
-		return null;
-	}
-}
-
-// How many tarballs were scanned. The publish path counts the scans it
-// paid for, so a test can prove that a refused publish never reached the
-// scan.
+// How many backstop scans ran. The publish path counts the scans it pays
+// for, so a test can prove that a refused publish never reached the scan.
 let scanCount = 0;
 
 export function capabilityScanCount(): number {
@@ -287,25 +244,18 @@ export function resetCapabilityScanCount(): void {
 	scanCount = 0;
 }
 
-export async function scanTarballCapabilities(tarball: Uint8Array): Promise<CapabilityEvidence[]> {
-	if (!isGzipTarball(tarball)) return scanParsedCapabilities(parseTarball(tarball));
-	const inflated = await inflateBounded(tarball);
-	if (!inflated) return [];
-	return scanParsedCapabilities(parseTarball(inflated));
-}
-
-// The scan over an already parsed tarball. The publish path parses the
-// upload once and scans the entries it already has.
-export function scanParsedCapabilities(parsed: ParsedTarball): CapabilityEvidence[] {
+// The backstop scan over canonical files: the same textual heuristic, run
+// over the bytes the server itself derived. The publish path calls this
+// only for files no entry root reaches.
+export function scanCanonicalCapabilities(files: CanonicalFile[]): CapabilityEvidence[] {
 	scanCount += 1;
-	const files: Array<{ name: string; text: string }> = [];
+	const inputs: Array<{ name: string; text: string }> = [];
 	const dec = new TextDecoder();
-	for (const e of parsed.entries) {
-		if (e.dir) continue;
-		if (!e.name.endsWith('.rnx')) continue;
-		files.push({ name: e.name, text: dec.decode(e.bytes) });
+	for (const f of files) {
+		if (!f.name.endsWith('.rnx')) continue;
+		inputs.push({ name: f.name, text: dec.decode(f.bytes) });
 	}
-	return detectCapabilityUse(files);
+	return detectCapabilityUse(inputs);
 }
 
 export type CoverageResult = { ok: true } | { ok: false; error: string };

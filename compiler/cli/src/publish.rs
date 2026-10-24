@@ -4,26 +4,10 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishFile {
     pub path: String,
-    pub size: u64,
+    pub content: String,
 }
 
-#[derive(Debug)]
-pub struct PackageMeta {
-    pub name: String,
-    pub version: String,
-    pub checksum: String,
-    pub description: String,
-    pub keywords: Vec<String>,
-    pub readme: String,
-    pub docs: String,
-    pub files: Vec<PublishFile>,
-    pub permissions: Vec<frontend::project::PermissionDecl>,
-}
-
-// metaVersion marks the X-RNX-Meta shape: 1 means keywords, readme, and
-// files are present alongside the description; 2 adds the manifest with
-// the declared permissions ceiling; 3 adds the docgen JSON snapshot.
-const PUBLISH_META_VERSION: u32 = 3;
+pub const PUBLISH_PROTOCOL: &str = "0";
 
 pub fn gate_formatted(
     package_dir: &Path,
@@ -75,145 +59,93 @@ pub fn package_docs(
     })
 }
 
-pub fn package_meta(
-    package_dir: &std::path::Path,
-    cfg: &frontend::project::ProjectConfig,
-    checksum: String,
-    docs: String,
-) -> Result<PackageMeta, Diagnostic> {
-    let manifest =
-        frontend::project::Manifest { project: Some(cfg.clone()), workspace: None };
-    let files = frontend::pack::package_file_list(package_dir, &manifest)?
-        .into_iter()
-        .map(|f| PublishFile { path: f.path, size: f.size })
-        .collect();
-    Ok(PackageMeta {
-        name: cfg.name.clone(),
-        version: cfg.version.clone(),
-        checksum,
-        description: cfg.description.clone(),
-        keywords: cfg.keywords.clone(),
-        readme: frontend::pack::package_readme_text(package_dir, &cfg.name),
-        docs,
-        files,
-        permissions: cfg.permissions.clone().unwrap_or_default(),
-    })
-}
-
-pub fn package_meta_minified(
-    package_dir: &std::path::Path,
-    cfg: &frontend::project::ProjectConfig,
-    checksum: String,
-    docs: String,
-    sizes: &[(String, u64)],
-) -> Result<PackageMeta, Diagnostic> {
-    let manifest =
-        frontend::project::Manifest { project: Some(cfg.clone()), workspace: None };
-    let names = frontend::pack::package_file_list(package_dir, &manifest)?;
-    let mut files = Vec::with_capacity(names.len());
-    for f in names {
-        let size = sizes
-            .iter()
-            .find(|(n, _)| n == &f.path)
-            .map(|(_, s)| *s)
-            .ok_or_else(|| {
-                Diagnostic::new(
-                    Code::E108,
-                    format!("cannot publish {}: minified size missing", f.path),
-                )
-            })?;
-        files.push(PublishFile { path: f.path, size });
+// The source tree the server canonicalizes: every file the pack would
+// ship, as UTF-8 text. The server derives the stored bytes itself, so the
+// client never supplies stored bytes under any path.
+pub fn collect_publish_files(
+    package_dir: &Path,
+    manifest: &frontend::project::Manifest,
+) -> Result<Vec<PublishFile>, Diagnostic> {
+    let mut out = Vec::new();
+    for f in frontend::pack::package_file_list(package_dir, manifest)? {
+        let bytes = std::fs::read(package_dir.join(&f.path)).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot read {}: {e}", f.path))
+        })?;
+        let content = String::from_utf8(bytes).map_err(|_| {
+            Diagnostic::new(Code::E108, format!("cannot publish {}: not valid UTF-8", f.path))
+        })?;
+        out.push(PublishFile { path: f.path, content });
     }
-    Ok(PackageMeta {
-        name: cfg.name.clone(),
-        version: cfg.version.clone(),
-        checksum,
-        description: cfg.description.clone(),
-        keywords: cfg.keywords.clone(),
-        readme: frontend::pack::package_readme_text(package_dir, &cfg.name),
-        docs,
-        files,
-        permissions: cfg.permissions.clone().unwrap_or_default(),
-    })
+    Ok(out)
 }
 
-pub fn meta_json(meta: &PackageMeta) -> String {
-    let files: Vec<serde_json::Value> = meta
-        .files
+pub fn publish_frame(
+    cfg: &frontend::project::ProjectConfig,
+    readme: &str,
+    files: &[PublishFile],
+    docs: &str,
+) -> serde_json::Value {
+    let file_values: Vec<serde_json::Value> = files
         .iter()
-        .map(|f| serde_json::json!({"path": f.path, "size": f.size}))
+        .map(|f| serde_json::json!({"path": f.path, "content": f.content}))
         .collect();
-    let permissions: Vec<serde_json::Value> = meta
-        .permissions
-        .iter()
-        .map(|d| match &d.reason {
-            Some(r) => serde_json::json!({"perm": d.perm, "reason": r}),
-            None => serde_json::Value::String(d.perm.clone()),
-        })
-        .collect();
-    let docs: serde_json::Value =
-        serde_json::from_str(&meta.docs).unwrap_or(serde_json::Value::Null);
+    let docs_value: serde_json::Value =
+        serde_json::from_str(docs).unwrap_or(serde_json::Value::Null);
     serde_json::json!({
-        "metaVersion": PUBLISH_META_VERSION,
-        "description": meta.description,
-        "keywords": meta.keywords,
-        "readme": meta.readme,
-        "docs": docs,
-        "files": files,
-        "manifest": { "permissions": permissions },
+        "name": cfg.name,
+        "version": cfg.version,
+        "files": file_values,
+        "description": cfg.description,
+        "readme": readme,
+        "docs": docs_value,
+        "engineRange": cfg.engine,
+        "keywords": cfg.keywords,
+        "tags": [],
+        "license": "MIT",
     })
-    .to_string()
-}
-
-pub fn read_tarball_meta(tarball: &std::path::Path, cwd: &std::path::Path) -> Result<(Vec<u8>, PackageMeta), Diagnostic> {
-    let bytes = std::fs::read(tarball).map_err(|e| {
-        Diagnostic::new(Code::E108, format!("cannot read {}: {e}", tarball.display()))
-    })?;
-    let targets = crate::resolve_pack_targets(cwd, None)?;
-    let (_, dir, cfg) = targets.packages.first().ok_or_else(|| {
-        Diagnostic::new(Code::E108, "no package found; run `rnx publish` inside a project".to_string())
-    })?;
-    let manifest =
-        frontend::project::Manifest { project: Some(cfg.clone()), workspace: None };
-    gate_formatted(dir, &manifest)?;
-    let docs = package_docs(dir, &manifest)?;
-    let checksum = frontend::checksum::Sha256::hexdigest(&bytes);
-    Ok((bytes, package_meta(dir, cfg, checksum, docs)?))
 }
 
 pub enum PublishOutcome {
-    Published { url: String },
+    Published { url: String, digest: String },
     Rejected { status: u16, message: String },
 }
 
-pub fn post_package(
+pub fn post_frame(
     registry: &str,
     token: &str,
-    bytes: &[u8],
-    meta: &PackageMeta,
+    frame: &serde_json::Value,
+    name: &str,
 ) -> Result<PublishOutcome, Diagnostic> {
-    let url = registry.trim_end_matches('/').to_string();
+    let mut base = registry.trim().trim_end_matches('/').to_string();
+    for suffix in ["/api/v0/packages", "/api/packages"] {
+        if let Some(root) = base.strip_suffix(suffix) {
+            base = root.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    let url = format!("{base}/api/v0/packages");
     let config = ureq::config::Config::builder()
         .timeout_global(Some(std::time::Duration::from_secs(30)))
         .http_status_as_error(false)
         .build();
     let agent: ureq::Agent = config.into();
+    let body = serde_json::to_string(frame).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("publish failed: cannot encode request: {e}"))
+    })?;
     let res = agent
         .post(&url)
         .header("Authorization", &format!("Bearer {token}"))
-        .header("Content-Type", "application/octet-stream")
-        .header("X-RNX-Package-Name", &meta.name)
-        .header("X-RNX-Package-Version", &meta.version)
-        .header("X-RNX-Checksum", &meta.checksum)
-        .header("X-RNX-Meta", &meta_json(meta))
-        .send(bytes);
+        .header("Content-Type", "application/json")
+        .header("X-RNX-Protocol", PUBLISH_PROTOCOL)
+        .send(&body);
     match res {
         Ok(mut response) => {
             let status = response.status().as_u16();
             let body = response.body_mut().read_to_string().unwrap_or_default();
             if status == 200 || status == 201 {
-                let pkg_url = package_url(&url, &meta.name, &body);
-                Ok(PublishOutcome::Published { url: pkg_url })
+                let pkg_url = package_url(&url, name, &body);
+                let digest = extract_json_string(&body, "manifestDigest").unwrap_or_default();
+                Ok(PublishOutcome::Published { url: pkg_url, digest })
             } else {
                 let message = extract_json_string(&body, "error").unwrap_or_else(|| short_body(&body));
                 Ok(PublishOutcome::Rejected { status, message })
@@ -242,7 +174,7 @@ pub fn fetch_bytes(url: &str) -> Result<Vec<u8>, Diagnostic> {
         .call()
         .map_err(|e| Diagnostic::new(Code::E108, format!("fetch failed: {e}")))?;
     let status = response.status().as_u16();
-    if status < 200 || status > 299 {
+    if !(200..300).contains(&status) {
         return Err(Diagnostic::new(Code::E108, format!("fetch failed: HTTP {status}")));
     }
     response
@@ -356,7 +288,7 @@ mod tests {
     }
 
     fn fixture_project(tag: &str, readme: Option<&str>) -> crate::scratch::Scratch {
-        let dir = crate::scratch::dir(&format!("meta-{tag}"));
+        let dir = crate::scratch::dir(&format!("frame-{tag}"));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
             dir.join("Project.config"),
@@ -375,77 +307,93 @@ mod tests {
     }
 
     #[test]
-    fn meta_carries_readme_keywords_and_files() {
+    fn frame_carries_name_version_files_and_docs() {
         let dir = fixture_project("full", Some("# probe\n\nUsage notes.\n"));
         let cfg = fixture_cfg(&dir);
         let manifest =
             frontend::project::Manifest { project: Some(cfg.clone()), workspace: None };
         let docs = package_docs(&dir, &manifest).unwrap();
-        let meta = package_meta(&dir, &cfg, "abc".to_string(), docs).unwrap();
-        assert_eq!(meta.name, "probe");
-        assert_eq!(meta.version, "1.2.3");
-        assert_eq!(meta.description, "Probe package");
-        assert_eq!(meta.keywords, vec!["http".to_string(), "cli-2".to_string()]);
-        assert_eq!(meta.readme, "# probe\n\nUsage notes.\n");
-        let paths: Vec<&str> = meta.files.iter().map(|f| f.path.as_str()).collect();
+        let files = collect_publish_files(&dir, &manifest).unwrap();
+        let readme = frontend::pack::package_readme_text(&dir, &cfg.name);
+        assert_eq!(readme, "# probe\n\nUsage notes.\n");
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
         let mut sorted = paths.clone();
         sorted.sort();
         assert_eq!(paths, sorted);
         assert!(paths.contains(&"src/main.rnx"));
         assert!(paths.contains(&"Project.config"));
         assert!(paths.contains(&"README.md"));
-        for f in &meta.files {
-            assert!(!f.path.contains('\\'), "{}", f.path);
-        }
-        let json = meta_json(&meta);
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["metaVersion"], 3);
-        assert_eq!(parsed["readme"], "# probe\n\nUsage notes.\n");
-        assert_eq!(parsed["keywords"], serde_json::json!(["http", "cli-2"]));
-        assert_eq!(parsed["description"], "Probe package");
-        assert!(parsed["docs"]["modules"].is_array(), "{json}");
-        let file_paths: Vec<&str> = parsed["files"]
+        let frame = publish_frame(&cfg, &readme, &files, &docs);
+        assert_eq!(frame["name"], "probe");
+        assert_eq!(frame["version"], "1.2.3");
+        assert_eq!(frame["description"], "Probe package");
+        assert_eq!(frame["keywords"], serde_json::json!(["http", "cli-2"]));
+        let file_paths: Vec<&str> = frame["files"]
             .as_array()
             .unwrap()
             .iter()
             .map(|f| f["path"].as_str().unwrap())
             .collect();
         assert!(file_paths.contains(&"src/main.rnx"));
+        let main = frame["files"].as_array().unwrap().iter().find(|f| f["path"] == "src/main.rnx").unwrap();
+        assert!(main["content"].as_str().unwrap().contains("return 0"));
     }
 
     #[test]
-    fn meta_readme_falls_back_to_default_heading() {
-        let dir = fixture_project("bare", None);
-        let cfg = fixture_cfg(&dir);
-        let meta = package_meta(&dir, &cfg, "abc".to_string(), "{\"modules\":[]}".to_string()).unwrap();
-        assert_eq!(meta.readme, "# probe\n");
-        let json = meta_json(&meta);
-        assert!(json.contains("# probe\\n"), "{json}");
+    fn frame_posts_to_v0_with_protocol_zero() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        request.extend_from_slice(&chunk[..n]);
+                        if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(request);
+            let body = "{\"success\": true, \"url\": \"/packages/probe\", \"version\": \"1.2.3\", \"manifestDigest\": \"ab\"}";
+            let head = format!(
+                "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+        });
+        let frame = serde_json::json!({"name": "probe", "version": "1.2.3", "files": []});
+        let outcome = post_frame(&format!("http://{addr}"), "tok", &frame, "probe").unwrap();
+        let request = String::from_utf8_lossy(&rx.recv().unwrap()).into_owned();
+        let head = request.split("\r\n\r\n").next().unwrap_or("").to_string();
+        assert!(head.contains("POST /api/v0/packages "), "{head}");
+        assert!(head.to_ascii_lowercase().contains("x-rnx-protocol: 0"), "{head}");
+        match outcome {
+            PublishOutcome::Published { url, digest } => {
+                assert!(url.contains("/packages/probe"), "{url}");
+                assert_eq!(digest, "ab");
+            }
+            PublishOutcome::Rejected { status, message } => panic!("rejected {status}: {message}"),
+        }
     }
 
     #[test]
-    fn meta_manifest_carries_declared_permissions() {
-        let dir = crate::scratch::dir("meta");
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(
-            dir.join("Project.config"),
-            "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    },\n    permissions: [{ perm: \"fs:read:/data\", reason: \"seed\" }, \"term:write\"]\n}\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int {\n    return 0;\n}\n").unwrap();
+    fn collect_refuses_non_utf8_files() {
+        let dir = fixture_project("nonutf", None);
+        std::fs::write(dir.join("src").join("blob.rnx"), [0xff, 0xfe, 0x00]).unwrap();
         let cfg = fixture_cfg(&dir);
-        let meta = package_meta(&dir, &cfg, "abc".to_string(), "{\"modules\":[]}".to_string()).unwrap();
-        assert_eq!(meta.permissions.len(), 2);
-        let parsed: serde_json::Value = serde_json::from_str(&meta_json(&meta)).unwrap();
-        assert_eq!(
-            parsed["manifest"]["permissions"],
-            serde_json::json!([{ "perm": "fs:read:/data", "reason": "seed" }, "term:write"])
-        );
-    }
-
-    fn gate_manifest(dir: &std::path::Path) -> frontend::project::Manifest {
-        let cfg = fixture_cfg(dir);
-        frontend::project::Manifest { project: Some(cfg), workspace: None }
+        let manifest =
+            frontend::project::Manifest { project: Some(cfg), workspace: None };
+        let err = collect_publish_files(&dir, &manifest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("not valid UTF-8"), "{}", err.message);
     }
 
     #[test]
@@ -453,6 +401,11 @@ mod tests {
         let dir = fixture_project("gate-ok", None);
         let manifest = gate_manifest(&dir);
         gate_formatted(&dir, &manifest).unwrap();
+    }
+
+    fn gate_manifest(dir: &std::path::Path) -> frontend::project::Manifest {
+        let cfg = fixture_cfg(dir);
+        frontend::project::Manifest { project: Some(cfg), workspace: None }
     }
 
     #[test]
@@ -464,42 +417,5 @@ mod tests {
         assert_eq!(err.code, diagnostics::Code::E108);
         assert!(err.message.contains("unformatted"), "{}", err.message);
         assert!(err.message.contains("main.rnx"), "{}", err.message);
-    }
-
-    #[test]
-    fn minified_meta_uses_minified_sizes() {
-        let dir = fixture_project("min-size", None);
-        std::fs::write(
-            dir.join("src").join("main.rnx"),
-            "// header\nfn Main(): Int {\n    return 0;\n}\n",
-        )
-        .unwrap();
-        let cfg = fixture_cfg(&dir);
-        let manifest =
-            frontend::project::Manifest { project: Some(cfg.clone()), workspace: None };
-        let out = crate::scratch::dir("pub");
-        let (_, _, sizes) =
-            frontend::pack::pack_package_gz_minified(&dir, &manifest, &out).unwrap();
-        let meta =
-            package_meta_minified(&dir, &cfg, "abc".to_string(), "{\"modules\":[]}".to_string(), &sizes)
-                .unwrap();
-        let main = meta.files.iter().find(|f| f.path == "src/main.rnx").unwrap();
-        assert_eq!(main.size, "fn Main():Int{return 0;}".len() as u64);
-        let disk = package_meta(&dir, &cfg, "abc".to_string(), "{\"modules\":[]}".to_string()).unwrap();
-        let disk_main = disk.files.iter().find(|f| f.path == "src/main.rnx").unwrap();
-        assert!(main.size < disk_main.size, "minify did not shrink main.rnx");
-        let config = meta.files.iter().find(|f| f.path == "Project.config").unwrap();
-        let disk_config = disk.files.iter().find(|f| f.path == "Project.config").unwrap();
-        assert_eq!(config.size, disk_config.size);
-    }
-
-    #[test]
-    fn minified_meta_fails_closed_on_missing_size() {
-        let dir = fixture_project("min-miss", None);
-        let cfg = fixture_cfg(&dir);
-        let err =
-            package_meta_minified(&dir, &cfg, "abc".to_string(), "{\"modules\":[]}".to_string(), &[])
-                .unwrap_err();
-        assert_eq!(err.code, diagnostics::Code::E108);
     }
 }

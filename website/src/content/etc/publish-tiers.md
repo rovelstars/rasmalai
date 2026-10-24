@@ -16,7 +16,7 @@ Publishing needs a token: pass `--token` or set `RNX_TOKEN`, or the CLI stops wi
 
 ## Quotas count accepts, not attempts
 
-Only accepted versions count against quota — rejected uploads, failed validations, and idempotent retries cost nothing. What counts is the stored bytes of live versions, sampled against the storage budget with a pity-style ramp: a flat base sample rate while usage is comfortable, rising toward certain measurement as the budget fills. The per-version 512KB cap and a weekly per-package publish cap of 20 keep any single publisher from moving the needle far.
+Only accepted versions count against quota — rejected uploads, failed validations, and idempotent retries cost nothing. What counts is the canonical bytes of live versions (`.rnx` minified, the form the server stores), sampled against the storage budget with a pity-style ramp: a flat base sample rate while usage is comfortable, rising toward certain measurement as the budget fills. The plan-shaped source caps (16 KiB Free, 4 MiB Paid) and a weekly per-package publish cap of 20 keep any single publisher from moving the needle far. Republishing an unchanged tree stores nothing new: identical canonical bytes reuse every stored object and skip re-analysis.
 
 Publishing is metered by what you store: each accepted version counts against your quota, and rejected or retried uploads never do. Read the current allowance with `rnx quota`.
 
@@ -29,7 +29,7 @@ Velocity and burst protection runs on its own track from storage quota. A publis
 The free tier covers public packages within the caps above. Paid tiers add four things, each aimed at teams rather than individuals:
 
 - **Private scopes**, invisible to anyone outside the owning org.
-- **Higher caps** on version size and publish rate.
+- **Higher caps** on source size (4 MiB), file and chunk counts, and publish rate.
 - **Provenance**, recording which identity and pipeline cut each version.
 - **SPDX filtering**, resolving and auditing dependencies by license expression.
 

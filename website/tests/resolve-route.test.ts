@@ -1,8 +1,9 @@
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { startFakeLibsql, type FakeLibsql } from './libsql-fake.js';
-import { POST } from '../src/routes/api/resolve/+server.ts';
-import { publishPackage, clearVersionIndex, type PublishPayload } from '../src/lib/server/db.js';
+import { POST } from '../src/routes/api/v0/resolve/+server.ts';
+import { seedPackage, seedPayload, type CanonicalPublishPayload } from './publish-helpers.js';
+import { clearVersionIndex } from '../src/lib/server/db.js';
 
 // The route is the wire contract of the registry: an old client must keep
 // the body it always got, and a client that asks for something the server
@@ -10,32 +11,19 @@ import { publishPackage, clearVersionIndex, type PublishPayload } from '../src/l
 
 let fake: FakeLibsql;
 
-function payload(name: string, version: string, overrides: Partial<PublishPayload> = {}): PublishPayload {
-	return {
-		name,
-		version,
-		description: 'fixture',
-		author: 'test',
-		license: 'MIT',
-		tags: [],
-		readme: '',
-		docJson: '{"modules":[]}',
-		checksum: `c-${name}-${version}`,
-		manifestJson: '{}',
-		tarballSha256: `sha-${name}-${version}`,
-		...overrides
-	};
+function payload(name: string, version: string, overrides: Partial<CanonicalPublishPayload> = {}): CanonicalPublishPayload {
+	return seedPayload(name, version, overrides);
 }
 
 function call(body: Record<string, unknown>): Promise<Response> {
-	const request = new Request('https://registry.test/api/resolve', {
+	const request = new Request('https://registry.test/api/v0/resolve', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 	return POST({
 		request,
-		url: new URL('https://registry.test/api/resolve'),
+		url: new URL('https://registry.test/api/v0/resolve'),
 		platform: { env: fake.env }
 	} as never);
 }
@@ -55,7 +43,7 @@ beforeEach(() => {
 
 describe('resolve route body', () => {
 	it('answers a client that never opts in with the historical body', async () => {
-		await publishPackage(fake.env, payload('@acme/wire', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/wire', '1.0.0'));
 		const res = await call({ requirements: { '@acme/wire': '*' } });
 		assert.equal(res.status, 200);
 		const body = (await res.json()) as Record<string, unknown>;
@@ -83,7 +71,7 @@ describe('resolve route body', () => {
 				chunks: ['c'.repeat(64)]
 			}))
 		);
-		await publishPackage(fake.env, payload('@acme/declined', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/declined', '1.0.0'));
 		fake.db
 			.prepare('UPDATE package_versions SET tar_manifest_json = ? WHERE package_id = ?')
 			.run(entries, 'pkg_@acme/declined');
@@ -98,7 +86,7 @@ describe('resolve route body', () => {
 	});
 
 	it('reports an inline answer it can give', async () => {
-		await publishPackage(fake.env, payload('@acme/inlined', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/inlined', '1.0.0'));
 		clearVersionIndex();
 		const res = await call({ requirements: { '@acme/inlined': '*' }, chunks: true });
 		assert.equal(res.status, 200);
@@ -112,7 +100,7 @@ describe('resolve route errors', () => {
 	it('answers a budget failure with a structured body', async () => {
 		const deps: Record<string, string> = {};
 		for (let i = 0; i < 600; i++) deps[`@acme/n${i}`] = '*';
-		await publishPackage(fake.env, payload('@acme/roombudget', '1.0.0', {
+		await seedPackage(fake.env, payload('@acme/roombudget', '1.0.0', {
 			manifestJson: JSON.stringify({ deps })
 		}));
 		clearVersionIndex();
@@ -143,7 +131,7 @@ describe('resolve route errors', () => {
 	});
 
 	it('answers a race with a retryable status instead of a wrong answer', async () => {
-		await publishPackage(fake.env, payload('@acme/raceroute', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/raceroute', '1.0.0'));
 		clearVersionIndex();
 		await call({ requirements: { '@acme/raceroute': '*' } });
 		// A tombstone that reached the version while the row still says live:

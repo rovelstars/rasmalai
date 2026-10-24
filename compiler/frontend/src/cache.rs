@@ -427,21 +427,21 @@ mod tests {
         let (_guard, _dir) = testkit::isolate_cache("digestpin");
         let empty = stdlib_sources_digest();
         let pin = env!("CARGO_PKG_VERSION");
-        let (gz, sha) = testkit::fixture_tarball("@std/seed", pin);
+        let (manifest, pairs, digest, _pc, _main) = testkit::fixture_tree("@std/seed", pin);
         let nodes: Vec<String> = crate::stdlib_seed::std_package_names()
             .iter()
-            .map(|full| testkit::node_json(full, pin, &sha, false))
+            .map(|full| testkit::node_json(full, pin, &digest, false))
             .collect();
         let server = testkit::MockRegistry::start(testkit::MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
             resolve_body: testkit::resolve_json_static(&nodes),
             manifest_status: 200,
-            fallback_tarball: gz,
+            fallback_tarball: Vec::new(),
             manifest_error: String::new(),
-            manifest_override: None,
-            chunk_override: None,
+            manifest_override: Some(manifest),
+            chunk_override: Some(pairs),
         });
         let cfg = testkit::registry_cfg(&server.base);
         let report =

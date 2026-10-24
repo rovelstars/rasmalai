@@ -1,4 +1,5 @@
 pub mod eval;
+pub mod redact;
 
 use diagnostics::{Code, Diagnostic};
 use std::collections::BTreeMap;
@@ -507,7 +508,13 @@ fn parse_entries(val: &ConfigValue) -> Result<Entries, String> {
     Ok(Entries { main, lib, docs, bins })
 }
 
-fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<WorkspaceConfig>), String> {
+pub fn parse_manifest_for_publish(
+    text: &str,
+) -> Result<(Option<ProjectConfig>, Option<WorkspaceConfig>), String> {
+    parse_manifest(text)
+}
+
+pub(crate) fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<WorkspaceConfig>), String> {
     let root = eval_config_text(text)?;
     let top = match &root {
         ConfigValue::Object(_) => &root,

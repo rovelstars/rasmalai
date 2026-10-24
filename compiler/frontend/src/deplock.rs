@@ -126,7 +126,6 @@ fn collect_into(
             }
             continue;
         }
-        let checksum = compute_package_checksum(&pkg_root)?;
         let mut deps: Vec<(String, String)> = Vec::new();
         for (dep_name, spec) in &cfg.dependencies {
             if let crate::project::DependencySpec::Native { lib, .. } = spec {
@@ -192,6 +191,20 @@ fn collect_into(
             stack.push((dep_root, dep_cfg, false, hint));
         }
         let source = source_hint.unwrap_or_else(|| source_of(anchor, &pkg_root, first));
+        // The lock pins the registry manifest digest for registry packages,
+        // not the local tree hash: the digest is the version identity the
+        // registry served and verified. Path, git and root packages keep the
+        // local tree checksum.
+        let checksum = if source.starts_with("registry:") {
+            crate::fetch::cached_integrity(&pkg_root).ok_or_else(|| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("package `{}` has no registry integrity", cfg.name),
+                )
+            })?
+        } else {
+            compute_package_checksum(&pkg_root)?
+        };
         nodes.insert(
             cfg.name.clone(),
             PkgNode {
@@ -586,19 +599,20 @@ mod tests {
     #[test]
     fn semver_dep_locks_from_registry() {
         let (_guard, _cache) = crate::fetch::testkit::isolate_cache("deplock-reg");
-        let (gz, sha) = crate::fetch::testkit::fixture_tarball("@acme/widget", "1.2.0");
-        let node = crate::fetch::testkit::node_json("@acme/widget", "1.2.0", &sha, false);
+        let (manifest, pairs, digest, _pc, _main) =
+            crate::fetch::testkit::fixture_tree("@acme/widget", "1.2.0");
+        let node = crate::fetch::testkit::node_json("@acme/widget", "1.2.0", &digest, false);
         let server = crate::fetch::testkit::MockRegistry::start(
             crate::fetch::testkit::MockConfig {
-                version_spec: 1,
+                version_spec: 0,
                 capabilities: vec!["tombstones"],
                 resolve_status: 200,
                 resolve_body: crate::fetch::testkit::resolve_json_static(&[node]),
                 manifest_status: 200,
-                fallback_tarball: gz,
+                fallback_tarball: Vec::new(),
                 manifest_error: String::new(),
-                manifest_override: None,
-                chunk_override: None,
+                manifest_override: Some(manifest),
+                chunk_override: Some(pairs),
             },
         );
         let dir = crate::scratch::dir("lock");
@@ -619,7 +633,7 @@ mod tests {
         let widget = lock.packages.iter().find(|p| p.name == "@acme/widget").unwrap();
         assert_eq!(widget.version, "1.2.0");
         assert_eq!(widget.source, "registry:@acme/widget@1.2.0");
-        assert_eq!(widget.checksum.len(), 64);
+        assert_eq!(widget.checksum, digest);
         verify_lock(&root, &cfg, &lock).unwrap();
     }
 

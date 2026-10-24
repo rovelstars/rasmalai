@@ -156,23 +156,46 @@ mod tests {
         }
     }
 
-    fn fixture_tarball(version: &str) -> (Vec<u8>, String) {
-        let manifest = format!(
+    fn fixture_tree(version: &str) -> (String, Vec<(String, Vec<u8>)>, String) {
+        let original = format!(
             "export default {{\n    project: {{\n        name: \"@std/seed\",\n        version: \"{version}\"\n    }}\n}}\n"
         );
-        let mut buf = Vec::new();
-        {
-            let mut tar = frontend::tar::TarWriter::new(&mut buf);
-            tar.add_file("Project.config", manifest.as_bytes()).unwrap();
-            tar.add_file("src/main.rnx", b"export fn hello(): Int { return 1; }\n")
-                .unwrap();
-            tar.add_file("src/http.rnx", b"export fn hello(): Int { return 1; }\n")
-                .unwrap();
-            tar.finish().unwrap();
+        let stored = original.replace(
+            &format!("version: \"{version}\""),
+            "version: \"0.0.0-published\"",
+        );
+        let files = vec![
+            ("Project.config".to_string(), stored.into_bytes()),
+            ("src/main.rnx".to_string(), b"export fn hello(): Int { return 1; }\n".to_vec()),
+            ("src/http.rnx".to_string(), b"export fn hello(): Int { return 1; }\n".to_vec()),
+        ];
+        let mut entries = Vec::new();
+        let mut pairs = Vec::new();
+        for (name, bytes) in &files {
+            let h = frontend::checksum::Sha256::hexdigest(bytes);
+            entries.push(format!(
+                "{{\"name\": \"{name}\", \"size\": {}, \"dir\": false, \"chunks\": [\"{h}\"]}}",
+                bytes.len()
+            ));
+            pairs.push((h, bytes.clone()));
         }
-        let gz = frontend::gzip::compress_gzip(&buf);
-        let sha = frontend::checksum::Sha256::hexdigest(&gz);
-        (gz, sha)
+        let manifest = format!("{{\"entries\": [{}]}}", entries.join(", "));
+        let digest = frontend::checksum::manifest_digest_hex(
+            &files
+                .iter()
+                .map(|(name, bytes)| {
+                    let h = frontend::checksum::Sha256::hexdigest(bytes);
+                    frontend::checksum::DigestEntry {
+                        name: name.clone(),
+                        size: bytes.len() as u64,
+                        dir: false,
+                        chunks: vec![h],
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        (manifest, pairs, digest)
     }
 
     fn node_json(full: &str, version: &str, integrity: &str) -> String {
@@ -201,12 +224,10 @@ mod tests {
         )
     }
 
-    fn fallback_manifest(tarball: &[u8]) -> String {
-        let digest = frontend::checksum::Sha256::hexdigest(tarball);
-        format!(
-            "{{\"entries\": [{{\"name\": \"\", \"size\": {}, \"dir\": false, \"chunks\": [\"{digest}\"]}}]}}",
-            tarball.len()
-        )
+    struct TreeFixture {
+        manifest: String,
+        pairs: Vec<(String, Vec<u8>)>,
+        digest: String,
     }
 
     struct MockRegistry {
@@ -215,7 +236,7 @@ mod tests {
     }
 
     impl MockRegistry {
-        fn start(resolve_body: String, tarball: Vec<u8>) -> MockRegistry {
+        fn start(resolve_body: String, fixture: TreeFixture) -> MockRegistry {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let base = format!("http://{addr}");
@@ -237,12 +258,12 @@ mod tests {
                     // the path without query so salted and plain reads behave
                     // identically here.
                     let route = path.split('?').next().unwrap_or_default();
-                    let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", "1")];
+                    let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", "0")];
                     if method == "GET" && route == "/api/version" {
                         let body =
-                            "{\"spec\": 1, \"capabilities\": [], \"registry\": \"test\"}";
+                            "{\"spec\": 0, \"capabilities\": [], \"registry\": \"test\"}";
                         respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
-                    } else if method == "POST" && route == "/api/resolve" {
+                    } else if method == "POST" && route == "/api/v0/resolve" {
                         respond(
                             &mut stream,
                             200,
@@ -251,27 +272,25 @@ mod tests {
                             with_spec,
                         );
                     } else if method == "GET" && route.ends_with("/chunks") {
-                        let body = fallback_manifest(&tarball);
-                        respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
+                        respond(&mut stream, 200, "application/json", fixture.manifest.as_bytes(), with_spec);
                     } else if method == "GET" && route.contains("/chunk/") {
                         let hash = route.rsplit('/').next().unwrap_or_default().to_string();
-                        let digest = frontend::checksum::Sha256::hexdigest(&tarball);
-                        if digest == hash {
-                            respond(
+                        let hit = fixture.pairs.iter().find(|(h, _)| h == &hash).map(|(_, b)| b.clone());
+                        match hit {
+                            Some(bytes) => respond(
                                 &mut stream,
                                 200,
                                 "application/octet-stream",
-                                &tarball,
+                                &bytes,
                                 with_spec,
-                            );
-                        } else {
-                            respond(
+                            ),
+                            None => respond(
                                 &mut stream,
                                 404,
                                 "application/json",
                                 b"{\"message\": \"chunk not found\"}",
                                 with_spec,
-                            );
+                            ),
                         }
                     } else {
                         respond(
@@ -292,7 +311,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .filter(|(m, p, _)| m == "POST" && p == "/api/resolve")
+                .filter(|(m, p, _)| m == "POST" && p == "/api/v0/resolve")
                 .count()
         }
     }
@@ -372,8 +391,10 @@ mod tests {
     #[test]
     fn cold_cache_seeds_once_then_generates_docs() {
         let (_guard, dir) = isolate("cold");
-        let (gz, sha) = fixture_tarball("1.0.0");
-        let server = MockRegistry::start(resolve_json_static(&std_nodes("1.0.0", &sha)), gz);
+        let (manifest, pairs, digest) = fixture_tree("1.0.0");
+        let fixture = TreeFixture { manifest, pairs, digest };
+        let digest = fixture.digest.clone();
+        let server = MockRegistry::start(resolve_json_static(&std_nodes("1.0.0", &digest)), fixture);
         set_registry(&server.base);
         let path =
             crate::generate_stdlib_docs_json(&dir.join("out")).expect("docs generate on cold cache");
@@ -387,15 +408,20 @@ mod tests {
     #[test]
     fn warm_cache_generates_docs_without_network() {
         let (_guard, dir) = isolate("warm");
-        let (gz, sha) = fixture_tarball("1.0.0");
-        let first = MockRegistry::start(resolve_json_static(&std_nodes("1.0.0", &sha)), gz);
+        let (manifest, pairs, digest) = fixture_tree("1.0.0");
+        let fixture = TreeFixture { manifest, pairs, digest };
+        let digest = fixture.digest.clone();
+        let first = MockRegistry::start(resolve_json_static(&std_nodes("1.0.0", &digest)), fixture);
         set_registry(&first.base);
         let first_out =
             crate::generate_stdlib_docs_json(&dir.join("out-first")).expect("initial seed");
         assert_eq!(first.resolve_posts(), 1);
-        let (gz2, sha2) = fixture_tarball("1.0.0");
-        let nodes2 = std_nodes("1.0.0", &sha2);
-        let second = MockRegistry::start(resolve_json_static(&nodes2), gz2);
+        let (manifest2, pairs2, digest2) = fixture_tree("1.0.0");
+        let nodes2 = std_nodes("1.0.0", &digest2);
+        let second = MockRegistry::start(
+            resolve_json_static(&nodes2),
+            TreeFixture { manifest: manifest2, pairs: pairs2, digest: digest2 },
+        );
         set_registry(&second.base);
         frontend::stdvfs::clear();
         let second_out =

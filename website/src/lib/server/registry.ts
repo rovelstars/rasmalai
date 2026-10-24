@@ -1,4 +1,4 @@
-export const SPEC_VERSION = 1;
+export const SPEC_VERSION = 0;
 export const CAPABILITIES = [
 	'tombstones',
 	'guides',

@@ -60,20 +60,17 @@ function edgeResponse(body: unknown, cacheStatus: string, status = 200): Respons
 describe('purge', () => {
 	it('lists versioned sub-resources', () => {
 		const urls = packagePointerUrls('https://example.com', '@acme/a', '1.0.0');
-		assert.ok(urls.includes('https://example.com/api/packages'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a'));
-		assert.ok(urls.includes('https://example.com/packages'));
-		assert.ok(urls.includes('https://example.com/packages/@acme/a'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/api'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/manifest'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/chunks'));
-		assert.ok(urls.includes('https://example.com/api/packages/@acme/a@1.0.0/guides'));
-		assert.ok(urls.includes('https://example.com/packages/@acme/a@1.0.0'));
+		assert.ok(urls.includes('https://example.com/api/v0/packages'));
+		assert.ok(urls.includes('https://example.com/api/v0/packages/@acme/a'));
+		assert.ok(urls.includes('https://example.com/api/v0/packages/@acme/a@1.0.0'));
+		assert.ok(urls.includes('https://example.com/api/v0/packages/@acme/a@1.0.0/api'));
+		assert.ok(urls.includes('https://example.com/api/v0/packages/@acme/a@1.0.0/manifest'));
+		assert.ok(urls.includes('https://example.com/api/v0/packages/@acme/a@1.0.0/chunks'));
+		assert.ok(urls.includes('https://example.com/api/v0/packages/@acme/a@1.0.0/guides'));
 	});
 
 	it('never throws and reports verification', async () => {
-		const r = await purgeUrls({}, ['https://example.com/api/packages'], { fullName: '@acme/a' });
+		const r = await purgeUrls({}, ['https://example.com/api/v0/packages'], { fullName: '@acme/a' });
 		assert.equal(typeof r.ok, 'boolean');
 		assert.equal(typeof r.verified, 'boolean');
 		assert.equal(r.verified, false);
@@ -83,7 +80,7 @@ describe('purge', () => {
 
 	it('records the skipped purge with the verification state', async () => {
 		const env = { ...fake.env };
-		const r = await purgeUrls(env, ['https://example.com/api/packages'], { fullName: '@acme/skipped' });
+		const r = await purgeUrls(env, ['https://example.com/api/v0/packages'], { fullName: '@acme/skipped' });
 		assert.equal(r.ok, true);
 		assert.equal(r.verified, false);
 		const rows = fake.db
@@ -102,8 +99,8 @@ describe('purge', () => {
 		);
 		const r = await purgeUrls(
 			env,
-			['https://example.com/api/packages/@acme/a@1.0.0'],
-			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/packages/@acme/a@1.0.0', bodyStatus: 'yanked' } }
+			['https://example.com/api/v0/packages/@acme/a@1.0.0'],
+			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/v0/packages/@acme/a@1.0.0', bodyStatus: 'yanked' } }
 		);
 		assert.equal(r.ok, true);
 		assert.equal(r.verified, true);
@@ -120,8 +117,8 @@ describe('purge', () => {
 		);
 		const r = await purgeUrls(
 			env,
-			['https://example.com/api/packages/@acme/a@1.0.0'],
-			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/packages/@acme/a@1.0.0', bodyStatus: 'yanked' } }
+			['https://example.com/api/v0/packages/@acme/a@1.0.0'],
+			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/v0/packages/@acme/a@1.0.0', bodyStatus: 'yanked' } }
 		);
 		assert.equal(r.ok, false);
 		assert.equal(r.verified, false);
@@ -143,8 +140,8 @@ describe('purge', () => {
 		);
 		const r = await purgeUrls(
 			env,
-			['https://example.com/api/packages/@acme/a@1.0.0'],
-			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/packages/@acme/a@1.0.0', status: 410 } }
+			['https://example.com/api/v0/packages/@acme/a@1.0.0'],
+			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/v0/packages/@acme/a@1.0.0', status: 410 } }
 		);
 		assert.equal(r.ok, false);
 		assert.equal(r.verified, false);
@@ -158,8 +155,8 @@ describe('purge', () => {
 		);
 		const r = await purgeUrls(
 			env,
-			['https://example.com/api/packages/@acme/a@1.0.0'],
-			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/packages/@acme/a@1.0.0', status: 410 } }
+			['https://example.com/api/v0/packages/@acme/a@1.0.0'],
+			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/v0/packages/@acme/a@1.0.0', status: 410 } }
 		);
 		assert.equal(r.ok, true);
 		assert.equal(r.verified, true);
@@ -173,8 +170,8 @@ describe('purge', () => {
 		);
 		const r = await purgeUrls(
 			env,
-			['https://example.com/api/packages/@acme/a@1.0.0'],
-			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/packages/@acme/a@1.0.0' } }
+			['https://example.com/api/v0/packages/@acme/a@1.0.0'],
+			{ fullName: '@acme/a', verify: { url: 'https://example.com/api/v0/packages/@acme/a@1.0.0' } }
 		);
 		assert.equal(r.ok, false);
 		assert.equal(r.verified, false);

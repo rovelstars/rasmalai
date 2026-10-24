@@ -260,11 +260,13 @@ mod tests {
     // `always_stale` is set, even origin-direct reads get the stale
     // generation, reproducing a genuinely inconsistent registry.
     fn start_generation_server(always_stale: bool) -> (GenerationServer, RegistryConfig) {
-        let (fresh_tar, fresh_sha) = fixture_tarball("@std/seed", "1.0.0");
-        let (stale_tar, stale_sha) = fixture_tarball("@std/seed", "0.0.9");
-        let fresh_manifest = fallback_manifest(&fresh_tar);
-        let stale_manifest = fallback_manifest(&stale_tar);
-        let resolve_body = resolve_json_static(&std_nodes("1.0.0", &fresh_sha));
+        let (fresh_manifest, fresh_pairs, fresh_digest, _, _) = fixture_tree("@std/seed", "1.0.0");
+        let (stale_manifest, stale_pairs, _stale_digest, _, _) = fixture_tree_with_main(
+            "@std/seed",
+            "0.0.9",
+            b"export fn hello(): Int { return 0; }\n",
+        );
+        let resolve_body = resolve_json_static(&std_nodes("1.0.0", &fresh_digest));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let log: Arc<Mutex<Vec<(String, String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -298,20 +300,26 @@ mod tests {
                     .unwrap_or_else(|e| e.into_inner())
                     .push((method.clone(), path.clone(), direct));
                 if method == "GET" && route == "/api/version" {
-                    respond(&mut stream, 200, b"{\"spec\": 1}", true);
-                } else if method == "POST" && route == "/api/resolve" {
+                    respond(&mut stream, 200, b"{\"spec\": 0}", true);
+                } else if method == "POST" && route == "/api/v0/resolve" {
                     respond(&mut stream, 200, resolve_body.as_bytes(), true);
                 } else if method == "GET" && route.ends_with("/chunks") {
                     let body = if direct { &fresh_manifest } else { &stale_manifest };
                     respond(&mut stream, 200, body.as_bytes(), true);
                 } else if method == "GET" && route.contains("/chunk/") {
                     let hash = route.rsplit('/').next().unwrap_or_default();
-                    if hash == fresh_sha {
-                        respond(&mut stream, 200, &fresh_tar, false);
-                    } else if hash == stale_sha {
-                        respond(&mut stream, 200, &stale_tar, false);
-                    } else {
-                        respond(&mut stream, 404, b"{}", true);
+                    let mut hit: Option<Vec<u8>> = None;
+                    for pairs in [&fresh_pairs, &stale_pairs] {
+                        for (h, b) in pairs {
+                            if h == hash {
+                                hit = Some(b.clone());
+                                break;
+                            }
+                        }
+                    }
+                    match hit {
+                        Some(bytes) => respond(&mut stream, 200, &bytes, false),
+                        None => respond(&mut stream, 404, b"{}", true),
                     }
                 } else {
                     respond(&mut stream, 404, b"{}", true);
@@ -387,24 +395,24 @@ mod tests {
     }
 
     fn start_std_registry(version: &str) -> (MockRegistry, String, RegistryConfig) {
-        let (gz, sha) = fixture_tarball("@std/seed", version);
+        let (manifest, pairs, digest, _, _) = fixture_tree("@std/seed", version);
         let server = MockRegistry::start(MockConfig {
-            version_spec: 1,
+            version_spec: 0,
             capabilities: vec!["tombstones"],
             resolve_status: 200,
-            resolve_body: resolve_json_static(&std_nodes(version, &sha)),
+            resolve_body: resolve_json_static(&std_nodes(version, &digest)),
             manifest_status: 200,
-            fallback_tarball: gz,
+            fallback_tarball: Vec::new(),
             manifest_error: String::new(),
-            manifest_override: None,
-            chunk_override: None,
+            manifest_override: Some(manifest),
+            chunk_override: Some(pairs),
         });
         let cfg = RegistryConfig {
             url: server.base.clone(),
             token_env: None,
             ca_cert: None,
         };
-        (server, sha, cfg)
+        (server, digest, cfg)
     }
 
     #[test]

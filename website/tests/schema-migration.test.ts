@@ -1,29 +1,13 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startFakeLibsql, type FakeLibsql } from './libsql-fake.js';
-import { publishPackage, type PublishPayload } from '../src/lib/server/db.js';
+import { seedPackage } from './publish-helpers.js';
 
 // The migration ladder runs once per database, before the first query. This
 // file starts from a database that predates the mutation count column, so
 // the ladder has something to do.
 
 let fake: FakeLibsql;
-
-function payload(name: string, version: string): PublishPayload {
-	return {
-		name,
-		version,
-		description: 'fixture',
-		author: 'test',
-		license: 'MIT',
-		tags: [],
-		readme: '',
-		docJson: '{"modules":[]}',
-		checksum: `c-${name}-${version}`,
-		manifestJson: '{}',
-		tarballSha256: `sha-${name}-${version}`
-	};
-}
 
 before(async () => {
 	fake = await startFakeLibsql();
@@ -50,7 +34,7 @@ describe('schema migration', () => {
 			'the fixture database starts without the column'
 		);
 		// The first publish runs the ladder.
-		await publishPackage(fake.env, payload('@old/pkg', '1.0.0'));
+		await seedPackage(fake.env, '@old/pkg', '1.0.0');
 		const after = fake.db
 			.prepare("SELECT name FROM pragma_table_info('packages')")
 			.all() as Array<{ name: string }>;
@@ -65,7 +49,7 @@ describe('schema migration', () => {
 	});
 
 	it('drops the global generation counter row', async () => {
-		await publishPackage(fake.env, payload('@old/pkg3', '1.0.0'));
+		await seedPackage(fake.env, '@old/pkg3', '1.0.0');
 		const rows = fake.db
 			.prepare("SELECT count(*) AS c FROM meta WHERE key = 'registry_generation'")
 			.all() as Array<{ c: number }>;
@@ -73,6 +57,30 @@ describe('schema migration', () => {
 		const stamped = fake.db
 			.prepare("SELECT value AS v FROM meta WHERE key = 'schema_version'")
 			.get() as { v: string } | undefined;
-		assert.equal(Number(stamped?.v), 3, 'the ladder stamps the schema version');
+		assert.equal(Number(stamped?.v), 4, 'the ladder stamps the schema version');
+	});
+
+	it('carries the canonical columns on the version row', async () => {
+		await seedPackage(fake.env, '@old/pkg4', '2.0.0', {
+			entries: [{ name: 'a.txt', size: 1, dir: false, chunks: [] }],
+			manifestDigest: 'd'.repeat(64),
+			verdictKey: 'v'.repeat(64)
+		});
+		const row = fake.db
+			.prepare(
+				`SELECT v.manifest_digest AS d, v.verdict_key AS v FROM package_versions v
+				 JOIN packages p ON p.id = v.package_id
+				 WHERE p.scope = 'old' AND p.name = 'pkg4' AND v.version = '2.0.0'`
+			)
+			.get() as { d: string; v: string } | undefined;
+		assert.equal(row?.d, 'd'.repeat(64));
+		assert.equal(row?.v, 'v'.repeat(64));
+		const tables = fake.db
+			.prepare("SELECT name AS n FROM sqlite_master WHERE type = 'table'")
+			.all() as Array<{ n: string }>;
+		const names = tables.map((t) => t.n);
+		assert.ok(names.includes('canonical_facts'), 'the fact cache table exists');
+		assert.ok(names.includes('package_edges'), 'the edge table exists');
+		assert.ok(!names.includes('manifest_chunks'), 'the mapping table is gone');
 	});
 });

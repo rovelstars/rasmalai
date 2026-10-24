@@ -189,3 +189,39 @@ fn lockfile_round_trip_is_sorted_and_stable() {
     assert!(text.find("name: \"app\"") < text.find("name: \"dep\""), "sorted:\n{text}");
     assert_eq!(ProjectDepLock::parse(&lock.to_rnx()).unwrap(), lock);
 }
+
+#[test]
+fn redact_replaces_project_version_only() {
+    let src = "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\",\n        description: \"mentions version \\\"9.9.9\\\" inside\"\n    },\n    dependencies: {\n        dep: { version: \"4.5.6\" }\n    }\n}\n";
+    let facts = project::redact::publish_facts(src).unwrap_or_else(|e| panic!("facts failed: {e}"));
+    assert_eq!(facts.name, "probe");
+    assert_eq!(facts.version, "1.2.3");
+    assert!(facts.redacted.contains("version: \"0.0.0-published\""), "{}", facts.redacted);
+    assert!(facts.redacted.contains("version: \"4.5.6\""), "dep version must survive:\n{}", facts.redacted);
+    assert!(facts.redacted.contains("9.9.9"), "description text must survive:\n{}", facts.redacted);
+    let back = project::redact::rehydrate_project_version(&facts.redacted, "1.2.3").unwrap();
+    assert!(back.contains("version: \"1.2.3\""), "{back}");
+}
+
+#[test]
+fn redact_survives_comments_and_braces_in_strings() {
+    let src = "export default {\n    // version: \"0.0.0\" in a comment\n    /* version: \"0.0.0\" in a block, braces { } here */\n    project: {\n        name: \"probe\", // trailing\n        version: \"1.2.3\",\n        description: \"a brace-free string\"\n    }\n}\n";
+    let facts = project::redact::publish_facts(src).unwrap_or_else(|e| panic!("facts failed: {e}"));
+    assert_eq!(facts.version, "1.2.3");
+    assert!(facts.redacted.contains("version: \"0.0.0-published\""), "{}", facts.redacted);
+    assert!(facts.redacted.contains("// version: \"0.0.0\" in a comment"), "{}", facts.redacted);
+}
+
+#[test]
+fn rehydrate_refuses_foreign_placeholder() {
+    let src = "export default {\n    project: {\n        name: \"probe\",\n        version: \"9.9.9\"\n    }\n}\n";
+    let err = project::redact::rehydrate_project_version(src, "1.2.3").unwrap_err();
+    assert_eq!(err.code, diagnostics::Code::E108);
+}
+
+#[test]
+fn redact_rejects_missing_project_version() {
+    let src = "export default {\n    project: {\n        name: \"probe\"\n    }\n}\n";
+    let err = project::redact::publish_facts(src).unwrap_err();
+    assert_eq!(err.code, diagnostics::Code::E108);
+}

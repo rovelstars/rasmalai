@@ -4,11 +4,6 @@ export interface ChunkUnit {
 	bytes: Uint8Array;
 }
 
-export interface TarEntry {
-	name: string;
-	bytes: Uint8Array;
-}
-
 export interface TarEntryRef {
 	name: string;
 	size: number;
@@ -16,22 +11,15 @@ export interface TarEntryRef {
 	chunks: string[];
 }
 
-// One parsed entry of an uploaded tarball.
-export interface TarFile {
+// One canonical file of a publish: the server derives these bytes itself,
+// so identical source always yields identical bytes, identical hashes and
+// identical stored objects no matter which client submitted it.
+export interface CanonicalFile {
 	name: string;
-	dir: boolean;
 	bytes: Uint8Array;
 }
 
-// The parsed tarball. The publish path parses the upload once and reuses
-// the entries for the name check, the capability scan and the chunking.
-export interface ParsedTarball {
-	entries: TarFile[];
-	files: number;
-	raw: Uint8Array;
-}
-
-export interface ChunkedTarball {
+export interface ChunkedPackage {
 	units: ChunkUnit[];
 	entries: TarEntryRef[];
 }
@@ -56,17 +44,13 @@ const NAME_ENCODER = new TextEncoder();
 //      `..`;
 //   6. it holds no control character, NUL included;
 //   7. it is at most 255 bytes long.
-//
-// The one name that is not a path is the protocol sentinel: a manifest of
-// exactly one entry whose name is the empty string and which is not a
-// directory means "this package is one opaque tarball blob".
 export const MAX_ENTRY_NAME_BYTES = 255;
 
 export class UnsafeEntryNameError extends Error {
 	readonly entryName: string;
 
 	constructor(entryName: string, reason: string) {
-		super(`unsafe tar entry name \`${entryName}\`: ${reason}`);
+		super(`unsafe entry name \`${entryName}\`: ${reason}`);
 		this.entryName = entryName;
 	}
 }
@@ -89,77 +73,13 @@ export function checkManifestEntryName(name: string): string | null {
 	return null;
 }
 
-// The same rule applied to a whole manifest. The empty name is the
-// sentinel, so it is accepted only as the single entry of the manifest.
+// The same rule applied to a whole manifest.
 export function checkManifestEntries(entries: TarEntryRef[]): { name: string; reason: string } | null {
-	const sentinel = entries.length === 1 && entries[0].name === '' && !entries[0].dir;
 	for (const e of entries) {
-		if (e.name === '' && !e.dir) {
-			if (!sentinel) {
-				return { name: e.name, reason: 'the empty name is reserved for the opaque tarball sentinel' };
-			}
-			continue;
-		}
 		const reason = checkManifestEntryName(e.name);
 		if (reason) return { name: e.name, reason };
 	}
 	return null;
-}
-
-// The tar parser. One pass over the upload produces every entry the
-// publish path needs: the name check, the capability scan and the chunking
-// all read this result instead of parsing the bytes again.
-export function parseTarball(tar: Uint8Array): ParsedTarball {
-	const entries: TarFile[] = [];
-	const dec = new TextDecoder();
-	let off = 0;
-	let files = 0;
-	let longName: string | null = null;
-	while (off + 512 <= tar.length) {
-		const header = tar.subarray(off, off + 512);
-		let empty = true;
-		for (let i = 0; i < 512; i++) {
-			if (header[i] !== 0) {
-				empty = false;
-				break;
-			}
-		}
-		if (empty) break;
-		const rawName = dec.decode(header.subarray(0, 100)).replace(/\0.*$/, '');
-		const prefix = dec.decode(header.subarray(345, 500)).replace(/\0.*$/, '');
-		const sizeField = String.fromCharCode(...header.subarray(124, 136))
-			.replace(/\0/g, '')
-			.trim();
-		const size = parseInt(sizeField, 8);
-		if (!Number.isFinite(size) || size < 0) break;
-		const typeflag = header[156];
-		off += 512;
-		if (off + size > tar.length) break;
-		const data = tar.slice(off, off + size);
-		off += Math.ceil(size / 512) * 512;
-		if (typeflag === 76) {
-			longName = dec.decode(data).replace(/\0.*$/, '');
-			continue;
-		}
-		if (typeflag !== 0 && typeflag !== 48 && typeflag !== 53) continue;
-		const name = longName ?? (prefix ? `${prefix}/${rawName}` : rawName);
-		longName = null;
-		if (!name) continue;
-		const dir = typeflag === 53;
-		if (!dir) files++;
-		entries.push({ name, dir, bytes: dir ? new Uint8Array(0) : data });
-	}
-	return { entries, files, raw: tar };
-}
-
-// The files of a tarball, without the directory entries.
-export function parseTarEntries(tar: Uint8Array): TarEntry[] {
-	const out: TarEntry[] = [];
-	for (const e of parseTarball(tar).entries) {
-		if (e.dir) continue;
-		out.push({ name: e.name, bytes: e.bytes });
-	}
-	return out;
 }
 
 export const LARGE_FILE_BYTES = 128 * 1024;
@@ -179,38 +99,19 @@ const CDC_MIN = 16 * 1024;
 const CDC_MAX = 256 * 1024;
 const CDC_MASK = 0xffff;
 
-// The chunk count of a package is bounded. Every chunk is one R2 object
-// and one row, and the Free plan allows 50 external subrequests per
-// invocation, so a package that needs more chunks than that cannot be
-// stored on Free at all. The cap is checked before the chunking work
-// starts, from the worst case the splitter can produce.
-export const MAX_CHUNKS = 32;
-
-export class TooManyChunksError extends Error {
-	constructor(count: number) {
-		super(`package needs ${count} chunks, over the ${MAX_CHUNKS} chunk limit`);
-	}
-}
-
-// The worst-case chunk count of a tarball. A file over the large-file
-// threshold is split by content-defined chunking, and every part but the
-// last is at least CDC_MIN bytes, so the split count is bounded before a
-// single byte is hashed.
-export function chunkCountBound(parsed: ParsedTarball): number {
-	let files = 0;
+// The worst-case chunk count of a canonical file list. A file over the
+// large-file threshold is split by content-defined chunking, and every
+// part but the last is at least CDC_MIN bytes, so the split count is
+// bounded before a single byte is hashed.
+export function chunkCountBound(files: CanonicalFile[]): number {
 	let total = 0;
-	for (const e of parsed.entries) {
-		if (e.dir || e.bytes.length === 0) continue;
-		files++;
-		if (e.bytes.length > LARGE_FILE_BYTES) {
-			total += Math.ceil(e.bytes.length / CDC_MIN);
+	for (const f of files) {
+		if (f.bytes.length > LARGE_FILE_BYTES) {
+			total += Math.ceil(f.bytes.length / CDC_MIN);
 		} else {
 			total += 1;
 		}
 	}
-	// A tarball with no file entry is one opaque blob, split by the same
-	// rule over the whole upload.
-	if (files === 0) return Math.max(1, Math.ceil(parsed.raw.length / CDC_MIN));
 	return total;
 }
 
@@ -258,10 +159,7 @@ function cdcSplit(data: Uint8Array): Uint8Array[] {
 	return out;
 }
 
-export async function chunkTarball(source: Uint8Array | ParsedTarball): Promise<ChunkedTarball> {
-	const parsed = source instanceof Uint8Array ? parseTarball(source) : source;
-	const bound = chunkCountBound(parsed);
-	if (bound > MAX_CHUNKS) throw new TooManyChunksError(bound);
+export async function chunkCanonicalFiles(files: CanonicalFile[]): Promise<ChunkedPackage> {
 	const units: ChunkUnit[] = [];
 	const byHash = new Map<string, ChunkUnit>();
 	const entries: TarEntryRef[] = [];
@@ -274,16 +172,7 @@ export async function chunkTarball(source: Uint8Array | ParsedTarball): Promise<
 		}
 		return hash;
 	};
-	if (parsed.files === 0) {
-		const chunks: string[] = [];
-		for (const part of cdcSplit(parsed.raw)) chunks.push(await push(part));
-		return { units, entries: [{ name: '', size: parsed.raw.length, dir: false, chunks }] };
-	}
-	for (const f of parsed.entries) {
-		if (f.dir) {
-			entries.push({ name: f.name, size: 0, dir: true, chunks: [] });
-			continue;
-		}
+	for (const f of files) {
 		const chunks: string[] = [];
 		if (f.bytes.length > LARGE_FILE_BYTES) {
 			for (const part of cdcSplit(f.bytes)) chunks.push(await push(part));
@@ -297,114 +186,63 @@ export async function chunkTarball(source: Uint8Array | ParsedTarball): Promise<
 	return { units, entries };
 }
 
-// The entry names of a tarball, checked against the accepted-name rule
-// before the tarball is accepted. The publish path calls this first, so an
-// unsafe name is refused before anything is written.
-export function validateTarballEntryNames(
-	parsed: ParsedTarball
-): { ok: true } | { ok: false; name: string; reason: string } {
-	for (const e of parsed.entries) {
-		const reason = checkManifestEntryName(e.name);
-		if (reason) return { ok: false, name: e.name, reason };
-	}
-	return { ok: true };
-}
-
-function writeOctal(buf: Uint8Array, off: number, len: number, value: number): void {
-	const digits = value.toString(8);
-	const pad = len - 1 - digits.length;
-	for (let i = 0; i < pad; i++) buf[off + i] = 48;
-	for (let i = 0; i < digits.length; i++) buf[off + pad + i] = digits.charCodeAt(i);
-	buf[off + len - 1] = 0;
-}
-
-function tarHeader(e: TarEntryRef): Uint8Array {
+// The version identity: sha256 over the canonical entry bytes, one entry
+// after the other in stored order. Both the Rust client and this server
+// implement these bytes, and the golden vectors in the test suites pin
+// them byte-identical.
+export function manifestDigestBytes(entries: TarEntryRef[]): Uint8Array {
 	const enc = new TextEncoder();
-	const head = new Uint8Array(512);
-	const nameBytes = enc.encode(e.name);
-	head.set(nameBytes.subarray(0, Math.min(nameBytes.length, 100)));
-	writeOctal(head, 100, 8, e.dir ? 0o755 : 0o644);
-	writeOctal(head, 108, 8, 0);
-	writeOctal(head, 116, 8, 0);
-	writeOctal(head, 124, 12, e.size);
-	writeOctal(head, 136, 12, 0);
-	for (let i = 148; i < 156; i++) head[i] = 32;
-	head[156] = e.dir ? 53 : 48;
-	head.set(enc.encode('ustar\0'), 257);
-	head.set(enc.encode('00'), 263);
-	head.set(enc.encode('rnx'), 265);
-	head.set(enc.encode('rnx'), 297);
-	let sum = 0;
-	for (let i = 0; i < 512; i++) sum += head[i];
-	const sumText = sum.toString(8).padStart(6, '0');
-	for (let i = 0; i < 6; i++) head[148 + i] = sumText.charCodeAt(i);
-	head[154] = 0;
-	head[155] = 32;
-	return head;
-}
-
-// The canonical rebuild, as a stream of parts. The round-trip check walks
-// the same parts the rebuild does, so the rebuild is never materialized a
-// second time just to be compared.
-function* rebuildParts(
-	entries: TarEntryRef[],
-	byHash: Map<string, Uint8Array>
-): Generator<Uint8Array> {
-	const fallback = entries.length === 1 && entries[0].name === '' && !entries[0].dir;
+	let total = 0;
+	const parts: Uint8Array[] = [];
 	for (const e of entries) {
-		if (e.name === '' && !e.dir) {
-			for (const h of e.chunks) {
-				const b = byHash.get(h);
-				if (!b) throw new Error(`missing chunk ${h}`);
-				yield b;
-			}
-			continue;
+		const name = enc.encode(e.name);
+		const head = new Uint8Array(4 + name.length + 8 + 1 + 4 + e.chunks.length * 32);
+		const view = new DataView(head.buffer);
+		view.setUint32(0, name.length, true);
+		head.set(name, 4);
+		let off = 4 + name.length;
+		let size = BigInt(e.size);
+		for (let i = 0; i < 8; i++) {
+			head[off + i] = Number(size & 0xffn);
+			size >>= 8n;
 		}
-		yield tarHeader(e);
-		if (!e.dir) {
-			let done = 0;
-			for (const h of e.chunks) {
-				const b = byHash.get(h);
-				if (!b) throw new Error(`missing chunk ${h}`);
-				yield b;
-				done += b.length;
+		off += 8;
+		head[off] = e.dir ? 1 : 0;
+		off += 1;
+		view.setUint32(off, e.chunks.length, true);
+		off += 4;
+		for (const h of e.chunks) {
+			for (let i = 0; i < 32; i++) {
+				head[off++] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
 			}
-			if (done !== e.size) throw new Error(`size mismatch for ${e.name}`);
-			const pad = (512 - (e.size % 512)) % 512;
-			if (pad > 0) yield new Uint8Array(pad);
 		}
+		parts.push(head);
+		total += head.length;
 	}
-	if (!fallback) yield new Uint8Array(1024);
-}
-
-export function rebuildTarball(entries: TarEntryRef[], byHash: Map<string, Uint8Array>): Uint8Array {
-	const parts = [...rebuildParts(entries, byHash)];
-	const total = parts.reduce((n, p) => n + p.length, 0);
 	const out = new Uint8Array(total);
-	let off = 0;
+	let at = 0;
 	for (const p of parts) {
-		out.set(p, off);
-		off += p.length;
+		out.set(p, at);
+		at += p.length;
 	}
 	return out;
 }
 
-// The round-trip check: the canonical rebuild of the stored chunks,
-// compared against the uploaded bytes part by part. A byte-for-byte match
-// is the same check the sha256 comparison did, and a stricter one.
-export function rebuildMatchesTarball(
-	entries: TarEntryRef[],
-	byHash: Map<string, Uint8Array>,
-	original: Uint8Array
-): boolean {
+export async function manifestDigest(entries: TarEntryRef[]): Promise<string> {
+	return sha256Hex(manifestDigestBytes(entries));
+}
+
+// One sha256 over a byte stream, in a single call. Hashing each chunk in
+// its own `crypto.subtle` call pays per-call overhead per chunk; the same
+// bytes in one call cost a fraction of it.
+export async function sha256HexConcat(parts: Uint8Array[]): Promise<string> {
+	let total = 0;
+	for (const p of parts) total += p.length;
+	const merged = new Uint8Array(total);
 	let off = 0;
-	for (const part of rebuildParts(entries, byHash)) {
-		if (off + part.length > original.length) return false;
-		const slice = original.subarray(off, off + part.length);
-		for (let i = 0; i < part.length; i++) {
-			if (slice[i] !== part[i]) return false;
-		}
-		off += part.length;
+	for (const p of parts) {
+		merged.set(p, off);
+		off += p.length;
 	}
-	return off === original.length;
+	return sha256Hex(merged);
 }

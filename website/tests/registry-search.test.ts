@@ -8,7 +8,7 @@ import {
 	validateKeywords,
 	type PackageSummary
 } from '../src/lib/server/db.js';
-import { parseTarEntries, decodeFileView } from '../src/lib/server/chunks.js';
+import { decodeFileView } from '../src/lib/server/chunks.js';
 import { humanDate, shortDownloads } from '../src/lib/packages-meta.js';
 
 function tarEntry(name: string, data: Uint8Array, typeflag = '0', prefix = ''): Uint8Array {

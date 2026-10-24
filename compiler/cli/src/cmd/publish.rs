@@ -1,5 +1,5 @@
 
-pub(super) fn run_publish(tarball: Option<std::path::PathBuf>, registry: String, token: Option<String>) {
+pub(super) fn run_publish(registry: String, token: Option<String>) {
             let token = match token {
                 Some(t) => t,
                 None => {
@@ -14,85 +14,46 @@ pub(super) fn run_publish(tarball: Option<std::path::PathBuf>, registry: String,
                 eprintln!("error: cannot read working directory: {e}");
                 std::process::exit(1);
             });
-            let (bytes, meta) = match tarball {
-                Some(path) => {
-                    match cli::publish::read_tarball_meta(std::path::Path::new(&path), &cwd) {
-                        Ok(done) => done,
-                        Err(e) => {
-                            println!("{e}");
-                            std::process::exit(1);
-                        }
-                    }
-                }
-                None => {
-                    let targets = match cli::resolve_pack_targets(&cwd, None) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            println!("{e}");
-                            std::process::exit(1);
-                        }
-                    };
-                    for (_, dir, cfg) in &targets.packages {
-                        let manifest = frontend::project::Manifest {
-                            project: Some(cfg.clone()),
-                            workspace: None,
-                        };
-                        if let Err(e) = cli::publish::gate_formatted(dir, &manifest) {
-                            println!("{e}");
-                            std::process::exit(1);
-                        }
-                    }
-                    let tmp = std::env::temp_dir().join(format!("rnx-publish-{}", std::process::id()));
-                    let packed = match cli::pack_targets_minified(&targets, &tmp) {
-                        Ok(done) => done,
-                        Err(e) => {
-                            println!("{e}");
-                            std::process::exit(1);
-                        }
-                    };
-                    let (name, tar, sizes) = packed.first().unwrap_or_else(|| {
-                        eprintln!("error: pack produced no archive");
-                        std::process::exit(1);
-                    });
-                    let bytes = std::fs::read(tar).unwrap_or_else(|e| {
-                        eprintln!("error: cannot read {}: {e}", tar.display());
-                        std::process::exit(1);
-                    });
-                    let (_, dir, cfg) = targets
-                        .packages
-                        .iter()
-                        .find(|(n, _, _)| n == name)
-                        .unwrap_or_else(|| {
-                            eprintln!("error: pack produced no manifest");
-                            std::process::exit(1);
-                        });
-                    let manifest = frontend::project::Manifest {
-                        project: Some(cfg.clone()),
-                        workspace: None,
-                    };
-                    let docs = match cli::publish::package_docs(dir, &manifest) {
-                        Ok(d) => d,
-                        Err(e) => {
-                            println!("{e}");
-                            std::process::exit(1);
-                        }
-                    };
-                    let checksum = frontend::checksum::Sha256::hexdigest(&bytes);
-                    let meta = match cli::publish::package_meta_minified(dir, cfg, checksum, docs, sizes) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            println!("{e}");
-                            std::process::exit(1);
-                        }
-                    };
-                    let _ = std::fs::remove_dir_all(&tmp);
-                    (bytes, meta)
+            let targets = match cli::resolve_pack_targets(&cwd, None) {
+                Ok(t) => t,
+                Err(e) => {
+                    println!("{e}");
+                    std::process::exit(1);
                 }
             };
-            match cli::publish::post_package(&registry, &token, &bytes, &meta) {
-                Ok(cli::publish::PublishOutcome::Published { url }) => {
-                    println!("┌─ published: {} [v{}]", meta.name, meta.version);
+            let (name, dir, cfg) = targets.packages.first().unwrap_or_else(|| {
+                eprintln!("error: no package found; run `rnx publish` inside a project");
+                std::process::exit(1);
+            });
+            let manifest = frontend::project::Manifest {
+                project: Some(cfg.clone()),
+                workspace: None,
+            };
+            if let Err(e) = cli::publish::gate_formatted(dir, &manifest) {
+                println!("{e}");
+                std::process::exit(1);
+            }
+            let files = match cli::publish::collect_publish_files(dir, &manifest) {
+                Ok(f) => f,
+                Err(e) => {
+                    println!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            let docs = match cli::publish::package_docs(dir, &manifest) {
+                Ok(d) => d,
+                Err(e) => {
+                    println!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            let readme = frontend::pack::package_readme_text(dir, &cfg.name);
+            let frame = cli::publish::publish_frame(cfg, &readme, &files, &docs);
+            match cli::publish::post_frame(&registry, &token, &frame, name) {
+                Ok(cli::publish::PublishOutcome::Published { url, digest }) => {
+                    println!("┌─ published: {name} [v{}]", cfg.version);
                     println!("│  url: {url}");
+                    println!("│  digest: {digest}");
                     println!("└─ status: live");
                 }
                 Ok(cli::publish::PublishOutcome::Rejected { status, message }) => {

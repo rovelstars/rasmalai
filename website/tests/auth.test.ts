@@ -53,28 +53,28 @@ describe('auth', () => {
 	});
 
 	it('checks browser origin for session-cookie mutations', () => {
-		const url = new URL('https://example.com/api/packages');
-		const withOrigin = new Request('https://example.com/api/packages', {
+		const url = new URL('https://example.com/api/v0/packages');
+		const withOrigin = new Request('https://example.com/api/v0/packages', {
 			method: 'POST',
 			headers: { Origin: 'https://example.com' }
 		});
 		assert.equal(checkBrowserOrigin(withOrigin, url), true);
-		const badOrigin = new Request('https://example.com/api/packages', {
+		const badOrigin = new Request('https://example.com/api/v0/packages', {
 			method: 'POST',
 			headers: { Origin: 'https://evil.com' }
 		});
 		assert.equal(checkBrowserOrigin(badOrigin, url), false);
-		const withReferer = new Request('https://example.com/api/packages', {
+		const withReferer = new Request('https://example.com/api/v0/packages', {
 			method: 'POST',
 			headers: { Referer: 'https://example.com/packages/foo' }
 		});
 		assert.equal(checkBrowserOrigin(withReferer, url), true);
-		const badReferer = new Request('https://example.com/api/packages', {
+		const badReferer = new Request('https://example.com/api/v0/packages', {
 			method: 'POST',
 			headers: { Referer: 'https://evil.com/x' }
 		});
 		assert.equal(checkBrowserOrigin(badReferer, url), false);
-		const absent = new Request('https://example.com/api/packages', { method: 'POST' });
+		const absent = new Request('https://example.com/api/v0/packages', { method: 'POST' });
 		assert.equal(checkBrowserOrigin(absent, url), false);
 	});
 

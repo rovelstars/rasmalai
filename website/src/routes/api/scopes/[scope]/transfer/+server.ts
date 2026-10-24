@@ -28,9 +28,9 @@ export async function POST({ params, request, platform, url }) {
 	}
 	try {
 		await transferScope(env, scope, newOwner, force);
-		await purgeUrls(env, [`${url.origin}/api/packages`], {
+		await purgeUrls(env, [`${url.origin}/api/v0/packages`], {
 			fullName: `@${scope}`,
-			prefixes: [`${url.origin}/api/packages/@${scope}/`]
+			prefixes: [`${url.origin}/api/v0/packages/@${scope}/`]
 		});
 		return json({ success: true, scope, newOwner }, { headers: specHeaders() });
 	} catch (e) {
