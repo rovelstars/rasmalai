@@ -8,7 +8,7 @@
 //
 //   RNX_BIN=/path/to/rnx SITE_URL=https://... PUBLISH_TOKEN=... node scripts/publish-std.mjs
 // RNX_BIN defaults to `cargo run -q -p cli` from the repo root.
-import { readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -90,49 +90,66 @@ const moduleBlurb = (name) => {
 rmSync(stage, { recursive: true, force: true });
 let published = 0;
 let skipped = 0;
-for (const name of modules) {
-	const full = `@std/${name}`;
-	const dir = join(stage, name.replace('/', '_'));
-	mkdirSync(join(dir, 'src'), { recursive: true });
-	cpSync(join(stdDir, `${name}.rnx`), join(dir, 'src', 'lib.rnx'));
-	for (const sub of SUBMODULES[name] ?? []) {
-		cpSync(join(stdDir, name, sub), join(dir, 'src', sub));
-	}
-	writeFileSync(join(dir, 'README.md'), `# ${full}\n\n${moduleBlurb(name)}\n`);
-	cpSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'));
-	writeFileSync(
-		join(dir, 'Project.config'),
-		`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))}\n    },\n    entries: {\n        main: "src/lib.rnx"\n    }${renderPermissions(name)}\n}\n`
-	);
-	// Generated config is canonicalized mechanically; staged sources must
-	// already be clean (checked below) so published bytes match the repo.
-	rnx(['fmt', join(dir, 'Project.config')], dir);
-	for (const f of [join(dir, 'src', 'lib.rnx'), ...(SUBMODULES[name] ?? []).map((s) => join(dir, 'src', s))]) {
-		try {
-			rnx(['fmt', '--check', f], dir);
-		} catch {
-			throw new Error(
-				`publish-std: staged source ${f} is not fmt-clean; run \`rnx fmt\` on compiler/stdlib and recommit`
+// Passes repeat until everything lands: a module whose @std/* dep is not
+// published yet fails with "is not preloaded" and retries on the next
+// pass once its dep exists. A pass that makes no progress while modules
+// remain means a real error, which throws instead of looping forever.
+const isMissingDep = (text) => text.includes('is not preloaded');
+let pending = [...modules];
+let lastError = null;
+while (pending.length > 0) {
+	const next = [];
+	let progressed = false;
+	for (const name of pending) {
+		const full = `@std/${name}`;
+		const dir = join(stage, name.replace('/', '_'));
+		mkdirSync(join(dir, 'src'), { recursive: true });
+		cpSync(join(stdDir, `${name}.rnx`), join(dir, 'src', 'lib.rnx'));
+		for (const sub of SUBMODULES[name] ?? []) {
+			cpSync(join(stdDir, name, sub), join(dir, 'src', sub));
+		}
+		if (!existsSync(join(dir, 'Project.config'))) {
+			writeFileSync(join(dir, 'README.md'), `# ${full}\n\n${moduleBlurb(name)}\n`);
+			cpSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'));
+			writeFileSync(
+				join(dir, 'Project.config'),
+				`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))}\n    },\n    entries: {\n        main: "src/lib.rnx"\n    }${renderPermissions(name)}\n}\n`
 			);
+			rnx(['fmt', join(dir, 'Project.config')], dir);
+			for (const f of [join(dir, 'src', 'lib.rnx'), ...(SUBMODULES[name] ?? []).map((s) => join(dir, 'src', s))]) {
+				try {
+					rnx(['fmt', '--check', f], dir);
+				} catch {
+					throw new Error(
+						`publish-std: staged source ${f} is not fmt-clean; run \`rnx fmt\` on compiler/stdlib and recommit`
+					);
+				}
+			}
+		}
+		const outDir = join(dir, 'dist');
+		mkdirSync(outDir, { recursive: true });
+		try {
+			rnx(['publish', '--registry', SITE], dir);
+			published++;
+			progressed = true;
+			console.log(`publish-std: published ${full}@${cliVersion}`);
+		} catch (e) {
+			const text = String(e.stdout ?? '') + String(e.stderr ?? '') + String(e.message ?? '');
+			if (text.includes('409') || text.includes('already published')) {
+				skipped++;
+				progressed = true;
+				console.log(`publish-std: skip ${full}@${cliVersion} (exists)`);
+			} else if (isMissingDep(text)) {
+				lastError = new Error(`publish-std: ${full} waiting on an unpublished dep`);
+				next.push(name);
+				console.log(`publish-std: defer ${full}@${cliVersion} (dep not published yet)`);
+			} else {
+				throw e;
+			}
 		}
 	}
-	const outDir = join(dir, 'dist');
-	mkdirSync(outDir, { recursive: true });
-	// Protocol 0 publishes the staged source tree itself; the server
-	// derives the stored bytes, so there is no tarball step.
-	try {
-		rnx(['publish', '--registry', SITE], dir);
-		published++;
-		console.log(`publish-std: published ${full}@${cliVersion}`);
-	} catch (e) {
-		const text = String(e.stdout ?? '') + String(e.stderr ?? '') + String(e.message ?? '');
-		if (text.includes('409') || text.includes('already published')) {
-			skipped++;
-			console.log(`publish-std: skip ${full}@${cliVersion} (exists)`);
-		} else {
-			throw e;
-		}
-	}
+	if (!progressed) throw lastError ?? new Error('publish-std: stall with modules remaining');
+	pending = next;
 }
 rmSync(stage, { recursive: true, force: true });
 console.log(`publish-std: ${published} published, ${skipped} skipped, ${modules.length} modules`);
