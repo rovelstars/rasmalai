@@ -34,6 +34,9 @@ const cliVersion = readFileSync(join(repo, 'compiler', 'cli', 'Cargo.toml'), 'ut
 	/^version = "(.*)"$/m
 )?.[1];
 if (!cliVersion) throw new Error('cannot read cli version');
+// The token travels in the environment, never in argv: exec failures
+// embed the command line, and argv would leak the secret into logs.
+process.env['RNX_TOKEN'] = TOKEN;
 
 const modules = [];
 for (const e of readdirSync(stdDir, { withFileTypes: true })) {
@@ -118,7 +121,7 @@ for (const name of modules) {
 	// Protocol 0 publishes the staged source tree itself; the server
 	// derives the stored bytes, so there is no tarball step.
 	try {
-		rnx(['publish', '--registry', SITE, '--token', TOKEN], dir);
+		rnx(['publish', '--registry', SITE], dir);
 		published++;
 		console.log(`publish-std: published ${full}@${cliVersion}`);
 	} catch (e) {
