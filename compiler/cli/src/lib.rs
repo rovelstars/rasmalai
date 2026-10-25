@@ -211,6 +211,7 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::P202 => "hoist the scan out of the loop or build a lookup table once before the loop",
         Code::P203 => "collect pieces with push and join once after the loop, or move the array creation before the loop",
         Code::W201 => "correct the spelling or remove the entry",
+        Code::W202 => "remove the `unsafe` block or move a foreign call into it",
         Code::W204 => "replace `pub`/`public` with `export`",
         Code::W108 => "make one side `GenRef` or add `#[Allow(CyclicReference)]`",
         Code::W109 => "set the field to `null` in `deinit` or a `clear*`/`close*`/`reset*` method",

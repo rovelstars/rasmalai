@@ -44,6 +44,7 @@ pub enum Code {
     W108,
     W109,
     W201,
+    W202,
     W204,
     P101,
     P102,
@@ -91,6 +92,7 @@ impl Code {
             Code::W108 => "W108",
             Code::W109 => "W109",
             Code::W201 => "W201",
+            Code::W202 => "W202",
             Code::W204 => "W204",
             Code::P101 => "P101",
             Code::P102 => "P102",
@@ -101,7 +103,7 @@ impl Code {
     }
 
     pub fn is_warning(self) -> bool {
-        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W204 | Code::P201 | Code::P202 | Code::P203)
+        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W202 | Code::W204 | Code::P201 | Code::P202 | Code::P203)
     }
 
     pub fn is_perf_note(self) -> bool {
@@ -144,6 +146,7 @@ impl Code {
             Code::W108 => "mutual strong fields",
             Code::W109 => "allowed cycle never cleared",
             Code::W201 => "unrecognized manifest section or field",
+            Code::W202 => "unneeded unsafe block",
             Code::W204 => "deprecated `pub` visibility",
             Code::P101 => "compiler-restructured reduction nest",
             Code::P102 => "compiler-versioned bounds checks",
@@ -185,6 +188,7 @@ impl Code {
             "W108" => Code::W108,
             "W109" => Code::W109,
             "W201" => Code::W201,
+            "W202" => Code::W202,
             "W204" => Code::W204,
             "P101" => Code::P101,
             "P102" => Code::P102,
@@ -233,6 +237,7 @@ pub const ALL: &[Code] = &[
     Code::W108,
     Code::W109,
     Code::W201,
+    Code::W202,
     Code::W204,
     Code::P101,
     Code::P102,

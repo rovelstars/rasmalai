@@ -260,10 +260,12 @@ pub fn run_check(
                 .collect(),
         };
         let mut lower_diags: Vec<diagnostics::Diagnostic> = Vec::new();
+        let mut boundary: Vec<frontend::unsafe_taint::Boundary> = Vec::new();
         if !is_err {
             if let Some(g) = &graph {
                 match g.resolve() {
                     Ok(mut module) => {
+                        boundary = frontend::unsafe_taint::boundary_map(&module);
                         frontend::harness::strip_tests(&mut module);
                         frontend::harness::strip_benches(&mut module);
                         let mut staged = frontend::desugar::desugar(&mut module);
@@ -316,6 +318,27 @@ pub fn run_check(
             }
             if !diag.code.is_warning() {
                 target_failed = true;
+            }
+        }
+        if !json && !quiet && !boundary.is_empty() {
+            let decl_files = graph
+                .as_ref()
+                .map(|g| frontend::modules::merged_decl_files(g))
+                .unwrap_or_default();
+            for b in &boundary {
+                let path = decl_files
+                    .get(&(b.span.start, b.span.end))
+                    .cloned()
+                    .unwrap_or_else(|| entry.clone());
+                let src = crate::report::source_for(&sources, &path);
+                let (line, col) = diagnostics::line_col(&src, b.span.start);
+                let state = if b.contained { "contained" } else { "needs-unsafe" };
+                stderr.push_str(&format!(
+                    "boundary: {} at {}:{line}:{col}: {} direct seeds, {state}\n",
+                    b.name,
+                    crate::report::relative_display(&path),
+                    b.direct_seeds,
+                ));
             }
         }
         let canon = std::fs::canonicalize(entry).unwrap_or_else(|_| entry.clone());

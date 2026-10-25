@@ -143,14 +143,14 @@ fn role_allowed(kind: &str, role: &str) -> bool {
     }
 }
 
-fn valid_name(value: &str) -> bool {
+pub(crate) fn valid_name(value: &str) -> bool {
     !value.is_empty()
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
 }
 
-fn valid_target(value: &str) -> bool {
+pub(crate) fn valid_target(value: &str) -> bool {
     let parts: Vec<&str> = value.split('-').collect();
     (parts.len() == 3 || parts.len() == 4)
         && parts
@@ -158,7 +158,7 @@ fn valid_target(value: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
 }
 
-fn valid_generator(value: &str) -> bool {
+pub(crate) fn valid_generator(value: &str) -> bool {
     let Some((name, version)) = value.split_once(' ') else {
         return false;
     };
@@ -173,14 +173,14 @@ fn valid_generator(value: &str) -> bool {
             .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn valid_upstream(value: &str) -> bool {
+pub(crate) fn valid_upstream(value: &str) -> bool {
     match value.split_once('@') {
         Some((name, digest)) => valid_name(name) && is_artifact_digest(digest),
         None => false,
     }
 }
 
-fn valid_title(value: &str) -> bool {
+pub(crate) fn valid_title(value: &str) -> bool {
     !value.is_empty()
         && value != "."
         && value != ".."

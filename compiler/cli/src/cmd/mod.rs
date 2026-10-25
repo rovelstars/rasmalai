@@ -52,6 +52,7 @@ fn bus_detail(stage: &str) -> &str {
 mod add;
 mod audit;
 mod bench;
+mod bindgen;
 mod build;
 mod cache;
 mod check;
@@ -80,6 +81,7 @@ mod vendor;
 use self::add::run_add;
 use self::audit::run_audit;
 use self::bench::run_bench;
+use self::bindgen::run_bindgen;
 use self::build::run_build;
 use self::cache::{run_cache, run_clean};
 use self::check::run_check;
@@ -232,8 +234,7 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
             cli::args::Command::Add { package, path, accept_caps, accept_all_caps } => {
                 run_add(package, path, accept_caps, accept_all_caps);
             }
-            cli::args::Command::Bench {
-                package,
+            cli::args::Command::Bench {                package,
                 filter,
                 backend,
                 release: _,
@@ -267,6 +268,20 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
             }
             cli::args::Command::Mcp => {
                 run_mcp();
+            }
+            cli::args::Command::Bindgen {
+                header,
+                native_lib,
+                pkg_name,
+                out,
+                target,
+                prefix,
+                skip,
+                include,
+                upstream_name,
+                check,
+            } => {
+                run_bindgen(header, native_lib, pkg_name, out, target, prefix, skip, include, upstream_name, check);
             }
             cli::args::Command::Cache { action } => {
                 run_cache(action);
