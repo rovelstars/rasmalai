@@ -356,6 +356,7 @@ pub struct Graph {
     pub used_names: BTreeSet<String>,
     pub resolved: Vec<Vec<Option<TargetSym>>>,
     pub relaxed: BTreeSet<(usize, u32, u64)>,
+    pub dyn_abs: Vec<(usize, u32, u64, String, i64)>,
     pub needed_libs: BTreeSet<String>,
     pub exec_stack: bool,
 }
@@ -859,6 +860,7 @@ pub fn mark(
         used_names: BTreeSet::new(),
         resolved,
         relaxed: BTreeSet::new(),
+        dyn_abs: Vec::new(),
         needed_libs: BTreeSet::new(),
         exec_stack: false,
         rela_idx: ridx,
@@ -1056,6 +1058,7 @@ pub fn plan_slots(
         dynamic: bool,
         key: Option<GotKey>,
         name: Option<String>,
+        addend: i64,
         used: Option<String>,
         tls_want: u64,
         tls_pair: Option<String>,
@@ -1103,6 +1106,7 @@ pub fn plan_slots(
                 dynamic: t.dynamic,
                 key: None,
                 name: None,
+                addend: r.addend,
                 used: if (t.dynamic || t.weak_zero) && !t.name.is_empty() {
                     Some(t.name.clone())
                 } else {
@@ -1132,6 +1136,9 @@ pub fn plan_slots(
             }
             match out.plan {
                 Plan::Skip | Plan::Direct | Plan::TpoffRelax => {}
+                Plan::DynAbs => {
+                    out.name = Some(t.name.clone());
+                }
                 Plan::Got => {
                     out.key = Some(got_key(g, t));
                 }
@@ -1196,6 +1203,17 @@ pub fn plan_slots(
         }
         match s.plan {
             Plan::Skip | Plan::Direct | Plan::TpoffRelax => {}
+            Plan::DynAbs => {
+                match s.name.clone() {
+                    Some(name) => g.dyn_abs.push((s.oi, s.si, s.offset, name, s.addend)),
+                    None => {
+                        return Err(LinkError::Native(format!(
+                            "{}: absolute relocation without a symbol name",
+                            g.objs[s.oi].label
+                        )));
+                    }
+                }
+            }
             Plan::Got => {
                 intern_got(g, s.key.unwrap(), false, s.dynamic);
             }

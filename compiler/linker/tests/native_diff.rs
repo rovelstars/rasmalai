@@ -768,3 +768,66 @@ fn stripped_static_drops_symtab_keeps_build_id_and_runs() {
         "stripped output (including BuildID) is not deterministic"
     );
 }
+
+const ABSTABLE_C: &str = "#include <unistd.h>\ntypedef int (*close_fn)(int);\nclose_fn table[2] = { (close_fn)close, (close_fn)close };\nint pick(int i);\nint pick(int i) { return table[i & 1] != 0; }\nint main(void) { return pick(0) ? 42 : 1; }\n";
+
+fn build_abstable_object(dir: &Path) -> Vec<u8> {
+    let src = write_src(dir, "abstable.c", ABSTABLE_C);
+    let obj = dir.join("abstable.o");
+    let compile = Command::new("cc")
+        .arg("-O0")
+        .arg("-c")
+        .arg(&src)
+        .arg("-o")
+        .arg(&obj)
+        .output()
+        .expect("cc must be installed for native link tests");
+    assert!(
+        compile.status.success(),
+        "cc -c failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    std::fs::read(&obj).unwrap()
+}
+
+fn dynamic_relocs(bin: &Path) -> String {
+    let out = Command::new("readelf").arg("-rW").arg(bin).output().unwrap();
+    assert!(out.status.success());
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn absolute_func_pointer_emits_dynamic_reloc() {
+    let dir = fixture_dir("dynabs");
+    let obj = build_abstable_object(&dir);
+    let out = dir.join("dynabs_static");
+    native::native_link_static(
+        &[LinkInput::ObjectBytes(obj.clone())],
+        &out,
+        &native::StaticOpts::default(),
+    )
+    .unwrap();
+    let (code, _) = run_bin(&out);
+    assert_eq!(code, 42);
+    let relocs = dynamic_relocs(&out);
+    assert!(
+        relocs.lines().any(|l| l.contains("R_X86_64_64") && l.contains("close")),
+        "expected a dynamic R_X86_64_64 reloc against close:\n{relocs}"
+    );
+    let dyn_out = dir.join("dynabs_dynamic");
+    native::native_link_dynamic(
+        &[LinkInput::ObjectBytes(obj)],
+        &dyn_out,
+        &native::DynamicOpts {
+            entry: "main".to_string(),
+            target: "x86_64-unknown-linux-gnu".to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let relocs = dynamic_relocs(&dyn_out);
+    assert!(
+        relocs.lines().any(|l| l.contains("R_X86_64_64") && l.contains("close")),
+        "dynamic link misses R_X86_64_64 against close:\n{relocs}"
+    );
+}

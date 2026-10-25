@@ -108,6 +108,7 @@ impl X86_64 {
             SymClass::DynamicFunc => match kind {
                 R_NONE => Ok(Plan::Skip),
                 R_PLT32 | R_PC32 | R_GOTPCREL | R_GOTPCRELX | R_REX_GOTPCRELX => Ok(Plan::Plt),
+                R_64 => Ok(Plan::DynAbs),
                 _ => Err(self.unsupported(kind, sym)),
             },
             SymClass::DynamicData => match kind {
@@ -246,6 +247,9 @@ impl Target for X86_64 {
 
     fn rel_irelative(&self) -> u32 {
         37
+    }
+    fn rel_abs64(&self) -> u32 {
+        R_64
     }
 
     fn rel_copy(&self) -> u32 {
