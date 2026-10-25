@@ -95,6 +95,17 @@ for item in manifests:
     if "sha256:" + hashlib.sha256(man_bytes).hexdigest() != digest:
         fail("manifest bytes do not match %s" % digest)
     man = json.loads(man_bytes)
+    cfg = man.get("config", {})
+    cdigest = cfg.get("digest", "")
+    if not is_digest(cdigest):
+        fail("manifest %s carries a bad config digest" % digest)
+    cfg_path = os.path.join(index_dir, "blobs", cdigest[7:])
+    if not os.path.isfile(cfg_path):
+        fail("config blob missing for %s" % digest)
+    with open(cfg_path, "rb") as fh:
+        cbytes = fh.read()
+    if "sha256:" + hashlib.sha256(cbytes).hexdigest() != cdigest:
+        fail("config bytes do not match %s" % cdigest)
     layers = man.get("layers")
     if not isinstance(layers, list) or not layers:
         fail("manifest %s carries no layers" % digest)
