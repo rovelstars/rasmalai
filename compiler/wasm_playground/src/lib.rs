@@ -957,6 +957,7 @@ pub fn publish_config_facts(text: &str) -> String {
         },
         "permissions": permissions,
         "dependencies": dependencies,
+        "artifacts": facts.artifacts,
     })
     .to_string()
 }
@@ -1428,6 +1429,19 @@ mod tests {
         assert_eq!(out["entries"]["main"], "src/main.rnx");
         assert_eq!(out["permissions"][0], "term:write");
         assert_eq!(out["dependencies"]["utils"], "^1.0.0");
+        assert!(out["artifacts"].is_null(), "{}", out["artifacts"]);
+    }
+
+    #[test]
+    fn config_facts_report_bare_artifacts_ref() {
+        let _serial = serial();
+        let text = "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    },\n    artifacts: \"ghcr.io/org/sqlite3\"\n}\n";
+        let out: serde_json::Value = serde_json::from_str(&publish_config_facts(text)).unwrap();
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["artifacts"], "ghcr.io/org/sqlite3");
+        let keyed = "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    },\n    artifacts: { native: \"ghcr.io/org/x\" }\n}\n";
+        let out: serde_json::Value = serde_json::from_str(&publish_config_facts(keyed)).unwrap();
+        assert_eq!(out["ok"], false);
     }
 
     #[test]

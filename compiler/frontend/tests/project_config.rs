@@ -168,6 +168,7 @@ fn lockfile_round_trip_is_sorted_and_stable() {
                 version: "0.1.0".to_string(),
                 source: "root".to_string(),
                 checksum: "4792fbf8e9c7ee3f9d1eda17d5efab674330f431fb914deb660e45e28add3000".to_string(),
+                artifact_digest: Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
                 dependencies: vec!["dep 0.2.0".to_string()],
                 tier: "pure".to_string(),
                 capabilities: vec![],
@@ -177,6 +178,7 @@ fn lockfile_round_trip_is_sorted_and_stable() {
                 version: "0.2.0".to_string(),
                 source: "path:../dep".to_string(),
                 checksum: "19a45518b6b76282bafa62db49ef24accd4ef11584050e5f25cb1302336a17ca".to_string(),
+                artifact_digest: None,
                 dependencies: vec![],
                 tier: "pure".to_string(),
                 capabilities: vec![],
@@ -224,4 +226,18 @@ fn redact_rejects_missing_project_version() {
     let src = "export default {\n    project: {\n        name: \"probe\"\n    }\n}\n";
     let err = project::redact::publish_facts(src).unwrap_err();
     assert_eq!(err.code, diagnostics::Code::E108);
+}
+
+#[test]
+fn publish_facts_pass_artifacts_declaration_through() {
+    let src = "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    },\n    artifacts: \"ghcr.io/org/sqlite3\"\n}\n";
+    let facts = project::redact::publish_facts(src).unwrap_or_else(|e| panic!("facts failed: {e}"));
+    assert_eq!(facts.artifacts.as_deref(), Some("ghcr.io/org/sqlite3"));
+    let plain = "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    }\n}\n";
+    let facts = project::redact::publish_facts(plain).unwrap_or_else(|e| panic!("facts failed: {e}"));
+    assert_eq!(facts.artifacts, None);
+    let keyed = "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    },\n    artifacts: { native: { ref: \"ghcr.io/org/x:1.0.0\", digest: \"sha256:abc\" } }\n}\n";
+    let err = project::redact::publish_facts(keyed).unwrap_err();
+    assert_eq!(err.code, diagnostics::Code::E108);
+    assert!(err.message.contains("keyed `artifacts` tables are rejected"), "{}", err.message);
 }

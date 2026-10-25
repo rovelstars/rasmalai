@@ -1478,6 +1478,7 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
             dependencies: std::collections::BTreeMap::new(),
             permissions: None,
             keywords: Vec::new(),
+            artifacts: None,
         }),
         workspace: None,
     };
@@ -2334,6 +2335,7 @@ fn record_lock_entry(
         version: analysis.version.clone(),
         source: format!("path:{rel}"),
         checksum,
+        artifact_digest: None,
         dependencies: Vec::new(),
         tier: analysis.tier.to_string(),
         capabilities: analysis.capabilities.clone(),
@@ -2360,6 +2362,7 @@ fn ensure_root_entry(
         version: config.version,
         source: "root".to_string(),
         checksum,
+        artifact_digest: None,
         dependencies: Vec::new(),
         tier: "pure".to_string(),
         capabilities: Vec::new(),

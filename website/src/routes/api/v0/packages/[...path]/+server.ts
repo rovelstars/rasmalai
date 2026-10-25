@@ -134,6 +134,7 @@ export async function GET({ params, platform, setHeaders, url }) {
 				status: row.status,
 				checksum: row.checksum,
 				tarballSha256: row.tarballSha256,
+				artifactDigest: row.artifactDigest === '' ? null : row.artifactDigest,
 				engineRange: row.engineRange,
 				links: {
 					api: `/api/v0/packages/${full}@${version}/api`,

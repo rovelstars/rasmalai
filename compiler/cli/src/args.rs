@@ -286,6 +286,9 @@ pub enum Command {
         /// Publisher authentication token (or RNX_TOKEN)
         #[arg(long, env = "RNX_TOKEN")]
         token: Option<String>,
+        /// Author-asserted OCI index digest for the `artifacts` image (one digest for the one image)
+        #[arg(long)]
+        artifact: Option<String>,
     },
     /// Vendor git dependencies into vendor/
     Vendor {

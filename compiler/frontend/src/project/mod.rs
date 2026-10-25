@@ -61,6 +61,7 @@ pub struct ProjectConfig {
     pub dependencies: BTreeMap<String, DependencySpec>,
     pub permissions: Option<Vec<PermissionDecl>>,
     pub keywords: Vec<String>,
+    pub artifacts: Option<String>,
 }
 
 impl ProjectConfig {
@@ -261,6 +262,60 @@ fn opt_str(obj: &ConfigValue, key: &str, default: &str) -> Result<String, String
         Some(ConfigValue::String(s)) => Ok(s.clone()),
         Some(_) => Err(format!("field `{key}` must be a string")),
         None => Ok(default.to_string()),
+    }
+}
+
+pub fn validate_artifact_ref(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Err("field `artifacts` must be a bare OCI repo ref string (e.g. `artifacts: \"ghcr.io/org/sqlite3\"`); digest-bearing or keyed `artifacts` tables are rejected".to_string());
+    }
+    if value.contains('@') || value.contains("sha256:") {
+        return Err("field `artifacts` must be a bare OCI repo ref string (e.g. `artifacts: \"ghcr.io/org/sqlite3\"`); digest-bearing or keyed `artifacts` tables are rejected".to_string());
+    }
+    if value.chars().any(|c| c.is_whitespace() || c.is_ascii_uppercase()) {
+        return Err("field `artifacts` must be a bare OCI repo ref string (e.g. `artifacts: \"ghcr.io/org/sqlite3\"`); digest-bearing or keyed `artifacts` tables are rejected".to_string());
+    }
+    let mut parts = value.split('/');
+    let host = parts.next().unwrap_or_default();
+    let rest: Vec<&str> = parts.collect();
+    if !host.contains('.') || rest.is_empty() {
+        return Err("field `artifacts` must be a bare OCI repo ref string (e.g. `artifacts: \"ghcr.io/org/sqlite3\"`); digest-bearing or keyed `artifacts` tables are rejected".to_string());
+    }
+    let host_ok = host
+        .split(':')
+        .enumerate()
+        .all(|(i, seg)| {
+            if i == 1 {
+                !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit())
+            } else {
+                !seg.is_empty()
+                    && seg.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-'
+                    })
+            }
+        })
+        && host.matches(':').count() <= 1;
+    let seg_ok = |seg: &str| {
+        !seg.is_empty()
+            && seg.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_' || b == b'-'
+            })
+    };
+    if !host_ok || rest.iter().any(|s| !seg_ok(s)) {
+        return Err("field `artifacts` must be a bare OCI repo ref string (e.g. `artifacts: \"ghcr.io/org/sqlite3\"`); digest-bearing or keyed `artifacts` tables are rejected".to_string());
+    }
+    if let Some(last) = rest.last()
+        && last.contains(':')
+    {
+        return Err("field `artifacts` must be a bare OCI repo ref string (e.g. `artifacts: \"ghcr.io/org/sqlite3\"`); digest-bearing or keyed `artifacts` tables are rejected".to_string());
+    }
+    Ok(value.to_string())
+}
+
+pub fn parse_artifact_decl(val: &ConfigValue) -> Result<Option<String>, String> {
+    match val {
+        ConfigValue::String(s) => Ok(Some(validate_artifact_ref(s)?)),
+        _ => Err("field `artifacts` must be a bare OCI repo ref string (e.g. `artifacts: \"ghcr.io/org/sqlite3\"`); digest-bearing or keyed `artifacts` tables are rejected".to_string()),
     }
 }
 
@@ -621,6 +676,10 @@ pub(crate) fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Optio
             } else if obj_get(top, "registries").is_some() {
                 return Err("field `registries` must be an object".to_string());
             }
+            let artifacts = match obj_get(top, "artifacts") {
+                Some(v) => parse_artifact_decl(v)?,
+                None => None,
+            };
             Some(ProjectConfig {
                 name,
                 version,
@@ -632,6 +691,7 @@ pub(crate) fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Optio
                 dependencies,
                 permissions,
                 keywords,
+                artifacts,
             })
         }
         None => None,
@@ -668,7 +728,7 @@ const ENTRIES_KEYS: &[&str] = &["main", "lib", "docs", "bins"];
 const REGISTRY_KEYS: &[&str] = &["url", "token_env", "ca_cert"];
 const WORKSPACE_KEYS: &[&str] = &["members"];
 const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system"];
-const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace"];
+const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts"];
 
 fn span_line(text: &str, offset: u32) -> usize {
     let off = (offset as usize).min(text.len());
@@ -845,6 +905,9 @@ pub fn manifest_to_rnx(manifest: &Manifest) -> String {
             }
             out.push_str("    },\n");
         }
+        if let Some(a) = &p.artifacts {
+            out.push_str(&format!("    artifacts: {},\n", crate::deplock::rnx_string(a)));
+        }
     }
     if let Some(w) = &manifest.workspace {
         out.push_str("    workspace: {\n        members: [");
@@ -939,7 +1002,7 @@ fn dep_to_rnx(spec: &DependencySpec) -> String {
 }
 
 pub fn manifest_sections() -> &'static [&'static str] {
-    &["project", "entries", "registry", "dependencies", "workspace", "permissions", "keywords", "registries"]
+    &["project", "entries", "registry", "dependencies", "workspace", "permissions", "keywords", "registries", "artifacts"]
 }
 
 pub fn manifest_keys(section: &str) -> &'static [&'static str] {
@@ -961,6 +1024,7 @@ pub fn manifest_section_doc(section: &str) -> Option<&'static str> {
         "permissions" => Some("Security ceiling: an array of capability strings the package and its dependencies may use."),
         "keywords" => Some("Search keywords: an array of up to 12 lowercase/digit/hyphen tags, 24 characters each, mirroring npm keywords."),
         "registries" => Some("Scoped registry overrides keyed by scope, e.g. `registries: { \"@acme\": { url = \"...\" } }`."),
+        "artifacts" => Some("One bare OCI repo ref for the version's artifact image, e.g. `artifacts: \"ghcr.io/org/sqlite3\"`. No tags, no digests; the digest is asserted out-of-band at publish time."),
         _ if section.starts_with("registries.") => Some("Scoped registry override for `@scope/*`: same fields as `[registry]` plus optional `ca_cert`."),
         _ => None,
     }
@@ -1445,6 +1509,11 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
             code: Code::E108,
             message: "field `registries` must be an object".to_string(),
         });
+    }
+    if let Some(a) = obj_get(top, "artifacts")
+        && let Err(msg) = parse_artifact_decl(a)
+    {
+        out.push(ManifestIssue { line: 0, error: true, code: Code::E108, message: msg });
     }
     out
 }
@@ -1946,5 +2015,63 @@ mod tests {
             issues.iter().any(|i| i.error && i.code == Code::E108 && i.message.contains("at most 12")),
             "{issues:?}"
         );
+    }
+
+    #[test]
+    fn artifacts_accept_single_bare_repo_string() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 artifacts: \"ghcr.io/org/sqlite3\"\n\
+             }\n",
+        );
+        assert_eq!(c.artifacts.as_deref(), Some("ghcr.io/org/sqlite3"));
+        let m = parse_manifest(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 artifacts: \"ghcr.io/org/sqlite3\"\n\
+             }\n",
+        )
+        .unwrap();
+        let out = manifest_to_rnx(&Manifest { project: m.0.clone(), workspace: m.1.clone() });
+        assert!(out.contains("artifacts:"), "{out}");
+        let again = parse_manifest(&out).unwrap().0.unwrap();
+        assert_eq!(again.artifacts.as_deref(), Some("ghcr.io/org/sqlite3"));
+    }
+
+    #[test]
+    fn artifacts_default_to_none() {
+        let c = parse("export default {\n    project: { name: \"demo\", version: \"0.1.0\" }\n}\n");
+        assert_eq!(c.artifacts, None);
+    }
+
+    #[test]
+    fn artifacts_reject_digest_bearing_and_keyed_tables() {
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    artifacts: \"ghcr.io/org/sqlite3@sha256:abc\"\n}\n",
+                "bare OCI repo ref",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    artifacts: \"ghcr.io/org/sqlite3:0.3.0\"\n}\n",
+                "bare OCI repo ref",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    artifacts: { native: { ref: \"ghcr.io/org/codec:0.3.0\", digest: \"sha256:abc\" } }\n}\n",
+                "keyed `artifacts` tables are rejected",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    artifacts: 7\n}\n",
+                "bare OCI repo ref",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
+            let issues = validate_manifest_text(text, None);
+            assert!(
+                issues.iter().any(|i| i.error && i.code == Code::E108),
+                "{issues:?} for {text}"
+            );
+        }
     }
 }

@@ -103,6 +103,7 @@ export interface ConfigFacts {
 	entries: { main: string; lib: string | null; docs: string | null; bins: Record<string, string> };
 	permissions: Array<{ perm: string; reason: string | null }>;
 	dependencies: Record<string, string>;
+	artifacts: string | null;
 }
 
 export interface TreeAnalysis {
@@ -141,7 +142,8 @@ export async function configFacts(text: string): Promise<ConfigFacts> {
 		permissions: rawPermissions.map((p) =>
 			typeof p === 'string' ? { perm: p, reason: null } : { perm: p.perm, reason: p.reason ?? null }
 		),
-		dependencies: (out['dependencies'] ?? {}) as Record<string, string>
+		dependencies: (out['dependencies'] ?? {}) as Record<string, string>,
+		artifacts: typeof out['artifacts'] === 'string' ? (out['artifacts'] as string) : null
 	};
 }
 

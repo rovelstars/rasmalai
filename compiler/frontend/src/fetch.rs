@@ -455,6 +455,7 @@ pub struct ResolveNode {
     pub engine_range: String,
     pub deps: Vec<String>,
     pub yanked: bool,
+    pub artifact_digest: Option<String>,
     pub entries: Option<Vec<ChunkEntry>>,
 }
 
@@ -1598,6 +1599,11 @@ fn parse_node(value: &JsonValue) -> Result<ResolveNode, Diagnostic> {
             .to_string(),
         deps,
         yanked,
+        artifact_digest: obj
+            .iter()
+            .find(|(k, _)| k.as_str() == "artifactDigest")
+            .and_then(|(_, v)| v.as_str())
+            .map(|s| s.to_string()),
         entries,
     })
 }
@@ -1657,6 +1663,58 @@ pub fn cached_package_dir(base: &str, full: &str, version: &str) -> PathBuf {
 
 fn integrity_path(dir: &Path) -> PathBuf {
     dir.join(".rnx-integrity")
+}
+
+fn artifact_marker_path(dir: &Path) -> PathBuf {
+    dir.join(".rnx-artifact")
+}
+
+pub fn cached_artifact_digest(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(artifact_marker_path(dir)).ok()?;
+    let digest = text.lines().next().unwrap_or_default().trim().to_string();
+    if crate::oci::is_artifact_digest(&digest) {
+        Some(digest)
+    } else {
+        None
+    }
+}
+
+fn node_artifacts_ready(dir: &Path, expected: Option<&str>) -> bool {
+    match expected {
+        None => true,
+        Some(digest) => {
+            cached_artifact_digest(dir).as_deref() == Some(digest) && dir.join(".artifacts").is_dir()
+        }
+    }
+}
+
+fn cached_artifacts_present(dir: &Path) -> bool {
+    cached_artifact_digest(dir).is_some() && dir.join(".artifacts").is_dir()
+}
+
+fn ensure_node_artifacts(dir: &Path, node: &ResolveNode, asserted: &str) -> Result<(), Diagnostic> {
+    let cfg = ProjectConfig::load_from_dir(dir)?.ok_or_else(|| {
+        Diagnostic::new(
+            Code::E108,
+            format!("package `{}@{}` has no Project.config", node.full, node.version),
+        )
+    })?;
+    let bare = match cfg.artifacts.as_deref() {
+        Some(bare) => bare,
+        None => {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "package `{}@{}` pins artifact {asserted} but declares no `artifacts`",
+                    node.full, node.version
+                ),
+            ));
+        }
+    };
+    crate::oci::ensure_artifacts(dir, bare, asserted, std::env::consts::OS, std::env::consts::ARCH)?;
+    std::fs::write(artifact_marker_path(dir), format!("{asserted}\n")).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", artifact_marker_path(dir).display()))
+    })
 }
 
 pub fn cached_integrity(dir: &Path) -> Option<String> {
@@ -2320,6 +2378,7 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
     let dir = cached_package_dir(base, &node.full, &node.version);
     if dir.join(crate::project::MANIFEST_FILE).is_file()
         && cached_integrity(&dir).as_deref() == Some(node.integrity.as_str())
+        && node_artifacts_ready(&dir, node.artifact_digest.as_deref())
     {
         check_engine(node)?;
         warn_if_yanked(node);
@@ -2403,6 +2462,9 @@ fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShar
         .map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dir.display()))
         })?;
+    if let Some(digest) = node.artifact_digest.as_deref() {
+        ensure_node_artifacts(&dir, node, digest)?;
+    }
     canonical_cached(&dir)
 }
 
@@ -2518,7 +2580,9 @@ pub fn resolve_registry_package(
         if dir.join(crate::project::MANIFEST_FILE).is_file() && cached_integrity(&dir).is_some() {
             if let Ok(canonical) = std::fs::canonicalize(&dir) {
                 if let Ok(Some(cfg)) = ProjectConfig::load_from_dir(&canonical) {
-                    return Ok((canonical, cfg, pin.to_string()));
+                    if cfg.artifacts.is_none() || cached_artifacts_present(&canonical) {
+                        return Ok((canonical, cfg, pin.to_string()));
+                    }
                 }
             }
         }
@@ -3164,6 +3228,12 @@ pub(crate) mod testkit {
         node_engine_json(full, version, integrity, yanked, "")
     }
 
+    pub fn node_artifact_json(full: &str, version: &str, integrity: &str, artifact_digest: &str) -> String {
+        format!(
+            "{{\"full\": \"{full}\", \"version\": \"{version}\", \"path\": \"{full}@{version}/chunks\", \"integrity\": \"{integrity}\", \"engineRange\": \"\", \"deps\": [], \"yanked\": false, \"artifactDigest\": \"{artifact_digest}\"}}"
+        )
+    }
+
     // A publish-shaped file tree: the stored Project.config carries the
     // published version placeholder, exactly as the registry stores it.
     // Installs rehydrate it back to the resolved version. Returns the
@@ -3490,6 +3560,56 @@ mod tests {
         let mut reqs = BTreeMap::new();
         reqs.insert(full.to_string(), range.to_string());
         reqs
+    }
+
+    fn artifact_fixture_tree(
+        full: &str,
+        version: &str,
+        bare: &str,
+    ) -> (String, Vec<(String, Vec<u8>)>, String) {
+        let original = format!(
+            "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }},\n    entries: {{ main: \"src/main.rnx\" }},\n    artifacts: \"{bare}\"\n}}\n"
+        );
+        let stored = original.replace(
+            &format!("version: \"{version}\""),
+            "version: \"0.0.0-published\"",
+        );
+        let main = b"export fn hello(): Int { return 1; }\n".to_vec();
+        let files = vec![
+            ("Project.config".to_string(), stored.into_bytes()),
+            ("src/main.rnx".to_string(), main),
+        ];
+        let mut entries = Vec::new();
+        let mut pairs = Vec::new();
+        for (name, bytes) in &files {
+            let h = Sha256::hexdigest(bytes);
+            entries.push(format!(
+                "{{\"name\": \"{name}\", \"size\": {}, \"dir\": false, \"chunks\": [\"{h}\"]}}",
+                bytes.len()
+            ));
+            pairs.push((h, bytes.clone()));
+        }
+        let manifest = format!("{{\"entries\": [{}]}}", entries.join(", "));
+        let digest = manifest_digest_of(&manifest);
+        (manifest, pairs, digest)
+    }
+
+    fn artifact_index_for(hash: &str, annotations: &str) -> Vec<u8> {
+        format!(
+            "{{\"schemaVersion\": 2, \"manifests\": [{{\"digest\": \"sha256:{hash}\", \"annotations\": {{{annotations}}}}}]}}"
+        )
+        .into_bytes()
+    }
+
+    fn runtime_annotations() -> String {
+        format!(
+            "\"run.rasmalai.kind\": \"binary\", \"run.rasmalai.role\": \"runtime\", \
+             \"run.rasmalai.target\": \"x86_64-unknown-linux-gnu\", \
+             \"run.rasmalai.generator\": \"rnx-bindgen 0.1.0\", \
+             \"run.rasmalai.upstream\": \"sqlite@sha256:{}\", \
+             \"org.opencontainers.image.title\": \"libnative.so\"",
+            "cd".repeat(32)
+        )
     }
 
     #[test]
@@ -5368,5 +5488,65 @@ mod tests {
             }
         }
         assert_eq!(manifests, 1);
+    }
+
+    #[test]
+    fn artifact_pin_installs_blobs_and_locks_the_digest() {
+        use crate::oci::testkit::start_origin;
+        let (_guard, _dir) = isolate_cache("artifact-pin");
+        let blob = b"fake native bytes for lock test".to_vec();
+        let blob_hash = Sha256::hexdigest(&blob);
+        let manifest_doc = format!(
+            "{{\"schemaVersion\": 2, \"config\": {{\"digest\": \"sha256:{}\"}}, \"layers\": [{{\"digest\": \"sha256:{blob_hash}\"}}]}}",
+            "cc".repeat(32)
+        );
+        let manifest_hash = Sha256::hexdigest(manifest_doc.as_bytes());
+        let index = artifact_index_for(&manifest_hash, &runtime_annotations());
+        let index_digest = format!("sha256:{}", Sha256::hexdigest(&index));
+        let mut files = BTreeMap::new();
+        files.insert(format!("sha256:{manifest_hash}"), manifest_doc.into_bytes());
+        files.insert(format!("sha256:{blob_hash}"), blob.clone());
+        let origin = start_origin(index, files);
+        let (manifest, pairs, digest) = artifact_fixture_tree("@acme/widget", "1.2.0", &origin.bare);
+        let node = node_artifact_json("@acme/widget", "1.2.0", &digest, &index_digest);
+        let server = start_tree(&[node], &manifest, pairs);
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        let installed = std::fs::read(fetched[0].dir.join(".artifacts").join("runtime").join("libnative.so")).unwrap();
+        assert_eq!(installed, blob);
+        assert_eq!(cached_artifact_digest(&fetched[0].dir).as_deref(), Some(index_digest.as_str()));
+        let dir = crate::scratch::dir("artifact-lock");
+        let root = dir.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"app\",\n        version: \"0.1.0\"\n    }},\n    entries: {{ main: \"src/main.rnx\" }},\n    dependencies: {{\n        \"@acme/widget\": {{ version: \"^1.0.0\" }}\n    }},\n    registry: {{ url: \"{}\" }}\n}}\n",
+                server.base
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        let cfg = crate::project::ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        let widget = lock.packages.iter().find(|p| p.name == "@acme/widget").unwrap();
+        assert_eq!(widget.artifact_digest.as_deref(), Some(index_digest.as_str()));
+        crate::deplock::verify_lock(&root, &cfg, &lock).unwrap();
+        let mut tampered = lock.clone();
+        tampered
+            .packages
+            .iter_mut()
+            .find(|p| p.name == "@acme/widget")
+            .unwrap()
+            .artifact_digest = Some(format!("sha256:{}", "ee".repeat(32)));
+        let err = crate::deplock::verify_lock(&root, &cfg, &tampered).unwrap_err();
+        assert!(err.message.contains("artifact mismatch"), "{}", err.message);
     }
 }

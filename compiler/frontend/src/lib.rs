@@ -23,6 +23,7 @@ pub mod lint;
 pub mod lsp_completion;
 pub mod minify;
 pub mod objects;
+pub mod oci;
 pub mod lsp_nav;
 pub mod lsp_symbols;
 pub mod semantic_tokens;

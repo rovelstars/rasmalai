@@ -39,20 +39,19 @@ With that manifest the upload holds `Project.config`, the two entry files, the r
 
 ## Native binaries and wasm live outside source packages
 
-Compiled artifacts are never uploaded with source — neither per-platform native libraries nor `.wasm` modules. They ship as OCI artifacts: one index per version, per-target manifests beneath it, identical shape for bindings and binaries. A package that needs them declares the reference and the pinned digest:
+Compiled artifacts are never uploaded with source — neither per-platform native libraries nor `.wasm` modules. They ship as OCI artifacts: the registry stores no artifact bytes, only a pin. One image per package version; composition is the image author's job (an image bundles everything its version needs). A package that needs artifacts declares one bare repo ref, no tags, no digests:
 
 ```rnx
 export default {
     project: { name: "codec", version: "0.3.0" },
     entries: { lib: "src/lib.rnx" },
-    artifacts: {
-        native: { ref: "ghcr.io/org/codec:0.3.0", digest: "sha256:<64 hex chars>" },
-        wasm:   { ref: "ghcr.io/org/codec-wasm:0.3.0", digest: "sha256:<64 hex chars>" }
-    }
+    artifacts: "ghcr.io/org/codec"
 }
 ```
 
-Tags discover, digests pin: the digest is resolved once and stored, and every fetch below it addresses content by digest only — a moved tag can never affect a pinned consumer. The package manager downloads, hash-verifies, and caches artifacts globally (`~/.cache/rnx/artifacts/<hash>`, shared across projects). First fetch of a native artifact prints what is being installed from where. Linking native code voids all other sandbox guarantees for that scope — see the capability rules in the language manual. WebAssembly follows this same path with a single entry, since one module runs everywhere; execution needs a wasm runtime, which is a separate, not-yet-built phase — declarations and verification work today, running comes later. Our own blob tier speaks the same OCI protocol, so origins are interchangeable without client changes.
+The index is the file list — config never duplicates it, so a digest-bearing or keyed `artifacts` table is rejected. At publish time the author asserts the index digest out-of-band (`rnx publish --artifact sha256:<hex>`, one digest for the one image). The server resolves the declared ref fresh, fetches the index (capped at 1 MiB), hashes it, and rejects the publish fail-closed on mismatch; declaration and assertion must agree in both directions. Every fetch below the index addresses content by digest: consumers verify the index digest first, then per-blob hashes from the verified index, pick role (`runtime`, `bindgen`, `wasm`, `media`) and platform from the descriptors, and place blobs by title filename under `.artifacts/<role>/` — the same layout the author develops against. A future operator mirror would serve identical hashes under a reserved prefix outside the chunk store; until then there is no registry blob storage to meter or delete.
+
+Tags discover, digests pin: refs are bare repos (an explicit tag is a discovery hint only), and the digest is resolved once and stored as version metadata. WebAssembly follows this same path with one manifest per flavor (no arch suffix; simd/threads/memory64 ship as separate manifests in the same index when needed). First fetch of a native artifact prints what is being installed from where. Linking native code voids all other sandbox guarantees for that scope — see the capability rules in the language manual. WebAssembly declarations and verification work today; execution needs a wasm runtime, which is a separate, not-yet-built phase.
 
 ## LICENSE is required
 

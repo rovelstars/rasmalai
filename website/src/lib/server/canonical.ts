@@ -60,6 +60,7 @@ export interface PublishFrame {
 	tags: string[];
 	license: string;
 	requestId: string;
+	artifactDigest: string | null;
 }
 
 export type FrameError = { status: number; message: string };
@@ -135,6 +136,14 @@ export function parsePublishFrame(body: unknown, caps: PlanCaps): { ok: true; fr
 	if (bad) return { ok: false, error: fail(400, `unsafe entry name \`${bad.name}\`: ${bad.reason}`) };
 	const keywords = v['keywords'];
 	const tags = v['tags'];
+	const rawDigest = v['artifactDigest'];
+	let artifactDigest: string | null = null;
+	if (rawDigest !== undefined && rawDigest !== null) {
+		if (typeof rawDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(rawDigest)) {
+			return { ok: false, error: fail(400, 'invalid artifactDigest (expected "sha256:<64 hex chars>")') };
+		}
+		artifactDigest = rawDigest;
+	}
 	const frame: PublishFrame = {
 		name,
 		version,
@@ -147,7 +156,8 @@ export function parsePublishFrame(body: unknown, caps: PlanCaps): { ok: true; fr
 		keywords: Array.isArray(keywords) ? keywords.filter((k): k is string => typeof k === 'string') : [],
 		tags: Array.isArray(tags) ? tags.filter((t): t is string => typeof t === 'string') : [],
 		license: str('license') ?? 'MIT',
-		requestId: str('requestId') ?? ''
+		requestId: str('requestId') ?? '',
+		artifactDigest
 	};
 	if (Buffer.byteLength(frame.docJson, 'utf8') > 1024 * 1024) {
 		return { ok: false, error: fail(413, 'payload exceeds size limits') };
