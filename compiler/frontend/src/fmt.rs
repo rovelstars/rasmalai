@@ -428,7 +428,7 @@ fn match_generic_brackets(toks: &[Ft]) -> Vec<bool> {
                         Fk::Semi | Fk::Comma | Fk::RParen | Fk::RBrack | Fk::RBrace
                         | Fk::LBrace | Fk::LParen | Fk::Colon | Fk::ColonColon | Fk::Dot
                         | Fk::Question | Fk::FatArrow | Fk::Arrow | Fk::Newline => true,
-                        Fk::Word => matches!(toks[k].text.as_str(), "with" | "extends" | "where"),
+                        Fk::Word => matches!(toks[k].text.as_str(), "with" | "extends" | "where" | "as"),
                         Fk::Op => {
                             toks[k].text == "="
                                 || toks[k].text == ">"
