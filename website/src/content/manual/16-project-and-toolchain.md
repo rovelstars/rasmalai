@@ -68,6 +68,8 @@ export default {
 
 Version requirements follow SemVer 2.0: `^1.2.0` permits compatible minor and patch changes; `~1.2.0` permits patch-level changes only; a bare version pins exactly; ranges combine comparators. A git dependency pins exactly one of `rev`, `tag`, or `branch` (`rev` holding a branch name is rejected). A `path` entry is a local checkout; git checkouts cache under `.rnx-cache/cache/git/`; a `vendor/<pkg>/` directory wins over the network. The token never lives in the manifest: `token_env` names the environment variable, and `ca_cert` pins a corporate root CA.
 
+`rnx add <name>` resolves the latest stable version from the configured registry and records it as `^<version>`; `rnx add <name>@<range>` records the given range verbatim (`*`, `latest`, `X.Y.Z`, `^`, `~`, `>=`). The lockfile pins the resolved version digest, never the range or a tag name. `rnx add <name> --path <dir>` keeps the local flow: the directory is recorded as a `path` entry.
+
 | Requirement | Matches | Skips |
 |---|---|---|
 | `^1.2.0` | `>=1.2.0`, same major | `2.0.0`, prereleases |
@@ -240,7 +242,7 @@ print(quote(2.0));
 | `rnx doc` | docs to `target/doc` (HTML or `--json`) | `-p`, `--open`, `--no-deps`, `--all`/`--private`, `--json`, `--stdlib`, `--out-dir` |
 | `rnx lint` | static checks over sources | `[paths...]`, `-p`, `--sarif`, `--json`, `--deny-warnings`, `--fix` |
 | `rnx fmt` | format `.rnx` sources | `[paths...]`, `--check`, `--diff` |
-| `rnx add` | add a local path dependency with capability approval | `<package>`, `--path <dir>`, `--accept-caps <list>`, `--accept-all-caps` |
+| `rnx add` | add a registry (`<name>[@range]`) or local path dependency with capability approval | `<package>[@range]`, `--path <dir>`, `--accept-caps <list>`, `--accept-all-caps` |
 | `rnx publish` | publish the current project to the registry (pushes the OCI image when `RNX_OCI_PUSH_URL` is set) | `--registry <url>`, `--token <token>`, `--artifact <digest>` |
 | `rnx lsp` | Language Server Protocol over stdio | none |
 | `rnx mcp` | Model Context Protocol server over stdio | none |

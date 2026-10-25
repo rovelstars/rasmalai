@@ -2202,10 +2202,7 @@ pub fn add_package(
         ));
     };
     let Some(rel) = path else {
-        return AddResult::Failed(Diagnostic::new(
-            Code::E108,
-            "registry add is not supported yet; pass `--path <dir>` with a local package",
-        ));
+        return add_registry_package(&root, package, accept_caps, accept_all_caps);
     };
     let dep_dir = if rel.is_absolute() {
         rel.to_path_buf()
@@ -2235,53 +2232,9 @@ pub fn add_package(
         ));
     }
     let tier = analysis.tier.to_string();
-    if !analysis.capabilities.is_empty() {
-        if accept_all_caps {
-            // Approved below.
-        } else if let Some(list) = accept_caps {
-            let accepted: std::collections::BTreeSet<String> = list
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            let missing: Vec<&String> = analysis
-                .capabilities
-                .iter()
-                .filter(|c| !accepted.contains(*c))
-                .collect();
-            if !missing.is_empty() {
-                let missing = missing
-                    .iter()
-                    .map(|c| format!("`{c}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return AddResult::Failed(Diagnostic::new(
-                    Code::E108,
-                    format!("`--accept-caps` does not cover deduced {missing}"),
-                ));
-            }
-        } else if std::io::stdin().is_terminal() {
-            println!("package `{package}` (tier {tier}) requests:");
-            for c in &analysis.capabilities {
-                println!("  {c}");
-            }
-            match prompt_grant(&analysis.traces) {
-                GrantAnswer::Yes => {}
-                GrantAnswer::No => {
-                    return AddResult::Failed(Diagnostic::new(
-                        Code::E108,
-                        format!("add of `{package}` aborted; Project.deplock unchanged"),
-                    ));
-                }
-            }
-        } else {
-            let caps = analysis.capabilities.join(",");
-            return AddResult::Headless(format!(
-                "error[S101]: Package '{package}' requires unapproved capabilities: [{}]\nTo approve non-interactively, re-run with:\n  rnx add {package} --path {} --accept-caps=\"{caps}\"",
-                analysis.capabilities.join(", "),
-                dep_dir.display(),
-            ));
-        }
+    let rerun = format!("rnx add {package} --path {} ", dep_dir.display());
+    if let Err(outcome) = approve_add_capabilities(package, &rerun, &analysis, accept_caps, accept_all_caps) {
+        return outcome;
     }
     if let Err(e) = record_dependency(&root, &dep_dir, &analysis.name) {
         return AddResult::Failed(e);
@@ -2293,6 +2246,274 @@ pub fn add_package(
         )),
         Err(e) => AddResult::Failed(e),
     }
+}
+
+fn approve_add_capabilities(
+    package: &str,
+    rerun_prefix: &str,
+    analysis: &frontend::security::DepAnalysis,
+    accept_caps: Option<&str>,
+    accept_all_caps: bool,
+) -> Result<(), AddResult> {
+    if analysis.capabilities.is_empty() {
+        return Ok(());
+    }
+    if accept_all_caps {
+        return Ok(());
+    }
+    if let Some(list) = accept_caps {
+        let accepted: std::collections::BTreeSet<String> = list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let missing: Vec<&String> = analysis
+            .capabilities
+            .iter()
+            .filter(|c| !accepted.contains(*c))
+            .collect();
+        if !missing.is_empty() {
+            let missing = missing
+                .iter()
+                .map(|c| format!("`{c}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(AddResult::Failed(Diagnostic::new(
+                Code::E108,
+                format!("`--accept-caps` does not cover deduced {missing}"),
+            )));
+        }
+        return Ok(());
+    }
+    if std::io::stdin().is_terminal() {
+        let tier = analysis.tier.to_string();
+        println!("package `{package}` (tier {tier}) requests:");
+        for c in &analysis.capabilities {
+            println!("  {c}");
+        }
+        return match prompt_grant(&analysis.traces) {
+            GrantAnswer::Yes => Ok(()),
+            GrantAnswer::No => Err(AddResult::Failed(Diagnostic::new(
+                Code::E108,
+                format!("add of `{package}` aborted; Project.deplock unchanged"),
+            ))),
+        };
+    }
+    let caps = analysis.capabilities.join(",");
+    Err(AddResult::Headless(format!(
+        "error[S101]: Package '{package}' requires unapproved capabilities: [{}]\nTo approve non-interactively, re-run with:\n  {rerun_prefix}--accept-caps=\"{caps}\"",
+        analysis.capabilities.join(", "),
+    )))
+}
+
+fn parse_add_selector(spec: &str) -> Result<(String, Option<String>), Diagnostic> {
+    let bad = || {
+        Diagnostic::new(
+            Code::E108,
+            format!("bad add target `{spec}`: expected `name` or `name@range`"),
+        )
+    };
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Err(bad());
+    }
+    match spec.rfind('@').filter(|&i| i > 0) {
+        None => {
+            if spec == "@" || !valid_add_name(spec) {
+                return Err(bad());
+            }
+            Ok((spec.to_string(), None))
+        }
+        Some(i) => {
+            let name = spec[..i].trim();
+            let selector = spec[i + 1..].trim();
+            if name.is_empty() || selector.is_empty() || !valid_add_name(name) {
+                return Err(bad());
+            }
+            Ok((name.to_string(), Some(selector.to_string())))
+        }
+    }
+}
+
+fn valid_add_name(name: &str) -> bool {
+    !name.starts_with('@') || name.contains('/')
+}
+
+fn add_registry_package(
+    root: &std::path::Path,
+    spec: &str,
+    accept_caps: Option<&str>,
+    accept_all_caps: bool,
+) -> AddResult {
+    let (name, selector) = match parse_add_selector(spec) {
+        Ok(parsed) => parsed,
+        Err(e) => return AddResult::Failed(e),
+    };
+    let range = selector.clone().unwrap_or_else(|| "latest".to_string());
+    if !frontend::fetch::is_valid_range(&range) {
+        return AddResult::Failed(Diagnostic::new(
+            Code::E108,
+            format!("selector `{range}` for package `{name}` is not a valid range (`*`, `latest`, `X.Y.Z`, `^`, `~`, `>=`); dist-tags are not resolved by this client"),
+        ));
+    }
+    let manifest = match frontend::project::load_manifest(root) {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) => {
+            return AddResult::Failed(Diagnostic::new(
+                Code::E108,
+                "project has no Project.config".to_string(),
+            ));
+        }
+        Err(e) => return AddResult::Failed(e),
+    };
+    let consumer = match manifest.project.as_ref() {
+        Some(cfg) => cfg.clone(),
+        None => {
+            return AddResult::Failed(Diagnostic::new(
+                Code::E108,
+                "Project.config has no `project` object".to_string(),
+            ));
+        }
+    };
+    if let Some(existing) = consumer.dependencies.get(&name)
+        && !matches!(existing, frontend::project::DependencySpec::Semver { .. })
+    {
+        return AddResult::Failed(Diagnostic::new(
+            Code::E108,
+            format!("dependency `{name}` already declared with a different source"),
+        ));
+    }
+    let have = frontend::fetch::scan_cache_have();
+    let (dep_dir, dep_cfg, resolved) = match frontend::fetch::resolve_registry_package(
+        &name,
+        &range,
+        consumer.registry.as_ref(),
+        &consumer.registries,
+        None,
+        &have,
+    ) {
+        Ok(resolved) => resolved,
+        Err(e) => return AddResult::Failed(e),
+    };
+    if dep_cfg.name != name {
+        return AddResult::Failed(Diagnostic::new(
+            Code::E108,
+            format!(
+                "package name mismatch: requested `{name}`, registry says `{}`",
+                dep_cfg.name,
+            ),
+        ));
+    }
+    let analysis = match frontend::security::analyze_dep_dir(&dep_dir) {
+        Ok(analysis) => analysis,
+        Err(e) => return AddResult::Failed(e),
+    };
+    let rerun = format!("rnx add {spec} ");
+    if let Err(outcome) =
+        approve_add_capabilities(&name, &rerun, &analysis, accept_caps, accept_all_caps)
+    {
+        return outcome;
+    }
+    let stored = selector.unwrap_or_else(|| format!("^{resolved}"));
+    if let Err(e) = record_registry_dependency(root, &name, &stored) {
+        return AddResult::Failed(e);
+    }
+    let prefer = frontend::native::NativePrefer::from_env();
+    let manifest = match frontend::project::load_manifest(root) {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) => {
+            return AddResult::Failed(Diagnostic::new(
+                Code::E108,
+                "project has no Project.config".to_string(),
+            ));
+        }
+        Err(e) => return AddResult::Failed(e),
+    };
+    let lock = match manifest.workspace {
+        Some(ws) => {
+            let members = match frontend::project::resolve_workspace_members(root, &ws) {
+                Ok(members) => members,
+                Err(e) => return AddResult::Failed(e),
+            };
+            frontend::deplock::ProjectDepLock::resolve_workspace_with(root, &members, prefer)
+        }
+        None => {
+            let cfg = match manifest.project {
+                Some(cfg) => cfg,
+                None => {
+                    return AddResult::Failed(Diagnostic::new(
+                        Code::E108,
+                        "Project.config has no `project` object".to_string(),
+                    ));
+                }
+            };
+            frontend::deplock::ProjectDepLock::resolve_with(root, &cfg, prefer)
+        }
+    };
+    let lock = match lock {
+        Ok(lock) => lock,
+        Err(e) => return AddResult::Failed(e),
+    };
+    if let Err(e) = lock.write(root) {
+        return AddResult::Failed(e);
+    }
+    if let Err(e) = frontend::fetch::fetch_all_registry_deps(root) {
+        return AddResult::Failed(e);
+    }
+    match lock.packages.iter().find(|p| p.name == name) {
+        Some(pinned) => {
+            let mut report = format!(
+                "Added {name} v{} (tier {})\nchecksum: {}",
+                pinned.version, pinned.tier, pinned.checksum,
+            );
+            if let Some(digest) = pinned.artifact_digest.as_deref() {
+                report.push_str(&format!("\nartifactDigest: {digest}"));
+            }
+            AddResult::Added(report)
+        }
+        None => AddResult::Failed(Diagnostic::new(
+            Code::E108,
+            format!("package `{name}` missing from Project.deplock after lock"),
+        )),
+    }
+}
+
+fn record_registry_dependency(
+    root: &std::path::Path,
+    name: &str,
+    range: &str,
+) -> Result<(), Diagnostic> {
+    let manifest_path = root.join(frontend::project::MANIFEST_FILE);
+    let mut manifest = frontend::project::load_manifest(root)?.ok_or_else(|| {
+        Diagnostic::new(Code::E108, "project has no Project.config".to_string())
+    })?;
+    let project = manifest.project.as_mut().ok_or_else(|| {
+        Diagnostic::new(Code::E108, "Project.config has no `project` object".to_string())
+    })?;
+    let link = match project.dependencies.get(name) {
+        Some(frontend::project::DependencySpec::Semver { version, link }) => {
+            if version == range {
+                return Ok(());
+            }
+            *link
+        }
+        Some(_) => {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("dependency `{name}` already declared with a different source"),
+            ));
+        }
+        None => frontend::license::LinkPreference::Auto,
+    };
+    project.dependencies.insert(
+        name.to_string(),
+        frontend::project::DependencySpec::Semver { version: range.to_string(), link },
+    );
+    let out = frontend::project::manifest_to_rnx(&manifest);
+    std::fs::write(&manifest_path, out).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", manifest_path.display()))
+    })?;
+    Ok(())
 }
 
 enum GrantAnswer {
@@ -2479,6 +2700,45 @@ mod tests {
 
     fn scratch(tag: &str) -> crate::scratch::Scratch {
         crate::scratch::dir(&format!("gitignore-{tag}"))
+    }
+
+    #[test]
+    fn add_selector_bare_name_resolves_latest() {
+        assert_eq!(
+            parse_add_selector("sqlite-rnx").unwrap(),
+            ("sqlite-rnx".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn add_selector_scoped_bare_name_keeps_scope() {
+        assert_eq!(
+            parse_add_selector("@std/fs").unwrap(),
+            ("@std/fs".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn add_selector_latest_and_ranges_split_on_last_at() {
+        assert_eq!(
+            parse_add_selector("@std/fs@latest").unwrap(),
+            ("@std/fs".to_string(), Some("latest".to_string()))
+        );
+        assert_eq!(
+            parse_add_selector("widget@^1.2.0").unwrap(),
+            ("widget".to_string(), Some("^1.2.0".to_string()))
+        );
+        assert_eq!(
+            parse_add_selector("widget@1.2.0").unwrap(),
+            ("widget".to_string(), Some("1.2.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn add_selector_rejects_bad_shapes() {
+        for bad in ["", "   ", "@", "widget@", "@1.2.0", "  @  "] {
+            assert!(parse_add_selector(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

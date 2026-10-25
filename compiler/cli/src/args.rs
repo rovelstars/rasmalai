@@ -336,11 +336,11 @@ pub enum Command {
         #[arg(long, env = "RNX_REGISTRY")]
         registry: Option<String>,
     },
-    /// Add a local package dependency with capability approval
+    /// Add a package dependency with capability approval (`name[@range]` from the registry or `--path <dir>` local)
     Add {
-        /// Dependency name (must match its `Project.config` name)
+        /// Dependency name (must match its `Project.config` name; append `@range` for registry versions)
         package: String,
-        /// Local directory containing the package
+        /// Local directory containing the package (omit to resolve `package` from the registry)
         #[arg(long)]
         path: Option<PathBuf>,
         /// Approve exactly these comma-separated capabilities non-interactively
