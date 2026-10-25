@@ -194,6 +194,14 @@ jobs:
       - name: Ensure jq (index selectors)
         run: command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
 
+      - name: Seed stdlib
+        run: |
+          seeded=""
+          for _ in 1 2 3; do
+            if cargo run -q -p cli -- fetch-std; then seeded=1; break; fi
+          done
+          [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
+
       - uses: actions/download-artifact@v7
         with:
           path: farm-stage
