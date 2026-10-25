@@ -3,6 +3,8 @@ pub(super) fn run_audit(
     path: Option<std::path::PathBuf>,
     json: bool,
     export_manifest: bool,
+    licenses: bool,
+    deny_license: Vec<String>,
     registry: Option<String>,
 ) {
     let dir = match path {
@@ -32,6 +34,38 @@ pub(super) fn run_audit(
         let drift = cli::audit::lockfile_drift(&dir);
         print!("{}", cli::audit::render_audit_text(&report, &drift));
     }
+    let denied = cli::audit::parse_deny_licenses(&deny_license);
+    for license in &denied {
+        if !frontend::license::is_known_spdx(license) {
+            eprintln!("error[E108]: unknown license `{license}` in --deny-license (expected a known SPDX id)");
+            std::process::exit(1);
+        }
+    }
+    let mut license_failed = false;
+    if licenses || !denied.is_empty() {
+        match cli::audit::license_report_for_dir(&dir) {
+            Ok(license_report) => {
+                let text = cli::audit::render_license_text(&license_report, &denied);
+                if json {
+                    eprint!("{text}");
+                } else {
+                    print!("{text}");
+                }
+                if !cli::audit::denied_hits(&license_report, &denied).is_empty() {
+                    license_failed = true;
+                }
+                if !license_report.conflicts.is_empty() {
+                    license_failed = true;
+                }
+            }
+            Err(e) => {
+                if licenses || !denied.is_empty() {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
     let base = cli::audit::advisory_registry(registry.as_deref());
     match cli::audit::audit_advisories(&dir, &base) {
         cli::audit::AdvisoryCheck::Skipped(note) => {
@@ -52,5 +86,8 @@ pub(super) fn run_audit(
                 std::process::exit(1);
             }
         }
+    }
+    if license_failed {
+        std::process::exit(1);
     }
 }

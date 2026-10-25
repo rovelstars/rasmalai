@@ -116,7 +116,7 @@ The reverse direction — calling Rasmalai from C — is `rnx build --lib`. Top-
 
 ## Auditing the surface
 
-`unsafe` surface is counted: `rnx audit` reports `unsafe {}` sites, raw `Pointer`/`Address` uses, and `from native` imports per package for CI gating. Manifests carry the badge (`has_hazard: bool`), surfaced by `rnx doc` and `rnx audit` alike.
+`unsafe` surface is counted: `rnx audit` reports `unsafe {}` sites, raw `Pointer`/`Address` uses, and `from native` imports per package for CI gating. Manifests carry the badge (`has_hazard: bool`), surfaced by `rnx doc` and `rnx audit` alike. `rnx audit --licenses` reports the license graph instead: per-package SPDX, effective linkage, obligation class, and conflict notes, with `--deny-license` failing the audit on denied ids.
 
 ## Files
 

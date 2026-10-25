@@ -315,6 +315,12 @@ pub enum Command {
         /// Emit the minimal publishing manifest as JSON
         #[arg(long)]
         export_manifest: bool,
+        /// Report the resolved license graph (per-package SPDX, linkage, obligations, conflicts)
+        #[arg(long)]
+        licenses: bool,
+        /// Fail when a locked dependency carries one of these SPDX ids (comma-separated, repeatable)
+        #[arg(long = "deny-license", value_delimiter = ',')]
+        deny_license: Vec<String>,
         /// Registry base URL for the advisory feed (or RNX_REGISTRY)
         #[arg(long, env = "RNX_REGISTRY")]
         registry: Option<String>,

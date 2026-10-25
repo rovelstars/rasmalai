@@ -66,6 +66,8 @@ Filing and withdrawing are operator-only. Both need the admin token and `X-RNX-P
 
 `rnx audit` matches the locked `Project.deplock` — versions and `artifactDigest` pins — against this feed and reports. A `critical` finding fails the audit; everything else warns or notes. The re-pin of affected dependencies is a separate, explicit update step; the audit names the finding, it never rewrites the lockfile.
 
+`rnx audit --licenses` reports the license graph instead of the capability surface: one line per locked package with its SPDX id, effective `link` (`static` or `dynamic` from the lockfile), and obligation class (`none`, `notice`, `file-copyleft`, `relink-object-files`, `relink-corresponding-source`, `whole-work-copyleft`), followed by conflict notes (Apache-2.0 against GPL-2.0, static copyleft pulls, static relink obligations). `--deny-license <spdx>` (comma-separated, repeatable) fails the audit when a locked package carries a denied id; unknown ids in the flag fail with `E108`. A lock with conflicts or denied hits exits `1`, so the flag gates CI.
+
 ## Reading from the registry
 
 Reads take no credentials. Every response carries an `rnx-registry-spec: 0` header. `GET /api/version` reports the contract in one place:
@@ -232,7 +234,9 @@ The CLI posts one JSON frame with exactly these headers:
 - `Content-Type: application/json`
 - `X-RNX-Protocol: 0`
 
-The frame carries the package name, the requested version, every file as text, and the readme, docs, engine range, keywords, and license. The server reads the package identity out of `Project.config` itself, checks the frame against it, minifies what it stores, redacts the published version, and analyses the whole tree before storing. A 201 means the version is live and names the stored manifest digest; anything else prints the rejection status and message with the hint to check the token and the version.
+The frame carries the package name, the requested version, every file as text, and the readme, docs, engine range, keywords, and license. The license is the manifest's `license` field when present (a known SPDX id), otherwise the SPDX inferred from the LICENSE text, falling back to `MIT`. The server reads the package identity out of `Project.config` itself, checks the frame against it, minifies what it stores, redacts the published version, and analyses the whole tree before storing. A 201 means the version is live and names the stored manifest digest; anything else prints the rejection status and message with the hint to check the token and the version. Unknown SPDX ids fail the publish with 400 on the server and `E108` on the client before anything is sent.
+
+The client validates the license before posting: the package root must hold a non-empty `LICENSE` (or `LICENSE.txt`) file or the publish stops with `E108`, and a declared `license` must read as that grant or the publish stops naming the mismatch. The server enforces the same floor: no LICENSE file, or an unknown license string, rejects the publish.
 
 Publishing canonicalizes on the server. `rnx publish` first refuses unformatted trees with `E108` naming the files (run `rnx fmt` and retry; the gate is UX only, the server trusts nothing), then extracts the API docs so doc comments survive in the payload, then ships the source tree as text. The server minifies `.rnx` sources itself — comments stripped — stores `Project.config` with its version redacted, and fails the publish closed if anything does not parse. The manifest digest covers the canonical bytes.
 
@@ -342,18 +346,18 @@ export default {
 }
 ```
 
-A native dependency names a system library and never mixes with `git`, `version`, or `url`:
+A native dependency names a system library and never mixes with `git`, `version`, or `url` (a `link` key may ride alongside any shape: `static`, `dynamic`, or `auto`, with `dynamic` reserved for native entries):
 
 ```rnx
 export default {
     project: { name: "colony", version: "0.4.0" },
     dependencies: {
-        zlib: { native: "z", system: true }
+        zlib: { native: "z", system: true, link: "dynamic" }
     }
 }
 ```
 
-`native` is the library name, `system: true` means the host provides it, and an optional `path` vendors it instead. `version` constrains the source (installed host library for `system: true`, declaring-package version otherwise), and `from` selects a blob by title from the package's own `artifacts` image, implying `system: false`. The combinations are exclusive: `system: true` with `from`, or `path` with any of `system: true`, `version`, or `from`, is an `E108` error — as is `from` without a declared `artifacts` image. A `system: true` entry with a `version` is verified at lock time through `pkg-config`, failing closed on mismatch. At `rnx build` time the linker appends `-l<lib>` automatically; at `rnx run` time the JIT resolves each symbol from the host loader. Importing a native entry as a module is an error — call it with `from native "lib"` (see [Hardware and FFI](/manual/13-hardware-and-ffi)). The final consumer re-pins any transitive native source from the root `native` table or the `--prefer-system` / `--prefer-bundled` flags; see [Project and Toolchain](/manual/16-project-and-toolchain).
+`native` is the library name, `system: true` means the host provides it, and an optional `path` vendors it instead. `version` constrains the source (installed host library for `system: true`, declaring-package version otherwise), and `from` selects a blob by title from the package's own `artifacts` image, implying `system: false`. The combinations are exclusive: `system: true` with `from`, or `path` with any of `system: true`, `version`, or `from`, is an `E108` error — as is `from` without a declared `artifacts` image. `link: "dynamic"` on a path, git, tarball, or registry entry is an `E108` error; on native entries `auto` picks `dynamic` when a shared object exists and `static` otherwise. A `system: true` entry with a `version` is verified at lock time through `pkg-config`, failing closed on mismatch. At `rnx build` time the linker appends `-l<lib>` automatically; at `rnx run` time the JIT resolves each symbol from the host loader. Importing a native entry as a module is an error — call it with `from native "lib"` (see [Hardware and FFI](/manual/13-hardware-and-ffi)). The final consumer re-pins any transitive native source from the root `native` table or the `--prefer-system` / `--prefer-bundled` flags; see [Project and Toolchain](/manual/16-project-and-toolchain).
 
 Bare versus subpath imports resolve against the dependency's `entries`. A bare `"pkg"` loads `entries.main` (`src/main.rnx` by default) and falls back to `entries.lib` when main is missing. `"pkg/sub"` probes `src/sub.rnx`, `src/sub/mod.rnx`, then `src/sub/index.rnx` under the package root, and any path escaping the package fails. A scoped `"@scope/pkg"` splits the same way after the second segment.
 

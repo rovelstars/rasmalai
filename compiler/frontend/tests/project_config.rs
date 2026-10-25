@@ -40,13 +40,14 @@ fn basic_manifest_evaluates() {
     assert_eq!(c.entries.main, "src/main.rnx");
     assert_eq!(
         c.dependencies["utils"],
-        DependencySpec::Path { path: std::path::PathBuf::from("../utils") }
+        DependencySpec::Path { path: std::path::PathBuf::from("../utils"), link: frontend::license::LinkPreference::Auto }
     );
     assert_eq!(
         c.dependencies["algo"],
         DependencySpec::Git {
             git: "https://github.com/example/algo".to_string(),
-            rev: "main".to_string()
+            rev: "main".to_string(),
+            link: frontend::license::LinkPreference::Auto,
         }
     );
     assert_eq!(
@@ -169,6 +170,8 @@ fn lockfile_round_trip_is_sorted_and_stable() {
                 source: "root".to_string(),
                 checksum: "4792fbf8e9c7ee3f9d1eda17d5efab674330f431fb914deb660e45e28add3000".to_string(),
                 artifact_digest: Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+                license: Some("MIT".to_string()),
+                link: Some("static".to_string()),
                 dependencies: vec!["dep 0.2.0".to_string()],
                 tier: "pure".to_string(),
                 capabilities: vec![],
@@ -179,6 +182,8 @@ fn lockfile_round_trip_is_sorted_and_stable() {
                 source: "path:../dep".to_string(),
                 checksum: "19a45518b6b76282bafa62db49ef24accd4ef11584050e5f25cb1302336a17ca".to_string(),
                 artifact_digest: None,
+                license: Some("MIT".to_string()),
+                link: Some("static".to_string()),
                 dependencies: vec![],
                 tier: "pure".to_string(),
                 capabilities: vec![],

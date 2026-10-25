@@ -153,6 +153,10 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
         project: Some(cfg.clone()),
         workspace: None,
     };
+    if let Err(e) = cli::publish::publish_license(cfg, dir) {
+        println!("{e}");
+        std::process::exit(1);
+    }
     if let Err(e) = cli::publish::gate_formatted(dir, &manifest) {
         println!("{e}");
         std::process::exit(1);

@@ -358,7 +358,7 @@ pub fn publish_facts(text: &str) -> Result<PublishFacts, Diagnostic> {
     let mut registry_deps = Vec::new();
     for (dep, spec) in &cfg.dependencies {
         match spec {
-            super::DependencySpec::Semver { version } => {
+            super::DependencySpec::Semver { version, .. } => {
                 registry_deps.push((dep.clone(), version.clone()));
             }
             super::DependencySpec::Url { url, .. } => {

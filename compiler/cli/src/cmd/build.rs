@@ -37,7 +37,7 @@ fn build_key(
             owned.push(std::fs::read(root.join(lib)).unwrap_or_default());
         }
         for (name, spec) in &cfg.dependencies {
-            if let frontend::project::DependencySpec::Path { path } = spec {
+            if let frontend::project::DependencySpec::Path { path, .. } = spec {
                 owned.push(name.as_bytes().to_vec());
                 let dep_root = root.join(path);
                 owned.push(

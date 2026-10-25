@@ -16,6 +16,8 @@ pub struct LockedPackage {
     pub source: String,
     pub checksum: String,
     pub artifact_digest: Option<String>,
+    pub license: Option<String>,
+    pub link: Option<String>,
     pub dependencies: Vec<String>,
     pub tier: String,
     pub capabilities: Vec<String>,
@@ -33,6 +35,8 @@ struct PkgNode {
     source: String,
     checksum: String,
     artifact_digest: Option<String>,
+    license: String,
+    link: String,
     deps: Vec<(String, String)>,
     dir: PathBuf,
 }
@@ -103,6 +107,16 @@ fn source_of(root: &Path, pkg_root: &Path, is_root: bool) -> String {
     }
 }
 
+fn requested_link(spec: &crate::project::DependencySpec) -> crate::license::LinkPreference {
+    match spec {
+        crate::project::DependencySpec::Semver { link, .. }
+        | crate::project::DependencySpec::Path { link, .. }
+        | crate::project::DependencySpec::Git { link, .. }
+        | crate::project::DependencySpec::Url { link, .. }
+        | crate::project::DependencySpec::Native { link, .. } => *link,
+    }
+}
+
 fn collect_into(
     nodes: &mut BTreeMap<String, PkgNode>,
     anchor: &Path,
@@ -114,9 +128,9 @@ fn collect_into(
     prefer: crate::native::NativePrefer,
     used_pins: &mut BTreeSet<String>,
 ) -> Result<(), Diagnostic> {
-    let mut stack: Vec<(PathBuf, ProjectConfig, bool, Option<String>)> =
-        vec![(root.to_path_buf(), config.clone(), is_root, None)];
-    while let Some((pkg_root, cfg, first, source_hint)) = stack.pop() {
+    let mut stack: Vec<(PathBuf, ProjectConfig, bool, Option<String>, String)> =
+        vec![(root.to_path_buf(), config.clone(), is_root, None, "static".to_string())];
+    while let Some((pkg_root, cfg, first, source_hint, incoming_link)) = stack.pop() {
 
         if nodes.contains_key(&cfg.name) {
             let seen = &nodes[&cfg.name];
@@ -133,7 +147,7 @@ fn collect_into(
         }
         let mut deps: Vec<(String, String)> = Vec::new();
         for (dep_name, spec) in &cfg.dependencies {
-            if let crate::project::DependencySpec::Native { lib, system, version, from, .. } = spec {
+            if let crate::project::DependencySpec::Native { lib, system, version, from, link, .. } = spec {
                 if nodes.contains_key(dep_name) {
                     deps.push((dep_name.clone(), String::new()));
                     continue;
@@ -171,6 +185,8 @@ fn collect_into(
                 } else {
                     format!("native:{lib}")
                 };
+                let has_shared = eff.system || eff.from.is_some();
+                let effective = link.effective(has_shared).to_string();
                 nodes.insert(
                     dep_name.clone(),
                     PkgNode {
@@ -179,6 +195,8 @@ fn collect_into(
                         version: installed.unwrap_or_default(),
                         checksum: String::new(),
                         artifact_digest: owner_digest,
+                        license: "unknown".to_string(),
+                        link: effective,
                         deps: Vec::new(),
                         dir: pkg_root.clone(),
                     },
@@ -186,8 +204,16 @@ fn collect_into(
                 deps.push((dep_name.clone(), String::new()));
                 continue;
             }
+            let want_link = requested_link(spec);
+            if want_link == crate::license::LinkPreference::Dynamic {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("dependency `{dep_name}`: `link: \"dynamic\"` needs a native dependency (only native entries provide shared objects)"),
+                ));
+            }
+            let effective = want_link.effective(false).to_string();
             let (dep_root, dep_cfg, hint) = match spec {
-                crate::project::DependencySpec::Path { path } => {
+                crate::project::DependencySpec::Path { path, .. } => {
                     let dep_root = std::fs::canonicalize(pkg_root.join(path)).map_err(|_| {
                         Diagnostic::new(Code::E108, format!("cannot resolve package `{dep_name}`"))
                     })?;
@@ -196,7 +222,7 @@ fn collect_into(
                     })?;
                     (dep_root, dep_cfg, None)
                 }
-                crate::project::DependencySpec::Git { git, rev } => {
+                crate::project::DependencySpec::Git { git, rev, .. } => {
                     let anchor = crate::fetch::cache_anchor(&pkg_root);
                     let dep_root = crate::fetch::resolve_git_dep(&anchor, dep_name, git, rev)?;
                     let dep_cfg = ProjectConfig::load_from_dir(&dep_root)?.ok_or_else(|| {
@@ -204,7 +230,7 @@ fn collect_into(
                     })?;
                     (dep_root, dep_cfg, Some(format!("git:{git}#{rev}")))
                 }
-                crate::project::DependencySpec::Semver { version } => {
+                crate::project::DependencySpec::Semver { version, .. } => {
                     let (dep_root, dep_cfg, resolved) =
                         crate::fetch::resolve_registry_package(
                             dep_name,
@@ -227,7 +253,7 @@ fn collect_into(
                 }
             };
             deps.push((dep_cfg.name.clone(), dep_cfg.version.clone()));
-            stack.push((dep_root, dep_cfg, false, hint));
+            stack.push((dep_root, dep_cfg, false, hint, effective));
         }
         let source = source_hint.unwrap_or_else(|| source_of(anchor, &pkg_root, first));
         // The lock pins the registry manifest digest for registry packages,
@@ -253,10 +279,12 @@ fn collect_into(
             cfg.name.clone(),
             PkgNode {
                 source,
-                name: cfg.name,
-                version: cfg.version,
+                name: cfg.name.clone(),
+                version: cfg.version.clone(),
                 checksum,
                 artifact_digest,
+                license: crate::license::resolve_package_license(&pkg_root, cfg.license.as_deref()),
+                link: incoming_link.clone(),
                 deps,
                 dir: pkg_root.clone(),
             },
@@ -322,6 +350,8 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
                 source: n.source,
                 checksum: n.checksum,
                 artifact_digest: None,
+                license: Some(n.license),
+                link: Some(n.link),
                 dependencies: Vec::new(),
                 tier: "system".to_string(),
                 capabilities: Vec::new(),
@@ -335,6 +365,8 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
             source: n.source,
             checksum: n.checksum,
             artifact_digest: n.artifact_digest,
+            license: Some(n.license),
+            link: Some(n.link),
             dependencies: n.deps.iter().map(|(n, v)| {
                 if v.is_empty() {
                     n.clone()
@@ -400,6 +432,17 @@ fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnos
                     format!("artifact mismatch for package `{}`", node.name),
                 ));
             }
+            if let Some(want) = locked.link.as_deref()
+                && want != node.link.as_str()
+            {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "link mismatch for package `{}`: Project.deplock has `{want}`, project wants `{}` (run 'rnx lock')",
+                        node.name, node.link,
+                    ),
+                ));
+            }
             continue;
         }
         if locked.version != node.version {
@@ -430,6 +473,17 @@ fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnos
             return Err(Diagnostic::new(
                 Code::E108,
                 format!("artifact mismatch for package `{}`", node.name),
+            ));
+        }
+        if let Some(want) = locked.link.as_deref()
+            && want != node.link.as_str()
+        {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "link mismatch for package `{}`: Project.deplock has `{want}`, project wants `{}` (run 'rnx lock')",
+                    node.name, node.link,
+                ),
             ));
         }
         let scan = crate::security::analyze_dep_dir(&node.dir)?;
@@ -529,6 +583,12 @@ impl ProjectDepLock {
             if let Some(digest) = &p.artifact_digest {
                 out.push_str(&format!("            artifactDigest: {},\n", rnx_string(digest)));
             }
+            if let Some(license) = &p.license {
+                out.push_str(&format!("            license: {},\n", rnx_string(license)));
+            }
+            if let Some(link) = &p.link {
+                out.push_str(&format!("            link: {},\n", rnx_string(link)));
+            }
             out.push_str("            dependencies: [");
             for (j, d) in p.dependencies.iter().enumerate() {
                 if j > 0 {
@@ -625,12 +685,27 @@ fn parse_locked(val: &ConfigValue) -> Result<LockedPackage, String> {
         Some(_) => return Err("locked package field `artifactDigest` must be a string".to_string()),
         None => None,
     };
+    let license = match obj.get("license") {
+        Some(ConfigValue::String(s)) => Some(s.clone()),
+        Some(_) => return Err("locked package field `license` must be a string".to_string()),
+        None => None,
+    };
+    let link = match obj.get("link") {
+        Some(ConfigValue::String(s)) if s == "static" || s == "dynamic" => Some(s.clone()),
+        Some(ConfigValue::String(s)) => {
+            return Err(format!("locked package field `link` `{s}` must be `static` or `dynamic`"))
+        }
+        Some(_) => return Err("locked package field `link` must be a string".to_string()),
+        None => None,
+    };
     Ok(LockedPackage {
         name: get_str("name")?,
         version: get_str("version")?,
         source: get_str("source")?,
         checksum: get_str("checksum")?,
         artifact_digest,
+        license,
+        link,
         dependencies,
         tier,
         capabilities,
