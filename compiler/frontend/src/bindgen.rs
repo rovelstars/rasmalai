@@ -179,12 +179,14 @@ struct CFunc {
     ret: Cty,
     params: Vec<(String, Cty)>,
     variadic: bool,
+    docs: String,
 }
 
 #[derive(Debug, Clone)]
 struct ConstVal {
     name: String,
     value: ConstLit,
+    docs: String,
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +314,157 @@ fn lex_c(text: &str) -> Vec<Ctok> {
         out.push(Ctok::Punct((b as char).to_string()));
         i += 1;
     }
+    out
+}
+
+struct ScannedComment {
+    body: String,
+    line_style: bool,
+    leading: bool,
+}
+
+struct ScannedLine {
+    comments: Vec<ScannedComment>,
+    in_block: bool,
+}
+
+fn scan_c_lines(text: &str) -> Vec<ScannedLine> {
+    let bytes = text.as_bytes();
+    let mut lines: Vec<ScannedLine> = Vec::new();
+    let mut comments: Vec<ScannedComment> = Vec::new();
+    let mut line_in_block = false;
+    let mut seen_code = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\n' {
+            lines.push(ScannedLine {
+                comments: std::mem::take(&mut comments),
+                in_block: line_in_block,
+            });
+            line_in_block = false;
+            seen_code = false;
+            i += 1;
+            continue;
+        }
+        if b == b'"' || b == b'\'' {
+            seen_code = true;
+            let q = b;
+            i += 1;
+            while i < bytes.len() && bytes[i] != q && bytes[i] != b'\n' {
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == q {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j] != b'\n' {
+                j += 1;
+            }
+            comments.push(ScannedComment {
+                body: String::from_utf8_lossy(&bytes[i + 2..j]).into_owned(),
+                line_style: true,
+                leading: !seen_code,
+            });
+            i = j;
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            let leading = !seen_code;
+            line_in_block = true;
+            let inner = i + 2;
+            let mut j = inner;
+            while j + 1 < bytes.len() && !(bytes[j] == b'*' && bytes[j + 1] == b'/') {
+                if bytes[j] == b'\n' {
+                    lines.push(ScannedLine {
+                        comments: std::mem::take(&mut comments),
+                        in_block: true,
+                    });
+                    seen_code = false;
+                }
+                j += 1;
+            }
+            let end = j.min(bytes.len());
+            if leading {
+                comments.push(ScannedComment {
+                    body: String::from_utf8_lossy(&bytes[inner..end]).into_owned(),
+                    line_style: false,
+                    leading: true,
+                });
+            }
+            i = (j + 2).min(bytes.len());
+            continue;
+        }
+        if !b.is_ascii_whitespace() {
+            seen_code = true;
+        }
+        i += 1;
+    }
+    lines.push(ScannedLine {
+        comments,
+        in_block: line_in_block,
+    });
+    lines
+}
+
+fn clean_c_doc(body: &str, line_style: bool) -> Option<String> {
+    let mut kept: Vec<String> = Vec::new();
+    if line_style {
+        let mut t = body;
+        if t.starts_with('/') || t.starts_with('!') {
+            t = &t[1..];
+        }
+        if let Some(s) = t.strip_prefix(' ') {
+            t = s;
+        }
+        kept.push(t.trim_end().to_string());
+    } else {
+        for raw in body.split('\n') {
+            let s = raw.trim_end().trim_start();
+            let s = s.trim_start_matches('*');
+            kept.push(s.strip_prefix(' ').unwrap_or(s).to_string());
+        }
+    }
+    while kept.first().is_some_and(|l| l.is_empty()) {
+        kept.remove(0);
+    }
+    while kept.last().is_some_and(|l| l.is_empty()) {
+        kept.pop();
+    }
+    if kept.iter().all(|l| l.is_empty()) {
+        return None;
+    }
+    let mut text = kept.join("\n");
+    while text.contains("*/") {
+        text = text.replace("*/", "* /");
+    }
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(text)
+}
+
+fn format_doc_comment(text: &str) -> String {
+    if !text.contains('\n') {
+        return format!("/** {text} */\n");
+    }
+    let mut out = String::from("/**\n");
+    for line in text.split('\n') {
+        if line.is_empty() {
+            out.push_str(" *\n");
+        } else {
+            out.push_str(" * ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.push_str(" */\n");
     out
 }
 
@@ -744,6 +897,8 @@ struct Pp<'a> {
     include_dirs: &'a [PathBuf],
     primary: bool,
     toks: Vec<(Ctok, bool)>,
+    doc_marks: Vec<(usize, String)>,
+    define_docs: BTreeMap<String, String>,
     state: PpState,
     consts: BTreeMap<String, i64>,
     visited: BTreeSet<PathBuf>,
@@ -771,23 +926,50 @@ fn process_text(
     pp: &mut Pp,
     depth: usize,
 ) -> Result<(), String> {
-    let joined = join_continuations(&strip_block_comments(text));
-    for raw in joined.lines() {
+    let joined_raw = join_continuations(text);
+    let scanned = scan_c_lines(&joined_raw);
+    let joined = strip_block_comments(&joined_raw);
+    let primary = pp.primary;
+    let mut pending: Vec<String> = Vec::new();
+    for (idx, raw) in joined.lines().enumerate() {
+        if primary {
+            if let Some(sl) = scanned.get(idx) {
+                for c in &sl.comments {
+                    if !c.leading {
+                        continue;
+                    }
+                    if let Some(t) = clean_c_doc(&c.body, c.line_style) {
+                        pending.push(t);
+                    }
+                }
+            }
+        }
         let line = raw.trim_start();
         if !line.starts_with('#') {
-            if pp.state.is_active() {
-                let lexed = lex_c(raw);
-                let expanded = expand_defines(&lexed, &pp.state.defines);
-                let fun_bodies: BTreeMap<String, (Vec<String>, Vec<Ctok>)> = pp
-                    .state
-                    .fun_like
-                    .iter()
-                    .map(|(n, (q, b))| (n.clone(), (q.clone(), lex_c(b))))
-                    .collect();
-                let expanded = expand_fun_like(&expanded, &fun_bodies);
-                let primary = pp.primary;
-                pp.toks.extend(expanded.into_iter().map(|t| (t, primary)));
+            let blank = raw.trim().is_empty()
+                && !scanned.get(idx).is_some_and(|sl| sl.in_block);
+            if blank {
+                pending.clear();
+                continue;
             }
+            if !pp.state.is_active() {
+                pending.clear();
+                continue;
+            }
+            let lexed = lex_c(raw);
+            let expanded = expand_defines(&lexed, &pp.state.defines);
+            let fun_bodies: BTreeMap<String, (Vec<String>, Vec<Ctok>)> = pp
+                .state
+                .fun_like
+                .iter()
+                .map(|(n, (q, b))| (n.clone(), (q.clone(), lex_c(b))))
+                .collect();
+            let expanded = expand_fun_like(&expanded, &fun_bodies);
+            if primary && !pending.is_empty() && !lexed.is_empty() {
+                pp.doc_marks.push((pp.toks.len(), pending.join("\n\n")));
+                pending.clear();
+            }
+            pp.toks.extend(expanded.into_iter().map(|t| (t, primary)));
             continue;
         }
         let body = line[1..].trim_start();
@@ -819,8 +1001,13 @@ fn process_text(
                             pp.state.fun_like.insert(name, (params, body));
                         }
                     }
+                    pending.clear();
                     continue;
                 }
+                if pp.primary && !pending.is_empty() {
+                    pp.define_docs.entry(name.clone()).or_insert(pending.join("\n\n"));
+                }
+                pending.clear();
                 let value = after.trim_start().to_string();
                 if pp.primary {
                     pp.state.primary_defines.insert(name.clone());
@@ -925,12 +1112,15 @@ fn process_text(
 struct DeclParser {
     toks: Vec<(Ctok, bool)>,
     pos: usize,
+    doc_marks: Vec<(usize, String)>,
+    mark_cursor: usize,
     fun_like: BTreeMap<String, (Vec<String>, String)>,
     typedefs: BTreeMap<String, Cty>,
     defined_recs: BTreeSet<String>,
     unions: BTreeSet<String>,
     funcs: Vec<CFunc>,
     consts: Vec<(String, ConstLit)>,
+    const_docs: BTreeMap<String, String>,
     int_consts: BTreeMap<String, i64>,
     warnings: Vec<String>,
     defines: BTreeMap<String, String>,
@@ -947,6 +1137,17 @@ impl DeclParser {
 
     fn at_primary(&self) -> bool {
         self.toks.get(self.pos).map(|(_, p)| *p).unwrap_or(false)
+    }
+
+    fn take_doc(&mut self, start: usize) -> String {
+        let mut out = String::new();
+        while self.mark_cursor < self.doc_marks.len()
+            && self.doc_marks[self.mark_cursor].0 <= start
+        {
+            out = self.doc_marks[self.mark_cursor].1.clone();
+            self.mark_cursor += 1;
+        }
+        out
     }
 
     fn next(&mut self) -> Option<Ctok> {
@@ -1117,7 +1318,8 @@ impl DeclParser {
                 for _ in 0..decl.ptr_depth {
                     ret = Cty::Ptr(Box::new(ret));
                 }
-                self.funcs.push(CFunc { name, ret, params, variadic });
+                let docs = self.take_doc(save);
+                self.funcs.push(CFunc { name, ret, params, variadic, docs });
             }
             return true;
         }
@@ -1515,6 +1717,7 @@ impl DeclParser {
             if self.eat("}") {
                 break;
             }
+            let estart = self.pos;
             let enumerator = match self.next() {
                 Some(Ctok::Ident(n)) => n,
                 _ => {
@@ -1565,6 +1768,10 @@ impl DeclParser {
             }
             if self.at_primary() {
                 self.consts.push((enumerator.clone(), ConstLit::Int(value)));
+                let docs = self.take_doc(estart);
+                if !docs.is_empty() {
+                    self.const_docs.entry(enumerator.clone()).or_insert(docs);
+                }
             }
             self.int_consts.insert(enumerator, value);
             if !self.eat(",") {
@@ -2185,6 +2392,8 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
         include_dirs: &opts.include_dirs,
         primary: true,
         toks: Vec::new(),
+        doc_marks: Vec::new(),
+        define_docs: BTreeMap::new(),
         state: PpState {
             defines: pred,
             fun_like: BTreeMap::new(),
@@ -2205,12 +2414,15 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
     let mut parser = DeclParser {
         toks: pp.toks,
         pos: 0,
+        doc_marks: pp.doc_marks,
+        mark_cursor: 0,
         fun_like: pp.state.fun_like,
         typedefs: BTreeMap::new(),
         defined_recs: BTreeSet::new(),
         unions: BTreeSet::new(),
         funcs: Vec::new(),
         consts: Vec::new(),
+        const_docs: BTreeMap::new(),
         int_consts: BTreeMap::new(),
         warnings: Vec::new(),
         defines: pp.state.defines,
@@ -2222,7 +2434,8 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
     let mut consts: Vec<ConstVal> = Vec::new();
     for (name, lit) in parser.consts {
         if seen_consts.insert(name.clone()) {
-            consts.push(ConstVal { name, value: lit });
+            let docs = parser.const_docs.get(&name).cloned().unwrap_or_default();
+            consts.push(ConstVal { name, value: lit, docs });
         }
     }
     let mut define_consts: Vec<ConstVal> = Vec::new();
@@ -2233,11 +2446,13 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
         }
         if let Some(body) = parser.defines.get(name).cloned() {
             let body = body.trim().to_string();
+            let docs = pp.define_docs.get(name).cloned().unwrap_or_default();
             if body.starts_with('"') && body.ends_with('"') && body.len() >= 2 {
                 seen_consts.insert(name.clone());
                 define_consts.push(ConstVal {
                     name: name.clone(),
                     value: ConstLit::Str(body[1..body.len() - 1].to_string()),
+                    docs,
                 });
                 continue;
             }
@@ -2247,7 +2462,11 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
             {
                 int_consts.insert(name.clone(), v);
                 seen_consts.insert(name.clone());
-                define_consts.push(ConstVal { name: name.clone(), value: ConstLit::Int(v) });
+                define_consts.push(ConstVal {
+                    name: name.clone(),
+                    value: ConstLit::Int(v),
+                    docs,
+                });
             }
         }
     }
@@ -2380,6 +2599,13 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
         upstream,
         header_names.join(",")
     ));
+    rnx.push_str(&format!(
+        "//! Generated by {} from {} (upstream={}).\n",
+        generator_string(),
+        header_names.join(","),
+        upstream
+    ));
+    rnx.push_str("//! Do not edit by hand; regenerate with `rnx bindgen`.\n");
     if !kept.is_empty() {
         rnx.push_str("import {\n");
         for (i, ((f, shape), _)) in kept.iter().zip(display.iter()).enumerate() {
@@ -2408,6 +2634,9 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
         rnx.push_str("\"\n\n");
     }
     for ((f, shape), name) in kept.iter().zip(display.iter()) {
+        if !f.docs.is_empty() {
+            rnx.push_str(&format_doc_comment(&f.docs));
+        }
         let ret_ann = if shape.ret == "Void" { String::new() } else { format!(": {}", shape.ret) };
         rnx.push_str(&format!("unsafe fn {name}({}){ret_ann} {{\n", shape.params));
         if shape.ret == "Void" {
@@ -2428,6 +2657,9 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
     if !filtered_consts.is_empty() {
         rnx.push('\n');
         for c in &filtered_consts {
+            if !c.docs.is_empty() {
+                rnx.push_str(&format_doc_comment(&c.docs));
+            }
             let (ty, val) = match &c.value {
                 ConstLit::Int(n) => ("Int", n.to_string()),
                 ConstLit::Str(s) => ("String", format!("\"{}\"", escape_str(s))),
@@ -2550,6 +2782,81 @@ mod tests {
         generate(&opts)
     }
 
+    #[test]
+    fn banner_comment_converts_to_doc_block() {
+        let out = gen_src(
+            "/*\n** CAPI3REF: Open A Database.\n**\n** Open the file and return a handle.\n*/\nint sqlite3_open(const char *name, int flags);\n",
+        )
+        .unwrap();
+        assert!(
+            out.rnx.contains("/**\n * CAPI3REF: Open A Database.\n *\n * Open the file and return a handle.\n */\nunsafe fn sqlite3_open("),
+            "{}",
+            out.rnx
+        );
+    }
+
+    #[test]
+    fn first_star_slash_terminates_doc_prose() {
+        let out = gen_src("/* First. */ trailing /* Second. */\nint frob(int x);\n").unwrap();
+        assert!(out.rnx.contains("/** First. */\nunsafe fn frob("), "{}", out.rnx);
+        assert!(!out.rnx.contains("Second"), "{}", out.rnx);
+    }
+
+    #[test]
+    fn empty_doc_comments_never_emit() {
+        let out = gen_src("/**/\nint a(int x);\n/** */\nint b(int x);\n/***/\nint c(int x);\n").unwrap();
+        assert!(!out.rnx.contains("/**"), "{}", out.rnx);
+        assert!(out.rnx.contains("unsafe fn a("), "{}", out.rnx);
+        assert!(out.rnx.contains("unsafe fn c("), "{}", out.rnx);
+    }
+
+    #[test]
+    fn doc_attaches_above_wrapper_with_module_header() {
+        let out = gen_src("// Open a database file.\nint sqlite3_open(const char *name);\n").unwrap();
+        assert!(out.rnx.contains("//! Generated by rnx-bindgen "), "{}", out.rnx);
+        assert!(out.rnx.contains("(upstream="), "{}", out.rnx);
+        assert!(
+            out.rnx.contains("/** Open a database file. */\nunsafe fn sqlite3_open("),
+            "{}",
+            out.rnx
+        );
+        assert!(!out.rnx.contains("/** Open a database file. */\nimport"), "{}", out.rnx);
+    }
+
+    #[test]
+    fn define_block_documents_const() {
+        let out = gen_src(
+            "/*\n** KEYWORDS: result codes.\n**\n** Success or failure.\n*/\n#define SQLITE_OK 0\n#define SQLITE_ERROR 1\n",
+        )
+        .unwrap();
+        assert!(
+            out.rnx.contains("/**\n * KEYWORDS: result codes.\n *\n * Success or failure.\n */\nexport const SQLITE_OK: Int = 0"),
+            "{}",
+            out.rnx
+        );
+        assert!(out.rnx.contains("export const SQLITE_ERROR: Int = 1"), "{}", out.rnx);
+    }
+
+    #[test]
+    fn stray_comments_do_not_leak_across_blank_lines() {
+        let out = gen_src(
+            "/* License banner for the whole file. */\n#ifndef GUARD_H\n#define GUARD_H\n#endif\n\nint bare(int x);\nint lonely(int y); /* trailing never leaks forward */\n// Doc for next.\nint next(int z);\n",
+        )
+        .unwrap();
+        assert!(!out.rnx.contains("License banner"), "{}", out.rnx);
+        assert!(!out.rnx.contains("trailing never leaks"), "{}", out.rnx);
+        assert!(out.rnx.contains("/** Doc for next. */\nunsafe fn next("), "{}", out.rnx);
+        let bare_pos = out.rnx.find("unsafe fn bare(").unwrap();
+        assert!(!out.rnx[..bare_pos].contains("/**"), "{}", out.rnx);
+        let lonely_pos = out.rnx.find("unsafe fn lonely(").unwrap();
+        assert!(!out.rnx[bare_pos..lonely_pos].contains("/**"), "{}", out.rnx);
+    }
+
+    #[test]
+    fn star_slash_inside_line_comment_is_sanitized() {
+        let out = gen_src("// see a */ b\nint guarded(int x);\n").unwrap();
+        assert!(out.rnx.contains("/** see a * / b */\nunsafe fn guarded("), "{}", out.rnx);
+    }
     #[test]
     fn bool_maps_to_bool_not_pointer() {
         let out = gen_src("typedef unsigned char Bool;\n_Bool flag(int x);\n").unwrap();

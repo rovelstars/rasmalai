@@ -123,6 +123,7 @@ pub fn collect_module(name: &str, module: &A::Module, include_private: bool) -> 
         ..Default::default()
     };
     let mut extensions: Vec<(A::Type, Vec<A::Spanned<A::ClassMember>>)> = Vec::new();
+    let mut export_lists: Vec<Vec<A::ExportSpecifier>> = Vec::new();
     for decl in &module.decls {
         match &decl.node {
             A::Decl::Fn(f) => {
@@ -162,7 +163,53 @@ pub fn collect_module(name: &str, module: &A::Module, include_private: bool) -> 
             A::Decl::Extension { target, members, .. } => {
                 extensions.push((target.clone(), members.clone()));
             }
+            A::Decl::ExportList(specs) => {
+                export_lists.push(specs.clone());
+            }
             _ => {}
+        }
+    }
+    if !include_private {
+        for specs in &export_lists {
+            for spec in specs {
+                let public = spec.alias.clone().unwrap_or_else(|| spec.name.clone());
+                let mut found = false;
+                for decl in &module.decls {
+                    match &decl.node {
+                        A::Decl::Fn(f) => {
+                            if f.name == spec.name
+                                && !f.is_test
+                                && !doc.fns.iter().any(|d| d.name == public)
+                            {
+                                doc.fns.push(DocFn {
+                                    name: public.clone(),
+                                    sig: fn_sig(&public, f),
+                                    docs: f.docs.clone(),
+                                });
+                                found = true;
+                            }
+                        }
+                        A::Decl::Const { name, ty, docs, .. } => {
+                            if *name == spec.name
+                                && !doc.consts.iter().any(|d| d.name == public)
+                            {
+                                let ty =
+                                    ty.as_ref().map(ty_name).unwrap_or_else(|| "Any".to_string());
+                                doc.consts.push(DocConst {
+                                    name: public.clone(),
+                                    ty,
+                                    docs: docs.clone(),
+                                });
+                                found = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                    if found {
+                        break;
+                    }
+                }
+            }
         }
     }
     for (target, members) in extensions {
@@ -818,6 +865,22 @@ pub fn modules_to_json(modules: &[DocModuleDoc]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_list_surfaces_reexported_private_fns_and_consts() {
+        let src = "/** Adds two. */\nfn add(a: Int, b: Int): Int { return a + b; }\n/** Hidden. */\nfn hidden(): Int { return 0; }\n/** The answer. */\nconst ANSWER: Int = 42\nexport {\n    add,\n    hidden as shown,\n    ANSWER\n}\n";
+        let module = crate::parser::Parser::parse_module(src).unwrap();
+        let doc = collect_module("probe", &module, false);
+        let names: Vec<&str> = doc.fns.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["add", "shown"]);
+        assert_eq!(doc.fns[0].docs, "Adds two.");
+        assert_eq!(doc.fns[1].docs, "Hidden.");
+        assert_eq!(doc.consts.len(), 1);
+        assert_eq!(doc.consts[0].name, "ANSWER");
+        assert_eq!(doc.consts[0].docs, "The answer.");
+        let all = collect_module("probe", &module, true);
+        assert!(all.fns.iter().any(|f| f.name == "hidden"));
+    }
 
     #[test]
     fn plain_docs_render_without_tag_list() {
