@@ -238,12 +238,13 @@ print(quote(2.0));
 | `rnx lint` | static checks over sources | `[paths...]`, `-p`, `--sarif`, `--json`, `--deny-warnings`, `--fix` |
 | `rnx fmt` | format `.rnx` sources | `[paths...]`, `--check`, `--diff` |
 | `rnx add` | add a local path dependency with capability approval | `<package>`, `--path <dir>`, `--accept-caps <list>`, `--accept-all-caps` |
-| `rnx publish` | publish the current project to the registry | `--registry <url>`, `--token <token>` |
+| `rnx publish` | publish the current project to the registry (pushes the OCI image when `RNX_OCI_PUSH_URL` is set) | `--registry <url>`, `--token <token>`, `--artifact <digest>` |
 | `rnx lsp` | Language Server Protocol over stdio | none |
 | `rnx mcp` | Model Context Protocol server over stdio | none |
 | `rnx explain` | diagnostic text plus fix | `<code>` |
 | `rnx audit` | report capability and tier surface per package | `--path <dir>`, `--json`, `--export-manifest` |
 | `rnx bindgen` | generate `bindgen.rnx` plus OCI annotations from C headers | `--header <file>`, `--native-lib <lib>`, `--pkg-name <name>`, `--out <dir>`, `--target`, `--prefix`, `--skip`, `--include`, `--check` |
+| `rnx task` | run an author-local task from `Project.config` (`bindgen` replays the driver table) | `[name]` (lists tasks when omitted) |
 | `rnx completions` | shell completion scripts | `bash`, `zsh`, `fish`, `powershell`, `elvish` |
 | `rnx pack` | deterministic ustar plus SHA-256 | `-p`, `--out-dir`, `--gzip/-z` |
 | `rnx unpack` | verify and extract archive | `--out-dir <dir>` |
@@ -253,13 +254,95 @@ print(quote(2.0));
 | `rnx fetch-std` | seed the global registry cache with every `@std/*` package | `--registry <url>` |
 | `rnx doctor` | check the stdlib cache pin and contents, plus dep product status | `--repair-std`, `--registry <url>` |
 
-Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners.
+Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners. `--prefer-system` resolves every native dependency from the host library and `--prefer-bundled` from bundled OCI blobs; the two conflict, and per-dependency `native` pins override either.
 
 `rnx fetch-std` resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). The installer runs it automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. Both accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default. With an empty cache and no network, `@std/*` imports fail as `E108` naming the registry instead of falling back silently.
 
 `rnx fetch` downloads every dependency of the current scope and then precompiles the scope: it loads each member's entry module so the dependency resolver records its products. Each product is mirrored from the project cache into the global store at `products/<registry-host>/<package>/<version>/<toolchain>/` (git dependencies under `products/git/<name>/<rev>/<toolchain>/`), next to a `manifest` file holding the content hash, dep set, and toolchain. A product is reused only when the exact pinned version, the toolchain hash, and the content digest all match; floating ranges never populate, and a missing or corrupt entry falls back to the normal path. `rnx build` also keeps whole-program codegen units in a content-keyed global `objects/` pool, so rebuilding the same program with an empty project cache skips LLVM emission. `rnx doctor` lists each pinned dependency as `cached` or `absent` (floating ranges are reported as unpinned), and `rnx cache status`/`prune` covers the new pools.
 
 `rnx fmt` rewrites sources with the canonical style (4-space indents, Egyptian braces, single spaces around binary operators, at most one blank line, no trailing whitespace); comments and string contents are never altered and formatting is idempotent. `rnx lint` checks `L001` (unused variable), `L002` (unused parameter), `L003` (unreachable code), `L004` (missing doc comment), and `L005` (empty block).
+
+## Native matrix and author tasks
+
+Native dependencies choose their source per entry: a host system library or a bundled OCI blob. The declaration carries the choice:
+
+```rnx
+export default {
+    project: { name: "colony", version: "0.4.0" },
+    artifacts: "ghcr.io/org/colony",
+    dependencies: {
+        zlib: { native: "z", system: true, version: ">=1.2.0" },
+        codec: { native: "codec", from: "libcodec.so" }
+    }
+}
+```
+
+`version` constrains the source: the installed host library for `system: true`, the declaring package's own version for bundled sources. Ranges use the same grammar as SemVer requirements (`*`, `^`, `~`, `>=`, exact). `from` selects a blob by its OCI title from the package's own `artifacts` image and implies `system: false`; a `from` entry without a declared `artifacts` image is an `E108` error. `system: true` consumes the host library only after verifying the version: the check runs `pkg-config --modversion <lib>`, falling back to `ldconfig -p` for presence. A mismatch or a missing library fails the lock closed and names the mismatch — there is no silent fallback. `path` vendors a local checkout instead and cannot combine with `system: true`, `version`, or `from`.
+
+The library author declares the default, but the final consumer re-pins any transitive native dependency from the root `Project.config`:
+
+```rnx
+export default {
+    project: { name: "app", version: "1.0.0" },
+    dependencies: {
+        sqlite3: "^3.45.0"
+    },
+    native: {
+        sqlite3: { system: true, version: ">=3.40.0" }
+    }
+}
+```
+
+The `native` table is root-only; member and dependency tables are ignored. The `--prefer-system` and `--prefer-bundled` global flags set the default for every entry without an explicit pin (or `RNX_PREFER_NATIVE=system|bundled` when the flags are absent; the flags win). Explicit pins override both. A flag that flips a declared source keeps the declared `version` constraint and checks it against the new source — a host-oriented range that the flipped source cannot satisfy fails the lock with the mismatch named, and an explicit pin without `version` clears it. The lockfile records the effective choice per entry — `native:<lib>+system` with the installed version, `native:<lib>#<title>` with the owning image digest, plain `native:<lib>` for the automatic role-plus-platform match — so locked builds resolve offline and identically. Re-lock after changing a pin or a flag; a locked verify with different preferences fails as a source mismatch, which is the point.
+
+Author-local automation lives in two more tables. `bindgen` drives the generator without flags:
+
+```rnx
+export default {
+    project: { name: "demo", version: "0.1.0" },
+    bindgen: {
+        headers: ["include/foo.h"],
+        include: ["include"],
+        prefix: ["foo_"],
+        skip: ["foo_debug"],
+        native_lib: "foo",
+        outputs: {
+            "src/gen": { title: "foo.rnx" }
+        }
+    }
+}
+```
+
+`rnx task bindgen` replays the driver for every output directory, writing `<dir>/<title>` plus `<dir>/bindgen.oci.json`. (`bindgen` the task name is reserved: a `tasks.bindgen` entry is rejected.) The `tasks` table holds the rest:
+
+```rnx
+export default {
+    project: { name: "demo", version: "0.1.0" },
+    tasks: {
+        check: ["rnx check", "rnx lint"],
+        build: {
+            steps: [{ run: target.os == "windows" ? "rnx build --target x86_64-pc-windows-msvc" : "rnx build" }],
+            matrix: ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+        },
+        all: { tasks: ["check", "build"], strategy: "parallel", "on-failure": "continue" }
+    }
+}
+```
+
+`rnx task <name>` runs steps with the project root as the working directory, streaming their output; `rnx task` alone lists them. A step is a shell command string, a `{ run = ... }` table, or a `{ task = ... }` reference to another task. A metatask names other tasks with `strategy: serial | parallel` and `"on-failure": stop | continue` — note the quotes, since a bare `on-failure` key is not valid record syntax. A `matrix` list of target triples evaluates every step once per triple (each leg sees its own `target`), so one table fans out across platforms; the manifest sandbox — `const`, spreads, ternaries, `switch` on `target`, member access, no interpolation — is the whole expression language, and a driver that needs more is rejected as non-declarative. Task cycles and unknown names fail closed with `E108`.
+
+Tasks are containment-load-bearing: they run only through `rnx task` on the author's machine. They never ship — the publish frame drops `tasks` and `bindgen`, only generated files travel — they never run on consumers, and no other command reads them. There are no lifecycle hooks, and none will ever exist.
+
+Publishing a version that declares `artifacts` can push the image itself. Stage per-target blobs under `.rnx-cache/publish/<target>/<role>/<title>` (roles `runtime`, `wasm`, `bindgen`, `media`; the author's matrix tasks produce these), point at an endpoint, and publish:
+
+```sh
+export RNX_OCI_PUSH_URL=https://ghcr.io
+rnx publish
+```
+
+The pipeline replays `rnx task bindgen`, assembles one manifest per target plus the bindings manifests into a single index, cross-checks every staged file against the index before asserting, pushes blobs, manifests, and the index, then captures the index digest into the frame's `artifactDigest` automatically — no hand-copied hashes. A `--artifact` flag that disagrees with the pushed digest fails closed. Without the push URL, publish keeps the old behavior: `--artifact sha256:<hex>` asserts a prebuilt image, fetched by tag, verified by digest, and cross-checked against the local project cache (`.rnx-cache/artifacts/`, seeded from the global `~/.cache/rnx/artifacts/` store; cache hits print a notice and skip the download). The push URL always comes from the environment — never from `Project.config`, since the registry endpoint is environment, not package identity.
+
+Every new failure here reports `E108` with the cause in the message; no new diagnostic codes were added.
 
 ## Optimization levels, profiling, and linking
 

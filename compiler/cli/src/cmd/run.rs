@@ -2,7 +2,7 @@ use super::*;
 use cli::RunOutcome;
 use runtime::value::Value;
 
-pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: Option<String>, locked: bool, opt_level: String, backend: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, verbose: bool, rest: Vec<String>) {
+pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: Option<String>, locked: bool, opt_level: String, backend: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, verbose: bool, rest: Vec<String>, prefer: frontend::native::NativePrefer) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let backend = match backend.as_str() {
@@ -28,7 +28,7 @@ pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: 
                 });
             if locked {
                 let locked_ok = match &target.scope_root {
-                    Some(root) => cli::enforce_locked_at(root),
+                    Some(root) => cli::enforce_locked_at_with(root, prefer),
                     None => Err(cli::missing_lock()),
                 };
                 if let Err(e) = locked_ok {

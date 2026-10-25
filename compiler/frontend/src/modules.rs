@@ -2378,9 +2378,11 @@ fn dep_spec_string(spec: &crate::project::DependencySpec) -> String {
         crate::project::DependencySpec::Url { version, url, checksum } => {
             format!("url:{url}@{version}:{}", checksum.as_deref().unwrap_or(""))
         }
-        crate::project::DependencySpec::Native { lib, system, path } => format!(
-            "native:{lib}:{system}:{}",
-            path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+        crate::project::DependencySpec::Native { lib, system, path, version, from } => format!(
+            "native:{lib}:{system}:{}:{}:{}",
+            path.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+            version.as_deref().unwrap_or_default(),
+            from.as_deref().unwrap_or_default()
         ),
     }
 }

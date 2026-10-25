@@ -110,6 +110,9 @@ fn collect_into(
     config: &ProjectConfig,
     is_root: bool,
     have: &[crate::fetch::HaveEntry],
+    pins: &BTreeMap<String, crate::project::NativePin>,
+    prefer: crate::native::NativePrefer,
+    used_pins: &mut BTreeSet<String>,
 ) -> Result<(), Diagnostic> {
     let mut stack: Vec<(PathBuf, ProjectConfig, bool, Option<String>)> =
         vec![(root.to_path_buf(), config.clone(), is_root, None)];
@@ -130,19 +133,52 @@ fn collect_into(
         }
         let mut deps: Vec<(String, String)> = Vec::new();
         for (dep_name, spec) in &cfg.dependencies {
-            if let crate::project::DependencySpec::Native { lib, .. } = spec {
+            if let crate::project::DependencySpec::Native { lib, system, version, from, .. } = spec {
                 if nodes.contains_key(dep_name) {
                     deps.push((dep_name.clone(), String::new()));
                     continue;
                 }
+                let pin = pins.get(dep_name);
+                if pin.is_some() {
+                    used_pins.insert(dep_name.clone());
+                }
+                let eff = crate::native::effective_choice(
+                    *system,
+                    version.as_deref(),
+                    from.as_deref(),
+                    pin,
+                    prefer,
+                );
+                if !eff.system
+                    && let Some(range) = eff.version.as_deref()
+                {
+                    crate::native::check_owner_version(dep_name, &cfg.version, range)?;
+                }
+                let installed = if eff.system {
+                    Some(crate::native::verify_system_lib(lib, eff.version.as_deref())?)
+                } else {
+                    None
+                };
+                let owner_digest = if eff.from.is_some() {
+                    crate::fetch::cached_artifact_digest(&pkg_root)
+                } else {
+                    None
+                };
+                let source = if eff.system {
+                    format!("native:{lib}+system")
+                } else if let Some(title) = eff.from.as_deref() {
+                    format!("native:{lib}#{title}")
+                } else {
+                    format!("native:{lib}")
+                };
                 nodes.insert(
                     dep_name.clone(),
                     PkgNode {
-                        source: format!("native:{lib}"),
+                        source,
                         name: dep_name.clone(),
-                        version: String::new(),
+                        version: installed.unwrap_or_default(),
                         checksum: String::new(),
-                        artifact_digest: None,
+                        artifact_digest: owner_digest,
                         deps: Vec::new(),
                         dir: pkg_root.clone(),
                     },
@@ -233,9 +269,19 @@ fn collect_graph(
     root: &Path,
     config: &ProjectConfig,
     have: &[crate::fetch::HaveEntry],
+    prefer: crate::native::NativePrefer,
 ) -> Result<Vec<PkgNode>, Diagnostic> {
     let mut nodes: BTreeMap<String, PkgNode> = BTreeMap::new();
-    collect_into(&mut nodes, root, root, config, true, have)?;
+    let mut used_pins: BTreeSet<String> = BTreeSet::new();
+    collect_into(&mut nodes, root, root, config, true, have, &config.native_pins, prefer, &mut used_pins)?;
+    for name in config.native_pins.keys() {
+        if !used_pins.contains(name) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("native pin `{name}` matches no native dependency in scope"),
+            ));
+        }
+    }
     Ok(nodes.into_values().collect())
 }
 
@@ -243,10 +289,25 @@ fn collect_workspace_graph(
     ws_root: &Path,
     members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
     have: &[crate::fetch::HaveEntry],
+    prefer: crate::native::NativePrefer,
 ) -> Result<Vec<PkgNode>, Diagnostic> {
+    let ws_pins = ProjectConfig::load_from_dir(ws_root)
+        .ok()
+        .flatten()
+        .map(|c| c.native_pins)
+        .unwrap_or_default();
     let mut nodes: BTreeMap<String, PkgNode> = BTreeMap::new();
+    let mut used_pins: BTreeSet<String> = BTreeSet::new();
     for (root, cfg) in members.values() {
-        collect_into(&mut nodes, ws_root, root, cfg, false, have)?;
+        collect_into(&mut nodes, ws_root, root, cfg, false, have, &ws_pins, prefer, &mut used_pins)?;
+    }
+    for name in ws_pins.keys() {
+        if !used_pins.contains(name) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("native pin `{name}` matches no native dependency in scope"),
+            ));
+        }
     }
     Ok(nodes.into_values().collect())
 }
@@ -324,6 +385,21 @@ fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnos
                     ),
                 ));
             }
+            if locked.version != node.version {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "version mismatch for package `{}`: Project.deplock has {}, project has {}",
+                        node.name, locked.version, node.version
+                    ),
+                ));
+            }
+            if locked.artifact_digest != node.artifact_digest {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("artifact mismatch for package `{}`", node.name),
+                ));
+            }
             continue;
         }
         if locked.version != node.version {
@@ -379,16 +455,32 @@ fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnos
 
 impl ProjectDepLock {
     pub fn resolve(root: &Path, config: &ProjectConfig) -> Result<ProjectDepLock, Diagnostic> {
+        Self::resolve_with(root, config, crate::native::NativePrefer::from_env())
+    }
+
+    pub fn resolve_with(
+        root: &Path,
+        config: &ProjectConfig,
+        prefer: crate::native::NativePrefer,
+    ) -> Result<ProjectDepLock, Diagnostic> {
         let have = existing_have(root);
-        nodes_to_lock(collect_graph(root, config, &have)?)
+        nodes_to_lock(collect_graph(root, config, &have, prefer)?)
     }
 
     pub fn resolve_workspace(
         ws_root: &Path,
         members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
     ) -> Result<ProjectDepLock, Diagnostic> {
+        Self::resolve_workspace_with(ws_root, members, crate::native::NativePrefer::from_env())
+    }
+
+    pub fn resolve_workspace_with(
+        ws_root: &Path,
+        members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
+        prefer: crate::native::NativePrefer,
+    ) -> Result<ProjectDepLock, Diagnostic> {
         let have = existing_have(ws_root);
-        nodes_to_lock(collect_workspace_graph(ws_root, members, &have)?)
+        nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer)?)
     }
 
     pub fn load(root: &Path) -> Result<Option<ProjectDepLock>, Diagnostic> {
@@ -565,8 +657,17 @@ pub fn rnx_string(s: &str) -> String {
     out
 }
 pub fn verify_lock(root: &Path, config: &ProjectConfig, lock: &ProjectDepLock) -> Result<(), Diagnostic> {
+    verify_lock_with(root, config, lock, crate::native::NativePrefer::from_env())
+}
+
+pub fn verify_lock_with(
+    root: &Path,
+    config: &ProjectConfig,
+    lock: &ProjectDepLock,
+    prefer: crate::native::NativePrefer,
+) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
-    check_nodes(collect_graph(root, config, &have)?, lock)
+    check_nodes(collect_graph(root, config, &have, prefer)?, lock)
 }
 
 pub fn verify_workspace_lock(
@@ -574,8 +675,17 @@ pub fn verify_workspace_lock(
     members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
     lock: &ProjectDepLock,
 ) -> Result<(), Diagnostic> {
+    verify_workspace_lock_with(ws_root, members, lock, crate::native::NativePrefer::from_env())
+}
+
+pub fn verify_workspace_lock_with(
+    ws_root: &Path,
+    members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
+    lock: &ProjectDepLock,
+    prefer: crate::native::NativePrefer,
+) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
-    check_nodes(collect_workspace_graph(ws_root, members, &have)?, lock)
+    check_nodes(collect_workspace_graph(ws_root, members, &have, prefer)?, lock)
 }
 
 #[cfg(test)]
@@ -675,5 +785,151 @@ mod tests {
         lock.packages.retain(|p| p.name != "dep");
         let e = verify_lock(&root, &cfg, &lock).unwrap_err();
         assert!(e.message.contains("not found in Project.deplock"), "{}", e.message);
+    }
+
+    fn native_tree(tag: &str, deps: &str, extra: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+        let dir = crate::scratch::dir(&format!("lock-native-{tag}"));
+        let root = dir.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"app\",\n        version: \"0.1.0\"\n    }},\n    dependencies: {{\n{deps}    }}{extra}}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        (dir, root)
+    }
+
+    fn stub_pkg_config(tag: &str, version: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("lock-pkgcfg-{tag}"));
+        let path = dir.join("pkg-config");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\nif [ \"$1\" = \"--modversion\" ]; then echo \"{version}\"; exit 0; fi\nexit 1\n"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
+        dir
+    }
+
+    struct PathPrepend {
+        prev: Option<String>,
+    }
+
+    impl Drop for PathPrepend {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prev {
+                    Some(p) => std::env::set_var("PATH", p),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+    }
+
+    fn prepend_path(dir: &std::path::Path) -> PathPrepend {
+        let prev = std::env::var("PATH").ok();
+        let next = match &prev {
+            Some(p) if !p.is_empty() => format!("{}:{p}", dir.display()),
+            _ => dir.display().to_string(),
+        };
+        unsafe {
+            std::env::set_var("PATH", next);
+        }
+        PathPrepend { prev }
+    }
+
+    #[test]
+    fn native_system_choice_records_installed_version() {
+        let _guard = crate::native::test_path_guard();
+        let stub = stub_pkg_config("sys", "1.2.13");
+        let _path = prepend_path(&stub);
+        let (_dir, root) = native_tree("sys", "        zlib: { native: \"z\", system: true, version: \">=1.0.0\" }\n", "");
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock =
+            ProjectDepLock::resolve_with(&root, &cfg, crate::native::NativePrefer::None).unwrap();
+        let zlib = lock.packages.iter().find(|p| p.name == "zlib").unwrap();
+        assert_eq!(zlib.source, "native:z+system");
+        assert_eq!(zlib.version, "1.2.13");
+        verify_lock_with(&root, &cfg, &lock, crate::native::NativePrefer::None).unwrap();
+    }
+
+    #[test]
+    fn native_system_mismatch_fails_closed_naming_versions() {
+        let _guard = crate::native::test_path_guard();
+        let stub = stub_pkg_config("mismatch", "1.2.13");
+        let _path = prepend_path(&stub);
+        let (_dir, root) = native_tree("mismatch", "        zlib: { native: \"z\", system: true, version: \">=9.0.0\" }\n", "");
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let err = ProjectDepLock::resolve_with(&root, &cfg, crate::native::NativePrefer::None).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("1.2.13"), "{}", err.message);
+        assert!(err.message.contains(">=9.0"), "{}", err.message);
+    }
+
+    #[test]
+    fn native_prefer_bundled_overrides_system_declaration() {
+        let _guard = crate::native::test_path_guard();
+        let stub = stub_pkg_config("prefer", "1.2.13");
+        let _path = prepend_path(&stub);
+        let (_dir, root) = native_tree("prefer", "        zlib: { native: \"z\", system: true }\n", "");
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock =
+            ProjectDepLock::resolve_with(&root, &cfg, crate::native::NativePrefer::Bundled).unwrap();
+        let zlib = lock.packages.iter().find(|p| p.name == "zlib").unwrap();
+        assert_eq!(zlib.source, "native:z");
+        let err =
+            verify_lock_with(&root, &cfg, &lock, crate::native::NativePrefer::None).unwrap_err();
+        assert!(err.message.contains("source mismatch"), "{}", err.message);
+    }
+
+    #[test]
+    fn native_pin_repins_transitive_source_and_rejects_strays() {
+        let _guard = crate::native::test_path_guard();
+        let stub = stub_pkg_config("pin", "3.0.0");
+        let _path = prepend_path(&stub);
+        let (_dir, root) = native_tree(
+            "pin",
+            "        zlib: { native: \"z\", system: true }\n",
+            ",\n    native: { zlib: { system: false } }\n",
+        );
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock =
+            ProjectDepLock::resolve_with(&root, &cfg, crate::native::NativePrefer::None).unwrap();
+        let zlib = lock.packages.iter().find(|p| p.name == "zlib").unwrap();
+        assert_eq!(zlib.source, "native:z");
+        let (_dir2, root2) = native_tree(
+            "pin-stray",
+            "        zlib: { native: \"z\", system: true }\n",
+            ",\n    native: { nosuch: { system: true } }\n",
+        );
+        let cfg2 = ProjectConfig::load_from_dir(&root2).unwrap().unwrap();
+        let err = ProjectDepLock::resolve_with(&root2, &cfg2, crate::native::NativePrefer::None).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("nosuch"), "{}", err.message);
+    }
+
+    #[test]
+    fn native_from_records_title_choice() {
+        let _guard = crate::native::test_path_guard();
+        let (_dir, root) = native_tree(
+            "from",
+            "        codec: { native: \"codec\", from: \"libcodec.so\" }\n",
+            ",\n    artifacts: \"ghcr.io/org/demo\"\n",
+        );
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock =
+            ProjectDepLock::resolve_with(&root, &cfg, crate::native::NativePrefer::None).unwrap();
+        let codec = lock.packages.iter().find(|p| p.name == "codec").unwrap();
+        assert_eq!(codec.source, "native:codec#libcodec.so");
+        verify_lock_with(&root, &cfg, &lock, crate::native::NativePrefer::None).unwrap();
     }
 }

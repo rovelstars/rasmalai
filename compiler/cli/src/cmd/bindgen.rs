@@ -21,6 +21,7 @@ pub(super) fn run_bindgen(
         prefixes: prefix,
         skips: skip,
         upstream_name,
+        title: None,
     };
     let output = match frontend::bindgen::generate(&opts) {
         Ok(output) => output,

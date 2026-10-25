@@ -239,6 +239,27 @@ Capability and permission failures. The full model — capability grammar, `[per
 |---|---|---|---|
 | `W201` | warning | unrecognized manifest section or field; ignored | correct the spelling or remove the entry |
 
+## Native, task, and pipeline errors (E108)
+
+Native sources, author tasks, and the publish pipeline reuse `E108`; the message always names the cause. No new codes were added for this surface.
+
+| Message (abridged) | Cause | Resolution |
+|---|---|---|
+| `` `system: true` and `from` cannot combine`` | host libraries have no image titles | drop `from` (host source) or drop `system: true` (bundled source) |
+| `` vendored `path` and `system: true` cannot combine`` (likewise `version`, `from`) | a checkout is already a source | keep `path` alone for vendored code |
+| `` `from: "t"` needs the package's own `artifacts` image`` | titles resolve against the declared image | declare `artifacts: "host/org/repo"` first |
+| `` system library `z` reports `1.2.11` which does not satisfy `>=2``` | host library too old (or the constraint too new) | upgrade the library or loosen the range; the lock fails instead of linking a wrong version |
+| `` system library `z` not found`` | neither `pkg-config` nor `ldconfig -p` knows the library | install the development package |
+| `` native pin `x` matches no native dependency in scope`` | typo in the root `native` table | correct the name or remove the pin |
+| `` source mismatch for package `z``` | lock was written with different preferences or pins | re-lock with the same flags (`--prefer-system` / `--prefer-bundled`) |
+| `` task `bindgen` is reserved`` | `tasks.bindgen` collides with the driver | declare `bindgen: { ... }` instead |
+| `` task cycle: a -> b -> a`` | tasks invoke each other in a loop | break the cycle |
+| `` task `x`: step `...` failed with exit code N`` | a shell step failed (serial `stop` halts; `continue` reports at the end) | fix the command, or split it out of the critical path |
+| `` nothing to push: no bindgen outputs and no files under `.rnx-cache/publish/``` | the pipeline has no inputs | declare `bindgen.outputs` or stage per-target blobs, then retry |
+| `` --artifact asserts X, the pipeline pushed Y`` | hand-copied digest disagrees with the fresh push | drop the flag and let the pipeline capture the digest |
+| `` pipeline: staged file `...` must live at `.rnx-cache/publish/<target>/<role>/<title>``` | a staged file is outside the layout | move it under the target/role/title path |
+| `` artifact push failed ...`` | the OCI endpoint rejected a blob, manifest, or index PUT | check `RNX_OCI_PUSH_URL`, the token, and the repo name |
+
 ## Containment warnings (W202)
 
 | Code | Severity | Cause | Resolution |

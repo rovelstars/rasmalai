@@ -25,6 +25,14 @@ pub struct Cli {
     /// Suppress progress banners and non-error telemetry
     #[arg(short, long, global = true)]
     pub quiet: bool,
+
+    /// Resolve every native dependency from the host system (`pkg-config` verified, fail-closed)
+    #[arg(long, global = true, conflicts_with = "prefer_bundled")]
+    pub prefer_system: bool,
+
+    /// Resolve every native dependency from bundled OCI blobs (role-plus-platform match)
+    #[arg(long, global = true, conflicts_with = "prefer_system")]
+    pub prefer_bundled: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -427,6 +435,11 @@ pub enum Command {
         /// Verify the output files are up to date without writing them
         #[arg(long)]
         check: bool,
+    },
+    /// Run an author-local task from Project.config (`tasks` table; never ships, never runs on consumers)
+    Task {
+        /// Task name (lists tasks when omitted; `bindgen` runs the `bindgen` driver table)
+        name: Option<String>,
     },
     /// Generate shell completion scripts
     Completions {

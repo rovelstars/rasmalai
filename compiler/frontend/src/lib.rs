@@ -31,6 +31,7 @@ pub mod semantic_tokens;
 pub mod stdlib_seed;
 pub mod stdvfs;
 pub mod modules;
+pub mod native;
 pub mod parser;
 pub mod prelude;
 pub mod products;

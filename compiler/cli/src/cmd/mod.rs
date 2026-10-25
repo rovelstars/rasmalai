@@ -74,6 +74,7 @@ mod publish;
 mod repl;
 mod run;
 mod setup;
+mod task;
 mod test;
 mod unpack;
 mod vendor;
@@ -103,11 +104,18 @@ use self::publish::run_publish;
 use self::repl::run_repl;
 use self::run::run_run;
 use self::setup::run_setup;
+use self::task::run_task;
 use self::test::run_test;
 use self::unpack::run_unpack;
 use self::vendor::run_vendor;
 
-pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, no_color: bool) {
+pub(super) fn dispatch(
+    command: cli::args::Command,
+    verbose: bool,
+    quiet: bool,
+    no_color: bool,
+    prefer: frontend::native::NativePrefer,
+) {
     match command {
             cli::args::Command::Repl => {
                 run_repl();
@@ -137,7 +145,7 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 memory_cap,
                 args: rest,
             } => {
-                run_run(path, entry, package, locked, opt_level, backend, time_passes, trace, perf_map, debug, jobs, memory_cap, verbose, rest);
+                run_run(path, entry, package, locked, opt_level, backend, time_passes, trace, perf_map, debug, jobs, memory_cap, verbose, rest, prefer);
             }
             cli::args::Command::Explain { code } => {
                 run_explain(code);
@@ -164,7 +172,7 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 fix_force,
                 fix_keep_backup,
             } => {
-                run_build(path, entry, release, lib, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, deny_perf_lints, show_perf_notes, fix, fix_force, fix_keep_backup, verbose, quiet);
+                run_build(path, entry, release, lib, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, deny_perf_lints, show_perf_notes, fix, fix_force, fix_keep_backup, verbose, quiet, prefer);
             }
             cli::args::Command::Init { name } => {
                 run_init(name);
@@ -186,7 +194,7 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 run_fmt(paths, check, diff);
             }
             cli::args::Command::Lock { package } => {
-                run_lock(package);
+                run_lock(package, prefer);
             }
             cli::args::Command::Fetch { package } => {
                 run_fetch(package);
@@ -259,6 +267,9 @@ pub(super) fn dispatch(command: cli::args::Command, verbose: bool, quiet: bool, 
                 memory_cap,
             } => {
                 run_test(filter, package, opt_level, backend, exact, nocapture, jobs, memory_cap, verbose, quiet, no_color);
+            }
+            cli::args::Command::Task { name } => {
+                run_task(name, prefer);
             }
             cli::args::Command::Setup { editor } => {
                 run_setup(editor);

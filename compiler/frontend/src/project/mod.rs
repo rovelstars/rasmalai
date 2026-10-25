@@ -14,7 +14,57 @@ pub enum DependencySpec {
     Path { path: PathBuf },
     Git { git: String, rev: String },
     Url { version: String, url: String, checksum: Option<String> },
-    Native { lib: String, system: bool, path: Option<PathBuf> },
+    Native { lib: String, system: bool, path: Option<PathBuf>, version: Option<String>, from: Option<String> },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativePin {
+    pub system: bool,
+    pub version: Option<String>,
+    pub from: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskStep {
+    Run(String),
+    Invoke(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TaskStrategy {
+    #[default]
+    Serial,
+    Parallel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TaskOnFailure {
+    #[default]
+    Stop,
+    Continue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskDef {
+    Steps { steps: Vec<TaskStep>, matrix: Vec<String> },
+    Group { tasks: Vec<String>, strategy: TaskStrategy, on_failure: TaskOnFailure },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindgenOutputDecl {
+    pub title: String,
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BindgenDriver {
+    pub headers: Vec<String>,
+    pub include: Vec<String>,
+    pub prefix: Vec<String>,
+    pub skip: Vec<String>,
+    pub native_lib: Option<String>,
+    pub upstream: Option<String>,
+    pub outputs: BTreeMap<String, BindgenOutputDecl>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -62,6 +112,9 @@ pub struct ProjectConfig {
     pub permissions: Option<Vec<PermissionDecl>>,
     pub keywords: Vec<String>,
     pub artifacts: Option<String>,
+    pub native_pins: BTreeMap<String, NativePin>,
+    pub tasks: BTreeMap<String, TaskDef>,
+    pub bindgen: Option<BindgenDriver>,
 }
 
 impl ProjectConfig {
@@ -240,9 +293,9 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 use self::eval::{ConfigTarget, ConfigValue, eval_module};
 use crate::parser::Parser;
 
-fn eval_config_text(text: &str) -> Result<ConfigValue, String> {
+fn eval_config_text_with(text: &str, target: ConfigTarget) -> Result<ConfigValue, String> {
     let module = Parser::parse_module(text).map_err(|e| e.message.clone())?;
-    eval_module(&module, ConfigTarget::host()).map_err(|e| e.message.clone())
+    eval_module(&module, target).map_err(|e| e.message.clone())
 }
 
 fn obj_get<'a>(v: &'a ConfigValue, key: &str) -> Option<&'a ConfigValue> {
@@ -345,8 +398,8 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
             let has_version = has("version");
             let has_native = has("native");
             if has_native {
-                if has_git || has_url || has_version {
-                    return Err(format!("dependency `{name}`: `native` must not mix with `git` or `version`/`url`"));
+                if has_git || has_url {
+                    return Err(format!("dependency `{name}`: `native` must not mix with `git` or `url`"));
                 }
                 let lib = match obj_get(val, "native") {
                     Some(ConfigValue::String(s)) if !s.is_empty() => s.clone(),
@@ -362,7 +415,34 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
                     Some(_) => return Err(format!("dependency `{name}`: `path` must be a string")),
                     None => None,
                 };
-                return Ok(DependencySpec::Native { lib, system, path });
+                let version = match obj_get(val, "version") {
+                    Some(ConfigValue::String(s)) => {
+                        if !crate::fetch::is_valid_range(s) {
+                            return Err(format!("dependency `{name}`: `version` `{s}` is not a valid range (expected `*`, `^1.2.0`, `~1.2.0`, `>=1.2.0`, or an exact `1.2.0`)"));
+                        }
+                        Some(s.clone())
+                    }
+                    Some(_) => return Err(format!("dependency `{name}`: `version` must be a string")),
+                    None => None,
+                };
+                let from = match obj_get(val, "from") {
+                    Some(ConfigValue::String(s)) if !s.is_empty() => Some(s.clone()),
+                    Some(_) => return Err(format!("dependency `{name}`: `from` must be a non-empty string")),
+                    None => None,
+                };
+                if system && from.is_some() {
+                    return Err(format!("dependency `{name}`: `system: true` and `from` cannot combine (host libraries have no image titles)"));
+                }
+                if path.is_some() && system {
+                    return Err(format!("dependency `{name}`: vendored `path` and `system: true` cannot combine (pick one source)"));
+                }
+                if path.is_some() && version.is_some() {
+                    return Err(format!("dependency `{name}`: vendored `path` and `version` cannot combine (a local checkout carries no version to check)"));
+                }
+                if path.is_some() && from.is_some() {
+                    return Err(format!("dependency `{name}`: vendored `path` and `from` cannot combine (titles live in the declared `artifacts` image, not in a checkout)"));
+                }
+                return Ok(DependencySpec::Native { lib, system, path, version, from });
             }
             let kinds = [has_path, has_git, has_url || (has_version && !has_git && !has_path)].iter().filter(|&&b| b).count();
             if kinds > 1 {
@@ -425,6 +505,246 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
             "dependency `{name}`: expected a version string, path string, or inline object"
         )),
     }
+}
+
+fn parse_native_pin(name: &str, val: &ConfigValue) -> Result<NativePin, String> {
+    let obj = match val {
+        ConfigValue::Object(_) => val,
+        _ => return Err(format!("field `native.{name}` must be an object (`{{ system = ... }}`)")),
+    };
+    for (key, _) in object_fields(obj) {
+        if !["system", "version", "from"].contains(&key.as_str()) {
+            return Err(format!("field `native.{name}.{key}` is not a pin field (expected `system`, `version`, or `from`)"));
+        }
+    }
+    let system = match obj_get(obj, "system") {
+        Some(ConfigValue::Bool(b)) => *b,
+        Some(_) => return Err(format!("field `native.{name}.system` must be a boolean")),
+        None => return Err(format!("field `native.{name}` is missing required field `system`")),
+    };
+    let version = match obj_get(obj, "version") {
+        Some(ConfigValue::String(s)) => {
+            if !crate::fetch::is_valid_range(s) {
+                return Err(format!("field `native.{name}.version` `{s}` is not a valid range (expected `*`, `^1.2.0`, `~1.2.0`, `>=1.2.0`, or an exact `1.2.0`)"));
+            }
+            Some(s.clone())
+        }
+        Some(_) => return Err(format!("field `native.{name}.version` must be a string")),
+        None => None,
+    };
+    let from = match obj_get(obj, "from") {
+        Some(ConfigValue::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(_) => return Err(format!("field `native.{name}.from` must be a non-empty string")),
+        None => None,
+    };
+    if system && from.is_some() {
+        return Err(format!("field `native.{name}`: `system: true` and `from` cannot combine (host libraries have no image titles)"));
+    }
+    Ok(NativePin { system, version, from })
+}
+
+fn parse_task_step(task: &str, index: usize, val: &ConfigValue) -> Result<TaskStep, String> {
+    match val {
+        ConfigValue::String(s) if !s.is_empty() => Ok(TaskStep::Run(s.clone())),
+        ConfigValue::String(_) => Err(format!("task `{task}` step {index}: command must not be empty")),
+        ConfigValue::Object(_) => {
+            for (key, _) in object_fields(val) {
+                if !["run", "task"].contains(&key.as_str()) {
+                    return Err(format!("task `{task}` step {index}: unknown field `{key}` (expected `run` or `task`)"));
+                }
+            }
+            let has_run = obj_get(val, "run").is_some();
+            let has_task = obj_get(val, "task").is_some();
+            match (has_run, has_task) {
+                (true, false) => match obj_get(val, "run") {
+                    Some(ConfigValue::String(s)) if !s.is_empty() => Ok(TaskStep::Run(s.clone())),
+                    _ => Err(format!("task `{task}` step {index}: `run` must be a non-empty string")),
+                },
+                (false, true) => match obj_get(val, "task") {
+                    Some(ConfigValue::String(s)) if !s.is_empty() => Ok(TaskStep::Invoke(s.clone())),
+                    _ => Err(format!("task `{task}` step {index}: `task` must be a non-empty task name")),
+                },
+                _ => Err(format!("task `{task}` step {index}: specify exactly one of `run` or `task`")),
+            }
+        }
+        _ => Err(format!("task `{task}` step {index}: expected a command string or a `{{ run = ... }}` / `{{ task = ... }}` table")),
+    }
+}
+
+fn parse_task_def(name: &str, val: &ConfigValue) -> Result<TaskDef, String> {
+    match val {
+        ConfigValue::Array(items) => {
+            let mut steps = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                steps.push(parse_task_step(name, i, item)?);
+            }
+            Ok(TaskDef::Steps { steps, matrix: Vec::new() })
+        }
+        ConfigValue::Object(_) => {
+            let has_steps = obj_get(val, "steps").is_some();
+            let has_tasks = obj_get(val, "tasks").is_some();
+            match (has_steps, has_tasks) {
+                (true, false) => {
+                    for (key, _) in object_fields(val) {
+                        if !["steps", "matrix"].contains(&key.as_str()) {
+                            return Err(format!("task `{name}.{key}` is not a step field (expected `steps` or `matrix`)"));
+                        }
+                    }
+                    let items = match obj_get(val, "steps") {
+                        Some(ConfigValue::Array(items)) => items,
+                        _ => return Err(format!("task `{name}`: `steps` must be an array")),
+                    };
+                    let mut steps = Vec::with_capacity(items.len());
+                    for (i, item) in items.iter().enumerate() {
+                        steps.push(parse_task_step(name, i, item)?);
+                    }
+                    let matrix = match obj_get(val, "matrix") {
+                        Some(ConfigValue::Array(targets)) => {
+                            let mut out = Vec::with_capacity(targets.len());
+                            for t in targets {
+                                match t {
+                                    ConfigValue::String(triple) if crate::oci::valid_target(triple) => out.push(triple.clone()),
+                                    _ => return Err(format!("task `{name}`: `matrix` entries must be arch-vendor-os-env triples")),
+                                }
+                            }
+                            out
+                        }
+                        Some(_) => return Err(format!("task `{name}`: `matrix` must be an array of target triples")),
+                        None => Vec::new(),
+                    };
+                    Ok(TaskDef::Steps { steps, matrix })
+                }
+                (false, true) => {
+                    for (key, _) in object_fields(val) {
+                        if !["tasks", "strategy", "on-failure"].contains(&key.as_str()) {
+                            return Err(format!("task `{name}.{key}` is not a metatask field (expected `tasks`, `strategy`, or `on-failure`)"));
+                        }
+                    }
+                    let items = match obj_get(val, "tasks") {
+                        Some(ConfigValue::Array(items)) if !items.is_empty() => items,
+                        Some(ConfigValue::Array(_)) => return Err(format!("task `{name}`: `tasks` must not be empty")),
+                        _ => return Err(format!("task `{name}`: `tasks` must be an array of task names")),
+                    };
+                    let mut tasks = Vec::with_capacity(items.len());
+                    for item in items {
+                        match item {
+                            ConfigValue::String(s) if !s.is_empty() => tasks.push(s.clone()),
+                            _ => return Err(format!("task `{name}`: `tasks` entries must be non-empty task names")),
+                        }
+                    }
+                    let strategy = match obj_get(val, "strategy") {
+                        Some(ConfigValue::String(s)) if s == "serial" => TaskStrategy::Serial,
+                        Some(ConfigValue::String(s)) if s == "parallel" => TaskStrategy::Parallel,
+                        Some(_) => return Err(format!("task `{name}`: `strategy` must be `serial` or `parallel`")),
+                        None => TaskStrategy::Serial,
+                    };
+                    let on_failure = match obj_get(val, "on-failure") {
+                        Some(ConfigValue::String(s)) if s == "stop" => TaskOnFailure::Stop,
+                        Some(ConfigValue::String(s)) if s == "continue" => TaskOnFailure::Continue,
+                        Some(_) => return Err(format!("task `{name}`: `on-failure` must be `stop` or `continue`")),
+                        None => TaskOnFailure::Stop,
+                    };
+                    Ok(TaskDef::Group { tasks, strategy, on_failure })
+                }
+                _ => Err(format!("task `{name}`: specify exactly one of `steps` (or a bare step array) or `tasks`")),
+            }
+        }
+        _ => Err(format!("task `{name}`: expected a step array or a `{{ steps = ... }}` / `{{ tasks = ... }}` table")),
+    }
+}
+
+fn parse_string_list(field: &str, val: &ConfigValue) -> Result<Vec<String>, String> {
+    match val {
+        ConfigValue::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    ConfigValue::String(s) if !s.is_empty() => out.push(s.clone()),
+                    _ => return Err(format!("field `{field}` must hold non-empty strings")),
+                }
+            }
+            Ok(out)
+        }
+        _ => Err(format!("field `{field}` must be an array of strings")),
+    }
+}
+
+fn parse_bindgen_driver(val: &ConfigValue) -> Result<BindgenDriver, String> {
+    let obj = match val {
+        ConfigValue::Object(_) => val,
+        _ => return Err("field `bindgen` must be an object".to_string()),
+    };
+    for (key, _) in object_fields(obj) {
+        if !["headers", "include", "prefix", "skip", "native_lib", "upstream", "outputs"].contains(&key.as_str()) {
+            return Err(format!("field `bindgen.{key}` is not a driver field (expected `headers`, `include`, `prefix`, `skip`, `native_lib`, `upstream`, or `outputs`)"));
+        }
+    }
+    let headers = match obj_get(obj, "headers") {
+        Some(v) => parse_string_list("bindgen.headers", v)?,
+        None => return Err("field `bindgen` is missing required field `headers`".to_string()),
+    };
+    if headers.is_empty() {
+        return Err("field `bindgen.headers` must hold at least one header".to_string());
+    }
+    let include = match obj_get(obj, "include") {
+        Some(v) => parse_string_list("bindgen.include", v)?,
+        None => Vec::new(),
+    };
+    let prefix = match obj_get(obj, "prefix") {
+        Some(v) => parse_string_list("bindgen.prefix", v)?,
+        None => Vec::new(),
+    };
+    let skip = match obj_get(obj, "skip") {
+        Some(v) => parse_string_list("bindgen.skip", v)?,
+        None => Vec::new(),
+    };
+    let native_lib = match obj_get(obj, "native_lib") {
+        Some(ConfigValue::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(_) => return Err("field `bindgen.native_lib` must be a non-empty string".to_string()),
+        None => None,
+    };
+    let upstream = match obj_get(obj, "upstream") {
+        Some(ConfigValue::String(s)) => {
+            if !crate::oci::valid_name(s) {
+                return Err(format!("field `bindgen.upstream` `{s}` must match `[A-Za-z0-9._-]+`"));
+            }
+            Some(s.clone())
+        }
+        Some(_) => return Err("field `bindgen.upstream` must be a string".to_string()),
+        None => None,
+    };
+    let entries = match obj_get(obj, "outputs") {
+        Some(ConfigValue::Object(entries)) if !entries.is_empty() => entries,
+        Some(ConfigValue::Object(_)) => return Err("field `bindgen.outputs` must hold at least one output".to_string()),
+        Some(_) => return Err("field `bindgen.outputs` must be an object".to_string()),
+        None => return Err("field `bindgen` is missing required field `outputs`".to_string()),
+    };
+    let mut outputs = BTreeMap::new();
+    for (dir, decl) in entries {
+        if dir.is_empty() {
+            return Err("field `bindgen.outputs` holds an empty output directory".to_string());
+        }
+        let table = match decl {
+            ConfigValue::Object(_) => decl,
+            _ => return Err(format!("field `bindgen.outputs.{dir}` must be an object (`{{ title = ... }}`)")),
+        };
+        for (key, _) in object_fields(table) {
+            if !["title", "target"].contains(&key.as_str()) {
+                return Err(format!("field `bindgen.outputs.{dir}.{key}` is not an output field (expected `title` or `target`)"));
+            }
+        }
+        let title = match obj_get(table, "title") {
+            Some(ConfigValue::String(s)) if crate::oci::valid_title(s) => s.clone(),
+            _ => return Err(format!("field `bindgen.outputs.{dir}.title` must be a plain filename")),
+        };
+        let target = match obj_get(table, "target") {
+            Some(ConfigValue::String(s)) if crate::oci::valid_target(s) => Some(s.clone()),
+            Some(_) => return Err(format!("field `bindgen.outputs.{dir}.target` must be an arch-vendor-os-env triple")),
+            None => None,
+        };
+        outputs.insert(dir.clone(), BindgenOutputDecl { title, target });
+    }
+    Ok(BindgenDriver { headers, include, prefix, skip, native_lib, upstream, outputs })
 }
 
 const MAX_KEYWORDS: usize = 12;
@@ -570,7 +890,22 @@ pub fn parse_manifest_for_publish(
 }
 
 pub(crate) fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Option<WorkspaceConfig>), String> {
-    let root = eval_config_text(text)?;
+    parse_manifest_with(text, ConfigTarget::host())
+}
+
+pub fn parse_tasks_for_target(
+    text: &str,
+    target: ConfigTarget,
+) -> Result<BTreeMap<String, TaskDef>, String> {
+    let (project, _) = parse_manifest_with(text, target)?;
+    Ok(project.map(|p| p.tasks).unwrap_or_default())
+}
+
+pub(crate) fn parse_manifest_with(
+    text: &str,
+    target: ConfigTarget,
+) -> Result<(Option<ProjectConfig>, Option<WorkspaceConfig>), String> {
+    let root = eval_config_text_with(text, target)?;
     let top = match &root {
         ConfigValue::Object(_) => &root,
         _ => return Err("configuration `export default` must be an object".to_string()),
@@ -680,6 +1015,36 @@ pub(crate) fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Optio
                 Some(v) => parse_artifact_decl(v)?,
                 None => None,
             };
+            for (dep_name, spec) in &dependencies {
+                if let DependencySpec::Native { from: Some(title), .. } = spec
+                    && artifacts.is_none()
+                {
+                    return Err(format!("dependency `{dep_name}`: `from: \"{title}\"` names a title in the package's own `artifacts` image (declare `artifacts: \"host/org/repo\"` first)"));
+                }
+            }
+            let mut native_pins = BTreeMap::new();
+            if let Some(ConfigValue::Object(entries)) = obj_get(top, "native") {
+                for (k, v) in entries {
+                    native_pins.insert(k.clone(), parse_native_pin(k, v)?);
+                }
+            } else if obj_get(top, "native").is_some() {
+                return Err("field `native` must be an object".to_string());
+            }
+            let mut tasks = BTreeMap::new();
+            if let Some(ConfigValue::Object(entries)) = obj_get(top, "tasks") {
+                for (k, v) in entries {
+                    if k == "bindgen" {
+                        return Err("task `bindgen` is reserved for the bindgen driver (declare `bindgen: { ... }` instead)".to_string());
+                    }
+                    tasks.insert(k.clone(), parse_task_def(k, v)?);
+                }
+            } else if obj_get(top, "tasks").is_some() {
+                return Err("field `tasks` must be an object".to_string());
+            }
+            let bindgen = match obj_get(top, "bindgen") {
+                Some(v) => Some(parse_bindgen_driver(v)?),
+                None => None,
+            };
             Some(ProjectConfig {
                 name,
                 version,
@@ -692,6 +1057,9 @@ pub(crate) fn parse_manifest(text: &str) -> Result<(Option<ProjectConfig>, Optio
                 permissions,
                 keywords,
                 artifacts,
+                native_pins,
+                tasks,
+                bindgen,
             })
         }
         None => None,
@@ -727,8 +1095,8 @@ const PROJECT_KEYS: &[&str] = &["name", "version", "description", "engine"];
 const ENTRIES_KEYS: &[&str] = &["main", "lib", "docs", "bins"];
 const REGISTRY_KEYS: &[&str] = &["url", "token_env", "ca_cert"];
 const WORKSPACE_KEYS: &[&str] = &["members"];
-const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system"];
-const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts"];
+const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system", "from"];
+const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts", "native", "tasks", "bindgen"];
 
 fn span_line(text: &str, offset: u32) -> usize {
     let off = (offset as usize).min(text.len());
@@ -744,6 +1112,14 @@ fn is_version_shape(version: &str) -> bool {
 }
 
 pub fn manifest_to_rnx(manifest: &Manifest) -> String {
+    manifest_to_rnx_inner(manifest, false)
+}
+
+pub fn manifest_to_rnx_for_publish(manifest: &Manifest) -> String {
+    manifest_to_rnx_inner(manifest, true)
+}
+
+fn manifest_to_rnx_inner(manifest: &Manifest, strip_aux: bool) -> String {
     let mut out = String::from("export default {\n");
     if let Some(p) = &manifest.project {
         let mut fields = vec![
@@ -908,6 +1284,47 @@ pub fn manifest_to_rnx(manifest: &Manifest) -> String {
         if let Some(a) = &p.artifacts {
             out.push_str(&format!("    artifacts: {},\n", crate::deplock::rnx_string(a)));
         }
+        if !p.native_pins.is_empty() {
+            out.push_str("    native: {\n");
+            let mut names: Vec<&String> = p.native_pins.keys().collect();
+            names.sort();
+            for (i, name) in names.iter().enumerate() {
+                let key = if is_ident_key(name) {
+                    (*name).clone()
+                } else {
+                    crate::deplock::rnx_string(name)
+                };
+                out.push_str(&format!("        {key}: {}", native_pin_to_rnx(&p.native_pins[*name])));
+                if i + 1 < names.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            out.push_str("    },\n");
+        }
+        if !p.tasks.is_empty() && !strip_aux {
+            out.push_str("    tasks: {\n");
+            let mut names: Vec<&String> = p.tasks.keys().collect();
+            names.sort();
+            for (i, name) in names.iter().enumerate() {
+                let key = if is_ident_key(name) {
+                    (*name).clone()
+                } else {
+                    crate::deplock::rnx_string(name)
+                };
+                out.push_str(&format!("        {key}: {}", task_def_to_rnx(&p.tasks[*name])));
+                if i + 1 < names.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            out.push_str("    },\n");
+        }
+        if let Some(b) = &p.bindgen
+            && !strip_aux
+        {
+            out.push_str(&format!("    bindgen: {},\n", bindgen_driver_to_rnx(b)));
+        }
     }
     if let Some(w) = &manifest.workspace {
         out.push_str("    workspace: {\n        members: [");
@@ -926,6 +1343,92 @@ pub fn manifest_to_rnx(manifest: &Manifest) -> String {
     }
     out.push_str("}\n");
     out
+}
+
+fn task_step_to_rnx(step: &TaskStep) -> String {
+    match step {
+        TaskStep::Run(cmd) => crate::deplock::rnx_string(cmd),
+        TaskStep::Invoke(name) => format!("{{ task: {} }}", crate::deplock::rnx_string(name)),
+    }
+}
+
+fn task_def_to_rnx(def: &TaskDef) -> String {
+    match def {
+        TaskDef::Steps { steps, matrix } => {
+            if matrix.is_empty() && steps.iter().all(|s| matches!(s, TaskStep::Run(_))) {
+                let inner: Vec<String> = steps.iter().map(task_step_to_rnx).collect();
+                return format!("[{}]", inner.join(", "));
+            }
+            let mut s = String::from("{ ");
+            let inner: Vec<String> = steps.iter().map(task_step_to_rnx).collect();
+            s.push_str(&format!("steps: [{}]", inner.join(", ")));
+            if !matrix.is_empty() {
+                let triples: Vec<String> = matrix.iter().map(|t| crate::deplock::rnx_string(t)).collect();
+                s.push_str(&format!(", matrix: [{}]", triples.join(", ")));
+            }
+            s.push_str(" }");
+            s
+        }
+        TaskDef::Group { tasks, strategy, on_failure } => {
+            let names: Vec<String> = tasks.iter().map(|t| crate::deplock::rnx_string(t)).collect();
+            let mut s = format!("{{ tasks: [{}]", names.join(", "));
+            if *strategy != TaskStrategy::Serial {
+                s.push_str(", strategy: \"parallel\"");
+            }
+            if *on_failure != TaskOnFailure::Stop {
+                s.push_str(", \"on-failure\": \"continue\"");
+            }
+            s.push_str(" }");
+            s
+        }
+    }
+}
+
+fn native_pin_to_rnx(pin: &NativePin) -> String {
+    let mut s = format!("{{ system: {}", pin.system);
+    if let Some(v) = &pin.version {
+        s.push_str(&format!(", version: {}", crate::deplock::rnx_string(v)));
+    }
+    if let Some(f) = &pin.from {
+        s.push_str(&format!(", from: {}", crate::deplock::rnx_string(f)));
+    }
+    s.push_str(" }");
+    s
+}
+
+fn bindgen_driver_to_rnx(driver: &BindgenDriver) -> String {
+    let mut parts = Vec::new();
+    let list = |items: &[String]| {
+        let quoted: Vec<String> = items.iter().map(|s| crate::deplock::rnx_string(s)).collect();
+        format!("[{}]", quoted.join(", "))
+    };
+    parts.push(format!("headers: {}", list(&driver.headers)));
+    if !driver.include.is_empty() {
+        parts.push(format!("include: {}", list(&driver.include)));
+    }
+    if !driver.prefix.is_empty() {
+        parts.push(format!("prefix: {}", list(&driver.prefix)));
+    }
+    if !driver.skip.is_empty() {
+        parts.push(format!("skip: {}", list(&driver.skip)));
+    }
+    if let Some(lib) = &driver.native_lib {
+        parts.push(format!("native_lib: {}", crate::deplock::rnx_string(lib)));
+    }
+    if let Some(upstream) = &driver.upstream {
+        parts.push(format!("upstream: {}", crate::deplock::rnx_string(upstream)));
+    }
+    let mut outs: Vec<String> = Vec::new();
+    for (dir, decl) in &driver.outputs {
+        let mut o = format!("{{ title: {}", crate::deplock::rnx_string(&decl.title));
+        if let Some(t) = &decl.target {
+            o.push_str(&format!(", target: {}", crate::deplock::rnx_string(t)));
+        }
+        o.push_str(" }");
+        outs.push(format!("{}: {o}", crate::deplock::rnx_string(dir)));
+    }
+    parts.push(format!("outputs: {{ {} }}", outs.join(", ")));
+    format!("{{ {} }}", parts.join(", "))
 }
 
 fn is_ident_key(k: &str) -> bool {
@@ -987,13 +1490,19 @@ fn dep_to_rnx(spec: &DependencySpec) -> String {
             s.push_str(" }");
             s
         }
-        DependencySpec::Native { lib, system, path } => {
+        DependencySpec::Native { lib, system, path, version, from } => {
             let mut s = format!("{{ native: {}", crate::deplock::rnx_string(lib));
             if *system {
                 s.push_str(", system: true");
             }
             if let Some(p) = path {
                 s.push_str(&format!(", path: {}", crate::deplock::rnx_string(&p.to_string_lossy())));
+            }
+            if let Some(v) = version {
+                s.push_str(&format!(", version: {}", crate::deplock::rnx_string(v)));
+            }
+            if let Some(f) = from {
+                s.push_str(&format!(", from: {}", crate::deplock::rnx_string(f)));
             }
             s.push_str(" }");
             s
@@ -1002,7 +1511,7 @@ fn dep_to_rnx(spec: &DependencySpec) -> String {
 }
 
 pub fn manifest_sections() -> &'static [&'static str] {
-    &["project", "entries", "registry", "dependencies", "workspace", "permissions", "keywords", "registries", "artifacts"]
+    &["project", "entries", "registry", "dependencies", "workspace", "permissions", "keywords", "registries", "artifacts", "native", "tasks", "bindgen"]
 }
 
 pub fn manifest_keys(section: &str) -> &'static [&'static str] {
@@ -1019,12 +1528,15 @@ pub fn manifest_section_doc(section: &str) -> Option<&'static str> {
         "project" => Some("Package identity: `name` and `version` are required, `engine` states the minimum toolchain requirement."),
         "entries" => Some("Entry points: `main` defaults to `src/main.rnx`, `lib` names the library file, `docs` the guides folder, `bins` extra tool shims."),
         "registry" => Some("Default registry for unscoped packages: `url` is required, `token_env` names the auth token env var."),
-        "dependencies" => Some("Semver (`\"^1.2.0\"`), path (`\"libs/x\"` or `{ path = \"...\" }`), git (`{ git = \"<url>\", rev/tag/branch = \"...\" }`), tarball (`{ version = \"...\", url = \"...\", checksum = \"...\" }`), or native (`{ native = \"z\", system = true }`)."),
+        "dependencies" => Some("Semver (`\"^1.2.0\"`), path (`\"libs/x\"` or `{ path = \"...\" }`), git (`{ git = \"<url>\", rev/tag/branch = \"...\" }`), tarball (`{ version = \"...\", url = \"...\", checksum = \"...\" }`), or native (`{ native = \"z\", system = true }`, plus `version` constraints and `from` image titles)."),
         "workspace" => Some("Monorepo members: `members = [\"alpha\", \"beta\"]` or globs like `[\"crates/*\"]`."),
         "permissions" => Some("Security ceiling: an array of capability strings the package and its dependencies may use."),
         "keywords" => Some("Search keywords: an array of up to 12 lowercase/digit/hyphen tags, 24 characters each, mirroring npm keywords."),
         "registries" => Some("Scoped registry overrides keyed by scope, e.g. `registries: { \"@acme\": { url = \"...\" } }`."),
         "artifacts" => Some("One bare OCI repo ref for the version's artifact image, e.g. `artifacts: \"ghcr.io/org/sqlite3\"`. No tags, no digests; the digest is asserted out-of-band at publish time."),
+        "native" => Some("Final-consumer re-pin of transitive native sources: `native: { zlib: { system: true } }` overrides the author's declaration. Root only; member and dependency tables are ignored."),
+        "tasks" => Some("Author-local task runner: `tasks: { check: [\"rnx check\", \"rnx lint\"] }`. Metatasks run other tasks with `strategy: serial | parallel` and `on-failure: stop | continue`. Never ships, never runs on consumers."),
+        "bindgen" => Some("Bindgen driver: shared `headers`, `prefix`/`skip` sets, and per-output titles consumed by `rnx task bindgen`. Author-local; only the generated files ship."),
         _ if section.starts_with("registries.") => Some("Scoped registry override for `@scope/*`: same fields as `[registry]` plus optional `ca_cert`."),
         _ => None,
     }
@@ -1049,11 +1561,18 @@ pub fn manifest_field_doc(section: &str, key: &str) -> Option<&'static str> {
         (_, "rev") => Some("Pinned tag or commit for a git dependency."),
         (_, "tag") => Some("Git tag for a git dependency (stored as the pinned ref)."),
         (_, "branch") => Some("Git branch for a git dependency (moving target)."),
+        ("native", "system") => Some("Consumer re-pin: `true` takes the host library, `false` takes the bundled OCI blob."),
+        ("native", "version") => Some("Consumer re-pin of the version constraint: host library version for `system: true`, declaring-package version for bundled sources."),
+        ("native", "from") => Some("Consumer re-pin of the OCI image title for a bundled native dependency."),
         (_, "version") => Some("Semver requirement, e.g. `\"^3.45.0\"` or `{ version = \"1.5.5\", url = \"...\" }`."),
         (_, "url") => Some("Direct tarball URL, paired with `version` and optional `checksum`."),
         (_, "checksum") => Some("Expected `sha256:...` digest of a tarball URL dependency."),
         (_, "native") => Some("System native library dependency; links `-l<lib>` and records `native:<lib>` in the lockfile."),
         (_, "system") => Some("Whether a native dependency comes from the host system (`true`) or a vendored path."),
+        (_, "from") => Some("OCI image title for a bundled native dependency; selects the blob by title from the package's own `artifacts` image and implies `system: false`."),
+        ("tasks", _) => Some("Author-local task: a step array, `{ steps, matrix }`, or a `{ tasks, strategy, on-failure }` metatask."),
+        ("bindgen", "headers") => Some("C headers the driver feeds the bindgen generator."),
+        ("bindgen", "outputs") => Some("Output directories mapping to `{ title, target }`; titles become OCI titles."),
         ("dependencies", _) => Some("Semver, path, git, tarball, or native dependency (see `rnx doc` manifest reference)."),
         _ => None,
     }
@@ -1515,6 +2034,66 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
     {
         out.push(ManifestIssue { line: 0, error: true, code: Code::E108, message: msg });
     }
+    if let Some(n) = obj_get(top, "native") {
+        match n {
+            ConfigValue::Object(entries) => {
+                for (k, v) in entries {
+                    if let Err(msg) = parse_native_pin(k, v) {
+                        out.push(ManifestIssue { line: 0, error: true, code: Code::E108, message: msg });
+                    }
+                }
+            }
+            _ => out.push(ManifestIssue {
+                line: 0,
+                error: true,
+                code: Code::E108,
+                message: "field `native` must be an object".to_string(),
+            }),
+        }
+    }
+    if let Some(t) = obj_get(top, "tasks") {
+        match t {
+            ConfigValue::Object(entries) => {
+                for (k, v) in entries {
+                    if k == "bindgen" {
+                        out.push(ManifestIssue {
+                            line: 0,
+                            error: true,
+                            code: Code::E108,
+                            message: "task `bindgen` is reserved for the bindgen driver (declare `bindgen: { ... }` instead)".to_string(),
+                        });
+                    } else if let Err(msg) = parse_task_def(k, v) {
+                        out.push(ManifestIssue { line: 0, error: true, code: Code::E108, message: msg });
+                    }
+                }
+            }
+            _ => out.push(ManifestIssue {
+                line: 0,
+                error: true,
+                code: Code::E108,
+                message: "field `tasks` must be an object".to_string(),
+            }),
+        }
+    }
+    if let Some(b) = obj_get(top, "bindgen")
+        && let Err(msg) = parse_bindgen_driver(b)
+    {
+        out.push(ManifestIssue { line: 0, error: true, code: Code::E108, message: msg });
+    }
+    if obj_get(top, "artifacts").is_none()
+        && let Some(ConfigValue::Object(deps)) = obj_get(top, "dependencies")
+    {
+        for (key, val) in deps {
+            if let Ok(DependencySpec::Native { from: Some(title), .. }) = parse_dependency(key, val) {
+                out.push(ManifestIssue {
+                    line: 0,
+                    error: true,
+                    code: Code::E108,
+                    message: format!("dependency `{key}`: `from: \"{title}\"` names a title in the package's own `artifacts` image (declare `artifacts: \"host/org/repo\"` first)"),
+                });
+            }
+        }
+    }
     out
 }
 
@@ -1780,14 +2359,16 @@ mod tests {
         );
         assert_eq!(
             c.dependencies["zlib"],
-            DependencySpec::Native { lib: "z".to_string(), system: true, path: None }
+            DependencySpec::Native { lib: "z".to_string(), system: true, path: None, version: None, from: None }
         );
         assert_eq!(
             c.dependencies["vendored"],
             DependencySpec::Native {
                 lib: "gui".to_string(),
                 system: false,
-                path: Some(PathBuf::from("./native"))
+                path: Some(PathBuf::from("./native")),
+                version: None,
+                from: None,
             }
         );
     }
@@ -1802,6 +2383,270 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.contains("must not mix"), "{e}");
+    }
+
+    #[test]
+    fn native_version_and_from_parse_and_round_trip() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 artifacts: \"ghcr.io/org/demo\",\n\
+                 dependencies: {\n\
+                     zlib: { native: \"z\", system: true, version: \">=1.2.0\" },\n\
+                     codec: { native: \"codec\", from: \"libcodec.so\" }\n\
+                 }\n\
+             }\n",
+        );
+        assert_eq!(
+            c.dependencies["zlib"],
+            DependencySpec::Native {
+                lib: "z".to_string(),
+                system: true,
+                path: None,
+                version: Some(">=1.2.0".to_string()),
+                from: None,
+            }
+        );
+        assert_eq!(
+            c.dependencies["codec"],
+            DependencySpec::Native {
+                lib: "codec".to_string(),
+                system: false,
+                path: None,
+                version: None,
+                from: Some("libcodec.so".to_string()),
+            }
+        );
+        let m = parse_manifest(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 artifacts: \"ghcr.io/org/demo\",\n\
+                 dependencies: { codec: { native: \"codec\", from: \"libcodec.so\" } }\n\
+             }\n",
+        )
+        .unwrap();
+        let out = manifest_to_rnx(&Manifest { project: m.0.clone(), workspace: m.1.clone() });
+        assert!(out.contains("from:"), "{out}");
+        let again = parse_manifest(&out).unwrap().0.unwrap();
+        assert_eq!(again.dependencies, m.0.unwrap().dependencies);
+    }
+
+    #[test]
+    fn native_rejects_bad_source_combinations() {
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    artifacts: \"ghcr.io/org/demo\",\n    dependencies: { z: { native: \"z\", system: true, from: \"libz.so\" } }\n}\n",
+                "cannot combine",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { z: { native: \"z\", system: true, path: \"./z\" } }\n}\n",
+                "cannot combine",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { z: { native: \"z\", path: \"./z\", version: \"^1.0.0\" } }\n}\n",
+                "cannot combine",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { z: { native: \"z\", path: \"./z\", from: \"libz.so\" } }\n}\n",
+                "cannot combine",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { z: { native: \"z\", system: true, version: \"nonsense!!\" } }\n}\n",
+                "not a valid range",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { z: { native: \"z\", from: \"libz.so\" } }\n}\n",
+                "own `artifacts` image",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
+            let issues = validate_manifest_text(text, None);
+            assert!(
+                issues.iter().any(|i| i.error && i.code == Code::E108),
+                "{issues:?} for {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_pins_parse_and_reject_bad_shapes() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 dependencies: { zlib: { native: \"z\", system: true } },\n\
+                 native: { zlib: { system: true, version: \">=1.2.0\" } }\n\
+             }\n",
+        );
+        assert_eq!(
+            c.native_pins["zlib"],
+            NativePin { system: true, version: Some(">=1.2.0".to_string()), from: None }
+        );
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    native: { zlib: { version: \"^1.0.0\" } }\n}\n",
+                "missing required field `system`",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    native: { zlib: { system: \"yes\" } }\n}\n",
+                "must be a boolean",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    native: { zlib: { system: true, from: \"libz.so\" } }\n}\n",
+                "cannot combine",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    native: { zlib: \"system\" }\n}\n",
+                "must be an object",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    native: [\"zlib\"]\n}\n",
+                "must be an object",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
+            let issues = validate_manifest_text(text, None);
+            assert!(
+                issues.iter().any(|i| i.error && i.code == Code::E108),
+                "{issues:?} for {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn tasks_parse_steps_groups_and_reject_bad_shapes() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 tasks: {\n\
+                     check: [\"rnx check\", { run: \"rnx lint\" }],\n\
+                     matrix: { steps: [{ run: \"rnx build --target x\" }], matrix: [\"x86_64-unknown-linux-gnu\"] },\n\
+                     all: { tasks: [\"check\", \"matrix\"], strategy: \"parallel\", \"on-failure\": \"continue\" }\n\
+                 }\n\
+             }\n",
+        );
+        assert_eq!(
+            c.tasks["check"],
+            TaskDef::Steps {
+                steps: vec![
+                    TaskStep::Run("rnx check".to_string()),
+                    TaskStep::Run("rnx lint".to_string()),
+                ],
+                matrix: Vec::new(),
+            }
+        );
+        assert_eq!(
+            c.tasks["matrix"],
+            TaskDef::Steps {
+                steps: vec![TaskStep::Run("rnx build --target x".to_string())],
+                matrix: vec!["x86_64-unknown-linux-gnu".to_string()],
+            }
+        );
+        assert_eq!(
+            c.tasks["all"],
+            TaskDef::Group {
+                tasks: vec!["check".to_string(), "matrix".to_string()],
+                strategy: TaskStrategy::Parallel,
+                on_failure: TaskOnFailure::Continue,
+            }
+        );
+        let m = parse_manifest(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 tasks: { check: [\"rnx check\"], all: { tasks: [\"check\"] } }\n\
+             }\n",
+        )
+        .unwrap();
+        let out = manifest_to_rnx(&Manifest { project: m.0.clone(), workspace: m.1.clone() });
+        assert!(out.contains("tasks:"), "{out}");
+        let again = parse_manifest(&out).unwrap().0.unwrap();
+        assert_eq!(again.tasks, m.0.unwrap().tasks);
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bindgen: [\"x\"] }\n}\n",
+                "reserved",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { steps: [\"ok\"], tasks: [\"ok\"] } }\n}\n",
+                "exactly one of",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { tasks: [\"x\"], strategy: \"sideways\" } }\n}\n",
+                "must be `serial` or `parallel`",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { tasks: [] } }\n}\n",
+                "must not be empty",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { steps: [\"ok\"], matrix: [\"nope\"] } }\n}\n",
+                "must be arch-vendor-os-env triples",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: [\"x\"]\n}\n",
+                "must be an object",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
+            let issues = validate_manifest_text(text, None);
+            assert!(
+                issues.iter().any(|i| i.error && i.code == Code::E108),
+                "{issues:?} for {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn bindgen_driver_parses_and_round_trips() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 bindgen: {\n\
+                     headers: [\"include/foo.h\"],\n\
+                     include: [\"include\"],\n\
+                     prefix: [\"foo_\"],\n\
+                     skip: [\"foo_debug\"],\n\
+                     native_lib: \"foo\",\n\
+                     upstream: \"foo-src\",\n\
+                     outputs: { \"src/gen\": { title: \"foo.rnx\", target: \"x86_64-unknown-linux-gnu\" } }\n\
+                 }\n\
+             }\n",
+        );
+        let driver = c.bindgen.unwrap();
+        assert_eq!(driver.headers, vec!["include/foo.h".to_string()]);
+        assert_eq!(driver.native_lib.as_deref(), Some("foo"));
+        assert_eq!(
+            driver.outputs["src/gen"],
+            BindgenOutputDecl { title: "foo.rnx".to_string(), target: Some("x86_64-unknown-linux-gnu".to_string()) }
+        );
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    bindgen: { outputs: { \"x\": { title: \"a.rnx\" } } }\n}\n",
+                "missing required field `headers`",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    bindgen: { headers: [], outputs: { \"x\": { title: \"a.rnx\" } } }\n}\n",
+                "at least one header",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    bindgen: { headers: [\"a.h\"], outputs: {} }\n}\n",
+                "at least one output",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    bindgen: { headers: [\"a.h\"], outputs: { \"x\": { title: \"../evil.rnx\" } } }\n}\n",
+                "must be a plain filename",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
+            let issues = validate_manifest_text(text, None);
+            assert!(
+                issues.iter().any(|i| i.error && i.code == Code::E108),
+                "{issues:?} for {text}"
+            );
+        }
     }
 
     #[test]
@@ -1842,11 +2687,11 @@ mod tests {
         );
         assert_eq!(
             c.dependencies["zlib"],
-            DependencySpec::Native { lib: "z".to_string(), system: true, path: None }
+            DependencySpec::Native { lib: "z".to_string(), system: true, path: None, version: None, from: None }
         );
         assert_eq!(
             c.dependencies["gui"],
-            DependencySpec::Native { lib: "gui_x86".to_string(), system: false, path: None }
+            DependencySpec::Native { lib: "gui_x86".to_string(), system: false, path: None, version: None, from: None }
         );
         assert_eq!(c.permissions, Some(vec![PermissionDecl { perm: "fs:read:/data".to_string(), reason: Some("fixtures".to_string()) }, PermissionDecl { perm: "net:http:example.com".to_string(), reason: None }]));
     }

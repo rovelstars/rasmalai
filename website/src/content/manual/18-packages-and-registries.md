@@ -317,7 +317,7 @@ export default {
 }
 ```
 
-`native` is the library name, `system: true` means the host provides it, and an optional `path` vendors it instead. At `rnx build` time the linker appends `-l<lib>` automatically; at `rnx run` time the JIT resolves each symbol from the host loader. Importing a native entry as a module is an error — call it with `from native "lib"` (see [Hardware and FFI](/manual/13-hardware-and-ffi)).
+`native` is the library name, `system: true` means the host provides it, and an optional `path` vendors it instead. `version` constrains the source (installed host library for `system: true`, declaring-package version otherwise), and `from` selects a blob by title from the package's own `artifacts` image, implying `system: false`. The combinations are exclusive: `system: true` with `from`, or `path` with any of `system: true`, `version`, or `from`, is an `E108` error — as is `from` without a declared `artifacts` image. A `system: true` entry with a `version` is verified at lock time through `pkg-config`, failing closed on mismatch. At `rnx build` time the linker appends `-l<lib>` automatically; at `rnx run` time the JIT resolves each symbol from the host loader. Importing a native entry as a module is an error — call it with `from native "lib"` (see [Hardware and FFI](/manual/13-hardware-and-ffi)). The final consumer re-pins any transitive native source from the root `native` table or the `--prefer-system` / `--prefer-bundled` flags; see [Project and Toolchain](/manual/16-project-and-toolchain).
 
 Bare versus subpath imports resolve against the dependency's `entries`. A bare `"pkg"` loads `entries.main` (`src/main.rnx` by default) and falls back to `entries.lib` when main is missing. `"pkg/sub"` probes `src/sub.rnx`, `src/sub/mod.rnx`, then `src/sub/index.rnx` under the package root, and any path escaping the package fails. A scoped `"@scope/pkg"` splits the same way after the second segment.
 
@@ -352,6 +352,8 @@ rnx run --backend cranelift tools/rnx-bindgen/src/main.rnx -- \
 ```
 
 `--prefix` keeps matching names (repeatable; empty keeps the legacy allowlist) and `--skip` drops exact function names that the header declares but the shipped library does not export — native backends resolve foreign symbols eagerly, so one missing symbol fails the whole package. Optional `--include <dir>` (repeatable) and `--clang-flags "<flags>"` extend the compiler search path and flags.
+
+For day-to-day use, declare the driver once in `Project.config` and replay it with `rnx task bindgen` instead of repeating flags; the `bindgen` table (`headers`, `include`, `prefix`, `skip`, `native_lib`, per-output titles) is documented under [Project and Toolchain](/manual/16-project-and-toolchain).
 
 The tool writes `<out>/src/lib.rnx` (and `src/types.rnx` when structs or constants exist) directly, and prints the manifest between `---BEGIN Project.config---` markers because runtime writes to any `Project.config` path abort with `S301`. Extract it with:
 

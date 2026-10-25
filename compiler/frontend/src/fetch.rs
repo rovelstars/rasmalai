@@ -1683,13 +1683,14 @@ fn node_artifacts_ready(dir: &Path, expected: Option<&str>) -> bool {
     match expected {
         None => true,
         Some(digest) => {
-            cached_artifact_digest(dir).as_deref() == Some(digest) && dir.join(".artifacts").is_dir()
+            cached_artifact_digest(dir).as_deref() == Some(digest)
+                && crate::oci::project_artifact_cache(dir).is_dir()
         }
     }
 }
 
 fn cached_artifacts_present(dir: &Path) -> bool {
-    cached_artifact_digest(dir).is_some() && dir.join(".artifacts").is_dir()
+    cached_artifact_digest(dir).is_some() && crate::oci::project_artifact_cache(dir).is_dir()
 }
 
 fn ensure_node_artifacts(dir: &Path, node: &ResolveNode, asserted: &str) -> Result<(), Diagnostic> {
@@ -5520,7 +5521,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fetched.len(), 1);
-        let installed = std::fs::read(fetched[0].dir.join(".artifacts").join("runtime").join("libnative.so")).unwrap();
+        let installed = std::fs::read(fetched[0].dir.join(".rnx-cache").join("artifacts").join("runtime").join("libnative.so")).unwrap();
         assert_eq!(installed, blob);
         assert_eq!(cached_artifact_digest(&fetched[0].dir).as_deref(), Some(index_digest.as_str()));
         let dir = crate::scratch::dir("artifact-lock");
@@ -5582,7 +5583,7 @@ mod tests {
         )
         .unwrap();
         let installed =
-            std::fs::read(fetched[0].dir.join(".artifacts").join("runtime").join("libnative.so")).unwrap();
+            std::fs::read(fetched[0].dir.join(".rnx-cache").join("artifacts").join("runtime").join("libnative.so")).unwrap();
         assert_eq!(installed, blob);
     }
 
