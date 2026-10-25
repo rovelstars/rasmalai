@@ -77,11 +77,25 @@ jobs:
       - name: Build rnx
         run: cargo build -p cli
 
+      - name: Seed stdlib
+        run: |
+          seeded=""
+          for _ in 1 2 3; do
+            if ./target/debug/rnx fetch-std; then seeded=1; break; fi
+          done
+          [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
+
       - name: Emit object and stage blob
         run: |
-          set -x
           ./target/debug/rnx --version
           command -v ld >/dev/null || { echo "no ld on PATH"; exit 1; }
+          command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
+          src="$RUNNER_TEMP/canary.rnx"
+          printf 'fn Main(): Int { return 42; }\n' > "$src"
+          if ! out="$(./target/debug/rnx --no-color build --emit-obj --target ${{ matrix.triple }} "$src" 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
           command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
           src="$RUNNER_TEMP/canary.rnx"
           printf 'fn Main(): Int { return 42; }\n' > "$src"
@@ -106,7 +120,10 @@ jobs:
         run: |
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           src="$RUNNER_TEMP/canary.rnx"
-          out="$(./target/debug/rnx --no-color build "$src")"
+          if ! out="$(./target/debug/rnx --no-color build "$src" 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
           app="$(printf '%s\n' "$out" | grep '^artifact: ' | tail -1 | sed -e 's/^artifact: //' -e 's/ (fresh)$//')"
           [ -n "$app" ] && [ -x "$app" ] || { echo "no binary emitted"; exit 1; }
           "$app"
