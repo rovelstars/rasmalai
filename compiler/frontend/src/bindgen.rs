@@ -20,6 +20,7 @@ pub struct BindgenOptions {
     pub prefixes: Vec<String>,
     pub skips: Vec<String>,
     pub upstream_name: Option<String>,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2299,7 +2300,7 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
     warnings.sort();
     warnings.dedup();
 
-    let annotations = annotation_set(&opts.target, &generator_string(), &upstream, TITLE);
+    let annotations = annotation_set(&opts.target, &generator_string(), &upstream, opts.title.as_deref().unwrap_or(TITLE));
     verify_annotations(&annotations)
         .map_err(|e| format!("generated annotations fail verification: {e}"))?;
     let digest = format!("sha256:{}", Sha256::hexdigest(rnx.as_bytes()));
@@ -2364,6 +2365,7 @@ mod tests {
             prefixes: Vec::new(),
             skips: Vec::new(),
             upstream_name: None,
+            title: None,
         }
     }
 

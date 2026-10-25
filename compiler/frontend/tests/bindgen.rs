@@ -15,6 +15,7 @@ fn sqlite_opts() -> Option<BindgenOptions> {
         prefixes: Vec::new(),
         skips: Vec::new(),
         upstream_name: None,
+        title: None,
     })
 }
 
@@ -32,6 +33,7 @@ fn zlib_opts() -> Option<BindgenOptions> {
         prefixes: Vec::new(),
         skips: Vec::new(),
         upstream_name: None,
+        title: None,
     })
 }
 
@@ -58,6 +60,7 @@ fn fixture_opts() -> BindgenOptions {
         prefixes: Vec::new(),
         skips: Vec::new(),
         upstream_name: None,
+        title: None,
     }
 }
 

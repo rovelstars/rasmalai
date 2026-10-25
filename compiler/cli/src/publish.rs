@@ -120,7 +120,7 @@ pub fn index_blob_hexes(bare: &str, index_bytes: &[u8]) -> BTreeSet<String> {
 
 pub fn local_artifact_hashes(package_dir: &std::path::Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    let root = package_dir.join(".artifacts");
+    let root = frontend::oci::project_artifact_cache(package_dir);
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
         let entries = std::fs::read_dir(&dir).map(|r| r.collect::<Vec<_>>()).unwrap_or_default();
@@ -135,6 +135,9 @@ pub fn local_artifact_hashes(package_dir: &std::path::Path) -> BTreeMap<String, 
                 continue;
             }
             let rel = path.strip_prefix(&root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+            if rel.starts_with("blobs/") || rel == "blobs" {
+                continue;
+            }
             let bytes = std::fs::read(&path).unwrap_or_default();
             out.insert(rel, frontend::checksum::Sha256::hexdigest(&bytes));
         }
@@ -149,11 +152,234 @@ pub fn cross_check_local_artifacts(package_dir: &std::path::Path, blob_hexes: &B
         if !blob_hexes.contains(&hash) {
             return Err(Diagnostic::new(
                 Code::E108,
-                format!("local artifact `.artifacts/{rel}` is not in the asserted index (stale image or stale --artifact digest)"),
+                format!("local artifact `{rel}` is not in the asserted index (stale image or stale --artifact digest)"),
             ));
         }
     }
     Ok(checked)
+}
+
+pub const PUBLISH_STAGE_DIR: &str = ".rnx-cache/publish";
+
+pub fn push_plan() -> Option<(String, Option<String>)> {
+    let base = std::env::var(crate::task::PUSH_URL_ENV).ok()?;
+    if base.trim().is_empty() {
+        return None;
+    }
+    let token = std::env::var(crate::task::PUSH_TOKEN_ENV).ok();
+    Some((base, token))
+}
+
+fn staged_role_kind(role: &str) -> Option<&'static str> {
+    match role {
+        "runtime" | "wasm" => Some("binary"),
+        "bindgen" => Some("bindings"),
+        "media" => Some("media"),
+        _ => None,
+    }
+}
+
+pub fn collect_pipeline_inputs(
+    package_dir: &std::path::Path,
+    cfg: &frontend::project::ProjectConfig,
+) -> Result<Vec<frontend::oci::AssembleInput>, Diagnostic> {
+    let mut inputs = Vec::new();
+    if let Some(driver) = cfg.bindgen.as_ref() {
+        let mut upstream_bytes = Vec::new();
+        let mut sorted_headers = driver.headers.clone();
+        sorted_headers.sort();
+        for h in &sorted_headers {
+            let bytes = std::fs::read(package_dir.join(h)).map_err(|e| {
+                Diagnostic::new(Code::E108, format!("pipeline: cannot read bindgen header `{h}`: {e}"))
+            })?;
+            upstream_bytes.extend_from_slice(&bytes);
+        }
+        let upstream_name = driver.upstream.clone().unwrap_or_else(|| cfg.name.clone());
+        let upstream = format!("{upstream_name}@sha256:{}", frontend::checksum::Sha256::hexdigest(&upstream_bytes));
+        let mut outputs: Vec<(&String, &frontend::project::BindgenOutputDecl)> = driver.outputs.iter().collect();
+        outputs.sort_by(|a, b| a.0.cmp(b.0));
+        for (dir, decl) in outputs {
+            let path = package_dir.join(dir).join(&decl.title);
+            let bytes = std::fs::read(&path).map_err(|e| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("pipeline: bindgen output `{}` is missing: {e} (run `rnx task bindgen` first)", path.display()),
+                )
+            })?;
+            let target = decl.target.clone().unwrap_or_else(frontend::native::host_triple);
+            inputs.push(frontend::oci::AssembleInput {
+                role: frontend::bindgen::ROLE.to_string(),
+                title: decl.title.clone(),
+                kind: frontend::bindgen::KIND.to_string(),
+                target: target.clone(),
+                platform: frontend::oci::platform_for_triple(&target),
+                generator: frontend::bindgen::generator_string(),
+                upstream: upstream.clone(),
+                bytes,
+            });
+        }
+    }
+    let stage = package_dir.join(PUBLISH_STAGE_DIR);
+    if stage.is_dir() {
+        let mut staged: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![stage.clone()];
+        while let Some(dir) = stack.pop() {
+            let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+                .map(|r| r.filter_map(|e| e.ok().map(|e| e.path())).collect())
+                .unwrap_or_default();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.is_file() {
+                    staged.push(path);
+                }
+            }
+        }
+        staged.sort();
+        for path in staged {
+            let rel = path.strip_prefix(&stage).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+            let mut parts = rel.splitn(3, '/');
+            let (target, role, title) = match (parts.next(), parts.next(), parts.next()) {
+                (Some(t), Some(r), Some(title)) if !t.is_empty() && !r.is_empty() && !title.is_empty() => (t, r, title),
+                _ => {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        format!("pipeline: staged file `{rel}` must live at `{PUBLISH_STAGE_DIR}/<target>/<role>/<title>`"),
+                    ));
+                }
+            };
+            if !frontend::oci::valid_target(target) {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("pipeline: staged target `{target}` must be an arch-vendor-os-env triple"),
+                ));
+            }
+            let kind = staged_role_kind(role).ok_or_else(|| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("pipeline: staged role `{role}` must be one of `runtime`, `wasm`, `bindgen`, or `media`"),
+                )
+            })?;
+            if !frontend::oci::valid_title(title) {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("pipeline: staged title `{title}` must be a plain filename"),
+                ));
+            }
+            let bytes = std::fs::read(&path).map_err(|e| {
+                Diagnostic::new(Code::E108, format!("pipeline: cannot read staged `{rel}`: {e}"))
+            })?;
+            let package_name = cfg.name.clone();
+            let upstream = format!("{package_name}@sha256:{}", frontend::checksum::Sha256::hexdigest(&bytes));
+            inputs.push(frontend::oci::AssembleInput {
+                role: role.to_string(),
+                title: title.to_string(),
+                kind: kind.to_string(),
+                target: target.to_string(),
+                platform: frontend::oci::platform_for_triple(target),
+                generator: format!("rnx-publish {}", env!("CARGO_PKG_VERSION")),
+                upstream,
+                bytes,
+            });
+        }
+    }
+    Ok(inputs)
+}
+
+fn push_request(
+    agent: &ureq::Agent,
+    method: &str,
+    url: &str,
+    token: Option<&str>,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(u16, Vec<(String, String)>, Vec<u8>), Diagnostic> {
+    let mut req = match method {
+        "POST" => agent.post(url),
+        _ => agent.put(url),
+    };
+    if let Some(t) = token {
+        req = req.header("Authorization", &format!("Bearer {t}"));
+    }
+    let mut response = req
+        .header("Content-Type", content_type)
+        .send(body)
+        .map_err(|e| Diagnostic::new(Code::E108, format!("artifact push failed ({method} {url}): {e}")))?;
+    let status = response.status().as_u16();
+    let mut headers = Vec::new();
+    for name in ["location", "docker-content-digest"] {
+        if let Some(value) = response.headers().get(name) {
+            headers.push((name.to_string(), value.to_str().unwrap_or_default().to_string()));
+        }
+    }
+    let bytes = response.body_mut().read_to_vec().unwrap_or_default();
+    Ok((status, headers, bytes))
+}
+
+pub fn push_assembly(
+    base_url: &str,
+    repo: &str,
+    token: Option<&str>,
+    assembly: &frontend::oci::Assembly,
+) -> Result<(), Diagnostic> {
+    let base = base_url.trim().trim_end_matches('/').to_string();
+    if !base.starts_with("http://") && !base.starts_with("https://") {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("artifact push failed: push URL `{base}` must start with `http://` or `https://`"),
+        ));
+    }
+    let config = ureq::config::Config::builder()
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .http_status_as_error(false)
+        .build();
+    let agent: ureq::Agent = config.into();
+    for (digest, bytes) in assembly.blobs.iter() {
+        let mono = format!("{base}/v2/{repo}/blobs/uploads/?digest={digest}");
+        let (status, headers, _) = push_request(&agent, "POST", &mono, token, "application/octet-stream", bytes)?;
+        if status == 201 {
+            continue;
+        }
+        let location = headers.iter().find(|(k, _)| k == "location").map(|(_, v)| v.clone());
+        let location = match location {
+            Some(loc) if status == 202 => loc,
+            _ => {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("artifact push failed (blob {digest} answered HTTP {status}, expected 201 or a 202 with a location)"),
+                ));
+            }
+        };
+        let resume = if location.contains("digest=") { location } else { format!("{location}&digest={digest}") };
+        let resume = if resume.starts_with("http") { resume } else { format!("{base}{resume}") };
+        let (status, _, _) = push_request(&agent, "PUT", &resume, token, "application/octet-stream", bytes)?;
+        if !(200..300).contains(&status) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("artifact push failed (blob {digest} upload answered HTTP {status})"),
+            ));
+        }
+    }
+    for (digest, bytes) in assembly.manifests.iter() {
+        let url = format!("{base}/v2/{repo}/manifests/{digest}");
+        let (status, _, _) = push_request(&agent, "PUT", &url, token, "application/vnd.oci.image.manifest.v1+json", bytes)?;
+        if !(200..300).contains(&status) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("artifact push failed (manifest {digest} answered HTTP {status})"),
+            ));
+        }
+    }
+    let url = format!("{base}/v2/{repo}/manifests/latest");
+    let (status, _, _) = push_request(&agent, "PUT", &url, token, "application/vnd.oci.image.index.v1+json", &assembly.index_bytes)?;
+    if !(200..300).contains(&status) {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("artifact push failed (index push answered HTTP {status})"),
+        ));
+    }
+    Ok(())
 }
 
 pub fn gate_formatted(
@@ -214,7 +440,12 @@ pub fn collect_publish_files(
     manifest: &frontend::project::Manifest,
 ) -> Result<Vec<PublishFile>, Diagnostic> {
     let mut out = Vec::new();
+    let strip_aux = manifest.project.as_ref().is_some_and(|c| !c.tasks.is_empty() || c.bindgen.is_some());
     for f in frontend::pack::package_file_list(package_dir, manifest)? {
+        if strip_aux && f.path == frontend::project::MANIFEST_FILE {
+            out.push(PublishFile { path: f.path, content: frontend::project::manifest_to_rnx_for_publish(manifest) });
+            continue;
+        }
         let bytes = std::fs::read(package_dir.join(&f.path)).map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot read {}: {e}", f.path))
         })?;
@@ -607,9 +838,10 @@ mod tests {
     #[test]
     fn artifact_cross_check_rejects_files_missing_from_index() {
         let dir = fixture_project("xcheck", None);
-        std::fs::create_dir_all(dir.join(".artifacts").join("runtime")).unwrap();
+        let role_dir = dir.join(".rnx-cache").join("artifacts").join("runtime");
+        std::fs::create_dir_all(&role_dir).unwrap();
         let blob = b"fake native bytes";
-        std::fs::write(dir.join(".artifacts").join("runtime").join("libfoo.so"), blob).unwrap();
+        std::fs::write(role_dir.join("libfoo.so"), blob).unwrap();
         let hash = frontend::checksum::Sha256::hexdigest(blob);
         let mut hexes = BTreeSet::new();
         hexes.insert(hash.clone());
@@ -618,7 +850,10 @@ mod tests {
         let err = cross_check_local_artifacts(&dir, &empty).unwrap_err();
         assert_eq!(err.code, diagnostics::Code::E108);
         assert!(err.message.contains("runtime/libfoo.so"), "{}", err.message);
-        std::fs::remove_dir_all(dir.join(".artifacts")).unwrap();
+        std::fs::create_dir_all(dir.join(".rnx-cache").join("artifacts").join("blobs")).unwrap();
+        std::fs::write(dir.join(".rnx-cache").join("artifacts").join("blobs").join(&hash), blob).unwrap();
+        assert_eq!(cross_check_local_artifacts(&dir, &empty).unwrap_err().code, diagnostics::Code::E108);
+        std::fs::remove_dir_all(dir.join(".rnx-cache")).unwrap();
         assert_eq!(cross_check_local_artifacts(&dir, &empty).unwrap(), 0);
     }
 
@@ -636,5 +871,165 @@ mod tests {
         let hexes = index_blob_hexes("example.invalid/org/x", &bytes);
         assert_eq!(hexes.len(), 1, "{hexes:?}");
         assert!(hexes.contains(&hex), "{hexes:?}");
+    }
+
+    struct PushOrigin {
+        base: String,
+        blobs: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>>,
+        manifests: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>>,
+    }
+
+    fn start_push_origin() -> PushOrigin {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let blobs: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+        let manifests: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+        let seen_blobs = blobs.clone();
+        let seen_manifests = manifests.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                let mut content_len = 0usize;
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(0) => break,
+                        Ok(_) => head.push(byte[0]),
+                        Err(_) => break,
+                    }
+                    if head.len() > 65536 {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&head).into_owned();
+                for line in text.lines() {
+                    if let Some(rest) = line.strip_prefix("Content-Length:")
+                        .or_else(|| line.strip_prefix("content-length:")) {
+                        content_len = rest.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; content_len];
+                let mut at = 0;
+                while at < content_len {
+                    match stream.read(&mut body[at..]) {
+                        Ok(0) => break,
+                        Ok(n) => at += n,
+                        Err(_) => break,
+                    }
+                }
+                body.truncate(at);
+                let first = text.lines().next().unwrap_or_default().to_string();
+                let mut status = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
+                if first.starts_with("POST") && first.contains("/blobs/uploads/") {
+                    if let Some(query) = first.split_whitespace().nth(1).and_then(|p| p.split('?').nth(1)) {
+                        let digest = query.strip_prefix("digest=").unwrap_or_default().to_string();
+                        if !digest.is_empty() && frontend::oci::is_artifact_digest(&digest) {
+                            seen_blobs.lock().unwrap().insert(digest, body);
+                            status = "HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
+                        }
+                    } else {
+                        status = "HTTP/1.1 202 Accepted\r\nLocation: /v2/org/sqlite3/blobs/uploads/uuid\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
+                    }
+                } else if first.starts_with("PUT") && first.contains("/blobs/uploads/uuid") {
+                    seen_blobs.lock().unwrap().insert("resumed".to_string(), body);
+                    status = "HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
+                } else if first.starts_with("PUT") && first.contains("/manifests/") {
+                    let reference = first.split_whitespace().nth(1).unwrap_or_default().rsplit('/').next().unwrap_or_default().split('?').next().unwrap_or_default().to_string();
+                    seen_manifests.lock().unwrap().insert(reference, body);
+                    status = "HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
+                }
+                let _ = stream.write_all(status.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        PushOrigin { base: format!("http://{addr}"), blobs, manifests }
+    }
+
+    fn pipeline_project(tag: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("pipe-{tag}"));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    artifacts: \"example.invalid/org/demo\"\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int {\n    return 0;\n}\n").unwrap();
+        let staged = dir.join(PUBLISH_STAGE_DIR).join("x86_64-unknown-linux-gnu").join("runtime");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("libdemo.so"), b"fake staged bytes").unwrap();
+        dir
+    }
+
+    fn push_inputs() -> Vec<frontend::oci::AssembleInput> {
+        vec![frontend::oci::AssembleInput {
+            role: "runtime".to_string(),
+            title: "libdemo.so".to_string(),
+            kind: "binary".to_string(),
+            target: "x86_64-unknown-linux-gnu".to_string(),
+            platform: Some(("linux".to_string(), "amd64".to_string())),
+            generator: "rnx-publish 0.1.0".to_string(),
+            upstream: format!("demo@sha256:{}", "ab".repeat(32)),
+            bytes: b"fake staged bytes".to_vec(),
+        }]
+    }
+
+    #[test]
+    fn pipeline_collects_staged_files_and_pushes_image() {
+        let dir = pipeline_project("push");
+        let cfg = fixture_cfg(&dir);
+        let inputs = collect_pipeline_inputs(&dir, &cfg).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].title, "libdemo.so");
+        let assembly = frontend::oci::assemble_index(&inputs).unwrap();
+        let origin = start_push_origin();
+        push_assembly(&origin.base, "org/demo", None, &assembly).unwrap();
+        let blobs = origin.blobs.lock().unwrap();
+        assert!(blobs.values().any(|b| b == b"fake staged bytes"), "{blobs:?}");
+        let manifests = origin.manifests.lock().unwrap();
+        assert!(manifests.contains_key("latest"), "{manifests:?}");
+        assert!(manifests.keys().any(|k| k.starts_with("sha256:")), "{manifests:?}");
+        drop(blobs);
+        drop(manifests);
+        let hexes = frontend::oci::assembly_blob_hexes(&assembly);
+        assert_eq!(cross_check_local_artifacts(&dir, &hexes).unwrap(), 0);
+    }
+
+    #[test]
+    fn pipeline_rejects_bad_push_url_and_stray_layout() {
+        let assembly = frontend::oci::assemble_index(&push_inputs()).unwrap();
+        let err = push_assembly("not-a-url", "org/demo", None, &assembly).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("http"), "{}", err.message);
+        let dir = pipeline_project("stray");
+        std::fs::write(dir.join(PUBLISH_STAGE_DIR).join("flat.so"), b"x").unwrap();
+        let cfg = fixture_cfg(&dir);
+        let err = collect_pipeline_inputs(&dir, &cfg).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("<target>/<role>/<title>"), "{}", err.message);
+    }
+
+    #[test]
+    fn frame_redacts_tasks_and_bindgen_but_keeps_pins() {
+        let dir = crate::scratch::dir("frame-redact");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { zlib: { native: \"z\", system: true } },\n    native: { zlib: { system: false } },\n    tasks: { check: [\"rnx check\"] },\n    bindgen: { headers: [\"a.h\"], outputs: { out: { title: \"a.rnx\" } } }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int {\n    return 0;\n}\n").unwrap();
+        let cfg = fixture_cfg(&dir);
+        assert!(!cfg.tasks.is_empty());
+        assert!(cfg.bindgen.is_some());
+        let manifest = frontend::project::Manifest { project: Some(cfg), workspace: None };
+        let files = collect_publish_files(&dir, &manifest).unwrap();
+        let config = files.iter().find(|f| f.path == "Project.config").unwrap();
+        assert!(!config.content.contains("tasks:"), "{}", config.content);
+        assert!(!config.content.contains("bindgen:"), "{}", config.content);
+        assert!(config.content.contains("native:"), "{}", config.content);
+        assert!(config.content.contains("zlib"), "{}", config.content);
     }
 }

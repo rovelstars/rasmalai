@@ -16,6 +16,7 @@ pub mod lsp;
 pub mod publish;
 pub mod repl;
 pub mod report;
+pub mod task;
 pub mod telemetry;
 pub mod test_runner;
 pub mod unpack;
@@ -1480,6 +1481,9 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
             permissions: None,
             keywords: Vec::new(),
             artifacts: None,
+            native_pins: std::collections::BTreeMap::new(),
+            tasks: std::collections::BTreeMap::new(),
+            bindgen: None,
         }),
         workspace: None,
     };
@@ -1637,6 +1641,14 @@ pub fn resolve_scope_target(
 }
 
 pub fn lock_scope(path: Option<&str>, package: Option<&str>) -> Result<usize, Diagnostic> {
+    lock_scope_with(path, package, frontend::native::NativePrefer::from_env())
+}
+
+pub fn lock_scope_with(
+    path: Option<&str>,
+    package: Option<&str>,
+    prefer: frontend::native::NativePrefer,
+) -> Result<usize, Diagnostic> {
     let scope_root = match (path, package) {
         (Some(p), _) => {
             let target = resolve_scope_target(Some(p), None)?;
@@ -1657,13 +1669,13 @@ pub fn lock_scope(path: Option<&str>, package: Option<&str>) -> Result<usize, Di
     let lock = match manifest.workspace {
         Some(ws) => {
             let members = frontend::project::resolve_workspace_members(&scope_root, &ws)?;
-            frontend::deplock::ProjectDepLock::resolve_workspace(&scope_root, &members)?
+            frontend::deplock::ProjectDepLock::resolve_workspace_with(&scope_root, &members, prefer)?
         }
         None => {
             let cfg = manifest.project.ok_or_else(|| {
                 Diagnostic::new(Code::E108, format!("{}: missing [project] section", scope_root.display()))
             })?;
-            frontend::deplock::ProjectDepLock::resolve(&scope_root, &cfg)?
+            frontend::deplock::ProjectDepLock::resolve_with(&scope_root, &cfg, prefer)?
         }
     };
     let count = lock.packages.len();
@@ -1676,18 +1688,25 @@ pub fn missing_lock() -> Diagnostic {
 }
 
 pub fn enforce_locked_at(scope_root: &std::path::Path) -> Result<(), Diagnostic> {
+    enforce_locked_at_with(scope_root, frontend::native::NativePrefer::from_env())
+}
+
+pub fn enforce_locked_at_with(
+    scope_root: &std::path::Path,
+    prefer: frontend::native::NativePrefer,
+) -> Result<(), Diagnostic> {
     let manifest = frontend::project::load_manifest(scope_root)?.ok_or_else(no_manifest)?;
     let lock = frontend::deplock::ProjectDepLock::load(scope_root)?.ok_or_else(missing_lock)?;
     match manifest.workspace {
         Some(ws) => {
             let members = frontend::project::resolve_workspace_members(scope_root, &ws)?;
-            frontend::deplock::verify_workspace_lock(scope_root, &members, &lock)
+            frontend::deplock::verify_workspace_lock_with(scope_root, &members, &lock, prefer)
         }
         None => {
             let cfg = manifest.project.ok_or_else(|| {
                 Diagnostic::new(Code::E108, format!("{}: missing [project] section", scope_root.display()))
             })?;
-            frontend::deplock::verify_lock(scope_root, &cfg, &lock)
+            frontend::deplock::verify_lock_with(scope_root, &cfg, &lock, prefer)
         }
     }
 }

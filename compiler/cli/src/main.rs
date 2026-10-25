@@ -37,5 +37,6 @@ fn main() {
         }
     };
     cmd::fetch::install_registry_transport();
-    cmd::dispatch(command, verbose, quiet, no_color);
+    let prefer = frontend::native::NativePrefer::resolve(args.prefer_system, args.prefer_bundled);
+    cmd::dispatch(command, verbose, quiet, no_color, prefer);
 }
