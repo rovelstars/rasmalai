@@ -52,6 +52,40 @@ fn excluded(rel: &str) -> bool {
         || rel.starts_with("tests/")
 }
 
+fn normalize_gen_dir(dir: &str) -> String {
+    let mut out = dir.replace('\\', "/");
+    while out.starts_with("./") {
+        out = out[2..].to_string();
+    }
+    while out.len() > 1 && out.ends_with('/') {
+        out.pop();
+    }
+    out
+}
+
+fn generated_dirs(manifest: &Manifest) -> Vec<String> {
+    let mut dirs = Vec::new();
+    if let Some(project) = manifest.project.as_ref() {
+        if let Some(driver) = project.bindgen.as_ref() {
+            for dir in driver.outputs.keys() {
+                let norm = normalize_gen_dir(dir);
+                if norm.is_empty() || norm == "." || norm == "/" {
+                    continue;
+                }
+                dirs.push(norm);
+            }
+        }
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+fn under_generated_dir(rel: &str, dirs: &[String]) -> bool {
+    let flat = rel.replace('\\', "/");
+    dirs.iter().any(|d| flat == *d || flat.starts_with(&format!("{d}/")))
+}
+
 fn sanitize(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -131,6 +165,40 @@ pub fn validate_for_pack(
             format!("package entry `{}` does not exist", project.entries.main),
         ));
     }
+    let mut raw_dirs = Vec::new();
+    if let Some(driver) = project.bindgen.as_ref() {
+        raw_dirs.extend(driver.outputs.keys().cloned());
+    }
+    for raw in &raw_dirs {
+        let norm = normalize_gen_dir(raw);
+        if norm.is_empty() || norm == "." || norm == "/" || norm == ".." || norm.starts_with("../") {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("bindgen output `{raw}` is not a shippable output directory: declare a package-relative directory such as `src/gen`"),
+            ));
+        }
+    }
+    let gen_dirs = generated_dirs(manifest);
+    let mut entries: Vec<(String, &str)> =
+        vec![("main entry".to_string(), project.entries.main.as_str())];
+    if let Some(lib) = project.entries.lib.as_deref() {
+        entries.push(("lib entry".to_string(), lib));
+    }
+    for (name, target) in &project.entries.bins {
+        entries.push((format!("bin entry `{name}`"), target.as_str()));
+    }
+    for (label, target) in &entries {
+        let hit = gen_dirs.iter().find(|d| {
+            let flat = target.replace('\\', "/");
+            flat == **d || flat.starts_with(&format!("{d}/"))
+        });
+        if let Some(dir) = hit {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("package {label} `{target}` lives under bindgen output `{dir}`: generated bindings ship as OCI artifacts, never registry chunks (move hand-written sources out of generated directories)"),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -167,10 +235,11 @@ fn collect_pack_names(
         Diagnostic::new(Code::E108, "rnx pack needs a [project] manifest".to_string())
     })?;
     let mut rels: BTreeSet<String> = BTreeSet::new();
+    let gen_dirs = generated_dirs(manifest);
     let mut push_abs = |abs: &Path| {
         if let Ok(rel) = abs.strip_prefix(package_dir) {
             let text = rel.to_string_lossy().replace('\\', "/");
-            if !text.is_empty() && !excluded(&text) {
+            if !text.is_empty() && !excluded(&text) && !under_generated_dir(&text, &gen_dirs) {
                 rels.insert(text);
             }
         }
@@ -475,6 +544,20 @@ mod tests {
         Manifest { project: Some(project), workspace: None }
     }
 
+    fn fixture_bindgen_dir(tag: &str, outputs: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("pack-{tag}"));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"probe\",\n        version: \"1.2.3\"\n    }},\n    bindgen: {{\n        headers: [\"build/foo.h\"],\n        native_lib: \"foo\",\n        outputs: {{\n{outputs}\n        }}\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        dir
+    }
+
     #[test]
     fn file_list_matches_tar_contents() {
         let dir = fixture_dir("files", Some(("README.md", "# probe\n")));
@@ -559,6 +642,74 @@ mod tests {
         let err = build_minified_package_tar(&dir, &manifest).unwrap_err();
         assert_eq!(err.code, diagnostics::Code::E108);
         assert!(err.message.contains("src/main.rnx"), "{}", err.message);
+    }
+
+    #[test]
+    fn declared_bindgen_outputs_stay_out_of_chunks() {
+        let dir = fixture_bindgen_dir(
+            "gen",
+            "            \"src/gen\": { title: \"sqlite3.rnx\" },\n            \"extra/out/\": { title: \"extra.rnx\" }",
+        );
+        std::fs::create_dir_all(dir.join("src").join("gen")).unwrap();
+        std::fs::write(dir.join("src").join("gen").join("sqlite3.rnx"), "generated\n").unwrap();
+        std::fs::write(dir.join("src").join("gen").join("stale.rnx"), "stale rename leftover\n").unwrap();
+        std::fs::write(dir.join("src").join("gen").join("bindgen.oci.json"), "{}\n").unwrap();
+        std::fs::create_dir_all(dir.join("extra").join("out")).unwrap();
+        std::fs::write(dir.join("extra").join("out").join("extra.rnx"), "generated\n").unwrap();
+        let manifest = fixture_manifest(&dir);
+        let files = package_file_list(&dir, &manifest).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"Project.config"), "{paths:?}");
+        assert!(paths.contains(&"src/main.rnx"), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.starts_with("src/gen")), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.starts_with("extra/out")), "{paths:?}");
+        let tar = build_package_tar(&dir, &manifest).unwrap();
+        let text = String::from_utf8_lossy(&tar);
+        assert!(text.contains("src/main.rnx"), "{paths:?}");
+        for leaked in ["src/gen/sqlite3.rnx", "src/gen/stale.rnx", "extra/out/extra.rnx"] {
+            assert!(!text.contains(leaked), "generated file leaked into tar: {leaked}");
+        }
+    }
+
+    #[test]
+    fn gen_dir_without_driver_still_ships() {
+        let dir = fixture_dir("nogendriver", None);
+        std::fs::create_dir_all(dir.join("src").join("gen")).unwrap();
+        std::fs::write(
+            dir.join("src").join("gen").join("hand.rnx"),
+            "fn Main(): Int { return 0; }\n",
+        )
+        .unwrap();
+        let manifest = fixture_manifest(&dir);
+        let files = package_file_list(&dir, &manifest).unwrap();
+        assert!(files.iter().any(|f| f.path == "src/gen/hand.rnx"));
+    }
+
+    #[test]
+    fn entry_inside_generated_dir_fails_closed() {
+        let dir = fixture_bindgen_dir("genentry", "            \"src/gen\": { title: \"foo.rnx\" }");
+        std::fs::create_dir_all(dir.join("src").join("gen")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    },\n    entries: {\n        main: \"src/gen/main.rnx\"\n    },\n    bindgen: {\n        headers: [\"build/foo.h\"],\n        native_lib: \"foo\",\n        outputs: {\n            \"src/gen\": { title: \"foo.rnx\" }\n        }\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("gen").join("main.rnx"), "fn Main(): Int { return 0; }\n")
+            .unwrap();
+        let manifest = fixture_manifest(&dir);
+        let err = package_file_list(&dir, &manifest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("src/gen/main.rnx"), "{}", err.message);
+        assert!(err.message.contains("OCI"), "{}", err.message);
+    }
+
+    #[test]
+    fn degenerate_bindgen_output_dir_fails_closed() {
+        let dir = fixture_bindgen_dir("gendot", "            \".\": { title: \"foo.rnx\" }");
+        let manifest = fixture_manifest(&dir);
+        let err = package_file_list(&dir, &manifest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("output directory"), "{}", err.message);
     }
 }
 

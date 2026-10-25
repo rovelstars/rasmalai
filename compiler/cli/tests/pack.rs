@@ -33,6 +33,28 @@ fn digest(path: &std::path::Path) -> String {
     frontend::checksum::Sha256::hexdigest(&std::fs::read(path).unwrap())
 }
 
+fn write_bindgen_project(tag: &str, name: &str, main: &str) -> crate::scratch::Scratch {
+    let dir = crate::scratch::dir(&format!("pack-{tag}"));
+    std::fs::create_dir_all(dir.join("src").join("gen")).unwrap();
+    std::fs::write(
+        dir.join("Project.config"),
+        format!(
+            "export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.1.0\",\n        description: \"Bindgen pack test.\"\n    }},\n    entries: {{\n        main: \"{main}\"\n    }},\n    bindgen: {{\n        headers: [\"build/foo.h\"],\n        native_lib: \"foo\",\n        outputs: {{\n            \"src/gen\": {{ title: \"foo.rnx\" }}\n        }}\n    }}\n}}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src").join("main.rnx"), MAIN_SRC).unwrap();
+    std::fs::write(dir.join("src").join("gen").join("foo.rnx"), "generated\n").unwrap();
+    std::fs::write(dir.join("src").join("gen").join("bindgen.oci.json"), "{}\n").unwrap();
+    dir
+}
+
+fn tar_list(tar: &std::path::Path) -> String {
+    let list = std::process::Command::new("tar").arg("-tf").arg(tar).output().unwrap();
+    assert!(list.status.success());
+    String::from_utf8(list.stdout).unwrap()
+}
+
 #[test]
 fn test_pack_generates_archive_and_digest() {
     let dir = write_project("gen", "calc");
@@ -123,4 +145,31 @@ fn test_excluded_paths_not_in_tar() {
     assert!(!text.lines().any(|l| l == ".rnx/doc.json"), "generated doc.json packed");
     assert!(text.lines().any(|l| l == "Project.config"), "config missing:\n{text}");
     assert!(text.lines().any(|l| l == "src/main.rnx"), "source missing:\n{text}");
+}
+
+#[test]
+fn test_pack_excludes_declared_bindgen_outputs() {
+    let dir = write_bindgen_project("genout", "genprobe", "src/main.rnx");
+    let out = run_pack(&dir, &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let tar = dir.join("target").join("package").join("genprobe-0.1.0.tar");
+    let text = tar_list(&tar);
+    assert!(text.lines().any(|l| l == "Project.config"), "config missing:\n{text}");
+    assert!(text.lines().any(|l| l == "src/main.rnx"), "hand source missing:\n{text}");
+    assert!(
+        !text.lines().any(|l| l == "src/gen/foo.rnx" || l.starts_with("src/gen/")),
+        "generated bindgen output packed:\n{text}"
+    );
+}
+
+#[test]
+fn test_pack_rejects_entry_under_bindgen_output() {
+    let dir = write_bindgen_project("genentry", "genentry", "src/gen/main.rnx");
+    std::fs::write(dir.join("src").join("gen").join("main.rnx"), MAIN_SRC).unwrap();
+    let out = run_pack(&dir, &[]);
+    assert!(!out.status.success(), "entry under generated dir accepted");
+    let err = String::from_utf8_lossy(&out.stdout).into_owned()
+        + &String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(err.contains("E108"), "{err}");
+    assert!(err.contains("OCI"), "{err}");
 }
