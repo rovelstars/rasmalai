@@ -126,8 +126,7 @@ jobs:
           fi
           app="$(printf '%s\n' "$out" | grep '^artifact: ' | tail -1 | sed -e 's/^artifact: //' -e 's/ (fresh)$//')"
           [ -n "$app" ] && [ -x "$app" ] || { echo "no binary emitted"; exit 1; }
-          "$app"
-          code=$?
+          "$app" || code=$?
           [ "$code" -eq 42 ] || { echo "expected exit 42, got $code"; exit 1; }
           cp "$app" "farm-stage/${{ matrix.triple }}/runtime/canary"
 
