@@ -727,6 +727,30 @@ mod tests {
     }
 
     #[test]
+    fn publish_frame_excludes_bindgen_output_but_pipeline_keeps_it() {
+        let dir = fixture_project("genex", None);
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\",\n        description: \"Probe package\"\n    },\n    bindgen: {\n        headers: [\"build/foo.h\"],\n        native_lib: \"foo\",\n        outputs: {\n            \"src/gen\": { title: \"foo.rnx\" }\n        }\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("build")).unwrap();
+        std::fs::write(dir.join("build").join("foo.h"), "int foo_add(int a, int b);\n").unwrap();
+        std::fs::create_dir_all(dir.join("src").join("gen")).unwrap();
+        std::fs::write(dir.join("src").join("gen").join("foo.rnx"), "generated\n").unwrap();
+        let cfg = fixture_cfg(&dir);
+        let manifest =
+            frontend::project::Manifest { project: Some(cfg.clone()), workspace: None };
+        let files = collect_publish_files(&dir, &manifest).unwrap();
+        assert!(files.iter().any(|f| f.path == "src/main.rnx"));
+        assert!(!files.iter().any(|f| f.path.starts_with("src/gen")));
+        let inputs = collect_pipeline_inputs(&dir, &cfg).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].title, "foo.rnx");
+        assert_eq!(inputs[0].bytes, b"generated\n");
+    }
+
+    #[test]
     fn frame_carries_name_version_files_and_docs() {
         let dir = fixture_project("full", Some("# probe\n\nUsage notes.\n"));
         let cfg = fixture_cfg(&dir);

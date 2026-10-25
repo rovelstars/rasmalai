@@ -35,7 +35,7 @@ With that manifest the upload holds `Project.config`, the two entry files, the r
 
 ## What never ships
 
-`target/`, `.git/`, `.rnx/`, `.rnx-cache/`, and `tests/` are excluded even when they hold matching files. `Project.deplock` never ships either — the lockfile pins your build and stays on your machine; publishing it would pin everyone else's. There are no wasm blobs, no compiled binaries, and no generated output in uploads: if a file is not source, manifest, readme, guide, or license text, it does not belong in the upload.
+`target/`, `.git/`, `.rnx/`, `.rnx-cache/`, and `tests/` are excluded even when they hold matching files. Directories declared as bindgen `outputs` are excluded the same way — generated bindings travel as OCI artifacts, and a package entry that points inside one is rejected at pack time. `Project.deplock` never ships either — the lockfile pins your build and stays on your machine; publishing it would pin everyone else's. There are no wasm blobs, no compiled binaries, and no generated output in uploads: if a file is not source, manifest, readme, guide, or license text, it does not belong in the upload.
 
 ## Native binaries and wasm live outside source packages
 
