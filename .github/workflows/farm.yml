@@ -1,0 +1,206 @@
+name: Farm
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - compiler/linker/**
+      - compiler/frontend/src/oci.rs
+      - compiler/frontend/src/native.rs
+      - compiler/frontend/src/bindgen.rs
+      - compiler/cli/src/publish.rs
+      - compiler/cli/src/task.rs
+      - compiler/cli/src/cmd/publish.rs
+      - .github/workflows/farm.yml
+      - .github/scripts/farm-*.sh
+  pull_request:
+    paths:
+      - compiler/linker/**
+      - compiler/frontend/src/oci.rs
+      - compiler/frontend/src/native.rs
+      - compiler/frontend/src/bindgen.rs
+      - compiler/cli/src/publish.rs
+      - compiler/cli/src/task.rs
+      - compiler/cli/src/cmd/publish.rs
+      - .github/workflows/farm.yml
+      - .github/scripts/farm-*.sh
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# PR pushes cancel their superseded runs; main runs never cancel, so every
+# merged commit gets its verdict.
+concurrency:
+  group: farm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: ${{ matrix.triple }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The native linker backend targets x86_64 Linux only, so the
+          # aarch64 leg proves cross object emission plus index membership
+          # and never links; full aarch64 linking waits on backend work.
+          - triple: x86_64-unknown-linux-gnu
+            machine: "62"
+            runnable: "true"
+          - triple: aarch64-unknown-linux-gnu
+            machine: "183"
+            runnable: "false"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install LLVM 22
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22-dev libpolly-22-dev gdb binutils lld-22
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: farm-${{ matrix.triple }}
+
+      - name: Ensure jq (leg metadata selector)
+        run: command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
+
+      - name: Build rnx
+        run: cargo build -p cli
+
+      - name: Emit object and stage blob
+        run: |
+          command -v ld >/dev/null || { echo "no ld on PATH"; exit 1; }
+          command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
+          src="$RUNNER_TEMP/canary.rnx"
+          printf 'fn Main(): Int { return 42; }\n' > "$src"
+          out="$(./target/debug/rnx --no-color build --emit-obj --target ${{ matrix.triple }} "$src")"
+          obj="$(printf '%s\n' "$out" | grep '^artifact: ' | tail -1 | sed -e 's/^artifact: //' -e 's/ (fresh)$//')"
+          [ -n "$obj" ] && [ -f "$obj" ] || { echo "no object emitted for ${{ matrix.triple }}"; exit 1; }
+          python3 - "$obj" "${{ matrix.machine }}" <<'EOF'
+          import sys
+          path, want = sys.argv[1], int(sys.argv[2])
+          with open(path, "rb") as fh:
+              data = fh.read()
+          assert data[0:4] == b"\x7fELF", "not an ELF object"
+          machine = int.from_bytes(data[18:20], "little")
+          assert machine == want, "machine %d != %d" % (machine, want)
+          print("ok: %s machine=%d" % (path, machine))
+          EOF
+          mkdir -p "farm-stage/${{ matrix.triple }}/runtime"
+          cp "$obj" "farm-stage/${{ matrix.triple }}/runtime/canary"
+
+      - name: Static-link and run probe
+        if: matrix.runnable == 'true'
+        run: |
+          sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
+          src="$RUNNER_TEMP/canary.rnx"
+          out="$(./target/debug/rnx --no-color build "$src")"
+          app="$(printf '%s\n' "$out" | grep '^artifact: ' | tail -1 | sed -e 's/^artifact: //' -e 's/ (fresh)$//')"
+          [ -n "$app" ] && [ -x "$app" ] || { echo "no binary emitted"; exit 1; }
+          "$app"
+          code=$?
+          [ "$code" -eq 42 ] || { echo "expected exit 42, got $code"; exit 1; }
+          cp "$app" "farm-stage/${{ matrix.triple }}/runtime/canary"
+
+      - name: Write leg metadata
+        run: |
+          blob="farm-stage/${{ matrix.triple }}/runtime/canary"
+          [ -f "$blob" ] || { echo "missing staged blob $blob"; exit 1; }
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' compiler/cli/Cargo.toml | head -1)"
+          src="$RUNNER_TEMP/canary.rnx"
+          upstream="canary-src@sha256:$(sha256sum "$src" | cut -d' ' -f1)"
+          case "${{ matrix.triple }}" in
+            x86_64-unknown-linux-gnu) os="linux"; arch="amd64" ;;
+            aarch64-unknown-linux-gnu) os="linux"; arch="arm64" ;;
+            *) echo "no platform mapping for ${{ matrix.triple }}"; exit 1 ;;
+          esac
+          jq -n \
+            --arg target "${{ matrix.triple }}" \
+            --arg role "runtime" \
+            --arg title "canary" \
+            --arg kind "binary" \
+            --arg generator "rnx-farm $version" \
+            --arg upstream "$upstream" \
+            --arg os "$os" \
+            --arg arch "$arch" \
+            --arg blob "${{ matrix.triple }}/runtime/canary" \
+            '{target: $target, role: $role, title: $title, kind: $kind, generator: $generator, upstream: $upstream, os: $os, architecture: $arch, blob: $blob}' \
+            > "farm-stage/${{ matrix.triple }}.meta.json"
+
+      - name: Upload leg artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: farm-leg-${{ matrix.triple }}
+          path: farm-stage/
+
+  assemble:
+    name: assemble index
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      index_digest: ${{ steps.assemble.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install LLVM 22
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22-dev libpolly-22-dev gdb binutils lld-22
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: farm-assemble
+
+      - name: Ensure jq (index selectors)
+        run: command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: farm-stage
+          pattern: farm-leg-*
+          merge-multiple: true
+
+      - name: Assemble multi-target index
+        id: assemble
+        run: |
+          bash .github/scripts/farm-assemble.sh farm-stage farm-index
+          digest="$(cat farm-index/digest.txt)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify index pointer-style
+        run: bash .github/scripts/farm-verify.sh farm-index farm-stage
+
+      - name: OCI assembly unit tests
+        run: cargo nextest run --profile ci --no-fail-fast -p frontend -- oci
+
+      - name: Cross-emission probe tests
+        run: cargo nextest run --profile ci --no-fail-fast -p cli -- test_emit_obj test_cross_target_determinism test_unsupported_target_rejected test_matrix_cross_compile_aarch64
+
+      - name: Push canary origin
+        # ttl.sh is canary-grade and ephemeral: tags rot after the named
+        # TTL. The uploaded farm-index artifact remains the evidence; a
+        # durable origin is a follow-up.
+        run: bash .github/scripts/farm-push-ttl.sh farm-stage farm-index "rnx-farm-${GITHUB_RUN_ID}" "24h"
+
+      - name: Upload farm index
+        uses: actions/upload-artifact@v6
+        with:
+          name: farm-index
+          path: farm-index/
