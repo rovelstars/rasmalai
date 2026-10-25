@@ -285,7 +285,7 @@ rnx publish --artifact sha256:<64 hex chars>
 
 The assertion rides the publish frame as `artifactDigest` (`null` when the package declares no `artifacts`) and is never written to stored config. The server resolves the declared ref fresh over TLS, fetches the index (capped at 1 MiB), hashes it, and fails the publish closed on mismatch; a declared `artifacts` with a null frame digest, or a frame digest with no declared `artifacts`, both reject. The resolved digest is stored as version metadata and echoed back as `artifactDigest` in the publish response.
 
-Locked builds pin the artifact like the version: `Project.deplock` records an `artifactDigest` on each locked entry, resolve serves the pin with the version metadata, and the client verifies the index digest first, then the per-blob hashes from the verified index, selecting role and platform from the descriptors. Blobs land by title filename under `.artifacts/<role>/`, the same layout the author develops against. A mismatch at any leg aborts the build.
+Locked builds pin the artifact like the version: `Project.deplock` records an `artifactDigest` on each locked entry, resolve serves the pin with the version metadata, and the client verifies the index digest first, then the per-blob hashes from the verified index, selecting role and platform from the descriptors. Each native entry's `from` title resolves per role into the content-addressed caches (project `.rnx-cache/artifacts/`, durable global `~/.cache/rnx/artifacts/<hash>`, hardlink with copy fallback); a dev checkout shadows the cached entry with a notice. A mismatch at any leg aborts the build.
 
 ## Import sources
 
