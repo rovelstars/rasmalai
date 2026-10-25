@@ -407,3 +407,82 @@ pub fn lockfile_drift(dir: &Path) -> Vec<String> {
         .map(|d| format!("[{}] {}", d.code.as_str(), d.message))
         .collect()
 }
+
+pub enum AdvisoryCheck {
+    Skipped(String),
+    Rejected(String),
+    Done(Vec<frontend::advisory::Finding>),
+}
+
+pub fn advisory_registry(flag: Option<&str>) -> String {
+    let from_flag = flag.map(|s| s.to_string());
+    let from_env = std::env::var("RNX_REGISTRY").ok().filter(|s| !s.trim().is_empty());
+    match from_flag.or(from_env) {
+        Some(url) => frontend::fetch::expand_registry_base(&url),
+        None => frontend::fetch::expand_registry_base(""),
+    }
+}
+
+pub fn audit_advisories(dir: &Path, registry: &str) -> AdvisoryCheck {
+    let lock = match frontend::deplock::ProjectDepLock::load(dir) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            return AdvisoryCheck::Skipped("no Project.deplock found; skipping advisory check".to_string());
+        }
+        Err(e) => {
+            return AdvisoryCheck::Skipped(format!("cannot read Project.deplock: {}; skipping advisory check", e.message));
+        }
+    };
+    match frontend::advisory::fetch_signed_feed(registry) {
+        Ok(feed) => AdvisoryCheck::Done(frontend::advisory::match_lock(&lock, &feed.advisories)),
+        Err(frontend::advisory::FeedError::Unavailable(message)) => {
+            AdvisoryCheck::Skipped(format!("advisory feed unavailable ({message}); skipping advisory check"))
+        }
+        Err(frontend::advisory::FeedError::Rejected(message)) => {
+            AdvisoryCheck::Rejected(format!("advisory feed rejected: {message}"))
+        }
+    }
+}
+
+pub fn render_advisory_text(findings: &[frontend::advisory::Finding]) -> String {
+    if findings.is_empty() {
+        return "advisories: no advisories apply to the locked dependencies.\n".to_string();
+    }
+    let mut out = String::from("advisories:\n");
+    for finding in findings {
+        let pin = if finding.pinned_artifact { " (pinned artifact)" } else { "" };
+        match finding.severity.as_str() {
+            "critical" => {
+                out.push_str(&format!(
+                    "  error: advisory {} [critical security hold]: {}@{}{}: {}\n",
+                    finding.advisory_id, finding.package, finding.version, pin, finding.title,
+                ));
+            }
+            "warning" => {
+                out.push_str(&format!(
+                    "  warning: package `{}@{}` is affected by advisory {}{}: {}\n",
+                    finding.package, finding.version, finding.advisory_id, pin, finding.title,
+                ));
+            }
+            _ => {
+                out.push_str(&format!(
+                    "  note: advisory {} [info]: {}@{}{}: {}\n",
+                    finding.advisory_id, finding.package, finding.version, pin, finding.title,
+                ));
+            }
+        }
+        if !finding.detail.is_empty() {
+            out.push_str(&format!("    {}\n", finding.detail.replace('\n', "\n    ")));
+        }
+    }
+    let holds = findings.iter().filter(|f| f.severity == "critical").count();
+    let warnings = findings.iter().filter(|f| f.severity == "warning").count();
+    out.push_str(&format!(
+        "advisory check: {} {} ({} critical, {} warning)\n",
+        findings.len(),
+        if findings.len() == 1 { "finding" } else { "findings" },
+        holds,
+        warnings,
+    ));
+    out
+}

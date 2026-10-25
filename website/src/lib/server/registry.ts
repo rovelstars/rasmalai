@@ -5,6 +5,7 @@ export const CAPABILITIES = [
 	'jsdoc',
 	'yank',
 	'transfer',
+	'advisories',
 	'resolve-inline-chunks'
 ];
 

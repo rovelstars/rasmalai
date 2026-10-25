@@ -158,7 +158,10 @@ Each capability sits in one of four tiers: `pure` (no external reach), `delegate
 rnx audit --path ../dep        # audit another directory (defaults to current)
 rnx audit --json               # full report as JSON for CI
 rnx audit --export-manifest    # minimal publishing manifest as JSON
+rnx audit --registry https://rnx.acme.internal  # check advisories against another registry (or RNX_REGISTRY)
 ```
+
+When the directory holds a `Project.deplock`, the audit also fetches the registry-signed advisory feed (`GET /api/v0/advisories`), verifies the operator signature, and matches the locked entries — versions and `artifactDigest` pins — against it. A `critical` finding fails the audit with a security hold; a `warning` warns exactly like a yanked version; an `info` finding is a plain note. A feed whose signature does not verify fails the audit closed; a feed that cannot be reached only warns and the audit passes on the capability report alone. `RNX_ADVISORY_KEY` pins the expected feed key id or public key for registries whose key is known out of band. The audit never rewrites the lockfile: re-pinning an affected dependency stays an explicit update step.
 
 There is no `--unsafe` flag: the default audit already prints every capability, including `unsafe:*` grants. `unsafe` is a language block, not a CLI switch, and capability checks stay enforced at compile time.
 
@@ -242,7 +245,7 @@ print(quote(2.0));
 | `rnx lsp` | Language Server Protocol over stdio | none |
 | `rnx mcp` | Model Context Protocol server over stdio | none |
 | `rnx explain` | diagnostic text plus fix | `<code>` |
-| `rnx audit` | report capability and tier surface per package | `--path <dir>`, `--json`, `--export-manifest` |
+| `rnx audit` | report capability and tier surface per package, plus advisory check against the lockfile | `--path <dir>`, `--json`, `--export-manifest`, `--registry <url>` |
 | `rnx bindgen` | generate `bindgen.rnx` plus OCI annotations from C headers | `--header <file>`, `--native-lib <lib>`, `--pkg-name <name>`, `--out <dir>`, `--target`, `--prefix`, `--skip`, `--include`, `--check` |
 | `rnx task` | run an author-local task from `Project.config` (`bindgen` replays the driver table) | `[name]` (lists tasks when omitted) |
 | `rnx completions` | shell completion scripts | `bash`, `zsh`, `fish`, `powershell`, `elvish` |

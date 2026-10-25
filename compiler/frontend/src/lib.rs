@@ -3,6 +3,7 @@
 mod scratch;
 
 pub mod ast;
+pub mod advisory;
 pub mod async_expand;
 pub mod bindgen;
 pub mod cache;
