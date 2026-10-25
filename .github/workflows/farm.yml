@@ -182,6 +182,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.149
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: farm-assemble
