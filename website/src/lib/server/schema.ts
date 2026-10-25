@@ -49,6 +49,8 @@ export const packageVersions = sqliteTable('package_versions', {
 	tarManifestJson: text('tar_manifest_json').notNull().default('[]'),
 	manifestDigest: text('manifest_digest').notNull().default(''),
 	verdictKey: text('verdict_key').notNull().default(''),
+	artifactDigest: text('artifact_digest').notNull().default(''),
+	artifactMeta: text('artifact_meta').notNull().default(''),
 	requestId: text('request_id').notNull().default('')
 });
 

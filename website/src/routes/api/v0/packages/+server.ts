@@ -49,6 +49,11 @@ import {
 	fileAllowed
 } from '$lib/server/canonical';
 import { canonicalizeTree, configFacts, analyzeTree } from '$lib/server/analysis';
+import {
+	checkArtifactAgreement,
+	fetchArtifactIndex,
+	parseArtifactIndex
+} from '$lib/server/oci';
 import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 
 const MAX_GUIDES_BYTES = 400 * 1024;
@@ -317,6 +322,28 @@ export async function POST({ request, platform, url }) {
 		throw e;
 	}
 
+	// The artifact declaration and the frame assertion must agree in both
+	// directions, and the asserted digest must match a freshly resolved
+	// origin index. The fetch runs after the storage-quota refusal and
+	// before any row is written, so a doomed publish costs a quota check
+	// plus at most one capped index fetch.
+	const agreement = checkArtifactAgreement(facts.artifacts, frame.artifactDigest);
+	if (!agreement.ok) return frameError(400, agreement.message);
+	let artifactMeta: string | null = null;
+	if (facts.artifacts && frame.artifactDigest) {
+		const fetched = await fetchArtifactIndex(facts.artifacts);
+		if (!fetched.ok) return frameError(400, fetched.message);
+		if (fetched.digest !== frame.artifactDigest) {
+			return frameError(
+				400,
+				`E108: artifact digest mismatch (frame asserts ${frame.artifactDigest}, origin serves ${fetched.digest} for \`${facts.artifacts}\`)`
+			);
+		}
+		const parsed = parseArtifactIndex(facts.artifacts, fetched.bytes, frame.artifactDigest);
+		if (!parsed.ok) return frameError(400, parsed.message);
+		artifactMeta = JSON.stringify(parsed.pin);
+	}
+
 	// An identical chunk list means identical canonical bytes (every chunk
 	// is hash-pinned), so the verdict cannot have changed: version-only
 	// publishes become metadata writes with zero PUTs and no analysis.
@@ -422,6 +449,8 @@ export async function POST({ request, platform, url }) {
 		entries: chunked.entries,
 		manifestDigest: digest,
 		verdictKey,
+		artifactDigest: frame.artifactDigest,
+		artifactMeta,
 		units: chunked.units,
 		facts: factRows,
 		edges
@@ -443,7 +472,7 @@ export async function POST({ request, platform, url }) {
 	for (const dep of extractDepNames(manifestJson)) {
 		await purgeUrls(env, [`${url.origin}/api/v0/packages/${dep}/dependents`], { fullName: dep });
 	}
-	return json({ success: true, url: `/packages/${frame.name}`, version: frame.version, manifestDigest: digest }, { status: 201, headers: specHeaders() });
+	return json({ success: true, url: `/packages/${frame.name}`, version: frame.version, manifestDigest: digest, artifactDigest: frame.artifactDigest ?? null }, { status: 201, headers: specHeaders() });
 }
 
 function canonicalFilesFor(canonical: Record<string, string>, names: string[]): CanonicalFile[] {

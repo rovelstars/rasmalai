@@ -1,4 +1,5 @@
 use diagnostics::{Code, Diagnostic};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,6 +9,152 @@ pub struct PublishFile {
 }
 
 pub const PUBLISH_PROTOCOL: &str = "0";
+pub const OCI_INDEX_CAP: usize = 1024 * 1024;
+
+pub fn parse_artifact_digest(raw: &str) -> Result<String, Diagnostic> {
+    let digest = raw.trim().to_string();
+    let hex_ok = digest.len() == 71
+        && digest.starts_with("sha256:")
+        && digest.as_bytes()[7..].iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b));
+    if !hex_ok {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("invalid --artifact `{raw}` (expected `sha256:<64 lowercase hex chars>`)"),
+        ));
+    }
+    Ok(digest)
+}
+
+pub fn artifact_repo_parts(bare: &str) -> Result<(String, String), Diagnostic> {
+    frontend::project::validate_artifact_ref(bare).map_err(|e| Diagnostic::new(Code::E108, e))?;
+    let slash = bare.find('/').unwrap_or(bare.len());
+    Ok((bare[..slash].to_string(), bare[slash + 1..].to_string()))
+}
+
+pub fn fetch_oci_index(bare: &str) -> Result<(Vec<u8>, String), Diagnostic> {
+    let (registry, repo) = artifact_repo_parts(bare)?;
+    let url = format!("https://{registry}/v2/{repo}/manifests/latest");
+    let config = ureq::config::Config::builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .build();
+    let agent: ureq::Agent = config.into();
+    let mut response = agent
+        .get(&url)
+        .header(
+            "Accept",
+            "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json",
+        )
+        .call()
+        .map_err(|e| {
+            Diagnostic::new(Code::E108, format!("artifact origin unreachable (cannot reach `{registry}`: {e})"))
+        })?;
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("artifact origin unreachable (registry answered HTTP {status} for `{bare}`)"),
+        ));
+    }
+    let bytes = response.body_mut().read_to_vec().map_err(|e| {
+        Diagnostic::new(Code::E108, format!("artifact origin unreachable (cannot read index for `{bare}`: {e})"))
+    })?;
+    if bytes.len() > OCI_INDEX_CAP {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("artifact index exceeds the 1 MiB cap (ref `{bare}`)"),
+        ));
+    }
+    let digest = format!("sha256:{}", frontend::checksum::Sha256::hexdigest(&bytes));
+    Ok((bytes, digest))
+}
+
+pub fn index_blob_hexes(bare: &str, index_bytes: &[u8]) -> BTreeSet<String> {
+    let mut hexes = BTreeSet::new();
+    let doc: serde_json::Value = match serde_json::from_slice(index_bytes) {
+        Ok(v) => v,
+        Err(_) => return hexes,
+    };
+    let manifests = doc.get("manifests").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+    let (registry, repo) = match artifact_repo_parts(bare) {
+        Ok(p) => p,
+        Err(_) => return hexes,
+    };
+    for manifest in &manifests {
+        let digest = manifest.get("digest").and_then(|d| d.as_str()).unwrap_or_default();
+        if let Some(hex) = digest.strip_prefix("sha256:") {
+            hexes.insert(hex.to_string());
+        }
+        let url = format!("https://{registry}/v2/{repo}/manifests/{digest}");
+        let config = ureq::config::Config::builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .http_status_as_error(false)
+            .build();
+        let agent: ureq::Agent = config.into();
+        let body = agent
+            .get(&url)
+            .header("Accept", "application/vnd.oci.image.manifest.v1+json")
+            .call()
+            .ok()
+            .filter(|r| (200..300).contains(&r.status().as_u16()))
+            .and_then(|mut r| r.body_mut().read_to_vec().ok())
+            .filter(|b| b.len() <= OCI_INDEX_CAP);
+        let Some(body) = body else { continue };
+        let child: serde_json::Value = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(hex) = child.get("config").and_then(|c| c.get("digest")).and_then(|d| d.as_str()).and_then(|d| d.strip_prefix("sha256:")) {
+            hexes.insert(hex.to_string());
+        }
+        if let Some(layers) = child.get("layers").and_then(|l| l.as_array()) {
+            for layer in layers {
+                if let Some(hex) = layer.get("digest").and_then(|d| d.as_str()).and_then(|d| d.strip_prefix("sha256:")) {
+                    hexes.insert(hex.to_string());
+                }
+            }
+        }
+    }
+    hexes
+}
+
+pub fn local_artifact_hashes(package_dir: &std::path::Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let root = package_dir.join(".artifacts");
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).map(|r| r.collect::<Vec<_>>()).unwrap_or_default();
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path.is_file() {
+                continue;
+            }
+            let rel = path.strip_prefix(&root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+            let bytes = std::fs::read(&path).unwrap_or_default();
+            out.insert(rel, frontend::checksum::Sha256::hexdigest(&bytes));
+        }
+    }
+    out
+}
+
+pub fn cross_check_local_artifacts(package_dir: &std::path::Path, blob_hexes: &BTreeSet<String>) -> Result<usize, Diagnostic> {
+    let mut checked = 0;
+    for (rel, hash) in local_artifact_hashes(package_dir) {
+        checked += 1;
+        if !blob_hexes.contains(&hash) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("local artifact `.artifacts/{rel}` is not in the asserted index (stale image or stale --artifact digest)"),
+            ));
+        }
+    }
+    Ok(checked)
+}
 
 pub fn gate_formatted(
     package_dir: &Path,
@@ -84,6 +231,7 @@ pub fn publish_frame(
     readme: &str,
     files: &[PublishFile],
     docs: &str,
+    artifact_digest: Option<&str>,
 ) -> serde_json::Value {
     let file_values: Vec<serde_json::Value> = files
         .iter()
@@ -102,11 +250,12 @@ pub fn publish_frame(
         "keywords": cfg.keywords,
         "tags": [],
         "license": "MIT",
+        "artifactDigest": artifact_digest,
     })
 }
 
 pub enum PublishOutcome {
-    Published { url: String, digest: String },
+    Published { url: String, digest: String, artifact_digest: Option<String> },
     Rejected { status: u16, message: String },
 }
 
@@ -145,7 +294,8 @@ pub fn post_frame(
             if status == 200 || status == 201 {
                 let pkg_url = package_url(&url, name, &body);
                 let digest = extract_json_string(&body, "manifestDigest").unwrap_or_default();
-                Ok(PublishOutcome::Published { url: pkg_url, digest })
+                let artifact_digest = extract_json_string(&body, "artifactDigest");
+                Ok(PublishOutcome::Published { url: pkg_url, digest, artifact_digest })
             } else {
                 let message = extract_json_string(&body, "error").unwrap_or_else(|| short_body(&body));
                 Ok(PublishOutcome::Rejected { status, message })
@@ -323,7 +473,7 @@ mod tests {
         assert!(paths.contains(&"src/main.rnx"));
         assert!(paths.contains(&"Project.config"));
         assert!(paths.contains(&"README.md"));
-        let frame = publish_frame(&cfg, &readme, &files, &docs);
+        let frame = publish_frame(&cfg, &readme, &files, &docs, None);
         assert_eq!(frame["name"], "probe");
         assert_eq!(frame["version"], "1.2.3");
         assert_eq!(frame["description"], "Probe package");
@@ -376,7 +526,7 @@ mod tests {
         assert!(head.contains("POST /api/v0/packages "), "{head}");
         assert!(head.to_ascii_lowercase().contains("x-rnx-protocol: 0"), "{head}");
         match outcome {
-            PublishOutcome::Published { url, digest } => {
+            PublishOutcome::Published { url, digest, .. } => {
                 assert!(url.contains("/packages/probe"), "{url}");
                 assert_eq!(digest, "ab");
             }
@@ -417,5 +567,74 @@ mod tests {
         assert_eq!(err.code, diagnostics::Code::E108);
         assert!(err.message.contains("unformatted"), "{}", err.message);
         assert!(err.message.contains("main.rnx"), "{}", err.message);
+    }
+
+    #[test]
+    fn artifact_digest_accepts_lowercase_hex_only() {
+        let good = format!("sha256:{}", "ab".repeat(32));
+        assert_eq!(parse_artifact_digest(&good).unwrap(), good);
+        for bad in [
+            "sha256:ABCDEF".to_string() + &"ab".repeat(29),
+            "sha256:xyz".to_string(),
+            "ab".repeat(32),
+            String::new(),
+        ] {
+            let err = parse_artifact_digest(&bad).unwrap_err();
+            assert_eq!(err.code, diagnostics::Code::E108);
+        }
+    }
+
+    #[test]
+    fn artifact_frame_carries_digest_or_null() {
+        let dir = fixture_project("frame-art", None);
+        let cfg = fixture_cfg(&dir);
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", None);
+        assert!(frame["artifactDigest"].is_null(), "{}", frame["artifactDigest"]);
+        let digest = format!("sha256:{}", "cd".repeat(32));
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", Some(&digest));
+        assert_eq!(frame["artifactDigest"], digest);
+    }
+
+    #[test]
+    fn artifact_parts_split_registry_from_repo() {
+        let (registry, repo) = artifact_repo_parts("ghcr.io/org/sqlite3").unwrap();
+        assert_eq!(registry, "ghcr.io");
+        assert_eq!(repo, "org/sqlite3");
+        let err = artifact_repo_parts("ghcr.io/org/sqlite3:1.0.0").unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+    }
+
+    #[test]
+    fn artifact_cross_check_rejects_files_missing_from_index() {
+        let dir = fixture_project("xcheck", None);
+        std::fs::create_dir_all(dir.join(".artifacts").join("runtime")).unwrap();
+        let blob = b"fake native bytes";
+        std::fs::write(dir.join(".artifacts").join("runtime").join("libfoo.so"), blob).unwrap();
+        let hash = frontend::checksum::Sha256::hexdigest(blob);
+        let mut hexes = BTreeSet::new();
+        hexes.insert(hash.clone());
+        assert_eq!(cross_check_local_artifacts(&dir, &hexes).unwrap(), 1);
+        let empty = BTreeSet::new();
+        let err = cross_check_local_artifacts(&dir, &empty).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("runtime/libfoo.so"), "{}", err.message);
+        std::fs::remove_dir_all(dir.join(".artifacts")).unwrap();
+        assert_eq!(cross_check_local_artifacts(&dir, &empty).unwrap(), 0);
+    }
+
+    #[test]
+    fn artifact_index_hexes_collect_manifest_digests_when_origin_unreachable() {
+        let hex = "aa".repeat(32);
+        let index = serde_json::json!({
+            "schemaVersion": 2,
+            "manifests": [
+                { "digest": format!("sha256:{hex}"), "annotations": {} },
+                { "digest": "not-a-digest", "annotations": {} }
+            ]
+        });
+        let bytes = serde_json::to_vec(&index).unwrap();
+        let hexes = index_blob_hexes("example.invalid/org/x", &bytes);
+        assert_eq!(hexes.len(), 1, "{hexes:?}");
+        assert!(hexes.contains(&hex), "{hexes:?}");
     }
 }

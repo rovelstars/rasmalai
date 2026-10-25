@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS package_versions (
     created_at INTEGER NOT NULL,
     manifest_digest TEXT NOT NULL DEFAULT '',
     verdict_key TEXT NOT NULL DEFAULT '',
+    artifact_digest TEXT NOT NULL DEFAULT '',
+    artifact_meta TEXT NOT NULL DEFAULT '',
     UNIQUE(package_id, version)
 );
 
@@ -368,7 +370,7 @@ export async function ensureSchema(db: Client): Promise<void> {
 	return schemaPromise;
 }
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 async function checkSchemaVersion(db: Client): Promise<boolean> {
 	try {
@@ -420,6 +422,8 @@ async function migrateSchema(db: Client): Promise<void> {
 		['tar_manifest_json', "TEXT NOT NULL DEFAULT '[]'"],
 		['manifest_digest', "TEXT NOT NULL DEFAULT ''"],
 		['verdict_key', "TEXT NOT NULL DEFAULT ''"],
+		['artifact_digest', "TEXT NOT NULL DEFAULT ''"],
+		['artifact_meta', "TEXT NOT NULL DEFAULT ''"],
 		['request_id', "TEXT NOT NULL DEFAULT ''"]
 	];
 	for (const [col, ddl] of backfill) {
@@ -793,6 +797,8 @@ export interface CanonicalPublishPayload extends PublishPayload {
 	entries: TarEntryRef[];
 	manifestDigest: string;
 	verdictKey: string;
+	artifactDigest: string | null;
+	artifactMeta: string | null;
 	units: CanonicalUnit[];
 	facts: CanonicalFact[];
 	edges: CanonicalEdges;
@@ -846,6 +852,8 @@ export async function publishCanonicalVersion(
 			tarManifestJson: JSON.stringify(p.entries),
 			manifestDigest: p.manifestDigest,
 			verdictKey: p.verdictKey,
+			artifactDigest: p.artifactDigest ?? '',
+			artifactMeta: p.artifactMeta ?? '',
 			requestId: p.requestId ?? ''
 		})
 		.onConflictDoNothing();
@@ -1021,6 +1029,8 @@ export interface VersionRow {
 	tarballSha256: string;
 	manifestDigest: string;
 	verdictKey: string;
+	artifactDigest: string;
+	artifactMeta: string;
 	engineRange: string;
 	docJson: string;
 	manifestJson: string;
@@ -1047,6 +1057,8 @@ function versionIndexColumns(v: typeof s.packageVersions) {
 		tarballSha256: v.tarballSha256,
 		manifestDigest: v.manifestDigest,
 		verdictKey: v.verdictKey,
+		artifactDigest: v.artifactDigest,
+		artifactMeta: v.artifactMeta,
 		tarManifestJson: v.tarManifestJson,
 		engineRange: v.engineRange,
 		manifestJson: v.manifestJson,
@@ -1084,6 +1096,8 @@ export async function getVersionRow(
 		tarballSha256: r.tarballSha256 ?? '',
 		manifestDigest: r.manifestDigest ?? '',
 		verdictKey: r.verdictKey ?? '',
+		artifactDigest: r.artifactDigest ?? '',
+		artifactMeta: r.artifactMeta ?? '',
 		tarManifestJson: r.tarManifestJson ?? '[]',
 		engineRange: r.engineRange ?? '',
 		docJson: r.docJson ?? '{"modules":[]}',
@@ -1122,6 +1136,8 @@ export async function getVersionIndexRow(
 		tarballSha256: r.tarballSha256 ?? '',
 		manifestDigest: r.manifestDigest ?? '',
 		verdictKey: r.verdictKey ?? '',
+		artifactDigest: r.artifactDigest ?? '',
+		artifactMeta: r.artifactMeta ?? '',
 		tarManifestJson: r.tarManifestJson ?? '[]',
 		engineRange: r.engineRange ?? '',
 		manifestJson: r.manifestJson ?? '{}',
@@ -1806,6 +1822,7 @@ export interface ResolveNode {
 	engineRange: string;
 	deps: string[];
 	yanked: boolean;
+	artifactDigest?: string | null;
 	entries?: TarEntryRef[];
 }
 
@@ -1992,6 +2009,8 @@ interface ResolveRow {
 	version: string;
 	status: string;
 	manifestDigest: string;
+	artifactDigest: string;
+	artifactMeta: string;
 	engineRange: string;
 	manifestJson: string;
 	withdrawn: boolean;
@@ -2023,6 +2042,7 @@ function pickedRowSql(): string {
 	// once the closure is known (see attachInlineEntries).
 	return `SELECT p.scope AS scope, p.name AS name,
 	v.version AS version, v.status AS status, v.manifest_digest AS manifest_digest,
+	v.artifact_digest AS artifact_digest, v.artifact_meta AS artifact_meta,
 	v.engine_range AS engine_range, v.manifest_json AS manifest_json,
 	p.mutation_count AS mutation_count,
 	(SELECT 1 FROM tombstones t WHERE t.package_id = p.id AND t.version = v.version) AS withdrawn
@@ -2112,6 +2132,8 @@ async function resolvePickedRows(
 				version,
 				status: String(row['status'] ?? 'live'),
 				manifestDigest: String(row['manifest_digest'] ?? ''),
+				artifactDigest: String(row['artifact_digest'] ?? ''),
+				artifactMeta: String(row['artifact_meta'] ?? ''),
 				engineRange: String(row['engine_range'] ?? ''),
 				manifestJson: String(row['manifest_json'] ?? '{}'),
 				withdrawn: row['withdrawn'] !== null && row['withdrawn'] !== undefined,
@@ -2532,15 +2554,19 @@ export async function resolveGraph(
 		frontier = next.sort();
 	}
 
-	const makeNode = (full: string, version: string, row: ResolveRow, deps: string[]): ResolveNode => ({
-		full,
-		version,
-		path: `${full}@${version}/chunks`,
-		integrity: row.manifestDigest,
-		engineRange: row.engineRange,
-		deps,
-		yanked: row.status === 'yanked'
-	});
+	const makeNode = (full: string, version: string, row: ResolveRow, deps: string[]): ResolveNode => {
+		const node: ResolveNode = {
+			full,
+			version,
+			path: `${full}@${version}/chunks`,
+			integrity: row.manifestDigest,
+			engineRange: row.engineRange,
+			deps,
+			yanked: row.status === 'yanked'
+		};
+		if (row.artifactDigest !== '') node.artifactDigest = row.artifactDigest;
+		return node;
+	};
 
 	const memo = new Map<string, ResolveNode>();
 	const resolved: Record<string, string> = {};

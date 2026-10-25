@@ -8,6 +8,7 @@ pub struct PublishFacts {
     pub version: String,
     pub redacted: String,
     pub registry_deps: Vec<(String, String)>,
+    pub artifacts: Option<String>,
 }
 
 fn is_key_byte(b: u8) -> bool {
@@ -353,6 +354,7 @@ pub fn publish_facts(text: &str) -> Result<PublishFacts, Diagnostic> {
     })?;
     let version = cfg.version.clone();
     let name = cfg.name.clone();
+    let artifacts = cfg.artifacts.clone();
     let mut registry_deps = Vec::new();
     for (dep, spec) in &cfg.dependencies {
         match spec {
@@ -395,5 +397,5 @@ pub fn publish_facts(text: &str) -> Result<PublishFacts, Diagnostic> {
             "Project.config redaction changed the entries manifest",
         ));
     }
-    Ok(PublishFacts { name, version, redacted, registry_deps })
+    Ok(PublishFacts { name, version, redacted, registry_deps, artifacts })
 }

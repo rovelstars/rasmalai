@@ -57,7 +57,7 @@ describe('schema migration', () => {
 		const stamped = fake.db
 			.prepare("SELECT value AS v FROM meta WHERE key = 'schema_version'")
 			.get() as { v: string } | undefined;
-		assert.equal(Number(stamped?.v), 4, 'the ladder stamps the schema version');
+		assert.equal(Number(stamped?.v), 5, 'the ladder stamps the schema version');
 	});
 
 	it('carries the canonical columns on the version row', async () => {

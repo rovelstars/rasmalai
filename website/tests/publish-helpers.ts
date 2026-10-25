@@ -29,6 +29,8 @@ export function seedPayload(
 		entries: [],
 		manifestDigest: digest,
 		verdictKey: '',
+		artifactDigest: null,
+		artifactMeta: null,
 		units: [],
 		facts: [],
 		edges: { edges: [], permsDigest: '', files: [] },

@@ -15,6 +15,7 @@ pub struct LockedPackage {
     pub version: String,
     pub source: String,
     pub checksum: String,
+    pub artifact_digest: Option<String>,
     pub dependencies: Vec<String>,
     pub tier: String,
     pub capabilities: Vec<String>,
@@ -31,6 +32,7 @@ struct PkgNode {
     version: String,
     source: String,
     checksum: String,
+    artifact_digest: Option<String>,
     deps: Vec<(String, String)>,
     dir: PathBuf,
 }
@@ -140,6 +142,7 @@ fn collect_into(
                         name: dep_name.clone(),
                         version: String::new(),
                         checksum: String::new(),
+                        artifact_digest: None,
                         deps: Vec::new(),
                         dir: pkg_root.clone(),
                     },
@@ -205,6 +208,11 @@ fn collect_into(
         } else {
             compute_package_checksum(&pkg_root)?
         };
+        let artifact_digest = if source.starts_with("registry:") {
+            crate::fetch::cached_artifact_digest(&pkg_root)
+        } else {
+            None
+        };
         nodes.insert(
             cfg.name.clone(),
             PkgNode {
@@ -212,6 +220,7 @@ fn collect_into(
                 name: cfg.name,
                 version: cfg.version,
                 checksum,
+                artifact_digest,
                 deps,
                 dir: pkg_root.clone(),
             },
@@ -251,6 +260,7 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
                 version: n.version,
                 source: n.source,
                 checksum: n.checksum,
+                artifact_digest: None,
                 dependencies: Vec::new(),
                 tier: "system".to_string(),
                 capabilities: Vec::new(),
@@ -263,6 +273,7 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
             version: n.version,
             source: n.source,
             checksum: n.checksum,
+            artifact_digest: n.artifact_digest,
             dependencies: n.deps.iter().map(|(n, v)| {
                 if v.is_empty() {
                     n.clone()
@@ -337,6 +348,12 @@ fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnos
             return Err(Diagnostic::new(
                 Code::E108,
                 format!("checksum mismatch for package `{}`", node.name),
+            ));
+        }
+        if locked.artifact_digest != node.artifact_digest {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("artifact mismatch for package `{}`", node.name),
             ));
         }
         let scan = crate::security::analyze_dep_dir(&node.dir)?;
@@ -417,6 +434,9 @@ impl ProjectDepLock {
             out.push_str(&format!("            version: {},\n", rnx_string(&p.version)));
             out.push_str(&format!("            source: {},\n", rnx_string(&p.source)));
             out.push_str(&format!("            checksum: {},\n", rnx_string(&p.checksum)));
+            if let Some(digest) = &p.artifact_digest {
+                out.push_str(&format!("            artifactDigest: {},\n", rnx_string(digest)));
+            }
             out.push_str("            dependencies: [");
             for (j, d) in p.dependencies.iter().enumerate() {
                 if j > 0 {
@@ -508,11 +528,17 @@ fn parse_locked(val: &ConfigValue) -> Result<LockedPackage, String> {
         Some(_) => return Err("locked package field `tier` must be a string".to_string()),
         None => "pure".to_string(),
     };
+    let artifact_digest = match obj.get("artifactDigest") {
+        Some(ConfigValue::String(s)) => Some(s.clone()),
+        Some(_) => return Err("locked package field `artifactDigest` must be a string".to_string()),
+        None => None,
+    };
     Ok(LockedPackage {
         name: get_str("name")?,
         version: get_str("version")?,
         source: get_str("source")?,
         checksum: get_str("checksum")?,
+        artifact_digest,
         dependencies,
         tier,
         capabilities,
