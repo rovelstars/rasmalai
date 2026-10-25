@@ -879,7 +879,12 @@ pub fn collect_package_docs(
     include_private: bool,
 ) -> Result<Vec<frontend::doc::DocModuleDoc>, diagnostics::Diagnostic> {
     let entry = cfg.main_path(dir);
-    let graph = frontend::modules::ModuleGraph::build(&entry)?;
+    let manifest = frontend::project::Manifest {
+        project: Some(cfg.clone()),
+        workspace: None,
+    };
+    let extra = frontend::pack::bindgen_output_files(dir, &manifest);
+    let graph = frontend::modules::ModuleGraph::build_with_extra(&entry, &extra)?;
     let mut docs = Vec::new();
     for f in &graph.files {
         if f.path.extension().is_some_and(|e| e == "rnx") && f.path.starts_with(dir) {
