@@ -1072,7 +1072,19 @@ mod tests {
 
     #[test]
     fn ensure_installs_blob_by_title_under_role_dir() {
-        let blob_hash = Sha256::hexdigest(BLOB);
+        // Bytes are unique per run: the global blob cache is shared (and
+        // restored across CI jobs), so fixed bytes could hit a warm cache
+        // and skip the fetch this test asserts on.
+        let blob: Vec<u8> = format!(
+            "fake native bytes install {}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )
+        .into_bytes();
+        let blob_hash = Sha256::hexdigest(&blob);
         let manifest = format!(
             "{{\"schemaVersion\": 2, \"config\": {{\"digest\": \"sha256:{}\"}}, \"layers\": [{{\"digest\": \"sha256:{blob_hash}\"}}]}}",
             "cc".repeat(32)
@@ -1082,14 +1094,14 @@ mod tests {
         let digest = format!("sha256:{}", Sha256::hexdigest(&index));
         let mut files = BTreeMap::new();
         files.insert(format!("sha256:{manifest_hash}"), manifest.into_bytes());
-        files.insert(format!("sha256:{blob_hash}"), BLOB.to_vec());
+        files.insert(format!("sha256:{blob_hash}"), blob.clone());
         let origin = start_origin(index, files);
         let dir = crate::scratch::dir("oci-install");
         let written = ensure_artifacts(&dir, &origin.bare, &digest, "linux", "x86_64").unwrap();
         assert_eq!(written, 1);
         let installed =
             std::fs::read(dir.join(".rnx-cache").join("artifacts").join("runtime").join("libfoo.so")).unwrap();
-        assert_eq!(installed, BLOB);
+        assert_eq!(installed, blob);
         let gets: Vec<String> = origin.log.lock().unwrap().clone();
         assert!(
             gets.iter().any(|p| p.ends_with("/manifests/latest")),

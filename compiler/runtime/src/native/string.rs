@@ -481,8 +481,8 @@ mod string_tests {
             // support a doubling ratio bound: the noise alone exceeds it.
             const REPEATS: usize = 5;
             let unit = "abcdefghijklmnopqrstuvwxyz0123456789";
-            let s100 = mortal(&unit.repeat(17_760));
-            let s200 = mortal(&unit.repeat(35_520));
+            let s100 = mortal(&unit.repeat(71_040));
+            let s200 = mortal(&unit.repeat(142_080));
             let nd = mortal("9a");
             let drive_index = |s: *mut u8| {
                 let mut hits = 0usize;
