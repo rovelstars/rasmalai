@@ -3059,6 +3059,101 @@ pub(crate) mod testkit {
                 .collect()
         }
 
+        pub fn start_dynamic(
+            chunks: BTreeMap<String, (String, Vec<(String, Vec<u8>)>)>,
+            resolve: impl Fn(BTreeMap<String, String>) -> String + Send + Sync + 'static,
+        ) -> MockRegistry {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let base = format!("http://{addr}");
+            let log: Arc<Mutex<Vec<LoggedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+            let chunks = Arc::new(chunks);
+            let resolve = Arc::new(resolve);
+            let seen = log.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else {
+                        continue;
+                    };
+                    let Some((method, path, headers, body)) = read_request(&mut stream) else {
+                        continue;
+                    };
+                    let route = path.split('?').next().unwrap_or_default().to_string();
+                    seen.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(LoggedRequest { method: method.clone(), path: path.clone(), headers, body: body.clone() });
+                    let with_spec: &[(&str, &str)] = &[("rnx-registry-spec", "0")];
+                    if method == "GET" && route == "/api/version" {
+                        let body = version_body(0, &["tombstones"]);
+                        respond(&mut stream, 200, "application/json", body.as_bytes(), with_spec);
+                    } else if method == "POST" && route == "/api/v0/resolve" {
+                        let mut reqs = BTreeMap::new();
+                        if let Ok(value) = parse_json(&body) {
+                            if let JsonValue::Object(fields) =
+                                value.get("requirements").cloned().unwrap_or(JsonValue::Null)
+                            {
+                                for (k, v) in fields {
+                                    if let Some(s) = v.as_str() {
+                                        reqs.insert(k, s.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        let out = resolve(reqs);
+                        respond(&mut stream, 200, "application/json", out.as_bytes(), with_spec);
+                    } else if method == "GET" && route.ends_with("/chunks") {
+                        let hit = chunks.iter().find(|(k, _)| route.contains(k.as_str()));
+                        match hit {
+                            Some((_, (manifest, _))) => respond(
+                                &mut stream,
+                                200,
+                                "application/json",
+                                manifest.as_bytes(),
+                                with_spec,
+                            ),
+                            None => respond(
+                                &mut stream,
+                                404,
+                                "application/json",
+                                b"{\"code\": \"not-found\", \"message\": \"unknown\"}",
+                                with_spec,
+                            ),
+                        }
+                    } else if method == "GET" && route.contains("/chunk/") {
+                        let hash = route.rsplit('/').next().unwrap_or_default().to_string();
+                        let mut hit: Option<Vec<u8>> = None;
+                        for (_, pairs) in chunks.values() {
+                            for (h, b) in pairs {
+                                if *h == hash {
+                                    hit = Some(b.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        match hit {
+                            Some(bytes) => respond(&mut stream, 200, "application/octet-stream", &bytes, with_spec),
+                            None => respond(
+                                &mut stream,
+                                404,
+                                "application/json",
+                                b"{\"code\": \"not-found\", \"message\": \"chunk not found\"}",
+                                with_spec,
+                            ),
+                        }
+                    } else {
+                        respond(
+                            &mut stream,
+                            404,
+                            "application/json",
+                            b"{\"code\": \"not-found\", \"message\": \"unknown\"}",
+                            with_spec,
+                        );
+                    }
+                }
+            });
+            MockRegistry { base, log }
+        }
+
         pub fn start_routed(config: RoutedConfig) -> MockRegistry {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();

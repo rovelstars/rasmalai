@@ -77,6 +77,7 @@ mod setup;
 mod task;
 mod test;
 mod unpack;
+mod update;
 mod vendor;
 
 use self::add::run_add;
@@ -107,6 +108,7 @@ use self::setup::run_setup;
 use self::task::run_task;
 use self::test::run_test;
 use self::unpack::run_unpack;
+use self::update::run_update;
 use self::vendor::run_vendor;
 
 pub(super) fn dispatch(
@@ -195,6 +197,9 @@ pub(super) fn dispatch(
             }
             cli::args::Command::Lock { package } => {
                 run_lock(package, prefer);
+            }
+            cli::args::Command::Update { packages, major, package } => {
+                run_update(packages, major, package, prefer);
             }
             cli::args::Command::Fetch { package } => {
                 run_fetch(package);

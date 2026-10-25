@@ -1688,6 +1688,56 @@ pub fn missing_lock() -> Diagnostic {
     Diagnostic::new(Code::E108, "Project.deplock not found, run 'rnx lock'")
 }
 
+pub fn update_scope_with(
+    path: Option<&str>,
+    package: Option<&str>,
+    selections: Vec<String>,
+    allow_major: bool,
+    prefer: frontend::native::NativePrefer,
+) -> Result<frontend::deplock::UpdateSummary, Diagnostic> {
+    let parsed: Vec<frontend::deplock::UpdateSelection> = selections
+        .iter()
+        .map(|s| frontend::deplock::parse_update_selector(s))
+        .collect::<Result<Vec<_>, _>>()?;
+    let scope_root = match (path, package) {
+        (Some(p), _) => {
+            let target = resolve_scope_target(Some(p), None)?;
+            target.scope_root.ok_or_else(no_manifest)?
+        }
+        (None, Some(name)) => {
+            let target = resolve_scope_target(None, Some(name))?;
+            target.scope_root.ok_or_else(no_manifest)?
+        }
+        (None, None) => {
+            let cwd = std::env::current_dir().map_err(|e| {
+                Diagnostic::new(Code::E108, format!("cannot read working directory: {e}"))
+            })?;
+            scope_of(&cwd)?
+        }
+    };
+    let manifest = frontend::project::load_manifest(&scope_root)?.ok_or_else(no_manifest)?;
+    let (lock, summary) = match manifest.workspace {
+        Some(ws) => {
+            let members = frontend::project::resolve_workspace_members(&scope_root, &ws)?;
+            frontend::deplock::ProjectDepLock::update_workspace_lock(
+                &scope_root,
+                &members,
+                prefer,
+                &parsed,
+                allow_major,
+            )?
+        }
+        None => {
+            let cfg = manifest.project.ok_or_else(|| {
+                Diagnostic::new(Code::E108, format!("{}: missing [project] section", scope_root.display()))
+            })?;
+            frontend::deplock::ProjectDepLock::update_lock(&scope_root, &cfg, prefer, &parsed, allow_major)?
+        }
+    };
+    lock.write(&scope_root)?;
+    Ok(summary)
+}
+
 pub fn enforce_locked_at(scope_root: &std::path::Path) -> Result<(), Diagnostic> {
     enforce_locked_at_with(scope_root, frontend::native::NativePrefer::from_env())
 }
