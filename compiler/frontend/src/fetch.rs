@@ -1693,6 +1693,12 @@ fn cached_artifacts_present(dir: &Path) -> bool {
 }
 
 fn ensure_node_artifacts(dir: &Path, node: &ResolveNode, asserted: &str) -> Result<(), Diagnostic> {
+    let artifact = format!("{}@{}", node.full, node.version);
+    if node.yanked {
+        if let Some(d) = fx::require_live(&artifact, false) {
+            return Err(d);
+        }
+    }
     let cfg = ProjectConfig::load_from_dir(dir)?.ok_or_else(|| {
         Diagnostic::new(
             Code::E108,
@@ -1711,8 +1717,9 @@ fn ensure_node_artifacts(dir: &Path, node: &ResolveNode, asserted: &str) -> Resu
             ));
         }
     };
-    crate::oci::ensure_artifacts(dir, bare, asserted, std::env::consts::OS, std::env::consts::ARCH)?;
-    std::fs::write(artifact_marker_path(dir), format!("{asserted}\n")).map_err(|e| {
+    let install =
+        crate::oci::ensure_artifacts(dir, bare, asserted, std::env::consts::OS, std::env::consts::ARCH)?;
+    std::fs::write(artifact_marker_path(dir), format!("{asserted}\nisolation={}\n", install.isolation)).map_err(|e| {
         Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", artifact_marker_path(dir).display()))
     })
 }
@@ -3607,6 +3614,7 @@ mod tests {
              \"run.rasmalai.target\": \"x86_64-unknown-linux-gnu\", \
              \"run.rasmalai.generator\": \"rnx-bindgen 0.1.0\", \
              \"run.rasmalai.upstream\": \"sqlite@sha256:{}\", \
+             \"run.rasmalai.isolation\": \"none\", \
              \"org.opencontainers.image.title\": \"libnative.so\"",
             "cd".repeat(32)
         )
@@ -5548,5 +5556,64 @@ mod tests {
             .artifact_digest = Some(format!("sha256:{}", "ee".repeat(32)));
         let err = crate::deplock::verify_lock(&root, &cfg, &tampered).unwrap_err();
         assert!(err.message.contains("artifact mismatch"), "{}", err.message);
+    }
+
+    #[test]
+    fn yanked_artifact_blobs_are_refused_with_e207() {
+        use crate::oci::testkit::start_origin;
+        let (_guard, _dir) = isolate_cache("artifact-yanked");
+        let index = artifact_index_for(&"aa".repeat(32), &runtime_annotations());
+        let index_digest = format!("sha256:{}", Sha256::hexdigest(&index));
+        let origin = start_origin(index, BTreeMap::new());
+        let (manifest, pairs, digest) = artifact_fixture_tree("@acme/widget", "1.2.0", &origin.bare);
+        let node = format!(
+            "{{\"full\": \"@acme/widget\", \"version\": \"1.2.0\", \"path\": \"@acme/widget@1.2.0/chunks\", \"integrity\": \"{digest}\", \"engineRange\": \"\", \"deps\": [], \"yanked\": true, \"artifactDigest\": \"{index_digest}\"}}"
+        );
+        let server = start_tree(&[node], &manifest, pairs);
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E207);
+        assert!(err.message.contains("@acme/widget@1.2.0"), "{}", err.message);
+    }
+
+    #[test]
+    fn artifact_marker_records_host_isolation() {
+        use crate::oci::testkit::start_origin;
+        let (_guard, _dir) = isolate_cache("artifact-marker");
+        let blob = b"fake native bytes for marker test".to_vec();
+        let blob_hash = Sha256::hexdigest(&blob);
+        let manifest_doc = format!(
+            "{{\"schemaVersion\": 2, \"config\": {{\"digest\": \"sha256:{}\"}}, \"layers\": [{{\"digest\": \"sha256:{blob_hash}\"}}]}}",
+            "cc".repeat(32)
+        );
+        let manifest_hash = Sha256::hexdigest(manifest_doc.as_bytes());
+        let index = artifact_index_for(&manifest_hash, &runtime_annotations());
+        let index_digest = format!("sha256:{}", Sha256::hexdigest(&index));
+        let mut files = BTreeMap::new();
+        files.insert(format!("sha256:{manifest_hash}"), manifest_doc.into_bytes());
+        files.insert(format!("sha256:{blob_hash}"), blob.clone());
+        let origin = start_origin(index, files);
+        let (manifest, pairs, digest) = artifact_fixture_tree("@acme/widget", "1.2.0", &origin.bare);
+        let node = node_artifact_json("@acme/widget", "1.2.0", &digest, &index_digest);
+        let server = start_tree(&[node], &manifest, pairs);
+        let default = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let marker =
+            std::fs::read_to_string(fetched[0].dir.join(".rnx-artifact")).unwrap();
+        let mut lines = marker.lines();
+        assert_eq!(lines.next().unwrap_or_default(), index_digest.as_str());
+        assert_eq!(lines.next().unwrap_or_default(), "isolation=none");
     }
 }

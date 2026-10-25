@@ -192,6 +192,9 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::E204 => "instantiate the class with `new Class(...)`",
         Code::E205 => "change the value to match the declared type, or declare the variable as `Any`",
         Code::E206 => "add an initializer with `= <expr>`",
+        Code::E207 => "route the artifact through the `rnx-fx-host` helper instead of linking it in-process",
+        Code::E208 => "remove the refused function from the proxied surface or keep `isolation: none` and link statically",
+        Code::E209 => "retry the call; the helper died, the frame was oversize, or a handle ID went stale",
         Code::E302 => "break the cycle with `GenRef` on a back edge",
         Code::E303 => "declare the variable with `let` or check the spelling",
         Code::E304 => "return a value matching the declared return type",
@@ -476,8 +479,48 @@ pub fn load_program_cfg(
         return Err(errors);
     }
     let native_libs = lir::instr::native_libs(&lowered);
+    errors.extend(fx_link_violations(&graph.root, &native_libs));
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     let perf_diags = lir::perflint::to_diagnostics(&lowered.perf_lints);
     Ok(FileProgram { lir: lowered, warnings, perf_diags, profiler, debug, native_libs })
+}
+
+fn fx_link_violations(entry: &std::path::Path, native_libs: &[String]) -> Vec<diagnostics::Diagnostic> {
+    if native_libs.is_empty() {
+        return Vec::new();
+    }
+    let anchor = if entry.is_file() {
+        entry.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf()
+    } else {
+        entry.to_path_buf()
+    };
+    let root = match frontend::project::find_project_root(&anchor) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let lock = match frontend::deplock::ProjectDepLock::load(&root).ok().flatten() {
+        Some(l) => l,
+        None => return Vec::new(),
+    };
+    let mut wanted = std::collections::BTreeSet::new();
+    for p in &lock.packages {
+        if p.artifact_digest.is_none() {
+            continue;
+        }
+        if let Some(rest) = p.source.strip_prefix("registry:") {
+            if let Some((full, version)) = rest.rsplit_once('@') {
+                if !full.is_empty() && !version.is_empty() {
+                    wanted.insert((full.to_string(), version.to_string()));
+                }
+            }
+        }
+    }
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    fx::link_violations_for_lock(&wanted, &frontend::fetch::registry_cache_root(), native_libs)
 }
 
 pub struct LibBuild {

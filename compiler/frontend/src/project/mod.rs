@@ -1114,6 +1114,13 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
                     code: Code::E108,
                     message: "`edition` was removed, engine range only".to_string(),
                 });
+            } else if key == "sandbox" {
+                out.push(ManifestIssue {
+                    line: field_line(text, &module, &[], &key),
+                    error: true,
+                    code: Code::E108,
+                    message: "field `sandbox` does not exist; isolation is declared by the artifact's `run.rasmalai.isolation` annotation alone".to_string(),
+                });
             } else {
                 out.push(ManifestIssue {
                     line: field_line(text, &module, &[], &key),
@@ -1740,6 +1747,18 @@ mod tests {
                 "{issues:?}"
             );
         }
+    }
+
+    #[test]
+    fn sandbox_key_is_rejected() {
+        let text = "export default {\n    project: { name: \"a\", version: \"0.1.0\" },\n    sandbox: \"strict\"\n}\n";
+        let issues = validate_manifest_text(text, None);
+        assert!(
+            issues.iter().any(|i| i.error
+                && i.code == Code::E108
+                && i.message.contains("run.rasmalai.isolation")),
+            "{issues:?}"
+        );
     }
 
     #[test]

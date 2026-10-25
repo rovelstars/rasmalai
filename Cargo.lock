@@ -353,6 +353,7 @@ dependencies = [
  "docgen",
  "fancy-regex",
  "frontend",
+ "fx",
  "linker",
  "lir",
  "llvm",
@@ -864,6 +865,7 @@ name = "frontend"
 version = "0.1.0"
 dependencies = [
  "diagnostics",
+ "fx",
  "libc",
  "rayon",
  "reqwest",
@@ -966,6 +968,21 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "fx"
+version = "0.1.0"
+dependencies = [
+ "diagnostics",
+]
+
+[[package]]
+name = "fxhost"
+version = "0.1.0"
+dependencies = [
+ "fx",
+ "libc",
 ]
 
 [[package]]
