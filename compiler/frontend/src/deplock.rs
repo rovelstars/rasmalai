@@ -127,6 +127,7 @@ fn collect_into(
     pins: &BTreeMap<String, crate::project::NativePin>,
     prefer: crate::native::NativePrefer,
     used_pins: &mut BTreeSet<String>,
+    overrides: &BTreeMap<String, String>,
 ) -> Result<(), Diagnostic> {
     let mut stack: Vec<(PathBuf, ProjectConfig, bool, Option<String>, String)> =
         vec![(root.to_path_buf(), config.clone(), is_root, None, "static".to_string())];
@@ -231,10 +232,11 @@ fn collect_into(
                     (dep_root, dep_cfg, Some(format!("git:{git}#{rev}")))
                 }
                 crate::project::DependencySpec::Semver { version, .. } => {
+                    let req = overrides.get(dep_name).map(String::as_str).unwrap_or(version.as_str());
                     let (dep_root, dep_cfg, resolved) =
                         crate::fetch::resolve_registry_package(
                             dep_name,
-                            version,
+                            req,
                             cfg.registry.as_ref(),
                             &cfg.registries,
                             None,
@@ -298,10 +300,11 @@ fn collect_graph(
     config: &ProjectConfig,
     have: &[crate::fetch::HaveEntry],
     prefer: crate::native::NativePrefer,
+    overrides: &BTreeMap<String, String>,
 ) -> Result<Vec<PkgNode>, Diagnostic> {
     let mut nodes: BTreeMap<String, PkgNode> = BTreeMap::new();
     let mut used_pins: BTreeSet<String> = BTreeSet::new();
-    collect_into(&mut nodes, root, root, config, true, have, &config.native_pins, prefer, &mut used_pins)?;
+    collect_into(&mut nodes, root, root, config, true, have, &config.native_pins, prefer, &mut used_pins, overrides)?;
     for name in config.native_pins.keys() {
         if !used_pins.contains(name) {
             return Err(Diagnostic::new(
@@ -318,6 +321,7 @@ fn collect_workspace_graph(
     members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
     have: &[crate::fetch::HaveEntry],
     prefer: crate::native::NativePrefer,
+    overrides: &BTreeMap<String, String>,
 ) -> Result<Vec<PkgNode>, Diagnostic> {
     let ws_pins = ProjectConfig::load_from_dir(ws_root)
         .ok()
@@ -327,7 +331,7 @@ fn collect_workspace_graph(
     let mut nodes: BTreeMap<String, PkgNode> = BTreeMap::new();
     let mut used_pins: BTreeSet<String> = BTreeSet::new();
     for (root, cfg) in members.values() {
-        collect_into(&mut nodes, ws_root, root, cfg, false, have, &ws_pins, prefer, &mut used_pins)?;
+        collect_into(&mut nodes, ws_root, root, cfg, false, have, &ws_pins, prefer, &mut used_pins, overrides)?;
     }
     for name in ws_pins.keys() {
         if !used_pins.contains(name) {
@@ -517,8 +521,17 @@ impl ProjectDepLock {
         config: &ProjectConfig,
         prefer: crate::native::NativePrefer,
     ) -> Result<ProjectDepLock, Diagnostic> {
+        Self::resolve_with_overrides(root, config, prefer, &BTreeMap::new())
+    }
+
+    pub fn resolve_with_overrides(
+        root: &Path,
+        config: &ProjectConfig,
+        prefer: crate::native::NativePrefer,
+        overrides: &BTreeMap<String, String>,
+    ) -> Result<ProjectDepLock, Diagnostic> {
         let have = existing_have(root);
-        nodes_to_lock(collect_graph(root, config, &have, prefer)?)
+        nodes_to_lock(collect_graph(root, config, &have, prefer, overrides)?)
     }
 
     pub fn resolve_workspace(
@@ -533,8 +546,17 @@ impl ProjectDepLock {
         members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
         prefer: crate::native::NativePrefer,
     ) -> Result<ProjectDepLock, Diagnostic> {
+        Self::resolve_workspace_with_overrides(ws_root, members, prefer, &BTreeMap::new())
+    }
+
+    pub fn resolve_workspace_with_overrides(
+        ws_root: &Path,
+        members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
+        prefer: crate::native::NativePrefer,
+        overrides: &BTreeMap<String, String>,
+    ) -> Result<ProjectDepLock, Diagnostic> {
         let have = existing_have(ws_root);
-        nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer)?)
+        nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, overrides)?)
     }
 
     pub fn load(root: &Path) -> Result<Option<ProjectDepLock>, Diagnostic> {
@@ -742,7 +764,7 @@ pub fn verify_lock_with(
     prefer: crate::native::NativePrefer,
 ) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
-    check_nodes(collect_graph(root, config, &have, prefer)?, lock)
+    check_nodes(collect_graph(root, config, &have, prefer, &BTreeMap::new())?, lock)
 }
 
 pub fn verify_workspace_lock(
@@ -760,7 +782,263 @@ pub fn verify_workspace_lock_with(
     prefer: crate::native::NativePrefer,
 ) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
-    check_nodes(collect_workspace_graph(ws_root, members, &have, prefer)?, lock)
+    check_nodes(collect_workspace_graph(ws_root, members, &have, prefer, &BTreeMap::new())?, lock)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateSelection {
+    pub name: String,
+    pub selector: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateChange {
+    pub name: String,
+    pub old: String,
+    pub new: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpdateSummary {
+    pub updated: Vec<UpdateChange>,
+    pub held: Vec<UpdateChange>,
+}
+
+pub fn parse_update_selector(arg: &str) -> Result<UpdateSelection, Diagnostic> {
+    let bad = || {
+        Diagnostic::new(
+            Code::E108,
+            format!("bad update target `{arg}`: expected `name` or `name@range`"),
+        )
+    };
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return Err(bad());
+    }
+    match arg.rfind('@').filter(|&i| i > 0) {
+        None => {
+            if arg == "@" {
+                return Err(bad());
+            }
+            Ok(UpdateSelection { name: arg.to_string(), selector: None })
+        }
+        Some(i) => {
+            let name = arg[..i].trim();
+            let selector = arg[i + 1..].trim();
+            if name.is_empty() || selector.is_empty() {
+                return Err(bad());
+            }
+            Ok(UpdateSelection { name: name.to_string(), selector: Some(selector.to_string()) })
+        }
+    }
+}
+
+fn major_of(version: &str) -> Option<u64> {
+    version.split('.').next()?.trim().parse::<u64>().ok()
+}
+
+fn locked_registry<'a>(lock: &'a ProjectDepLock, name: &str) -> Option<&'a LockedPackage> {
+    lock.packages
+        .iter()
+        .find(|p| p.name == name && p.source.starts_with("registry:"))
+}
+
+fn manifest_ranges(configs: &[&ProjectConfig]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for config in configs {
+        for (name, spec) in &config.dependencies {
+            if let crate::project::DependencySpec::Semver { version, .. } = spec {
+                out.entry(name.clone()).or_insert_with(|| version.clone());
+            }
+        }
+    }
+    out
+}
+
+fn update_overrides(
+    ranges: &BTreeMap<String, String>,
+    old: &ProjectDepLock,
+    selections: &[UpdateSelection],
+    update_all: bool,
+) -> Result<(BTreeMap<String, String>, BTreeSet<String>), Diagnostic> {
+    let mut wanted: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for s in selections {
+        if wanted.contains_key(&s.name) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("duplicate update target `{}`", s.name),
+            ));
+        }
+        wanted.insert(s.name.clone(), s.selector.clone());
+    }
+    for name in wanted.keys() {
+        if !ranges.contains_key(name) {
+            return Err(Diagnostic::new(Code::E108, format!("package `{name}` is not a registry dependency (only registry ranges update)")));
+        }
+    }
+    let mut overrides = BTreeMap::new();
+    let mut explicit = BTreeSet::new();
+    for name in ranges.keys() {
+        match wanted.get(name) {
+            Some(Some(selector)) => {
+                if !crate::fetch::is_valid_range(selector) {
+                    return Err(Diagnostic::new(Code::E108, format!("selector `{selector}` for package `{name}` is not a valid range (`*`, `latest`, `X.Y.Z`, `^`, `~`, `>=`); dist-tags are not resolved by this client")));
+                }
+                explicit.insert(name.clone());
+                overrides.insert(name.clone(), selector.clone());
+            }
+            Some(None) => {}
+            None => {
+                if !update_all
+                    && let Some(pinned) = locked_registry(old, name)
+                {
+                    overrides.insert(name.clone(), pinned.version.clone());
+                }
+            }
+        }
+    }
+    Ok((overrides, explicit))
+}
+
+fn update_targets(
+    ranges: &BTreeMap<String, String>,
+    old: &ProjectDepLock,
+    selections: &[UpdateSelection],
+    update_all: bool,
+) -> BTreeSet<String> {
+    if update_all {
+        return ranges.keys().cloned().collect();
+    }
+    let mut out: BTreeSet<String> = selections.iter().map(|s| s.name.clone()).collect();
+    for name in ranges.keys() {
+        if locked_registry(old, name).is_none() {
+            out.insert(name.clone());
+        }
+    }
+    out
+}
+
+fn summarize_update(old: &ProjectDepLock, new: &ProjectDepLock) -> Vec<UpdateChange> {
+    let mut updated = Vec::new();
+    for p in &new.packages {
+        if !p.source.starts_with("registry:") {
+            continue;
+        }
+        match locked_registry(old, &p.name) {
+            Some(o)
+                if o.version == p.version
+                    && o.checksum == p.checksum
+                    && o.artifact_digest == p.artifact_digest => {}
+            Some(o) => updated.push(UpdateChange {
+                name: p.name.clone(),
+                old: o.version.clone(),
+                new: p.version.clone(),
+            }),
+            None => updated.push(UpdateChange {
+                name: p.name.clone(),
+                old: "none".to_string(),
+                new: p.version.clone(),
+            }),
+        }
+    }
+    updated.sort_by(|a, b| a.name.cmp(&b.name));
+    updated
+}
+
+fn hold_major_moves(
+    old: &ProjectDepLock,
+    candidate: &ProjectDepLock,
+    targets: &BTreeSet<String>,
+    explicit: &BTreeSet<String>,
+    allow_major: bool,
+    overrides: &mut BTreeMap<String, String>,
+) -> Vec<UpdateChange> {
+    if allow_major {
+        return Vec::new();
+    }
+    let mut held = Vec::new();
+    for name in targets {
+        if explicit.contains(name) {
+            continue;
+        }
+        let old_version = locked_registry(old, name).map(|p| p.version.as_str()).unwrap_or_default();
+        let new_version = candidate
+            .packages
+            .iter()
+            .find(|p| p.name == *name)
+            .map(|p| p.version.as_str())
+            .unwrap_or_default();
+        if old_version.is_empty() || new_version.is_empty() || old_version == new_version {
+            continue;
+        }
+        let crossed = match (major_of(old_version), major_of(new_version)) {
+            (Some(a), Some(b)) => a != b,
+            _ => false,
+        };
+        if crossed {
+            overrides.insert(name.clone(), old_version.to_string());
+            held.push(UpdateChange {
+                name: name.clone(),
+                old: old_version.to_string(),
+                new: new_version.to_string(),
+            });
+        }
+    }
+    held.sort_by(|a, b| a.name.cmp(&b.name));
+    held
+}
+
+impl ProjectDepLock {
+    pub fn update_lock(
+        root: &Path,
+        config: &ProjectConfig,
+        prefer: crate::native::NativePrefer,
+        selections: &[UpdateSelection],
+        allow_major: bool,
+    ) -> Result<(ProjectDepLock, UpdateSummary), Diagnostic> {
+        let old = ProjectDepLock::load(root)?.ok_or_else(|| {
+            Diagnostic::new(Code::E108, "Project.deplock not found, run 'rnx lock'")
+        })?;
+        let ranges = manifest_ranges(std::slice::from_ref(&config));
+        let update_all = selections.is_empty();
+        let (mut overrides, explicit) = update_overrides(&ranges, &old, selections, update_all)?;
+        let targets = update_targets(&ranges, &old, selections, update_all);
+        let have = existing_have(root);
+        let mut candidate = nodes_to_lock(collect_graph(root, config, &have, prefer, &overrides)?)?;
+        let held = hold_major_moves(&old, &candidate, &targets, &explicit, allow_major, &mut overrides);
+        if !held.is_empty() {
+            candidate = nodes_to_lock(collect_graph(root, config, &have, prefer, &overrides)?)?;
+        }
+        let updated = summarize_update(&old, &candidate);
+        Ok((candidate, UpdateSummary { updated, held }))
+    }
+
+    pub fn update_workspace_lock(
+        ws_root: &Path,
+        members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
+        prefer: crate::native::NativePrefer,
+        selections: &[UpdateSelection],
+        allow_major: bool,
+    ) -> Result<(ProjectDepLock, UpdateSummary), Diagnostic> {
+        let old = ProjectDepLock::load(ws_root)?.ok_or_else(|| {
+            Diagnostic::new(Code::E108, "Project.deplock not found, run 'rnx lock'")
+        })?;
+        let configs: Vec<&ProjectConfig> = members.values().map(|(_, c)| c).collect();
+        let ranges = manifest_ranges(&configs);
+        let update_all = selections.is_empty();
+        let (mut overrides, explicit) = update_overrides(&ranges, &old, selections, update_all)?;
+        let targets = update_targets(&ranges, &old, selections, update_all);
+        let have = existing_have(ws_root);
+        let mut candidate =
+            nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, &overrides)?)?;
+        let held = hold_major_moves(&old, &candidate, &targets, &explicit, allow_major, &mut overrides);
+        if !held.is_empty() {
+            candidate =
+                nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, &overrides)?)?;
+        }
+        let updated = summarize_update(&old, &candidate);
+        Ok((candidate, UpdateSummary { updated, held }))
+    }
 }
 
 #[cfg(test)]
@@ -1006,5 +1284,582 @@ mod tests {
         let codec = lock.packages.iter().find(|p| p.name == "codec").unwrap();
         assert_eq!(codec.source, "native:codec#libcodec.so");
         verify_lock_with(&root, &cfg, &lock, crate::native::NativePrefer::None).unwrap();
+    }
+
+    fn update_app(
+        tag: &str,
+        deps: &str,
+        extra: &str,
+        registry: &str,
+    ) -> (crate::scratch::Scratch, std::path::PathBuf) {
+        let dir = crate::scratch::dir(&format!("update-{tag}"));
+        let root = dir.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"app\",\n        version: \"0.1.0\"\n    }},\n    dependencies: {{\n{deps}    }}{extra},\n    registry: {{ url: \"{registry}\" }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src").join("main.rnx"),
+            "fn Main(): Int { return 0; }\n",
+        )
+        .unwrap();
+        (dir, root)
+    }
+
+    fn update_point_registry(root: &std::path::Path, deps: &str, extra: &str, registry: &str) {
+        std::fs::write(
+            root.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"app\",\n        version: \"0.1.0\"\n    }},\n    dependencies: {{\n{deps}    }}{extra},\n    registry: {{ url: \"{registry}\" }}\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn update_mock(
+        version: &str,
+        full: &str,
+        engine: &str,
+    ) -> (String, Vec<(String, Vec<u8>)>, String, String) {
+        let n: u32 = version.bytes().map(u32::from).sum();
+        let main = format!("export fn hello(): Int {{ return {n}; }}\n").into_bytes();
+        let (manifest, pairs, digest, _, _) =
+            crate::fetch::testkit::fixture_tree_with_main(full, version, &main);
+        let node = if engine.is_empty() {
+            crate::fetch::testkit::node_json(full, version, &digest, false)
+        } else {
+            crate::fetch::testkit::node_engine_json(full, version, &digest, false, engine)
+        };
+        (manifest, pairs, digest, node)
+    }
+
+    #[test]
+    fn update_selector_parsing() {
+        let s = parse_update_selector("widget").unwrap();
+        assert_eq!(s.name, "widget");
+        assert_eq!(s.selector, None);
+        let s = parse_update_selector("@acme/widget").unwrap();
+        assert_eq!(s.name, "@acme/widget");
+        assert_eq!(s.selector, None);
+        let s = parse_update_selector("widget@^1.0.0").unwrap();
+        assert_eq!(s.name, "widget");
+        assert_eq!(s.selector.as_deref(), Some("^1.0.0"));
+        let s = parse_update_selector("@acme/widget@1.2.3").unwrap();
+        assert_eq!(s.name, "@acme/widget");
+        assert_eq!(s.selector.as_deref(), Some("1.2.3"));
+        let s = parse_update_selector("widget@latest").unwrap();
+        assert_eq!(s.selector.as_deref(), Some("latest"));
+        for bad in ["", "@", "widget@", "@widget@"] {
+            assert!(parse_update_selector(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn update_rewrites_lock_with_new_digest() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-rewrite");
+        let (manifest_a, pairs_a, digest_a, node_a) = update_mock("1.2.0", "@acme/widget", "");
+        let (manifest_b, pairs_b, digest_b, node_b) = update_mock("1.3.0", "@acme/widget", "");
+        assert_ne!(digest_a, digest_b);
+        let server_a =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_a]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_a),
+                chunk_override: Some(pairs_a),
+            });
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" }\n";
+        let (_dir, root) = update_app("rewrite", deps, "", &server_a.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let old = ProjectDepLock::resolve(&root, &cfg).unwrap();
+        old.write(&root).unwrap();
+        let server_b =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_b]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_b),
+                chunk_override: Some(pairs_b),
+            });
+        update_point_registry(&root, deps, "", &server_b.base);
+        let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let (new_lock, summary) = ProjectDepLock::update_lock(
+            &root,
+            &cfg_b,
+            crate::native::NativePrefer::None,
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(summary.updated.len(), 1);
+        assert_eq!(summary.updated[0].name, "@acme/widget");
+        assert_eq!(summary.updated[0].old, "1.2.0");
+        assert_eq!(summary.updated[0].new, "1.3.0");
+        assert!(summary.held.is_empty());
+        let widget = new_lock
+            .packages
+            .iter()
+            .find(|p| p.name == "@acme/widget")
+            .unwrap();
+        assert_eq!(widget.version, "1.3.0");
+        assert_eq!(widget.source, "registry:@acme/widget@1.3.0");
+        assert_eq!(widget.checksum, digest_b);
+        verify_lock(&root, &cfg_b, &new_lock).unwrap();
+    }
+
+    #[test]
+    fn update_noop_when_current() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-noop");
+        let (manifest, pairs, digest, node) = update_mock("1.2.0", "@acme/widget", "");
+        let server =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest),
+                chunk_override: Some(pairs),
+            });
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" }\n";
+        let (_dir, root) = update_app("noop", deps, "", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let old = ProjectDepLock::resolve(&root, &cfg).unwrap();
+        old.write(&root).unwrap();
+        assert_eq!(
+            old.packages
+                .iter()
+                .find(|p| p.name == "@acme/widget")
+                .unwrap()
+                .checksum,
+            digest
+        );
+        let (new_lock, summary) =
+            ProjectDepLock::update_lock(&root, &cfg, crate::native::NativePrefer::None, &[], false)
+                .unwrap();
+        assert!(summary.updated.is_empty());
+        assert!(summary.held.is_empty());
+        assert_eq!(new_lock.to_rnx(), old.to_rnx());
+    }
+
+    #[test]
+    fn update_named_pins_other_direct_deps() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-named");
+        let (pkg_wa, digest_wa) = crate::fetch::testkit::routed_fixture("@acme/widget", "1.2.0", 0);
+        let (pkg_ga, digest_ga) = crate::fetch::testkit::routed_fixture("@acme/gadget", "2.0.0", 0);
+        let node_wa = crate::fetch::testkit::node_json("@acme/widget", "1.2.0", &digest_wa, false);
+        let node_ga = crate::fetch::testkit::node_json("@acme/gadget", "2.0.0", &digest_ga, false);
+        let server_a = crate::fetch::testkit::MockRegistry::start_routed(
+            crate::fetch::testkit::RoutedConfig {
+                version_spec: 0,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_wa, node_ga]),
+                packages: vec![pkg_wa, pkg_ga],
+            },
+        );
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" },\n        \"@acme/gadget\": { version: \"^2.0.0\" }\n";
+        let (_dir, root) = update_app("named", deps, "", &server_a.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let old = ProjectDepLock::resolve(&root, &cfg).unwrap();
+        old.write(&root).unwrap();
+        let (pkg_wb, digest_wb) = crate::fetch::testkit::routed_fixture("@acme/widget", "1.3.0", 0);
+        let (pkg_gb, digest_gb) = crate::fetch::testkit::routed_fixture("@acme/gadget", "2.0.0", 0);
+        let node_wb = crate::fetch::testkit::node_json("@acme/widget", "1.3.0", &digest_wb, false);
+        let node_gb = crate::fetch::testkit::node_json("@acme/gadget", "2.0.0", &digest_gb, false);
+        let server_b = crate::fetch::testkit::MockRegistry::start_routed(
+            crate::fetch::testkit::RoutedConfig {
+                version_spec: 0,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_wb, node_gb]),
+                packages: vec![pkg_wb, pkg_gb],
+            },
+        );
+        update_point_registry(&root, deps, "", &server_b.base);
+        let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let only_widget = vec![parse_update_selector("@acme/widget").unwrap()];
+        let (new_lock, summary) = ProjectDepLock::update_lock(
+            &root,
+            &cfg_b,
+            crate::native::NativePrefer::None,
+            &only_widget,
+            false,
+        )
+        .unwrap();
+        assert_eq!(summary.updated.len(), 1);
+        assert_eq!(summary.updated[0].name, "@acme/widget");
+        assert_eq!(summary.updated[0].old, "1.2.0");
+        assert_eq!(summary.updated[0].new, "1.3.0");
+        let gadget = new_lock
+            .packages
+            .iter()
+            .find(|p| p.name == "@acme/gadget")
+            .unwrap();
+        assert_eq!(gadget.version, "2.0.0");
+        let widget = new_lock
+            .packages
+            .iter()
+            .find(|p| p.name == "@acme/widget")
+            .unwrap();
+        assert_eq!(widget.checksum, digest_wb);
+        let bodies = server_b.resolve_bodies();
+        assert!(!bodies.is_empty());
+        assert!(
+            bodies
+                .iter()
+                .any(|b| crate::fetch::testkit::requirement(b, "@acme/widget") == "^1.0.0"),
+            "{bodies:?}"
+        );
+        assert!(
+            bodies
+                .iter()
+                .any(|b| crate::fetch::testkit::requirement(b, "@acme/gadget") == "2.0.0"),
+            "{bodies:?}"
+        );
+    }
+
+    #[test]
+    fn update_latest_selector_pins_digest_not_tag() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-latest");
+        let (manifest_a, pairs_a, _, node_a) = update_mock("1.2.0", "@acme/widget", "");
+        let server_a =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_a]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_a),
+                chunk_override: Some(pairs_a),
+            });
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" }\n";
+        let (_dir, root) = update_app("latest", deps, "", &server_a.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        ProjectDepLock::resolve(&root, &cfg)
+            .unwrap()
+            .write(&root)
+            .unwrap();
+        let (manifest_b, pairs_b, digest_b, node_b) = update_mock("1.9.0", "@acme/widget", "");
+        let server_b =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_b]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_b),
+                chunk_override: Some(pairs_b),
+            });
+        update_point_registry(&root, deps, "", &server_b.base);
+        let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let sel = vec![parse_update_selector("@acme/widget@latest").unwrap()];
+        let (new_lock, summary) = ProjectDepLock::update_lock(
+            &root,
+            &cfg_b,
+            crate::native::NativePrefer::None,
+            &sel,
+            false,
+        )
+        .unwrap();
+        assert_eq!(summary.updated.len(), 1);
+        assert_eq!(summary.updated[0].new, "1.9.0");
+        let widget = new_lock
+            .packages
+            .iter()
+            .find(|p| p.name == "@acme/widget")
+            .unwrap();
+        assert_eq!(widget.source, "registry:@acme/widget@1.9.0");
+        assert_eq!(widget.checksum, digest_b);
+        assert!(!widget.source.contains("latest"));
+        let bodies = server_b.resolve_bodies();
+        let last = bodies.last().unwrap();
+        assert_eq!(
+            crate::fetch::testkit::requirement(last, "@acme/widget"),
+            "latest"
+        );
+    }
+
+    #[test]
+    fn update_holds_major_without_flag() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-major");
+        let (manifest_a, pairs_a, _, node_a) = update_mock("1.2.0", "@acme/widget", "");
+        let server_a =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_a]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_a),
+                chunk_override: Some(pairs_a),
+            });
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" }\n";
+        let (_dir, root) = update_app("major", deps, "", &server_a.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        ProjectDepLock::resolve(&root, &cfg)
+            .unwrap()
+            .write(&root)
+            .unwrap();
+        let (manifest_old, pairs_old, digest_old, _) = update_mock("1.2.0", "@acme/widget", "");
+        let (manifest_new, pairs_new, digest_new, _) = update_mock("2.0.0", "@acme/widget", "");
+        let node_old =
+            crate::fetch::testkit::node_json("@acme/widget", "1.2.0", &digest_old, false);
+        let node_new =
+            crate::fetch::testkit::node_json("@acme/widget", "2.0.0", &digest_new, false);
+        let body_old = crate::fetch::testkit::resolve_json_static(&[node_old]);
+        let body_new = crate::fetch::testkit::resolve_json_static(&[node_new]);
+        let mut chunks = std::collections::BTreeMap::new();
+        chunks.insert("@acme/widget@1.2.0".to_string(), (manifest_old, pairs_old));
+        chunks.insert("@acme/widget@2.0.0".to_string(), (manifest_new, pairs_new));
+        let server_b = crate::fetch::testkit::MockRegistry::start_dynamic(chunks, move |reqs| {
+            if reqs.get("@acme/widget").map(String::as_str) == Some("1.2.0") {
+                body_old.clone()
+            } else {
+                body_new.clone()
+            }
+        });
+        update_point_registry(&root, deps, "", &server_b.base);
+        let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let (held_lock, held_summary) = ProjectDepLock::update_lock(
+            &root,
+            &cfg_b,
+            crate::native::NativePrefer::None,
+            &[],
+            false,
+        )
+        .unwrap();
+        assert!(held_summary.updated.is_empty());
+        assert_eq!(held_summary.held.len(), 1);
+        assert_eq!(held_summary.held[0].old, "1.2.0");
+        assert_eq!(held_summary.held[0].new, "2.0.0");
+        assert_eq!(
+            held_lock
+                .packages
+                .iter()
+                .find(|p| p.name == "@acme/widget")
+                .unwrap()
+                .version,
+            "1.2.0"
+        );
+        let (moved_lock, moved_summary) = ProjectDepLock::update_lock(
+            &root,
+            &cfg_b,
+            crate::native::NativePrefer::None,
+            &[],
+            true,
+        )
+        .unwrap();
+        assert_eq!(moved_summary.updated.len(), 1);
+        assert_eq!(moved_summary.updated[0].new, "2.0.0");
+        assert!(moved_summary.held.is_empty());
+        assert_eq!(
+            moved_lock
+                .packages
+                .iter()
+                .find(|p| p.name == "@acme/widget")
+                .unwrap()
+                .version,
+            "2.0.0"
+        );
+    }
+
+    #[test]
+    fn update_rejects_unknown_tag_and_unknown_package() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-reject");
+        let (manifest, pairs, _, node) = update_mock("1.2.0", "@acme/widget", "");
+        let server =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest),
+                chunk_override: Some(pairs),
+            });
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" }\n";
+        let (_dir, root) = update_app("reject", deps, "", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        ProjectDepLock::resolve(&root, &cfg)
+            .unwrap()
+            .write(&root)
+            .unwrap();
+        let tag = vec![parse_update_selector("@acme/widget@beta").unwrap()];
+        let err = ProjectDepLock::update_lock(
+            &root,
+            &cfg,
+            crate::native::NativePrefer::None,
+            &tag,
+            false,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("not a valid range"), "{}", err.message);
+        assert!(err.message.contains("dist-tags"), "{}", err.message);
+        let unknown = vec![parse_update_selector("nosuch").unwrap()];
+        let err = ProjectDepLock::update_lock(
+            &root,
+            &cfg,
+            crate::native::NativePrefer::None,
+            &unknown,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("not a registry dependency"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn update_fails_closed_on_engine_mismatch() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-engine");
+        let (manifest_a, pairs_a, _, node_a) = update_mock("1.2.0", "@acme/widget", "");
+        let server_a =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_a]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_a),
+                chunk_override: Some(pairs_a),
+            });
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" }\n";
+        let (_dir, root) = update_app("engine", deps, "", &server_a.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        ProjectDepLock::resolve(&root, &cfg)
+            .unwrap()
+            .write(&root)
+            .unwrap();
+        let (manifest_b, pairs_b, _, node_b) = update_mock("1.3.0", "@acme/widget", ">=99.0.0");
+        let server_b =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_b]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_b),
+                chunk_override: Some(pairs_b),
+            });
+        update_point_registry(&root, deps, "", &server_b.base);
+        let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let err = ProjectDepLock::update_lock(
+            &root,
+            &cfg_b,
+            crate::native::NativePrefer::None,
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("needs engine"), "{}", err.message);
+    }
+
+    #[test]
+    fn update_keeps_consumer_native_override() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-native");
+        let (manifest_a, pairs_a, _, node_a) = update_mock("1.2.0", "@acme/widget", "");
+        let server_a =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_a]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_a),
+                chunk_override: Some(pairs_a),
+            });
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" },\n        zlib: { native: \"z\", system: true }\n";
+        let extra = ",\n    native: { zlib: { system: false } }";
+        let (_dir, root) = update_app("native", deps, extra, &server_a.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let old =
+            ProjectDepLock::resolve_with(&root, &cfg, crate::native::NativePrefer::None).unwrap();
+        assert_eq!(
+            old.packages
+                .iter()
+                .find(|p| p.name == "zlib")
+                .unwrap()
+                .source,
+            "native:z"
+        );
+        old.write(&root).unwrap();
+        let (manifest_b, pairs_b, _, node_b) = update_mock("1.3.0", "@acme/widget", "");
+        let server_b =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_b]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_b),
+                chunk_override: Some(pairs_b),
+            });
+        update_point_registry(&root, deps, extra, &server_b.base);
+        let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let (new_lock, summary) = ProjectDepLock::update_lock(
+            &root,
+            &cfg_b,
+            crate::native::NativePrefer::None,
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(summary.updated.len(), 1);
+        assert_eq!(
+            new_lock
+                .packages
+                .iter()
+                .find(|p| p.name == "zlib")
+                .unwrap()
+                .source,
+            "native:z"
+        );
+        verify_lock_with(&root, &cfg_b, &new_lock, crate::native::NativePrefer::None).unwrap();
+    }
+
+    #[test]
+    fn update_needs_lockfile() {
+        let dir = crate::scratch::dir("update-nolock");
+        let root = dir.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Project.config"),
+            "export default {\n    project: {\n        name: \"app\",\n        version: \"0.1.0\"\n    }\n}\n",
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let err =
+            ProjectDepLock::update_lock(&root, &cfg, crate::native::NativePrefer::None, &[], false)
+                .unwrap_err();
+        assert!(err.message.contains("run 'rnx lock'"), "{}", err.message);
     }
 }

@@ -221,6 +221,17 @@ pub enum Command {
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
     },
+    /// Re-resolve registry ranges and rewrite Project.deplock with new digests
+    Update {
+        /// Only update these dependencies (`name` or `name@range`; `latest` resolves then pins)
+        packages: Vec<String>,
+        /// Allow crossing major versions (explicit `name@range` selectors always may)
+        #[arg(long)]
+        major: bool,
+        /// Package selection for workspace builds
+        #[arg(short = 'p', long = "package")]
+        package: Option<String>,
+    },
     /// Fetch dependencies into the cache and precompile dep products
     Fetch {
         /// Package selection

@@ -218,6 +218,27 @@ An oversized body is refused on its declared length, before a byte of it is read
 
 A resolve also has a runtime budget: the traversal stops at 64 levels, 512 packages, 512 packages in one level and 4096 candidate versions, and the request may spend 50 calls to the store. A closure that needs more answers 422 `budget-exceeded` with the reason in the message. The last limit is the platform's own: one request may make 50 external calls on the free plan, so the resolver counts them and refuses itself rather than being cut off mid-answer.
 
+## Lockfile and rnx update
+
+`rnx lock` writes `Project.deplock`, pinning every dependency to the exact version the registry just served: the version number plus the manifest digest as `checksum`, and the OCI index digest as `artifactDigest` when the version ships artifacts. A build run with a lockfile never auto-upgrades: pinned versions resolve from cache without network access, and byte mismatches abort the build. The registry never stores deplocks — a published deplock would pin everyone else's tree.
+
+Moving a dependency takes an explicit update:
+
+```sh
+rnx update
+rnx update @acme/ui sqlite3
+rnx update @acme/ui@latest
+rnx update sqlite3 --major
+```
+
+With no names, every registry range re-resolves against the live registry and the lockfile is rewritten with the new digests. With names, only those dependencies float; every other direct registry dependency stays pinned to its locked version while the named ones re-resolve. Each move prints as `updated <name> <old> -> <new>`; when nothing moves the command prints `Already up to date.` and leaves the lockfile byte-identical.
+
+Three rules govern what an update may pick:
+
+- Selectors never reach the manifest. A `name@range` selector is a one-shot override for that update only — the `Project.config` range is untouched, and the lockfile pins the resolved digest, never the range or tag text. `latest` resolves through the registry's computed latest pointer and pins the resulting digest. Any other tag is rejected: named dist-tags need the server `dist-tags` capability, which the registry does not advertise yet.
+- Major versions need opt-in. An update that would cross a major version holds that dependency at its locked version and prints `held <name> at <old> (major move to <new> needs --major)`. Passing `--major` allows the crossing. An explicit `name@range` selector always opts that dependency in.
+- The server stays the source of truth. A candidate whose engine range the running toolchain does not satisfy fails the update instead of being pinned, and consumer native choices (the root `native` table, `--prefer-system` / `--prefer-bundled`) are preserved across the rewrite. Every byte still verifies against the manifest digest and chunk hashes at install time.
+
 ## Publishing
 
 `rnx publish` ships the current project as a source tree. `rnx pack` stays for local archives but plays no part in publishing: the server derives the stored bytes itself.
@@ -307,7 +328,7 @@ export default {
 }
 ```
 
-It resolves through the range rules above once registry fetching lands; today it fails the build as not implemented.
+It resolves through the range rules above: `rnx lock` writes the picked versions to `Project.deplock`, and `rnx update` moves them (see Lockfile and rnx update).
 
 A path dependency is a string starting with `.` or containing `/`, or an object with `path`:
 
