@@ -126,6 +126,9 @@ index = {"schemaVersion": 2, "manifests": descriptors}
 index_bytes = json.dumps(index, sort_keys=True,
                          separators=(",", ": ")).encode()
 digest = "sha256:" + hashlib.sha256(index_bytes).hexdigest()
+os.makedirs(os.path.join(out, "blobs"), exist_ok=True)
+with open(os.path.join(out, "blobs", config_digest[7:]), "wb") as fh:
+    fh.write(config)
 with open(os.path.join(out, "index.json"), "wb") as fh:
     fh.write(index_bytes)
 for hexpart, body in manifest_files.items():

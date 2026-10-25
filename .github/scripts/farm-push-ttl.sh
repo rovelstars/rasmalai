@@ -74,6 +74,10 @@ for meta in "$stage"/*.meta.json; do
     [ -f "$file" ] || fail "missing blob $rel"
     push_blob "$file" "$(sha256sum "$file" | cut -d' ' -f1)"
 done
+for blob in "$index_dir"/blobs/*; do
+    [ -f "$blob" ] || continue
+    push_blob "$blob" "$(basename "$blob")"
+done
 
 for manifest in "$index_dir"/manifests/*.json; do
     hex="$(basename "$manifest" .json)"
