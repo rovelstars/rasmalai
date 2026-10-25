@@ -7,16 +7,18 @@ edition.workspace = true
 diagnostics = { path = "../diagnostics" }
 stdlib = { path = "../stdlib" }
 sha2 = "0.10"
-ring = "0.17"
 rayon = "1.12"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 # The registry client: HTTP/2 over rustls, so one session per host carries
-# the whole chunk burst of a cold seed.
+# the whole chunk burst of a cold seed. ring verifies advisory feed
+# signatures on native targets only: getrandom has no wasm32 build, and the
+# server (node:crypto) and browser (same-origin fetch) never need it there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-webpki-roots", "http2", "blocking", "system-proxy"] }
+ring = "0.17"
 
 [dev-dependencies]
 tempfile = "3"

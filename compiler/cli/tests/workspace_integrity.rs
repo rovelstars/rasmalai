@@ -45,7 +45,11 @@ fn test_zero_external_dependencies_in_core() {
     // - frontend/tempfile + lir/tempfile + runtime/tempfile: unique
     //   per-test scratch directories (dev-dependencies only, never linked
     //   into shipped rnx binaries).
-    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2"), ("frontend", "rayon"), ("frontend", "libc"), ("lir", "rayon"), ("lir", "sha2"), ("frontend", "tempfile"), ("lir", "tempfile"), ("runtime", "tempfile")];
+    // - frontend/ring: Ed25519 verification of the signed advisory feed
+    //   (native targets only; getrandom has no wasm32 build, so ring is
+    //   target-gated in frontend/Cargo.toml. No hand-rolled crypto; the
+    //   exact version was already locked in the tree).
+    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2"), ("frontend", "rayon"), ("frontend", "libc"), ("lir", "rayon"), ("lir", "sha2"), ("frontend", "tempfile"), ("lir", "tempfile"), ("runtime", "tempfile"), ("frontend", "ring")];
     for krate in ["frontend", "lir", "runtime", "diagnostics", "stdlib"] {
         let path = root.join(krate).join("Cargo.toml");
         assert!(path.is_file(), "missing {}", path.display());

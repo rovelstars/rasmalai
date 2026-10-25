@@ -193,10 +193,20 @@ pub fn verify_feed(feed: &SignedFeed) -> Result<(), Diagnostic> {
         return Err(bad("signature is not 64 bytes"));
     }
     let message = feed_canonical_bytes(&feed.advisories);
-    let peer = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public_key);
-    peer.verify(&message, &signature)
-        .map_err(|_| bad("signature verification failed"))?;
+    verify_signature(&public_key, &message, &signature)?;
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn verify_signature(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), Diagnostic> {
+    let peer = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public_key);
+    peer.verify(message, signature)
+        .map_err(|_| Diagnostic::new(Code::E108, "advisory feed: signature verification failed"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn verify_signature(_public_key: &[u8], _message: &[u8], _signature: &[u8]) -> Result<(), Diagnostic> {
+    Err(Diagnostic::new(Code::E108, "advisory feed: verification is not available on this target"))
 }
 
 pub enum FeedError {
