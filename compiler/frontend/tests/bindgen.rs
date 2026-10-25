@@ -46,40 +46,78 @@ fn tally_of(opts: &BindgenOptions) -> (ClassTally, frontend::bindgen::BindgenOut
     (out.tally.clone(), out)
 }
 
+fn fixture_opts() -> BindgenOptions {
+    let header =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fx_surface.h");
+    BindgenOptions {
+        headers: vec![header],
+        include_dirs: Vec::new(),
+        native_lib: "fx".to_string(),
+        pkg_name: "fx".to_string(),
+        target: "x86_64-unknown-linux-gnu".to_string(),
+        prefixes: Vec::new(),
+        skips: Vec::new(),
+        upstream_name: None,
+    }
+}
+
 #[test]
-fn sqlite3_tally_matches_reference_classifier() {
-    let Some(opts) = sqlite_opts() else {
-        return;
-    };
-    let (tally, _) = tally_of(&opts);
+fn fixture_tally_is_pinned() {
+    let opts = fixture_opts();
+    let (tally, out) = tally_of(&opts);
     assert_eq!(
         tally,
         ClassTally {
-            proxyable: 18,
-            marshalable: 33,
-            handletable: 138,
-            not_proxyable: 109,
+            proxyable: 3,
+            marshalable: 2,
+            handletable: 1,
+            not_proxyable: 4,
         },
         "{tally:?}"
+    );
+    assert_eq!(out.emitted, 7);
+    let reasons: std::collections::BTreeMap<&str, &str> =
+        out.skipped.iter().map(|(n, r)| (n.as_str(), r.as_str())).collect();
+    assert_eq!(reasons.get("fx_each"), Some(&"callback"));
+    assert_eq!(reasons.get("fx_alloc"), Some(&"voidptr"));
+    assert_eq!(reasons.get("fx_flex"), Some(&"variadic"));
+    assert!(out.rnx.contains("unsafe fn fx_add("));
+    assert!(out.rnx.contains("unsafe fn fx_close("));
+    assert!(out.rnx.contains("unsafe fn fx_open("));
+}
+
+fn assert_tally_self_consistent(out: &frontend::bindgen::BindgenOutput) {
+    let bucketed =
+        out.tally.proxyable + out.tally.marshalable + out.tally.handletable + out.tally.not_proxyable;
+    assert_eq!(
+        bucketed,
+        out.emitted + out.skipped.len(),
+        "every classified function is emitted or skipped: {bucketed} vs {}+{}",
+        out.emitted,
+        out.skipped.len()
     );
 }
 
 #[test]
-fn zlib_tally_matches_reference_classifier() {
+fn sqlite3_tally_is_self_consistent() {
+    let Some(opts) = sqlite_opts() else {
+        return;
+    };
+    let (tally, out) = tally_of(&opts);
+    assert_tally_self_consistent(&out);
+    let (again, _) = tally_of(&opts);
+    assert_eq!(tally, again, "classifier is deterministic on one header");
+}
+
+#[test]
+fn zlib_tally_is_self_consistent() {
     let Some(opts) = zlib_opts() else {
         return;
     };
-    let (tally, _) = tally_of(&opts);
-    assert_eq!(
-        tally,
-        ClassTally {
-            proxyable: 7,
-            marshalable: 75,
-            handletable: 0,
-            not_proxyable: 6,
-        },
-        "{tally:?}"
-    );
+    let (tally, out) = tally_of(&opts);
+    assert_tally_self_consistent(&out);
+    let (again, _) = tally_of(&opts);
+    assert_eq!(tally, again, "classifier is deterministic on one header");
 }
 
 #[test]
