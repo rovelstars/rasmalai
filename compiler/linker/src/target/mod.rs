@@ -21,6 +21,7 @@ pub enum Plan {
     Direct,
     Got,
     Plt,
+    DynAbs,
     TlsGd,
     TlsLd,
     TpoffRelax,
@@ -51,6 +52,7 @@ pub trait Target: Sync {
     fn rel_globdat(&self) -> u32;
     fn rel_relative(&self) -> u32;
     fn rel_irelative(&self) -> u32;
+    fn rel_abs64(&self) -> u32;
     fn rel_copy(&self) -> u32;
     fn global_offset_label(&self) -> &'static str;
 }

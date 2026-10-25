@@ -14,6 +14,8 @@ fn build_key(
     debug: bool,
     jobs: usize,
     memory_cap: u64,
+    prefer: frontend::native::NativePrefer,
+    bundled: &[std::path::PathBuf],
 ) -> String {
     // Path-dep manifests and path-dep src trees (src/**/*.rnx, skipping
     // target/, .git/, .rnx-cache/) feed the fingerprint. Files outside a
@@ -50,6 +52,13 @@ fn build_key(
     }
     owned.push(entry.as_bytes().to_vec());
     owned.push(format!("jobs={jobs} memory-cap={memory_cap}").into_bytes());
+    owned.push(format!("prefer={prefer:?}").into_bytes());
+    let mut bundled: Vec<&std::path::PathBuf> = bundled.iter().collect();
+    bundled.sort();
+    for path in bundled {
+        owned.push(path.display().to_string().into_bytes());
+        owned.push(std::fs::read(path).unwrap_or_default());
+    }
     let host = linker::host_triple().0;
     owned.extend(frontend::cache::toolchain_parts(
         release,
@@ -187,6 +196,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 });
             let input = target.entry;
             let root = project_root_for(&input);
+            let scope_root = target.scope_root.clone().unwrap_or_else(|| root.clone());
             validate_project_name(&root);
             if verbose {
                 eprintln!("rnx: building {input} ({})", if release { "release" } else { "dev" });
@@ -384,6 +394,17 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     std::process::exit(1);
                 }
             }
+            let link_plan = match frontend::native::resolve_native_links(&scope_root, prefer, &built.native_libs) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    println!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            let bundled_paths: Vec<std::path::PathBuf> = link_plan
+                .iter()
+                .filter_map(|n| n.archive.clone())
+                .collect();
             let (out_path, pending_stamp) = {
                     let path = default_out_path(&input, &root, release);
                     if let Some(parent) = path.parent() {
@@ -392,7 +413,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                             std::process::exit(1);
                         }
                     }
-                    let key = build_key(&input, &root, &entry, release, opt_level, target_triple.as_deref(), debug, cfg.jobs, cfg.memory_cap);
+                    let key = build_key(&input, &root, &entry, release, opt_level, target_triple.as_deref(), debug, cfg.jobs, cfg.memory_cap, prefer, &bundled_paths);
                     let stamp = match path.file_name().map(|s| s.to_string_lossy().into_owned()) {
                         Some(stem) => path.with_file_name(format!("{stem}.fingerprint")),
                         None => path.with_file_name(".fingerprint"),
@@ -406,10 +427,21 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             };
             let target = linker::host_triple();
             let link_start = std::time::Instant::now();
-            let foreign_libs: Vec<linker::LinkInput> = built
-                .native_libs
+            let foreign_libs: Vec<linker::LinkInput> = link_plan
                 .iter()
-                .map(|l| linker::LinkInput::Lib(l.clone()))
+                .map(|n| match &n.archive {
+                    Some(path) => linker::LinkInput::ArchivePath(path.clone()),
+                    None => linker::LinkInput::Lib(n.lib.clone()),
+                })
+                .collect();
+            let bundled_archives: Vec<linker::LinkInput> = link_plan
+                .iter()
+                .filter_map(|n| n.archive.clone().map(linker::LinkInput::ArchivePath))
+                .collect();
+            let system_lib_names: Vec<String> = link_plan
+                .iter()
+                .filter(|n| n.archive.is_none())
+                .map(|n| n.lib.clone())
                 .collect();
             let user_objects: Vec<linker::LinkInput> = built
                 .objects
@@ -482,9 +514,11 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     match linker::find_shared_runtime_dir() {
                         Some(lib_dir) => {
                             let mut dyn_libs = vec!["runtime_native".to_string()];
-                            dyn_libs.extend(built.native_libs.iter().cloned());
+                            dyn_libs.extend(system_lib_names.iter().cloned());
+                            let mut dyn_objects = user_objects;
+                            dyn_objects.extend(bundled_archives);
                             linker::native::native_link_dynamic(
-                                &user_objects,
+                                &dyn_objects,
                                 std::path::Path::new(&out_path),
                                 &linker::native::DynamicOpts {
                                     entry: "_start".to_string(),
@@ -530,9 +564,11 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 match linker::find_shared_runtime_dir() {
                     Some(lib_dir) => {
                         let mut dyn_libs = vec!["runtime_native".to_string()];
-                        dyn_libs.extend(built.native_libs.iter().cloned());
+                        dyn_libs.extend(system_lib_names.iter().cloned());
+                        let mut dyn_objects = user_objects;
+                        dyn_objects.extend(bundled_archives);
                         linker::link_executable_dynamic(
-                            &user_objects,
+                            &dyn_objects,
                             std::path::Path::new(&out_path),
                             &target,
                             &linker::DynLink { lib_dir, libs: dyn_libs },
@@ -656,10 +692,10 @@ mod tests {
         let dep_src = dep.join("src").join("lib.rnx");
         std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 1;\n}\n").unwrap();
         let input = main.to_string_lossy().into_owned();
-        let key_before = build_key(&input, &root, "Main", false, 1, None, false, 1, 0);
-        assert_eq!(key_before, build_key(&input, &root, "Main", false, 1, None, false, 1, 0));
+        let key_before = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[]);
+        assert_eq!(key_before, build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[]));
         std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 2;\n}\n").unwrap();
-        let key_after = build_key(&input, &root, "Main", false, 1, None, false, 1, 0);
+        let key_after = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[]);
         assert_ne!(key_before, key_after);
     }
 }

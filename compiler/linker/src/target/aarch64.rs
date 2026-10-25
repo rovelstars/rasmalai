@@ -44,6 +44,9 @@ impl Target for Aarch64 {
     fn rel_irelative(&self) -> u32 {
         0
     }
+    fn rel_abs64(&self) -> u32 {
+        0
+    }
     fn rel_copy(&self) -> u32 {
         0
     }

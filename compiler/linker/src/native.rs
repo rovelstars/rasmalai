@@ -1367,7 +1367,7 @@ fn synth_list(g: &Graph, dyn_info: &DynInfo, target: &dyn Target, pie_rels: usiz
     };
     let plt_count = g.plt.iter().filter(|s| !s.ifunc).count();
     let iplt_count = g.plt.iter().filter(|s| s.ifunc).count();
-    let rela_dyn_count = g.got.iter().filter(|s| s.ifunc || s.dynamic).count() + pie_rels;
+    let rela_dyn_count = g.got.iter().filter(|s| s.ifunc || s.dynamic).count() + g.dyn_abs.len() + pie_rels;
     let rela_plt_count = if dyn_info.interp.is_some() { g.plt.len() } else { 0 };
     let dynamic_section = dyn_info.interp.is_some() || dyn_info.force_dynamic;
     if dyn_info.interp.is_some() {
@@ -2052,6 +2052,31 @@ fn build_dyn_info(
     Ok(info)
 }
 
+fn dyn_abs_place(g: &Graph, layout: &Layout, oi: usize, si: u32, offset: u64) -> Result<u64, LinkError> {
+    for o in layout.order.iter() {
+        if o.synth != crate::core::layout::SynthSec::None {
+            continue;
+        }
+        if let Some(key) = o.merge {
+            let grp = layout.merged.get(&key).ok_or_else(|| {
+                LinkError::Native(format!("absolute relocation in `{}` lost its output section", g.objs[oi].label))
+            })?;
+            if grp.members.contains(&(oi, si)) {
+                let off = g.merged_off.get(&(oi, si)).copied().ok_or_else(|| {
+                    LinkError::Native(format!("absolute relocation in `{}` lost its output offset", g.objs[oi].label))
+                })?;
+                return Ok(o.addr + off + offset);
+            }
+        } else if o.obj == oi && o.sec == si {
+            return Ok(o.addr + offset);
+        }
+    }
+    Err(LinkError::Native(format!(
+        "absolute relocation in `{}` lost its output address",
+        g.objs[oi].label
+    )))
+}
+
 fn fill_dyn_relocs(
     g: &Graph,
     layout: &Layout,
@@ -2094,6 +2119,15 @@ fn fill_dyn_relocs(
             dyn_info.plt_rel.push((addr, target.rel_jmpslot(), index_of(&slot.name)?, 0));
             n += 1;
         }
+    }
+    let mut abs: Vec<(usize, u32, u64, String, i64)> = g.dyn_abs.clone();
+    abs.sort();
+    for (oi, si, offset, name, addend) in abs {
+        if g.eh.dead_rel.contains(&(oi, si, offset)) {
+            continue;
+        }
+        let addr = dyn_abs_place(g, layout, oi, si, offset)?;
+        dyn_info.dyn_rel.push((addr, target.rel_abs64(), index_of(&name)?, addend));
     }
     dyn_info.dyn_rel.sort();
     dyn_info.plt_rel.sort();

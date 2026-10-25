@@ -59,6 +59,261 @@ pub fn effective_choice(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeLink {
+    pub lib: String,
+    pub archive: Option<std::path::PathBuf>,
+}
+
+struct NativeDecl {
+    dep: String,
+    lib: String,
+    system: bool,
+    title: Option<String>,
+    owner: std::path::PathBuf,
+    owner_pkg: String,
+}
+
+fn lock_registry_versions(root: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let lock = crate::deplock::ProjectDepLock::load(root).ok().flatten();
+    for pkg in lock.iter().flat_map(|l| l.packages.iter()) {
+        if let Some(rest) = pkg.source.strip_prefix("registry:")
+            && let Some((full, version)) = rest.rsplit_once('@')
+        {
+            out.entry(full.to_string()).or_insert_with(|| version.to_string());
+        }
+    }
+    out
+}
+
+fn exact_requirement_version(req: &str) -> Option<String> {
+    let req = req.trim();
+    if req.is_empty() || req == "*" || req == "latest" {
+        return None;
+    }
+    let mut parts = req.split('.');
+    let ok = parts.by_ref().take(3).all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    if ok && parts.next().is_none() {
+        return Some(req.to_string());
+    }
+    None
+}
+
+fn offline_dep_dir(
+    pkg_dir: &std::path::Path,
+    dep_name: &str,
+    spec: &crate::project::DependencySpec,
+    locked: &std::collections::BTreeMap<String, String>,
+    entry_cfg: &crate::project::ProjectConfig,
+) -> Option<std::path::PathBuf> {
+    let offline = match spec {
+        crate::project::DependencySpec::Path { path, .. } => std::fs::canonicalize(pkg_dir.join(path)).ok(),
+        crate::project::DependencySpec::Git { rev, .. } => {
+            let anchor = crate::fetch::cache_anchor(pkg_dir);
+            let vendor = anchor.join("vendor").join(dep_name);
+            if vendor.join(crate::project::MANIFEST_FILE).is_file() {
+                std::fs::canonicalize(&vendor).ok()
+            } else {
+                let dir = anchor
+                    .join(".rnx-cache")
+                    .join("cache")
+                    .join("git")
+                    .join(format!("{dep_name}-{}", crate::fetch::short_rev(rev)));
+                std::fs::canonicalize(&dir).ok()
+            }
+        }
+        crate::project::DependencySpec::Semver { version, .. } => {
+            let pinned = locked.get(dep_name).cloned().or_else(|| exact_requirement_version(version));
+            let pinned = pinned?;
+            let base = crate::fetch::registry_base_for(
+                dep_name,
+                entry_cfg.registry.as_ref(),
+                &entry_cfg.registries,
+            );
+            let dir = crate::fetch::cached_package_dir(&base, dep_name, &pinned);
+            std::fs::canonicalize(&dir).ok()
+        }
+        crate::project::DependencySpec::Url { .. } | crate::project::DependencySpec::Native { .. } => None,
+    };
+    if offline.is_some() {
+        return offline;
+    }
+    match spec {
+        crate::project::DependencySpec::Git { git, rev, .. } => {
+            crate::fetch::resolve_git_dep(&crate::fetch::cache_anchor(pkg_dir), dep_name, git, rev).ok()
+        }
+        crate::project::DependencySpec::Semver { version, .. } => crate::fetch::resolve_registry_package(
+            dep_name,
+            version,
+            entry_cfg.registry.as_ref(),
+            &entry_cfg.registries,
+            locked.get(dep_name).cloned(),
+            &[],
+        )
+        .ok()
+        .map(|(dir, _, _)| dir),
+        _ => None,
+    }
+}
+
+fn find_bundled_blob(owner: &std::path::Path, title: &str) -> Option<std::path::PathBuf> {
+    let root = crate::oci::project_artifact_cache(owner);
+    let mut stack = vec![root];
+    let mut hits: Vec<std::path::PathBuf> = Vec::new();
+    while let Some(dir) = stack.pop() {
+        let mut entries: Vec<std::path::PathBuf> = Vec::new();
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            entries.push(entry.path());
+        }
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                if path.file_name().map(|n| n == "blobs").unwrap_or(false) {
+                    continue;
+                }
+                stack.push(path);
+            } else if path.is_file() && path.file_name().map(|n| n == title).unwrap_or(false) {
+                hits.push(path);
+            }
+        }
+    }
+    hits.sort();
+    hits.into_iter().next()
+}
+
+pub fn resolve_native_links(
+    scope_root: &std::path::Path,
+    prefer: NativePrefer,
+    wanted: &[String],
+) -> Result<Vec<NativeLink>, Diagnostic> {
+    let manifest = crate::project::load_manifest(scope_root)?;
+    let Some(manifest) = manifest else {
+        return Ok(wanted
+            .iter()
+            .map(|lib| NativeLink { lib: lib.clone(), archive: None })
+            .collect());
+    };
+    let mut roots: Vec<(std::path::PathBuf, crate::project::ProjectConfig)> = Vec::new();
+    let pins: std::collections::BTreeMap<String, crate::project::NativePin> = match &manifest.workspace {
+        Some(ws) => {
+            let members = crate::project::resolve_workspace_members(scope_root, ws)?;
+            let mut names: Vec<&String> = members.keys().collect();
+            names.sort();
+            for name in names {
+                if let Some((dir, cfg)) = members.get(name) {
+                    roots.push((dir.clone(), cfg.clone()));
+                }
+            }
+            crate::project::ProjectConfig::load_from_dir(scope_root)
+                .ok()
+                .flatten()
+                .map(|c| c.native_pins)
+                .unwrap_or_default()
+        }
+        None => {
+            let cfg = manifest.project.ok_or_else(|| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("{}: missing [project] section", scope_root.display()),
+                )
+            })?;
+            roots.push((scope_root.to_path_buf(), cfg.clone()));
+            cfg.native_pins.clone()
+        }
+    };
+    let locked = lock_registry_versions(scope_root);
+    let mut decls: std::collections::BTreeMap<String, NativeDecl> = std::collections::BTreeMap::new();
+    let mut seen: std::collections::BTreeSet<std::path::PathBuf> = std::collections::BTreeSet::new();
+    let mut stack = roots;
+    stack.reverse();
+    while let Some((pkg_dir, cfg)) = stack.pop() {
+        let Ok(canonical) = std::fs::canonicalize(&pkg_dir) else {
+            continue;
+        };
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        let mut deps: Vec<(&String, &crate::project::DependencySpec)> = cfg.dependencies.iter().collect();
+        deps.sort_by(|a, b| a.0.cmp(b.0));
+        let mut pending: Vec<(std::path::PathBuf, crate::project::ProjectConfig)> = Vec::new();
+        for (dep_name, spec) in deps {
+            if let crate::project::DependencySpec::Native { lib, system, version, from, .. } = spec {
+                if decls.contains_key(lib) {
+                    continue;
+                }
+                let eff = effective_choice(
+                    *system,
+                    version.as_deref(),
+                    from.as_deref(),
+                    pins.get(dep_name),
+                    prefer,
+                );
+                decls.insert(
+                    lib.clone(),
+                    NativeDecl {
+                        dep: dep_name.clone(),
+                        lib: lib.clone(),
+                        system: eff.system,
+                        title: eff.from.clone(),
+                        owner: canonical.clone(),
+                        owner_pkg: cfg.name.clone(),
+                    },
+                );
+                continue;
+            }
+            let dir = offline_dep_dir(&canonical, dep_name, spec, &locked, &cfg);
+            match dir {
+                Some(dir) => match crate::project::ProjectConfig::load_from_dir(&dir)? {
+                    Some(dep_cfg) => pending.push((dir, dep_cfg)),
+                    None => continue,
+                },
+                None => continue,
+            }
+        }
+        pending.reverse();
+        stack.extend(pending);
+    }
+    let mut out = Vec::with_capacity(wanted.len());
+    for lib in wanted {
+        let Some(decl) = decls.get(lib) else {
+            out.push(NativeLink { lib: lib.clone(), archive: None });
+            continue;
+        };
+        if decl.system {
+            out.push(NativeLink { lib: lib.clone(), archive: None });
+            continue;
+        }
+        let Some(title) = decl.title.as_deref() else {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "native dependency `{}` (`{}`) selects the bundled build but names no blob (declare `from: \"lib{}.a\"` on the dependency in `{}/Project.config` or rebuild with `--prefer-system` for the host library)",
+                    decl.dep, decl.lib, decl.lib, decl.owner_pkg,
+                ),
+            ));
+        };
+        match find_bundled_blob(&decl.owner, title) {
+            Some(path) => out.push(NativeLink { lib: lib.clone(), archive: Some(path) }),
+            None => {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "bundled blob `{title}` for native `{}` (package `{}`) not found under `{}` (fetch the owning package's `artifacts` image so the blob is staged, then rebuild; or rebuild with `--prefer-system` for the host library)",
+                        decl.lib,
+                        decl.dep,
+                        crate::oci::project_artifact_cache(&decl.owner).display(),
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn valid_probe_name(lib: &str) -> bool {
     !lib.is_empty()
         && !lib.starts_with('-')
@@ -254,6 +509,150 @@ mod tests {
         assert_eq!(NativePrefer::resolve(true, false), NativePrefer::System);
         assert_eq!(NativePrefer::resolve(false, true), NativePrefer::Bundled);
         assert_eq!(NativePrefer::resolve(false, false), NativePrefer::from_env());
+        assert_eq!(NativePrefer::resolve(true, true), NativePrefer::System);
+    }
+
+    fn link_tree(tag: &str, deps: &str, extra: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+        let dir = crate::scratch::dir(&format!("native-link-{tag}"));
+        let root = dir.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"app\",\n        version: \"0.1.0\"\n    }}{extra},\n    dependencies: {{\n{deps}    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        (dir, root)
+    }
+
+    fn link_path_dep(
+        tag: &str,
+        name: &str,
+        deps: &str,
+        extra: &str,
+        blob: Option<(&str, &[u8])>,
+    ) -> (crate::scratch::Scratch, std::path::PathBuf) {
+        let dir = crate::scratch::dir(&format!("native-linkdep-{tag}"));
+        let pkg = dir.join(name);
+        std::fs::create_dir_all(pkg.join("src")).unwrap();
+        std::fs::write(
+            pkg.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.1.0\"\n    }}{extra},\n    dependencies: {{\n{deps}    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(pkg.join("src").join("lib.rnx"), "fn f(): Int { return 1; }\n").unwrap();
+        if let Some((title, bytes)) = blob {
+            let staged = pkg.join(".rnx-cache").join("artifacts").join("runtime").join(title);
+            std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+            std::fs::write(&staged, bytes).unwrap();
+        }
+        (dir, pkg)
+    }
+
+    fn resolve_wanted(root: &std::path::Path, prefer: NativePrefer, wanted: &[&str]) -> Result<Vec<NativeLink>, String> {
+        let wanted: Vec<String> = wanted.iter().map(|s| s.to_string()).collect();
+        resolve_native_links(root, prefer, &wanted).map_err(|d| d.message.clone())
+    }
+
+    #[test]
+    fn link_plan_defaults_to_declared_choice() {
+        let (_dep, author) = link_path_dep(
+            "declared",
+            "author",
+            "        foo: { native: \"foo\", from: \"libfoo.a\", link: \"static\" }\n",
+            ",\n    artifacts: \"example.com/org/author\"\n",
+            Some(("libfoo.a", b"archive-bytes")),
+        );
+        let (_dir, root) = link_tree(
+            "declared",
+            &format!("        author: {{ path: \"{}\" }}\n", author.display()),
+            "",
+        );
+        let plan = resolve_wanted(&root, NativePrefer::None, &["foo"]).unwrap();
+        assert_eq!(plan.len(), 1);
+        let archive = plan[0].archive.as_ref().unwrap();
+        assert_eq!(std::fs::read(archive).unwrap(), b"archive-bytes");
+        let plan = resolve_wanted(&root, NativePrefer::Bundled, &["foo"]).unwrap();
+        assert!(plan[0].archive.is_some());
+        let plan = resolve_wanted(&root, NativePrefer::System, &["foo"]).unwrap();
+        assert_eq!(plan, vec![NativeLink { lib: "foo".to_string(), archive: None }]);
+    }
+
+    #[test]
+    fn link_plan_undeclared_lib_stays_system() {
+        let (_dir, root) = link_tree("undeclared", "", "");
+        let plan = resolve_wanted(&root, NativePrefer::Bundled, &["z"]).unwrap();
+        assert_eq!(plan, vec![NativeLink { lib: "z".to_string(), archive: None }]);
+    }
+
+    #[test]
+    fn link_plan_missing_blob_fails_closed() {
+        let (_dep, author) = link_path_dep(
+            "missing",
+            "author",
+            "        foo: { native: \"foo\", from: \"libfoo.a\", link: \"static\" }\n",
+            ",\n    artifacts: \"example.com/org/author\"\n",
+            None,
+        );
+        let (_dir, root) = link_tree(
+            "missing",
+            &format!("        author: {{ path: \"{}\" }}\n", author.display()),
+            "",
+        );
+        let err = resolve_wanted(&root, NativePrefer::None, &["foo"]).unwrap_err();
+        assert!(err.contains("libfoo.a"), "{err}");
+        assert!(err.contains("foo"), "{err}");
+        assert!(err.contains("--prefer-system"), "{err}");
+    }
+
+    #[test]
+    fn link_plan_bundled_without_title_fails_closed() {
+        let (_dep, author) = link_path_dep(
+            "notitle",
+            "author",
+            "        z: { native: \"z\", system: true }\n",
+            "",
+            None,
+        );
+        let (_dir, root) = link_tree(
+            "notitle",
+            &format!("        author: {{ path: \"{}\" }}\n", author.display()),
+            "",
+        );
+        let plan = resolve_wanted(&root, NativePrefer::None, &["z"]).unwrap();
+        assert_eq!(plan, vec![NativeLink { lib: "z".to_string(), archive: None }]);
+        let err = resolve_wanted(&root, NativePrefer::Bundled, &["z"]).unwrap_err();
+        assert!(err.contains("names no blob"), "{err}");
+        assert!(err.contains("from:"), "{err}");
+    }
+
+    #[test]
+    fn link_plan_without_manifest_stays_system() {
+        let dir = crate::scratch::dir("native-link-nomanifest");
+        let plan = resolve_wanted(&dir, NativePrefer::Bundled, &["z"]).unwrap();
+        assert_eq!(plan, vec![NativeLink { lib: "z".to_string(), archive: None }]);
+    }
+
+    #[test]
+    fn link_plan_ignores_unwanted_libs() {
+        let (_dep, author) = link_path_dep(
+            "unwanted",
+            "author",
+            "        foo: { native: \"foo\", from: \"libfoo.a\", link: \"static\" }\n",
+            ",\n    artifacts: \"example.com/org/author\"\n",
+            None,
+        );
+        let (_dir, root) = link_tree(
+            "unwanted",
+            &format!("        author: {{ path: \"{}\" }}\n", author.display()),
+            "",
+        );
+        let plan = resolve_wanted(&root, NativePrefer::None, &["other"]).unwrap();
+        assert_eq!(plan, vec![NativeLink { lib: "other".to_string(), archive: None }]);
     }
 
     #[test]
