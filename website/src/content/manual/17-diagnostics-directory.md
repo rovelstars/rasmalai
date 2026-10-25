@@ -190,14 +190,6 @@ Adding the initializer is the fix.
 const limit: Int = 10;
 ```
 
-## Foreign boundary codes (E207-E209)
-
-| Code | Severity | Cause | Resolution |
-|---|---|---|---|
-| `E207` | error | process-isolated artifact linked outside the helper, or artifact blobs fetched for a version that is not live | route the call through `rnx-fx-host`; never link a `process`-isolated artifact in-process |
-| `E208` | error | build-gate refusal: a callback, unpaired pointer, or variadic in the proxied surface, a drifted bindgen profile, or a `sandbox` config key | remove the refused function from the proxied surface or keep `isolation: none` and link statically |
-| `E209` | error | helper IPC transport failure: oversize frame, dead helper, stale handle ID, or malformed reply | retry the call; the helper died, the frame was oversize, or a handle ID went stale |
-
 ## Type and ownership codes (E302-E305)
 
 | Code | Severity | Cause | Resolution |

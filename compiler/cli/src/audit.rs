@@ -105,6 +105,24 @@ fn native_imports(text: &str) -> Vec<(String, Vec<String>)> {
     out
 }
 
+fn advisory_refusal(reason: &str) -> bool {
+    matches!(reason, "variadic" | "callback" | "voidptr" | "va_list")
+}
+
+fn advisory_refusals(used: &[&str], skipped: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for name in used {
+        for (skipped_name, reason) in skipped {
+            if skipped_name == name && advisory_refusal(reason) {
+                out.push(((*name).to_string(), reason.clone()));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn boundary_profile_skipped(dir: &Path) -> Vec<(String, String)> {
     let raw = match std::fs::read_to_string(dir.join("bindgen.oci.json")) {
         Ok(r) => r,
@@ -165,7 +183,7 @@ pub fn boundary_for_dir(dir: &Path) -> ForeignBoundary {
     used.dedup();
     let skipped = boundary_profile_skipped(dir);
     let used_refs: Vec<&str> = used.iter().map(|s| s.as_str()).collect();
-    let refused = fx::refused_surface(&used_refs, &skipped)
+    let refused = advisory_refusals(&used_refs, &skipped)
         .into_iter()
         .map(|(name, reason)| BoundaryRefusal { name, reason })
         .collect::<Vec<_>>();
@@ -175,7 +193,7 @@ pub fn boundary_for_dir(dir: &Path) -> ForeignBoundary {
         used,
         refused,
         isolation,
-        note: "boundary from local scan; map leaves check-only".to_string(),
+        note: "advisory transparency report: the audit itself is the map; nothing here is enforced".to_string(),
     }
 }
 
@@ -290,7 +308,7 @@ pub fn render_audit_text(report: &AuditReport, drift: &[String]) -> String {
             out.push_str(&format!("  [!] {line}\n"));
         }
     }
-    out.push_str("foreign boundary (local scan; map leaves check-only):\n");
+    out.push_str("foreign boundary (advisory transparency report):\n");
     if report.boundary.libs.is_empty() {
         out.push_str("  no `from native` imports\n");
     } else {
@@ -345,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_refused_surface_forces_none() {
+    fn boundary_reports_refused_surface_as_advisory() {
         let dir = scratch("boundary");
         std::fs::write(
             dir.join("main.rnx"),
@@ -356,6 +374,7 @@ mod tests {
         assert_eq!(boundary.libs, vec!["evil".to_string()]);
         assert_eq!(boundary.refused.len(), 0);
         assert_eq!(boundary.isolation, "proxyable");
+        assert!(boundary.note.contains("audit itself is the map"), "{}", boundary.note);
         std::fs::write(
             dir.join("bindgen.oci.json"),
             "{\"profile\": {\"skipped\": [{\"name\": \"cb\", \"reason\": \"callback\"}]}}",

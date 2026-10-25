@@ -6,8 +6,6 @@ members = [
     "compiler/diagnostics",
     "compiler/docgen",
     "compiler/frontend",
-    "compiler/fx",
-    "compiler/fxhost",
     "compiler/linker",
     "compiler/lir",
     "compiler/llvm",

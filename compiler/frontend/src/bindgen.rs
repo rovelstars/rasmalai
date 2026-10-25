@@ -2463,7 +2463,7 @@ mod tests {
     }
 
     #[test]
-    fn gate_promotes_classifier_refusals_into_e208() {
+    fn profile_reports_classifier_refusals_as_advisory() {
         let out = gen_src(
             "typedef void *Handle;\nint cb(int (*f)(int));\nvoid *alloc(int n);\nint flex(const char *fmt, ...);\ntypedef struct sqlite3 sqlite3;\nint open(const char *name, sqlite3 **db);\nint add(int a, int b);\n",
         )
@@ -2471,21 +2471,6 @@ mod tests {
         assert!(out.skipped.iter().any(|(n, r)| n == "cb" && r == "callback"));
         assert!(out.skipped.iter().any(|(n, r)| n == "alloc" && r == "voidptr"));
         assert!(out.skipped.iter().any(|(n, r)| n == "flex" && r == "variadic"));
-        let used: Vec<&str> = vec!["cb", "flex", "alloc", "open", "add"];
-        let refused = fx::refused_surface(&used, &out.skipped);
-        assert_eq!(refused.len(), 3);
-        let err = fx::check_proxy_surface(&used, &out.skipped).unwrap_err();
-        assert_eq!(err.code, diagnostics::Code::E208);
-        assert!(err.message.contains("`cb`"), "{}", err.message);
-        assert!(fx::check_proxy_surface(&["open", "add"], &out.skipped).is_ok());
-        assert!(matches!(
-            fx::gate_outcome(&["cb"], &out.skipped),
-            fx::GateOutcome::ForcedNone { .. }
-        ));
-        assert!(matches!(
-            fx::gate_outcome(&["open", "add"], &out.skipped),
-            fx::GateOutcome::Proxyable
-        ));
         assert!(out.oci_json.contains("\"profile\""), "{}", out.oci_json);
         assert!(out.oci_json.contains("\"reason\": \"callback\""), "{}", out.oci_json);
     }
