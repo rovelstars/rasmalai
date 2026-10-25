@@ -14,9 +14,6 @@ on:
       - "editors/tree-sitter-rasmalai/**"
       - ".github/workflows/tree-sitter.yml"
   workflow_dispatch:
-  schedule:
-    # Nightly: catches drift between grammar.js and the corpus even with no pushes.
-    - cron: "0 3 * * *"
 
 jobs:
   generate:
