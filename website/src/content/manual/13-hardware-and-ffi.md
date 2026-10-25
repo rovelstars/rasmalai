@@ -9,7 +9,7 @@ icon: "Cpu"
 
 ## What unsafe means
 
-Safe Rasmalai covers applications, servers, simulations, and tooling. The remainder — raw pointers, hardware registers, C libraries — is spelled `unsafe` and `native`. `unsafe` does not suspend checking; it assigns responsibility for three specific operations: taking addresses (`&x`), pointer arithmetic on `Pointer`-typed values, and calling `unsafe fn` functions. Bounds, types, and ownership keep working inside `unsafe` exactly as outside it.
+Safe Rasmalai covers applications, servers, simulations, and tooling. The remainder — raw pointers, hardware registers, C libraries — is spelled `unsafe` and `native`. `unsafe` does not suspend checking; it assigns responsibility through containment: every foreign call and every raw-memory operation must sit inside an `unsafe` block (or an `unsafe fn`), and the compiler verifies the whole call graph to a fixpoint. A function that reaches foreign code only through a justified block stays safe itself, so wrappers contain rather than spread `unsafe`. Bounds, types, and ownership keep working inside `unsafe` exactly as outside it.
 
 ```rnx
 unsafe fn Raw(x: Int): Int { return x * 2 }
@@ -17,7 +17,7 @@ unsafe fn Raw(x: Int): Int { return x * 2 }
 unsafe { print(Raw(21)); }
 ```
 
-Calling an `unsafe fn` outside an `unsafe` block is an `E201` error; address-of or `Pointer` arithmetic outside one is `E202`. As an expression, `unsafe { ... }` runs the block and yields `null`, so it slots into statement position without affecting surrounding code.
+Calling an `unsafe fn` or a foreign function outside an `unsafe` block is an `E201` error; address-of or `Pointer` arithmetic outside one is `E202`. An `unsafe` block that reaches no foreign or raw-memory authority at all is a `W202` warning. As an expression, `unsafe { ... }` runs the block and yields `null`, so it slots into statement position without affecting surrounding code.
 
 Deliberately excluded from `unsafe`: intentional reference cycles (they waste memory at worst — see [Cycles and Handles](/manual/12-cycles-and-handles)) and data-race-free threading through `@std/sync`. `unsafe` is reserved for raw memory, C-ABI calls, and genuine data races.
 
@@ -45,6 +45,37 @@ export {
 ```
 
 Only C-ABI types cross the boundary; managed values (`String`, `Array`, objects, closures) are rejected with `E108` until converted to primitives or raw addresses explicitly.
+
+Calling a foreign function requires containment: the call must sit in an `unsafe` block (or an `unsafe fn`), verified across the call graph — a direct call outside one is `E201`. The safe wrapper pattern keeps the perimeter small:
+
+```rnx
+import {
+    fn compressBound(sourceLen: Int): Int as rawBound
+} from native "z"
+
+fn bound(n: Int): Int {
+    let out = 0;
+    unsafe {
+        out = rawBound(n);
+    }
+    return out;
+}
+```
+
+`bound` is safe to call anywhere; the single `unsafe` block justifies the foreign authority, and `rnx check` lists `bound` on the containment boundary for audit.
+
+## Generating bindings with rnx bindgen
+
+`rnx bindgen` reads C headers and writes `bindgen.rnx` plus `bindgen.oci.json` (the registry annotation set: kind, role, target, generator, upstream digest, title). The header parser is built in — no clang needed — with fixed per-target preprocessor defines, so the same inputs produce byte-identical output on any machine. Only value-shaped surface emits: scalars, fixed-size POD pointers, strings, and opaque handles as `Pointer<Byte>`; each emitted function becomes an `unsafe fn` wrapper over a private native import (unsafe-by-construction, so hand wrappers own containment). Callback, `void*`, and variadic surface warns instead of emitting.
+
+```sh
+rnx bindgen --header /usr/include/sqlite3.h --native-lib sqlite3 \
+    --pkg-name sqlite3 --out ./gen --include /usr/include
+rnx bindgen --header ./gen-check.h --native-lib sqlite3 \
+    --pkg-name sqlite3 --out ./gen --check
+```
+
+`--prefix` keeps only matching symbols (empty means everything), `--skip` drops exact names, and `--check` fails when the checked-in output drifted from the generator.
 
 ## Raw pointers
 

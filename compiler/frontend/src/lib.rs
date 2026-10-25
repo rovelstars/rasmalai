@@ -4,6 +4,7 @@ mod scratch;
 
 pub mod ast;
 pub mod async_expand;
+pub mod bindgen;
 pub mod cache;
 pub mod capabilities;
 pub mod checksum;
@@ -42,3 +43,4 @@ pub mod tar;
 pub mod pack;
 pub mod gzip;
 pub mod token;
+pub mod unsafe_taint;

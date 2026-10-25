@@ -24,6 +24,15 @@ pub fn check_with_files(module: &Module, files: &DeclFiles) -> Vec<Diagnostic> {
     check_w108(module, &mut diags, files);
     check_cyclic_defaults(module, &mut diags, files);
     check_scopes(module, &mut diags, files);
+    let taint_from = diags.len();
+    diags.extend(crate::unsafe_taint::check_module(module));
+    for d in &mut diags[taint_from..] {
+        if d.file.is_none()
+            && let Some(span) = d.span
+            && let Some(path) = decl_file(files, span) {
+                d.file = Some(path);
+            }
+    }
     diags.sort_by(|a, b| {
         a.code
             .as_str()

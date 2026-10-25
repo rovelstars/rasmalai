@@ -8,7 +8,7 @@ const BYTE_SRC: &str = "import { ByteBuffer } from \"@std/bytes\";\nfn Main(): I
 
 const LIBC_SRC: &str = "import { ByteBuffer } from \"@std/bytes\";\nimport {\n    fn strlen(s: Pointer<Byte>): Int,\n    fn puts(s: Pointer<Byte>): Int\n} from native \"c\"\nfn Main(): Int {\n    let buf = ByteBuffer.allocate(32);\n    let msg = \"Hello from Native C!\";\n    let i = 0;\n    while i < 20 { buf.writeUInt8(i, msg.charCodeAt(i)); i = i + 1; }\n    buf.writeUInt8(20, 0);\n    unsafe {\n        let p = Pointer.fromAddress<Byte>(buf.address());\n        let len = strlen(p);\n        print(len);\n        assert(len == 20, \"strlen\");\n        puts(p);\n    }\n    return 0;\n}\n";
 
-const ZLIB_SRC: &str = "import {\n    fn compressBound(sourceLen: Int): Int\n} from native \"z\"\nfn Main(): Int {\n    let bound = compressBound(100);\n    print(bound);\n    assert(bound > 100, \"bound grows\");\n    return 0;\n}\n";
+const ZLIB_SRC: &str = "import {\n    fn compressBound(sourceLen: Int): Int\n} from native \"z\"\nfn Main(): Int {\n    let bound = 0;\n    unsafe {\n        bound = compressBound(100);\n    }\n    print(bound);\n    assert(bound > 100, \"bound grows\");\n    return 0;\n}\n";
 
 fn write_proj(src: &str, tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
     let dir = crate::scratch::dir(&format!("ffi-{tag}"));

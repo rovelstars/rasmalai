@@ -395,6 +395,39 @@ pub enum Command {
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
     },
+    /// Generate Rasmalai bindings from C headers
+    Bindgen {
+        /// Primary C headers to emit bindings from (repeatable)
+        #[arg(long)]
+        header: Vec<PathBuf>,
+        /// Native library name for the generated `from native` import
+        #[arg(long)]
+        native_lib: String,
+        /// Package name (defaults the upstream annotation name)
+        #[arg(long)]
+        pkg_name: String,
+        /// Output directory for `bindgen.rnx` and `bindgen.oci.json`
+        #[arg(long)]
+        out: PathBuf,
+        /// Target triple for preprocessing (default x86_64-unknown-linux-gnu)
+        #[arg(long, default_value = "x86_64-unknown-linux-gnu")]
+        target: String,
+        /// Only emit symbols with one of these prefixes (empty means all)
+        #[arg(long)]
+        prefix: Vec<String>,
+        /// Skip these exact symbol names
+        #[arg(long)]
+        skip: Vec<String>,
+        /// Extra include directories for quoted headers
+        #[arg(long)]
+        include: Vec<PathBuf>,
+        /// Upstream name for the annotation set (defaults to the package name)
+        #[arg(long)]
+        upstream_name: Option<String>,
+        /// Verify the output files are up to date without writing them
+        #[arg(long)]
+        check: bool,
+    },
     /// Generate shell completion scripts
     Completions {
         /// Target shell

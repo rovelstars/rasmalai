@@ -143,7 +143,7 @@ Without `fn decay(this)`, a self-capturing closure warns as `W104`. A mutual str
 
 | Code | Severity | Cause | Resolution |
 |---|---|---|---|
-| `E201` | error | call to an `unsafe fn` outside an `unsafe` block | wrap the call in `unsafe { ... }` |
+| `E201` | error | call to an `unsafe fn` or a foreign (`from native`) function outside an `unsafe` block | wrap the call in `unsafe { ... }` |
 | `E202` | error | address-of (`&x`) or `Pointer` arithmetic outside `unsafe` | move the operation into an `unsafe` block |
 | `E203` | error | `private` field, method, or module item accessed outside its scope | widen visibility or access through the owning scope |
 | `E204` | error | class invoked as a direct call (`Meter(20)`) instead of `new` | instantiate with `new Meter(20)` |
@@ -238,6 +238,14 @@ Capability and permission failures. The full model — capability grammar, `[per
 | Code | Severity | Cause | Resolution |
 |---|---|---|---|
 | `W201` | warning | unrecognized manifest section or field; ignored | correct the spelling or remove the entry |
+
+## Containment warnings (W202)
+
+| Code | Severity | Cause | Resolution |
+|---|---|---|---|
+| `W202` | warning | `unsafe` block that reaches no foreign call and no raw-memory operation | remove the `unsafe` block or move a foreign call into it |
+
+`W202` is the companion to the containment rule: an `unsafe` block must justify itself by containing (or calling into) foreign or raw-memory authority. `rnx check` also prints the containment boundary — one `boundary:` line per tainted function naming its direct seed count and whether every seed is contained — so audits can review the perimeter without reading every call site.
 
 ## Performance notes and warnings (P101-P203)
 

@@ -243,6 +243,7 @@ print(quote(2.0));
 | `rnx mcp` | Model Context Protocol server over stdio | none |
 | `rnx explain` | diagnostic text plus fix | `<code>` |
 | `rnx audit` | report capability and tier surface per package | `--path <dir>`, `--json`, `--export-manifest` |
+| `rnx bindgen` | generate `bindgen.rnx` plus OCI annotations from C headers | `--header <file>`, `--native-lib <lib>`, `--pkg-name <name>`, `--out <dir>`, `--target`, `--prefix`, `--skip`, `--include`, `--check` |
 | `rnx completions` | shell completion scripts | `bash`, `zsh`, `fish`, `powershell`, `elvish` |
 | `rnx pack` | deterministic ustar plus SHA-256 | `-p`, `--out-dir`, `--gzip/-z` |
 | `rnx unpack` | verify and extract archive | `--out-dir <dir>` |
