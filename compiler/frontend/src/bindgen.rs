@@ -1988,7 +1988,12 @@ pub fn verify_annotations(ann: &BTreeMap<String, String>) -> Result<(), String> 
     Ok(())
 }
 
-fn render_oci_json(annotations: &BTreeMap<String, String>, digest: &str) -> String {
+fn render_oci_json(
+    annotations: &BTreeMap<String, String>,
+    digest: &str,
+    tally: &ClassTally,
+    skipped: &[(String, String)],
+) -> String {
     let mut out = String::from("{\n");
     out.push_str(&format!("  \"digest\": \"{digest}\",\n"));
     out.push_str("  \"annotations\": {\n");
@@ -2000,7 +2005,18 @@ fn render_oci_json(annotations: &BTreeMap<String, String>, digest: &str) -> Stri
         first = false;
         out.push_str(&format!("    \"{k}\": \"{v}\""));
     }
-    out.push_str("\n  }\n}\n");
+    out.push_str("\n  },\n");
+    out.push_str(&format!(
+        "  \"profile\": {{\"proxyable\": {}, \"marshalable\": {}, \"handletable\": {}, \"not_proxyable\": {}, \"skipped\": [",
+        tally.proxyable, tally.marshalable, tally.handletable, tally.not_proxyable
+    ));
+    for (i, (name, reason)) in skipped.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&format!("{{\"name\": \"{name}\", \"reason\": \"{reason}\"}}"));
+    }
+    out.push_str("]}\n}\n");
     out
 }
 
@@ -2287,7 +2303,7 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
     verify_annotations(&annotations)
         .map_err(|e| format!("generated annotations fail verification: {e}"))?;
     let digest = format!("sha256:{}", Sha256::hexdigest(rnx.as_bytes()));
-    let oci_json = render_oci_json(&annotations, &digest);
+    let oci_json = render_oci_json(&annotations, &digest, &tally, &skipped);
     let emitted = kept.len();
     let consts_count = filtered_consts.len();
     Ok(BindgenOutput { rnx, oci_json, annotations, tally, emitted, consts: consts_count, skipped, warnings })
@@ -2444,5 +2460,33 @@ mod tests {
         let pos_alpha = first.rnx.find("unsafe fn alpha").unwrap();
         let pos_zeta = first.rnx.find("unsafe fn zeta").unwrap();
         assert!(pos_alpha < pos_zeta, "{}", first.rnx);
+    }
+
+    #[test]
+    fn gate_promotes_classifier_refusals_into_e208() {
+        let out = gen_src(
+            "typedef void *Handle;\nint cb(int (*f)(int));\nvoid *alloc(int n);\nint flex(const char *fmt, ...);\ntypedef struct sqlite3 sqlite3;\nint open(const char *name, sqlite3 **db);\nint add(int a, int b);\n",
+        )
+        .unwrap();
+        assert!(out.skipped.iter().any(|(n, r)| n == "cb" && r == "callback"));
+        assert!(out.skipped.iter().any(|(n, r)| n == "alloc" && r == "voidptr"));
+        assert!(out.skipped.iter().any(|(n, r)| n == "flex" && r == "variadic"));
+        let used: Vec<&str> = vec!["cb", "flex", "alloc", "open", "add"];
+        let refused = fx::refused_surface(&used, &out.skipped);
+        assert_eq!(refused.len(), 3);
+        let err = fx::check_proxy_surface(&used, &out.skipped).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E208);
+        assert!(err.message.contains("`cb`"), "{}", err.message);
+        assert!(fx::check_proxy_surface(&["open", "add"], &out.skipped).is_ok());
+        assert!(matches!(
+            fx::gate_outcome(&["cb"], &out.skipped),
+            fx::GateOutcome::ForcedNone { .. }
+        ));
+        assert!(matches!(
+            fx::gate_outcome(&["open", "add"], &out.skipped),
+            fx::GateOutcome::Proxyable
+        ));
+        assert!(out.oci_json.contains("\"profile\""), "{}", out.oci_json);
+        assert!(out.oci_json.contains("\"reason\": \"callback\""), "{}", out.oci_json);
     }
 }

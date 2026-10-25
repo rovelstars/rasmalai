@@ -18,6 +18,7 @@ pub struct OciDescriptor {
     pub target: String,
     pub generator: String,
     pub upstream: String,
+    pub isolation: String,
     pub os: Option<String>,
     pub architecture: Option<String>,
 }
@@ -222,6 +223,7 @@ fn check_descriptor(bare: &str, item: &JsonValue) -> Result<OciDescriptor, Diagn
     let target = str_field("run.rasmalai.target");
     let generator = str_field("run.rasmalai.generator");
     let upstream = str_field("run.rasmalai.upstream");
+    let isolation = str_field("run.rasmalai.isolation");
     let title = str_field("org.opencontainers.image.title");
     if kind != "binary" && kind != "bindings" && kind != "media" {
         return Err(bad(format!(
@@ -264,6 +266,12 @@ fn check_descriptor(bare: &str, item: &JsonValue) -> Result<OciDescriptor, Diagn
             if title.is_empty() { "missing" } else { title }
         )));
     }
+    if isolation != "none" && isolation != "process" {
+        return Err(bad(format!(
+            "E108: artifact descriptor {digest} carries a bad run.rasmalai.isolation `{}` (ref `{bare}`; expected `none` or `process`)",
+            if isolation.is_empty() { "missing" } else { isolation }
+        )));
+    }
     let (os, architecture) = match obj.get("platform") {
         None => (None, None),
         Some(JsonValue::Object(_)) => {
@@ -294,6 +302,7 @@ fn check_descriptor(bare: &str, item: &JsonValue) -> Result<OciDescriptor, Diagn
         target: target.to_string(),
         generator: generator.to_string(),
         upstream: upstream.to_string(),
+        isolation: isolation.to_string(),
         os,
         architecture,
     })
@@ -373,6 +382,16 @@ pub fn select_for_host<'a>(index: &'a OciIndex, os: &str, arch: &str) -> Vec<&'a
         .collect();
     out.sort_by(|a, b| a.digest.cmp(&b.digest));
     out
+}
+
+pub fn host_isolation(index: &OciIndex, os: &str, arch: &str) -> &'static str {
+    let mut isolation = "none";
+    for d in select_for_host(index, os, arch) {
+        if d.role == "runtime" || d.role == "wasm" {
+            isolation = fx::stricter_isolation(isolation, &d.isolation);
+        }
+    }
+    isolation
 }
 
 fn fetch_manifest(bare: &str, digest: &str) -> Result<JsonValue, Diagnostic> {
@@ -463,15 +482,22 @@ fn artifact_file_path(
     Some(path)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArtifactInstall {
+    pub written: usize,
+    pub isolation: &'static str,
+}
+
 pub fn ensure_artifacts(
     pkg_dir: &Path,
     bare: &str,
     asserted: &str,
     os: &str,
     arch: &str,
-) -> Result<usize, Diagnostic> {
+) -> Result<ArtifactInstall, Diagnostic> {
     let (bytes, _) = fetch_index(bare)?;
     let index = parse_index(bare, "latest", &bytes, asserted)?;
+    let isolation = host_isolation(&index, os, arch);
     let selected = select_for_host(&index, os, arch);
     let manifests: Vec<(OciDescriptor, Vec<String>)> = selected
         .into_iter()
@@ -556,7 +582,7 @@ pub fn ensure_artifacts(
         })?;
         written += 1;
     }
-    Ok(written)
+    Ok(ArtifactInstall { written, isolation })
 }
 
 #[cfg(test)]
@@ -653,6 +679,7 @@ mod tests {
              \"run.rasmalai.target\": \"x86_64-unknown-linux-gnu\", \
              \"run.rasmalai.generator\": \"rnx-bindgen 0.1.0\", \
              \"run.rasmalai.upstream\": \"sqlite@sha256:{}\", \
+             \"run.rasmalai.isolation\": \"none\", \
              \"org.opencontainers.image.title\": \"{title}\"",
             "cd".repeat(32)
         )
@@ -812,6 +839,34 @@ mod tests {
     }
 
     #[test]
+    fn isolation_is_required_and_selects_the_stricter_value() {
+        let no_iso = format!(
+            "{{\"schemaVersion\": 2, \"manifests\": [{{\"digest\": \"sha256:{}\", \"annotations\": {{\"run.rasmalai.kind\": \"binary\", \"run.rasmalai.role\": \"runtime\", \"run.rasmalai.target\": \"x86_64-unknown-linux-gnu\", \"run.rasmalai.generator\": \"rnx-bindgen 0.1.0\", \"run.rasmalai.upstream\": \"sqlite@sha256:{}\", \"org.opencontainers.image.title\": \"libfoo.so\"}}}}]}}",
+            manifest_hex(),
+            "cd".repeat(32)
+        )
+        .into_bytes();
+        let digest = format!("sha256:{}", Sha256::hexdigest(&no_iso));
+        let err = parse_index("example.invalid/org/x", "latest", &no_iso, &digest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("isolation"), "{}", err.message);
+        let proc_iso = format!(
+            "{{\"schemaVersion\": 2, \"manifests\": [{}, {}]}}",
+            descriptor_json(&format!("sha256:{}", "aa".repeat(32)), "runtime", "binary", "a.so", None)
+                .replace("\"run.rasmalai.isolation\": \"none\"", "\"run.rasmalai.isolation\": \"process\""),
+            descriptor_json(&format!("sha256:{}", "bb".repeat(32)), "runtime", "binary", "b.so", None),
+        )
+        .into_bytes();
+        let proc_digest = format!("sha256:{}", Sha256::hexdigest(&proc_iso));
+        let index = parse_index("example.invalid/org/x", "latest", &proc_iso, &proc_digest).unwrap();
+        assert_eq!(host_isolation(&index, "linux", "x86_64"), "process");
+        let plain = valid_index(&[manifest_hex()]);
+        let plain_digest = format!("sha256:{}", Sha256::hexdigest(&plain));
+        let plain_index = parse_index("example.invalid/org/x", "latest", &plain, &plain_digest).unwrap();
+        assert_eq!(host_isolation(&plain_index, "linux", "x86_64"), "none");
+    }
+
+    #[test]
     fn ensure_installs_blob_by_title_under_role_dir() {
         let blob_hash = Sha256::hexdigest(BLOB);
         let manifest = format!(
@@ -826,8 +881,9 @@ mod tests {
         files.insert(format!("sha256:{blob_hash}"), BLOB.to_vec());
         let origin = start_origin(index, files);
         let dir = crate::scratch::dir("oci-install");
-        let written = ensure_artifacts(&dir, &origin.bare, &digest, "linux", "x86_64").unwrap();
-        assert_eq!(written, 1);
+        let install = ensure_artifacts(&dir, &origin.bare, &digest, "linux", "x86_64").unwrap();
+        assert_eq!(install.written, 1);
+        assert_eq!(install.isolation, "none");
         let installed =
             std::fs::read(dir.join(".artifacts").join("runtime").join("libfoo.so")).unwrap();
         assert_eq!(installed, BLOB);

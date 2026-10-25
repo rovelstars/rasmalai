@@ -19,6 +19,21 @@ pub struct AuditTrace {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct BoundaryRefusal {
+    pub name: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForeignBoundary {
+    pub libs: Vec<String>,
+    pub used: Vec<String>,
+    pub refused: Vec<BoundaryRefusal>,
+    pub isolation: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AuditReport {
     pub name: String,
     pub version: String,
@@ -27,6 +42,7 @@ pub struct AuditReport {
     pub has_hazard: bool,
     pub traces: Vec<AuditTrace>,
     pub summary: String,
+    pub boundary: ForeignBoundary,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +55,128 @@ pub struct CapabilityManifest {
 
 fn is_hazard_cap(cap: &str) -> bool {
     cap.starts_with("sys:exec:") || cap.starts_with("unsafe:")
+}
+
+fn imported_fn_names(clause: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, _) in clause.match_indices("fn ") {
+        let before = clause[..i].chars().next_back();
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let name: String = clause[i + 3..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            out.push(name);
+        }
+    }
+    out
+}
+
+fn native_imports(text: &str) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let mut rest = text;
+    loop {
+        let start = match rest.find("from native") {
+            Some(i) => i,
+            None => break,
+        };
+        let head = &rest[..start];
+        rest = &rest[start + "from native".len()..];
+        let quote = match rest.find('"') {
+            Some(i) => i,
+            None => break,
+        };
+        let tail = &rest[quote + 1..];
+        let end = match tail.find('"') {
+            Some(i) => i,
+            None => break,
+        };
+        let lib = tail[..end].to_string();
+        rest = &tail[end + 1..];
+        let mut fns = Vec::new();
+        if let Some(open) = head.rfind("import {").or_else(|| head.rfind("export {")) {
+            fns = imported_fn_names(&head[open..]);
+        }
+        out.push((lib, fns));
+    }
+    out
+}
+
+fn boundary_profile_skipped(dir: &Path) -> Vec<(String, String)> {
+    let raw = match std::fs::read_to_string(dir.join("bindgen.oci.json")) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let doc: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Some(skipped) = doc.get("profile").and_then(|p| p.get("skipped")).and_then(|s| s.as_array()) {
+        for item in skipped {
+            let name = item.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+            let reason = item.get("reason").and_then(|r| r.as_str()).unwrap_or_default();
+            if !name.is_empty() && !reason.is_empty() {
+                out.push((name.to_string(), reason.to_string()));
+            }
+        }
+    }
+    out
+}
+
+pub fn boundary_for_dir(dir: &Path) -> ForeignBoundary {
+    let mut libs: Vec<String> = Vec::new();
+    let mut used: Vec<String> = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(top) = stack.pop() {
+        let mut entries = match std::fs::read_dir(&top) {
+            Ok(e) => e.flatten().map(|e| e.path()).collect::<Vec<_>>(),
+            Err(_) => continue,
+        };
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if name == "target" || name.starts_with('.') {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rnx") {
+                continue;
+            }
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            for (lib, fns) in native_imports(&text) {
+                libs.push(lib);
+                used.extend(fns);
+            }
+        }
+    }
+    libs.sort();
+    libs.dedup();
+    used.sort();
+    used.dedup();
+    let skipped = boundary_profile_skipped(dir);
+    let used_refs: Vec<&str> = used.iter().map(|s| s.as_str()).collect();
+    let refused = fx::refused_surface(&used_refs, &skipped)
+        .into_iter()
+        .map(|(name, reason)| BoundaryRefusal { name, reason })
+        .collect::<Vec<_>>();
+    let isolation = if refused.is_empty() { "proxyable".to_string() } else { "none".to_string() };
+    ForeignBoundary {
+        libs,
+        used,
+        refused,
+        isolation,
+        note: "boundary from local scan; map leaves check-only".to_string(),
+    }
 }
 
 pub fn audit_path(dir: &Path) -> Result<AuditReport, Diagnostic> {
@@ -90,6 +228,7 @@ pub fn audit_path(dir: &Path) -> Result<AuditReport, Diagnostic> {
         has_hazard,
         traces,
         summary,
+        boundary: boundary_for_dir(dir),
     })
 }
 
@@ -151,6 +290,20 @@ pub fn render_audit_text(report: &AuditReport, drift: &[String]) -> String {
             out.push_str(&format!("  [!] {line}\n"));
         }
     }
+    out.push_str("foreign boundary (local scan; map leaves check-only):\n");
+    if report.boundary.libs.is_empty() {
+        out.push_str("  no `from native` imports\n");
+    } else {
+        out.push_str(&format!("  libs: {}\n", report.boundary.libs.join(", ")));
+        out.push_str(&format!("  isolation: {}\n", report.boundary.isolation));
+        if report.boundary.refused.is_empty() {
+            out.push_str("  refused: none\n");
+        } else {
+            for r in &report.boundary.refused {
+                out.push_str(&format!("  [!] refused: `{}` ({})\n", r.name, r.reason));
+            }
+        }
+    }
     out
 }
 
@@ -166,6 +319,54 @@ pub fn export_manifest(report: &AuditReport) -> String {
 
 pub fn report_json(report: &AuditReport) -> String {
     serde_json::to_string_pretty(report).unwrap_or_else(|_| "{}".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rnx-audit-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn native_import_names_parse() {
+        let found = native_imports(
+            "import { fn strlen(s: Pointer<Byte>): Int, fn free(p: Pointer<Byte>): Void as release } from native \"c\"\n",
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "c");
+        assert_eq!(found[0].1, vec!["strlen".to_string(), "free".to_string()]);
+        assert!(native_imports("fn Main(): Int { return 0; }\n").is_empty());
+    }
+
+    #[test]
+    fn boundary_refused_surface_forces_none() {
+        let dir = scratch("boundary");
+        std::fs::write(
+            dir.join("main.rnx"),
+            "import { fn cb(f: Pointer<Byte>): Int } from native \"evil\"\nfn Main(): Int { return 0; }\n",
+        )
+        .unwrap();
+        let boundary = boundary_for_dir(&dir);
+        assert_eq!(boundary.libs, vec!["evil".to_string()]);
+        assert_eq!(boundary.refused.len(), 0);
+        assert_eq!(boundary.isolation, "proxyable");
+        std::fs::write(
+            dir.join("bindgen.oci.json"),
+            "{\"profile\": {\"skipped\": [{\"name\": \"cb\", \"reason\": \"callback\"}]}}",
+        )
+        .unwrap();
+        let boundary = boundary_for_dir(&dir);
+        assert_eq!(boundary.refused.len(), 1);
+        assert_eq!(boundary.refused[0].name, "cb");
+        assert_eq!(boundary.isolation, "none");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 pub fn lockfile_drift(dir: &Path) -> Vec<String> {
