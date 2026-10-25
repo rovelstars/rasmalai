@@ -297,10 +297,12 @@ pub(super) fn dispatch(
                 prefix,
                 skip,
                 include,
+                case,
+                rename,
                 upstream_name,
                 check,
             } => {
-                run_bindgen(header, native_lib, pkg_name, out, target, prefix, skip, include, upstream_name, check);
+                run_bindgen(header, native_lib, pkg_name, out, target, prefix, skip, include, case, rename, upstream_name, check);
             }
             cli::args::Command::Cache { action } => {
                 run_cache(action);

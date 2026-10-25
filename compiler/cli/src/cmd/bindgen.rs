@@ -9,9 +9,28 @@ pub(super) fn run_bindgen(
     prefix: Vec<String>,
     skip: Vec<String>,
     include: Vec<PathBuf>,
+    case: String,
+    rename: Vec<String>,
     upstream_name: Option<String>,
     check: bool,
 ) {
+    let case = match frontend::bindgen::CaseMode::parse(&case) {
+        Ok(case) => case,
+        Err(message) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+    };
+    let mut renames = Vec::with_capacity(rename.len());
+    for r in &rename {
+        match frontend::bindgen::parse_rename(r) {
+            Ok(pair) => renames.push(pair),
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
+            }
+        }
+    };
     let opts = frontend::bindgen::BindgenOptions {
         headers: header,
         include_dirs: include,
@@ -20,6 +39,8 @@ pub(super) fn run_bindgen(
         target,
         prefixes: prefix,
         skips: skip,
+        case,
+        renames,
         upstream_name,
         title: None,
     };

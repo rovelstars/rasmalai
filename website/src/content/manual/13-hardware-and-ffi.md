@@ -77,6 +77,13 @@ rnx bindgen --header ./gen-check.h --native-lib sqlite3 \
 
 `--prefix` keeps only matching symbols (empty means everything), `--skip` drops exact names, and `--check` fails when the checked-in output drifted from the generator.
 
+`--case camel` (or `pascal`) converts the emitted wrapper and parameter names to that style; `--rename old=new` (repeatable) pins one symbol to an exact name. The default `--case keep` leaves every name verbatim. Renames never touch the link: the `from native` line keeps the C name in the left-hand position (`fn sqlite3_open(...) as __rnx_sqlite3_open`), and the wrapper calls through the `__rnx_` alias, so the recorded foreign symbol is always the C name. `#define` constants still emit verbatim. When two C names map to one wrapper name, the later one (in C-name order) gains a digit suffix (`fooBar`, `fooBar2`), so output stays deterministic.
+
+```sh
+rnx bindgen --header /usr/include/sqlite3.h --native-lib sqlite3 \
+    --pkg-name sqlite3 --out ./gen --case camel --rename sqlite3_open=openDb
+```
+
 ## Raw pointers
 
 A `Pointer<T>` is a raw 64-bit address (`Int`/`Float`/`Byte`/`Bool` pointees; `Byte` accesses are exactly one byte wide). Mint one from real memory with `Pointer.fromAddress<T>(addr)` — for example `buf.address()` on a `ByteBuffer`, which must outlive the pointer. Inside `unsafe`, `ptr.read()` loads `T`, `ptr.write(v)` stores it, `readVolatile`/`writeVolatile` mark the access volatile (LLVM honors it; Cranelift and the interpreter emit a plain access), and `*ptr` / `*ptr = v` sugar works the same. Pointer arithmetic is raw byte addition.
