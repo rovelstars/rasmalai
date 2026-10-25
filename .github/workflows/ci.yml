@@ -8,6 +8,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# PR pushes cancel their superseded runs; main runs never cancel, so every
+# merged commit gets its verdict (out-of-order finishing cannot confuse
+# main-health.sh, which walks newest-created-first).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   rust:
     name: nextest --workspace
@@ -76,7 +83,11 @@ jobs:
           cargo run -q -p cli -- doc --json --stdlib --out-dir website/static/data
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             FILTER="$(bash .github/scripts/affected-tests.sh "origin/${{ github.base_ref }}")"
-            MAIN_STATE="$(bash .github/scripts/main-health.sh || echo MAIN_GREEN)"
+            HEALTH="$(bash .github/scripts/main-health.sh || printf 'MAIN_GREEN\nINFLIGHT_NONE\n')"
+            MAIN_STATE="$(echo "$HEALTH" | head -1)"
+            MAIN_FLIGHT="$(echo "$HEALTH" | sed -n '2p')"
+            [ -n "$MAIN_STATE" ] || MAIN_STATE="MAIN_GREEN"
+            [ "$MAIN_FLIGHT" = "INFLIGHT_NONE" ] || [ -z "$MAIN_FLIGHT" ] || echo "::notice ::main CI in flight for ${MAIN_FLIGHT#INFLIGHT_}; health below reflects the last completed run."
             if [ "$MAIN_STATE" != "MAIN_GREEN" ]; then
               echo "::warning ::main is red ${MAIN_STATE} - running the full suite; a red here does not necessarily implicate this PR."
               FILTER="FULL"
