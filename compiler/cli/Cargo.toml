@@ -11,7 +11,6 @@ path = "src/main.rs"
 diagnostics = { path = "../diagnostics" }
 docgen = { path = "../docgen" }
 frontend = { path = "../frontend" }
-fx = { path = "../fx" }
 lir = { path = "../lir" }
 runtime = { path = "../runtime" }
 stdlib = { path = "../stdlib" }

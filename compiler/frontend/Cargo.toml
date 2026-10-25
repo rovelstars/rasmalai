@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 diagnostics = { path = "../diagnostics" }
-fx = { path = "../fx" }
 stdlib = { path = "../stdlib" }
 sha2 = "0.10"
 rayon = "1.12"
