@@ -19,8 +19,113 @@ pub struct BindgenOptions {
     pub target: String,
     pub prefixes: Vec<String>,
     pub skips: Vec<String>,
+    pub case: CaseMode,
+    pub renames: Vec<(String, String)>,
     pub upstream_name: Option<String>,
     pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaseMode {
+    #[default]
+    Keep,
+    Camel,
+    Pascal,
+}
+
+impl CaseMode {
+    pub fn parse(s: &str) -> Result<CaseMode, String> {
+        match s {
+            "keep" => Ok(CaseMode::Keep),
+            "camel" => Ok(CaseMode::Camel),
+            "pascal" => Ok(CaseMode::Pascal),
+            _ => Err(format!(
+                "bad case mode `{s}` (expected `keep`, `camel`, or `pascal`)"
+            )),
+        }
+    }
+}
+
+pub fn parse_rename(s: &str) -> Result<(String, String), String> {
+    match s.split_once('=') {
+        Some((old, new)) if !old.is_empty() && !new.is_empty() => {
+            if !is_ident_legal(new) {
+                return Err(format!(
+                    "bad rename target `{new}` (expected an ASCII identifier)"
+                ));
+            }
+            Ok((old.to_string(), new.to_string()))
+        }
+        _ => Err(format!(
+            "bad rename `{s}` (expected `old=new` with a C name and an ASCII identifier)"
+        )),
+    }
+}
+
+fn is_ident_legal(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn convert_case(mode: CaseMode, name: &str) -> String {
+    let clean = sanitize_ident(name);
+    match mode {
+        CaseMode::Keep => clean,
+        CaseMode::Camel => to_camel_case(&clean),
+        CaseMode::Pascal => to_pascal_case(&clean),
+    }
+}
+
+fn to_camel_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut upper_next = false;
+    for c in name.chars() {
+        if c == '_' {
+            if !out.is_empty() {
+                upper_next = true;
+            }
+            continue;
+        }
+        if out.is_empty() {
+            out.push(c.to_ascii_lowercase());
+        } else if upper_next {
+            out.push(c.to_ascii_uppercase());
+            upper_next = false;
+        } else {
+            out.push(c);
+        }
+    }
+    if out.is_empty() {
+        out.push_str("arg");
+    }
+    out
+}
+
+fn to_pascal_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut upper_next = true;
+    for c in name.chars() {
+        if c == '_' {
+            if !out.is_empty() {
+                upper_next = true;
+            }
+            continue;
+        }
+        if upper_next {
+            out.push(c.to_ascii_uppercase());
+            upper_next = false;
+        } else {
+            out.push(c);
+        }
+    }
+    if out.is_empty() {
+        out.push_str("Arg");
+    }
+    out
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1907,13 +2012,25 @@ fn is_rnx_keyword(name: &str) -> bool {
     )
 }
 
-fn param_name(raw: &str, idx: usize) -> String {
-    let base = if raw.is_empty() { format!("arg{idx}") } else { sanitize_ident(raw) };
-    if is_rnx_keyword(&base) {
+fn param_name(raw: &str, idx: usize, mode: CaseMode, taken: &mut BTreeSet<String>) -> String {
+    let raw_base = if raw.is_empty() {
+        format!("arg{idx}")
+    } else {
+        sanitize_ident(raw)
+    };
+    let base = convert_case(mode, &raw_base);
+    let guarded = if is_rnx_keyword(&base) {
         format!("{base}_")
     } else {
         base
+    };
+    let mut cand = guarded.clone();
+    let mut n = 2u32;
+    while !taken.insert(cand.clone()) {
+        cand = format!("{guarded}{n}");
+        n += 1;
     }
+    cand
 }
 
 fn escape_str(text: &str) -> String {
@@ -2144,7 +2261,7 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut warnings = parser.warnings;
     let mut seen_fns = BTreeSet::new();
-    for f in parser.funcs {
+    for f in &parser.funcs {
         if !seen_fns.insert(f.name.clone()) {
             continue;
         }
@@ -2184,10 +2301,10 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
             skipped.push((f.name.clone(), reason));
             continue;
         }
-        match emit_shape(&f, &parser.typedefs, &parser.defined_recs) {
+        match emit_shape(&f, &parser.typedefs, &parser.defined_recs, opts.case) {
             Ok(Some(shape)) => {
                 skipped.retain(|(n, _)| n != &f.name);
-                kept.push((f, shape));
+                kept.push((f.clone(), shape));
             }
             Ok(None) => {
                 let reason = match class {
@@ -2215,6 +2332,46 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
         filtered_consts.push(c);
     }
 
+    let mut rename_map: BTreeMap<String, String> = BTreeMap::new();
+    for (old, new) in &opts.renames {
+        if rename_map.insert(old.clone(), new.clone()).is_some() {
+            return Err(format!("duplicate rename for `{old}`"));
+        }
+    }
+    if !rename_map.is_empty() {
+        let known: BTreeSet<&str> =
+            parser.funcs.iter().map(|f| f.name.as_str()).collect();
+        for old in rename_map.keys() {
+            if !known.contains(old.as_str()) {
+                return Err(format!(
+                    "unknown rename source `{old}` (no such function in headers)"
+                ));
+            }
+        }
+    }
+    let mut taken: BTreeSet<String> =
+        filtered_consts.iter().map(|c| c.name.clone()).collect();
+    let mut display: Vec<String> = Vec::with_capacity(kept.len());
+    for (f, _) in &kept {
+        let base = match rename_map.get(&f.name) {
+            Some(r) => sanitize_ident(r),
+            None => convert_case(opts.case, &f.name),
+        };
+        let guarded = if is_rnx_keyword(&base) {
+            format!("{base}_")
+        } else {
+            base
+        };
+        let mut cand = guarded.clone();
+        let mut n = 2u32;
+        while taken.contains(&cand) {
+            cand = format!("{guarded}{n}");
+            n += 1;
+        }
+        taken.insert(cand.clone());
+        display.push(cand);
+    }
+
     let mut rnx = String::new();
     rnx.push_str(&format!(
         "// @generated {} target={} upstream={} from={}\n",
@@ -2225,7 +2382,7 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
     ));
     if !kept.is_empty() {
         rnx.push_str("import {\n");
-        for (i, (f, shape)) in kept.iter().enumerate() {
+        for (i, ((f, shape), _)) in kept.iter().zip(display.iter()).enumerate() {
             if i > 0 {
                 rnx.push_str(",\n");
             }
@@ -2250,9 +2407,9 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
         rnx.push_str(&opts.native_lib);
         rnx.push_str("\"\n\n");
     }
-    for (f, shape) in &kept {
+    for ((f, shape), name) in kept.iter().zip(display.iter()) {
         let ret_ann = if shape.ret == "Void" { String::new() } else { format!(": {}", shape.ret) };
-        rnx.push_str(&format!("unsafe fn {}({}){} {{\n", f.name, shape.params, ret_ann));
+        rnx.push_str(&format!("unsafe fn {name}({}){ret_ann} {{\n", shape.params));
         if shape.ret == "Void" {
             rnx.push_str(&format!(
                 "    __rnx_{}({});\n",
@@ -2281,11 +2438,11 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
     if !kept.is_empty() {
         rnx.push('\n');
         rnx.push_str("export {\n");
-        for (i, (f, _)) in kept.iter().enumerate() {
+        for (i, name) in display.iter().enumerate() {
             if i > 0 {
                 rnx.push_str(",\n");
             }
-            rnx.push_str(&format!("    {}", f.name));
+            rnx.push_str(&format!("    {name}"));
         }
         rnx.push_str("\n}\n");
     }
@@ -2319,12 +2476,14 @@ fn emit_shape(
     f: &CFunc,
     typedefs: &BTreeMap<String, Cty>,
     defined: &BTreeSet<String>,
+    mode: CaseMode,
 ) -> Result<Option<EmitShape>, String> {
     if f.variadic {
         return Ok(None);
     }
     let mut params = Vec::new();
     let mut args = Vec::new();
+    let mut taken = BTreeSet::new();
     for (i, (pname, p)) in f.params.iter().enumerate() {
         let t = map_type(p, typedefs, defined)?;
         let Some(t) = t else {
@@ -2333,7 +2492,7 @@ fn emit_shape(
         if t == "Void" {
             return Ok(None);
         }
-        let aname = param_name(pname, i);
+        let aname = param_name(pname, i, mode, &mut taken);
         params.push(format!("{aname}: {t}"));
         args.push(aname);
     }
@@ -2363,9 +2522,23 @@ mod tests {
             target: "x86_64-unknown-linux-gnu".to_string(),
             prefixes: Vec::new(),
             skips: Vec::new(),
+            case: CaseMode::Keep,
+            renames: Vec::new(),
             upstream_name: None,
             title: None,
         }
+    }
+
+    fn gen_src_case(src: &str, case: CaseMode, renames: &[(&str, &str)]) -> Result<BindgenOutput, String> {
+        let dir = crate::scratch::dir("bindgen-unit");
+        let h = dir.join("t.h");
+        std::fs::write(&h, src).unwrap();
+        let mut opts = test_opts();
+        opts.headers = vec![h];
+        opts.case = case;
+        opts.renames =
+            renames.iter().map(|(o, n)| (o.to_string(), n.to_string())).collect();
+        generate(&opts)
     }
 
     fn gen_src(src: &str) -> Result<BindgenOutput, String> {
@@ -2484,5 +2657,124 @@ mod tests {
         assert!(out.skipped.iter().any(|(n, r)| n == "flex" && r == "variadic"));
         assert!(out.oci_json.contains("\"profile\""), "{}", out.oci_json);
         assert!(out.oci_json.contains("\"reason\": \"callback\""), "{}", out.oci_json);
+    }
+
+    #[test]
+    fn case_mode_parses_known_words_only() {
+        assert_eq!(CaseMode::parse("keep").unwrap(), CaseMode::Keep);
+        assert_eq!(CaseMode::parse("camel").unwrap(), CaseMode::Camel);
+        assert_eq!(CaseMode::parse("pascal").unwrap(), CaseMode::Pascal);
+        assert!(CaseMode::parse("snake").is_err());
+    }
+
+    #[test]
+    fn parse_rename_accepts_old_equals_new_only() {
+        assert_eq!(
+            parse_rename("sqlite3_open=openDb").unwrap(),
+            ("sqlite3_open".to_string(), "openDb".to_string())
+        );
+        assert!(parse_rename("no-equals").is_err());
+        assert!(parse_rename("=new").is_err());
+        assert!(parse_rename("old=").is_err());
+        assert!(parse_rename("old=9bad").is_err());
+    }
+
+    #[test]
+    fn case_conversion_shapes() {
+        assert_eq!(convert_case(CaseMode::Camel, "sqlite3_open"), "sqlite3Open");
+        assert_eq!(convert_case(CaseMode::Camel, "prepare_v2"), "prepareV2");
+        assert_eq!(convert_case(CaseMode::Camel, "fooBar"), "fooBar");
+        assert_eq!(convert_case(CaseMode::Camel, "done"), "done");
+        assert_eq!(convert_case(CaseMode::Pascal, "sqlite3_open"), "Sqlite3Open");
+        assert_eq!(convert_case(CaseMode::Keep, "sqlite3_open"), "sqlite3_open");
+    }
+
+    #[test]
+    fn camel_case_renames_wrappers_but_keeps_c_symbols() {
+        let out = gen_src_case(
+            "int sqlite3_open(const char *path, int flags);\nvoid sqlite3_close(int db);\n",
+            CaseMode::Camel,
+            &[],
+        )
+        .unwrap();
+        assert!(out.rnx.contains("unsafe fn sqlite3Open("), "{}", out.rnx);
+        assert!(out.rnx.contains("unsafe fn sqlite3Close("), "{}", out.rnx);
+        assert!(
+            out.rnx.contains("fn sqlite3_open(path: Pointer<Byte>, flags: Int): Int as __rnx_sqlite3_open"),
+            "{}",
+            out.rnx
+        );
+        assert!(out.rnx.contains("return __rnx_sqlite3_open(path, flags);"), "{}", out.rnx);
+        assert!(out.rnx.contains("    __rnx_sqlite3_close(db);"), "{}", out.rnx);
+        assert!(out.rnx.contains("    sqlite3Close,\n    sqlite3Open"), "{}", out.rnx);
+        assert!(!out.rnx.contains("unsafe fn sqlite3_open"), "{}", out.rnx);
+    }
+
+    #[test]
+    fn explicit_rename_overrides_case_and_validates() {
+        let out = gen_src_case(
+            "int sqlite3_open(const char *path);\n",
+            CaseMode::Camel,
+            &[("sqlite3_open", "openDb")],
+        )
+        .unwrap();
+        assert!(out.rnx.contains("unsafe fn openDb("), "{}", out.rnx);
+        assert!(
+            out.rnx.contains("fn sqlite3_open(path: Pointer<Byte>): Int as __rnx_sqlite3_open"),
+            "{}",
+            out.rnx
+        );
+        assert!(out.rnx.contains("return __rnx_sqlite3_open(path);"), "{}", out.rnx);
+        let err = gen_src_case("int a(int x);\n", CaseMode::Keep, &[("missing", "other")])
+            .unwrap_err();
+        assert!(err.contains("unknown rename source `missing`"), "{err}");
+    }
+
+    #[test]
+    fn rename_collisions_disambiguate_with_digit_suffixes() {
+        let out = gen_src_case(
+            "int foo_bar(int x);\nint fooBar(int x);\n",
+            CaseMode::Camel,
+            &[],
+        )
+        .unwrap();
+        assert!(out.rnx.contains("unsafe fn fooBar("), "{}", out.rnx);
+        assert!(out.rnx.contains("unsafe fn fooBar2("), "{}", out.rnx);
+        assert!(out.rnx.contains("fn foo_bar(x: Int): Int as __rnx_foo_bar"), "{}", out.rnx);
+        assert!(out.rnx.contains("fn fooBar(x: Int): Int as __rnx_fooBar"), "{}", out.rnx);
+    }
+
+    #[test]
+    fn params_camelcase_and_dedupe_per_function() {
+        let out = gen_src_case(
+            "int add(int foo_bar, int n);\nint dup(int foo_bar, int fooBar);\n",
+            CaseMode::Camel,
+            &[],
+        )
+        .unwrap();
+        assert!(out.rnx.contains("fn add(fooBar: Int, n: Int)"), "{}", out.rnx);
+        assert!(out.rnx.contains("fn dup(fooBar: Int, fooBar2: Int)"), "{}", out.rnx);
+    }
+
+    #[test]
+    fn type_param_stays_compiling_identifier() {
+        let out = gen_src_case("int f(int type);\n", CaseMode::Camel, &[]).unwrap();
+        assert!(out.rnx.contains("fn f(type: Int): Int as __rnx_f"), "{}", out.rnx);
+        assert!(out.rnx.contains("unsafe fn f(type: Int): Int"), "{}", out.rnx);
+    }
+
+    #[test]
+    fn keep_mode_stays_verbatim() {
+        let out = gen_src_case(
+            "int sqlite3_open(const char *db_path, int flags);\n",
+            CaseMode::Keep,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            out.rnx.contains("unsafe fn sqlite3_open(db_path: Pointer<Byte>, flags: Int)"),
+            "{}",
+            out.rnx
+        );
     }
 }

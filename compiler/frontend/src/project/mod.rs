@@ -62,6 +62,8 @@ pub struct BindgenDriver {
     pub include: Vec<String>,
     pub prefix: Vec<String>,
     pub skip: Vec<String>,
+    pub case: Option<String>,
+    pub rename: Vec<String>,
     pub native_lib: Option<String>,
     pub upstream: Option<String>,
     pub outputs: BTreeMap<String, BindgenOutputDecl>,
@@ -706,8 +708,8 @@ fn parse_bindgen_driver(val: &ConfigValue) -> Result<BindgenDriver, String> {
         _ => return Err("field `bindgen` must be an object".to_string()),
     };
     for (key, _) in object_fields(obj) {
-        if !["headers", "include", "prefix", "skip", "native_lib", "upstream", "outputs"].contains(&key.as_str()) {
-            return Err(format!("field `bindgen.{key}` is not a driver field (expected `headers`, `include`, `prefix`, `skip`, `native_lib`, `upstream`, or `outputs`)"));
+        if !["headers", "include", "prefix", "skip", "case", "rename", "native_lib", "upstream", "outputs"].contains(&key.as_str()) {
+            return Err(format!("field `bindgen.{key}` is not a driver field (expected `headers`, `include`, `prefix`, `skip`, `case`, `rename`, `native_lib`, `upstream`, or `outputs`)"));
         }
     }
     let headers = match obj_get(obj, "headers") {
@@ -727,6 +729,26 @@ fn parse_bindgen_driver(val: &ConfigValue) -> Result<BindgenDriver, String> {
     };
     let skip = match obj_get(obj, "skip") {
         Some(v) => parse_string_list("bindgen.skip", v)?,
+        None => Vec::new(),
+    };
+    let case = match obj_get(obj, "case") {
+        Some(ConfigValue::String(s)) => {
+            crate::bindgen::CaseMode::parse(s)
+                .map_err(|e| format!("field `bindgen.case`: {e}"))?;
+            Some(s.clone())
+        }
+        Some(_) => return Err("field `bindgen.case` must be a string".to_string()),
+        None => None,
+    };
+    let rename = match obj_get(obj, "rename") {
+        Some(v) => {
+            let items = parse_string_list("bindgen.rename", v)?;
+            for item in &items {
+                crate::bindgen::parse_rename(item)
+                    .map_err(|e| format!("field `bindgen.rename`: {e}"))?;
+            }
+            items
+        }
         None => Vec::new(),
     };
     let native_lib = match obj_get(obj, "native_lib") {
@@ -775,7 +797,7 @@ fn parse_bindgen_driver(val: &ConfigValue) -> Result<BindgenDriver, String> {
         };
         outputs.insert(dir.clone(), BindgenOutputDecl { title, target });
     }
-    Ok(BindgenDriver { headers, include, prefix, skip, native_lib, upstream, outputs })
+    Ok(BindgenDriver { headers, include, prefix, skip, case, rename, native_lib, upstream, outputs })
 }
 
 const MAX_KEYWORDS: usize = 12;
@@ -1459,6 +1481,12 @@ fn bindgen_driver_to_rnx(driver: &BindgenDriver) -> String {
     }
     if !driver.skip.is_empty() {
         parts.push(format!("skip: {}", list(&driver.skip)));
+    }
+    if let Some(case) = &driver.case {
+        parts.push(format!("case: {}", crate::deplock::rnx_string(case)));
+    }
+    if !driver.rename.is_empty() {
+        parts.push(format!("rename: {}", list(&driver.rename)));
     }
     if let Some(lib) = &driver.native_lib {
         parts.push(format!("native_lib: {}", crate::deplock::rnx_string(lib)));
@@ -2727,6 +2755,8 @@ mod tests {
             driver.outputs["src/gen"],
             BindgenOutputDecl { title: "foo.rnx".to_string(), target: Some("x86_64-unknown-linux-gnu".to_string()) }
         );
+        assert_eq!(driver.case, None);
+        assert!(driver.rename.is_empty());
         for (text, needle) in [
             (
                 "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    bindgen: { outputs: { \"x\": { title: \"a.rnx\" } } }\n}\n",
@@ -2752,6 +2782,41 @@ mod tests {
                 issues.iter().any(|i| i.error && i.code == Code::E108),
                 "{issues:?} for {text}"
             );
+        }
+    }
+
+    #[test]
+    fn bindgen_driver_case_and_rename_parse_and_round_trip() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 bindgen: {\n\
+                     headers: [\"include/foo.h\"],\n\
+                     case: \"camel\",\n\
+                     rename: [\"foo_open=openDb\"],\n\
+                     native_lib: \"foo\",\n\
+                     outputs: { \"src/gen\": { title: \"foo.rnx\" } }\n\
+                 }\n\
+             }\n",
+        );
+        let driver = c.bindgen.unwrap();
+        assert_eq!(driver.case.as_deref(), Some("camel"));
+        assert_eq!(driver.rename, vec!["foo_open=openDb".to_string()]);
+        let rendered = super::bindgen_driver_to_rnx(&driver);
+        assert!(rendered.contains("case: \"camel\""), "{rendered}");
+        assert!(rendered.contains("rename: [\"foo_open=openDb\"]"), "{rendered}");
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    bindgen: { headers: [\"a.h\"], case: \"snake\", outputs: { \"x\": { title: \"a.rnx\" } } }\n}\n",
+                "bad case mode",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    bindgen: { headers: [\"a.h\"], rename: [\"oops\"], outputs: { \"x\": { title: \"a.rnx\" } } }\n}\n",
+                "bad rename",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
         }
     }
 

@@ -1,4 +1,4 @@
-use frontend::bindgen::{verify_annotations, BindgenOptions, ClassTally};
+use frontend::bindgen::{verify_annotations, BindgenOptions, CaseMode, ClassTally};
 use std::path::PathBuf;
 
 fn sqlite_opts() -> Option<BindgenOptions> {
@@ -14,6 +14,8 @@ fn sqlite_opts() -> Option<BindgenOptions> {
         target: "x86_64-unknown-linux-gnu".to_string(),
         prefixes: Vec::new(),
         skips: Vec::new(),
+        case: CaseMode::Keep,
+        renames: Vec::new(),
         upstream_name: None,
         title: None,
     })
@@ -32,6 +34,8 @@ fn zlib_opts() -> Option<BindgenOptions> {
         target: "x86_64-unknown-linux-gnu".to_string(),
         prefixes: Vec::new(),
         skips: Vec::new(),
+        case: CaseMode::Keep,
+        renames: Vec::new(),
         upstream_name: None,
         title: None,
     })
@@ -59,6 +63,8 @@ fn fixture_opts() -> BindgenOptions {
         target: "x86_64-unknown-linux-gnu".to_string(),
         prefixes: Vec::new(),
         skips: Vec::new(),
+        case: CaseMode::Keep,
+        renames: Vec::new(),
         upstream_name: None,
         title: None,
     }

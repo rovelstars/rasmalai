@@ -449,6 +449,12 @@ pub enum Command {
         /// Extra include directories for quoted headers
         #[arg(long)]
         include: Vec<PathBuf>,
+        /// Case conversion for emitted wrapper and parameter names (keep, camel, pascal)
+        #[arg(long, default_value = "keep")]
+        case: String,
+        /// Explicit rename of one C symbol (old=new, repeatable; old is the C name)
+        #[arg(long)]
+        rename: Vec<String>,
         /// Upstream name for the annotation set (defaults to the package name)
         #[arg(long)]
         upstream_name: Option<String>,

@@ -325,6 +325,21 @@ fn driver_options(
         target: target.to_string(),
         prefixes: driver.prefix.clone(),
         skips: driver.skip.clone(),
+        case: match &driver.case {
+            Some(s) => frontend::bindgen::CaseMode::parse(s).map_err(|e| {
+                Diagnostic::new(Code::E108, format!("task `bindgen`: bad `case`: {e}"))
+            })?,
+            None => frontend::bindgen::CaseMode::Keep,
+        },
+        renames: {
+            let mut out = Vec::with_capacity(driver.rename.len());
+            for r in &driver.rename {
+                out.push(frontend::bindgen::parse_rename(r).map_err(|e| {
+                    Diagnostic::new(Code::E108, format!("task `bindgen`: bad `rename`: {e}"))
+                })?);
+            }
+            out
+        },
         upstream_name: driver.upstream.clone(),
         title: Some(title.to_string()),
     })
@@ -470,6 +485,29 @@ mod tests {
         let oci = std::fs::read_to_string(dir.join("src").join("gen").join("bindgen.oci.json")).unwrap();
         assert!(oci.contains("demo.rnx"), "{oci}");
         assert!(oci.contains("run.rasmalai.role"), "{oci}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bindgen_driver_applies_case_and_rename() {
+        let dir = project_with(
+            "driver-case",
+            "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    bindgen: {\n        headers: [\"include/add.h\"],\n        prefix: [\"demo_\"],\n        case: \"camel\",\n        rename: [\"demo_add=addNums\"],\n        native_lib: \"demo\",\n        outputs: { \"src/gen\": { title: \"demo.rnx\" } }\n    }\n}\n",
+        );
+        std::fs::create_dir_all(dir.join("include")).unwrap();
+        std::fs::write(
+            dir.join("include").join("add.h"),
+            "int demo_add(int first_value, int second_value);\nint demo_sub(int x, int y);\n",
+        )
+        .unwrap();
+        run(&dir, "bindgen").unwrap();
+        let generated = std::fs::read_to_string(dir.join("src").join("gen").join("demo.rnx")).unwrap();
+        assert!(generated.contains("unsafe fn addNums(firstValue: Int, secondValue: Int)"), "{generated}");
+        assert!(
+            generated.contains("fn demo_add(firstValue: Int, secondValue: Int): Int as __rnx_demo_add"),
+            "{generated}"
+        );
+        assert!(generated.contains("unsafe fn demoSub(x: Int, y: Int)"), "{generated}");
     }
 
     #[test]

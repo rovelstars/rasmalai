@@ -82,6 +82,8 @@ The ambient `rnx` object needs no import: `rnx.version` is the compiler version 
 
 An identifier starts with an ASCII letter or `_`, followed by ASCII letters, digits, or `_`. Identifiers are case-sensitive. Type names conventionally start with an uppercase letter; value names start with lowercase. The convention is unenforced except where stated (diagnostic `E303` applies to lowercase-led value names only).
 
+Free functions and methods use `camelCase` (`calculateDamage`, `updatePosition`); types, attributes, and macros use `PascalCase` (`Vec3`, `#[Layout(C)]`, `StaticAssert!(...)`). Foreign symbols keep their C spelling exactly (`sqlite3_open`), including inside `from native` declarations. Generated bindings may wrap a foreign symbol in an idiomatic name (see [Hardware and FFI](/manual/13-hardware-and-ffi)), but the C symbol in the declaration never changes.
+
 ## Reserved keywords
 
 The following words are reserved and cannot serve as identifiers: `true`, `false`, `null`, `this`, `new`, `class`, `struct`, `record`, `trait`, `interface`, `extension`, `enum`, `fn`, `init`, `deinit`, `onReload`, `extends`, `with`, `let`, `const`, `static`, `if`, `else`, `for`, `while`, `in`, `return`, `break`, `continue`, `try`, `catch`, `finally`, `throw`, `throws`, `defer`, `guard`, `switch`, `case`, `default`, `do`, `fallthrough`, `is`, `import`, `from`, `as`, `public`, `pub`, `private`, `unsafe`, `comptime`, `native`, `async`, `await`, `pass`.
