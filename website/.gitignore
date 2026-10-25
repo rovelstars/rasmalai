@@ -7,6 +7,9 @@ static/og/
 
 # Local stdlib doc snapshot (written by scripts/seed-std.mjs)
 .std-doc/
+
+# Staging dir (written by scripts/publish-std.mjs, removed on success)
+.std-publish/
 src/lib/wasm/wasm_playground.js
 src/lib/wasm/wasm_playground_bg.wasm
 src/lib/wasm/package.json
