@@ -2431,6 +2431,16 @@ mod tests {
     }
 
     #[test]
+    fn pointer_return_alias_line_stays_tight() {
+        let out = gen_src("char *column_text(const char *name, int col);\n").unwrap();
+        assert!(
+            out.rnx.contains("fn column_text(name: Pointer<Byte>, col: Int): Pointer<Byte> as __rnx_column_text"),
+            "{}",
+            out.rnx
+        );
+    }
+
+    #[test]
     fn golden_small_header() {
         let out = gen_src(
             "#define MAGIC 42\ntypedef unsigned char Byte;\nunsigned long size(int n);\nvoid done(void);\n",

@@ -177,6 +177,24 @@ fn test_fmt_generic_with_extends_snug() {
         .unwrap_or_else(|e| panic!("formatted generics fail to parse: {e}"));
 }
 
+const NATIVE_ALIAS_SRC: &str = "import {\n fn sqlite3_column_text(arg0: Pointer<Byte>, iCol: Int): Pointer<Byte> as __rnx_sqlite3_column_text,\n fn sqlite3_backup_init(pDest: Pointer<Byte>, zDestName: Pointer<Byte>): Pointer<Pointer<Byte>> as __rnx_sqlite3_backup_init\n} from native \"sqlite3\"\n";
+
+#[test]
+fn test_fmt_native_alias_pointer_return_stays_tight() {
+    let out = fmt(NATIVE_ALIAS_SRC);
+    for tight in [
+        "fn sqlite3_column_text(arg0: Pointer<Byte>, iCol: Int): Pointer<Byte> as __rnx_sqlite3_column_text,",
+        "fn sqlite3_backup_init(pDest: Pointer<Byte>, zDestName: Pointer<Byte>): Pointer<Pointer<Byte>> as __rnx_sqlite3_backup_init",
+    ] {
+        assert!(out.contains(tight), "missing {tight:?} in:\n{out}");
+    }
+    assert!(!out.contains("Pointer <"), "spurious generic spacing in:\n{out}");
+    let again = fmt(&out);
+    assert_eq!(out, again, "native alias formatting not idempotent");
+    frontend::parser::Parser::parse_module(&out)
+        .unwrap_or_else(|e| panic!("formatted native alias fails to parse: {e}"));
+}
+
 const SHIFT_SRC: &str = "fn Main(): Int {\n    let x = 1<<3;\n    let y = x>>1;\n    let z = x>>>1;\n    x<<=1;\n    return x;\n}\n";
 
 #[test]
