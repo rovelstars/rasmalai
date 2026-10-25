@@ -42,7 +42,10 @@ fn test_zero_external_dependencies_in_core() {
     //   scripts, single function used).
     // - lir/sha2: content hashing for per-function codegen cache keys
     //   (same crate and lockfile entry as frontend/sha2, no new surface).
-    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2"), ("frontend", "rayon"), ("frontend", "libc"), ("lir", "rayon"), ("lir", "sha2")];
+    // - frontend/tempfile + lir/tempfile + runtime/tempfile: unique
+    //   per-test scratch directories (dev-dependencies only, never linked
+    //   into shipped rnx binaries).
+    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2"), ("frontend", "rayon"), ("frontend", "libc"), ("lir", "rayon"), ("lir", "sha2"), ("frontend", "tempfile"), ("lir", "tempfile"), ("runtime", "tempfile")];
     for krate in ["frontend", "lir", "runtime", "diagnostics", "stdlib"] {
         let path = root.join(krate).join("Cargo.toml");
         assert!(path.is_file(), "missing {}", path.display());

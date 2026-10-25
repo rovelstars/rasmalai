@@ -10,3 +10,4 @@ rayon = "1.12"
 [dev-dependencies]
 cli = { path = "../cli" }
 runtime = { path = "../runtime" }
+tempfile = "3"

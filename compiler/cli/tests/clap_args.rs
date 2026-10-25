@@ -36,7 +36,7 @@ fn proj(tag: &str, files: &[(&str, &str)]) -> crate::scratch::Scratch {
 
 #[test]
 fn test_help_exits_zero() {
-    let dir = std::env::temp_dir();
+    let dir = crate::scratch::dir("clap-help");
     let (code, stdout, _) = run(&["--help"], &dir);
     assert_eq!(code, 0, "{stdout}");
     assert!(stdout.contains("Rasmalai systems language"), "{stdout}");
@@ -45,7 +45,7 @@ fn test_help_exits_zero() {
 
 #[test]
 fn test_typo_suggests_subcommand() {
-    let dir = std::env::temp_dir();
+    let dir = crate::scratch::dir("clap-typo");
     let (code, _, stderr) = run(&["chck"], &dir);
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("check"), "{stderr}");
@@ -53,7 +53,7 @@ fn test_typo_suggests_subcommand() {
 
 #[test]
 fn test_completions_for_all_shells() {
-    let dir = std::env::temp_dir();
+    let dir = crate::scratch::dir("clap-completions");
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
         let (code, stdout, stderr) = run(&["completions", shell], &dir);
         assert_eq!(code, 0, "{shell}: {stderr}");
@@ -116,7 +116,7 @@ fn test_lint_fix_renames_unused() {
 
 #[test]
 fn test_run_and_test_default_to_cranelift_backend() {
-    let dir = std::env::temp_dir();
+    let dir = crate::scratch::dir("clap-defaults");
     let (_, stdout, stderr) = run(&["run", "--help"], &dir);
     let text = stdout + &stderr;
     assert!(text.contains("default: cranelift"), "{text}");

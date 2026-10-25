@@ -10,11 +10,15 @@ env:
 
 jobs:
   rust:
-    name: cargo test --workspace
+    name: nextest --workspace
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Affected-only PR runs diff against the base ref, which needs the
+          # full history present for merge-base.
+          fetch-depth: 0
 
       - name: Install LLVM 22
         run: |
@@ -26,6 +30,11 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.149
 
       # `key` and `shared-key` are alternatives in rust-cache: setting
       # `shared-key` drops the job id from the cache key, so a second cached
@@ -45,7 +54,7 @@ jobs:
           # products that still pass validate_dep_product.
           key: rnx-global-v1-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'compiler/*/Cargo.toml', 'compiler/*/build.rs', 'compiler/*/src/**', 'compiler/runtime/bundle/**') }}
 
-      - name: Full workspace test suite
+      - name: Workspace test suite (affected on PR, full on main)
         run: |
           command -v ld >/dev/null || { echo "no ld on PATH"; exit 1; }
           command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
@@ -58,7 +67,23 @@ jobs:
           done
           [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
           cargo run -q -p cli -- doc --json --stdlib --out-dir website/static/data
-          cargo test --workspace --no-fail-fast || {
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILTER="$(bash .github/scripts/affected-tests.sh "origin/${{ github.base_ref }}")"
+          else
+            FILTER="FULL"
+          fi
+          [ -n "$FILTER" ] || FILTER="FULL"
+          echo "nextest target list: $FILTER"
+          run_suite() {
+            if [ "$FILTER" = "FULL" ]; then
+              cargo nextest run --workspace --profile ci --no-fail-fast
+            else
+              # FILTER is a `-p <pkg>` list produced by affected-tests.sh.
+              # shellcheck disable=SC2086
+              cargo nextest run --profile ci --no-fail-fast $FILTER
+            fi
+          }
+          run_suite || {
             echo "--- test failure: collecting native backtraces from cores ---"
             for core in /tmp/rnx-core-*; do
               [ -f "$core" ] || continue

@@ -1,0 +1,33 @@
+# Nextest configuration for the Rasmalai workspace.
+#
+# CI runs `cargo nextest run --profile ci`, which replaces the old
+# `cargo test --workspace --no-fail-fast` invocation. Local runs should use
+# the same profile: `cargo nextest run --profile ci --workspace`.
+#
+# Design rules for this file:
+# - `fail-fast = false` preserves the old `--no-fail-fast` semantics: every
+#   test runs even after a failure, so one red test never hides another.
+# - `retries` stays 0 for everything. Do NOT add blanket retries: a retry
+#   that masks a real failure is worse than the flake it hides.
+# - The single override below is the only sanctioned retry, and it names the
+#   test it quarantines.
+
+[profile.ci]
+fail-fast = false
+# Safety net so one hung test cannot wedge the whole CI job (which itself
+# caps at 360 minutes). Marked slow at 15 minutes, terminated one period
+# later. Release-mode codegen tests take minutes, never tens of minutes,
+# so this stays far clear of false positives.
+slow-timeout = { period = "15m", terminate-after = 1 }
+retries = 0
+
+[[profile.ci.overrides]]
+# QUARANTINE: `check_test::test_check_latency_comparison` asserts that
+# `rnx check` is faster than `rnx build` by comparing two wall-clock
+# measurements taken back-to-back. Under parallel load the scheduler can
+# stall the `check` run and flip the comparison, so this test flakes even
+# when the compiler is correct. It gets retries (2) instead of a fix because
+# the assertion itself is timing-based; every other test fails fast on its
+# first failure with no retries.
+filter = "test(test_check_latency_comparison)"
+retries = 2
