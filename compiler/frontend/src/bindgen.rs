@@ -2223,7 +2223,6 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
         upstream,
         header_names.join(",")
     ));
-    rnx.push('\n');
     if !kept.is_empty() {
         rnx.push_str("import {\n");
         for (i, (f, shape)) in kept.iter().enumerate() {
