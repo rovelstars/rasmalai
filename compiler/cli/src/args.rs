@@ -315,6 +315,9 @@ pub enum Command {
         /// Emit the minimal publishing manifest as JSON
         #[arg(long)]
         export_manifest: bool,
+        /// Registry base URL for the advisory feed (or RNX_REGISTRY)
+        #[arg(long, env = "RNX_REGISTRY")]
+        registry: Option<String>,
     },
     /// Add a local package dependency with capability approval
     Add {

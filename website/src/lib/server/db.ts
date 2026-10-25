@@ -129,6 +129,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_name ON audit_log(full_name, created_at);
 
+CREATE TABLE IF NOT EXISTS advisories (
+    id TEXT PRIMARY KEY,
+    package TEXT NOT NULL,
+    affected TEXT NOT NULL DEFAULT '*',
+    artifacts TEXT NOT NULL DEFAULT '[]',
+    severity TEXT NOT NULL DEFAULT 'warning',
+    title TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_advisories_package ON advisories(package, state);
+
 CREATE TABLE IF NOT EXISTS chunks (
     hash TEXT PRIMARY KEY,
     size_bytes INTEGER NOT NULL,
@@ -370,7 +384,7 @@ export async function ensureSchema(db: Client): Promise<void> {
 	return schemaPromise;
 }
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 async function checkSchemaVersion(db: Client): Promise<boolean> {
 	try {

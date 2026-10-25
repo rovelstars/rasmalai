@@ -358,6 +358,7 @@ dependencies = [
  "llvm",
  "notify",
  "rcgen",
+ "ring",
  "rmcp",
  "runtime",
  "rustls",
@@ -867,6 +868,7 @@ dependencies = [
  "libc",
  "rayon",
  "reqwest",
+ "ring",
  "sha2",
  "stdlib",
 ]

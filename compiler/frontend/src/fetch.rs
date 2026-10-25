@@ -1000,6 +1000,10 @@ fn retryable_status(status: u16) -> bool {
     matches!(status, 429 | 502 | 503 | 504)
 }
 
+pub fn registry_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
+    http_get(url, what)
+}
+
 fn http_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
     let mut attempt = 0u32;
     loop {

@@ -83,6 +83,19 @@ export const auditLog = sqliteTable('audit_log', {
 	createdAt: integer('created_at').notNull()
 });
 
+export const advisories = sqliteTable('advisories', {
+	id: text('id').primaryKey(),
+	package: text('package').notNull(),
+	affected: text('affected').notNull().default('*'),
+	artifacts: text('artifacts').notNull().default('[]'),
+	severity: text('severity').notNull().default('warning'),
+	title: text('title').notNull().default(''),
+	detail: text('detail').notNull().default(''),
+	state: text('state').notNull().default('active'),
+	createdAt: integer('created_at').notNull(),
+	updatedAt: integer('updated_at').notNull()
+});
+
 export const chunks = sqliteTable('chunks', {
 	hash: text('hash').primaryKey(),
 	sizeBytes: integer('size_bytes').notNull(),

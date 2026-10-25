@@ -31,12 +31,47 @@ Yank is reversible-looking but one-way, and takedown is forever. Both keep the n
 
 Only the `@std/*` scope has a further carve-out, `DELETE /api/scopes/{scope}/{name}@{version}`, which needs the org admin plus a second approval. It has no CLI path.
 
+## Security advisories
+
+Package and artifact advisories ride a registry-signed feed. Only the operator speaks: advisory objects name package versions and artifact pins, and no code path renders package content as a notice, so a forged notice is structurally impossible. Upstream CVE feeds are an input to advisories, not a fetch path — nothing fetches third-party feeds at build time; the operator files each advisory by hand through the route below.
+
+An advisory names what it covers and how bad it is:
+
+```json
+{
+  "id": "ADV-2026-0007",
+  "package": "@acme/widget",
+  "affected": "^1.0.0",
+  "artifacts": ["sha256:ab…"],
+  "severity": "critical",
+  "title": "signature bypass in the handshake",
+  "detail": "versions in ^1.0.0 accept …"
+}
+```
+
+`affected` uses the same range grammar as dependency requirements (`*`, `latest`, `X.Y.Z`, `^`, `~`, `>=`). `artifacts` is optional: when present, the advisory applies only to locked entries whose `artifactDigest` matches one of the pins exactly. Severity maps onto the notice tiers: `critical` is a security hold and fails operations, `warning` warns exactly like a yank, `info` is a plain notice.
+
+`GET /api/v0/advisories` serves the active advisories as one JSON document plus the operator's Ed25519 signature over the canonical byte form of that list:
+
+```json
+{ "advisories": [ … ], "keyId": "9f2c…", "publicKey": "ab…", "signature": "cd…" }
+```
+
+Clients verify the signature before matching anything, and fail closed when it does not verify. `RNX_ADVISORY_KEY` pins the expected key id or public key hex; a feed signed by any other key is rejected. Withdrawn advisories leave the feed but stay in the audit log, so the feed only ever carries what currently applies.
+
+Filing and withdrawing are operator-only. Both need the admin token and `X-RNX-Protocol: 0`:
+
+- `POST /api/v0/advisories` with the advisory object files it (a duplicate id fails with 409).
+- `POST /api/v0/advisories/<id>/withdraw` marks it withdrawn. Withdrawing an unknown or already-withdrawn id answers 404.
+
+`rnx audit` matches the locked `Project.deplock` — versions and `artifactDigest` pins — against this feed and reports. A `critical` finding fails the audit; everything else warns or notes. The re-pin of affected dependencies is a separate, explicit update step; the audit names the finding, it never rewrites the lockfile.
+
 ## Reading from the registry
 
 Reads take no credentials. Every response carries an `rnx-registry-spec: 0` header. `GET /api/version` reports the contract in one place:
 
 ```json
-{ "spec": 0, "capabilities": ["tombstones", "guides", "jsdoc", "yank", "transfer"], "registry": "rasmalai.rovelstars.com" }
+{ "spec": 0, "capabilities": ["tombstones", "guides", "jsdoc", "yank", "transfer", "advisories"], "registry": "rasmalai.rovelstars.com" }
 ```
 
 The fixed paths are:
@@ -52,6 +87,7 @@ The fixed paths are:
 | `GET .../<version>/chunks` | chunk entry manifest (file names, sizes, content hashes) describing canonical bytes; 404 `no-file-index` when the version ships no file index |
 | `GET .../<version>/chunk/<sha256>` | one content chunk by hash, immutable — clients fetch these in parallel and write files straight to disk; the digest is accepted in either case |
 | `GET .../<name>@<version>/guides[/<slug>]` | guide index or one guide, 404 when the package ships none |
+| `GET /api/v0/advisories` | registry-signed advisory feed: active advisories plus `keyId`, `publicKey`, and `signature` |
 
 Version metadata and content chunks cache as immutable for a year; a missing name or version answers 404 JSON and a tombstoned version answers 410. The status of a version is the one part of that metadata that changes after the publish, so the server purges the version URLs when a yank or a takedown lands, and then reads the edge back: the purge counts as done only when the edge answers with the new state instead of the old copy. Without the purge credentials (`CF_ZONE_ID` and `CF_PURGE_TOKEN`) nothing is purged, and the one-year lifetime of the metadata route is the bound. Tooling that must see one consistent generation (stdlib seeding, stdlib docs, the playground) reads transport payloads under a fixed `?origin-direct=1` namespace instead of the bare URL; the server answers that namespace `no-store`, so it always reflects origin live truth and can never hold a stale generation.
 
