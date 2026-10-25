@@ -186,7 +186,7 @@ pub fn fetch_all_git_deps(scope_root: &Path) -> Result<Vec<(String, String, Stri
     let mut stack: Vec<(PathBuf, ProjectConfig)> = starts;
     while let Some((pkg_root, cfg)) = stack.pop() {
         for (dep_name, spec) in &cfg.dependencies {
-            let crate::project::DependencySpec::Git { git, rev } = spec else {
+            let crate::project::DependencySpec::Git { git, rev, .. } = spec else {
                 continue;
             };
             if let Some((url, old_rev)) = seen.get(dep_name) {
@@ -2633,7 +2633,7 @@ pub fn fetch_all_registry_deps(
     for (_, cfg) in &cfgs {
         let mut reqs: BTreeMap<String, String> = BTreeMap::new();
         for (dep_name, spec) in &cfg.dependencies {
-            if let crate::project::DependencySpec::Semver { version } = spec {
+            if let crate::project::DependencySpec::Semver { version, .. } = spec {
                 reqs.insert(dep_name.clone(), version.clone());
             }
         }

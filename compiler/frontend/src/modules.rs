@@ -1994,7 +1994,7 @@ fn std_ctx_for(
         merged.entry(k.clone()).or_insert_with(|| v.clone());
     }
     let explicit = match cfg.dependencies.get(pkg) {
-        Some(crate::project::DependencySpec::Semver { version }) => Some(version.clone()),
+        Some(crate::project::DependencySpec::Semver { version, .. }) => Some(version.clone()),
         _ => None,
     };
     let scope_root = project::find_workspace_root(&proj_root).unwrap_or(proj_root);
@@ -2206,7 +2206,7 @@ fn resolve_package(
     let unknown = || Diagnostic::new(Code::E108, format!("unknown package dependency `{pkg}`"));
     let (proj_root, cfg) = package_ctx_of(from)?.ok_or_else(unknown)?;
     let (dep_root, dep_cfg, kind) = match cfg.dependencies.get(pkg.as_str()) {
-        Some(crate::project::DependencySpec::Path { path }) => {
+        Some(crate::project::DependencySpec::Path { path, .. }) => {
             let dep_root = std::fs::canonicalize(proj_root.join(path)).map_err(|_| {
                 Diagnostic::new(Code::E108, format!("cannot resolve package `{pkg}`"))
             })?;
@@ -2215,7 +2215,7 @@ fn resolve_package(
             })?;
             (dep_root, dep_cfg, crate::depcache::KIND_PATH.to_string())
         }
-        Some(crate::project::DependencySpec::Git { git, rev }) => {
+        Some(crate::project::DependencySpec::Git { git, rev, .. }) => {
             let anchor = crate::fetch::cache_anchor(&proj_root);
             let dep_root = crate::fetch::resolve_git_dep(&anchor, &pkg, git, rev)?;
             let dep_cfg = ProjectConfig::load_from_dir(&dep_root)?.ok_or_else(|| {
@@ -2223,7 +2223,7 @@ fn resolve_package(
             })?;
             (dep_root, dep_cfg, crate::depcache::KIND_GIT.to_string())
         }
-        Some(crate::project::DependencySpec::Semver { version }) => {
+        Some(crate::project::DependencySpec::Semver { version, .. }) => {
             let scope_root =
                 project::find_workspace_root(&proj_root).unwrap_or_else(|| proj_root.clone());
             let pinned = locked_registry_version(&scope_root, &pkg);
@@ -2372,17 +2372,18 @@ fn std_overlay_lookup(path: &Path) -> Option<PathBuf> {
 
 fn dep_spec_string(spec: &crate::project::DependencySpec) -> String {
     match spec {
-        crate::project::DependencySpec::Semver { version } => format!("semver:{version}"),
-        crate::project::DependencySpec::Path { path } => format!("path:{}", path.display()),
-        crate::project::DependencySpec::Git { git, rev } => format!("git:{git}@{rev}"),
-        crate::project::DependencySpec::Url { version, url, checksum } => {
-            format!("url:{url}@{version}:{}", checksum.as_deref().unwrap_or(""))
+        crate::project::DependencySpec::Semver { version, link, .. } => format!("semver:{version}:{}", link.as_str()),
+        crate::project::DependencySpec::Path { path, link, .. } => format!("path:{}:{}", path.display(), link.as_str()),
+        crate::project::DependencySpec::Git { git, rev, link, .. } => format!("git:{git}@{rev}:{}", link.as_str()),
+        crate::project::DependencySpec::Url { version, url, checksum, link, .. } => {
+            format!("url:{url}@{version}:{}:{}", checksum.as_deref().unwrap_or(""), link.as_str())
         }
-        crate::project::DependencySpec::Native { lib, system, path, version, from } => format!(
-            "native:{lib}:{system}:{}:{}:{}",
+        crate::project::DependencySpec::Native { lib, system, path, version, from, link, .. } => format!(
+            "native:{lib}:{system}:{}:{}:{}:{}",
             path.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
             version.as_deref().unwrap_or_default(),
-            from.as_deref().unwrap_or_default()
+            from.as_deref().unwrap_or_default(),
+            link.as_str()
         ),
     }
 }
@@ -2452,7 +2453,7 @@ fn dep_version_key(
     }
     if kind == KIND_SEMVER {
         let requirement = match entry_cfg.dependencies.get(pkg) {
-            Some(crate::project::DependencySpec::Semver { version }) => version.clone(),
+            Some(crate::project::DependencySpec::Semver { version, .. }) => version.clone(),
             _ => return None,
         };
         let scope_root = dep_scope_root(entry_root);
@@ -2467,7 +2468,7 @@ fn dep_version_key(
             return Some(locked);
         }
         let explicit = match entry_cfg.dependencies.get(pkg) {
-            Some(crate::project::DependencySpec::Semver { version }) => Some(version.clone()),
+            Some(crate::project::DependencySpec::Semver { version, .. }) => Some(version.clone()),
             _ => None,
         };
         let pin_ver = crate::stdlib_seed::read_std_pin()
@@ -2509,7 +2510,7 @@ fn dep_expected_root(
 ) -> Option<PathBuf> {
     use crate::depcache::*;
     if kind == KIND_PATH {
-        let crate::project::DependencySpec::Path { path } = entry_cfg.dependencies.get(pkg)?
+        let crate::project::DependencySpec::Path { path, .. } = entry_cfg.dependencies.get(pkg)?
         else {
             return None;
         };

@@ -457,6 +457,44 @@ pub fn collect_publish_files(
     Ok(out)
 }
 
+pub fn publish_license(cfg: &frontend::project::ProjectConfig, package_dir: &Path) -> Result<String, Diagnostic> {
+    if let Some(spdx) = cfg.license.as_deref() {
+        frontend::license::validate_spdx_field(spdx)?;
+    }
+    let text = ["LICENSE", "LICENSE.txt"]
+        .iter()
+        .find_map(|name| {
+            std::fs::read(package_dir.join(name))
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+        });
+    let Some(text) = text else {
+        return Err(Diagnostic::new(
+            Code::E108,
+            "package ships no LICENSE (add a LICENSE file at the package root)",
+        ));
+    };
+    if text.trim().is_empty() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            "package ships no LICENSE (the LICENSE file is empty)",
+        ));
+    }
+    if let Some(spdx) = cfg.license.as_deref() {
+        if !frontend::license::license_text_matches(&text, spdx) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("license mismatch: manifest declares `{spdx}` but the LICENSE file does not read as that grant"),
+            ));
+        }
+        return Ok(spdx.to_string());
+    }
+    if let Some(inferred) = frontend::license::infer_spdx_from_text(&text) {
+        return Ok(inferred);
+    }
+    Ok("MIT".to_string())
+}
+
 pub fn publish_frame(
     cfg: &frontend::project::ProjectConfig,
     readme: &str,
@@ -470,6 +508,7 @@ pub fn publish_frame(
         .collect();
     let docs_value: serde_json::Value =
         serde_json::from_str(docs).unwrap_or(serde_json::Value::Null);
+    let license = cfg.license.clone().unwrap_or_else(|| "MIT".to_string());
     serde_json::json!({
         "name": cfg.name,
         "version": cfg.version,
@@ -480,7 +519,7 @@ pub fn publish_frame(
         "engineRange": cfg.engine,
         "keywords": cfg.keywords,
         "tags": [],
-        "license": "MIT",
+        "license": license,
         "artifactDigest": artifact_digest,
     })
 }
@@ -1031,5 +1070,56 @@ mod tests {
         assert!(!config.content.contains("bindgen:"), "{}", config.content);
         assert!(config.content.contains("native:"), "{}", config.content);
         assert!(config.content.contains("zlib"), "{}", config.content);
+    }
+
+    fn license_project(tag: &str, manifest_extra: &str, license_file: Option<&str>) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("license-{tag}"));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"probe\",\n        version: \"1.2.3\"\n    }}{manifest_extra}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int {\n    return 0;\n}\n").unwrap();
+        if let Some(text) = license_file {
+            std::fs::write(dir.join("LICENSE"), text).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn publish_license_accepts_matching_spdx_and_infers_when_undeclared() {
+        let dir = license_project("ok", ",\n    license: \"MIT\"", Some("MIT License\n\nPermission is hereby granted.\n"));
+        let cfg = fixture_cfg(&dir);
+        assert_eq!(publish_license(&cfg, &dir).unwrap(), "MIT");
+        let dir = license_project("infer", "", Some("Licensed under the Apache License, Version 2.0\n"));
+        let cfg = fixture_cfg(&dir);
+        assert_eq!(publish_license(&cfg, &dir).unwrap(), "Apache-2.0");
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", None);
+        assert_eq!(frame["license"], "MIT");
+    }
+
+    #[test]
+    fn publish_license_rejects_missing_and_mismatched_files() {
+        let dir = license_project("missing", ",\n    license: \"MIT\"", None);
+        let cfg = fixture_cfg(&dir);
+        let err = publish_license(&cfg, &dir).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("no LICENSE"), "{}", err.message);
+        let dir = license_project("mismatch", ",\n    license: \"MIT\"", Some("Licensed under the Apache License, Version 2.0\n"));
+        let cfg = fixture_cfg(&dir);
+        let err = publish_license(&cfg, &dir).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("mismatch"), "{}", err.message);
+        let dir = license_project("unknown", ",\n    license: \"GPL-2.0\"", Some("MIT License\n"));
+        let write_ok = std::fs::read_to_string(dir.join("Project.config")).is_ok();
+        assert!(write_ok);
+        let raw = std::fs::read_to_string(dir.join("Project.config")).unwrap();
+        let _ = raw;
+        let cfg_text = "export default {\n    project: { name: \"probe\", version: \"1.2.3\" },\n    license: \"GPL-2.0\"\n}\n";
+        let parsed = frontend::project::parse_manifest_for_publish(cfg_text);
+        assert!(parsed.is_err(), "unknown SPDX must not parse");
     }
 }

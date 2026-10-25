@@ -236,9 +236,11 @@ pub(super) fn dispatch(
                 path,
                 json,
                 export_manifest,
+                licenses,
+                deny_license,
                 registry,
             } => {
-                run_audit(path, json, export_manifest, registry);
+                run_audit(path, json, export_manifest, licenses, deny_license, registry);
             }
             cli::args::Command::Add { package, path, accept_caps, accept_all_caps } => {
                 run_add(package, path, accept_caps, accept_all_caps);

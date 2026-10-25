@@ -245,7 +245,7 @@ print(quote(2.0));
 | `rnx lsp` | Language Server Protocol over stdio | none |
 | `rnx mcp` | Model Context Protocol server over stdio | none |
 | `rnx explain` | diagnostic text plus fix | `<code>` |
-| `rnx audit` | report capability and tier surface per package, plus advisory check against the lockfile | `--path <dir>`, `--json`, `--export-manifest`, `--registry <url>` |
+| `rnx audit` | report capability and tier surface per package, plus advisory check against the lockfile | `--path <dir>`, `--json`, `--export-manifest`, `--licenses`, `--deny-license <spdx>`, `--registry <url>` |
 | `rnx bindgen` | generate `bindgen.rnx` plus OCI annotations from C headers | `--header <file>`, `--native-lib <lib>`, `--pkg-name <name>`, `--out <dir>`, `--target`, `--prefix`, `--skip`, `--include`, `--check` |
 | `rnx task` | run an author-local task from `Project.config` (`bindgen` replays the driver table) | `[name]` (lists tasks when omitted) |
 | `rnx completions` | shell completion scripts | `bash`, `zsh`, `fish`, `powershell`, `elvish` |
@@ -281,6 +281,10 @@ export default {
 ```
 
 `version` constrains the source: the installed host library for `system: true`, the declaring package's own version for bundled sources. Ranges use the same grammar as SemVer requirements (`*`, `^`, `~`, `>=`, exact). `from` selects a blob by its OCI title from the package's own `artifacts` image and implies `system: false`; a `from` entry without a declared `artifacts` image is an `E108` error. `system: true` consumes the host library only after verifying the version: the check runs `pkg-config --modversion <lib>`, falling back to `ldconfig -p` for presence. A mismatch or a missing library fails the lock closed and names the mismatch — there is no silent fallback. `path` vendors a local checkout instead and cannot combine with `system: true`, `version`, or `from`.
+
+Every dependency accepts a `link` key with `static`, `dynamic`, or `auto` (default `auto`). Only native entries provide shared objects, so `dynamic` on a path, git, tarball, or registry entry is an `E108` error. For native entries `auto` resolves to `dynamic` when a shared object exists (a host library or a `from` title) and to `static` otherwise; an explicit `static` or `dynamic` is recorded as-is. The lockfile stores the effective choice per entry in a `link` field (`static` or `dynamic`), and changing it requires `rnx lock` — a verify against a lock with a different `link` fails naming the mismatch.
+
+Each package also declares its grant with a top-level `license` field holding one SPDX id (`MIT`, `Apache-2.0`, `LGPL-3.0-only`, and the rest of the known set). The id must be known or the manifest fails with `E108`. The lockfile carries each locked package's license alongside its `link`, so `rnx audit --licenses` can report the graph without network access.
 
 The library author declares the default, but the final consumer re-pins any transitive native dependency from the root `Project.config`:
 

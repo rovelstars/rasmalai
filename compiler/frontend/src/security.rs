@@ -54,7 +54,7 @@ fn dep_dirs(root: &Path, config: &ProjectConfig) -> Vec<DepDir> {
     let mut out = Vec::new();
     for (name, spec) in &config.dependencies {
         let dir = match spec {
-            DependencySpec::Path { path } => Some(root.join(path)),
+            DependencySpec::Path { path, .. } => Some(root.join(path)),
             DependencySpec::Git { .. } => {
                 let vendor = root.join("vendor").join(name);
                 if vendor.join("Project.config").is_file() {

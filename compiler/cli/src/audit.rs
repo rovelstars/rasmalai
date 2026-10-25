@@ -1,4 +1,4 @@
-use diagnostics::Diagnostic;
+use diagnostics::{Code, Diagnostic};
 use serde::Serialize;
 use std::path::Path;
 
@@ -381,6 +381,63 @@ mod tests {
         assert_eq!(boundary.refused[0].name, "cb");
         assert_eq!(boundary.isolation, "none");
     }
+
+    fn license_fixture(tag: &str) -> crate::scratch::Scratch {
+        let dir = scratch(&format!("licenses-{tag}"));
+        std::fs::create_dir_all(dir.join("dep").join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("app").join("src")).unwrap();
+        std::fs::write(
+            dir.join("dep").join("Project.config"),
+            "export default {\n    project: {\n        name: \"dep\",\n        version: \"0.2.0\"\n    },\n    license: \"LGPL-3.0-only\",\n    entries: { main: \"src/lib.rnx\" }\n}",
+        )
+        .unwrap();
+        std::fs::write(dir.join("dep").join("LICENSE"), "GNU LESSER GENERAL PUBLIC LICENSE Version 3\n").unwrap();
+        std::fs::write(dir.join("dep").join("src").join("lib.rnx"), "fn f(): Int { return 1; }\n").unwrap();
+        std::fs::write(
+            dir.join("app").join("Project.config"),
+            "export default {\n    project: {\n        name: \"app\",\n        version: \"0.1.0\"\n    },\n    license: \"MIT\",\n    entries: { main: \"src/main.rnx\" },\n    dependencies: {\n        dep: { path: \"../dep\" }\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("app").join("LICENSE"), "MIT License\n").unwrap();
+        std::fs::write(dir.join("app").join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn license_graph_reports_obligations_and_links() {
+        let dir = license_fixture("graph");
+        let root = dir.join("app");
+        let cfg = frontend::project::ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = frontend::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        lock.write(&root).unwrap();
+        let report = license_report_for_dir(&root).unwrap();
+        assert_eq!(report.entries.len(), 2);
+        let dep = report.entries.iter().find(|e| e.name == "dep").unwrap();
+        assert_eq!(dep.license, "LGPL-3.0-only");
+        assert_eq!(dep.link, "static");
+        assert_eq!(dep.obligation, "relink-corresponding-source");
+        let text = render_license_text(&report, &[]);
+        assert!(text.contains("LGPL-3.0-only"), "{text}");
+        assert!(text.contains("relink-corresponding-source"), "{text}");
+        assert!(text.contains("relink obligation"), "{text}");
+        assert!(denied_hits(&report, &[]).is_empty());
+        let denied = parse_deny_licenses(&["LGPL-3.0-only".to_string()]);
+        assert_eq!(denied_hits(&report, &denied).len(), 1);
+        assert!(parse_deny_licenses(&["MIT, Apache-2.0".to_string()]).contains(&"Apache-2.0".to_string()));
+    }
+
+    #[test]
+    fn license_graph_needs_a_lockfile() {
+        let dir = scratch("licenses-nolock");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: { name: \"a\", version: \"0.1.0\" },\n    entries: { main: \"src/main.rnx\" }\n}\n",
+        )
+        .unwrap();
+        let err = license_report_for_dir(&dir).unwrap_err();
+        assert!(err.message.contains("no Project.deplock"), "{}", err.message);
+    }
 }
 
 pub fn lockfile_drift(dir: &Path) -> Vec<String> {
@@ -407,6 +464,109 @@ pub enum AdvisoryCheck {
     Skipped(String),
     Rejected(String),
     Done(Vec<frontend::advisory::Finding>),
+}
+
+#[derive(Debug, Clone)]
+pub struct LicenseReport {
+    pub entries: Vec<frontend::license::LicenseEntry>,
+    pub conflicts: Vec<String>,
+}
+
+pub fn license_report_for_dir(dir: &Path) -> Result<LicenseReport, Diagnostic> {
+    let lock = frontend::deplock::ProjectDepLock::load(dir)?.ok_or_else(|| {
+        Diagnostic::new(
+            Code::E108,
+            "no Project.deplock found; run `rnx lock` before `rnx audit --licenses`".to_string(),
+        )
+    })?;
+    let mut entries: Vec<frontend::license::LicenseEntry> = Vec::new();
+    for package in &lock.packages {
+        let license = package.license.clone().unwrap_or_else(|| "unknown".to_string());
+        let link = package.link.clone().unwrap_or_else(|| "static".to_string());
+        entries.push(frontend::license::LicenseEntry {
+            name: package.name.clone(),
+            version: package.version.clone(),
+            obligation: frontend::license::obligation_for(&license).to_string(),
+            license,
+            link,
+        });
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    let conflicts = frontend::license::license_conflicts(&entries);
+    Ok(LicenseReport { entries, conflicts })
+}
+
+pub fn render_license_text(report: &LicenseReport, denied: &[String]) -> String {
+    let mut out = String::from("licenses:\n");
+    if report.entries.is_empty() {
+        out.push_str("  no locked dependencies.\n");
+    }
+    for entry in &report.entries {
+        let flag = if denied.iter().any(|d| d == &entry.license) {
+            " [DENIED]"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "  {}@{}: {}{} (link: {}, obligation: {}){}\n",
+            entry.name, entry.version, entry.license, flag, entry.link, entry.obligation, flag,
+        ));
+    }
+    if report.conflicts.is_empty() {
+        out.push_str("license check: no conflicts.\n");
+    } else {
+        for conflict in &report.conflicts {
+            out.push_str(&format!("  [!] conflict: {conflict}\n"));
+        }
+    }
+    let denied_hits: Vec<&frontend::license::LicenseEntry> = report
+        .entries
+        .iter()
+        .filter(|e| denied.iter().any(|d| *d == e.license))
+        .collect();
+    if denied_hits.is_empty() {
+        if denied.is_empty() {
+            out.push_str("license gate: no --deny-license set.\n");
+        } else {
+            out.push_str(&format!(
+                "license gate: {} denied license(s) checked, none present.\n",
+                denied.len(),
+            ));
+        }
+    } else {
+        let names: Vec<String> = denied_hits
+            .iter()
+            .map(|e| format!("{}@{} ({})", e.name, e.version, e.license))
+            .collect();
+        out.push_str(&format!("license gate: denied license present: {}\n", names.join(", ")));
+    }
+    out
+}
+
+pub fn denied_hits(report: &LicenseReport, denied: &[String]) -> Vec<String> {
+    report
+        .entries
+        .iter()
+        .filter(|e| denied.iter().any(|d| *d == e.license))
+        .map(|e| format!("{}@{} ({})", e.name, e.version, e.license))
+        .collect()
+}
+
+pub fn parse_deny_licenses(raw: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in raw {
+        for part in item.split(',') {
+            let license = part.trim().to_string();
+            if license.is_empty() {
+                continue;
+            }
+            if !out.contains(&license) {
+                out.push(license);
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 pub fn advisory_registry(flag: Option<&str>) -> String {

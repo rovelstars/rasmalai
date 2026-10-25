@@ -755,7 +755,7 @@ pub fn resolve_doc_targets(
                 Vec::new();
             for (_, dir, cfg) in &packages {
                 for dep in cfg.dependencies.values() {
-                    if let frontend::project::DependencySpec::Path { path } = dep {
+                    if let frontend::project::DependencySpec::Path { path, .. } = dep {
                         let dep_dir = dir.join(path);
                         if let Ok(Some(dcfg)) =
                             frontend::project::ProjectConfig::load_from_dir(&dep_dir)
@@ -791,7 +791,7 @@ pub fn resolve_doc_targets(
         if !no_deps {
             let (_, dir, cfg) = &packages[0].clone();
             for dep in cfg.dependencies.values() {
-                if let frontend::project::DependencySpec::Path { path } = dep {
+                if let frontend::project::DependencySpec::Path { path, .. } = dep {
                     let dep_dir = dir.join(path);
                     if let Ok(Some(dcfg)) = frontend::project::ProjectConfig::load_from_dir(&dep_dir) {
                         if !dcfg.name.is_empty() {
@@ -1481,6 +1481,7 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
             permissions: None,
             keywords: Vec::new(),
             artifacts: None,
+            license: None,
             native_pins: std::collections::BTreeMap::new(),
             tasks: std::collections::BTreeMap::new(),
             bindgen: None,
@@ -2288,7 +2289,7 @@ fn record_dependency(
         Diagnostic::new(Code::E108, "Project.config has no `project` object".to_string())
     })?;
     match project.dependencies.get(name) {
-        Some(frontend::project::DependencySpec::Path { path })
+        Some(frontend::project::DependencySpec::Path { path, .. })
             if path.to_string_lossy().replace('\\', "/") == rel =>
         {
             return Ok(())
@@ -2303,7 +2304,7 @@ fn record_dependency(
     }
     project.dependencies.insert(
         name.to_string(),
-        frontend::project::DependencySpec::Path { path: std::path::PathBuf::from(&rel) },
+        frontend::project::DependencySpec::Path { path: std::path::PathBuf::from(&rel), link: frontend::license::LinkPreference::Auto },
     );
     let out = frontend::project::manifest_to_rnx(&manifest);
     std::fs::write(&manifest_path, out).map_err(|e| {
@@ -2349,6 +2350,11 @@ fn record_lock_entry(
     );
     let checksum = frontend::checksum::compute_package_checksum(dep_dir)?;
     let rel = pathdiff_relative(root, dep_dir);
+    let dep_license = frontend::project::ProjectConfig::load_from_dir(dep_dir)
+        .ok()
+        .flatten()
+        .and_then(|c| c.license.clone());
+    let dep_license = Some(frontend::license::resolve_package_license(dep_dir, dep_license.as_deref()));
     lock.packages.retain(|p| p.name != analysis.name);
     lock.packages.push(frontend::deplock::LockedPackage {
         name: analysis.name.clone(),
@@ -2356,6 +2362,8 @@ fn record_lock_entry(
         source: format!("path:{rel}"),
         checksum,
         artifact_digest: None,
+        license: dep_license,
+        link: Some("static".to_string()),
         dependencies: Vec::new(),
         tier: analysis.tier.to_string(),
         capabilities: analysis.capabilities.clone(),
@@ -2377,12 +2385,15 @@ fn ensure_root_entry(
         Diagnostic::new(Code::E108, "no Project.config found; run `rnx init` first")
     })?;
     let checksum = frontend::checksum::compute_package_checksum(root)?;
+    let root_license = Some(frontend::license::resolve_package_license(root, config.license.as_deref()));
     lock.packages.push(frontend::deplock::LockedPackage {
         name: config.name,
         version: config.version,
         source: "root".to_string(),
         checksum,
         artifact_digest: None,
+        license: root_license,
+        link: Some("static".to_string()),
         dependencies: Vec::new(),
         tier: "pure".to_string(),
         capabilities: Vec::new(),

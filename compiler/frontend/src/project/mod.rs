@@ -10,11 +10,11 @@ pub const DEFAULT_ENTRY: &str = "src/main.rnx";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencySpec {
-    Semver { version: String },
-    Path { path: PathBuf },
-    Git { git: String, rev: String },
-    Url { version: String, url: String, checksum: Option<String> },
-    Native { lib: String, system: bool, path: Option<PathBuf>, version: Option<String>, from: Option<String> },
+    Semver { version: String, link: crate::license::LinkPreference },
+    Path { path: PathBuf, link: crate::license::LinkPreference },
+    Git { git: String, rev: String, link: crate::license::LinkPreference },
+    Url { version: String, url: String, checksum: Option<String>, link: crate::license::LinkPreference },
+    Native { lib: String, system: bool, path: Option<PathBuf>, version: Option<String>, from: Option<String>, link: crate::license::LinkPreference },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -112,6 +112,7 @@ pub struct ProjectConfig {
     pub permissions: Option<Vec<PermissionDecl>>,
     pub keywords: Vec<String>,
     pub artifacts: Option<String>,
+    pub license: Option<String>,
     pub native_pins: BTreeMap<String, NativePin>,
     pub tasks: BTreeMap<String, TaskDef>,
     pub bindgen: Option<BindgenDriver>,
@@ -372,18 +373,28 @@ pub fn parse_artifact_decl(val: &ConfigValue) -> Result<Option<String>, String> 
     }
 }
 
+fn parse_link_value(name: &str, val: &ConfigValue) -> Result<crate::license::LinkPreference, String> {
+    match obj_get(val, "link") {
+        None => Ok(crate::license::LinkPreference::Auto),
+        Some(ConfigValue::String(s)) => crate::license::LinkPreference::parse(s)
+            .map_err(|e| format!("dependency `{name}`: {e}")),
+        Some(_) => Err(format!("dependency `{name}`: `link` must be a string")),
+    }
+}
+
 fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, String> {
     match val {
         ConfigValue::String(s) => {
             if s.starts_with('.') || s.contains('/') {
                 return Ok(DependencySpec::Path {
                     path: PathBuf::from(s),
+                    link: crate::license::LinkPreference::Auto,
                 });
             }
             if s.is_empty() {
                 return Err(format!("dependency `{name}`: version must not be empty"));
             }
-            Ok(DependencySpec::Semver { version: s.clone() })
+            Ok(DependencySpec::Semver { version: s.clone(), link: crate::license::LinkPreference::Auto })
         }
         ConfigValue::Object(fields) => {
             let get_str = |key: &str| match obj_get(val, key) {
@@ -442,7 +453,8 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
                 if path.is_some() && from.is_some() {
                     return Err(format!("dependency `{name}`: vendored `path` and `from` cannot combine (titles live in the declared `artifacts` image, not in a checkout)"));
                 }
-                return Ok(DependencySpec::Native { lib, system, path, version, from });
+                let link = parse_link_value(name, val)?;
+                return Ok(DependencySpec::Native { lib, system, path, version, from, link });
             }
             let kinds = [has_path, has_git, has_url || (has_version && !has_git && !has_path)].iter().filter(|&&b| b).count();
             if kinds > 1 {
@@ -452,9 +464,14 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
                 if has_git || has_url || has_version {
                     return Err(format!("dependency `{name}`: specify either `path`, `git`, or `version`/`url`, not a mix"));
                 }
+                let link = parse_link_value(name, val)?;
+                if link == crate::license::LinkPreference::Dynamic {
+                    return Err(format!("dependency `{name}`: `link: \"dynamic\"` needs a native dependency (path dependencies link statically)"));
+                }
                 return match obj_get(val, "path") {
                     Some(ConfigValue::String(s)) => Ok(DependencySpec::Path {
                         path: PathBuf::from(s),
+                        link,
                     }),
                     _ => Err(format!("dependency `{name}`: `path` must be a string")),
                 };
@@ -480,7 +497,11 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
                         "dependency `{name}`: pin a tag or commit in `rev`, not branch `{rev}` (use `branch = \"{rev}\"` for a moving target)"
                     ));
                 }
-                return Ok(DependencySpec::Git { git, rev });
+                let link = parse_link_value(name, val)?;
+                if link == crate::license::LinkPreference::Dynamic {
+                    return Err(format!("dependency `{name}`: `link: \"dynamic\"` needs a native dependency (git dependencies link statically)"));
+                }
+                return Ok(DependencySpec::Git { git, rev, link });
             }
             if has_url {
                 let url = match obj_get(val, "url") {
@@ -489,11 +510,21 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
                 };
                 let version = get_str("version").unwrap_or_default();
                 let checksum = get_str("checksum");
-                return Ok(DependencySpec::Url { version, url, checksum });
+                let link = parse_link_value(name, val)?;
+                if link == crate::license::LinkPreference::Dynamic {
+                    return Err(format!("dependency `{name}`: `link: \"dynamic\"` needs a native dependency (tarball dependencies link statically)"));
+                }
+                return Ok(DependencySpec::Url { version, url, checksum, link });
             }
             if has_version {
                 return match obj_get(val, "version") {
-                    Some(ConfigValue::String(s)) => Ok(DependencySpec::Semver { version: s.clone() }),
+                    Some(ConfigValue::String(s)) => {
+                        let link = parse_link_value(name, val)?;
+                        if link == crate::license::LinkPreference::Dynamic {
+                            return Err(format!("dependency `{name}`: `link: \"dynamic\"` needs a native dependency (registry sources link statically)"));
+                        }
+                        Ok(DependencySpec::Semver { version: s.clone(), link })
+                    }
                     _ => Err(format!("dependency `{name}`: `version` must be a string")),
                 };
             }
@@ -1045,6 +1076,19 @@ pub(crate) fn parse_manifest_with(
                 Some(v) => Some(parse_bindgen_driver(v)?),
                 None => None,
             };
+            let license = match obj_get(top, "license") {
+                Some(ConfigValue::String(s)) => {
+                    if !crate::license::is_known_spdx(s) {
+                        return Err(format!(
+                            "field `license` `{s}` is not a known SPDX id (expected one of {})",
+                            crate::license::KNOWN_SPDX.join(", ")
+                        ));
+                    }
+                    Some(s.clone())
+                }
+                Some(_) => return Err("field `license` must be a string".to_string()),
+                None => None,
+            };
             Some(ProjectConfig {
                 name,
                 version,
@@ -1057,6 +1101,7 @@ pub(crate) fn parse_manifest_with(
                 permissions,
                 keywords,
                 artifacts,
+                license,
                 native_pins,
                 tasks,
                 bindgen,
@@ -1095,8 +1140,8 @@ const PROJECT_KEYS: &[&str] = &["name", "version", "description", "engine"];
 const ENTRIES_KEYS: &[&str] = &["main", "lib", "docs", "bins"];
 const REGISTRY_KEYS: &[&str] = &["url", "token_env", "ca_cert"];
 const WORKSPACE_KEYS: &[&str] = &["members"];
-const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system", "from"];
-const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts", "native", "tasks", "bindgen"];
+const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system", "from", "link"];
+const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts", "native", "tasks", "bindgen", "license"];
 
 fn span_line(text: &str, offset: u32) -> usize {
     let off = (offset as usize).min(text.len());
@@ -1284,6 +1329,9 @@ fn manifest_to_rnx_inner(manifest: &Manifest, strip_aux: bool) -> String {
         if let Some(a) = &p.artifacts {
             out.push_str(&format!("    artifacts: {},\n", crate::deplock::rnx_string(a)));
         }
+        if let Some(l) = &p.license {
+            out.push_str(&format!("    license: {},\n", crate::deplock::rnx_string(l)));
+        }
         if !p.native_pins.is_empty() {
             out.push_str("    native: {\n");
             let mut names: Vec<&String> = p.native_pins.keys().collect();
@@ -1467,18 +1515,41 @@ pub fn is_package_name(full: &str) -> bool {
 
 fn dep_to_rnx(spec: &DependencySpec) -> String {
     match spec {
-        DependencySpec::Semver { version } => crate::deplock::rnx_string(version),
-        DependencySpec::Path { path } => {
-            format!("{{ path: {} }}", crate::deplock::rnx_string(&path.to_string_lossy()))
+        DependencySpec::Semver { version, link } => {
+            if *link == crate::license::LinkPreference::Auto {
+                crate::deplock::rnx_string(version)
+            } else {
+                format!(
+                    "{{ version: {}, link: {} }}",
+                    crate::deplock::rnx_string(version),
+                    crate::deplock::rnx_string(link.as_str())
+                )
+            }
         }
-        DependencySpec::Git { git, rev } => {
-            format!(
-                "{{ git: {}, rev: {} }}",
+        DependencySpec::Path { path, link } => {
+            if *link == crate::license::LinkPreference::Auto {
+                format!("{{ path: {} }}", crate::deplock::rnx_string(&path.to_string_lossy()))
+            } else {
+                format!(
+                    "{{ path: {}, link: {} }}",
+                    crate::deplock::rnx_string(&path.to_string_lossy()),
+                    crate::deplock::rnx_string(link.as_str())
+                )
+            }
+        }
+        DependencySpec::Git { git, rev, link } => {
+            let mut s = format!(
+                "{{ git: {}, rev: {}",
                 crate::deplock::rnx_string(git),
                 crate::deplock::rnx_string(rev)
-            )
+            );
+            if *link != crate::license::LinkPreference::Auto {
+                s.push_str(&format!(", link: {}", crate::deplock::rnx_string(link.as_str())));
+            }
+            s.push_str(" }");
+            s
         }
-        DependencySpec::Url { version, url, checksum } => {
+        DependencySpec::Url { version, url, checksum, link } => {
             let mut s = String::from("{ ");
             if !version.is_empty() {
                 s.push_str(&format!("version: {}, ", crate::deplock::rnx_string(version)));
@@ -1487,10 +1558,13 @@ fn dep_to_rnx(spec: &DependencySpec) -> String {
             if let Some(c) = checksum {
                 s.push_str(&format!(", checksum: {}", crate::deplock::rnx_string(c)));
             }
+            if *link != crate::license::LinkPreference::Auto {
+                s.push_str(&format!(", link: {}", crate::deplock::rnx_string(link.as_str())));
+            }
             s.push_str(" }");
             s
         }
-        DependencySpec::Native { lib, system, path, version, from } => {
+        DependencySpec::Native { lib, system, path, version, from, link } => {
             let mut s = format!("{{ native: {}", crate::deplock::rnx_string(lib));
             if *system {
                 s.push_str(", system: true");
@@ -1504,6 +1578,9 @@ fn dep_to_rnx(spec: &DependencySpec) -> String {
             if let Some(f) = from {
                 s.push_str(&format!(", from: {}", crate::deplock::rnx_string(f)));
             }
+            if *link != crate::license::LinkPreference::Auto {
+                s.push_str(&format!(", link: {}", crate::deplock::rnx_string(link.as_str())));
+            }
             s.push_str(" }");
             s
         }
@@ -1511,7 +1588,7 @@ fn dep_to_rnx(spec: &DependencySpec) -> String {
 }
 
 pub fn manifest_sections() -> &'static [&'static str] {
-    &["project", "entries", "registry", "dependencies", "workspace", "permissions", "keywords", "registries", "artifacts", "native", "tasks", "bindgen"]
+    &["project", "entries", "registry", "dependencies", "workspace", "permissions", "keywords", "registries", "artifacts", "license", "native", "tasks", "bindgen"]
 }
 
 pub fn manifest_keys(section: &str) -> &'static [&'static str] {
@@ -1534,6 +1611,7 @@ pub fn manifest_section_doc(section: &str) -> Option<&'static str> {
         "keywords" => Some("Search keywords: an array of up to 12 lowercase/digit/hyphen tags, 24 characters each, mirroring npm keywords."),
         "registries" => Some("Scoped registry overrides keyed by scope, e.g. `registries: { \"@acme\": { url = \"...\" } }`."),
         "artifacts" => Some("One bare OCI repo ref for the version's artifact image, e.g. `artifacts: \"ghcr.io/org/sqlite3\"`. No tags, no digests; the digest is asserted out-of-band at publish time."),
+        "license" => Some("SPDX license id for the package, e.g. `license: \"MIT\"`. Must match the LICENSE file at the package root."),
         "native" => Some("Final-consumer re-pin of transitive native sources: `native: { zlib: { system: true } }` overrides the author's declaration. Root only; member and dependency tables are ignored."),
         "tasks" => Some("Author-local task runner: `tasks: { check: [\"rnx check\", \"rnx lint\"] }`. Metatasks run other tasks with `strategy: serial | parallel` and `on-failure: stop | continue`. Never ships, never runs on consumers."),
         "bindgen" => Some("Bindgen driver: shared `headers`, `prefix`/`skip` sets, and per-output titles consumed by `rnx task bindgen`. Author-local; only the generated files ship."),
@@ -1570,6 +1648,8 @@ pub fn manifest_field_doc(section: &str, key: &str) -> Option<&'static str> {
         (_, "native") => Some("System native library dependency; links `-l<lib>` and records `native:<lib>` in the lockfile."),
         (_, "system") => Some("Whether a native dependency comes from the host system (`true`) or a vendored path."),
         (_, "from") => Some("OCI image title for a bundled native dependency; selects the blob by title from the package's own `artifacts` image and implies `system: false`."),
+        (_, "link") => Some("Linkage preference for the dependency: `static`, `dynamic`, or `auto` (default `auto`; `dynamic` needs a native dependency)."),
+        (_, "license") => Some("SPDX license id for the package, e.g. `MIT` or `Apache-2.0`. Must match the LICENSE file."),
         ("tasks", _) => Some("Author-local task: a step array, `{ steps, matrix }`, or a `{ tasks, strategy, on-failure }` metatask."),
         ("bindgen", "headers") => Some("C headers the driver feeds the bindgen generator."),
         ("bindgen", "outputs") => Some("Output directories mapping to `{ title, target }`; titles become OCI titles."),
@@ -1856,7 +1936,7 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
     if let Some(ConfigValue::Object(deps)) = obj_get(top, "dependencies") {
         for (key, val) in deps {
             match parse_dependency(key, val) {
-                Ok(DependencySpec::Path { path }) => {
+                Ok(DependencySpec::Path { path, .. }) => {
                     if let Some(root) = root {
                         let dir = root.join(&path);
                         if !dir.join(MANIFEST_FILE).is_file() {
@@ -2033,6 +2113,26 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
         && let Err(msg) = parse_artifact_decl(a)
     {
         out.push(ManifestIssue { line: 0, error: true, code: Code::E108, message: msg });
+    }
+    if let Some(l) = obj_get(top, "license") {
+        match l {
+            ConfigValue::String(s) if crate::license::is_known_spdx(s) => {}
+            ConfigValue::String(s) => out.push(ManifestIssue {
+                line: 0,
+                error: true,
+                code: Code::E108,
+                message: format!(
+                    "field `license` `{s}` is not a known SPDX id (expected one of {})",
+                    crate::license::KNOWN_SPDX.join(", ")
+                ),
+            }),
+            _ => out.push(ManifestIssue {
+                line: 0,
+                error: true,
+                code: Code::E108,
+                message: "field `license` must be a string".to_string(),
+            }),
+        }
     }
     if let Some(n) = obj_get(top, "native") {
         match n {
@@ -2235,13 +2335,15 @@ mod tests {
         assert_eq!(
             c.dependencies["physics_2d"],
             DependencySpec::Path {
-                path: PathBuf::from("../physics_2d")
+                path: PathBuf::from("../physics_2d"),
+                link: crate::license::LinkPreference::Auto,
             }
         );
         assert_eq!(
             c.dependencies["helper"],
             DependencySpec::Path {
-                path: PathBuf::from("libs/helper")
+                path: PathBuf::from("libs/helper"),
+                link: crate::license::LinkPreference::Auto,
             }
         );
     }
@@ -2350,16 +2452,17 @@ mod tests {
             c.dependencies["algo"],
             DependencySpec::Git {
                 git: "https://github.com/example/algo".to_string(),
-                rev: "main".to_string()
+                rev: "main".to_string(),
+                link: crate::license::LinkPreference::Auto,
             }
         );
         assert_eq!(
             c.dependencies["json"],
-            DependencySpec::Semver { version: "^1.2.0".to_string() }
+            DependencySpec::Semver { version: "^1.2.0".to_string(), link: crate::license::LinkPreference::Auto }
         );
         assert_eq!(
             c.dependencies["zlib"],
-            DependencySpec::Native { lib: "z".to_string(), system: true, path: None, version: None, from: None }
+            DependencySpec::Native { lib: "z".to_string(), system: true, path: None, version: None, from: None, link: crate::license::LinkPreference::Auto }
         );
         assert_eq!(
             c.dependencies["vendored"],
@@ -2369,6 +2472,7 @@ mod tests {
                 path: Some(PathBuf::from("./native")),
                 version: None,
                 from: None,
+                link: crate::license::LinkPreference::Auto,
             }
         );
     }
@@ -2405,6 +2509,7 @@ mod tests {
                 path: None,
                 version: Some(">=1.2.0".to_string()),
                 from: None,
+                link: crate::license::LinkPreference::Auto,
             }
         );
         assert_eq!(
@@ -2415,6 +2520,7 @@ mod tests {
                 path: None,
                 version: None,
                 from: Some("libcodec.so".to_string()),
+                link: crate::license::LinkPreference::Auto,
             }
         );
         let m = parse_manifest(
@@ -2683,15 +2789,15 @@ mod tests {
         assert_eq!(v.get("project").and_then(|p| p.get("name")), Some(&eval::ConfigValue::String("demo".to_string())));
         assert_eq!(
             c.dependencies["json"],
-            DependencySpec::Semver { version: "1.2.0".to_string() }
+            DependencySpec::Semver { version: "1.2.0".to_string(), link: crate::license::LinkPreference::Auto }
         );
         assert_eq!(
             c.dependencies["zlib"],
-            DependencySpec::Native { lib: "z".to_string(), system: true, path: None, version: None, from: None }
+            DependencySpec::Native { lib: "z".to_string(), system: true, path: None, version: None, from: None, link: crate::license::LinkPreference::Auto }
         );
         assert_eq!(
             c.dependencies["gui"],
-            DependencySpec::Native { lib: "gui_x86".to_string(), system: false, path: None, version: None, from: None }
+            DependencySpec::Native { lib: "gui_x86".to_string(), system: false, path: None, version: None, from: None, link: crate::license::LinkPreference::Auto }
         );
         assert_eq!(c.permissions, Some(vec![PermissionDecl { perm: "fs:read:/data".to_string(), reason: Some("fixtures".to_string()) }, PermissionDecl { perm: "net:http:example.com".to_string(), reason: None }]));
     }
@@ -2920,6 +3026,121 @@ mod tests {
             (
                 "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    artifacts: 7\n}\n",
                 "bare OCI repo ref",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
+            let issues = validate_manifest_text(text, None);
+            assert!(
+                issues.iter().any(|i| i.error && i.code == Code::E108),
+                "{issues:?} for {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn link_defaults_to_auto_and_round_trips() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 dependencies: { zlib: { native: \"z\", system: true } }\n\
+             }\n",
+        );
+        assert_eq!(
+            c.dependencies["zlib"],
+            DependencySpec::Native {
+                lib: "z".to_string(),
+                system: true,
+                path: None,
+                version: None,
+                from: None,
+                link: crate::license::LinkPreference::Auto,
+            }
+        );
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 artifacts: \"ghcr.io/org/demo\",\n\
+                 dependencies: { codec: { native: \"codec\", from: \"libcodec.so\", link: \"static\" } }\n\
+             }\n",
+        );
+        assert_eq!(
+            c.dependencies["codec"],
+            DependencySpec::Native {
+                lib: "codec".to_string(),
+                system: false,
+                path: None,
+                version: None,
+                from: Some("libcodec.so".to_string()),
+                link: crate::license::LinkPreference::Static,
+            }
+        );
+        let m = parse_manifest(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 artifacts: \"ghcr.io/org/demo\",\n\
+                 dependencies: { codec: { native: \"codec\", from: \"libcodec.so\", link: \"static\" } }\n\
+             }\n",
+        )
+        .unwrap();
+        let out = manifest_to_rnx(&Manifest { project: m.0.clone(), workspace: m.1.clone() });
+        assert!(out.contains("link:"), "{out}");
+        let again = parse_manifest(&out).unwrap().0.unwrap();
+        assert_eq!(again.dependencies, m.0.unwrap().dependencies);
+    }
+
+    #[test]
+    fn link_rejects_unknown_values_and_dynamic_on_source_deps() {
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    artifacts: \"ghcr.io/org/demo\",\n    dependencies: { z: { native: \"z\", from: \"libz.so\", link: \"shared\" } }\n}\n",
+                "invalid `link` value",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { z: { native: \"z\", system: true, link: 7 } }\n}\n",
+                "`link` must be a string",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { dep: { path: \"../dep\", link: \"dynamic\" } }\n}\n",
+                "needs a native dependency",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { dep: { version: \"^1.0.0\", link: \"dynamic\" } }\n}\n",
+                "needs a native dependency",
+            ),
+        ] {
+            let e = parse_config(text).unwrap_err();
+            assert!(e.contains(needle), "{e} for {text}");
+            let issues = validate_manifest_text(text, None);
+            assert!(
+                issues.iter().any(|i| i.error && i.code == Code::E108),
+                "{issues:?} for {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn license_accepts_known_spdx_and_rejects_unknown() {
+        let c = parse(
+            "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    license: \"Apache-2.0\"\n}\n",
+        );
+        assert_eq!(c.license.as_deref(), Some("Apache-2.0"));
+        let m = parse_manifest(
+            "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    license: \"MIT\"\n}\n",
+        )
+        .unwrap();
+        let out = manifest_to_rnx(&Manifest { project: m.0.clone(), workspace: m.1.clone() });
+        assert!(out.contains("license:"), "{out}");
+        let again = parse_manifest(&out).unwrap().0.unwrap();
+        assert_eq!(again.license.as_deref(), Some("MIT"));
+        for (text, needle) in [
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    license: \"GPL-2.0\"\n}\n",
+                "not a known SPDX",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    license: 7\n}\n",
+                "must be a string",
             ),
         ] {
             let e = parse_config(text).unwrap_err();

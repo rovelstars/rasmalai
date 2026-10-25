@@ -3,6 +3,26 @@ import { parsePackageName } from './db.js';
 import { VERSION_RE } from './registry.js';
 
 export const PROTOCOL_VERSION = '0';
+export const KNOWN_SPDX = [
+	'0BSD',
+	'Apache-2.0',
+	'BSD-2-Clause',
+	'BSD-3-Clause',
+	'CC0-1.0',
+	'GPL-2.0-only',
+	'GPL-2.0-or-later',
+	'GPL-3.0-only',
+	'GPL-3.0-or-later',
+	'AGPL-3.0-only',
+	'ISC',
+	'LGPL-2.1-only',
+	'LGPL-2.1-or-later',
+	'LGPL-3.0-only',
+	'LGPL-3.0-or-later',
+	'MIT',
+	'MPL-2.0',
+	'Unlicense'
+];
 export const PROTOCOL_HEADER = 'X-RNX-Protocol';
 export const REDACTED_VERSION = '0.0.0-published';
 
@@ -159,6 +179,9 @@ export function parsePublishFrame(body: unknown, caps: PlanCaps): { ok: true; fr
 		requestId: str('requestId') ?? '',
 		artifactDigest
 	};
+	if (!KNOWN_SPDX.includes(frame.license)) {
+		return { ok: false, error: fail(400, `unknown license \`${frame.license}\` (expected a known SPDX id)`) };
+	}
 	if (Buffer.byteLength(frame.docJson, 'utf8') > 1024 * 1024) {
 		return { ok: false, error: fail(413, 'payload exceeds size limits') };
 	}
