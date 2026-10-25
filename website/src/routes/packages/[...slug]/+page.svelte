@@ -9,6 +9,8 @@
 	import ModuleDocs from '$lib/components/ModuleDocs.svelte';
 	import type { DocModule } from '$lib/docs/api';
 	import { shortDownloads, humanDate } from '$lib/packages-meta';
+import { PlaygroundRunner } from '$lib/playground/runner';
+import { isFormattablePackagePath, selectPackageText } from '$lib/packages-format';
 	import { untar, gunzip, isGzip } from '$lib/docs/untar';
 import { importSnippet } from '$lib/docs/stdlib';
 
@@ -84,6 +86,9 @@ import { importSnippet } from '$lib/docs/stdlib';
 	let fileSize = $state(0);
 	let fileError = $state<string | null>(null);
 	let fileLoading = $state(false);
+	let fileNotice = $state<string | null>(null);
+	let fileRequest = 0;
+	let formatRunner: PlaygroundRunner | null = null;
 	let dependents = $state<string[] | null>(null);
 	let dependentsError = $state<string | null>(null);
 	let manifestDeps = $state<Array<{ name: string; range: string }> | null>(null);
@@ -195,9 +200,11 @@ import { importSnippet } from '$lib/docs/stdlib';
 	}
 
 	async function loadFile(path: string) {
+		const request = ++fileRequest;
 		openFile = path;
 		fileText = null;
 		fileError = null;
+		fileNotice = null;
 		fileLoading = true;
 		try {
 			let bytes: Uint8Array | null = null;
@@ -212,20 +219,38 @@ import { importSnippet } from '$lib/docs/stdlib';
 				}
 				bytes = await assembleChunks(entry.chunks);
 			}
+			if (request !== fileRequest) return;
 			fileSize = bytes.length;
 			if (isBinary(path) || bytes.length > 256 * 1024) {
 				fileText = null;
 				return;
 			}
+			let raw: string;
 			try {
-				fileText = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+				raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 			} catch {
 				fileText = null;
+				return;
 			}
+			if (!isFormattablePackagePath(path)) {
+				fileText = raw;
+				return;
+			}
+			let formatRaw: string | null = null;
+			try {
+				formatRunner ??= new PlaygroundRunner();
+				formatRaw = await formatRunner.format(raw);
+			} catch {
+				formatRaw = null;
+			}
+			if (request !== fileRequest) return;
+			const outcome = selectPackageText(raw, path, formatRaw);
+			fileText = outcome.text;
+			fileNotice = outcome.notice;
 		} catch {
-			fileError = 'Could not load the file.';
+			if (request === fileRequest) fileError = 'Could not load the file.';
 		} finally {
-			fileLoading = false;
+			if (request === fileRequest) fileLoading = false;
 		}
 	}
 
@@ -497,6 +522,9 @@ import { importSnippet } from '$lib/docs/stdlib';
 								</div>
 							{:else}
 								<p class="border-b border-aura-border px-4 py-2 font-mono text-xs text-aura-muted">{openFile}</p>
+								{#if fileNotice}
+									<p class="border-b border-aura-border px-4 py-2 font-mono text-[11px] text-aura-muted">{fileNotice}</p>
+								{/if}
 								<AuraCode source={fileText} showCopy />
 							{/if}
 						</div>
