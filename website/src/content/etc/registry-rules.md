@@ -53,6 +53,10 @@ The index is the file list — config never duplicates it, so a digest-bearing o
 
 Tags discover, digests pin: refs are bare repos (an explicit tag is a discovery hint only), and the digest is resolved once and stored as version metadata. WebAssembly follows this same path with one manifest per flavor (no arch suffix; simd/threads/memory64 ship as separate manifests in the same index when needed). First fetch of a native artifact prints what is being installed from where. Native code is unaudited foreign bytes: declaring `artifacts` records the dependency and its pin, but no analysis passes over the blobs — see the capability rules in the language manual. WebAssembly declarations and verification work today; execution needs a wasm runtime, which is a separate, not-yet-built phase.
 
+## Farm-built images cover two Linux targets
+
+The `Farm` workflow builds one multi-target image per change to the native, bindgen, or OCI paths: `x86_64-unknown-linux-gnu` (emitted, statically linked, and executed — the binary must exit 42) plus `aarch64-unknown-linux-gnu` (object emission and ELF machine check only, since the linker backend targets x86_64 Linux). Each leg stages its blob with its target, role, title, generator, upstream source hash, and platform; the assemble job validates every descriptor against the annotation grammar, writes one sorted index, and verifies it pointer-style (index digest, then manifest hashes, then blob hashes). The index and blobs upload as workflow artifacts. A canary copy also pushes to `ttl.sh` under a `24h` tag and reads back anonymously by digest — `ttl.sh` origin data rots on expiry, so the artifact row is the durable evidence, and a durable operator origin is still an open follow-up. macOS and Windows legs wait on linker backend support; adding runners without a backend that can link for them would prove nothing.
+
 ## LICENSE is required
 
 Every version must include `LICENSE` or `LICENSE.txt` at the package root. An upload without one is rejected, because the registry redistributes your code and needs the grant on record.

@@ -1211,6 +1211,31 @@ mod tests {
     }
 
     #[test]
+    fn assemble_farm_matrix_of_two_linux_targets_round_trips() {
+        let inputs = vec![
+            assemble_input("runtime", "canary", "binary", "x86_64-unknown-linux-gnu"),
+            assemble_input("runtime", "canary", "binary", "aarch64-unknown-linux-gnu"),
+        ];
+        let assembly = assemble_index(&inputs).unwrap();
+        let again = assemble_index(&inputs).unwrap();
+        assert_eq!(assembly.index_bytes, again.index_bytes);
+        let index =
+            parse_index("example.invalid/org/x", "latest", &assembly.index_bytes, &assembly.digest)
+                .unwrap();
+        assert_eq!(index.descriptors.len(), 2);
+        let linux: Vec<&str> = select_for_host(&index, "linux", "x86_64")
+            .iter()
+            .map(|d| d.target.as_str())
+            .collect();
+        assert_eq!(linux, vec!["x86_64-unknown-linux-gnu"]);
+        let arm: Vec<&str> = select_for_host(&index, "linux", "aarch64")
+            .iter()
+            .map(|d| d.target.as_str())
+            .collect();
+        assert_eq!(arm, vec!["aarch64-unknown-linux-gnu"]);
+    }
+
+    #[test]
     fn assemble_rejects_empty_and_bad_annotations() {
         let err = assemble_index(&[]).unwrap_err();
         assert_eq!(err.code, diagnostics::Code::E108);
