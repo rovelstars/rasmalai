@@ -6,7 +6,6 @@ use frontend::ast::Decl;
 use frontend::desugar::desugar;
 use frontend::modules::{ModuleFile, ModuleGraph, ModuleKind};
 use frontend::parser::Parser;
-use std::path::PathBuf;
 
 fn parse(src: &str) -> frontend::ast::Module {
     Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"))
@@ -112,8 +111,9 @@ fn explicit_main_plus_top_level_is_e108() {
 
 #[test]
 fn imported_imperative_statement_is_e112() {
-    let root = PathBuf::from("/tmp/rnx-tl-e112-main.rnx");
-    let helper = PathBuf::from("/tmp/rnx-tl-e112-helpers.rnx");
+    let dir = crate::scratch::dir("tl-e112");
+    let root = dir.join("main.rnx");
+    let helper = dir.join("helpers.rnx");
     let g = ModuleGraph {
         root: root.clone(),
         files: vec![
@@ -137,8 +137,9 @@ fn imported_imperative_statement_is_e112() {
 
 #[test]
 fn imported_top_await_is_e112_not_e109() {
-    let root = PathBuf::from("/tmp/rnx-tl-e112a-main.rnx");
-    let helper = PathBuf::from("/tmp/rnx-tl-e112a-helpers.rnx");
+    let dir = crate::scratch::dir("tl-e112a");
+    let root = dir.join("main.rnx");
+    let helper = dir.join("helpers.rnx");
     let g = ModuleGraph {
         root: root.clone(),
         files: vec![
@@ -162,8 +163,9 @@ fn imported_top_await_is_e112_not_e109() {
 
 #[test]
 fn imported_let_binding_is_e112() {
-    let root = PathBuf::from("/tmp/rnx-tl-e112b-main.rnx");
-    let helper = PathBuf::from("/tmp/rnx-tl-e112b-helpers.rnx");
+    let dir = crate::scratch::dir("tl-e112b");
+    let root = dir.join("main.rnx");
+    let helper = dir.join("helpers.rnx");
     let g = ModuleGraph {
         root: root.clone(),
         files: vec![

@@ -4141,7 +4141,7 @@ mod tests {
         let bodies = server.resolve_bodies();
         assert!(!bodies.is_empty());
         assert_eq!(testkit::requirement(&bodies[0], "@acme/widget"), "^1.0.0");
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     #[test]
@@ -4159,7 +4159,7 @@ mod tests {
         let bodies = server.resolve_bodies();
         assert_eq!(bodies.len(), 1);
         assert_eq!(testkit::requirement(&bodies[0], "@acme/widget"), "^1.0.0");
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     fn std_overrides(url: &str) -> BTreeMap<String, crate::project::RegistryConfig> {
@@ -4622,7 +4622,7 @@ mod tests {
         );
         let (hits_after, _, _) = crate::depcache::stats();
         assert!(hits_after > hits_before, "registry dep must restore from cache");
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     #[test]
@@ -4656,7 +4656,7 @@ mod tests {
             served,
             "global hit path must not touch the registry"
         );
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     #[test]
@@ -4686,7 +4686,7 @@ mod tests {
                 "repopulation must heal corrupt entries"
             );
         }
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     #[test]
@@ -4723,7 +4723,7 @@ mod tests {
             .filter(|path| path.to_string_lossy().contains("@acme/widget"))
             .collect();
         assert_eq!(widget_files.len(), 2, "distinct dep sets shard into distinct files");
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     #[test]
@@ -4747,7 +4747,7 @@ mod tests {
             .filter(|path| path.to_string_lossy().contains("@acme/widget"))
             .collect();
         assert!(widget_files.is_empty(), "floating ranges must never populate");
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     #[test]
@@ -4779,7 +4779,7 @@ mod tests {
             served,
             "precompiled build must not touch the registry"
         );
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     struct EnvVarGuard {
@@ -4975,7 +4975,7 @@ mod tests {
         assert!(first.contains("Int(1)"), "{first}");
         let (hits, _, _) = crate::depcache::stats();
         assert_eq!(hits, 0, "cold build with no precompile must not restore anything");
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     #[test]
@@ -5044,7 +5044,7 @@ mod tests {
         assert_eq!(first, second);
         let (_, memo_hits, _) = crate::depcache::stats();
         assert!(memo_hits > 0, "repeat build must resolve through the restored memo");
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        drop(root);
     }
 
     #[test]

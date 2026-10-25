@@ -20,6 +20,7 @@ wasm-bindgen = "0.2"
 
 [dev-dependencies]
 frontend = { path = "../frontend" }
+tempfile = "3"
 
 [build-dependencies]
 serde_json = "1"

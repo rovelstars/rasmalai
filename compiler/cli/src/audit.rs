@@ -342,13 +342,9 @@ pub fn report_json(report: &AuditReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rnx-audit-test-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(name: &str) -> crate::scratch::Scratch {
+        crate::scratch::dir(&format!("audit-{name}"))
     }
 
     #[test]
@@ -384,7 +380,6 @@ mod tests {
         assert_eq!(boundary.refused.len(), 1);
         assert_eq!(boundary.refused[0].name, "cb");
         assert_eq!(boundary.isolation, "none");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
