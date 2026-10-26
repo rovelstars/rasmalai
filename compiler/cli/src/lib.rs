@@ -20,6 +20,7 @@ pub mod task;
 pub mod telemetry;
 pub mod test_runner;
 pub mod unpack;
+pub mod version;
 pub mod watcher;
 
 use diagnostics::{Code, Diagnostic};

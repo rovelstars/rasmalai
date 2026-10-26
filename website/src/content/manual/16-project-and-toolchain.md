@@ -9,7 +9,7 @@ icon: "Terminal"
 
 ## Installation
 
-One static binary — `rnx` — covers editing, running, testing, formatting, documenting, and shipping. Installation places `rnx` on `PATH`; `rnx --version` confirms the install. Scaffolding creates the manifest and entry file:
+One static binary — `rnx` — covers editing, running, testing, formatting, documenting, and shipping. Installation places `rnx` on `PATH`; `rnx --version` confirms the install and prints the build record (commit hash, build timestamp, install kind, target triple, backend versions) after the `rnx <version>` first line. Scaffolding creates the manifest and entry file:
 
 ```sh
 rnx init hello

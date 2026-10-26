@@ -8,6 +8,7 @@ use std::path::PathBuf;
     author,
     version,
     about = "Rasmalai systems language compiler and developer toolchain",
+    long_about = "Rasmalai systems language compiler and developer toolchain.\n\n`rnx --version` prints the full build record: version, commit hash, build timestamp, install kind, target triple, and backend versions.",
     styles = crate::styles::aura_clap_styles()
 )]
 pub struct Cli {
