@@ -7,9 +7,17 @@
 //! The bare `fs` name is sync and blocking; the `Async` suffix returns
 //! a `Promise`. Fallible operations return `Result<T, String>`; only
 //! `File.open` keeps the `isOpen` sentinel for a refused open.
-import { Result, Promise, PromiseWithResolvers } from "@std/prelude";
+import {
+    Result,
+    Promise,
+    PromiseWithResolvers
+} from "@std/prelude";
 import { ByteBuffer } from "@std/bytes";
-import { Mutex, Channel, AtomicInt } from "@std/sync";
+import {
+    Mutex,
+    Channel,
+    AtomicInt
+} from "@std/sync";
 
 /**
 * Open modes for File.open.

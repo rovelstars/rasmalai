@@ -1,7 +1,16 @@
 import { runClangAst } from "./clang";
-import { extractFunctions, extractStructs, extractDefines, matchPrefix, FnDecl } from "./extract";
+import {
+    extractFunctions,
+    extractStructs,
+    extractDefines,
+    matchPrefix,
+    FnDecl
+} from "./extract";
 import { emitPackage } from "./emit";
-import { File, OpenMode } from "@std/fs";
+import {
+    File,
+    OpenMode
+} from "@std/fs";
 
 fn usage(): Int {
     print("usage: rnx-bindgen --header <file.h> --native-lib <lib> --pkg-name <name> --out <dir> [--pkg-version <ver>] [--prefix <pfx>]... [--skip <name>]... [--include <dir>]... [--clang-flags \"<flags>\"]");

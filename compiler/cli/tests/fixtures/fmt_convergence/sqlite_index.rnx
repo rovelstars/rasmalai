@@ -1,0 +1,159 @@
+import {
+    ByteBuffer
+} from "@std/bytes";
+
+import {
+    fn sqlite3_open(path: Pointer<Byte>, db: Pointer<Byte>): Int as rawOpen,
+    fn sqlite3_close(db: Pointer<Byte>): Int as rawClose,
+    fn sqlite3_exec(db: Pointer<Byte>, sql: Pointer<Byte>, callback: Pointer<Byte>, arg: Pointer<Byte>, errmsg: Pointer<Byte>): Int as rawExec,
+    fn sqlite3_errmsg(db: Pointer<Byte>): Pointer<Byte> as rawErrmsg,
+    fn sqlite3_prepare_v2(db: Pointer<Byte>, sql: Pointer<Byte>, nbyte: Int, stmt: Pointer<Byte>, tail: Pointer<Byte>): Int as rawPrepare,
+    fn sqlite3_step(stmt: Pointer<Byte>): Int as rawStep,
+    fn sqlite3_column_int(stmt: Pointer<Byte>, col: Int): Int as rawColumnInt,
+    fn sqlite3_column_text(stmt: Pointer<Byte>, col: Int): Pointer<Byte> as rawColumnText,
+    fn sqlite3_finalize(stmt: Pointer<Byte>): Int as rawFinalize
+} from native "sqlite3"
+
+export const SQLITE_OK: Int = 0;
+export const SQLITE_ROW: Int = 100;
+export const SQLITE_DONE: Int = 101;
+
+export fn toCString(s: String): ByteBuffer {
+    let n = s.length();
+    let buf = ByteBuffer.allocate(n + 1);
+    let i = 0;
+    while i < n {
+        buf.writeUInt8(i, s.charCodeAt(i));
+        i = i + 1;
+    }
+    buf.writeUInt8(n, 0);
+    return buf;
+}
+
+export fn fromCString(p: Pointer<Byte>): String {
+    let codes: Array<Int> = [];
+    unsafe {
+        let i = 0;
+        while true {
+            let b = (p + i).read();
+            if b == 0 {
+                break;
+            }
+            codes.push(b as Int);
+            i = i + 1;
+        }
+    }
+    let buf = ByteBuffer.fromArray(codes);
+    return buf.readString(0, buf.length());
+}
+
+export fn open(path: String): Result<Pointer<Byte>, String> {
+    let s = toCString(path);
+    let slot = ByteBuffer.allocate(8);
+    let rc = 0;
+    unsafe {
+        let cpath = Pointer.fromAddress<Byte>(s.address());
+        let ppDb = Pointer.fromAddress<Byte>(slot.address());
+        rc = rawOpen(cpath, ppDb);
+    }
+    if rc != SQLITE_OK {
+        return Result.Err<Pointer<Byte>, String>("open failed");
+    }
+    let addr = 0;
+    unsafe {
+        addr = Pointer.fromAddress<Int>(slot.address()).read();
+    }
+    if addr == 0 {
+        return Result.Err<Pointer<Byte>, String>("open failed");
+    }
+    let db: Pointer<Byte>;
+    unsafe {
+        db = Pointer.fromAddress<Byte>(addr);
+    }
+    return Result.Ok<Pointer<Byte>, String>(db);
+}
+
+export fn errmsg(db: Pointer<Byte>): String {
+    let out = "";
+    unsafe {
+        out = fromCString(rawErrmsg(db));
+    }
+    return out;
+}
+
+export fn exec(db: Pointer<Byte>, sql: String): Int {
+    let s = toCString(sql);
+    let rc = 0;
+    unsafe {
+        let csql = Pointer.fromAddress<Byte>(s.address());
+        let nullp = Pointer.fromAddress<Byte>(0);
+        rc = rawExec(db, csql, nullp, nullp, nullp);
+    }
+    return rc;
+}
+
+export fn queryInt(db: Pointer<Byte>, sql: String): Result<Int, String> {
+    let s = toCString(sql);
+    let slot = ByteBuffer.allocate(8);
+    let rc = 0;
+    unsafe {
+        let csql = Pointer.fromAddress<Byte>(s.address());
+        let pstmt = Pointer.fromAddress<Byte>(slot.address());
+        let tail = Pointer.fromAddress<Byte>(0);
+        rc = rawPrepare(db, csql, -1, pstmt, tail);
+    }
+    if rc != SQLITE_OK {
+        return Result.Err<Int, String>("prepare failed: " + errmsg(db));
+    }
+    let value = 0;
+    let stepRc = 0;
+    unsafe {
+        let stmt = Pointer.fromAddress<Byte>(Pointer.fromAddress<Int>(slot.address()).read());
+        stepRc = rawStep(stmt);
+        if stepRc == SQLITE_ROW {
+            value = rawColumnInt(stmt, 0);
+        }
+        rawFinalize(stmt);
+    }
+    if stepRc != SQLITE_ROW {
+        return Result.Err<Int, String>("no row");
+    }
+    return Result.Ok<Int, String>(value);
+}
+
+export fn queryText(db: Pointer<Byte>, sql: String): Result<String, String> {
+    let s = toCString(sql);
+    let slot = ByteBuffer.allocate(8);
+    let rc = 0;
+    unsafe {
+        let csql = Pointer.fromAddress<Byte>(s.address());
+        let pstmt = Pointer.fromAddress<Byte>(slot.address());
+        let tail = Pointer.fromAddress<Byte>(0);
+        rc = rawPrepare(db, csql, -1, pstmt, tail);
+    }
+    if rc != SQLITE_OK {
+        return Result.Err<String, String>("prepare failed: " + errmsg(db));
+    }
+    let value = "";
+    let stepRc = 0;
+    unsafe {
+        let stmt = Pointer.fromAddress<Byte>(Pointer.fromAddress<Int>(slot.address()).read());
+        stepRc = rawStep(stmt);
+        if stepRc == SQLITE_ROW {
+            value = fromCString(rawColumnText(stmt, 0));
+        }
+        rawFinalize(stmt);
+    }
+    if stepRc != SQLITE_ROW {
+        return Result.Err<String, String>("no row");
+    }
+    return Result.Ok<String, String>(value);
+}
+
+export fn close(db: Pointer<Byte>): Int {
+    let rc = 0;
+    unsafe {
+        rc = rawClose(db);
+    }
+    return rc;
+}
