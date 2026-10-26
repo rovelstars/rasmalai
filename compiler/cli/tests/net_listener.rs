@@ -64,68 +64,52 @@ fn s2b(s: String): Array<Int> {
     return out;
 }
 
-fn acceptRaw(lh: Int): Int {
-    let r = __rnx_net_listener_accept_start(lh);
-    if r == 0 - 1 {
-        return 0 - 1;
-    }
-    if r < 0 {
-        return __rnx_net_listener_accept_wait(0 - r);
-    }
-    return r;
-}
-
-fn readSome(sh: Int, max: Int): Array<Int> {
+fn readSome(sh: TcpStream, max: Int): Array<Int> {
     let out: Array<Int> = [];
-    let n = __rnx_net_recv_or_wait(sh, max);
-    if n <= 0 {
-        return out;
-    }
+    let chunk: Array<Int> = sh.read(max).wait().unwrapOr([]);
     let i = 0;
-    while i < n {
-        out.push(__rnx_net_recv_get(sh, i));
+    while i < chunk.length() {
+        out.push(chunk[i]);
         i = i + 1;
     }
     return out;
 }
 
-fn readExact(sh: Int, want: Int): Array<Int> {
+fn readExact(sh: TcpStream, want: Int): Array<Int> {
     let out: Array<Int> = [];
     while out.length() < want {
-        let n = __rnx_net_recv_or_wait(sh, want - out.length());
-        if n <= 0 {
+        let chunk: Array<Int> = sh.read(want - out.length()).wait().unwrapOr([]);
+        if chunk.length() == 0 {
             return out;
         }
         let i = 0;
-        while i < n {
-            out.push(__rnx_net_recv_get(sh, i));
+        while i < chunk.length() {
+            out.push(chunk[i]);
             i = i + 1;
         }
     }
     return out;
 }
 
-fn writeAll(sh: Int, data: Array<Int>): Int {
-    let i = 0;
-    while i < data.length() {
-        let r = __rnx_net_send_or_wait(sh, data[i]);
-        if r < 0 {
-            return r;
-        }
-        i = i + 1;
+fn writeAll(sh: TcpStream, data: Array<Int>): Int {
+    let r = sh.write(data).wait();
+    if r.isErr() {
+        return 0 - 1;
     }
-    return i;
+    return r.unwrap();
 }
 "#;
 
 const ECHO_ONCE: &str = r#"fn echoOne(lh: Int): Int {
-    let sh = acceptRaw(lh);
-    if sh < 0 {
+    let listener = new TcpListener(lh);
+    let accepted = listener.accept().wait();
+    if accepted.isErr() {
         return 1;
     }
+    let sh: TcpStream = accepted.unwrap();
     let got = readExact(sh, 4);
     let w = writeAll(sh, got);
-    __rnx_net_close(sh);
+    sh.close();
     if w != got.length() {
         return 2;
     }
@@ -158,15 +142,17 @@ fn listener_accept_and_echo_round_trip() {
 }
 
 const ECHO_TEN: &str = r#"fn echoTen(lh: Int): Int {
+    let listener = new TcpListener(lh);
     let i = 0;
     while i < 10 {
-        let sh = acceptRaw(lh);
-        if sh < 0 {
+        let accepted = listener.accept().wait();
+        if accepted.isErr() {
             return 100 + i;
         }
+        let sh: TcpStream = accepted.unwrap();
         let got = readExact(sh, 3);
         let w = writeAll(sh, got);
-        __rnx_net_close(sh);
+        sh.close();
         if w != got.length() {
             return 200 + i;
         }

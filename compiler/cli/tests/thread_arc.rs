@@ -7,6 +7,36 @@ mod scratch;
 // would perturb. Not a race workaround.
 static LIVE_COUNT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+const STD_TOPS: &[&str] = &[
+    "@std/prelude", "@std/simd", "@std/collections", "@std/math",
+    "@std/fs", "@std/bytes", "@std/time", "@std/random",
+    "@std/sync", "@std/env", "@std/process", "@std/os",
+    "@std/testing", "@std/web", "@std/net", "@std/json",
+    "@std/io",
+];
+
+fn stage_checkout_std(tag: &str) {
+    let dir = crate::scratch::dir(&format!("stdstage-{tag}"));
+    let vendor = dir.join("vendor");
+    let cache = dir.join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rnx"))
+        .arg("vendor")
+        .args(STD_TOPS)
+        .arg("--dir")
+        .arg(&vendor)
+        .env("RNX_CACHE_HOME", &cache)
+        .env("RNX_REGISTRY", "http://127.0.0.1:9")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stage stdlib: {}", String::from_utf8_lossy(&out.stderr));
+    unsafe {
+        std::env::set_var("RNX_VENDOR_DIR", &vendor);
+        std::env::set_var("RNX_CACHE_HOME", &cache);
+    }
+    std::mem::forget(dir);
+}
+
 fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
     let dir = crate::scratch::dir(&format!("thread_arc-{tag}"));
     let main = dir.join("main.rnx");
@@ -65,16 +95,18 @@ fn test_channel_object_handoff() {
     check_all_backends(HANDOFF_SRC, 42, &["Worker received: ping 42".to_string()], "handoff");
 }
 
-const STRESS_SRC: &str = "import { Channel } from \"@std/sync\";\n\nclass Box {\n    let val: Int;\n    let items: Array<Int>;\n    init(v: Int, items: Array<Int>) {\n        this.val = v;\n        this.items = items;\n    }\n}\n\nfn worker(): Int {\n    let inch = Channel.byId(202);\n    let outch = Channel.byId(203);\n    let arrch = Channel.byId(204);\n    let b = inch.recv() as Box;\n    let total = b.val + b.items.length;\n    let arr = arrch.recv() as Array<Int>;\n    outch.send(b);\n    arrch.send(arr);\n    return total;\n}\n\nfn runRound(): Int {\n    let inch = Channel.byId(202);\n    let outch = Channel.byId(203);\n    let arrch = Channel.byId(204);\n    let b = new Box(0, [1, 2, 3]);\n    let h1 = Thread.spawn(worker);\n    let h2 = Thread.spawn(worker);\n    let h3 = Thread.spawn(worker);\n    let h4 = Thread.spawn(worker);\n    inch.send(b);\n    inch.send(b);\n    inch.send(b);\n    inch.send(b);\n    arrch.send([10, 20]);\n    arrch.send([30, 40]);\n    arrch.send([50, 60]);\n    arrch.send([70, 80]);\n    let sum = h1.join().unwrap() + h2.join().unwrap() + h3.join().unwrap() + h4.join().unwrap();\n    let r1 = outch.recv() as Box;\n    let r2 = outch.recv() as Box;\n    let r3 = outch.recv() as Box;\n    let r4 = outch.recv() as Box;\n    let boxes = r1.val + r2.val + r3.val + r4.val;\n    let a1 = arrch.recv() as Array<Int>;\n    let a2 = arrch.recv() as Array<Int>;\n    let a3 = arrch.recv() as Array<Int>;\n    let a4 = arrch.recv() as Array<Int>;\n    let lens = a1.length + a2.length + a3.length + a4.length;\n    if sum == 12 && boxes == 0 && lens == 8 {\n        return 0;\n    }\n    return 1;\n}\n\nfn Main(): Int {\n    let before = __rnx_debug_live_count();\n    let code = runRound();\n    let after = __rnx_debug_live_count();\n    if code == 0 && after == before {\n        return 0;\n    }\n    return 1;\n}\n";
+const STRESS_SRC: &str = "import { Channel } from \"@std/sync\";\nimport { liveCount } from \"@std/testing\";\n\nclass Box {\n    let val: Int;\n    let items: Array<Int>;\n    init(v: Int, items: Array<Int>) {\n        this.val = v;\n        this.items = items;\n    }\n}\n\nfn worker(): Int {\n    let inch = Channel.byId(202);\n    let outch = Channel.byId(203);\n    let arrch = Channel.byId(204);\n    let b = inch.recv() as Box;\n    let total = b.val + b.items.length;\n    let arr = arrch.recv() as Array<Int>;\n    outch.send(b);\n    arrch.send(arr);\n    return total;\n}\n\nfn runRound(): Int {\n    let inch = Channel.byId(202);\n    let outch = Channel.byId(203);\n    let arrch = Channel.byId(204);\n    let b = new Box(0, [1, 2, 3]);\n    let h1 = Thread.spawn(worker);\n    let h2 = Thread.spawn(worker);\n    let h3 = Thread.spawn(worker);\n    let h4 = Thread.spawn(worker);\n    inch.send(b);\n    inch.send(b);\n    inch.send(b);\n    inch.send(b);\n    arrch.send([10, 20]);\n    arrch.send([30, 40]);\n    arrch.send([50, 60]);\n    arrch.send([70, 80]);\n    let sum = h1.join().unwrap() + h2.join().unwrap() + h3.join().unwrap() + h4.join().unwrap();\n    let r1 = outch.recv() as Box;\n    let r2 = outch.recv() as Box;\n    let r3 = outch.recv() as Box;\n    let r4 = outch.recv() as Box;\n    let boxes = r1.val + r2.val + r3.val + r4.val;\n    let a1 = arrch.recv() as Array<Int>;\n    let a2 = arrch.recv() as Array<Int>;\n    let a3 = arrch.recv() as Array<Int>;\n    let a4 = arrch.recv() as Array<Int>;\n    let lens = a1.length + a2.length + a3.length + a4.length;\n    if sum == 12 && boxes == 0 && lens == 8 {\n        return 0;\n    }\n    return 1;\n}\n\nfn Main(): Int {\n    let before = liveCount();\n    let code = runRound();\n    let after = liveCount();\n    if code == 0 && after == before {\n        return 0;\n    }\n    return 1;\n}\n";
 
 #[test]
 fn test_cross_thread_arc_stress_race() {
+    stage_checkout_std("stress");
     check_all_backends(STRESS_SRC, 0, &[], "stress");
 }
 
-const DROP_SRC: &str = "import { Channel } from \"@std/sync\";\n\nclass Message {\n    let text: String;\n    let code: Int;\n    init(t: String, c: Int) {\n        this.text = t;\n        this.code = c;\n    }\n}\n\nfn fill(chan: Channel) {\n    chan.send(new Message(\"a\", 1));\n    chan.send(new Message(\"b\", 2));\n    chan.send(new Message(\"c\", 3));\n    chan.send(new Message(\"d\", 4));\n    chan.send(new Message(\"e\", 5));\n}\n\nfn Main(): Int {\n    let chan = Channel.byId(303);\n    let before = __rnx_debug_live_count();\n    fill(chan);\n    if chan.len() != 5 {\n        return 1;\n    }\n    chan.close();\n    if chan.len() != 0 {\n        return 2;\n    }\n    let after = __rnx_debug_live_count();\n    if after == before {\n        return 0;\n    }\n    return 3;\n}\n";
+const DROP_SRC: &str = "import { Channel } from \"@std/sync\";\nimport { liveCount } from \"@std/testing\";\n\nclass Message {\n    let text: String;\n    let code: Int;\n    init(t: String, c: Int) {\n        this.text = t;\n        this.code = c;\n    }\n}\n\nfn fill(chan: Channel) {\n    chan.send(new Message(\"a\", 1));\n    chan.send(new Message(\"b\", 2));\n    chan.send(new Message(\"c\", 3));\n    chan.send(new Message(\"d\", 4));\n    chan.send(new Message(\"e\", 5));\n}\n\nfn Main(): Int {\n    let chan = Channel.byId(303);\n    let before = liveCount();\n    fill(chan);\n    if chan.len() != 5 {\n        return 1;\n    }\n    chan.close();\n    if chan.len() != 0 {\n        return 2;\n    }\n    let after = liveCount();\n    if after == before {\n        return 0;\n    }\n    return 3;\n}\n";
 
 #[test]
 fn test_channel_drop_cleans_queued_objects() {
+    stage_checkout_std("dropclean");
     check_all_backends(DROP_SRC, 0, &[], "dropclean");
 }

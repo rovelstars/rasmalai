@@ -1,10 +1,10 @@
 pub(super) fn run_doctor(repair_std: bool, registry: Option<String>) {
     if repair_std {
-        return repair_stdlib(registry);
+        return super::download::repair_stdlib(registry);
     }
     let stdlib_missing = match frontend::stdlib_seed::read_std_pin() {
         None => {
-            println!("stdlib cache: no pin file; run `rnx fetch-std` to seed the global cache");
+            println!("stdlib cache: no pin file; run `rnx download` to seed the cache");
             true
         }
         Some(pin) => {
@@ -16,13 +16,13 @@ pub(super) fn run_doctor(repair_std: bool, registry: Option<String>) {
                         println!("stdlib products: precompiled ({files} files, {pkgs} packages)");
                     }
                     _ => {
-                        println!("stdlib products: absent (run `rnx fetch-std` to precompile them)");
+                        println!("stdlib products: absent (run `rnx download` to precompile them)");
                     }
                 }
                 false
             } else {
                 println!(
-                    "stdlib cache: {} missing ({}); run `rnx doctor --repair-std`",
+                    "stdlib cache: {} missing ({}); run `rnx download` (or `rnx doctor --repair-std`)",
                     missing.len(),
                     missing.join(", ")
                 );
@@ -39,8 +39,7 @@ pub(super) fn run_doctor(repair_std: bool, registry: Option<String>) {
 fn print_product_status() {
     let (files, bytes) = frontend::products::products_usage();
     println!(
-        "products: {files} files ({} bytes) under {}",
-        bytes,
+        "products: {files} files ({bytes} bytes) under {}",
         frontend::products::products_root().display()
     );
     println!(
@@ -63,53 +62,6 @@ fn print_product_status() {
             None => {
                 println!("dep {}: unpinned (floating range never caches)", status.pkg);
             }
-        }
-    }
-}
-
-fn repair_stdlib(registry: Option<String>) {
-    let (default, overrides) = super::fetch_std::std_registry(registry.as_deref());
-    let before: std::collections::BTreeSet<String> = frontend::fetch::scan_cache_have()
-        .iter()
-        .map(|h| format!("{}@{}", h.full, h.version))
-        .collect();
-    match frontend::stdlib_seed::seed_stdlib_cache(default.as_ref(), &overrides) {
-        Ok(report) => {
-            let repaired = report
-                .packages
-                .iter()
-                .filter(|(name, version)| !before.contains(&format!("{name}@{version}")))
-                .count();
-            if repaired == 0 {
-                println!(
-                    "stdlib cache: ok ({} packages, none missing)",
-                    report.packages.len()
-                );
-            } else {
-                println!(
-                    "stdlib cache: repaired {repaired} of {} packages",
-                    report.packages.len()
-                );
-            }
-            match frontend::products::precompile_std() {
-                Ok(pre) => {
-                    if pre.entries > 0 {
-                        println!(
-                            "Precompiled {} std products ({} entries in {} projects)",
-                            pre.populated, pre.entries, pre.projects
-                        );
-                    }
-                }
-                Err(reason) => {
-                    println!(
-                        "warning: stdlib precompile skipped ({reason}); first build will populate products"
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            println!("{e}");
-            std::process::exit(1);
         }
     }
 }

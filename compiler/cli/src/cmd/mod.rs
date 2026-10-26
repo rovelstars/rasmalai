@@ -62,7 +62,7 @@ mod doc;
 mod doctor;
 mod explain;
 pub(super) mod fetch;
-pub(super) mod fetch_std;
+pub(super) mod download;
 mod fmt;
 mod init;
 mod lint;
@@ -94,7 +94,7 @@ use self::doc::run_doc;
 use self::doctor::run_doctor;
 use self::explain::run_explain;
 use self::fetch::run_fetch;
-use self::fetch_std::run_fetch_std;
+use self::download::run_download;
 use self::fmt::run_fmt;
 use self::init::run_init;
 use self::lint::run_lint;
@@ -206,8 +206,8 @@ pub(super) fn dispatch(
             cli::args::Command::Fetch { package } => {
                 run_fetch(package);
             }
-            cli::args::Command::FetchStd { registry, local, from } => {
-                run_fetch_std(registry, local, from);
+            cli::args::Command::Download { packages, local, registry } => {
+                run_download(packages, local, registry);
             }
             cli::args::Command::Doctor { repair_std, registry } => {
                 run_doctor(repair_std, registry);
@@ -239,8 +239,8 @@ pub(super) fn dispatch(
             cli::args::Command::Unpack { archive, out_dir } => {
                 run_unpack(archive, out_dir);
             }
-            cli::args::Command::Vendor { package, stdlib } => {
-                run_vendor(package, stdlib);
+            cli::args::Command::Vendor { packages, dir } => {
+                run_vendor(packages, dir);
             }
             cli::args::Command::Audit {
                 path,

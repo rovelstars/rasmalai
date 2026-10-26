@@ -80,6 +80,39 @@ pub fn seed_stdlib_cache(
     let fetched =
         fetch::ensure_registry_requirements(&requirements, default_registry, overrides, &have)
             .map_err(|e| seed_error(&base, e))?;
+    finish_seed(&base, fetched, &requirements, &std_pin_path())
+}
+
+pub fn seed_stdlib_cache_local(
+    scope_root: &Path,
+    default_registry: Option<&RegistryConfig>,
+    overrides: &BTreeMap<String, RegistryConfig>,
+) -> Result<StdSeedReport, Diagnostic> {
+    let _origin = fetch::origin_direct_guard();
+    let requirements = std_requirements();
+    let base = fetch::registry_base_for("@std/prelude", default_registry, overrides);
+    let mut have = fetch::scan_cache_have();
+    let root = fetch::project_registry_root(scope_root);
+    have.extend(fetch::scan_have_under(&root));
+    have.sort_by(|a, b| (&a.full, &a.version).cmp(&(&b.full, &b.version)));
+    have.dedup_by(|a, b| a.full == b.full && a.version == b.version);
+    let fetched = fetch::ensure_registry_requirements_in(
+        &root,
+        &requirements,
+        default_registry,
+        overrides,
+        &have,
+    )
+    .map_err(|e| seed_error(&base, e))?;
+    finish_seed(&base, fetched, &requirements, &project_pin_path(scope_root))
+}
+
+fn finish_seed(
+    base: &str,
+    fetched: Vec<fetch::FetchedPackage>,
+    requirements: &BTreeMap<String, String>,
+    pin_path: &Path,
+) -> Result<StdSeedReport, Diagnostic> {
     let versions: BTreeMap<String, String> =
         fetched.into_iter().map(|f| (f.name, f.version)).collect();
     let mut packages: Vec<(String, String)> = Vec::with_capacity(requirements.len());
@@ -91,23 +124,48 @@ pub fn seed_stdlib_cache(
                     Code::E108,
                     format!("registry `{base}` resolved no version for package `{name}`"),
                 )
-                .with_hint("retry `rnx fetch-std` once the registry serves every @std/* package"));
+                .with_hint("retry `rnx download` once the registry serves every @std/* package"));
             }
         }
     }
+    pin_report(pin_path, base.to_string(), packages)
+}
+
+pub fn pin_report(
+    path: &Path,
+    registry: String,
+    mut packages: Vec<(String, String)>,
+) -> Result<StdSeedReport, Diagnostic> {
     packages.sort();
     let pin = StdPin {
         date_secs: now_secs(),
-        registry: base.clone(),
+        registry: registry.clone(),
         packages: packages.iter().cloned().collect(),
     };
-    let path = std_pin_path();
-    write_std_pin(&path, &pin)?;
+    write_std_pin(path, &pin)?;
     Ok(StdSeedReport {
         packages,
-        pin_path: path,
-        registry: base,
+        pin_path: path.to_path_buf(),
+        registry,
     })
+}
+
+pub fn merge_project_pin(
+    scope_root: &Path,
+    registry: &str,
+    packages: &[(String, String)],
+) -> Result<StdSeedReport, Diagnostic> {
+    let mut merged: BTreeMap<String, String> = read_project_pin(scope_root)
+        .map(|pin| pin.packages)
+        .unwrap_or_default();
+    for (name, version) in packages {
+        merged.insert(name.clone(), version.clone());
+    }
+    pin_report(
+        &project_pin_path(scope_root),
+        registry.to_string(),
+        merged.into_iter().collect(),
+    )
 }
 
 fn seed_error(base: &str, err: Diagnostic) -> Diagnostic {
@@ -121,12 +179,35 @@ fn seed_error(base: &str, err: Diagnostic) -> Diagnostic {
             err.message
         ),
     )
-    .with_hint("check the registry URL and network, then retry `rnx fetch-std`")
+    .with_hint("check the registry URL and network, then retry `rnx download`")
 }
 
+pub fn project_pin_path(scope_root: &Path) -> PathBuf {
+    scope_root.join(crate::cache::PROJECT_CACHE_DIR).join(STD_PIN_FILE)
+}
+
+pub fn read_project_pin(scope_root: &Path) -> Option<StdPin> {
+    let body = std::fs::read(project_pin_path(scope_root)).ok()?;
+    parse_pin(&body)
+}
+
+pub fn unpinned_std_version_for(scope_root: Option<&Path>, pkg: &str) -> String {
+    if let Some(scope) = scope_root {
+        if let Some(version) = read_project_pin(scope)
+            .and_then(|pin| pin.packages.get(pkg).cloned())
+        {
+            return version;
+        }
+    }
+    unpinned_std_version(pkg)
+}
 pub fn read_std_pin() -> Option<StdPin> {
     let body = std::fs::read(std_pin_path()).ok()?;
-    let value = fetch::parse_json(&body).ok()?;
+    parse_pin(&body)
+}
+
+fn parse_pin(body: &[u8]) -> Option<StdPin> {
+    let value = fetch::parse_json(body).ok()?;
     let version = value.get("version").and_then(|v| v.as_u64())?;
     if version != STD_PIN_VERSION {
         return None;
@@ -220,33 +301,29 @@ fn std_stage_permissions(name: &str) -> Option<&'static str> {
     }
 }
 
-fn std_tree_package(top: &str) -> Result<(String, String, String, Vec<(String, Vec<u8>)>), Diagnostic> {
+fn read_checkout_source(src_root: &Path, rel: &str) -> Result<Vec<u8>, Diagnostic> {
+    std::fs::read(src_root.join(rel)).map_err(|e| {
+        Diagnostic::new(
+            Code::E108,
+            format!("stdlib checkout at `{}` has no `{rel}`: {e}", src_root.display()),
+        )
+    })
+}
+
+fn std_tree_package_from_checkout(
+    src_root: &Path,
+    top: &str,
+) -> Result<(String, String, String, Vec<(String, Vec<u8>)>), Diagnostic> {
     let version = env!("CARGO_PKG_VERSION").to_string();
     let full = format!("@std/{top}");
-    let main = stdlib::source(top)
-        .ok_or_else(|| {
-            Diagnostic::new(
-                Code::E108,
-                format!("toolchain carries no source for `{full}`"),
-            )
-        })?
-        .as_bytes()
-        .to_vec();
+    let main = read_checkout_source(src_root, &format!("{top}/lib.rnx"))?;
     let mut files = vec![("src/lib.rnx".to_string(), main)];
     if top == "net" {
-        let http = stdlib::source("net/http")
-            .ok_or_else(|| {
-                Diagnostic::new(
-                    Code::E108,
-                    format!("toolchain carries no source for `{full}/http`"),
-                )
-            })?
-            .as_bytes()
-            .to_vec();
+        let http = read_checkout_source(src_root, "net/http.rnx")?;
         files.push(("src/http.rnx".to_string(), http));
     }
     let mut config = format!(
-        "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\",\n        description: \"Standard library package {full}, staged from the toolchain sources.\"\n    }},\n    entries: {{\n        main: \"src/lib.rnx\"\n    }}"
+        "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\",\n        description: \"Standard library package {full}, staged from the checkout sources.\"\n    }},\n    entries: {{\n        main: \"src/lib.rnx\"\n    }}"
     );
     if let Some(permissions) = std_stage_permissions(top) {
         config.push_str(",\n    ");
@@ -256,106 +333,72 @@ fn std_tree_package(top: &str) -> Result<(String, String, String, Vec<(String, V
     Ok((full, version, config, files))
 }
 
-pub fn stage_std_vendor_tree(out: &Path) -> Result<Vec<String>, Diagnostic> {
-    let mut staged = Vec::new();
-    for top in std_package_tops() {
-        let (full, _, config, files) = std_tree_package(&top)?;
-        let dir = out.join(&full);
-        for (name, bytes) in &files {
-            let path = dir.join(name);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
-                })?;
-            }
-            std::fs::write(&path, bytes).map_err(|e| {
-                Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", path.display()))
-            })?;
-        }
-        std::fs::write(dir.join(crate::project::MANIFEST_FILE), config).map_err(|e| {
-            Diagnostic::new(
-                Code::E108,
-                format!("cannot write `{}`: {e}", dir.display()),
-            )
-        })?;
-        staged.push(full);
-    }
-    staged.sort();
-    Ok(staged)
-}
-
-fn write_cached_tree(base: &str, full: &str, version: &str, files: &[(String, Vec<u8>)]) -> Result<(), Diagnostic> {
-    let mut digest_entries = Vec::with_capacity(files.len());
+fn write_staged_package(dir: &Path, config: &str, files: &[(String, Vec<u8>)]) -> Result<(), Diagnostic> {
     for (name, bytes) in files {
-        digest_entries.push(crate::checksum::DigestEntry {
-            name: name.clone(),
-            size: bytes.len() as u64,
-            dir: false,
-            chunks: vec![crate::checksum::Sha256::hexdigest(bytes)],
-        });
-    }
-    let digest = crate::checksum::manifest_digest_hex(&digest_entries)?;
-    let dest = fetch::cached_package_dir(base, full, version);
-    let _ = std::fs::remove_dir_all(&dest);
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Diagnostic::new(
-                Code::E108,
-                format!("cannot create `{}`: {e}", parent.display()),
-            )
-        })?;
-    }
-    for (name, bytes) in files {
-        let path = dest.join(name);
+        let path = dir.join(name);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                Diagnostic::new(
-                    Code::E108,
-                    format!("cannot write `{}`: {e}", path.display()),
-                )
+                Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
             })?;
         }
         std::fs::write(&path, bytes).map_err(|e| {
-            Diagnostic::new(
-                Code::E108,
-                format!("cannot write `{}`: {e}", path.display()),
-            )
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", path.display()))
         })?;
     }
-    std::fs::write(dest.join(".rnx-integrity"), format!("{full}\n{version}\n{digest}\n")).map_err(|e| {
+    std::fs::write(dir.join(crate::project::MANIFEST_FILE), config).map_err(|e| {
         Diagnostic::new(
             Code::E108,
-            format!("cannot write `{}`: {e}", dest.display()),
+            format!("cannot write `{}`: {e}", dir.display()),
         )
     })
 }
 
-pub fn seed_embedded_std_cache() -> Result<StdSeedReport, Diagnostic> {
-    let base = fetch::expand_registry_base("");
-    let mut packages: Vec<(String, String)> = Vec::with_capacity(std_package_names().len());
-    for top in std_package_tops() {
-        let (full, version, config, mut files) = std_tree_package(&top)?;
-        files.push((
-            crate::project::MANIFEST_FILE.to_string(),
-            config.into_bytes(),
+pub fn stage_std_checkout_package(
+    src_root: &Path,
+    full: &str,
+    out_dir: &Path,
+) -> Result<String, Diagnostic> {
+    let top = full.strip_prefix("@std/").ok_or_else(|| {
+        Diagnostic::new(Code::E108, format!("`{full}` is not a standard library package"))
+    })?;
+    if top.is_empty() || top.contains('/') && top != "net/http" {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("`{full}` is not a standard library package"),
         ));
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        write_cached_tree(&base, &full, &version, &files)?;
-        packages.push((full, version));
     }
-    packages.sort();
-    let pin = StdPin {
-        date_secs: now_secs(),
-        registry: base.clone(),
-        packages: packages.iter().cloned().collect(),
-    };
-    let path = std_pin_path();
-    write_std_pin(&path, &pin)?;
-    Ok(StdSeedReport {
-        packages,
-        pin_path: path,
-        registry: base,
-    })
+    let top_dir = if top == "net/http" { "net" } else { top };
+    if !std_package_tops().iter().any(|t| t == top_dir) {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("`{full}` is not a standard library package"),
+        ));
+    }
+    let (_, version, config, files) = std_tree_package_from_checkout(src_root, top_dir)?;
+    if top == "net/http" {
+        let http = files
+            .iter()
+            .find(|(name, _)| name == "src/http.rnx")
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or_else(|| {
+                Diagnostic::new(Code::E108, format!("stdlib checkout has no `net/http.rnx`"))
+            })?;
+        write_staged_package(out_dir, &config, &[("src/lib.rnx".to_string(), http)])?;
+    } else {
+        write_staged_package(out_dir, &config, &files)?;
+    }
+    Ok(version)
+}
+
+pub fn stage_std_checkout_tree(src_root: &Path, out: &Path) -> Result<Vec<String>, Diagnostic> {
+    let mut staged = Vec::new();
+    for top in std_package_tops() {
+        let (full, _, config, files) = std_tree_package_from_checkout(src_root, &top)?;
+        write_staged_package(&out.join(&full), &config, &files)?;
+        staged.push(full);
+    }
+    staged.sort();
+    Ok(staged)
 }
 
 fn write_std_pin(path: &Path, pin: &StdPin) -> Result<(), Diagnostic> {
@@ -388,7 +431,7 @@ fn write_std_pin(path: &Path, pin: &StdPin) -> Result<(), Diagnostic> {
             Code::E108,
             format!("cannot write `{}`: {e}", path.display()),
         )
-        .with_hint("check that the global cache directory is writable, then retry `rnx fetch-std`")
+        .with_hint("check that the global cache directory is writable, then retry `rnx download`")
     })
 }
 
@@ -568,44 +611,17 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn local_seed_populates_cache_for_offline_pinned_resolves() {
-        let (_guard, _dir) = isolate_cache("stdlocal");
-        let base = fetch::expand_registry_base("");
-        let report = seed_embedded_std_cache().unwrap();
-        assert_eq!(report.packages.len(), std_package_tops().len());
-        assert_eq!(report.registry, base);
-        assert_eq!(report.pin_path, std_pin_path());
-        assert!(missing_std_packages().is_empty());
-        let cli = env!("CARGO_PKG_VERSION");
-        for full in std_package_names() {
-            let dir = fetch::cached_package_dir(&base, &full, cli);
-            assert!(dir.join(crate::project::MANIFEST_FILE).is_file(), "{}", dir.display());
-            let integrity = std::fs::read_to_string(dir.join(".rnx-integrity")).unwrap();
-            let mut lines = integrity.lines();
-            assert_eq!(lines.next(), Some(full.as_str()));
-            assert_eq!(lines.next(), Some(cli));
-            assert!(lines.next().is_some_and(|s| s.len() == 64));
-            let (found, _, version) = fetch::resolve_registry_package(
-                &full,
-                "*",
-                None,
-                &BTreeMap::new(),
-                Some(cli.to_string()),
-                &[],
-                None,
-            )
-            .expect("locally seeded cache serves pinned resolves with no network");
-            assert_eq!(version, cli);
-            assert_eq!(found, std::fs::canonicalize(&dir).unwrap());
-        }
+    fn checkout_src() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib/src")
     }
 
     #[test]
-    fn stage_writes_a_resolvable_vendor_tree() {
+    fn stage_from_checkout_writes_a_resolvable_vendor_tree() {
         let (_guard, _dir) = isolate_cache("stdstage");
+        let src = checkout_src();
+        assert!(src.join("prelude").join("lib.rnx").is_file(), "{}", src.display());
         let out = crate::scratch::dir("stdstage-out");
-        let staged = stage_std_vendor_tree(out.path()).unwrap();
+        let staged = stage_std_checkout_tree(&src, out.path()).unwrap();
         assert_eq!(staged, std_package_names());
         let cli = env!("CARGO_PKG_VERSION");
         for full in &staged {
@@ -616,12 +632,12 @@ mod tests {
             assert_eq!(&cfg.name, full);
             assert_eq!(cfg.version, cli);
             let top = full.strip_prefix("@std/").unwrap();
-            let want = stdlib::source(top).expect("embedded source exists");
+            let want = std::fs::read(src.join(top).join("lib.rnx")).unwrap();
             let main = std::fs::read(dir.join("src").join("lib.rnx")).unwrap();
-            assert_eq!(main, want.as_bytes());
+            assert_eq!(main, want);
         }
         let net_http = std::fs::read(out.path().join("@std/net").join("src").join("http.rnx")).unwrap();
-        assert_eq!(net_http, stdlib::source("net/http").unwrap().as_bytes());
+        assert_eq!(net_http, std::fs::read(src.join("net").join("http.rnx")).unwrap());
         let _vendor = set_vendor_dir(out.path());
         assert!(vendor_covers_std());
         let dead = RegistryConfig { url: "http://127.0.0.1:9".to_string(), token_env: None, ca_cert: None };

@@ -170,6 +170,10 @@ impl ModuleGraph {
     /// lowering (Option/Result methods, `task.await()`, `Promise`)
     /// fails with `missing std.prelude.*`.
     pub fn from_source(src: &str) -> Result<A::Module, Diagnostic> {
+        Ok(Self::from_source_graph(src)?.resolve()?)
+    }
+
+    pub fn from_source_graph(src: &str) -> Result<ModuleGraph, Diagnostic> {
         let user = crate::parser::Parser::parse_module(src)?;
         let root = PathBuf::from("inline/main.rnx");
         let mut files = vec![ModuleFile { path: root.clone(), key: String::new(), kind: ModuleKind::Entry, module: user }];
@@ -209,7 +213,7 @@ impl ModuleGraph {
                 module,
             });
         }
-        ModuleGraph { root, files }.resolve()
+        Ok(ModuleGraph { root, files })
     }
 
     pub fn build(root: &Path) -> Result<ModuleGraph, Diagnostic> {        ModuleGraph::build_with_extra(root, &[])
@@ -1827,7 +1831,7 @@ fn resolve_import_meta(
 /// only swaps the *bytes* behind it via the overlay read by `read_source`.
 /// A VFS hit (tests, playground preloads) short-circuits before any cache
 /// or network access. Offline with an empty cache fails loudly as E108
-/// naming the registry with an `rnx fetch-std` hint.
+/// naming the registry with an `rnx download` hint.
 fn resolve_std_with_registries(
     from: &Path,
     source: &str,
@@ -1990,9 +1994,9 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
     let top = rest.split('/').next().unwrap_or(rest.as_str());
     let pkg = format!("@std/{top}");
     let base = crate::fetch::registry_base_for(&pkg, default.as_ref(), &overrides);
-    let version = crate::stdlib_seed::unpinned_std_version(&pkg);
-    let have = crate::fetch::scan_cache_have();
     let anchor = std_vendor_anchor(Path::new("."));
+    let version = crate::stdlib_seed::unpinned_std_version_for(Some(&anchor), &pkg);
+    let have = crate::fetch::scan_cache_have();
     if let Some((dir, cfg, _)) =
         crate::fetch::resolve_local_override(&pkg, &version, Some(&version), &anchor)?
     {
@@ -2016,8 +2020,19 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
         &have,
         Some(&anchor),
     ) {
-        Ok(_) => crate::stdvfs::std_source(&rest)
-            .ok_or_else(|| std_cache_miss_error(&format!("@std/{rest}"), &base)),
+        Ok((dir, cfg, _)) => {
+            // The resolved directory is authoritative: it may be the
+            // project-local cache (`rnx download --local`), which the
+            // global VFS read below cannot see.
+            let sub = rest.split_once('/').map(|(_, s)| s.to_string());
+            if let Ok(target) = resolve_subpath_target(&dir, sub.as_deref(), &cfg, &pkg, &format!("@std/{rest}"))
+                && let Ok(src) = std::fs::read_to_string(&target)
+            {
+                return Ok(src);
+            }
+            crate::stdvfs::std_source(&rest)
+                .ok_or_else(|| std_cache_miss_error(&format!("@std/{rest}"), &base))
+        }
         Err(e) => Err(std_fetch_error(&format!("@std/{rest}"), &base, &e.message)),
     }
 }
@@ -2035,7 +2050,7 @@ fn std_fetch_error(source: &str, base: &str, detail: &str) -> Diagnostic {
         Code::E108,
         format!("cannot resolve `{source}` from registry `{base}`: {detail}"),
     )
-    .with_hint("run `rnx fetch-std` to seed the global cache (or `rnx doctor --repair-std` to repair it)")
+    .with_hint("run `rnx download` to seed the cache (or `rnx doctor --repair-std` to repair it)")
 }
 
 fn std_cache_miss_error(source: &str, base: &str) -> Diagnostic {
@@ -2043,7 +2058,7 @@ fn std_cache_miss_error(source: &str, base: &str) -> Diagnostic {
         Code::E108,
         format!("cannot resolve `{source}`: stdlib cache is empty and registry `{base}` is unreachable"),
     )
-    .with_hint("run `rnx fetch-std` to seed the global cache (or `rnx doctor --repair-std` to repair it)")
+    .with_hint("run `rnx download` to seed the cache (or `rnx doctor --repair-std` to repair it)")
 }
 
 fn std_cache_registry() -> String {
@@ -2283,7 +2298,7 @@ fn resolve_subpath_target(
     Ok(target)
 }
 
-fn locked_registry_version(scope_root: &Path, pkg: &str) -> Option<String> {
+pub(crate) fn locked_registry_version(scope_root: &Path, pkg: &str) -> Option<String> {
     let lock = crate::deplock::ProjectDepLock::load(scope_root).ok()??;
     let entry = lock.packages.iter().find(|p| p.name == pkg)?;
     let rest = entry.source.strip_prefix("registry:")?;
@@ -2491,7 +2506,7 @@ fn dep_expected_root(
             return None;
         };
         let anchor = crate::fetch::cache_anchor(entry_root);
-        let vendor = anchor.join("vendor").join(pkg);
+        let vendor = anchor.join(crate::fetch::VENDOR_DIR).join(pkg);
         if vendor.join(crate::project::MANIFEST_FILE).is_file() {
             return std::fs::canonicalize(&vendor).ok();
         }
@@ -2815,7 +2830,7 @@ fn validate_dep_product(
     if product.kind == KIND_GIT {
         if product.commit.is_empty() {
             let anchor = crate::fetch::cache_anchor(entry_root);
-            let vendor = anchor.join("vendor").join(&product.pkg);
+            let vendor = anchor.join(crate::fetch::VENDOR_DIR).join(&product.pkg);
             if !vendor.join(crate::project::MANIFEST_FILE).is_file() {
                 return false;
             }
@@ -2827,7 +2842,7 @@ fn validate_dep_product(
     // are fully covered by version_key, base, and the content digest, so
     // entry/scope/lock bytes are pinned empty. Entry-manifest edits
     // elsewhere then keep hitting, while dep-manifest edits still
-    // invalidate. This lets install/fetch-std-time std products restore
+    // invalidate. This lets install/download-time std products restore
     // into any project on the same pin instead of sharding per entry.
     let expected_dep_set = if product.kind == KIND_STD {
         dep_set_hex(b"", b"", b"", &dep_cfg_raw, &dep_sub_specs(&dep_cfg))
@@ -3002,7 +3017,7 @@ fn build_dep_product(
     let base = dep_expected_base(kind, pkg, entry_root, entry_cfg);
     let commit = if kind == KIND_GIT {
         let anchor = crate::fetch::cache_anchor(entry_root);
-        let vendor = anchor.join("vendor").join(pkg);
+        let vendor = anchor.join(crate::fetch::VENDOR_DIR).join(pkg);
         if vendor.join(crate::project::MANIFEST_FILE).is_file() {
             String::new()
         } else {
@@ -4247,7 +4262,7 @@ mod tests {
         assert_eq!(err.code, Code::E108);
         assert!(err.message.contains("127.0.0.1:1"), "{}", err.message);
         assert!(
-            err.hint.as_deref().unwrap_or_default().contains("rnx fetch-std"),
+            err.hint.as_deref().unwrap_or_default().contains("rnx download"),
             "{:?}",
             err.hint
         );
@@ -4278,7 +4293,7 @@ mod tests {
     }
 
     fn write_std_vendor(root: &std::path::Path, top: &str, version: &str, main: &str) -> PathBuf {
-        let dir = root.join("vendor").join(format!("@std/{top}"));
+        let dir = root.join(crate::fetch::VENDOR_DIR).join(format!("@std/{top}"));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
             dir.join(crate::project::MANIFEST_FILE),
@@ -4337,7 +4352,7 @@ mod tests {
         assert!(graph.files.iter().any(|f| f.path.ends_with("src/main.rnx")));
         let served = server.requests().len();
         assert!(served > 0);
-        let vendor = root.join("vendor").join("@acme/widget");
+        let vendor = root.join(crate::fetch::VENDOR_DIR).join("@acme/widget");
         std::fs::create_dir_all(vendor.join("src")).unwrap();
         std::fs::write(
             vendor.join(crate::project::MANIFEST_FILE),
@@ -4380,7 +4395,7 @@ mod tests {
         assert_eq!(err.code, Code::E108);
         assert!(err.message.contains("registry"), "{}", err.message);
         assert!(
-            err.hint.as_deref().unwrap_or_default().contains("rnx fetch-std"),
+            err.hint.as_deref().unwrap_or_default().contains("rnx download"),
             "{:?}",
             err.hint
         );

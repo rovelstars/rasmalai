@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub const REGISTRY_SPEC: u32 = 0;
 pub const DEFAULT_REGISTRY_DOMAIN: &str = "rasmalai.rovelstars.com";
 pub const LOCAL_VENDOR_ENV: &str = "RNX_VENDOR_DIR";
+pub const VENDOR_DIR: &str = ".vendor";
 const RESOLVE_INLINE_CHUNKS: &str = "resolve-inline-chunks";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
@@ -55,7 +56,7 @@ pub fn local_override_dir(pkg: &str, anchor: &Path) -> Option<PathBuf> {
             return Some(candidate);
         }
     }
-    let candidate = anchor.join("vendor").join(pkg);
+    let candidate = anchor.join(VENDOR_DIR).join(pkg);
     if candidate
         .join(crate::project::MANIFEST_FILE)
         .is_file()
@@ -259,7 +260,7 @@ pub fn resolve_git_dep(
     git_url: &str,
     rev: &str,
 ) -> Result<PathBuf, Diagnostic> {
-    let vendor = anchor.join("vendor").join(name);
+    let vendor = anchor.join(VENDOR_DIR).join(name);
     if vendor.join(project::MANIFEST_FILE).is_file() {
         return std::fs::canonicalize(&vendor).map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", vendor.display()))
@@ -365,18 +366,307 @@ pub fn fetch_all_git_deps(scope_root: &Path) -> Result<Vec<(String, String, Stri
     Ok(out)
 }
 
-pub fn vendor_all(scope_root: &Path) -> Result<Vec<String>, Diagnostic> {
+pub fn vendor_all_in(scope_root: &Path, dest: &Path) -> Result<Vec<String>, Diagnostic> {
     let fetched = fetch_all_git_deps(scope_root)?;
     let mut names: Vec<String> = Vec::new();
     for (name, url, rev) in &fetched {
-        let dest = scope_root.join("vendor").join(name);
-        let _ = std::fs::remove_dir_all(&dest);
+        let out = dest.join(name);
+        let _ = std::fs::remove_dir_all(&out);
         let src = resolve_git_dep(scope_root, name, url, rev)?;
-        copy_tree(&src, &dest)?;
+        copy_tree(&src, &out)?;
         names.push(name.clone());
     }
     names.sort();
     Ok(names)
+}
+
+pub fn default_vendor_dir(scope_root: &Path) -> PathBuf {
+    scope_root.join(VENDOR_DIR)
+}
+
+fn vendor_copy(src: &Path, dest: &Path, name: &str) -> Result<(), Diagnostic> {
+    let out = dest.join(name);
+    let _ = std::fs::remove_dir_all(&out);
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
+        })?;
+    }
+    copy_tree(src, &out)
+}
+
+fn scope_dep_spec(scope_root: &Path, name: &str) -> Option<crate::project::DependencySpec> {
+    let manifest = project::load_manifest(scope_root).ok()??;
+    match manifest.workspace {
+        Some(ws) => {
+            let members = project::resolve_workspace_members(scope_root, &ws).ok()?;
+            for (_, cfg) in members.values() {
+                if let Some(spec) = cfg.dependencies.get(name) {
+                    return Some(spec.clone());
+                }
+            }
+            None
+        }
+        None => manifest.project?.dependencies.get(name).cloned(),
+    }
+}
+
+pub fn find_stdlib_checkout(start: &Path) -> Option<PathBuf> {
+    let mut dir = if start.is_file() {
+        start.parent()?.to_path_buf()
+    } else {
+        start.to_path_buf()
+    };
+    loop {
+        let cand = dir.join("compiler").join("stdlib").join("src");
+        if cand.join("prelude").join("lib.rnx").is_file() {
+            return Some(cand);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    let compiled = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("stdlib")
+        .join("src");
+    if compiled.join("prelude").join("lib.rnx").is_file() {
+        return Some(compiled);
+    }
+    None
+}
+
+fn best_cached_version(have: &[HaveEntry], name: &str, range: &str) -> Option<String> {
+    let mut best: Option<((u64, u64, u64, String), String)> = None;
+    for h in have {
+        if h.full != name {
+            continue;
+        }
+        if !engine_satisfied(range, &h.version) {
+            continue;
+        }
+        let Some(v) = parse_semver(&h.version) else {
+            continue;
+        };
+        let key = (v.0, v.1, v.2, v.3.clone());
+        let take = match &best {
+            None => true,
+            Some((bk, _)) => {
+                cmp_semver((key.0, key.1, key.2, key.3.as_str()), (bk.0, bk.1, bk.2, bk.3.as_str()))
+                    == std::cmp::Ordering::Greater
+            }
+        };
+        if take {
+            best = Some((key, h.version.clone()));
+        }
+    }
+    best.map(|(_, version)| version)
+}
+
+fn vendor_registry_package(
+    scope_root: &Path,
+    dest: &Path,
+    name: &str,
+    range: &str,
+    default_registry: Option<&RegistryConfig>,
+    overrides: &BTreeMap<String, RegistryConfig>,
+) -> Result<String, Diagnostic> {
+    let anchor = cache_anchor(scope_root);
+    let mut have = scan_cache_have();
+    have.extend(scan_have_under(&project_registry_root(scope_root)));
+    have.sort_by(|a, b| (&a.full, &a.version).cmp(&(&b.full, &b.version)));
+    have.dedup_by(|a, b| a.full == b.full && a.version == b.version);
+    let locked = crate::modules::locked_registry_version(scope_root, name);
+    let pinned = locked.or_else(|| {
+        if name.starts_with("@std/") {
+            let pin_ver = crate::stdlib_seed::unpinned_std_version_for(Some(scope_root), name);
+            if engine_satisfied(range, &pin_ver) {
+                return Some(pin_ver);
+            }
+        }
+        best_cached_version(&have, name, range)
+    });
+    let (dir, _cfg, version, staged) = match resolve_registry_package(
+        name,
+        range,
+        default_registry,
+        overrides,
+        pinned,
+        &have,
+        Some(&anchor),
+    ) {
+        Ok((dir, cfg, version)) => (dir, cfg, version, false),
+        Err(first) => {
+            let Some(src_root) = find_stdlib_checkout(scope_root) else {
+                return Err(first);
+            };
+            if !name.starts_with("@std/") {
+                return Err(first);
+            }
+            let out = dest.join(name);
+            let _ = std::fs::remove_dir_all(&out);
+            match crate::stdlib_seed::stage_std_checkout_package(&src_root, name, &out) {
+                Ok(version) => {
+                    let cfg = ProjectConfig::load_from_dir(&out).map_err(|e| {
+                        Diagnostic::new(Code::E108, format!("cannot stage `{name}`: {e}"))
+                    })?.ok_or_else(|| {
+                        Diagnostic::new(Code::E108, format!("package `{name}` has no Project.config"))
+                    })?;
+                    (out, cfg, version, true)
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_dir_all(&out);
+                    return Err(first);
+                }
+            }
+        }
+    };
+    if !staged {
+        vendor_copy(&dir, dest, name)?;
+    }
+    Ok(format!("{name}@{version}"))
+}
+
+pub fn vendor_packages(
+    scope_root: &Path,
+    dest: &Path,
+    names: &[String],
+    default_registry: Option<&RegistryConfig>,
+    overrides: &BTreeMap<String, RegistryConfig>,
+) -> Result<Vec<String>, Diagnostic> {
+    if names.is_empty() {
+        return vendor_all_in(scope_root, dest);
+    }
+    let mut done: Vec<String> = Vec::new();
+    for raw in names {
+        let parsed = crate::deplock::parse_update_selector(raw).map_err(|_| {
+            Diagnostic::new(
+                Code::E108,
+                format!("bad vendor target `{raw}`: expected `name` or `name@range`"),
+            )
+        })?;
+        let name = parsed.name;
+        let range = parsed.selector.unwrap_or_else(|| "*".to_string());
+        if !is_valid_range(&range) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("requirement for `{name}` is not a valid range (*, latest, X.Y.Z, ^, ~, >=)"),
+            ));
+        }
+        if let Some(spec) = scope_dep_spec(scope_root, &name) {
+            match spec {
+                crate::project::DependencySpec::Path { path, .. } => {
+                    let dir = if path.is_absolute() {
+                        path
+                    } else {
+                        scope_root.join(path)
+                    };
+                    let cfg = ProjectConfig::load_from_dir(&dir)?.ok_or_else(|| {
+                        Diagnostic::new(
+                            Code::E108,
+                            format!("local source for `{name}` at `{}` has no Project.config", dir.display()),
+                        )
+                    })?;
+                    if cfg.name != name {
+                        return Err(Diagnostic::new(
+                            Code::E108,
+                            format!("local source at `{}` names package `{}` but `{name}` was requested", dir.display(), cfg.name),
+                        ));
+                    }
+                    vendor_copy(&dir, dest, &name)?;
+                    done.push(format!("{name}@{}", cfg.version));
+                    continue;
+                }
+                crate::project::DependencySpec::Git { git, rev, .. } => {
+                    let src = resolve_git_dep(scope_root, &name, &git, &rev)?;
+                    vendor_copy(&src, dest, &name)?;
+                    done.push(format!("{name}#{rev}"));
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        done.push(vendor_registry_package(scope_root, dest, &name, &range, default_registry, overrides)?);
+    }
+    done.sort();
+    Ok(done)
+}
+
+pub fn project_registry_root(scope_root: &Path) -> PathBuf {
+    cache_anchor(scope_root).join(crate::cache::PROJECT_CACHE_DIR).join("registry")
+}
+
+pub fn project_package_dir(scope_root: &Path, base: &str, full: &str, version: &str) -> PathBuf {
+    package_dir_under(&project_registry_root(scope_root), base, full, version)
+}
+
+pub fn package_dir_under(root: &Path, base: &str, full: &str, version: &str) -> PathBuf {
+    root.join(host_of(base)).join(sanitize_full(full)).join(sanitize_segment(version))
+}
+
+pub fn scan_have_under(root: &Path) -> Vec<HaveEntry> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.join(crate::project::MANIFEST_FILE).is_file() {
+                    let text = match std::fs::read_to_string(integrity_path(&path)) {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    };
+                    let mut lines = text.lines();
+                    match (lines.next(), lines.next(), lines.next()) {
+                        (Some(full), Some(version), Some(integrity))
+                            if !full.is_empty()
+                                && !version.is_empty()
+                                && !integrity.is_empty() =>
+                        {
+                            out.push(HaveEntry {
+                                full: full.to_string(),
+                                version: version.to_string(),
+                                integrity: integrity.to_string(),
+                            });
+                        }
+                        _ => continue,
+                    }
+                } else {
+                    stack.push(path);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| (&a.full, &a.version).cmp(&(&b.full, &b.version)));
+    out.dedup_by(|a, b| a.full == b.full && a.version == b.version);
+    out
+}
+
+pub fn download_packages(
+    requirements: &BTreeMap<String, String>,
+    default_registry: Option<&RegistryConfig>,
+    overrides: &BTreeMap<String, RegistryConfig>,
+    scope_root: Option<&Path>,
+) -> Result<Vec<FetchedPackage>, Diagnostic> {
+    let _origin = origin_direct_guard();
+    let (root, have) = match scope_root {
+        Some(scope) => {
+            let root = project_registry_root(scope);
+            let mut have = scan_cache_have();
+            have.extend(scan_have_under(&root));
+            have.sort_by(|a, b| (&a.full, &a.version).cmp(&(&b.full, &b.version)));
+            have.dedup_by(|a, b| a.full == b.full && a.version == b.version);
+            (root, have)
+        }
+        None => (registry_cache_root(), scan_cache_have()),
+    };
+    Ok(ensure_registry_requirements_in(&root, requirements, default_registry, overrides, &have)?
+        .into_iter()
+        .collect())
 }
 
 fn registry_scope(full: &str) -> Option<&str> {
@@ -1809,10 +2099,7 @@ pub fn registry_cache_root() -> PathBuf {
 }
 
 pub fn cached_package_dir(base: &str, full: &str, version: &str) -> PathBuf {
-    registry_cache_root()
-        .join(host_of(base))
-        .join(sanitize_full(full))
-        .join(sanitize_segment(version))
+    package_dir_under(&registry_cache_root(), base, full, version)
 }
 
 fn integrity_path(dir: &Path) -> PathBuf {
@@ -1882,46 +2169,7 @@ pub fn cached_integrity(dir: &Path) -> Option<String> {
 }
 
 pub fn scan_cache_have() -> Vec<HaveEntry> {
-    let mut out = Vec::new();
-    let root = registry_cache_root();
-    let mut stack = vec![root];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if path.join(crate::project::MANIFEST_FILE).is_file() {
-                    let text = match std::fs::read_to_string(integrity_path(&path)) {
-                        Ok(t) => t,
-                        Err(_) => continue,
-                    };
-                    let mut lines = text.lines();
-                    match (lines.next(), lines.next(), lines.next()) {
-                        (Some(full), Some(version), Some(integrity))
-                            if !full.is_empty()
-                                && !version.is_empty()
-                                && !integrity.is_empty() =>
-                        {
-                            out.push(HaveEntry {
-                                full: full.to_string(),
-                                version: version.to_string(),
-                                integrity: integrity.to_string(),
-                            });
-                        }
-                        _ => continue,
-                    }
-                } else {
-                    stack.push(path);
-                }
-            }
-        }
-    }
-    out.sort_by(|a, b| (&a.full, &a.version).cmp(&(&b.full, &b.version)));
-    out.dedup_by(|a, b| a.full == b.full && a.version == b.version);
-    out
+    scan_have_under(&registry_cache_root())
 }
 
 fn check_engine(node: &ResolveNode) -> Result<(), Diagnostic> {
@@ -2530,8 +2778,14 @@ fn api_base_for(response_base: &str, request_base: &str) -> String {
     b.trim_end_matches('/').to_string()
 }
 
-fn ensure_node(base: &str, api_base: &str, node: &ResolveNode, share: &FetchShare) -> Result<PathBuf, Diagnostic> {
-    let dir = cached_package_dir(base, &node.full, &node.version);
+fn ensure_node(
+    cache_root: &Path,
+    base: &str,
+    api_base: &str,
+    node: &ResolveNode,
+    share: &FetchShare,
+) -> Result<PathBuf, Diagnostic> {
+    let dir = package_dir_under(cache_root, base, &node.full, &node.version);
     if dir.join(crate::project::MANIFEST_FILE).is_file()
         && cached_integrity(&dir).as_deref() == Some(node.integrity.as_str())
         && node_artifacts_ready(&dir, node.artifact_digest.as_deref())
@@ -2635,6 +2889,22 @@ pub fn ensure_registry_requirements(
     overrides: &BTreeMap<String, RegistryConfig>,
     have: &[HaveEntry],
 ) -> Result<Vec<FetchedPackage>, Diagnostic> {
+    ensure_registry_requirements_in(
+        &registry_cache_root(),
+        requirements,
+        default_registry,
+        overrides,
+        have,
+    )
+}
+
+pub fn ensure_registry_requirements_in(
+    cache_root: &Path,
+    requirements: &BTreeMap<String, String>,
+    default_registry: Option<&RegistryConfig>,
+    overrides: &BTreeMap<String, RegistryConfig>,
+    have: &[HaveEntry],
+) -> Result<Vec<FetchedPackage>, Diagnostic> {
     let mut by_base: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for (full, range) in requirements {
         if !is_valid_range(range) {
@@ -2682,7 +2952,7 @@ pub fn ensure_registry_requirements(
                     let Some(node) = ordered.get(i) else {
                         break;
                     };
-                    let got = ensure_node(base, &api_base, node, &share);
+                let got = ensure_node(cache_root, base, &api_base, node, &share);
                     let mut slot = slots[i].lock().unwrap_or_else(|e| e.into_inner());
                     *slot = Some(got);
                 });
@@ -2718,6 +2988,18 @@ pub fn ensure_registry_requirements(
     Ok(out.into_values().collect())
 }
 
+fn pinned_cache_hit(dir: &Path, _pkg: &str, pin: &str) -> Option<(PathBuf, ProjectConfig, String)> {
+    if !(dir.join(crate::project::MANIFEST_FILE).is_file() && cached_integrity(dir).is_some()) {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(dir).ok()?;
+    let cfg = ProjectConfig::load_from_dir(&canonical).ok()??;
+    if cfg.artifacts.is_none() || cached_artifacts_present(&canonical) {
+        return Some((canonical, cfg, pin.to_string()));
+    }
+    None
+}
+
 pub fn resolve_registry_package(
     pkg: &str,
     range: &str,
@@ -2733,20 +3015,21 @@ pub fn resolve_registry_package(
         }
     }
     if let Some(pin) = pinned.as_deref() {
-        // Pinned versions skip the network when the cache already holds
-        // them: the integrity file is written only after a verified
-        // download, so its presence means completeness. This keeps
-        // locked builds (and repeat installs) entirely off the wire.
+        // Pinned versions skip the network when a verified copy is cached:
+        // the integrity file is written only after a verified download, so
+        // its presence means completeness. The project-local registry (from
+        // `rnx download --local`) wins over the shared global cache. This
+        // keeps locked builds (and repeat installs) entirely off the wire.
         let base = registry_base_for(pkg, default_registry, overrides);
-        let dir = cached_package_dir(&base, pkg, pin);
-        if dir.join(crate::project::MANIFEST_FILE).is_file() && cached_integrity(&dir).is_some() {
-            if let Ok(canonical) = std::fs::canonicalize(&dir) {
-                if let Ok(Some(cfg)) = ProjectConfig::load_from_dir(&canonical) {
-                    if cfg.artifacts.is_none() || cached_artifacts_present(&canonical) {
-                        return Ok((canonical, cfg, pin.to_string()));
-                    }
-                }
+        if let Some(root) = anchor {
+            let dir = project_package_dir(root, &base, pkg, pin);
+            if let Some(found) = pinned_cache_hit(&dir, pkg, pin) {
+                return Ok(found);
             }
+        }
+        let dir = cached_package_dir(&base, pkg, pin);
+        if let Some(found) = pinned_cache_hit(&dir, pkg, pin) {
+            return Ok(found);
         }
     }
     let requirement = pinned.unwrap_or_else(|| range.to_string());
@@ -3853,6 +4136,208 @@ mod tests {
         reqs
     }
 
+    #[test]
+    fn vendor_stdlib_falls_back_to_checkout_sources_offline() {
+        let (_guard, _dir) = isolate_cache("vendorstd");
+        let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib/src");
+        assert!(src.join("prelude").join("lib.rnx").is_file(), "{}", src.display());
+        let scope = scope_scratch("checkout");
+        let dead = RegistryConfig {
+            url: "http://127.0.0.1:9".to_string(),
+            token_env: None,
+            ca_cert: None,
+        };
+        let dest = scope.join("staged");
+        let done = vendor_packages(
+            &scope,
+            &dest,
+            &["@std/fs".to_string()],
+            Some(&dead),
+            &BTreeMap::new(),
+        )
+        .expect("checkout sources vendor with no network");
+        let cli = env!("CARGO_PKG_VERSION");
+        assert_eq!(done, vec![format!("@std/fs@{cli}")]);
+        let staged = dest.join("@std/fs");
+        let want = std::fs::read(src.join("fs").join("lib.rnx")).unwrap();
+        assert_eq!(std::fs::read(staged.join("src").join("lib.rnx")).unwrap(), want);
+        let cfg = crate::project::ProjectConfig::load_from_dir(&staged)
+            .unwrap()
+            .expect("staged stdlib package carries a manifest");
+        assert_eq!(cfg.name, "@std/fs");
+        assert_eq!(cfg.version, cli);
+    }
+
+    fn scope_scratch(tag: &str) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("vendor-{tag}"));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: {\n        name: \"vendee\",\n        version: \"0.1.0\"\n    },\n    entries: { main: \"src/main.rnx\" }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int {\n    return 0;\n}\n").unwrap();
+        dir
+    }
+
+    fn tree_server(full: &str, version: &str) -> (MockRegistry, RegistryConfig) {
+        let (manifest, pairs, digest, _, _) = fixture_tree(full, version);
+        let server = start_tree(&[node_json(full, version, &digest, false)], &manifest, pairs);
+        let cfg = registry_cfg(&server.base);
+        (server, cfg)
+    }
+
+    #[test]
+    fn vendor_downloads_a_missing_registry_package_then_copies() {
+        let (_guard, _dir) = isolate_cache("vendordl");
+        let (_server, cfg) = tree_server("@acme/widget", "1.2.0");
+        let scope = scope_scratch("missing");
+        let dest = scope.join("staged");
+        let done = vendor_packages(
+            &scope,
+            &dest,
+            &["@acme/widget".to_string()],
+            Some(&cfg),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(done, vec!["@acme/widget@1.2.0".to_string()]);
+        let staged = dest.join("@acme/widget");
+        let main = std::fs::read(staged.join("src").join("main.rnx")).unwrap();
+        assert_eq!(main, b"export fn hello(): Int { return 1; }\n");
+        let manifest = std::fs::read_to_string(staged.join("Project.config")).unwrap();
+        assert!(manifest.contains("@acme/widget"), "{manifest}");
+        assert!(manifest.contains("1.2.0"), "{manifest}");
+    }
+
+    #[test]
+    fn vendor_honors_a_semver_selector() {
+        let (_guard, _dir) = isolate_cache("vendorsem");
+        let (_server, cfg) = tree_server("@acme/widget", "1.2.0");
+        let scope = scope_scratch("semver");
+        let dest = scope.join("staged");
+        let done = vendor_packages(
+            &scope,
+            &dest,
+            &["@acme/widget@^1.0.0".to_string()],
+            Some(&cfg),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(done, vec!["@acme/widget@1.2.0".to_string()]);
+        assert!(dest.join("@acme/widget").join("Project.config").is_file());
+        let bad = vendor_packages(
+            &scope,
+            &dest,
+            &["@acme/widget@bogus!!".to_string()],
+            Some(&cfg),
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert_eq!(bad.code, Code::E108);
+    }
+
+    #[test]
+    fn vendor_prefers_the_local_cache_with_no_network() {
+        let (_guard, _dir) = isolate_cache("vendorcache");
+        let (server, cfg) = tree_server("@acme/widget", "1.2.0");
+        let scope = scope_scratch("cached");
+        let dest = scope.join("staged");
+        vendor_packages(&scope, &dest, &["@acme/widget".to_string()], Some(&cfg), &BTreeMap::new())
+            .unwrap();
+        assert_eq!(server.resolve_bodies().len(), 1);
+        let again = vendor_packages(
+            &scope,
+            &scope.join("staged-two"),
+            &["@acme/widget".to_string()],
+            Some(&cfg),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(again, vec!["@acme/widget@1.2.0".to_string()]);
+        assert!(scope.join("staged-two").join("@acme/widget").join("src").join("main.rnx").is_file());
+        assert_eq!(
+            server.resolve_bodies().len(),
+            1,
+            "the second vendor must serve from cache with no new resolve call"
+        );
+    }
+
+    #[test]
+    fn download_seeds_the_global_cache_by_default() {
+        let (_guard, _dir) = isolate_cache("dlglobal");
+        let (_server, cfg) = tree_server("@acme/widget", "1.2.0");
+        let fetched = download_packages(
+            &requirements_for("@acme/widget", "1.2.0"),
+            Some(&cfg),
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].name, "@acme/widget");
+        assert_eq!(fetched[0].version, "1.2.0");
+        let dir = cached_package_dir(&cfg.url, "@acme/widget", "1.2.0");
+        assert!(dir.join("Project.config").is_file(), "{}", dir.display());
+        assert!(cached_integrity(&dir).is_some());
+    }
+
+    #[test]
+    fn download_local_targets_the_project_cache() {
+        let (_guard, _dir) = isolate_cache("dllocal");
+        let (server, cfg) = tree_server("@acme/widget", "1.2.0");
+        let scope = scope_scratch("local");
+        let fetched = download_packages(
+            &requirements_for("@acme/widget", "1.2.0"),
+            Some(&cfg),
+            &BTreeMap::new(),
+            Some(&scope),
+        )
+        .unwrap();
+        assert_eq!(fetched[0].version, "1.2.0");
+        assert_eq!(server.resolve_bodies().len(), 1);
+        let local = project_package_dir(&scope, &cfg.url, "@acme/widget", "1.2.0");
+        assert!(local.join("Project.config").is_file(), "{}", local.display());
+        assert!(
+            !cached_package_dir(&cfg.url, "@acme/widget", "1.2.0")
+                .join("Project.config")
+                .is_file(),
+            "local download must not write the global cache"
+        );
+        let (dir, _, version) = resolve_registry_package(
+            "@acme/widget",
+            "1.2.0",
+            Some(&cfg),
+            &BTreeMap::new(),
+            Some("1.2.0".to_string()),
+            &[],
+            Some(&scope),
+        )
+        .expect("project cache serves the pinned resolve");
+        assert_eq!(version, "1.2.0");
+        assert_eq!(dir, std::fs::canonicalize(&local).unwrap());
+        assert_eq!(
+            server.resolve_bodies().len(),
+            1,
+            "the project cache hit must not place a new resolve call"
+        );
+        let bare = scope_scratch("local-bare");
+        let (global_dir, _, _) = resolve_registry_package(
+            "@acme/widget",
+            "1.2.0",
+            Some(&cfg),
+            &BTreeMap::new(),
+            Some("1.2.0".to_string()),
+            &[],
+            Some(&bare),
+        )
+        .expect("an anchor without the project cache falls back to the network");
+        assert_eq!(
+            global_dir,
+            std::fs::canonicalize(cached_package_dir(&cfg.url, "@acme/widget", "1.2.0")).unwrap()
+        );
+    }
+
     fn artifact_fixture_tree(
         full: &str,
         version: &str,
@@ -4176,7 +4661,7 @@ mod tests {
         assert!(served > 0);
         let anchor = crate::scratch::dir("vendorbeat-anchor");
         let vendor =
-            write_vendor_package(&anchor.join("vendor"), "@acme/vendor-a", "1.2.0", "vendored\n");
+            write_vendor_package(&anchor.join(crate::fetch::VENDOR_DIR), "@acme/vendor-a", "1.2.0", "vendored\n");
         let (dir, _, ver) = resolve_registry_package(
             "@acme/vendor-a",
             "^1.0.0",
@@ -4200,7 +4685,7 @@ mod tests {
         let dead = registry_cfg("http://127.0.0.1:9");
         let empty = BTreeMap::new();
         let anchor = crate::scratch::dir("vendorenv-anchor");
-        write_vendor_package(&anchor.join("vendor"), "@acme/vendor-b", "9.9.9", "stale\n");
+        write_vendor_package(&anchor.join(crate::fetch::VENDOR_DIR), "@acme/vendor-b", "9.9.9", "stale\n");
         let env_root = crate::scratch::dir("vendorenv-env");
         let env_pkg = write_vendor_package(&env_root, "@acme/vendor-b", "1.2.0", "env\n");
         let _env = set_vendor_dir(env_root.path());
@@ -4225,7 +4710,7 @@ mod tests {
         let dead = registry_cfg("http://127.0.0.1:9");
         let empty = BTreeMap::new();
         let anchor = crate::scratch::dir("vendormismatch-anchor");
-        write_vendor_package(&anchor.join("vendor"), "@acme/vendor-c", "2.0.0", "new\n");
+        write_vendor_package(&anchor.join(crate::fetch::VENDOR_DIR), "@acme/vendor-c", "2.0.0", "new\n");
         let err = resolve_registry_package(
             "@acme/vendor-c",
             "^1.0.0",
@@ -4259,10 +4744,10 @@ mod tests {
         let dead = registry_cfg("http://127.0.0.1:9");
         let empty = BTreeMap::new();
         let anchor = crate::scratch::dir("vendorbad-anchor");
-        write_vendor_package(&anchor.join("vendor"), "@acme/vendor-d", "1.0.0", "x\n");
+        write_vendor_package(&anchor.join(crate::fetch::VENDOR_DIR), "@acme/vendor-d", "1.0.0", "x\n");
         std::fs::write(
             anchor
-                .join("vendor")
+                .join(crate::fetch::VENDOR_DIR)
                 .join("@acme/vendor-d")
                 .join(crate::project::MANIFEST_FILE),
             "export default {\n    project: {\n        name: \"@acme/other\",\n        version: \"1.0.0\"\n    }\n}\n",
@@ -4280,7 +4765,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, Code::E108);
         assert!(err.message.contains("@acme/other"), "{}", err.message);
-        let art = anchor.join("vendor").join("@acme/vendor-e");
+        let art = anchor.join(crate::fetch::VENDOR_DIR).join("@acme/vendor-e");
         std::fs::create_dir_all(art.join("src")).unwrap();
         std::fs::write(
             art.join(crate::project::MANIFEST_FILE),

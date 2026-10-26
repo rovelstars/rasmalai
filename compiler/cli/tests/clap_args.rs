@@ -44,16 +44,28 @@ fn test_help_exits_zero() {
 }
 
 #[test]
-fn test_fetch_std_from_removed_points_at_vendor() {
-    let dir = crate::scratch::dir("clap-from");
-    let (code, stdout, _) = run(&["fetch-std", "--from", "some-dir"], &dir);
-    assert_eq!(code, 1, "{stdout}");
-    assert!(stdout.contains("was removed"), "{stdout}");
-    assert!(stdout.contains("vendor --stdlib"), "{stdout}");
-    assert!(stdout.contains("RNX_VENDOR_DIR"), "{stdout}");
-    let (_, stdout, _) = run(&["fetch-std", "--help"], &dir);
-    assert!(!stdout.contains("--from"), "{stdout}");
+fn test_fetch_std_removed() {
+    let dir = crate::scratch::dir("clap-nofetchstd");
+    let (code, _, stderr) = run(&["fetch-std"], &dir);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("fetch-std"), "{stderr}");
+}
+
+#[test]
+fn test_download_help_names_packages_and_local() {
+    let dir = crate::scratch::dir("clap-download");
+    let (_, stdout, _) = run(&["download", "--help"], &dir);
+    assert!(stdout.contains("name@range"), "{stdout}");
     assert!(stdout.contains("--local"), "{stdout}");
+    assert!(stdout.contains("@std"), "{stdout}");
+}
+
+#[test]
+fn test_vendor_help_names_dir_default() {
+    let dir = crate::scratch::dir("clap-vendor");
+    let (_, stdout, _) = run(&["vendor", "--help"], &dir);
+    assert!(stdout.contains("--dir"), "{stdout}");
+    assert!(stdout.contains(".vendor"), "{stdout}");
 }
 
 #[test]

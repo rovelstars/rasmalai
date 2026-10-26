@@ -150,7 +150,7 @@ export async function configFacts(text: string): Promise<ConfigFacts> {
 export async function analyzeTree(
 	env: Record<string, string | undefined>,
 	files: Record<string, string>,
-	entries: { main: string; bins: Record<string, string> }
+	entries: { main: string; bins: Record<string, string>; packageName?: string }
 ): Promise<TreeAnalysis> {
 	const wasm = await serverWasm();
 	// @std/* imports resolve from provided sources, mirroring the

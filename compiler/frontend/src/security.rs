@@ -45,6 +45,300 @@ pub(crate) fn parse_cap(s: &str) -> Result<Capability, Diagnostic> {
     })
 }
 
+pub fn is_std_package_name(name: &str) -> bool {
+    name.starts_with("@std/")
+}
+
+pub fn bare_rnx_error(name: &str, span: diagnostics::Span) -> Diagnostic {
+    Diagnostic::new(
+        Code::S103,
+        format!("cannot reference runtime-internal `{name}` outside `@std/*`"),
+    )
+    .with_span(span)
+    .with_hint("call the owning `@std/*` wrapper instead of the `__rnx_*` internal (rule S103)")
+}
+
+fn nearest_manifest_name(path: &Path) -> Option<String> {
+    let mut dir = if path.is_file() {
+        path.parent()?.to_path_buf()
+    } else {
+        path.to_path_buf()
+    };
+    loop {
+        if dir.join(crate::project::MANIFEST_FILE).is_file() {
+            let cfg = ProjectConfig::load_from_dir(&dir).ok()??;
+            return Some(cfg.name);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+pub fn file_in_std_package(path: &Path, cache: &mut BTreeMap<PathBuf, bool>) -> bool {
+    if let Some(hit) = cache.get(path) {
+        return *hit;
+    }
+    let std = path.to_string_lossy().starts_with("@std/")
+        || nearest_manifest_name(path).is_some_and(|name| is_std_package_name(&name));
+    cache.insert(path.to_path_buf(), std);
+    std
+}
+
+pub fn s103_in_module(
+    module: &crate::ast::Module,
+    files: &diagnostics::DeclFiles,
+    extra_globals: &BTreeSet<String>,
+) -> Vec<Diagnostic> {
+    crate::semantic::check_with_files_and_globals(module, files, extra_globals)
+        .into_iter()
+        .filter(|d| d.code == Code::S103)
+        .collect()
+}
+
+pub fn s103_frame(modules: &[(&Path, &crate::ast::Module)]) -> Vec<Diagnostic> {
+    let mut extra = BTreeSet::new();
+    for (_, module) in modules {
+        extra.extend(declared_rnx_names(module));
+    }
+    let mut out = Vec::new();
+    for (path, module) in modules {
+        for mut diag in s103_in_module(module, &diagnostics::DeclFiles::new(), &extra) {
+            if diag.file.is_none() && !path.as_os_str().is_empty() {
+                diag.file = Some(path.to_path_buf());
+            }
+            out.push(diag);
+        }
+    }
+    out.sort_by(|a, b| {
+        a.file.cmp(&b.file).then(
+            a.span
+                .map(|s| s.start)
+                .unwrap_or(0)
+                .cmp(&b.span.map(|s| s.start).unwrap_or(0)),
+        )
+    });
+    out
+}
+
+pub fn s103_graph(graph: &crate::modules::ModuleGraph) -> Vec<Diagnostic> {
+    let mut cache: BTreeMap<PathBuf, bool> = BTreeMap::new();
+    let mut user: Vec<(PathBuf, crate::ast::Module)> = Vec::new();
+    for f in &graph.files {
+        if file_in_std_package(&f.path, &mut cache) {
+            continue;
+        }
+        user.push((f.path.clone(), f.module.clone()));
+    }
+    let refs: Vec<(&Path, &crate::ast::Module)> = user
+        .iter()
+        .map(|(path, module)| (path.as_path(), module))
+        .collect();
+    s103_frame(&refs)
+}
+
+fn collect_prefix_sources(dir: &Path) -> Result<Vec<(PathBuf, crate::ast::Module)>, Diagnostic> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rnx(dir, &mut files);
+    files.sort();
+    let mut modules = Vec::with_capacity(files.len());
+    for path in &files {
+        let src = std::fs::read_to_string(path).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", path.display()))
+        })?;
+        let module = crate::parser::Parser::parse_module(&src).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot parse `{}`: {}", path.display(), e.message),
+            )
+        })?;
+        modules.push((path.clone(), module));
+    }
+    Ok(modules)
+}
+
+pub fn verify_std_package_bytes(dir: &Path) -> Result<bool, Diagnostic> {
+    let Some(cfg) = ProjectConfig::load_from_dir(dir).map_err(|e| {
+        Diagnostic::new(
+            Code::E108,
+            format!("cannot read dependency manifest in `{}`: {e}", dir.display()),
+        )
+    })?
+    else {
+        return Ok(false);
+    };
+    if !is_std_package_name(&cfg.name) {
+        return Ok(false);
+    }
+    let Some(pin) = super::stdlib_seed::read_std_pin() else {
+        return Ok(false);
+    };
+    let Some(pinned) = pin.packages.get(&cfg.name) else {
+        return Ok(false);
+    };
+    if pinned != &cfg.version {
+        return Ok(false);
+    }
+    let cached = super::fetch::cached_package_dir(&pin.registry, &cfg.name, pinned);
+    if super::fetch::cached_integrity(&cached).is_none() {
+        return Ok(false);
+    }
+    let mut have: Vec<String> = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(top) = stack.pop() {
+        let entries = match std::fs::read_dir(&top) {
+            Ok(e) => e,
+            Err(_) => return Ok(false),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if path.is_dir() {
+                if name.starts_with('.') || name == "target" || name == "tests" || name == ".git" {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_some_and(|e| e == "rnx") {
+                let rel = match path.strip_prefix(dir) {
+                    Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                    Err(_) => return Ok(false),
+                };
+                have.push(rel);
+            }
+        }
+    }
+    let mut want: Vec<String> = Vec::new();
+    let mut cache_stack = vec![cached.clone()];
+    while let Some(top) = cache_stack.pop() {
+        let entries = match std::fs::read_dir(&top) {
+            Ok(e) => e,
+            Err(_) => return Ok(false),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                cache_stack.push(path);
+                continue;
+            }
+            if path.extension().is_some_and(|e| e == "rnx") {
+                let rel = match path.strip_prefix(&cached) {
+                    Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                    Err(_) => return Ok(false),
+                };
+                want.push(rel);
+            }
+        }
+    }
+    have.sort();
+    want.sort();
+    if have != want {
+        return Ok(false);
+    }
+    for rel in &have {
+        let a = std::fs::read(dir.join(rel)).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", dir.display()))
+        })?;
+        let Ok(b) = std::fs::read(cached.join(rel)) else {
+            return Ok(false);
+        };
+        if a != b {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub fn scan_dep_prefix(dir: &Path) -> Result<Vec<Diagnostic>, Diagnostic> {
+    if verify_std_package_bytes(dir).unwrap_or(false) {
+        return Ok(Vec::new());
+    }
+    let modules = collect_prefix_sources(dir)?;
+    let refs: Vec<(&Path, &crate::ast::Module)> = modules
+        .iter()
+        .map(|(path, module)| (path.as_path(), module))
+        .collect();
+    Ok(s103_frame(&refs))
+}
+
+pub fn s103_sources(sources: &[(PathBuf, String)]) -> Result<Vec<Diagnostic>, Diagnostic> {
+    let mut modules = Vec::with_capacity(sources.len());
+    for (path, src) in sources {
+        let module = crate::parser::Parser::parse_module(src).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot parse `{}`: {}", path.display(), e.message),
+            )
+        })?;
+        modules.push((path.clone(), module));
+    }
+    let refs: Vec<(&Path, &crate::ast::Module)> = modules
+        .iter()
+        .map(|(path, module)| (path.as_path(), module))
+        .collect();
+    Ok(s103_frame(&refs))
+}
+
+pub fn declared_rnx_names(module: &crate::ast::Module) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut take = |name: &str| {
+        if name.starts_with("__rnx_") {
+            out.insert(name.to_string());
+        }
+    };
+    for decl in &module.decls {
+        match &decl.node {
+            crate::ast::Decl::Fn(f) => take(&f.name),
+            crate::ast::Decl::Const { name, .. } => take(name),
+            crate::ast::Decl::Class { name, .. }
+            | crate::ast::Decl::Struct { name, .. }
+            | crate::ast::Decl::Enum { name, .. }
+            | crate::ast::Decl::Record { name, .. } => take(name),
+            crate::ast::Decl::Import(d) => {
+                for local in crate::modules::native_import_locals(&d.clause) {
+                    take(&local);
+                }
+                match &d.clause {
+                    crate::ast::ImportClause::Named(specs) => {
+                        for spec in specs {
+                            take(&crate::modules::import_local_name(spec));
+                        }
+                    }
+                    crate::ast::ImportClause::DefaultAndNamed(name, specs) => {
+                        take(name);
+                        for spec in specs {
+                            take(&crate::modules::import_local_name(spec));
+                        }
+                    }
+                    crate::ast::ImportClause::Namespace(ns)
+                    | crate::ast::ImportClause::Default(ns) => take(ns),
+                    _ => {}
+                }
+            }
+            crate::ast::Decl::ExportFrom(d) => {
+                if let crate::ast::ImportSource::Native(_) = &d.source {
+                    if let crate::ast::ExportClause::Native(sigs) = &d.clause {
+                        for sig in sigs {
+                            take(sig.alias.as_ref().unwrap_or(&sig.name));
+                        }
+                    }
+                }
+            }
+            crate::ast::Decl::ExportList(specs) => {
+                for spec in specs {
+                    take(spec.alias.as_ref().unwrap_or(&spec.name));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 pub struct DepDir {
     pub name: String,
     pub dir: PathBuf,
@@ -56,7 +350,7 @@ fn dep_dirs(root: &Path, config: &ProjectConfig) -> Vec<DepDir> {
         let dir = match spec {
             DependencySpec::Path { path, .. } => Some(root.join(path)),
             DependencySpec::Git { .. } => {
-                let vendor = root.join("vendor").join(name);
+                let vendor = root.join(crate::fetch::VENDOR_DIR).join(name);
                 if vendor.join("Project.config").is_file() {
                     Some(vendor)
                 } else {
@@ -418,5 +712,89 @@ fn collect_rnx(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path.extension().is_some_and(|e| e == "rnx") {
             out.push(path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fetch::testkit::*;
+
+    fn seed_verified_package(full: &str, version: &str, main: &[u8]) -> (String, PathBuf) {
+        let base = "http://127.0.0.1:9".to_string();
+        let dir = crate::fetch::cached_package_dir(&base, full, version);
+        let config = format!(
+            "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }},\n    entries: {{\n        main: \"src/main.rnx\"\n    }}\n}}\n"
+        );
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join(crate::project::MANIFEST_FILE), config).unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), main).unwrap();
+        let digest = crate::checksum::Sha256::hexdigest(main);
+        std::fs::write(dir.join(".rnx-integrity"), format!("{full}\n{version}\n{digest}\n")).unwrap();
+        crate::stdlib_seed::pin_report(
+            &crate::stdlib_seed::std_pin_path(),
+            base.clone(),
+            vec![(full.to_string(), version.to_string())],
+        )
+        .unwrap();
+        (base, dir)
+    }
+
+    fn mirror_tree(from: &Path, to: &Path) {
+        let mut stack = vec![from.to_path_buf()];
+        while let Some(top) = stack.pop() {
+            for entry in std::fs::read_dir(&top).unwrap().flatten() {
+                let path = entry.path();
+                let rel = path.strip_prefix(from).unwrap();
+                if path.is_dir() {
+                    std::fs::create_dir_all(to.join(rel)).unwrap();
+                    stack.push(path);
+                } else {
+                    std::fs::copy(&path, to.join(rel)).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn verified_std_bytes_pass_and_tampered_fail() {
+        let (_guard, _dir) = isolate_cache("verifybytes");
+        let main = b"fn f(): Int {\n    return __rnx_probe();\n}\n";
+        let (_base, cached) = seed_verified_package("@std/probe", "1.0.0", main);
+        let mirror = crate::scratch::dir("verify-mirror");
+        mirror_tree(&cached, mirror.path());
+        assert!(verify_std_package_bytes(mirror.path()).unwrap());
+        assert!(scan_dep_prefix(mirror.path()).unwrap().is_empty());
+        std::fs::write(
+            mirror.path().join("src").join("main.rnx"),
+            b"fn f(): Int {\n    return __rnx_probe_tampered();\n}\n",
+        )
+        .unwrap();
+        assert!(!verify_std_package_bytes(mirror.path()).unwrap());
+        let hits = scan_dep_prefix(mirror.path()).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].code, Code::S103);
+        assert!(hits[0].message.contains("__rnx_probe_tampered"), "{}", hits[0].message);
+    }
+
+    #[test]
+    fn unverifiable_std_claim_is_scanned() {
+        let (_guard, _dir) = isolate_cache("verifycold");
+        let dir = crate::scratch::dir("verify-cold");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join(crate::project::MANIFEST_FILE),
+            "export default {\n    project: {\n        name: \"@std/probe\",\n        version: \"9.9.9\"\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src").join("main.rnx"),
+            "fn f(): Int {\n    return __rnx_probe();\n}\n",
+        )
+        .unwrap();
+        assert!(!verify_std_package_bytes(dir.path()).unwrap());
+        let hits = scan_dep_prefix(dir.path()).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].code, Code::S103);
     }
 }

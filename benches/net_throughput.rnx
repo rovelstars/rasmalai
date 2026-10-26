@@ -10,28 +10,40 @@ fn payloadByte(i: Int): Int {
     return (i * 37 + 11) % 256;
 }
 
-fn serveEcho(sh: Int, pings: Int): Int {
+fn readExact(sh: TcpStream, want: Int): Array<Int> {
+    let out: Array<Int> = [];
+    while out.length() < want {
+        let chunk: Array<Int> = sh.read(want - out.length()).wait().unwrapOr([]);
+        if chunk.length() == 0 {
+            break;
+        }
+        let k = 0;
+        while k < chunk.length() {
+            out.push(chunk[k]);
+            k = k + 1;
+        }
+    }
+    return out;
+}
+
+fn writeAll(sh: TcpStream, data: Array<Int>): Int {
+    let r = sh.write(data).wait();
+    if r.isErr() {
+        return 0 - 1;
+    }
+    return r.unwrap();
+}
+
+fn serveEcho(sh: TcpStream, pings: Int): Int {
     let done = 0;
     while done < pings {
-        let msg: Array<Int> = [];
-        while msg.length() < 64 {
-            let n = __rnx_net_recv_or_wait(sh, 64 - msg.length());
-            if n <= 0 {
-                return 0 - 1;
-            }
-            let k = 0;
-            while k < n {
-                msg.push(__rnx_net_recv_get(sh, k));
-                k = k + 1;
-            }
+        let msg = readExact(sh, 64);
+        if msg.length() != 64 {
+            return 0 - 1;
         }
-        let sent = 0;
-        while sent < 64 {
-            let r = __rnx_net_send_or_wait(sh, msg[sent]);
-            if r < 0 {
-                return 0 - 2;
-            }
-            sent = sent + 1;
+        let sent = writeAll(sh, msg);
+        if sent < 0 {
+            return 0 - 2;
         }
         done = done + 1;
     }
@@ -39,57 +51,47 @@ fn serveEcho(sh: Int, pings: Int): Int {
 }
 
 fn serveOne(lh: Int, pings: Int): Int {
-    let r = __rnx_net_listener_accept_start(lh);
-    let sh = r;
-    if r < 0 {
-        if r == 0 - 1 {
-            return 0 - 1;
-        }
-        sh = __rnx_net_listener_accept_wait(0 - r);
-        if sh < 0 {
-            return 0 - 2;
-        }
+    let listener = new TcpListener(lh);
+    let accepted = listener.accept().wait();
+    if accepted.isErr() {
+        return 0 - 1;
     }
+    let sh: TcpStream = accepted.unwrap();
     let n = serveEcho(sh, pings);
-    __rnx_net_close(sh);
+    sh.close();
     return n;
 }
 
-fn pingOnce(sh: Int, seed: Int): Int {
+fn pingOnce(sh: TcpStream, seed: Int): Int {
     let i = 0;
     while i < 64 {
-        let r = __rnx_net_send_or_wait(sh, payloadByte(seed + i));
+        let data: Array<Int> = [payloadByte(seed + i)];
+        let r = writeAll(sh, data);
         if r < 0 {
             return 0 - 1;
         }
         i = i + 1;
     }
     let sum = 0;
-    let got = 0;
-    while got < 64 {
-        let n = __rnx_net_recv_or_wait(sh, 64 - got);
-        if n <= 0 {
-            return 0 - 2;
-        }
-        let k = 0;
-        while k < n {
-            sum = sum + __rnx_net_recv_get(sh, k);
-            k = k + 1;
-        }
-        got = got + n;
+    let got = readExact(sh, 64);
+    if got.length() != 64 {
+        return 0 - 2;
+    }
+    let k = 0;
+    while k < 64 {
+        sum = sum + got[k];
+        k = k + 1;
     }
     return sum;
 }
 
-fn clientLoop(port: Int, pings: Int): Int {    let h = __rnx_net_connect_start("127.0.0.1", port);
-    if h < 0 {
-        print("RESULT connect_fail", __rnx_net_error_text(-1));
+fn clientLoop(port: Int, pings: Int): Int {
+    let conn = TcpStream.connect("127.0.0.1", port).wait();
+    if conn.isErr() {
+        print("RESULT connect_fail", 1);
         return 0 - 1;
     }
-    if __rnx_net_connect_wait(h) != 0 {
-        print("RESULT connect_fail", __rnx_net_error_text(h));
-        return 0 - 2;
-    }
+    let h: TcpStream = conn.unwrap();
     let t0 = Clock.mono().nanos;
     let total = 0;
     let p = 0;
@@ -103,7 +105,7 @@ fn clientLoop(port: Int, pings: Int): Int {    let h = __rnx_net_connect_start("
         p = p + 1;
     }
     let t1 = Clock.mono().nanos;
-    __rnx_net_close(h);
+    h.close();
     print("RESULT pings", pings);
     print("RESULT pingms", (t1 - t0) / 1000000);
     print("RESULT pingsum", total);
@@ -121,7 +123,6 @@ fn Main(): Int {
     }
     let listener = TcpListener.bind("127.0.0.1", 0);
     let port = listener.port();
-    let live0 = __rnx_debug_live_count();
     let srv = Thread.spawn((): Int => serveOne(listener.handle, pings));
     let rc = clientLoop(port, pings);
     if rc != 0 {
@@ -129,7 +130,6 @@ fn Main(): Int {
     }
     let done = srv.join().unwrap();
     print("RESULT served", done);
-    print("RESULT live_delta", __rnx_debug_live_count() - live0);
     listener.close();
     return 0;
 }

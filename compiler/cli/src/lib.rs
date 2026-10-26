@@ -35,7 +35,16 @@ pub struct CheckReport {
 }
 
 pub fn check_source(src: &str) -> CheckReport {
-    let mut module = match frontend::modules::ModuleGraph::from_source(src) {
+    let graph = match frontend::modules::ModuleGraph::from_source_graph(src) {
+        Ok(g) => g,
+        Err(e) => {
+            return CheckReport {
+                errors: vec![e],
+                warnings: Vec::new(),
+            };
+        }
+    };
+    let mut module = match graph.resolve() {
         Ok(m) => m,
         Err(e) => {
             return CheckReport {
@@ -56,12 +65,16 @@ pub fn check_source(src: &str) -> CheckReport {
     let mut warnings: Vec<Diagnostic> = Vec::new();
     let mut kept: Vec<Diagnostic> = Vec::new();
     for d in frontend::semantic::check(&module) {
+        if d.code == diagnostics::Code::S103 {
+            continue;
+        }
         if d.code.is_warning() {
             warnings.push(d);
         } else {
             kept.push(d);
         }
     }
+    kept.extend(frontend::security::s103_graph(&graph));
     errors.extend(kept);
     errors.sort_by(|a, b| a.code.as_str().cmp(b.code.as_str()).then(a.message.cmp(&b.message)));
     errors.dedup_by(|a, b| a.code == b.code && a.message == b.message && a.span == b.span);
@@ -201,6 +214,7 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::E501 => "pass --token <token> or set RNX_TOKEN in your environment",
         Code::S101 => "approve the capability and re-lock, or remove the offending use",
         Code::S102 => "narrow the package code or deliberately widen the `[permissions]` ceiling",
+        Code::S103 => "call the owning `@std/*` wrapper instead of the `__rnx_*` internal",
         Code::S201 => "pass the delegated value through untouched or request the ambient grant",
         Code::S301 => "never target `Project.config`, `Project.deplock`, `.git`, or cache dirs from dependency code",
         Code::S401 => "add a covering `sys:exec:<name>` grant with explicit approval",
@@ -444,12 +458,16 @@ pub fn load_program_cfg(
     let mut warnings = Vec::new();
     if errors.is_empty() {
         for d in frontend::semantic::check(&module) {
+            if d.code == diagnostics::Code::S103 {
+                continue;
+            }
             if d.code.is_warning() {
                 warnings.push(d);
             } else {
                 errors.push(d);
             }
         }
+        errors.extend(frontend::security::s103_graph(&graph));
     }
     profiler.stop();
     if !errors.is_empty() {
@@ -674,12 +692,16 @@ pub fn build_lib_files_cfg(
     if errors.is_empty() {
         let mut warnings = Vec::new();
         for d in frontend::semantic::check(&module) {
+            if d.code == diagnostics::Code::S103 {
+                continue;
+            }
             if d.code.is_warning() {
                 warnings.push(d);
             } else {
                 errors.push(d);
             }
         }
+        errors.extend(frontend::security::s103_graph(&graph));
         let _ = warnings;
     }
     profiler.stop();
@@ -1511,11 +1533,23 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
 }
 
 fn ensure_gitignore_entry(path: &std::path::Path) -> std::io::Result<()> {
+    for entry in [".rnx-cache/", "/.rnx-cache/", ".vendor/", "/.vendor/"] {
+        append_gitignore_entry(path, entry)?;
+    }
+    Ok(())
+}
+
+fn append_gitignore_entry(path: &std::path::Path, entry: &str) -> std::io::Result<()> {
+    let alt = if let Some(rest) = entry.strip_prefix('/') {
+        format!("{rest}")
+    } else {
+        format!("/{entry}")
+    };
     match std::fs::read_to_string(path) {
         Ok(existing) => {
             let present = existing.lines().any(|line| {
                 let line = line.strip_suffix('\r').unwrap_or(line);
-                line == ".rnx-cache/" || line == "/.rnx-cache/"
+                line == entry || line == alt
             });
             if present {
                 return Ok(());
@@ -1525,12 +1559,12 @@ fn ensure_gitignore_entry(path: &std::path::Path) -> std::io::Result<()> {
             if !out.is_empty() && !out.ends_with('\n') {
                 out.push_str(eol);
             }
-            out.push_str(".rnx-cache/");
+            out.push_str(entry);
             out.push_str(eol);
             std::fs::write(path, out)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::write(path, ".rnx-cache/\n")
+            std::fs::write(path, format!("{entry}\n"))
         }
         Err(e) => Err(e),
     }
@@ -1934,10 +1968,14 @@ pub fn load_test_program_cfg(
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         for d in frontend::semantic::check(&module) {
+            if d.code == diagnostics::Code::S103 {
+                continue;
+            }
             if !d.code.is_warning() {
                 errors.push(d);
             }
         }
+        errors.extend(frontend::security::s103_graph(&graph));
     }
     profiler.stop();
     if !errors.is_empty() {
@@ -2018,10 +2056,14 @@ pub fn load_bench_program_cfg(
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         for d in frontend::semantic::check(&module) {
+            if d.code == diagnostics::Code::S103 {
+                continue;
+            }
             if !d.code.is_warning() {
                 errors.push(d);
             }
         }
+        errors.extend(frontend::security::s103_graph(&graph));
     }
     profiler.stop();
     if !errors.is_empty() {
@@ -2174,13 +2216,22 @@ pub fn fetch_scope(
     frontend::fetch::fetch_all_git_deps(&scope_root)
 }
 
-pub fn vendor_scope(package: Option<&str>) -> Result<Vec<String>, Diagnostic> {
-    let scope_root = fetch_scope_root(package)?;
-    frontend::fetch::vendor_all(&scope_root)
-}
-
-pub fn stage_std_vendor(dir: &std::path::Path) -> Result<Vec<String>, Diagnostic> {
-    frontend::stdlib_seed::stage_std_vendor_tree(dir)
+pub fn vendor_scope_packages(
+    names: &[String],
+    dir: Option<&std::path::Path>,
+) -> Result<(Vec<String>, std::path::PathBuf), Diagnostic> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot read working directory: {e}"))
+    })?;
+    let scope_root = frontend::project::find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let dest = match dir {
+        Some(d) if d.is_absolute() => d.to_path_buf(),
+        Some(d) => cwd.join(d),
+        None => frontend::fetch::default_vendor_dir(&scope_root),
+    };
+    let (default, overrides) = frontend::stdlib_seed::std_registry_from_env();
+    let done = frontend::fetch::vendor_packages(&scope_root, &dest, names, default.as_ref(), &overrides)?;
+    Ok((done, dest))
 }
 
 pub enum AddResult {
@@ -2756,7 +2807,7 @@ mod tests {
         let dir = scratch("missing");
         let path = dir.join(".gitignore");
         ensure_gitignore_entry(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), ".rnx-cache/\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), ".rnx-cache/\n.vendor/\n");
     }
 
     #[test]
@@ -2767,12 +2818,12 @@ mod tests {
         ensure_gitignore_entry(&path).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "target/\n*.log\n.rnx-cache/\n"
+            "target/\n*.log\n.rnx-cache/\n.vendor/\n"
         );
         ensure_gitignore_entry(&path).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "target/\n*.log\n.rnx-cache/\n"
+            "target/\n*.log\n.rnx-cache/\n.vendor/\n"
         );
     }
 
@@ -2784,7 +2835,7 @@ mod tests {
         ensure_gitignore_entry(&path).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "target/\n.rnx-cache/\n"
+            "target/\n.rnx-cache/\n.vendor/\n"
         );
     }
 
@@ -2796,7 +2847,7 @@ mod tests {
         ensure_gitignore_entry(&path).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "target/\n/.rnx-cache/\n"
+            "target/\n/.rnx-cache/\n.vendor/\n"
         );
     }
 
@@ -2808,12 +2859,12 @@ mod tests {
         ensure_gitignore_entry(&path).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "target/\r\n*.log\r\n.rnx-cache/\r\n"
+            "target/\r\n*.log\r\n.rnx-cache/\r\n.vendor/\r\n"
         );
         ensure_gitignore_entry(&path).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "target/\r\n*.log\r\n.rnx-cache/\r\n"
+            "target/\r\n*.log\r\n.rnx-cache/\r\n.vendor/\r\n"
         );
     }
 
@@ -2825,7 +2876,7 @@ mod tests {
         ensure_gitignore_entry(&path).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "target/\n .rnx-cache/\n.rnx-cache/\n"
+            "target/\n .rnx-cache/\n.rnx-cache/\n.vendor/\n"
         );
     }
 }

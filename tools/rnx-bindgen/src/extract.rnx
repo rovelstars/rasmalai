@@ -163,7 +163,7 @@ fn collectParams(node: Map<String, Any>, out: Array<Param>): Void {
     let innerv = node.get("inner");
     if innerv == null { return; }
     let inner: Any = innerv;
-    let n = __rnx_array_len(inner);
+    let n = (inner as Array<Any>).length();
     let i = 0;
     let anon = 0;
     while i < n {
@@ -272,7 +272,7 @@ export fn extractFunctions(astJson: String, prefixes: Array<String>): Array<FnDe
     let innerv = root.get("inner");
     if innerv == null { return found; }
     let inner: Any = innerv;
-    let n = __rnx_array_len(inner);
+    let n = (inner as Array<Any>).length();
     let i = 0;
     while i < n {
         let node = JSON.asMap(inner[i]);
@@ -312,7 +312,7 @@ fn collectFields(node: Map<String, Any>, out: Array<StructField>): Bool {
     let innerv = node.get("inner");
     if innerv == null { return true; }
     let inner: Any = innerv;
-    let n = __rnx_array_len(inner);
+    let n = (inner as Array<Any>).length();
     let i = 0;
     while i < n {
         let child = JSON.asMap(inner[i]);
@@ -341,7 +341,7 @@ export fn extractStructs(astJson: String, prefixes: Array<String>): Array<Struct
     let innerv = root.get("inner");
     if innerv == null { return structs; }
     let inner: Any = innerv;
-    let n = __rnx_array_len(inner);
+    let n = (inner as Array<Any>).length();
     let i = 0;
     while i < n {
         let node = JSON.asMap(inner[i]);

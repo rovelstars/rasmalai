@@ -108,13 +108,12 @@ function tryReleaseDocgen() {
 			console.log('docs: release archive has no rnx binary, skipping');
 			return false;
 		}
-		// Newer binaries ship no embedded stdlib and resolve @std/* from
-		// cache-or-registry instead: seed first (warn-only), so both eras
-		// of release binary work here.
+		// Binaries carry no embedded stdlib and resolve @std/* from
+		// cache-or-registry instead: seed first (warn-only).
 		try {
-			execFileSync(bin, ['fetch-std'], { stdio: ['ignore', 'pipe', 'ignore'] });
+			execFileSync(bin, ['download'], { stdio: ['ignore', 'pipe', 'ignore'] });
 		} catch {
-			console.log('docs: release fetch-std failed, relying on embedded stdlib if present');
+			console.log('docs: release download failed, relying on the seeded cache if present');
 		}
 		try {
 			execFileSync(bin, ['doc', '--json', '--stdlib', '--out-dir', outDir], {

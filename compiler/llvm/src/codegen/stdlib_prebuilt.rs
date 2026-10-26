@@ -65,18 +65,20 @@ fn link_shared(obj: &Path, out: &Path) -> Result<(), Diagnostic> {
 }
 
 fn build_stdlib_object() -> Result<Vec<u8>, Diagnostic> {
-    let mut module = frontend::modules::ModuleGraph::from_source(STDLIB_ENTRY)?;
+    let graph = frontend::modules::ModuleGraph::from_source_graph(STDLIB_ENTRY)?;
+    let mut module = graph.resolve()?;
     let desugared = frontend::desugar::desugar(&mut module);
     if !desugared.is_empty() {
         return Err(first_diag(desugared, "prebuilt stdlib: desugar failed"));
     }
     let mut errors = Vec::new();
     for diag in frontend::semantic::check(&module) {
-        if diag.code.is_warning() {
+        if diag.code.is_warning() || diag.code == diagnostics::Code::S103 {
             continue;
         }
         errors.push(diag);
     }
+    errors.extend(frontend::security::s103_graph(&graph));
     if !errors.is_empty() {
         return Err(first_diag(errors, "prebuilt stdlib: typecheck failed"));
     }

@@ -79,11 +79,15 @@ pub fn build_program(    path: &Path,
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         for d in frontend::semantic::check(&module) {
+            if d.code == diagnostics::Code::S103 {
+                continue;
+            }
             if d.code.is_warning() {
                 continue;
             }
             errors.push(d);
         }
+        errors.extend(frontend::security::s103_graph(&graph));
     }
     if !errors.is_empty() {
         return Err(errors);

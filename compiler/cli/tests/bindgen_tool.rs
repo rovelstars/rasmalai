@@ -94,12 +94,12 @@ fn bindgen_case_and_rename_emit_idiomatic_wrappers() {
     assert!(generated.contains("unsafe fn miniClose("), "{generated}");
     assert!(
         generated.contains(
-            "fn mini_open(dbPath: Pointer<Byte>, flags: Int): Int as __rnx_mini_open"
+            "fn mini_open(dbPath: Pointer<Byte>, flags: Int): Int as __ffi_mini_open"
         ),
         "{generated}"
     );
     assert!(
-        generated.contains("return __rnx_mini_open(dbPath, flags);"),
+        generated.contains("return __ffi_mini_open(dbPath, flags);"),
         "{generated}"
     );
     assert!(

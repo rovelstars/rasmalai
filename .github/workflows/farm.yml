@@ -81,7 +81,7 @@ jobs:
         run: |
           seeded=""
           for _ in 1 2 3; do
-            if ./target/debug/rnx fetch-std; then seeded=1; break; fi
+            if ./target/debug/rnx download; then seeded=1; break; fi
           done
           [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
 
@@ -198,7 +198,7 @@ jobs:
         run: |
           seeded=""
           for _ in 1 2 3; do
-            if cargo run -q -p cli -- fetch-std; then seeded=1; break; fi
+            if cargo run -q -p cli -- download; then seeded=1; break; fi
           done
           [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
 
