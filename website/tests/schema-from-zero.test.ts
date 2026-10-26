@@ -34,7 +34,7 @@ describe('schema from zero', () => {
 		const version = fake.db
 			.prepare("SELECT value AS v FROM meta WHERE key = 'schema_version'")
 			.get() as { v: string } | undefined;
-		assert.equal(version?.v, '6');
+		assert.equal(version?.v, '7');
 		for (const table of [
 			'packages',
 			'package_versions',
