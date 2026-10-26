@@ -9,7 +9,10 @@ impl<'a> ScopeCheck<'a> {
                 return Some(info.ty.clone());
             }
         }
-        if self.globals.contains(name) || SCOPE_BUILTINS.contains(&name) {
+        if self.globals.contains(name)
+            || self.extra_globals.contains(name)
+            || SCOPE_BUILTINS.contains(&name)
+        {
             return Some(None);
         }
         if crate::prelude::provides(name) {
@@ -30,13 +33,45 @@ impl<'a> ScopeCheck<'a> {
         None
     }
 
+    fn is_declared(&self, name: &str) -> bool {
+        for s in self.scopes.iter().rev() {
+            if s.contains_key(name) {
+                return true;
+            }
+        }
+        if self.globals.contains(name)
+            || self.extra_globals.contains(name)
+            || SCOPE_BUILTINS.contains(&name)
+        {
+            return true;
+        }
+        if crate::prelude::provides(name) {
+            return true;
+        }
+        false
+    }
+
+    fn check_bare_rnx(&mut self, name: &str, span: Span) -> bool {
+        if !self.emit_s103 {
+            return false;
+        }
+        if !name.starts_with("__rnx_") || self.is_declared(name) {
+            return false;
+        }
+        self.diags.push(crate::security::bare_rnx_error(name, self.span(span)));
+        true
+    }
+
     fn use_name(&mut self, name: &str) -> bool {
         for s in self.scopes.iter().rev() {
             if s.contains_key(name) {
                 return true;
             }
         }
-        if self.globals.contains(name) || SCOPE_BUILTINS.contains(&name) {
+        if self.globals.contains(name)
+            || self.extra_globals.contains(name)
+            || SCOPE_BUILTINS.contains(&name)
+        {
             return true;
         }
         if crate::prelude::provides(name) {
@@ -493,6 +528,9 @@ impl<'a> ScopeCheck<'a> {
     }
 
     fn check_ident_use(&mut self, name: &str, span: Span) {
+        if self.check_bare_rnx(name, span) {
+            return;
+        }
         if name == "this" || name == "super" {
             if !self.allow_this {
                 let span = self.span(span);
@@ -844,6 +882,7 @@ impl<'a> ScopeCheck<'a> {
                         }
                         if starts_uppercase(n) {
                             self.use_name(n);
+                        } else if self.check_bare_rnx(n, callee.span) {
                         } else if !self.use_name(n) {
                             self.err_undefined(n, callee.span);
                         }

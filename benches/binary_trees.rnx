@@ -101,7 +101,6 @@ fn Main(): Int {
         minDepth = 4;
         churn = 10000;
     }
-    let live0 = __rnx_debug_live_count();
     let t0 = Clock.mono().nanos;
     let loopSum = treePhase(minDepth, maxDepth);
     let t1 = Clock.mono().nanos;
@@ -112,6 +111,5 @@ fn Main(): Int {
     let c1 = Clock.mono().nanos;
     print("RESULT churnmix", mix);
     print("RESULT churnms", (c1 - c0) / 1000000);
-    print("RESULT live_delta", __rnx_debug_live_count() - live0);
     return 0;
 }

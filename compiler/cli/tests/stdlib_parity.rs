@@ -19,26 +19,22 @@ fn all_stdlib_modules_registered_and_resolvable() {
 }
 
 #[test]
-fn every_module_resolves_to_its_source() {
+fn every_module_resolves_to_its_checkout_source() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib/src");
     for module in stdlib::MODULES {
-        let src = stdlib::source(module);
-        assert!(
-            src.is_some(),
-            "specifier `@std/{module}` must resolve to a source file"
-        );
-        let src = src.unwrap();
+        let rel = if *module == "net/http" {
+            "net/http.rnx".to_string()
+        } else {
+            format!("{module}/lib.rnx")
+        };
+        let path = root.join(&rel);
+        assert!(path.is_file(), "`@std/{module}` must resolve to {rel} in the checkout");
+        let src = std::fs::read_to_string(&path).unwrap();
         assert!(
             !src.is_empty() && src.starts_with("//!"),
             "`@std/{module}` source must carry a `//!` module header"
         );
     }
-    assert!(
-        stdlib::source("net/http").is_some(),
-        "submodule `@std/net/http` must resolve"
-    );
-    assert_eq!(stdlib::source(""), None);
-    assert_eq!(stdlib::source("nope"), None);
-    assert_eq!(stdlib::source("@std/fs"), None);
 }
 
 #[test]

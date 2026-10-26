@@ -10,9 +10,15 @@ fn prepare(source: &str) -> Result<A::Module, Diagnostic> {
     frontend::modules::ModuleGraph::from_source(source)
 }
 fn check_merged(source: &str) -> Result<(Vec<Diagnostic>, Vec<Diagnostic>), Diagnostic> {
-    let mut module = prepare(source)?;
+    let graph = frontend::modules::ModuleGraph::from_source_graph(source)?;
+    let mut module = graph.resolve()?;
     let mut diags = frontend::desugar::desugar(&mut module);
-    diags.extend(frontend::semantic::check(&module));
+    diags.extend(
+        frontend::semantic::check(&module)
+            .into_iter()
+            .filter(|d| d.code != diagnostics::Code::S103),
+    );
+    diags.extend(frontend::security::s103_graph(&graph));
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     for d in diags {
@@ -610,6 +616,11 @@ fn project_merged(
         let mut diags = merged.warnings.clone();
         diags.extend(frontend::desugar::desugar_with_files(&mut merged, &files_map));
         diags.extend(frontend::semantic::check_with_files(&merged, &files_map));
+        // S103 needs per-file attribution (merged decl spans collide
+        // across files), so merged S103 verdicts are recomputed per
+        // graph file instead of trusted from the merged walk.
+        diags.retain(|d| d.code != diagnostics::Code::S103);
+        diags.extend(frontend::security::s103_graph(&graph));
         if diags.iter().all(|d| d.code.is_warning()) {
             diags.extend(graph.isolation_errors());
         }
@@ -1058,6 +1069,32 @@ pub fn analyze_project(files_json: &str, entries_json: &str) -> String {
         docs: String::new(),
         warnings: Vec::new(),
     };
+    // S103: bare `__rnx_*` references are forbidden outside `@std/*`.
+    // The stdlib's own publishes are exempt (the server gates `@std/`
+    // names to the org token, so an `@std/` frame is trusted bytes);
+    // every other frame is scanned per file with frame-wide declared
+    // names as the scope, so merged-span collisions cannot misattribute.
+    let package_name = entries
+        .get("packageName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !package_name.starts_with("@std/") {
+        let entry_src = files.get(&main_norm).map(|s| s.as_str()).unwrap_or("");
+        let mut frame: Vec<(std::path::PathBuf, frontend::ast::Module)> = Vec::new();
+        for (path, module) in &parsed {
+            if path.starts_with("@std/") {
+                continue;
+            }
+            frame.push((std::path::PathBuf::from(path), module.clone()));
+        }
+        let refs: Vec<(&std::path::Path, &frontend::ast::Module)> = frame
+            .iter()
+            .map(|(path, module)| (path.as_path(), module))
+            .collect();
+        if let Some(first) = frontend::security::s103_frame(&refs).first() {
+            return server_err(project_hook(&files, entry_src, first));
+        }
+    }
     let merged_src = files.values().cloned().collect::<Vec<_>>().join("\n");
     let mut capabilities = std::collections::BTreeSet::new();
     match frontend::capabilities::analyze_with_fuel(&tree, &merged_src, "project", 4_000_000) {
@@ -1500,6 +1537,45 @@ mod tests {
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
         assert_eq!(out["ok"], false, "{out}");
+    }
+
+    #[test]
+    fn analyze_rejects_bare_rnx_reference() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "fn Main(): Int { return __rnx_clock_mono(); }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(out["error"].as_str().unwrap_or_default().contains("S103"), "{out}");
+    }
+
+    #[test]
+    fn analyze_rejects_bare_rnx_in_unreached_file() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "fn Main(): Int { return 0; }\n",
+            "extra.rnx": "export fn stray(): Int { return __rnx_clock_mono(); }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(out["error"].as_str().unwrap_or_default().contains("S103"), "{out}");
+    }
+
+    #[test]
+    fn analyze_exempts_std_package_frames() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "fn tick(): Int { return __rnx_clock_mono(); }\nfn Main(): Int { return tick(); }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}, \"packageName\": \"@std/probe\"}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
     }
 
     #[test]

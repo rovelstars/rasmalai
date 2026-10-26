@@ -53,9 +53,9 @@ try {
   $Installed = (& $Bin --version 2>$null) -replace '^rnx\s+', ''
   if ([string]::IsNullOrEmpty($Installed)) { $Installed = $Version }
 
-  & $Bin fetch-std 2>$null | Out-Null
+  & $Bin download 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) {
-    Write-Warning "stdlib cache seeding failed (offline install? run 'rnx fetch-std' later)"
+    Write-Warning "stdlib cache seeding failed (offline install? run 'rnx download' later)"
   } else {
     Write-Host "stdlib cache: seeded"
   }

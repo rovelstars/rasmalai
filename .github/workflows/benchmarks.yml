@@ -69,7 +69,7 @@ jobs:
         run: |
           seeded=""
           for i in 1 2 3; do
-            if ./target/release/rnx fetch-std; then seeded=1; break; fi
+            if ./target/release/rnx download; then seeded=1; break; fi
             sleep 20
           done
           [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }

@@ -115,7 +115,7 @@ Functions, loops, imports, and I/O are rejected.\n\n\
 ## Standard modules\n\n\
 `@std/*` modules are built in and need no manifest entry: \
 `import { ByteBuffer } from \"@std/bytes\";` resolves without a `dependencies` line. \
-Use `rnx lock` to write `Project.deplock` and `rnx vendor` to copy sources into `vendor/`.";
+Use `rnx lock` to write `Project.deplock` and `rnx vendor` to copy sources into `.vendor/`.";
 
 const RESOURCE_GRAMMAR: &str = "rasmalai://spec/grammar";
 const RESOURCE_ARCHITECTURE: &str = "rasmalai://spec/architecture";

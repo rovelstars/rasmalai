@@ -95,16 +95,29 @@ fn test_rnx_vendor_offline() {
     let app = app_with_git_dep(&dir, &remote, Some("v0.1.0"));
     let (code, text) = rnx(&["vendor"], &app);
     assert_eq!(code, 0, "{text}");
-    assert!(text.contains("Vendored 1 packages into vendor/"), "{text}");
-    assert!(app.join("vendor").join("glib").join("src").join("lib.rnx").is_file());
-    assert!(app.join("vendor").join("glib").join("Project.config").is_file());
-    assert!(!app.join("vendor").join("glib").join(".git").exists());
+    assert!(text.contains("Vendored 1 packages into"), "{text}");
+    assert!(text.contains(".vendor"), "{text}");
+    assert!(app.join(".vendor").join("glib").join("src").join("lib.rnx").is_file());
+    assert!(app.join(".vendor").join("glib").join("Project.config").is_file());
+    assert!(!app.join(".vendor").join("glib").join(".git").exists());
     let _ = std::fs::remove_dir_all(dir.join("remote.git"));
     let _ = std::fs::remove_dir_all(dir.join("remote"));
     let _ = std::fs::remove_dir_all(app.join(".rnx-cache"));
     let (code, text) = rnx(&["run"], &app);
     assert_eq!(code, 0, "{text}");
     assert!(text.contains(EXPECTED), "{text}");
+}
+
+#[test]
+fn test_rnx_vendor_named_git_dep_into_custom_dir() {
+    let dir = base("vendor-dir");
+    let remote = bare_remote(&dir);
+    let app = app_with_git_dep(&dir, &remote, Some("v0.1.0"));
+    let (code, text) = rnx(&["vendor", "glib", "--dir", "third-party"], &app);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("Vendored 1 packages into"), "{text}");
+    assert!(app.join("third-party").join("glib").join("src").join("lib.rnx").is_file());
+    assert!(!app.join(".vendor").exists());
 }
 
 #[test]

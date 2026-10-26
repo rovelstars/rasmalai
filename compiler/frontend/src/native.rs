@@ -111,7 +111,7 @@ fn offline_dep_dir(
         crate::project::DependencySpec::Path { path, .. } => std::fs::canonicalize(pkg_dir.join(path)).ok(),
         crate::project::DependencySpec::Git { rev, .. } => {
             let anchor = crate::fetch::cache_anchor(pkg_dir);
-            let vendor = anchor.join("vendor").join(dep_name);
+            let vendor = anchor.join(crate::fetch::VENDOR_DIR).join(dep_name);
             if vendor.join(crate::project::MANIFEST_FILE).is_file() {
                 std::fs::canonicalize(&vendor).ok()
             } else {

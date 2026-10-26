@@ -425,7 +425,9 @@ fn resolve_renames_module_const_used_in_own_fn() {
     }).collect();
     assert!(consts.contains(&"lib.K".to_string()), "const decl must mangle with its uses: {consts:?}");
     assert!(!consts.contains(&"K".to_string()), "stale short const decl: {consts:?}");
-    let diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check(&m);
+    diags.retain(|d| d.code != diagnostics::Code::S103);
+    diags.extend(frontend::security::s103_graph(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
 }
 
@@ -443,7 +445,9 @@ fn namespace_as_value_becomes_new() {
         Decl::Class { name, .. } => name == "__ns_lib.ns",
         _ => false,
     }));
-    let diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check(&m);
+    diags.retain(|d| d.code != diagnostics::Code::S103);
+    diags.extend(frontend::security::s103_graph(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
 }
 
@@ -455,7 +459,9 @@ fn missing_import_in_dep_fails_despite_user_import() {
     ]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     let m = g.resolve().unwrap();
-    let diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check(&m);
+    diags.retain(|d| d.code != diagnostics::Code::S103);
+    diags.extend(frontend::security::s103_graph(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "merged check is blind to the leak by design: {diags:?}");
     let iso = g.isolation_errors();
     assert!(iso.iter().any(|x| !x.code.is_warning()), "liba naming Clock without importing it must fail even though main imports time: {iso:?}");
@@ -476,7 +482,9 @@ fn sibling_type_use_without_import_fails() {
     ]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     let m = g.resolve().unwrap();
-    let diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check(&m);
+    diags.retain(|d| d.code != diagnostics::Code::S103);
+    diags.extend(frontend::security::s103_graph(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "merged check is blind to the leak by design: {diags:?}");
     let iso = g.isolation_errors();
     assert!(iso.iter().any(|x| !x.code.is_warning()), "a.rnx naming Widget without importing it must fail even though c imports it: {iso:?}");
@@ -504,7 +512,10 @@ fn std_nested_submodule_resolves_with_parent() {
     assert!(names.contains(&"std.net.http.statusCode".to_string()), "{names:?}");
     assert!(names.contains(&"std.net.http.isSuccess".to_string()), "{names:?}");
     assert!(names.contains(&"std.net.Dns".to_string()), "{names:?}");
-    let diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check(&m);
+    diags.retain(|d| d.code != diagnostics::Code::S103);
+    let user = frontend::parser::Parser::parse_module(src).unwrap();
+    diags.extend(frontend::security::s103_frame(&[(std::path::Path::new(""), &user)]));
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
 }
 
@@ -554,7 +565,9 @@ fn packages_deep_nested_submodule() {
     assert!(names.contains(&"dep_math.src.folder.mod.modded".to_string()), "{names:?}");
     assert!(names.contains(&"dep_math.src.alt.index.indexed".to_string()), "{names:?}");
     assert!(names.contains(&"dep_math.src.lib.add".to_string()), "{names:?}");
-    let diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check(&m);
+    diags.retain(|d| d.code != diagnostics::Code::S103);
+    diags.extend(frontend::security::s103_graph(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
 }
 

@@ -58,10 +58,10 @@ pub fn std_source(rest: &str) -> Option<String> {
 }
 
 fn vendor_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
-    let version = crate::stdlib_seed::unpinned_std_version(pkg);
     let anchor = std::env::current_dir()
         .map(|cwd| crate::fetch::cache_anchor(&cwd))
         .unwrap_or_else(|_| PathBuf::from("."));
+    let version = crate::stdlib_seed::unpinned_std_version_for(Some(&anchor), pkg);
     let dir = crate::fetch::local_override_dir(pkg, &anchor)?;
     if !crate::fetch::check_local_override_silent(pkg, &dir, &version, Some(&version)) {
         return None;
@@ -69,6 +69,18 @@ fn vendor_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
     let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
     crate::fetch::note_local_override(pkg, &version, &canonical);
     read_cached_module(&canonical, sub)
+}
+
+fn project_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let anchor = crate::fetch::cache_anchor(&cwd);
+    let pin = crate::stdlib_seed::read_project_pin(&anchor)?;
+    let version = pin.packages.get(pkg)?;
+    let dir = crate::fetch::project_package_dir(&anchor, &pin.registry, pkg, version);
+    if crate::fetch::cached_integrity(&dir).is_none() {
+        return None;
+    }
+    read_cached_module(&dir, sub)
 }
 
 fn cached_std_source(key: &str) -> Option<String> {
@@ -82,6 +94,9 @@ fn cached_std_source(key: &str) -> Option<String> {
     if let Some(src) = vendor_std_source(&pkg, sub) {
         return Some(src);
     }
+    if let Some(src) = project_std_source(&pkg, sub) {
+        return Some(src);
+    }
     if let Some(pin) = crate::stdlib_seed::read_std_pin() {
         if let Some(version) = pin.packages.get(&pkg) {
             let dir = crate::fetch::cached_package_dir(&pin.registry, &pkg, version);
@@ -89,6 +104,9 @@ fn cached_std_source(key: &str) -> Option<String> {
                 return Some(src);
             }
         }
+    }
+    if let Some(src) = find_scanned_project_std_source(&pkg, sub) {
+        return Some(src);
     }
     find_scanned_std_source(&pkg, sub)
 }
@@ -110,6 +128,46 @@ fn read_cached_module(dir: &Path, sub: Option<&str>) -> Option<String> {
         return None;
     }
     String::from_utf8(bytes).ok()
+}
+
+fn find_scanned_project_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let anchor = crate::fetch::cache_anchor(&cwd);
+    let root = crate::fetch::project_registry_root(&anchor);
+    let hosts = std::fs::read_dir(&root).ok()?;
+    let mut best: Option<(SemKey, PathBuf)> = None;
+    for host in hosts.flatten() {
+        let pkg_dir = host.path().join(pkg);
+        let versions = match std::fs::read_dir(&pkg_dir) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for entry in versions.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            if !dir.join(crate::project::MANIFEST_FILE).is_file() {
+                continue;
+            }
+            if crate::fetch::cached_integrity(&dir).is_none() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(next) = sem_key(&name) else {
+                continue;
+            };
+            let replace = match &best {
+                None => true,
+                Some((cur, _)) => next > *cur,
+            };
+            if replace {
+                best = Some((next, dir));
+            }
+        }
+    }
+    let (_, dir) = best?;
+    read_cached_module(&dir, sub)
 }
 
 fn find_scanned_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {

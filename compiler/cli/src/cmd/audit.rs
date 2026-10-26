@@ -34,6 +34,20 @@ pub(super) fn run_audit(
         let drift = cli::audit::lockfile_drift(&dir);
         print!("{}", cli::audit::render_audit_text(&report, &drift));
     }
+    match frontend::security::scan_dep_prefix(&dir) {
+        Ok(hits) if hits.is_empty() => {}
+        Ok(hits) => {
+            eprint!("{}", cli::report::render_security_issues(&hits));
+            eprintln!(
+                "hint: call the owning `@std/*` wrapper instead of the `__rnx_*` internal (rule S103)"
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
     let denied = cli::audit::parse_deny_licenses(&deny_license);
     for license in &denied {
         if !frontend::license::is_known_spdx(license) {

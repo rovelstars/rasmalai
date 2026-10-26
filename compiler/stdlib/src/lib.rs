@@ -18,28 +18,3 @@ pub const MODULES: &[&str] = &[
     "json",
     "io",
 ];
-
-pub fn source(name: &str) -> Option<&'static str> {
-    let src: &'static str = match name {
-        "prelude" => include_str!("prelude/lib.rnx"),
-        "simd" => include_str!("simd/lib.rnx"),
-        "collections" => include_str!("collections/lib.rnx"),
-        "math" => include_str!("math/lib.rnx"),
-        "fs" => include_str!("fs/lib.rnx"),
-        "bytes" => include_str!("bytes/lib.rnx"),
-        "time" => include_str!("time/lib.rnx"),
-        "random" => include_str!("random/lib.rnx"),
-        "sync" => include_str!("sync/lib.rnx"),
-        "env" => include_str!("env/lib.rnx"),
-        "process" => include_str!("process/lib.rnx"),
-        "os" => include_str!("os/lib.rnx"),
-        "testing" => include_str!("testing/lib.rnx"),
-        "web" => include_str!("web/lib.rnx"),
-        "net" => include_str!("net/lib.rnx"),
-        "net/http" => include_str!("net/http.rnx"),
-        "json" => include_str!("json/lib.rnx"),
-        "io" => include_str!("io/lib.rnx"),
-        _ => return None,
-    };
-    Some(src)
-}

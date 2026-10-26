@@ -117,10 +117,10 @@ if ! "$BIN" --version; then
   exit 1
 fi
 
-if "$BIN" fetch-std; then
+if "$BIN" download; then
   echo "install.sh: seeded the standard library cache"
 else
-  echo "install.sh: warning: stdlib cache seeding failed (offline?); run \`rnx fetch-std\` once online, or \`rnx doctor --repair-std\` to repair it" >&2
+  echo "install.sh: warning: stdlib cache seeding failed (offline?); run \`rnx download\` once online, or \`rnx doctor --repair-std\` to repair it" >&2
 fi
 
 case ":$PATH:" in

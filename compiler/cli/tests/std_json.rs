@@ -97,7 +97,7 @@ fn Main(): Int {
     let it: Any = JSON.parse("[10, 20, 30]");
     print(it[0]);
     print(it[2]);
-    print(__rnx_array_len(it));
+    print((it as Array<Any>).length());
     return 0;
 }
 "#;
@@ -112,7 +112,7 @@ import { Map } from "@std/collections";
 fn showItems(it: Any): Int {
     print(it[0]);
     print(it[1]);
-    print(__rnx_array_len(it));
+    print((it as Array<Any>).length());
     return 0;
 }
 fn showMeta(nm: Any): Int {

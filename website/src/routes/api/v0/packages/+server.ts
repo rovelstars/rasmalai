@@ -390,7 +390,8 @@ export async function POST({ request, platform, url }) {
 			}
 			analysis = await analyzeTree(env, rnxFiles, {
 				main: facts.entries.main,
-				bins: facts.entries.bins
+				bins: facts.entries.bins,
+				packageName: frame.name
 			});
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);

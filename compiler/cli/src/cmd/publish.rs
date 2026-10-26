@@ -168,6 +168,29 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
             std::process::exit(1);
         }
     };
+    if !frontend::security::is_std_package_name(&cfg.name) {
+        let sources: Vec<(std::path::PathBuf, String)> = files
+            .iter()
+            .filter(|f| f.path.ends_with(".rnx"))
+            .map(|f| (std::path::PathBuf::from(&f.path), f.content.clone()))
+            .collect();
+        match frontend::security::s103_sources(&sources) {
+            Ok(hits) if hits.is_empty() => {}
+            Ok(hits) => {
+                for d in &hits {
+                    println!("{d}");
+                }
+                println!(
+                    "hint: call the owning `@std/*` wrapper instead of the `__rnx_*` internal (rule S103)"
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                println!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     let docs = match cli::publish::package_docs(dir, &manifest) {
         Ok(d) => d,
         Err(e) => {

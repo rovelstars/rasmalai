@@ -504,7 +504,7 @@ mod tests {
         let generated = std::fs::read_to_string(dir.join("src").join("gen").join("demo.rnx")).unwrap();
         assert!(generated.contains("unsafe fn addNums(firstValue: Int, secondValue: Int)"), "{generated}");
         assert!(
-            generated.contains("fn demo_add(firstValue: Int, secondValue: Int): Int as __rnx_demo_add"),
+            generated.contains("fn demo_add(firstValue: Int, secondValue: Int): Int as __ffi_demo_add"),
             "{generated}"
         );
         assert!(generated.contains("unsafe fn demoSub(x: Int, y: Int)"), "{generated}");

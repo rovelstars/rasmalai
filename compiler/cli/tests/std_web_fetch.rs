@@ -38,6 +38,7 @@ fn expect_backends(tag: &str, src: &str, want: &str) {
 
 const MOCK_AND_FETCH: &str = r#"import { TcpStream, TcpListener } from "@std/net";
 import { fetch, Response } from "@std/web";
+import { ByteBuffer } from "@std/bytes";
 
 fn s2b(s: String): Array<Int> {
     let out: Array<Int> = [];
@@ -50,26 +51,20 @@ fn s2b(s: String): Array<Int> {
 }
 
 fn b2s(data: Array<Int>): String {
-    let out = "";
-    let i = 0;
-    while i < data.length() {
-        out = out + __rnx_string_from_char_code(data[i]);
-        i = i + 1;
-    }
-    return out;
+    return ByteBuffer.fromArray(data).readString(0, data.length());
 }
 
-fn readReq(sh: Int): String {
+fn readReq(sh: TcpStream): String {
     let buf: Array<Int> = [];
     let done = false;
     while ! done {
-        let n = __rnx_net_recv_or_wait(sh, 1024);
-        if n <= 0 {
+        let chunk: Array<Int> = sh.read(1024).wait().unwrapOr([]);
+        if chunk.length() == 0 {
             done = true;
         } else {
             let i = 0;
-            while i < n {
-                buf.push(__rnx_net_recv_get(sh, i));
+            while i < chunk.length() {
+                buf.push(chunk[i]);
                 i = i + 1;
             }
             let m = buf.length();
@@ -81,30 +76,21 @@ fn readReq(sh: Int): String {
     return b2s(buf);
 }
 
-fn writeAll(sh: Int, data: Array<Int>): Int {
-    let i = 0;
-    while i < data.length() {
-        let r = __rnx_net_send_or_wait(sh, data[i]);
-        if r < 0 {
-            return r;
-        }
-        i = i + 1;
+fn writeAll(sh: TcpStream, data: Array<Int>): Int {
+    let r = sh.write(data).wait();
+    if r.isErr() {
+        return 0 - 1;
     }
-    return i;
+    return r.unwrap();
 }
 
 fn serveOne(lh: Int): Int {
-    let r = __rnx_net_listener_accept_start(lh);
-    let sh = r;
-    if r < 0 {
-        if r == 0 - 1 {
-            return 0 - 1;
-        }
-        sh = __rnx_net_listener_accept_wait(0 - r);
-        if sh < 0 {
-            return 0 - 2;
-        }
+    let listener = new TcpListener(lh);
+    let accepted = listener.accept().wait();
+    if accepted.isErr() {
+        return 0 - 1;
     }
+    let sh: TcpStream = accepted.unwrap();
     let req = readReq(sh);
     let eol = "\u{D}\u{A}";
     let status = "200 OK";
@@ -122,7 +108,7 @@ fn serveOne(lh: Int): Int {
     }
     let res = "HTTP/1.1 " + status + eol + framing + eol + "Content-Type: text/plain" + eol + "X-Echo: yes" + eol + "Connection: close" + eol + eol + body;
     let w = writeAll(sh, s2b(res));
-    __rnx_net_close(sh);
+    sh.close();
     if w < 0 {
         return 0 - 3;
     }
@@ -143,7 +129,7 @@ fn serveThree(lh: Int): Int {
 
 let listener = TcpListener.bind("127.0.0.1", 0);
 let port = listener.port();
-let base = "http://127.0.0.1:" + __rnx_int_to_str(port);
+let base = "http://127.0.0.1:" + port.toString();
 let srv = Thread.spawn((): Int => serveThree(listener.handle));
 let r1: Response = await fetch(base + "/hello");
 print(r1.status);
@@ -173,6 +159,7 @@ fn fetch_parses_status_headers_and_bodies() {
 
 const MOCK_AND_JSON: &str = r#"import { TcpStream, TcpListener } from "@std/net";
 import { fetch, Response } from "@std/web";
+import { ByteBuffer } from "@std/bytes";
 import { JSON } from "@std/json";
 import { Map } from "@std/collections";
 
@@ -187,26 +174,20 @@ fn s2b(s: String): Array<Int> {
 }
 
 fn b2s(data: Array<Int>): String {
-    let out = "";
-    let i = 0;
-    while i < data.length() {
-        out = out + __rnx_string_from_char_code(data[i]);
-        i = i + 1;
-    }
-    return out;
+    return ByteBuffer.fromArray(data).readString(0, data.length());
 }
 
-fn readReq(sh: Int): String {
+fn readReq(sh: TcpStream): String {
     let buf: Array<Int> = [];
     let done = false;
     while ! done {
-        let n = __rnx_net_recv_or_wait(sh, 1024);
-        if n <= 0 {
+        let chunk: Array<Int> = sh.read(1024).wait().unwrapOr([]);
+        if chunk.length() == 0 {
             done = true;
         } else {
             let i = 0;
-            while i < n {
-                buf.push(__rnx_net_recv_get(sh, i));
+            while i < chunk.length() {
+                buf.push(chunk[i]);
                 i = i + 1;
             }
             let m = buf.length();
@@ -218,16 +199,12 @@ fn readReq(sh: Int): String {
     return b2s(buf);
 }
 
-fn writeAll(sh: Int, data: Array<Int>): Int {
-    let i = 0;
-    while i < data.length() {
-        let r = __rnx_net_send_or_wait(sh, data[i]);
-        if r < 0 {
-            return r;
-        }
-        i = i + 1;
+fn writeAll(sh: TcpStream, data: Array<Int>): Int {
+    let r = sh.write(data).wait();
+    if r.isErr() {
+        return 0 - 1;
     }
-    return i;
+    return r.unwrap();
 }
 
 fn showCount(m: Map<String, Any>): Int {
@@ -241,22 +218,17 @@ fn showCount(m: Map<String, Any>): Int {
 }
 
 fn serveJson(lh: Int): Int {
-    let r = __rnx_net_listener_accept_start(lh);
-    let sh = r;
-    if r < 0 {
-        if r == 0 - 1 {
-            return 0 - 1;
-        }
-        sh = __rnx_net_listener_accept_wait(0 - r);
-        if sh < 0 {
-            return 0 - 2;
-        }
+    let listener = new TcpListener(lh);
+    let accepted = listener.accept().wait();
+    if accepted.isErr() {
+        return 0 - 1;
     }
+    let sh: TcpStream = accepted.unwrap();
     let req = readReq(sh);
     let eol = "\u{D}\u{A}";
     let status = "200 OK";
     let body = "\{\"status\": \"ok\", \"count\": 42}";
-    let framing = "Content-Length: " + __rnx_int_to_str(body.length());
+    let framing = "Content-Length: " + body.length().toString();
     if req.startsWith("GET /api ") {
         status = "200 OK";
     } else {
@@ -266,7 +238,7 @@ fn serveJson(lh: Int): Int {
     }
     let res = "HTTP/1.1 " + status + eol + framing + eol + "Content-Type: application/json" + eol + "Connection: close" + eol + eol + body;
     let w = writeAll(sh, s2b(res));
-    __rnx_net_close(sh);
+    sh.close();
     if w < 0 {
         return 0 - 3;
     }
@@ -275,7 +247,7 @@ fn serveJson(lh: Int): Int {
 
 let listener = TcpListener.bind("127.0.0.1", 0);
 let port = listener.port();
-let base = "http://127.0.0.1:" + __rnx_int_to_str(port);
+let base = "http://127.0.0.1:" + port.toString();
 let srv = Thread.spawn((): Int => serveJson(listener.handle));
 let r: Response = await fetch(base + "/api");
 print(r.status);

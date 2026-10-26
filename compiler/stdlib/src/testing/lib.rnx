@@ -44,3 +44,27 @@
 pub fn blackBox(val: Any): Any {
     return val;
 }
+
+/**
+* Live allocation count for leak assertions in tests.
+*
+* Reads the runtime's live object-plus-array count: the same number the
+* toolchain itself uses to balance allocations in its own test suite.
+* Snapshot it before and after the code under test and compare the two;
+* user code must never branch on it for control flow, only assert
+* balance in tests.
+*
+* @returns live allocations at the call instant.
+* @example
+* import { liveCount } from "@std/testing";
+*
+* fn Main(): Int {
+*     let before = liveCount();
+*     let v = [1, 2, 3];
+*     blackBox(v);
+*     return liveCount() - before;
+* }
+*/
+pub fn liveCount(): Int {
+    return __rnx_debug_live_count();
+}

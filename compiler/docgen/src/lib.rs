@@ -30,12 +30,12 @@ pub fn ensure_stdlib_seeded() -> Result<bool, diagnostics::Diagnostic> {
                 if err
                     .hint
                     .as_deref()
-                    .is_some_and(|h| h.contains("rnx fetch-std"))
+                    .is_some_and(|h| h.contains("rnx download"))
                 {
                     return Err(err);
                 }
                 return Err(err.with_hint(
-                    "check the registry URL and network, then retry `rnx fetch-std`",
+                    "check the registry URL and network, then retry `rnx download`",
                 ));
             }
             Err(diagnostics::Diagnostic::new(
@@ -45,7 +45,7 @@ pub fn ensure_stdlib_seeded() -> Result<bool, diagnostics::Diagnostic> {
                     err.message
                 ),
             )
-            .with_hint("check the registry URL and network, then retry `rnx fetch-std`"))
+            .with_hint("check the registry URL and network, then retry `rnx download`"))
         }
     }
 }
@@ -445,9 +445,10 @@ mod tests {
     #[test]
     fn vendored_stdlib_generates_docs_with_no_network() {
         let (_guard, dir) = isolate("vendored");
+        let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib/src");
         let vendor = crate::scratch::dir("docgen-vendor");
-        let staged = frontend::stdlib_seed::stage_std_vendor_tree(vendor.path())
-            .expect("stage in-repo stdlib");
+        let staged = frontend::stdlib_seed::stage_std_checkout_tree(&src, vendor.path())
+            .expect("stage checkout stdlib");
         assert_eq!(staged.len(), frontend::stdlib_seed::std_package_names().len());
         unsafe {
             std::env::set_var(frontend::fetch::LOCAL_VENDOR_ENV, vendor.path());

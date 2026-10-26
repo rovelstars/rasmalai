@@ -3152,14 +3152,14 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
             }
             if shape.ret == "Void" {
                 rnx.push_str(&format!(
-                    "    fn {}({}) as __rnx_{}",
+                    "    fn {}({}) as __ffi_{}",
                     f.name,
                     shape.params,
                     sanitize_ident(&f.name)
                 ));
             } else {
                 rnx.push_str(&format!(
-                    "    fn {}({}): {} as __rnx_{}",
+                    "    fn {}({}): {} as __ffi_{}",
                     f.name,
                     shape.params,
                     shape.ret,
@@ -3179,13 +3179,13 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
         rnx.push_str(&format!("unsafe fn {name}({}){ret_ann} {{\n", shape.params));
         if shape.ret == "Void" {
             rnx.push_str(&format!(
-                "    __rnx_{}({});\n",
+                "    __ffi_{}({});\n",
                 sanitize_ident(&f.name),
                 shape.args
             ));
         } else {
             rnx.push_str(&format!(
-                "    return __rnx_{}({});\n",
+                "    return __ffi_{}({});\n",
                 sanitize_ident(&f.name),
                 shape.args
             ));
@@ -3470,7 +3470,7 @@ mod tests {
     #[test]
     fn bool_maps_to_bool_not_pointer() {
         let out = gen_src("typedef unsigned char Bool;\n_Bool flag(int x);\n").unwrap();
-        assert!(out.rnx.contains("fn flag(x: Int): Bool as __rnx_flag"), "{}", out.rnx);
+        assert!(out.rnx.contains("fn flag(x: Int): Bool as __ffi_flag"), "{}", out.rnx);
     }
 
     #[test]
@@ -3524,7 +3524,7 @@ mod tests {
     fn pointer_return_alias_line_stays_tight() {
         let out = gen_src("char *column_text(const char *name, int col);\n").unwrap();
         assert!(
-            out.rnx.contains("fn column_text(name: Pointer<Byte>, col: Int): Pointer<Byte> as __rnx_column_text"),
+            out.rnx.contains("fn column_text(name: Pointer<Byte>, col: Int): Pointer<Byte> as __ffi_column_text"),
             "{}",
             out.rnx
         );
@@ -3540,7 +3540,7 @@ mod tests {
         assert!(out.rnx.contains("export const MAGIC: Int = 42"), "{}", out.rnx);
         assert!(out.rnx.contains("unsafe fn size(n: Int): Int"), "{}", out.rnx);
         assert!(out.rnx.contains("unsafe fn done()"), "{}", out.rnx);
-        assert!(out.rnx.contains("fn done() as __rnx_done"), "{}", out.rnx);
+        assert!(out.rnx.contains("fn done() as __ffi_done"), "{}", out.rnx);
         verify_annotations(&out.annotations).unwrap();
         assert_eq!(out.annotations.get("run.rasmalai.kind").map(|s| s.as_str()), Some("bindings"));
         assert_eq!(out.annotations.get("run.rasmalai.role").map(|s| s.as_str()), Some("bindgen"));
@@ -3617,12 +3617,12 @@ mod tests {
         assert!(out.rnx.contains("unsafe fn sqlite3Open("), "{}", out.rnx);
         assert!(out.rnx.contains("unsafe fn sqlite3Close("), "{}", out.rnx);
         assert!(
-            out.rnx.contains("fn sqlite3_open(path: Pointer<Byte>, flags: Int): Int as __rnx_sqlite3_open"),
+            out.rnx.contains("fn sqlite3_open(path: Pointer<Byte>, flags: Int): Int as __ffi_sqlite3_open"),
             "{}",
             out.rnx
         );
-        assert!(out.rnx.contains("return __rnx_sqlite3_open(path, flags);"), "{}", out.rnx);
-        assert!(out.rnx.contains("    __rnx_sqlite3_close(db);"), "{}", out.rnx);
+        assert!(out.rnx.contains("return __ffi_sqlite3_open(path, flags);"), "{}", out.rnx);
+        assert!(out.rnx.contains("    __ffi_sqlite3_close(db);"), "{}", out.rnx);
         assert!(out.rnx.contains("    sqlite3Close,\n    sqlite3Open"), "{}", out.rnx);
         assert!(!out.rnx.contains("unsafe fn sqlite3_open"), "{}", out.rnx);
     }
@@ -3637,11 +3637,11 @@ mod tests {
         .unwrap();
         assert!(out.rnx.contains("unsafe fn openDb("), "{}", out.rnx);
         assert!(
-            out.rnx.contains("fn sqlite3_open(path: Pointer<Byte>): Int as __rnx_sqlite3_open"),
+            out.rnx.contains("fn sqlite3_open(path: Pointer<Byte>): Int as __ffi_sqlite3_open"),
             "{}",
             out.rnx
         );
-        assert!(out.rnx.contains("return __rnx_sqlite3_open(path);"), "{}", out.rnx);
+        assert!(out.rnx.contains("return __ffi_sqlite3_open(path);"), "{}", out.rnx);
         let err = gen_src_case("int a(int x);\n", CaseMode::Keep, &[("missing", "other")])
             .unwrap_err();
         assert!(err.contains("unknown rename source `missing`"), "{err}");
@@ -3657,8 +3657,8 @@ mod tests {
         .unwrap();
         assert!(out.rnx.contains("unsafe fn fooBar("), "{}", out.rnx);
         assert!(out.rnx.contains("unsafe fn fooBar2("), "{}", out.rnx);
-        assert!(out.rnx.contains("fn foo_bar(x: Int): Int as __rnx_foo_bar"), "{}", out.rnx);
-        assert!(out.rnx.contains("fn fooBar(x: Int): Int as __rnx_fooBar"), "{}", out.rnx);
+        assert!(out.rnx.contains("fn foo_bar(x: Int): Int as __ffi_foo_bar"), "{}", out.rnx);
+        assert!(out.rnx.contains("fn fooBar(x: Int): Int as __ffi_fooBar"), "{}", out.rnx);
     }
 
     #[test]
@@ -3676,7 +3676,7 @@ mod tests {
     #[test]
     fn type_param_stays_compiling_identifier() {
         let out = gen_src_case("int f(int type);\n", CaseMode::Camel, &[]).unwrap();
-        assert!(out.rnx.contains("fn f(type: Int): Int as __rnx_f"), "{}", out.rnx);
+        assert!(out.rnx.contains("fn f(type: Int): Int as __ffi_f"), "{}", out.rnx);
         assert!(out.rnx.contains("unsafe fn f(type: Int): Int"), "{}", out.rnx);
     }
 

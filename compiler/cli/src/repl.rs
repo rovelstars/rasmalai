@@ -529,6 +529,9 @@ impl ReplSession {
                 sem_errs.push(d);
             }
         }
+        if let Ok(user) = frontend::parser::Parser::parse_module(&candidate) {
+            sem_errs.extend(frontend::security::s103_frame(&[(std::path::Path::new(""), &user)]));
+        }
         if !sem_errs.is_empty() {
             return ReplOut::Lines(self.render_errors(&sem_errs));
         }
@@ -628,6 +631,9 @@ impl ReplSession {
             if !d.code.is_warning() {
                 sem_errs.push(d);
             }
+        }
+        if let Ok(user) = frontend::parser::Parser::parse_module(&candidate) {
+            sem_errs.extend(frontend::security::s103_frame(&[(std::path::Path::new(""), &user)]));
         }
         if !sem_errs.is_empty() {
             return self.render_errors(&sem_errs);

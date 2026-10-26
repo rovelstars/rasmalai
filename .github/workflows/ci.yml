@@ -75,16 +75,20 @@ jobs:
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           ulimit -c unlimited
           # The standard library comes from the repo, never the network:
-          # seed the global cache straight from the toolchain's embedded
-          # sources (zero network), so the suite below resolves @std/*
-          # with no registry access. Then stage the same sources once and
-          # resolve a probe build straight from that staged tree through
-          # the vendor override. A dead registry URL from here on, so any
+          # stage the checkout sources into a vendor tree with zero
+          # network (every @std/* package named explicitly), so the suite
+          # below resolves @std/* with no registry access. Then resolve
+          # a probe build straight from that staged tree through the
+          # vendor override. A dead registry URL from here on, so any
           # network access fails loud instead of silently fetching. The
           # nextest suite itself runs without this override and keeps
           # exercising the registry paths with mocks.
-          cargo run -q -p cli -- fetch-std --local
-          cargo run -q -p cli -- vendor --stdlib "${{ runner.temp }}/std-vendor"
+          cargo run -q -p cli -- vendor \
+            @std/prelude @std/simd @std/collections @std/math \
+            @std/fs @std/bytes @std/time @std/random \
+            @std/sync @std/env @std/process @std/os \
+            @std/testing @std/web @std/net @std/json @std/io \
+            --dir "${{ runner.temp }}/std-vendor"
           export RNX_VENDOR_DIR="${{ runner.temp }}/std-vendor"
           export RNX_REGISTRY="http://127.0.0.1:9"
           export RNX_CACHE_HOME="${{ runner.temp }}/rnx-empty-cache"

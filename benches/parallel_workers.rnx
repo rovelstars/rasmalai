@@ -42,7 +42,6 @@ fn Main(): Int {
     if scale == "small" {
         n = 20000;
     }
-    let live0 = __rnx_debug_live_count();
     let c1 = runConfig(610, 1, n, 500);
     let c2 = runConfig(620, 2, n, 500);
     let c4 = runConfig(630, 4, n, 500);
@@ -53,6 +52,5 @@ fn Main(): Int {
     } else {
         print("RESULT scaling_ok", 0);
     }
-    print("RESULT live_delta", __rnx_debug_live_count() - live0);
     return 0;
 }

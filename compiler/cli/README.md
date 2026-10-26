@@ -5,7 +5,7 @@ The `rnx` binary and its integration test suites.
 ## Subcommands (`src/args.rs`)
 
 `dev` (hot reload), `run`, `build`, `check`, `test`, `bench`, `fmt`,
-`lint`, `explain`, `init`, `add`, `fetch`, `lock`, `vendor`, `audit`,
+`lint`, `explain`, `init`, `add`, `fetch`, `download`, `lock`, `vendor`, `audit`,
 `doc`, `pack`, `unpack`, `publish`, `completions`, plus LSP server
 (`lsp/`), MCP server (`mcp.rs`), REPL, file watcher, and telemetry
 supporting modules.

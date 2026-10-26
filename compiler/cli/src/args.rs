@@ -238,16 +238,16 @@ pub enum Command {
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
     },
-    /// Download standard library packages into the global registry cache
-    FetchStd {
-        /// Registry endpoint URL (or RNX_REGISTRY)
-        #[arg(long, env = "RNX_REGISTRY", conflicts_with = "local")]
-        registry: Option<String>,
-        /// Seed the global cache from the toolchain's embedded sources (zero network)
+    /// Download libraries from the registry into the cache
+    Download {
+        /// Packages to download (`name` or `name@range`; seeds every `@std/*` when empty)
+        packages: Vec<String>,
+        /// Seed the project-local cache instead of the global cache
         #[arg(long)]
         local: bool,
-        #[arg(long = "from", value_name = "DIR", hide = true)]
-        from: Option<PathBuf>,
+        /// Registry endpoint URL (or RNX_REGISTRY)
+        #[arg(long, env = "RNX_REGISTRY")]
+        registry: Option<String>,
     },
     /// Check toolchain health and optionally repair the stdlib cache
     Doctor {
@@ -325,14 +325,13 @@ pub enum Command {
         #[arg(long, env = "RNX_TOKEN")]
         token: Option<String>,
     },
-    /// Vendor git dependencies into vendor/
+    /// Copy local package sources into .vendor/ (downloads from the registry first when missing)
     Vendor {
-        /// Package selection
-        #[arg(short = 'p', long = "package")]
-        package: Option<String>,
-        /// Stage every @std/* package from the toolchain sources into DIR (local source override)
-        #[arg(long = "stdlib", value_name = "DIR")]
-        stdlib: Option<PathBuf>,
+        /// Packages to vendor (defaults to the scope's git dependencies)
+        packages: Vec<String>,
+        /// Destination directory (defaults to .vendor/ under the scope root)
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
     /// Audit a package directory for security capabilities
     Audit {

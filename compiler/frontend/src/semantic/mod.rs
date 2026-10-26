@@ -159,6 +159,7 @@ struct VarInfo {
 struct ScopeCheck<'a> {
     module: &'a Module,
     globals: BTreeSet<String>,
+    extra_globals: BTreeSet<String>,
     consts: BTreeSet<String>,
     let_names: BTreeSet<String>,
     classes: BTreeSet<String>,
@@ -179,6 +180,7 @@ struct ScopeCheck<'a> {
     async_methods: BTreeSet<(String, String)>,
     scopes: Vec<BTreeMap<String, VarInfo>>,
     used_prelude: BTreeSet<String>,
+    emit_s103: bool,
     allow_this: bool,
     expected: Option<String>,
     enum_hint: Option<String>,
@@ -310,6 +312,15 @@ fn collect_let_names(module: &Module) -> BTreeSet<String> {
 }
 
 fn run_scope_check<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck<'m> {
+    run_scope_check_with(module, files, &BTreeSet::new(), false)
+}
+
+fn run_scope_check_with<'m>(
+    module: &'m Module,
+    files: &DeclFiles,
+    extra_globals: &BTreeSet<String>,
+    emit_s103: bool,
+) -> ScopeCheck<'m> {
     let mut globals = BTreeSet::new();
     let mut consts = BTreeSet::new();
     let mut classes = BTreeSet::new();
@@ -532,6 +543,7 @@ fn run_scope_check<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck<'m> 
     let mut checker = ScopeCheck {
         module,
         globals,
+        extra_globals: extra_globals.clone(),
         consts,
         let_names: collect_let_names(module),
         classes,
@@ -552,6 +564,7 @@ fn run_scope_check<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck<'m> 
         async_methods,
         scopes: Vec::new(),
         used_prelude: BTreeSet::new(),
+        emit_s103,
         allow_this: false,
         expected: None,
         enum_hint: None,
@@ -673,4 +686,19 @@ fn check_scopes(module: &Module, diags: &mut Vec<Diagnostic>, files: &DeclFiles)
             .cmp(b.code.as_str())
             .then(a.message.cmp(&b.message))
     });
+}
+
+pub fn check_with_files_and_globals(
+    module: &Module,
+    files: &DeclFiles,
+    extra_globals: &BTreeSet<String>,
+) -> Vec<Diagnostic> {
+    let mut diags = run_scope_check_with(module, files, extra_globals, true).diags;
+    diags.sort_by(|a, b| {
+        a.code
+            .as_str()
+            .cmp(b.code.as_str())
+            .then(a.message.cmp(&b.message))
+    });
+    diags
 }
