@@ -220,44 +220,58 @@ fn std_stage_permissions(name: &str) -> Option<&'static str> {
     }
 }
 
-pub fn stage_std_vendor_tree(out: &Path) -> Result<Vec<String>, Diagnostic> {
+fn std_tree_package(top: &str) -> Result<(String, String, String, Vec<(String, Vec<u8>)>), Diagnostic> {
     let version = env!("CARGO_PKG_VERSION").to_string();
-    let mut staged = Vec::new();
-    for top in std_package_tops() {
-        let full = format!("@std/{top}");
-        let main = stdlib::source(&top).ok_or_else(|| {
+    let full = format!("@std/{top}");
+    let main = stdlib::source(top)
+        .ok_or_else(|| {
             Diagnostic::new(
                 Code::E108,
                 format!("toolchain carries no source for `{full}`"),
             )
-        })?;
-        let dir = out.join(&full);
-        let src = dir.join("src");
-        std::fs::create_dir_all(&src).map_err(|e| {
-            Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", src.display()))
-        })?;
-        std::fs::write(src.join("lib.rnx"), main).map_err(|e| {
-            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", src.display()))
-        })?;
-        if top == "net" {
-            let http = stdlib::source("net/http").ok_or_else(|| {
+        })?
+        .as_bytes()
+        .to_vec();
+    let mut files = vec![("src/lib.rnx".to_string(), main)];
+    if top == "net" {
+        let http = stdlib::source("net/http")
+            .ok_or_else(|| {
                 Diagnostic::new(
                     Code::E108,
                     format!("toolchain carries no source for `{full}/http`"),
                 )
-            })?;
-            std::fs::write(src.join("http.rnx"), http).map_err(|e| {
-                Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", src.display()))
+            })?
+            .as_bytes()
+            .to_vec();
+        files.push(("src/http.rnx".to_string(), http));
+    }
+    let mut config = format!(
+        "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\",\n        description: \"Standard library package {full}, staged from the toolchain sources.\"\n    }},\n    entries: {{\n        main: \"src/lib.rnx\"\n    }}"
+    );
+    if let Some(permissions) = std_stage_permissions(top) {
+        config.push_str(",\n    ");
+        config.push_str(permissions);
+    }
+    config.push_str("\n}\n");
+    Ok((full, version, config, files))
+}
+
+pub fn stage_std_vendor_tree(out: &Path) -> Result<Vec<String>, Diagnostic> {
+    let mut staged = Vec::new();
+    for top in std_package_tops() {
+        let (full, _, config, files) = std_tree_package(&top)?;
+        let dir = out.join(&full);
+        for (name, bytes) in &files {
+            let path = dir.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
+                })?;
+            }
+            std::fs::write(&path, bytes).map_err(|e| {
+                Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", path.display()))
             })?;
         }
-        let mut config = format!(
-            "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\",\n        description: \"Standard library package {full}, staged from the toolchain sources.\"\n    }},\n    entries: {{\n        main: \"src/lib.rnx\"\n    }}"
-        );
-        if let Some(permissions) = std_stage_permissions(&top) {
-            config.push_str(",\n    ");
-            config.push_str(permissions);
-        }
-        config.push_str("\n}\n");
         std::fs::write(dir.join(crate::project::MANIFEST_FILE), config).map_err(|e| {
             Diagnostic::new(
                 Code::E108,
@@ -268,6 +282,80 @@ pub fn stage_std_vendor_tree(out: &Path) -> Result<Vec<String>, Diagnostic> {
     }
     staged.sort();
     Ok(staged)
+}
+
+fn write_cached_tree(base: &str, full: &str, version: &str, files: &[(String, Vec<u8>)]) -> Result<(), Diagnostic> {
+    let mut digest_entries = Vec::with_capacity(files.len());
+    for (name, bytes) in files {
+        digest_entries.push(crate::checksum::DigestEntry {
+            name: name.clone(),
+            size: bytes.len() as u64,
+            dir: false,
+            chunks: vec![crate::checksum::Sha256::hexdigest(bytes)],
+        });
+    }
+    let digest = crate::checksum::manifest_digest_hex(&digest_entries)?;
+    let dest = fetch::cached_package_dir(base, full, version);
+    let _ = std::fs::remove_dir_all(&dest);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot create `{}`: {e}", parent.display()),
+            )
+        })?;
+    }
+    for (name, bytes) in files {
+        let path = dest.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("cannot write `{}`: {e}", path.display()),
+                )
+            })?;
+        }
+        std::fs::write(&path, bytes).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot write `{}`: {e}", path.display()),
+            )
+        })?;
+    }
+    std::fs::write(dest.join(".rnx-integrity"), format!("{full}\n{version}\n{digest}\n")).map_err(|e| {
+        Diagnostic::new(
+            Code::E108,
+            format!("cannot write `{}`: {e}", dest.display()),
+        )
+    })
+}
+
+pub fn seed_embedded_std_cache() -> Result<StdSeedReport, Diagnostic> {
+    let base = fetch::expand_registry_base("");
+    let mut packages: Vec<(String, String)> = Vec::with_capacity(std_package_names().len());
+    for top in std_package_tops() {
+        let (full, version, config, mut files) = std_tree_package(&top)?;
+        files.push((
+            crate::project::MANIFEST_FILE.to_string(),
+            config.into_bytes(),
+        ));
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        write_cached_tree(&base, &full, &version, &files)?;
+        packages.push((full, version));
+    }
+    packages.sort();
+    let pin = StdPin {
+        date_secs: now_secs(),
+        registry: base.clone(),
+        packages: packages.iter().cloned().collect(),
+    };
+    let path = std_pin_path();
+    write_std_pin(&path, &pin)?;
+    Ok(StdSeedReport {
+        packages,
+        pin_path: path,
+        registry: base,
+    })
 }
 
 fn write_std_pin(path: &Path, pin: &StdPin) -> Result<(), Diagnostic> {
@@ -478,6 +566,39 @@ mod tests {
             .iter()
             .map(|full| node_json(full, version, integrity, false))
             .collect()
+    }
+
+    #[test]
+    fn local_seed_populates_cache_for_offline_pinned_resolves() {
+        let (_guard, _dir) = isolate_cache("stdlocal");
+        let base = fetch::expand_registry_base("");
+        let report = seed_embedded_std_cache().unwrap();
+        assert_eq!(report.packages.len(), std_package_tops().len());
+        assert_eq!(report.registry, base);
+        assert_eq!(report.pin_path, std_pin_path());
+        assert!(missing_std_packages().is_empty());
+        let cli = env!("CARGO_PKG_VERSION");
+        for full in std_package_names() {
+            let dir = fetch::cached_package_dir(&base, &full, cli);
+            assert!(dir.join(crate::project::MANIFEST_FILE).is_file(), "{}", dir.display());
+            let integrity = std::fs::read_to_string(dir.join(".rnx-integrity")).unwrap();
+            let mut lines = integrity.lines();
+            assert_eq!(lines.next(), Some(full.as_str()));
+            assert_eq!(lines.next(), Some(cli));
+            assert!(lines.next().is_some_and(|s| s.len() == 64));
+            let (found, _, version) = fetch::resolve_registry_package(
+                &full,
+                "*",
+                None,
+                &BTreeMap::new(),
+                Some(cli.to_string()),
+                &[],
+                None,
+            )
+            .expect("locally seeded cache serves pinned resolves with no network");
+            assert_eq!(version, cli);
+            assert_eq!(found, std::fs::canonicalize(&dir).unwrap());
+        }
     }
 
     #[test]

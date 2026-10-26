@@ -18,20 +18,38 @@ pub(super) fn std_registry(
     (default, BTreeMap::new())
 }
 
-pub(super) fn run_fetch_std(registry: Option<String>, from: Option<std::path::PathBuf>) {
+pub(super) fn run_fetch_std(registry: Option<String>, local: bool, from: Option<std::path::PathBuf>) {
     if from.is_some() {
         let e = Diagnostic::new(
             Code::E108,
-            "`rnx fetch-std --from` was removed; stage with `rnx vendor --stdlib <DIR>` and point `RNX_VENDOR_DIR` at it (or copy it over `vendor/`) instead of installing into the cache",
+            "`rnx fetch-std --from` was removed; stage with `rnx vendor --stdlib <DIR>` and point `RNX_VENDOR_DIR` at it (or copy it over `vendor/`) to override locally, or pass `--local` to seed the cache from the toolchain's embedded sources",
         );
         println!("{e}");
         std::process::exit(1);
+    }
+    if local {
+        return run_fetch_std_local();
     }
     let (default, overrides) = std_registry(registry.as_deref());
     match frontend::stdlib_seed::seed_stdlib_cache(default.as_ref(), &overrides) {
         Ok(report) => {
             for (name, version) in &report.packages {
                 println!("Fetched {name}@{version}");
+            }
+            finish_fetch_std(&report);
+        }
+        Err(e) => {
+            println!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_fetch_std_local() {
+    match frontend::stdlib_seed::seed_embedded_std_cache() {
+        Ok(report) => {
+            for (name, version) in &report.packages {
+                println!("Seeded {name}@{version} from the toolchain");
             }
             finish_fetch_std(&report);
         }
