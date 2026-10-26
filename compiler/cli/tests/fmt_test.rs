@@ -324,6 +324,53 @@ fn test_fmt_converges_on_joined_statements() {
     }
 }
 
+#[test]
+fn test_fmt_breaks_semiless_import_tail() {
+    let src = "import { fn f(x: Int): Int as g } from native \"libx\" export const K: Int = 1;\n";
+    let out = fmt(src);
+    assert!(
+        out.contains("} from native \"libx\"\nexport const K: Int = 1;"),
+        "import tail not split:\n{out}"
+    );
+    assert_eq!(fmt(&out), out, "not idempotent");
+    let refmt = fmt(&minify_src(src));
+    assert_eq!(
+        refmt, out,
+        "fmt(minify(x)) != fmt(x):\n--- fmt(x):\n{out}\n--- fmt(minify(x)):\n{refmt}"
+    );
+    frontend::parser::Parser::parse_module(&out)
+        .unwrap_or_else(|e| panic!("split import fails to parse: {e}"));
+
+    let live = "import { fn sqlite3_open(path: Pointer<Byte>): Int as rawOpen } from native \"sqlite3\" export const SQLITE_OK: Int = 0;\n";
+    let live_out = fmt(live);
+    assert!(
+        live_out.contains("} from native \"sqlite3\"\nexport const SQLITE_OK: Int = 0;"),
+        "live chunk junction not split:\n{live_out}"
+    );
+    frontend::parser::Parser::parse_module(&live_out)
+        .unwrap_or_else(|e| panic!("live junction fails to parse: {e}"));
+
+    let reexport = "export { Aye } from \"cee\" export const J: Int = 2;\n";
+    let re_out = fmt(reexport);
+    assert!(
+        re_out.contains("} from \"cee\"\nexport const J: Int = 2;"),
+        "re-export tail not split:\n{re_out}"
+    );
+    assert_eq!(fmt(&re_out), re_out, "not idempotent");
+
+    let trailing = "import { Aye } from \"cee\" // trailing\nexport const J: Int = 2;\n";
+    let trail_out = fmt(trailing);
+    assert!(trail_out.contains("// trailing"), "comment lost:\n{trail_out}");
+    frontend::parser::Parser::parse_module(&trail_out)
+        .unwrap_or_else(|e| panic!("comment case fails to parse: {e}"));
+
+    let expr = "fn f(): Int { let s = \"a\" + \"b\"; return 0; } export const K: Int = 1;\n";
+    let expr_out = fmt(expr);
+    assert!(expr_out.contains("\"a\" + \"b\""), "expression string wrongly split:\n{expr_out}");
+    frontend::parser::Parser::parse_module(&expr_out)
+        .unwrap_or_else(|e| panic!("expression case fails to parse: {e}"));
+}
+
 fn corpus_paths() -> Vec<(&'static str, std::path::PathBuf)> {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     [
