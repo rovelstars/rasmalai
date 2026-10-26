@@ -468,6 +468,537 @@ fn format_doc_comment(text: &str) -> String {
     out
 }
 
+fn capi_keyword_title(line: &str) -> Option<String> {
+    for kw in ["CAPI3REF:", "CONSTRUCTOR:", "DESTRUCTOR:", "METHOD:"] {
+        if let Some(rest) = line.strip_prefix(kw) {
+            if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+                return Some(rest.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn is_bare_taxonomy(line: &str) -> bool {
+    for kw in ["CAPI3REF:", "CONSTRUCTOR:", "DESTRUCTOR:", "METHOD:"] {
+        if let Some(rest) = line.strip_prefix(kw)
+            && (rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t'))
+        {
+            let tail = rest.trim();
+            if !tail.is_empty()
+                && tail.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn strip_capi_markers(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '^' {
+            let prev = if i == 0 { None } else { Some(chars[i - 1]) };
+            let opens = matches!(prev, None | Some(' ') | Some('\t') | Some('('));
+            if chars.get(i + 1) == Some(&'(') && opens {
+                i += 2;
+                continue;
+            }
+            if opens {
+                i += 1;
+                continue;
+            }
+            out.push('^');
+            i += 1;
+            continue;
+        }
+        if chars[i] == ')'
+            && chars.get(i + 1) == Some(&'^')
+            && chars.get(i + 2).is_none_or(|c| *c == ' ' || *c == '\t')
+        {
+            i += 2;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn swap_command(line: &str, from: &str, to: &str) -> Option<String> {
+    let rest = line.strip_prefix(from)?;
+    if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') || rest.starts_with('[')
+    {
+        Some(format!("{to}{rest}"))
+    } else {
+        None
+    }
+}
+
+fn strip_command(line: &str, cmd: &str) -> Option<String> {
+    let rest = line.strip_prefix(cmd)?;
+    if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+        Some(rest.trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn convert_dash_param(tail: &str) -> Option<String> {
+    if let Some(rest) = tail.strip_prefix("@param") {
+        if !rest.is_empty() && !rest.starts_with(' ') && !rest.starts_with('\t') {
+            return None;
+        }
+        let rest = rest.trim().trim_start_matches(':').trim();
+        if rest.is_empty() {
+            return None;
+        }
+        let mut parts = rest.splitn(2, |c: char| c == ' ' || c == '\t');
+        let name = parts.next().unwrap_or("").trim_end_matches(':');
+        let desc = parts.next().unwrap_or("").trim().trim_start_matches(':').trim();
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return None;
+        }
+        if desc.is_empty() {
+            return Some(format!("@param {name}"));
+        }
+        return Some(format!("@param {name} {desc}"));
+    }
+    let body = tail.strip_prefix('@')?;
+    let colon = body.find(':')?;
+    let word = body[..colon].trim();
+    let desc = body[colon + 1..].trim();
+    if word.is_empty()
+        || !word.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        || desc.is_empty()
+    {
+        return None;
+    }
+    if word == "return" || word == "returns" {
+        Some(format!("@returns {desc}"))
+    } else {
+        Some(format!("@param {word} {desc}"))
+    }
+}
+
+fn convert_c_command(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let is_c = chars[i] == '\\'
+            && chars.get(i + 1) == Some(&'c')
+            && chars.get(i + 2).is_some_and(|c| *c == ' ' || *c == '\t');
+        if !is_c {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let mut j = i + 2;
+        while j < chars.len() && (chars[j] == ' ' || chars[j] == '\t') {
+            j += 1;
+        }
+        let start = j;
+        while j < chars.len() && chars[j] != ' ' && chars[j] != '\t' {
+            j += 1;
+        }
+        if start == j {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let mut word: String = chars[start..j].iter().collect();
+        let mut trail = String::new();
+        while let Some(c) = word.chars().next_back() {
+            if matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | ')' | ']') {
+                trail.insert(0, c);
+                word.pop();
+            } else {
+                break;
+            }
+        }
+        if word.is_empty() {
+            out.push_str(&chars[i..j].iter().collect::<String>());
+        } else {
+            out.push('`');
+            out.push_str(&word);
+            out.push('`');
+            out.push_str(&trail);
+        }
+        i = j;
+    }
+    out
+}
+
+fn convert_doc_command(line: &str) -> String {
+    if let Some(rest) = line.strip_prefix('-') {
+        let tail = rest.trim_start();
+        if tail.starts_with('@') {
+            if let Some(mapped) = convert_dash_param(tail) {
+                return mapped;
+            }
+        }
+    }
+    if let Some(mapped) = swap_command(line, "\\param", "@param") {
+        return convert_c_command(&mapped);
+    }
+    if let Some(mapped) = swap_command(line, "\\returns", "@returns") {
+        return convert_c_command(&mapped);
+    }
+    if let Some(mapped) = swap_command(line, "\\return", "@returns") {
+        return convert_c_command(&mapped);
+    }
+    if let Some(rest) = strip_command(line, "\\brief") {
+        return convert_c_command(&rest);
+    }
+    if let Some(rest) = strip_command(line, "@brief") {
+        return convert_c_command(&rest);
+    }
+    if line == "\\code" || line == "\\endcode" {
+        return String::new();
+    }
+    if let Some(mapped) = swap_command(line, "@return", "@returns") {
+        return convert_c_command(&mapped);
+    }
+    convert_c_command(line)
+}
+
+fn strip_list_item(line: &str) -> Option<String> {
+    for tag in ["<li>", "<LI>", "<li/>", "<LI/>"] {
+        if let Some(body) = line.strip_prefix(tag) {
+            return Some(body.trim_start().to_string());
+        }
+    }
+    None
+}
+
+fn is_block_wrapper(line: &str) -> bool {
+    matches!(
+        line.to_ascii_lowercase().as_str(),
+        "<ol>" | "</ol>"
+            | "<ul>"
+            | "</ul>"
+            | "<ol>)"
+            | "</ol>)"
+            | "<ul>)"
+            | "</ul>)"
+            | "<p>"
+            | "</p>"
+            | "<br>"
+            | "<br/>"
+            | "<br />"
+            | "<hr>"
+            | "<hr/>"
+    )
+}
+
+fn strip_c_tags(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '<' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        if chars.get(j) == Some(&'/') {
+            j += 1;
+        }
+        let name_start = j;
+        while j < chars.len() && chars[j].is_ascii_alphanumeric() {
+            j += 1;
+        }
+        if name_start == j || !chars[name_start].is_ascii_alphabetic() {
+            out.push('<');
+            i += 1;
+            continue;
+        }
+        while j < chars.len() && chars[j] != '>' && chars[j] != '<' {
+            j += 1;
+        }
+        if j < chars.len() && chars[j] == '>' {
+            i = j + 1;
+        } else {
+            out.push('<');
+            i += 1;
+        }
+    }
+    out
+}
+
+fn convert_inline_tags(line: &str) -> String {
+    let mut text = line.to_string();
+    for tag in ["<code>", "</code>", "<tt>", "</tt>"] {
+        text = text.replace(tag, "`");
+        text = text.replace(&tag.to_ascii_uppercase(), "`");
+    }
+    for br in ["<br/>", "<br />", "<br>"] {
+        text = text.replace(br, " ");
+        text = text.replace(&br.to_ascii_uppercase(), " ");
+    }
+    strip_c_tags(&text)
+}
+
+fn bracket_head(inner: &str) -> String {
+    let head = inner.split('|').next().unwrap_or(inner).trim();
+    if head.is_empty() {
+        inner.trim().to_string()
+    } else {
+        head.to_string()
+    }
+}
+
+fn convert_brackets(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '[' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let glued = i > 0
+            && (chars[i - 1].is_ascii_alphanumeric()
+                || chars[i - 1] == '_'
+                || chars[i - 1] == ']'
+                || chars[i - 1] == ')');
+        if glued {
+            out.push('[');
+            i += 1;
+            continue;
+        }
+        if chars.get(i + 1) == Some(&'[') {
+            let mut j = i + 2;
+            while j + 1 < chars.len() && !(chars[j] == ']' && chars[j + 1] == ']') {
+                j += 1;
+            }
+            if j + 1 < chars.len() {
+                let inner: String = chars[i + 2..j].iter().collect();
+                out.push_str(&bracket_head(&inner));
+                i = j + 2;
+            } else {
+                out.push('[');
+                i += 1;
+            }
+            continue;
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] != ']' {
+            j += 1;
+        }
+        if j < chars.len() {
+            let inner: String = chars[i + 1..j].iter().collect();
+            if inner.trim().is_empty() {
+                out.push_str("[]");
+            } else {
+                out.push_str(&bracket_head(&inner));
+            }
+            i = j + 1;
+        } else {
+            out.push('[');
+            i += 1;
+        }
+    }
+    out
+}
+
+fn convert_inline(line: &str) -> String {
+    convert_brackets(&convert_inline_tags(line))
+}
+
+fn convert_c_line(line: &str) -> String {
+    let marked = strip_capi_markers(line.trim());
+    let mut text = marked.trim().to_string();
+    if text.is_empty() {
+        return text;
+    }
+    if is_bare_taxonomy(&text) {
+        return String::new();
+    }
+    text = convert_doc_command(&text);
+    if let Some(body) = strip_list_item(&text) {
+        let item = convert_inline(&body).trim().to_string();
+        if item.is_empty() {
+            return String::new();
+        }
+        return format!("- {item}");
+    }
+    if is_block_wrapper(text.trim()) {
+        return String::new();
+    }
+    convert_inline(&text).trim().to_string()
+}
+
+fn convert_c_doc(raw: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for line in raw.split('\n') {
+        lines.push(convert_c_line(line));
+    }
+    if let Some(first) = lines.iter().position(|l| !l.is_empty()) {
+        if let Some(title) = capi_keyword_title(&lines[first]) {
+            lines[first] = title;
+        }
+    }
+    let mut kept: Vec<String> = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            if kept.last().is_some_and(|l| l.is_empty()) {
+                continue;
+            }
+            kept.push(String::new());
+        } else {
+            kept.push(line);
+        }
+    }
+    while kept.first().is_some_and(|l| l.is_empty()) {
+        kept.remove(0);
+    }
+    while kept.last().is_some_and(|l| l.is_empty()) {
+        kept.pop();
+    }
+    let mut text = kept.join("\n");
+    while text.contains("*/") {
+        text = text.replace("*/", "* /");
+    }
+    while text.contains("/**") {
+        text = text.replace("/**", "/* *");
+    }
+    text
+}
+
+fn capi_anchors(line: &str) -> Vec<String> {
+    if !line.trim_start().starts_with("[[") {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("[[") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("]]") else {
+            break;
+        };
+        let inner = after[..end].trim();
+        let name = inner.split('(').next().unwrap_or("").trim();
+        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            out.push(name.to_string());
+        }
+        rest = &after[end + 2..];
+    }
+    out
+}
+
+fn split_capi_sections(raw: &str) -> (String, Vec<(String, Vec<String>)>) {
+    let mut lead: Vec<String> = Vec::new();
+    let mut sections: Vec<(String, Vec<String>)> = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    for line in raw.split('\n') {
+        let anchors = capi_anchors(line);
+        if anchors.is_empty() {
+            if open.is_empty() {
+                lead.push(line.to_string());
+            } else {
+                for &idx in &open {
+                    sections[idx].1.push(line.to_string());
+                }
+            }
+            continue;
+        }
+        open.clear();
+        let mut rest = line.to_string();
+        loop {
+            let Some(start) = rest.find("[[") else {
+                break;
+            };
+            let after = start + 2;
+            let Some(rel) = rest[after..].find("]]") else {
+                break;
+            };
+            rest.replace_range(start..after + rel + 2, " ");
+        }
+        let rest = rest.trim().to_string();
+        for name in anchors {
+            sections.push((name, Vec::new()));
+            open.push(sections.len() - 1);
+        }
+        if !rest.is_empty() {
+            for &idx in &open {
+                sections[idx].1.push(rest.clone());
+            }
+        }
+    }
+    (lead.join("\n"), sections)
+}
+
+fn anchor_heading_redundant(first: &str, name: &str) -> bool {
+    let text = convert_inline(&strip_capi_markers(first.trim())).trim().to_string();
+    text == name || text == format!("{name}()")
+}
+
+fn push_raw_section(docs: &mut String, body: &str) {
+    if body.trim().is_empty() {
+        return;
+    }
+    if docs.trim().is_empty() {
+        *docs = body.to_string();
+    } else {
+        docs.push_str("\n\n");
+        docs.push_str(body);
+    }
+}
+
+fn route_capi_sections(kept: &mut [(CFunc, EmitShape)]) {
+    let index: BTreeMap<&str, usize> =
+        kept.iter().enumerate().map(|(i, (f, _))| (f.name.as_str(), i)).collect();
+    let mut rebuilt: Vec<String> = Vec::with_capacity(kept.len());
+    let mut stashed: Vec<(usize, String)> = Vec::new();
+    let mut orphaned: Vec<(usize, String)> = Vec::new();
+    for (i, (f, _)) in kept.iter().enumerate() {
+        let (lead, sections) = split_capi_sections(&f.docs);
+        if sections.is_empty() {
+            rebuilt.push(f.docs.clone());
+            continue;
+        }
+        let mut own: Vec<String> = Vec::new();
+        if !lead.trim().is_empty() {
+            own.push(lead);
+        }
+        for (name, mut lines) in sections {
+            if !lines.is_empty() && anchor_heading_redundant(&lines[0], &name) {
+                lines.remove(0);
+                while lines.first().is_some_and(|l| l.trim().is_empty()) {
+                    lines.remove(0);
+                }
+            }
+            let body = lines.join("\n");
+            if name == f.name {
+                if !body.trim().is_empty() {
+                    own.push(body);
+                }
+            } else if let Some(&t) = index.get(name.as_str()) {
+                stashed.push((t, body));
+            } else {
+                orphaned.push((i, body));
+            }
+        }
+        rebuilt.push(own.join("\n\n"));
+    }
+    for (i, text) in rebuilt.into_iter().enumerate() {
+        kept[i].0.docs = text;
+    }
+    for (t, body) in stashed {
+        push_raw_section(&mut kept[t].0.docs, &body);
+    }
+    for (o, body) in orphaned {
+        push_raw_section(&mut kept[o].0.docs, &body);
+    }
+}
+
 fn strip_block_comments(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -2539,6 +3070,10 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
     }
     skipped.sort();
     kept.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+    route_capi_sections(&mut kept);
+    for (f, _) in kept.iter_mut() {
+        f.docs = convert_c_doc(&f.docs);
+    }
 
     let mut filtered_consts: Vec<ConstVal> = Vec::new();
     for c in consts {
@@ -2549,6 +3084,9 @@ pub fn generate(opts: &BindgenOptions) -> Result<BindgenOutput, String> {
             continue;
         }
         filtered_consts.push(c);
+    }
+    for c in filtered_consts.iter_mut() {
+        c.docs = convert_c_doc(&c.docs);
     }
 
     let mut rename_map: BTreeMap<String, String> = BTreeMap::new();
@@ -2789,10 +3327,82 @@ mod tests {
         )
         .unwrap();
         assert!(
-            out.rnx.contains("/**\n * CAPI3REF: Open A Database.\n *\n * Open the file and return a handle.\n */\nunsafe fn sqlite3_open("),
+            out.rnx.contains("/**\n * Open A Database.\n *\n * Open the file and return a handle.\n */\nunsafe fn sqlite3_open("),
             "{}",
             out.rnx
         );
+    }
+
+    #[test]
+    fn capi3ref_intro_converts_markup_to_plain_prose() {
+        let out = gen_src(
+            "/*\n** CAPI3REF: Open A Database.\n** CONSTRUCTOR: sqlite3\n**\n** Open the file and return a handle.\n** ^Normative sentence with [brackets] and <b>bold</b>.\n** See Also: [Using Things].\n** Pipe link [MINI_OK | MINI_DONE] takes the display text.\n*/\nint sqlite3_open(const char *name, int flags);\n",
+        )
+        .unwrap();
+        assert!(
+            out.rnx.contains("/**\n * Open A Database.\n *\n * Open the file and return a handle.\n * Normative sentence with brackets and bold.\n * See Also: Using Things.\n * Pipe link MINI_OK takes the display text.\n */\nunsafe fn sqlite3_open("),
+            "{}",
+            out.rnx
+        );
+    }
+
+    #[test]
+    fn doxygen_block_converts_to_jsdoc_tags() {
+        let out = gen_src(
+            "/** @brief Add two numbers.\n * @param a first operand.\n * @param b second operand.\n * @return the sum.\n * Uses <code>add</code> and \\c fast paths.\n */\nint add(int a, int b);\n",
+        )
+        .unwrap();
+        assert!(
+            out.rnx.contains("/**\n * Add two numbers.\n * @param a first operand.\n * @param b second operand.\n * @returns the sum.\n * Uses `add` and `fast` paths.\n */\nunsafe fn add("),
+            "{}",
+            out.rnx
+        );
+    }
+
+    #[test]
+    fn kerneldoc_dash_params_become_tags() {
+        let out = gen_src(
+            "/**\n * my_func() - do things.\n * - @arg: the thing.\n * - @return: zero on success.\n */\nint my_func(int arg);\n",
+        )
+        .unwrap();
+        assert!(
+            out.rnx.contains("/**\n * my_func() - do things.\n * @param arg the thing.\n * @returns zero on success.\n */\nunsafe fn my_func("),
+            "{}",
+            out.rnx
+        );
+    }
+
+    #[test]
+    fn html_lists_become_bullets_and_carets_stripped() {
+        let out = gen_src(
+            "/*\n** CAPI3REF: Backup.\n**\n** ^(To copy:\n** <ol>\n** <li><b>init()</b> once,\n** <li><b>step()</b> often.\n** </ol>)^\n** Done.\n*/\nint go(void);\n",
+        )
+        .unwrap();
+        assert!(
+            out.rnx.contains("/**\n * Backup.\n *\n * To copy:\n *\n * - init() once,\n * - step() often.\n *\n * Done.\n */\nunsafe fn go("),
+            "{}",
+            out.rnx
+        );
+    }
+
+    #[test]
+    fn capi_section_anchors_route_to_their_symbols() {
+        let out = gen_src(
+            "/*\n** CAPI3REF: Thing API.\n**\n** Lead prose.\n**\n** [[foo_init()]] <b>foo_init()</b>\n**\n** ^Init docs with [link].\n**\n** [[foo_step()]] <b>foo_step()</b>\n**\n** Step docs.\n*/\nint foo_init(int x);\nint foo_step(int x);\n",
+        )
+        .unwrap();
+        let init_start = out.rnx.find("unsafe fn foo_init(").unwrap();
+        let init_doc = &out.rnx[..init_start];
+        assert!(init_doc.contains("Thing API."), "{}", out.rnx);
+        assert!(init_doc.contains("Lead prose."), "{}", out.rnx);
+        assert!(init_doc.contains("Init docs with link."), "{}", out.rnx);
+        assert!(!init_doc.contains("Step docs."), "{}", out.rnx);
+        assert!(!init_doc.contains("[["), "{}", out.rnx);
+        let step_start = out.rnx.find("unsafe fn foo_step(").unwrap();
+        let step_doc = &out.rnx[init_start..step_start];
+        assert!(step_doc.contains("Step docs."), "{}", out.rnx);
+        assert!(!step_doc.contains("Lead prose."), "{}", out.rnx);
+        assert!(!step_doc.contains("Init docs"), "{}", out.rnx);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 	import AuraCode from '$lib/components/AuraCode.svelte';
 	import ModuleDocs from '$lib/components/ModuleDocs.svelte';
 	import type { DocModule } from '$lib/docs/api';
+	import { displayModuleName, isGeneratedModule } from '$lib/docs/api';
 	import { shortDownloads, humanDate } from '$lib/packages-meta';
 import { PlaygroundRunner } from '$lib/playground/runner';
 import { isFormattablePackagePath, selectPackageText } from '$lib/packages-format';
@@ -559,7 +560,7 @@ import { importSnippet } from '$lib/docs/stdlib';
 					<p class="panel p-6 text-center text-sm text-aura-muted">No API reference published for this version yet.</p>
 				{:else}
 					{#each apiMods as m (m.name)}
-						<h2 class="mt-6 font-mono text-sm font-bold text-aura-text first:mt-0">{m.name}</h2>
+						<h2 class="mt-6 font-mono text-sm font-bold text-aura-text first:mt-0">{displayModuleName(m.name)}{#if isGeneratedModule(m.name)}<span class="ml-2 rounded border border-aura-border px-1.5 py-0.5 align-middle text-[11px] font-normal text-aura-muted">generated</span>{/if}</h2>
 						<ModuleDocs mod={m} allMods={apiMods} idPrefix="{m.name}-" />
 					{/each}
 				{/if}

@@ -61,3 +61,14 @@ export interface DocModule {
 	enums: DocEnum[];
 	constants: DocConst[];
 }
+
+const GENERATED_PREFIX = 'gen.';
+
+export function isGeneratedModule(name: string): boolean {
+	return name.length > GENERATED_PREFIX.length && name.startsWith(GENERATED_PREFIX);
+}
+
+export function displayModuleName(name: string): string {
+	if (isGeneratedModule(name)) return name.slice(GENERATED_PREFIX.length);
+	return name;
+}
