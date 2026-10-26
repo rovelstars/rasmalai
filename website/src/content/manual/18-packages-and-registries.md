@@ -222,6 +222,10 @@ A resolve also has a runtime budget: the traversal stops at 64 levels, 512 packa
 
 `rnx lock` writes `Project.deplock`, pinning every dependency to the exact version the registry just served: the version number plus the manifest digest as `checksum`, and the OCI index digest as `artifactDigest` when the version ships artifacts. A build run with a lockfile never auto-upgrades: pinned versions resolve from cache without network access, and byte mismatches abort the build. The registry never stores deplocks — a published deplock would pin everyone else's tree.
 
+Builds are locked by default. A registry range that floats (`*`, `latest`, `^`, `~`, `>=`) with no locked version in `Project.deplock` is `E115`, naming the package and the range: run `rnx lock` to pin it. An exact `X.Y.Z` requirement without a lock still resolves that one version. `rnx build --locked` and `rnx run --locked` remain accepted and additionally verify every locked checksum; they change nothing else.
+
+A cold cache with no network fails closed and names the remedy. A refused connection or a DNS failure returns after a single attempt — there are no doomed retries — as `E113`, naming the package, the registry base, and `rnx download`. A 500-series status keeps the existing retry policy. A pinned version served from cache skips the network entirely, and the cached copy still enforces the compat checks: the `engine` range is read from the cached manifest and a mismatch fails closed as `E114` (naming `rnx update` and `rnx download`), while a yanked pin warns exactly as on a fresh download. A chunk manifest listing more than 4096 entries is refused as `E116`. Only `rnx lock`, `rnx add`, and `rnx update` write `Project.deplock`; verification never does.
+
 Moving a dependency takes an explicit update:
 
 ```sh

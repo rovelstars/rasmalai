@@ -72,7 +72,7 @@ pub enum Command {
         /// Target triple override (e.g. x86_64-unknown-linux-gnu)
         #[arg(long)]
         target: Option<String>,
-        /// Fail unless Project.deplock matches the manifest
+        /// Verify Project.deplock checksums (floating ranges always resolve from the lock; accepted for compatibility)
         #[arg(long)]
         locked: bool,
         /// Optimization level (0 or 1)
@@ -136,7 +136,7 @@ pub enum Command {
         /// Package selection
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
-        /// Fail unless Project.deplock matches the manifest
+        /// Verify Project.deplock checksums (floating ranges always resolve from the lock; accepted for compatibility)
         #[arg(long)]
         locked: bool,
         /// Optimization level (0 or 1)

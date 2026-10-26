@@ -2047,7 +2047,7 @@ fn playground_std_error(source: &str) -> Diagnostic {
 
 fn std_fetch_error(source: &str, base: &str, detail: &str) -> Diagnostic {
     Diagnostic::new(
-        Code::E108,
+        Code::E113,
         format!("cannot resolve `{source}` from registry `{base}`: {detail}"),
     )
     .with_hint("run `rnx download` to seed the cache (or `rnx doctor --repair-std` to repair it)")
@@ -2055,7 +2055,7 @@ fn std_fetch_error(source: &str, base: &str, detail: &str) -> Diagnostic {
 
 fn std_cache_miss_error(source: &str, base: &str) -> Diagnostic {
     Diagnostic::new(
-        Code::E108,
+        Code::E113,
         format!("cannot resolve `{source}`: stdlib cache is empty and registry `{base}` is unreachable"),
     )
     .with_hint("run `rnx download` to seed the cache (or `rnx doctor --repair-std` to repair it)")
@@ -2192,6 +2192,15 @@ fn resolve_package(
             let scope_root =
                 project::find_workspace_root(&proj_root).unwrap_or_else(|| proj_root.clone());
             let pinned = locked_registry_version(&scope_root, &pkg);
+            if pinned.is_none() && exact_version(version).is_none() {
+                return Err(Diagnostic::new(
+                    Code::E115,
+                    format!(
+                        "package `{pkg}` declares floating range `{version}` with no locked version; run `rnx lock` to pin it"
+                    ),
+                )
+                .with_hint("run `rnx lock` to pin every registry dependency, then build again"));
+            }
             let have = crate::fetch::scan_cache_have();
             let anchor = crate::fetch::cache_anchor(&proj_root);
             let (dep_root, dep_cfg, _) = crate::fetch::resolve_registry_package(
@@ -4122,6 +4131,9 @@ mod tests {
         let server = start_widget_server();
         plant_prelude_cache(&server.base);
         let root = registry_app("live", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        lock.write(&root).unwrap();
         let entry = root.join("src").join("main.rnx");
         let graph = ModuleGraph::build(&entry).unwrap();
         assert!(graph.files.iter().any(|f| f.path.ends_with("src/main.rnx")));
@@ -4130,6 +4142,28 @@ mod tests {
         let bodies = server.resolve_bodies();
         assert!(!bodies.is_empty());
         assert_eq!(testkit::requirement(&bodies[0], "@acme/widget"), "^1.0.0");
+        drop(root);
+    }
+
+    #[test]
+    fn floating_range_without_lock_fails_naming_rnx_lock() {
+        let (_guard, _cache) = testkit::isolate_cache("modfloat");
+        let dead = "http://127.0.0.1:9";
+        plant_prelude_cache(dead);
+        let root = registry_app("float", dead);
+        let entry = root.join("src").join("main.rnx");
+        let err = match ModuleGraph::build(&entry) {
+            Ok(_) => panic!("a floating range without a lock must fail"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, Code::E115);
+        assert!(err.message.contains("@acme/widget"), "{}", err.message);
+        assert!(err.message.contains("^1.0.0"), "{}", err.message);
+        assert!(err.message.contains("rnx lock"), "{}", err.message);
+        assert!(
+            err.hint.as_deref().unwrap_or_default().contains("rnx lock"),
+            "{err:?}"
+        );
         drop(root);
     }
 
@@ -4259,7 +4293,7 @@ mod tests {
         let (_guard, _cache) = testkit::isolate_cache("stdfb");
         let err = resolve_std_with_registries(&dead_from(), "@std/fs", "fs", None, &dead_overrides())
             .unwrap_err();
-        assert_eq!(err.code, Code::E108);
+        assert_eq!(err.code, Code::E113);
         assert!(err.message.contains("127.0.0.1:1"), "{}", err.message);
         assert!(
             err.hint.as_deref().unwrap_or_default().contains("rnx download"),
@@ -4335,7 +4369,7 @@ mod tests {
         let err =
             resolve_std_with_registries(&from, "@std/time", "time", None, &dead_overrides())
                 .unwrap_err();
-        assert_eq!(err.code, Code::E108);
+        assert_eq!(err.code, Code::E113);
         assert!(err.message.contains("9.9.9"), "{}", err.message);
         assert_eq!(std_overlay_get(&PathBuf::from("@std/time")), None);
         drop(root);
@@ -4347,6 +4381,9 @@ mod tests {
         let server = start_widget_server();
         plant_prelude_cache(&server.base);
         let root = registry_app("vendorlive", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = crate::deplock::ProjectDepLock::resolve(&root, &cfg).unwrap();
+        lock.write(&root).unwrap();
         let entry = root.join("src").join("main.rnx");
         let graph = ModuleGraph::build(&entry).unwrap();
         assert!(graph.files.iter().any(|f| f.path.ends_with("src/main.rnx")));
@@ -4392,7 +4429,7 @@ mod tests {
     fn from_source_offline_no_cache_fails_loudly() {
         let (_guard, _cache) = testkit::isolate_cache("srcfb");
         let err = ModuleGraph::from_source("fn Main(): Int { return 1; }\n").unwrap_err();
-        assert_eq!(err.code, Code::E108);
+        assert_eq!(err.code, Code::E113);
         assert!(err.message.contains("registry"), "{}", err.message);
         assert!(
             err.hint.as_deref().unwrap_or_default().contains("rnx download"),
@@ -4733,17 +4770,17 @@ mod tests {
         plant_prelude_cache(&server.base);
         let root = registry_app("globfl", &server.base);
         let entry = root.join("src").join("main.rnx");
-        let first = merged_debug(&entry);
-        assert!(!first.is_empty());
-        let statuses = product_statuses(&root);
-        let widget = statuses.iter().find(|status| status.pkg == "@acme/widget").expect("widget");
-        assert_eq!(widget.version, None);
-        assert!(!widget.present);
+        let err = match ModuleGraph::build(&entry) {
+            Ok(_) => panic!("a floating range without a lock must fail"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, Code::E115);
+        assert!(err.message.contains("rnx lock"), "{}", err.message);
         let widget_files: Vec<_> = crate::products::product_files()
             .into_iter()
             .filter(|path| path.to_string_lossy().contains("@acme/widget"))
             .collect();
-        assert!(widget_files.is_empty(), "floating ranges must never populate");
+        assert!(widget_files.is_empty(), "a floating range without a lock fails before populating");
         drop(root);
     }
 

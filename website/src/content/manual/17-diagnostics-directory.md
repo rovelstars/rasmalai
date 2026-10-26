@@ -58,6 +58,10 @@ fix: declare the variable with `let` or check the spelling
 | `E110` | error | C-style `for (init; cond; step)` | use `for x in range` or `while` |
 | `E111` | error | direct `.poll()` call; the polling model is retired | use `await` or `promise.wait()` instead |
 | `E112` | error | loose top-level statement or top-level `await` in an imported module | move execution logic into a function or class method; top-level statements live in the entry file only |
+| `E113` | error | the registry is unreachable (connection refused, DNS failure) or the cache has no copy of the requested package | run `rnx download` to seed the cache, or check the network |
+| `E114` | error | the package's `engine` range does not admit the running toolchain | run `rnx update` to move to a compatible version, or `rnx download` to re-seed the cache |
+| `E115` | error | a registry range floats with no locked version in `Project.deplock` | run `rnx lock` to pin every registry dependency, then build again |
+| `E116` | error | a chunk manifest lists more than 4096 entries | run `rnx update` to move past this version or ask the maintainer to split the package |
 
 The `E108` declaration rule, corrected:
 
