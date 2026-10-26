@@ -906,6 +906,8 @@ mod tests {
 
     const BLOB: &[u8] = b"fake native bytes";
 
+    static BLOB_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     fn annotations(role: &str, kind: &str, title: &str) -> String {
         format!(
             "\"run.rasmalai.kind\": \"{kind}\", \"run.rasmalai.role\": \"{role}\", \
@@ -1078,10 +1080,7 @@ mod tests {
         let blob: Vec<u8> = format!(
             "fake native bytes install {}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+            BLOB_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         )
         .into_bytes();
         let blob_hash = Sha256::hexdigest(&blob);

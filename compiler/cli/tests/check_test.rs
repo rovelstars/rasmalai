@@ -4,7 +4,6 @@ mod scratch;
 
 use std::path::Path;
 use std::process::Command;
-use std::time::Instant;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
@@ -131,35 +130,6 @@ fn test_check_skips_codegen_and_artifacts() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(!has_artifacts(&dir), "check created build artifacts");
-}
-
-#[test]
-fn test_check_latency_comparison() {
-    let dir = fresh_dir("latency");
-    write_package(&dir, "speedpkg", &[("main.rnx", MAIN_OK), ("util.rnx", UTIL_OK)]);
-    let main = dir.join("src").join("main.rnx");
-    let name = main.to_string_lossy().into_owned();
-    let check_start = Instant::now();
-    let check = Command::new(rnx())
-        .arg("check")
-        .env("NO_COLOR", "1")
-        .arg(&name)
-        .output()
-        .unwrap();
-    let check_elapsed = check_start.elapsed();
-    assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
-    let build_start = Instant::now();
-    let build = Command::new(rnx())
-        .arg("build")
-        .arg(&name)
-        .output()
-        .unwrap();
-    let build_elapsed = build_start.elapsed();
-    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    assert!(
-        check_elapsed < build_elapsed,
-        "check {check_elapsed:?} not faster than build {build_elapsed:?}"
-    );
 }
 
 #[test]

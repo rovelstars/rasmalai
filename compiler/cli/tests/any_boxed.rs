@@ -11,29 +11,34 @@ const STD_TOPS: &[&str] = &[
     "@std/io",
 ];
 
-fn stage_checkout_std(tag: &str) {
-    let dir = crate::scratch::dir(&format!("stdstage-{tag}"));
-    let vendor = dir.join("vendor");
-    let cache = dir.join("cache");
-    std::fs::create_dir_all(&cache).unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rnx"))
-        .arg("vendor")
-        .args(STD_TOPS)
-        .arg("--dir")
-        .arg(&vendor)
-        .env("RNX_CACHE_HOME", &cache)
-        .env("RNX_REGISTRY", "http://127.0.0.1:9")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "stage stdlib: {}", String::from_utf8_lossy(&out.stderr));
-    unsafe {
-        std::env::set_var("RNX_VENDOR_DIR", &vendor);
-        std::env::set_var("RNX_CACHE_HOME", &cache);
-    }
-    std::mem::forget(dir);
+static STAGED_STD: std::sync::OnceLock<crate::scratch::Scratch> = std::sync::OnceLock::new();
+
+fn ensure_staged_std() {
+    STAGED_STD.get_or_init(|| {
+        let dir = crate::scratch::dir("stdstage-anybox");
+        let vendor = dir.join("vendor");
+        let cache = dir.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rnx"))
+            .arg("vendor")
+            .args(STD_TOPS)
+            .arg("--dir")
+            .arg(&vendor)
+            .env("RNX_CACHE_HOME", &cache)
+            .env("RNX_REGISTRY", "http://127.0.0.1:9")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "stage stdlib: {}", String::from_utf8_lossy(&out.stderr));
+        unsafe {
+            std::env::set_var("RNX_VENDOR_DIR", &vendor);
+            std::env::set_var("RNX_CACHE_HOME", &cache);
+        }
+        dir
+    });
 }
 
 fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
+    ensure_staged_std();
     let dir = crate::scratch::dir(&format!("anybox-{tag}"));
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();
@@ -155,7 +160,6 @@ fn any_thread_and_channel_values_print() {
 
 #[test]
 fn any_no_leak_on_roundtrip() {
-    stage_checkout_std("noleak");
     check_stdout_everywhere(
         "import { liveCount } from \"@std/testing\";\n\
         fn one(n: Int): Int {\n\

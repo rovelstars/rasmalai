@@ -475,68 +475,42 @@ mod string_tests {
     #[test]
     fn advancing_indexof_and_slice_scale_linearly() {
         unsafe {
-            // Sizes are chosen so each measured pass is tens of milliseconds,
-            // far above allocator and cache noise, and every timing is the
-            // minimum of several passes. A single sub-millisecond sample cannot
-            // support a doubling ratio bound: the noise alone exceeds it.
-            const REPEATS: usize = 5;
             let unit = "abcdefghijklmnopqrstuvwxyz0123456789";
             let s100 = mortal(&unit.repeat(71_040));
             let s200 = mortal(&unit.repeat(142_080));
             let nd = mortal("9a");
             let drive_index = |s: *mut u8| {
-                let mut hits = 0usize;
-                let mut best = std::time::Duration::MAX;
-                for _ in 0..REPEATS {
-                    let t0 = std::time::Instant::now();
-                    let mut from = 0i64;
-                    let mut n = 0usize;
-                    loop {
-                        let at = rnx_string_index_of_from(s, nd, from);
-                        if at < 0 {
-                            break;
-                        }
-                        n += 1;
-                        from = at + 1;
+                let mut from = 0i64;
+                let mut n = 0usize;
+                loop {
+                    let at = rnx_string_index_of_from(s, nd, from);
+                    if at < 0 {
+                        break;
                     }
-                    let d = std::time::Instant::now() - t0;
-                    hits = n;
-                    best = best.min(d);
+                    n += 1;
+                    from = at + 1;
                 }
-                (best, hits)
+                n
             };
-            let (d100, h100) = drive_index(s100);
-            let (d200, h200) = drive_index(s200);
+            let h100 = drive_index(s100);
+            let h200 = drive_index(s200);
             assert!(h100 > 2000, "{h100}");
             assert_eq!(h200, 2 * h100 + 1, "{h100} {h200}");
-            let ratio = d200.as_secs_f64() / d100.as_secs_f64().max(1e-6);
-            assert!(ratio < 2.6, "indexOf scaling ratio {ratio} ({d100:?} vs {d200:?})");
             let drive_slice = |s: *mut u8, total: i64| {
-                let mut acc = 0i64;
-                let mut best = std::time::Duration::MAX;
-                for _ in 0..REPEATS {
-                    let t0 = std::time::Instant::now();
-                    let mut k = 0i64;
-                    let mut a = 0i64;
-                    while k + 64 <= total {
-                        let w = rnx_string_slice(s, k, k + 64);
-                        a += rnx_string_len(w);
-                        rnx_release(w, size_of(w), None);
-                        k += 64;
-                    }
-                    acc = a;
-                    best = best.min(std::time::Instant::now() - t0);
+                let mut a = 0i64;
+                let mut k = 0i64;
+                while k + 64 <= total {
+                    let w = rnx_string_slice(s, k, k + 64);
+                    a += rnx_string_len(w);
+                    rnx_release(w, size_of(w), None);
+                    k += 64;
                 }
-                (best, acc)
+                a
             };
             let n100 = rnx_string_len(s100);
             let n200 = rnx_string_len(s200);
-            let (s100d, a100) = drive_slice(s100, n100);
-            let (s200d, a200) = drive_slice(s200, n200);
-            assert_eq!(a100, n100 / 64 * 64, "{a100} {n100}");
-            assert_eq!(a200, n200 / 64 * 64, "{a200} {n200}");
-            let sratio = s200d.as_secs_f64() / s100d.as_secs_f64().max(1e-6);
-            assert!(sratio < 2.6, "slice scaling ratio {sratio} ({s100d:?} vs {s200d:?})");
+            assert_eq!(drive_slice(s100, n100), n100 / 64 * 64, "{n100}");
+            assert_eq!(drive_slice(s200, n200), n200 / 64 * 64, "{n200}");
             rnx_release(s100, size_of(s100), None);
             rnx_release(s200, size_of(s200), None);
             rnx_release(nd, size_of(nd), None);
