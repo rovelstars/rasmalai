@@ -811,6 +811,43 @@ mod tests {
     }
 
     #[test]
+    fn guides_flow_for_a_real_std_library() {
+        let std_bytes =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib/src/bytes");
+        assert!(std_bytes.join("lib.rnx").is_file());
+        let project = crate::project::ProjectConfig {
+            name: "@std/bytes".to_string(),
+            version: "0.1.0".to_string(),
+            description: String::new(),
+            engine: String::new(),
+            entries: crate::project::Entries {
+                main: "src/lib.rnx".to_string(),
+                lib: None,
+                docs: Some("docs".to_string()),
+                bins: Default::default(),
+            },
+            registry: None,
+            registries: Default::default(),
+            dependencies: Default::default(),
+            permissions: None,
+            keywords: Vec::new(),
+            artifacts: None,
+            license: None,
+            native_pins: Default::default(),
+            tasks: Default::default(),
+            bindgen: None,
+        };
+        let manifest = Manifest { project: Some(project), workspace: None };
+        let guides = package_guides(&std_bytes, &manifest).unwrap();
+        let slugs: Vec<&str> = guides.iter().map(|g| g.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["getting-started", "overview"]);
+        assert_eq!(guides[0].title, "Getting started with @std/bytes");
+        assert_eq!(guides[1].title, "@std/bytes");
+        assert!(guides.iter().all(|g| g.source.starts_with("# ")));
+        assert!(guides[0].source.contains("```rnx"));
+    }
+
+    #[test]
     fn guides_derive_slug_title_and_sort() {
         let dir = fixture_guides_dir(
             "sort",

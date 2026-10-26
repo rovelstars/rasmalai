@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { normalizeDocJson, normalizeGuideEntry, parseStoredGuides, parseApiModules } from '../src/lib/server/guides.js';
 import { MAX_DOC_JSON_BYTES } from '../src/lib/server/db.js';
@@ -252,9 +252,9 @@ describe('stdlib capability baseline', () => {
 	it('only fs, io, and process use observable sinks', () => {
 		const got = new Map<string, string[]>();
 		for (const e of readdirSync(STD, { withFileTypes: true })) {
-			if (!e.isFile() || !e.name.endsWith('.rnx')) continue;
-			const name = e.name.slice(0, -4);
-			const text = readFileSync(join(STD, e.name), 'utf8');
+			if (!e.isDirectory() || !existsSync(join(STD, e.name, 'lib.rnx'))) continue;
+			const name = e.name;
+			const text = readFileSync(join(STD, name, 'lib.rnx'), 'utf8');
 			const heads = [...new Set(detectCapabilityUse([{ name: `src/${name}.rnx`, text }]).map((u) => u.head))].sort();
 			got.set(name, heads);
 		}

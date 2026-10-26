@@ -10,7 +10,7 @@
 // from the live catalog API). og/manifest.json maps page keys to files;
 // src/lib/docs/og.ts resolves a pathname through that manifest with a
 // default-banner fallback, so a skipped variant can never 404 an embed.
-import { writeFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Resvg } from '@resvg/resvg-js';
@@ -152,10 +152,9 @@ for (const [dir, kind] of [
 }
 
 try {
-	const mods = readdirSync(join(root, '..', 'compiler', 'stdlib', 'src'))
-		.filter((f) => f.endsWith('.rnx'))
-		.map((f) => f.replace(/\.rnx$/, ''))
-		.filter((m) => !m.includes('/'));
+	const mods = readdirSync(join(root, '..', 'compiler', 'stdlib', 'src'), { withFileTypes: true })
+		.filter((f) => f.isDirectory() && existsSync(join(root, '..', 'compiler', 'stdlib', 'src', f.name, 'lib.rnx')))
+		.map((f) => f.name);
 	for (const m of mods) {
 		const file = `og-std-${slugFile(m)}.png`;
 		render(chrome('Standard Library', `@std/${m}`, 'Shipped with the compiler — nothing to install.', null), file);

@@ -1230,8 +1230,8 @@ mod tests {
 
     fn genuine(name: &str) -> String {
         match name {
-            "prelude" => include_str!("../../stdlib/src/prelude.rnx").to_string(),
-            "fs" => include_str!("../../stdlib/src/fs.rnx").to_string(),
+            "prelude" => include_str!("../../stdlib/src/prelude/lib.rnx").to_string(),
+            "fs" => include_str!("../../stdlib/src/fs/lib.rnx").to_string(),
             _ => "export fn placeholder(): Int { return 0; }\n".to_string(),
         }
     }
