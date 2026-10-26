@@ -12,6 +12,7 @@ const RESOLVE_INLINE_CHUNKS: &str = "resolve-inline-chunks";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CHUNK_BYTES: usize = 1024 * 1024;
+const MAX_CHUNK_ENTRIES: usize = 4096;
 const CHUNK_FETCH_CONCURRENCY: usize = 8;
 const PACKAGE_FETCH_CONCURRENCY: usize = 16;
 const GLOBAL_CHUNK_INFLIGHT: usize = 32;
@@ -1264,7 +1265,7 @@ impl H2Transport {
                     format!("{what} timed out after {REQUEST_TIMEOUT_SECS}s"),
                 )
             } else {
-                Diagnostic::new(Code::E108, format!("{what} failed: {e}"))
+                Diagnostic::new(Code::E108, format!("{what} failed: {}", reqwest_chain(&e)))
             }
         })?;
         let status = response.status().as_u16();
@@ -1440,14 +1441,75 @@ fn retryable_status(status: u16) -> bool {
     matches!(status, 429 | 502 | 503 | 504)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn reqwest_chain(error: &reqwest::Error) -> String {
+    use std::error::Error;
+    let mut out = error.to_string();
+    let mut next = error.source();
+    while let Some(source) = next {
+        out.push_str(": ");
+        out.push_str(&source.to_string());
+        next = source.source();
+    }
+    out
+}
+
+fn is_fast_fail_offline(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "cannot reach registry",
+        "connection refused",
+        "dns error",
+        "failed to resolve",
+        "network is unreachable",
+        "no route to host",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "no such host is known",
+    ]
+    .iter()
+    .any(|s| lower.contains(s))
+}
+
+fn offline_diagnostic(what: &str, detail: &str) -> Diagnostic {
+    Diagnostic::new(
+        Code::E113,
+        format!("{what} failed: the registry is unreachable ({detail}); check the network or seed the cache"),
+    )
+    .with_hint("run `rnx download` to seed the cache (or check the network)")
+}
+
+fn offline_package_error(pkg: &str, base: &str, detail: &str) -> Diagnostic {
+    Diagnostic::new(
+        Code::E113,
+        format!("cannot fetch `{pkg}` from registry `{base}` while offline: {detail}"),
+    )
+    .with_hint("run `rnx download` to seed the cache (or check the network)")
+}
+
+fn with_offline_package_context(err: Diagnostic, pkg: &str, base: &str) -> Diagnostic {
+    if err.code == Code::E113 || is_fast_fail_offline(&err.message) {
+        return offline_package_error(pkg, base, &err.message);
+    }
+    err
+}
+
 pub fn registry_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
     http_get(url, what)
 }
 
 fn http_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
+    http_get_via(&*transport(), url, what)
+}
+
+fn http_get_via(
+    transport: &dyn RegistryTransport,
+    url: &str,
+    what: &str,
+) -> Result<RegistryReply, Diagnostic> {
     let mut attempt = 0u32;
     loop {
-        match transport().get(url) {
+        match transport.get(url) {
             Ok(reply) => {
                 if retryable_status(reply.status) && attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
@@ -1457,6 +1519,9 @@ fn http_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
                 return Ok(reply);
             }
             Err(e) => {
+                if is_fast_fail_offline(&e.message) {
+                    return Err(offline_diagnostic(what, &e.message));
+                }
                 if attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
                     attempt += 1;
@@ -1469,9 +1534,17 @@ fn http_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
 }
 
 fn http_manifest_get(url: &str, what: &str) -> Result<ManifestReply, Diagnostic> {
+    http_manifest_get_via(&*transport(), url, what)
+}
+
+fn http_manifest_get_via(
+    transport: &dyn RegistryTransport,
+    url: &str,
+    what: &str,
+) -> Result<ManifestReply, Diagnostic> {
     let mut attempt = 0u32;
     loop {
-        match transport().manifest_get(url) {
+        match transport.manifest_get(url) {
             Ok(reply) => {
                 if retryable_status(reply.reply.status) && attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
@@ -1481,6 +1554,9 @@ fn http_manifest_get(url: &str, what: &str) -> Result<ManifestReply, Diagnostic>
                 return Ok(reply);
             }
             Err(e) => {
+                if is_fast_fail_offline(&e.message) {
+                    return Err(offline_diagnostic(what, &e.message));
+                }
                 if attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
                     attempt += 1;
@@ -1493,9 +1569,18 @@ fn http_manifest_get(url: &str, what: &str) -> Result<ManifestReply, Diagnostic>
 }
 
 fn http_post_json(url: &str, body: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
+    http_post_json_via(&*transport(), url, body, what)
+}
+
+fn http_post_json_via(
+    transport: &dyn RegistryTransport,
+    url: &str,
+    body: &str,
+    what: &str,
+) -> Result<RegistryReply, Diagnostic> {
     let mut attempt = 0u32;
     loop {
-        match transport().post_json(url, body) {
+        match transport.post_json(url, body) {
             Ok(reply) => {
                 if retryable_status(reply.status) && attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
@@ -1505,6 +1590,9 @@ fn http_post_json(url: &str, body: &str, what: &str) -> Result<RegistryReply, Di
                 return Ok(reply);
             }
             Err(e) => {
+                if is_fast_fail_offline(&e.message) {
+                    return Err(offline_diagnostic(what, &e.message));
+                }
                 if attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
                     attempt += 1;
@@ -2023,16 +2111,20 @@ fn parse_node(value: &JsonValue) -> Result<ResolveNode, Diagnostic> {
         .unwrap_or(false);
     // Unknown to a registry without the capability, so the field is simply
     // absent and the download path falls back to the chunk manifest.
+    let full = req("full")?;
+    let version = req("version")?;
     let entries = match obj.iter().find(|(k, _)| k.as_str() == "entries").map(|(_, v)| v) {
         Some(JsonValue::Array(items)) => Some(parse_entries(
             items,
+            &full,
+            &version,
             "registry resolve returned malformed chunk entries",
         )?),
         _ => None,
     };
     Ok(ResolveNode {
-        full: req("full")?,
-        version: req("version")?,
+        full,
+        version,
         path: req("path")?,
         integrity: req("integrity")?,
         engine_range: obj
@@ -2172,24 +2264,58 @@ pub fn scan_cache_have() -> Vec<HaveEntry> {
     scan_have_under(&registry_cache_root())
 }
 
+fn engine_error(full: &str, version: &str, range: &str) -> Diagnostic {
+    let current = env!("CARGO_PKG_VERSION");
+    Diagnostic::new(
+        Code::E114,
+        format!("`{full}@{version}` needs engine {range}, have {current}"),
+    )
+    .with_hint("run `rnx update` to move to a compatible version, or `rnx download` to re-seed the cache")
+}
+
 fn check_engine(node: &ResolveNode) -> Result<(), Diagnostic> {
     let range = node.engine_range.trim();
     if range.is_empty() {
         return Ok(());
     }
-    let current = env!("CARGO_PKG_VERSION");
-    if engine_satisfied(range, current) {
+    if engine_satisfied(range, env!("CARGO_PKG_VERSION")) {
         return Ok(());
     }
-    Err(Diagnostic::new(
-        Code::E108,
-        format!("`{}@{}` needs engine {range}, have {current}", node.full, node.version),
-    ))
+    Err(engine_error(&node.full, &node.version, range))
+}
+
+fn check_cached_engine(cfg: &ProjectConfig, full: &str, version: &str) -> Result<(), Diagnostic> {
+    let range = cfg.engine.trim();
+    if range.is_empty() {
+        return Ok(());
+    }
+    if engine_satisfied(range, env!("CARGO_PKG_VERSION")) {
+        return Ok(());
+    }
+    Err(engine_error(full, version, range))
 }
 
 fn warn_if_yanked(node: &ResolveNode) {
     if node.yanked {
-        eprintln!("warning: package `{}@{}` is yanked and should be avoided", node.full, node.version);
+        warn_yanked(&node.full, &node.version);
+    }
+}
+
+fn warn_yanked(full: &str, version: &str) {
+    eprintln!("warning: package `{full}@{version}` is yanked and should be avoided");
+}
+
+fn yanked_marker_path(dir: &Path) -> PathBuf {
+    dir.join(".rnx-yanked")
+}
+
+fn cached_is_yanked(dir: &Path) -> bool {
+    yanked_marker_path(dir).is_file()
+}
+
+fn warn_if_cached_yanked(dir: &Path, full: &str, version: &str) {
+    if cached_is_yanked(dir) {
+        warn_yanked(full, version);
     }
 }
 
@@ -2235,7 +2361,21 @@ fn decode_chunk_manifest_body(
     ))
 }
 
-fn parse_entries(items: &[JsonValue], bad: &str) -> Result<Vec<ChunkEntry>, Diagnostic> {
+fn check_chunk_entry_cap(count: usize, full: &str, version: &str) -> Result<(), Diagnostic> {
+    if count > MAX_CHUNK_ENTRIES {
+        return Err(Diagnostic::new(
+            Code::E116,
+            format!(
+                "chunk manifest of `{full}@{version}` lists {count} entries, over the {MAX_CHUNK_ENTRIES}-per-version limit"
+            ),
+        )
+        .with_hint("the registry refuses versions over 4096 entries; run `rnx update` to move past this version or ask the maintainer to split the package"));
+    }
+    Ok(())
+}
+
+fn parse_entries(items: &[JsonValue], full: &str, version: &str, bad: &str) -> Result<Vec<ChunkEntry>, Diagnostic> {
+    check_chunk_entry_cap(items.len(), full, version)?;
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         let obj = match item {
@@ -2296,7 +2436,7 @@ fn fetch_chunks_manifest(url: &str, full: &str, version: &str, direct: bool) -> 
         .get("entries")
         .and_then(|v| v.as_array())
         .ok_or_else(|| Diagnostic::new(Code::E108, bad.clone()))?;
-    parse_entries(items, &bad)
+    parse_entries(items, full, version, &bad)
 }
 
 fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str, direct: bool) -> Result<Vec<u8>, Diagnostic> {
@@ -2872,6 +3012,13 @@ fn ensure_node(
         .map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dir.display()))
         })?;
+    if node.yanked {
+        std::fs::write(yanked_marker_path(&dir), "yanked\n").map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dir.display()))
+        })?;
+    } else {
+        let _ = std::fs::remove_file(yanked_marker_path(&dir));
+    }
     if let Some(digest) = node.artifact_digest.as_deref() {
         ensure_node_artifacts(&dir, node, digest)?;
     }
@@ -3020,22 +3167,32 @@ pub fn resolve_registry_package(
         // its presence means completeness. The project-local registry (from
         // `rnx download --local`) wins over the shared global cache. This
         // keeps locked builds (and repeat installs) entirely off the wire.
+        // The cached copy still enforces the compat checks: the engine range
+        // comes from the cached manifest and the yank flag from the marker
+        // the download wrote, so a stale toolchain or a yanked pin fails or
+        // warns here exactly as on the fresh-download path.
         let base = registry_base_for(pkg, default_registry, overrides);
         if let Some(root) = anchor {
             let dir = project_package_dir(root, &base, pkg, pin);
             if let Some(found) = pinned_cache_hit(&dir, pkg, pin) {
+                check_cached_engine(&found.1, pkg, pin)?;
+                warn_if_cached_yanked(&found.0, pkg, pin);
                 return Ok(found);
             }
         }
         let dir = cached_package_dir(&base, pkg, pin);
         if let Some(found) = pinned_cache_hit(&dir, pkg, pin) {
+            check_cached_engine(&found.1, pkg, pin)?;
+            warn_if_cached_yanked(&found.0, pkg, pin);
             return Ok(found);
         }
     }
+    let base = registry_base_for(pkg, default_registry, overrides);
     let requirement = pinned.unwrap_or_else(|| range.to_string());
     let mut reqs = BTreeMap::new();
     reqs.insert(pkg.to_string(), requirement);
-    let fetched = ensure_registry_requirements(&reqs, default_registry, overrides, have)?;
+    let fetched = ensure_registry_requirements(&reqs, default_registry, overrides, have)
+        .map_err(|e| with_offline_package_context(e, pkg, &base))?;
     let found = fetched.iter().find(|f| f.name == pkg).ok_or_else(|| {
         Diagnostic::new(Code::E108, format!("registry resolved no version for package `{pkg}`"))
     })?;
@@ -4433,6 +4590,300 @@ mod tests {
         assert_eq!(resolve_retry_delay_ms(u32::MAX), 2400);
     }
 
+    struct FailTransport {
+        calls: std::sync::Mutex<u32>,
+        message: String,
+    }
+
+    impl FailTransport {
+        fn refusing() -> FailTransport {
+            FailTransport {
+                calls: std::sync::Mutex::new(0),
+                message: "cannot reach registry `127.0.0.1:9`: connection refused".to_string(),
+            }
+        }
+
+        fn attempts(&self) -> u32 {
+            *self.calls.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    }
+
+    impl RegistryTransport for FailTransport {
+        fn get(&self, _url: &str) -> Result<RegistryReply, Diagnostic> {
+            *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            Err(Diagnostic::new(Code::E108, self.message.clone()))
+        }
+
+        fn post_json(&self, _url: &str, _body: &str) -> Result<RegistryReply, Diagnostic> {
+            *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            Err(Diagnostic::new(Code::E108, self.message.clone()))
+        }
+    }
+
+    #[test]
+    fn offline_fast_fail_classification() {
+        for offline in [
+            "cannot reach registry `127.0.0.1:9`: connection refused",
+            "registry request failed: connection refused",
+            "registry request failed: dns error: failed to resolve `example.invalid`",
+            "registry request failed: network is unreachable",
+            "registry resolve failed: No route to host",
+            "cannot reach registry: temporary failure in name resolution",
+        ] {
+            assert!(is_fast_fail_offline(offline), "{offline}");
+        }
+        for retry in [
+            "registry request failed: timed out after 30s",
+            "registry request failed: connection reset by peer",
+            "boom",
+        ] {
+            assert!(!is_fast_fail_offline(retry), "{retry}");
+        }
+    }
+
+    #[test]
+    fn offline_connection_refused_fails_fast_with_one_attempt() {
+        let fake = FailTransport::refusing();
+        let err = http_get_via(&fake, "http://127.0.0.1:9/api/version", "registry discovery")
+            .unwrap_err();
+        assert_eq!(err.code, Code::E113);
+        assert!(err.hint.as_deref().unwrap_or_default().contains("rnx download"), "{err:?}");
+        let err = http_post_json_via(&fake, "http://127.0.0.1:9/api/v0/resolve", "{}", "registry resolve")
+            .unwrap_err();
+        assert_eq!(err.code, Code::E113);
+        let err = http_manifest_get_via(&fake, "http://127.0.0.1:9/x/chunks", "chunk manifest of `a@1.0.0`")
+            .unwrap_err();
+        assert_eq!(err.code, Code::E113);
+        assert_eq!(fake.attempts(), 3, "one attempt per call, no doomed retries");
+    }
+
+    struct StatusTransport {
+        calls: std::sync::Mutex<u32>,
+        status: u16,
+    }
+
+    impl RegistryTransport for StatusTransport {
+        fn get(&self, _url: &str) -> Result<RegistryReply, Diagnostic> {
+            *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            Ok(RegistryReply { status: self.status, spec_header: None, body: Vec::new() })
+        }
+
+        fn post_json(&self, _url: &str, _body: &str) -> Result<RegistryReply, Diagnostic> {
+            *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            Ok(RegistryReply { status: self.status, spec_header: None, body: Vec::new() })
+        }
+    }
+
+    #[test]
+    fn retryable_status_keeps_retrying() {
+        let fake = StatusTransport { calls: std::sync::Mutex::new(0), status: 503 };
+        let reply = http_post_json_via(&fake, "http://127.0.0.1:9/api/v0/resolve", "{}", "registry resolve").unwrap();
+        assert_eq!(reply.status, 503);
+        assert_eq!(*fake.calls.lock().unwrap_or_else(|e| e.into_inner()), 4);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn http2_transport_refused_connection_fails_fast_with_one_attempt() {
+        struct Counting<'a> {
+            inner: &'a dyn RegistryTransport,
+            calls: std::sync::Mutex<u32>,
+        }
+        impl RegistryTransport for Counting<'_> {
+            fn get(&self, url: &str) -> Result<RegistryReply, Diagnostic> {
+                *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+                self.inner.get(url)
+            }
+            fn post_json(&self, url: &str, body: &str) -> Result<RegistryReply, Diagnostic> {
+                *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+                self.inner.post_json(url, body)
+            }
+        }
+        let (_guard, _dir) = isolate_cache("h2offline");
+        let h2 = H2Transport::new().unwrap();
+        let fake = Counting { inner: &h2, calls: std::sync::Mutex::new(0) };
+        let err =
+            http_get_via(&fake, "http://127.0.0.1:9/api/version", "registry discovery")
+                .unwrap_err();
+        assert_eq!(err.code, Code::E113);
+        assert!(
+            err.message.to_ascii_lowercase().contains("connection refused"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.hint.as_deref().unwrap_or_default().contains("rnx download"),
+            "{err:?}"
+        );
+        assert_eq!(
+            *fake.calls.lock().unwrap_or_else(|e| e.into_inner()),
+            1,
+            "one attempt, no doomed retries"
+        );
+    }
+
+    #[test]
+    fn cold_cache_offline_names_package_base_and_remedy() {
+        let (_guard, _dir) = isolate_cache("coldoffline");
+        let dead = registry_cfg("http://127.0.0.1:9");
+        let err = resolve_registry_package(
+            "@acme/widget",
+            "1.2.0",
+            Some(&dead),
+            &BTreeMap::new(),
+            None,
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E113);
+        assert!(err.message.contains("@acme/widget"), "{}", err.message);
+        assert!(err.message.contains("127.0.0.1:9"), "{}", err.message);
+        assert!(
+            err.hint.as_deref().unwrap_or_default().contains("rnx download"),
+            "{err:?}"
+        );
+    }
+
+    fn plant_pinned_cache(base: &str, full: &str, version: &str, engine: &str) -> PathBuf {
+        let dir = cached_package_dir(base, full, version);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join(crate::project::MANIFEST_FILE),
+            format!(
+                "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\",\n        engine: \"{engine}\"\n    }},\n    entries: {{\n        main: \"src/main.rnx\"\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "export fn hello(): Int { return 1; }\n").unwrap();
+        std::fs::write(dir.join(".rnx-integrity"), format!("{full}\n{version}\ntest\n")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn pinned_cache_hit_enforces_engine_after_upgrade() {
+        let (_guard, _dir) = isolate_cache("pinengine");
+        let dead = registry_cfg("http://127.0.0.1:9");
+        plant_pinned_cache(&dead.url, "@acme/widget", "1.2.0", ">=99.0.0");
+        let err = resolve_registry_package(
+            "@acme/widget",
+            "^1.0.0",
+            Some(&dead),
+            &BTreeMap::new(),
+            Some("1.2.0".to_string()),
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E114);
+        assert!(err.message.contains("needs engine"), "{}", err.message);
+        assert!(err.message.contains("@acme/widget@1.2.0"), "{}", err.message);
+        let hint = err.hint.as_deref().unwrap_or_default();
+        assert!(hint.contains("rnx update"), "{err:?}");
+        assert!(hint.contains("rnx download"), "{err:?}");
+    }
+
+    #[test]
+    fn pinned_cache_hit_serves_yanked_versions_without_network() {
+        let (_guard, _dir) = isolate_cache("pinyank");
+        let (manifest, pairs, digest, _, _) = fixture_tree("@acme/widget", "1.2.0");
+        let node = node_engine_json("@acme/widget", "1.2.0", &digest, true, "");
+        let server = start_tree(&[node], &manifest, pairs);
+        let default = registry_cfg(&server.base);
+        let empty = BTreeMap::new();
+        let (dir, _, ver) = resolve_registry_package(
+            "@acme/widget",
+            "^1.0.0",
+            Some(&default),
+            &empty,
+            None,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(ver, "1.2.0");
+        assert!(cached_is_yanked(&dir));
+        let served = server.requests().len();
+        assert!(served > 0);
+        let (dir2, _, ver2) = resolve_registry_package(
+            "@acme/widget",
+            "^1.0.0",
+            Some(&default),
+            &empty,
+            Some("1.2.0".to_string()),
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(ver2, "1.2.0");
+        assert_eq!(dir2, dir);
+        assert_eq!(server.requests().len(), served, "the pinned hit stays off the wire");
+    }
+
+    fn big_entries_array(count: usize) -> String {
+        let mut out = String::from('[');
+        for i in 0..count {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!(
+                "{{\"name\": \"src/f{i:05}.rnx\", \"size\": 1, \"dir\": false, \"chunks\": []}}"
+            ));
+        }
+        out.push(']');
+        out
+    }
+
+    fn big_entries_json(count: usize) -> String {
+        format!("{{\"entries\": {}}}", big_entries_array(count))
+    }
+
+    #[test]
+    fn chunk_entry_count_over_limit_fails_closed_on_inline_entries() {
+        let body = format!(
+            "{{\"resolved\": {{\"a\": \"1.0.0\"}}, \"base\": \"\", \"levels\": [[{{\"full\": \"a\", \"version\": \"1.0.0\", \"path\": \"a@1.0.0/chunks\", \"integrity\": \"x\", \"engineRange\": \"\", \"deps\": [], \"yanked\": false, \"entries\": {entries}}}]]}}",
+            entries = big_entries_array(MAX_CHUNK_ENTRIES + 1)
+        );
+        let err = parse_resolve(body.as_bytes()).unwrap_err();
+        assert_eq!(err.code, Code::E116);
+        assert!(err.message.contains("a@1.0.0"), "{}", err.message);
+        assert!(err.message.contains("4096"), "{}", err.message);
+        assert!(
+            err.hint.as_deref().unwrap_or_default().contains("rnx update"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn chunk_entry_count_over_limit_fails_closed_on_manifest() {
+        let (_guard, _dir) = isolate_cache("entrycap");
+        let (_manifest, pairs, digest, _, _) = fixture_tree("@acme/widget", "1.2.0");
+        let over = big_entries_json(MAX_CHUNK_ENTRIES + 1);
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 0,
+            capabilities: vec!["tombstones"],
+            resolve_status: 200,
+            resolve_body: resolve_json_static(&[node]),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: Some(over),
+            chunk_override: Some(pairs),
+        });
+        let default = registry_cfg(&server.base);
+        let err = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "1.2.0"),
+            Some(&default),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E116);
+        assert!(err.message.contains("@acme/widget@1.2.0"), "{}", err.message);
+        assert!(scan_cache_have().is_empty());
+    }
+
     #[test]
     fn resolve_503_retries_before_failing() {
         let (_guard, _dir) = isolate_cache("retry503");
@@ -5506,7 +5957,12 @@ mod tests {
             &[],
         )
         .unwrap_err();
+        assert_eq!(err.code, Code::E114);
         assert!(err.message.contains("needs engine"), "{}", err.message);
+        assert!(
+            err.hint.as_deref().unwrap_or_default().contains("rnx update"),
+            "{err:?}"
+        );
         assert_eq!(server.count_get("chunks"), 0);
     }
 

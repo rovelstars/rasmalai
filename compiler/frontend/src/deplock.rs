@@ -128,6 +128,7 @@ fn collect_into(
     prefer: crate::native::NativePrefer,
     used_pins: &mut BTreeSet<String>,
     overrides: &BTreeMap<String, String>,
+    locked: &BTreeMap<String, String>,
 ) -> Result<(), Diagnostic> {
     let mut stack: Vec<(PathBuf, ProjectConfig, bool, Option<String>, String)> =
         vec![(root.to_path_buf(), config.clone(), is_root, None, "static".to_string())];
@@ -239,7 +240,7 @@ fn collect_into(
                             req,
                             cfg.registry.as_ref(),
                             &cfg.registries,
-                            None,
+                            locked.get(dep_name).cloned(),
                             have,
                             None,
                         )?;
@@ -302,10 +303,11 @@ fn collect_graph(
     have: &[crate::fetch::HaveEntry],
     prefer: crate::native::NativePrefer,
     overrides: &BTreeMap<String, String>,
+    locked: &BTreeMap<String, String>,
 ) -> Result<Vec<PkgNode>, Diagnostic> {
     let mut nodes: BTreeMap<String, PkgNode> = BTreeMap::new();
     let mut used_pins: BTreeSet<String> = BTreeSet::new();
-    collect_into(&mut nodes, root, root, config, true, have, &config.native_pins, prefer, &mut used_pins, overrides)?;
+    collect_into(&mut nodes, root, root, config, true, have, &config.native_pins, prefer, &mut used_pins, overrides, locked)?;
     for name in config.native_pins.keys() {
         if !used_pins.contains(name) {
             return Err(Diagnostic::new(
@@ -323,6 +325,7 @@ fn collect_workspace_graph(
     have: &[crate::fetch::HaveEntry],
     prefer: crate::native::NativePrefer,
     overrides: &BTreeMap<String, String>,
+    locked: &BTreeMap<String, String>,
 ) -> Result<Vec<PkgNode>, Diagnostic> {
     let ws_pins = ProjectConfig::load_from_dir(ws_root)
         .ok()
@@ -332,7 +335,7 @@ fn collect_workspace_graph(
     let mut nodes: BTreeMap<String, PkgNode> = BTreeMap::new();
     let mut used_pins: BTreeSet<String> = BTreeSet::new();
     for (root, cfg) in members.values() {
-        collect_into(&mut nodes, ws_root, root, cfg, false, have, &ws_pins, prefer, &mut used_pins, overrides)?;
+        collect_into(&mut nodes, ws_root, root, cfg, false, have, &ws_pins, prefer, &mut used_pins, overrides, locked)?;
     }
     for name in ws_pins.keys() {
         if !used_pins.contains(name) {
@@ -532,7 +535,7 @@ impl ProjectDepLock {
         overrides: &BTreeMap<String, String>,
     ) -> Result<ProjectDepLock, Diagnostic> {
         let have = existing_have(root);
-        nodes_to_lock(collect_graph(root, config, &have, prefer, overrides)?)
+        nodes_to_lock(collect_graph(root, config, &have, prefer, overrides, &BTreeMap::new())?)
     }
 
     pub fn resolve_workspace(
@@ -557,7 +560,7 @@ impl ProjectDepLock {
         overrides: &BTreeMap<String, String>,
     ) -> Result<ProjectDepLock, Diagnostic> {
         let have = existing_have(ws_root);
-        nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, overrides)?)
+        nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, overrides, &BTreeMap::new())?)
     }
 
     pub fn load(root: &Path) -> Result<Option<ProjectDepLock>, Diagnostic> {
@@ -765,7 +768,7 @@ pub fn verify_lock_with(
     prefer: crate::native::NativePrefer,
 ) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
-    check_nodes(collect_graph(root, config, &have, prefer, &BTreeMap::new())?, lock)
+    check_nodes(collect_graph(root, config, &have, prefer, &BTreeMap::new(), &registry_pins(lock))?, lock)
 }
 
 pub fn verify_workspace_lock(
@@ -783,7 +786,7 @@ pub fn verify_workspace_lock_with(
     prefer: crate::native::NativePrefer,
 ) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
-    check_nodes(collect_workspace_graph(ws_root, members, &have, prefer, &BTreeMap::new())?, lock)
+    check_nodes(collect_workspace_graph(ws_root, members, &have, prefer, &BTreeMap::new(), &registry_pins(lock))?, lock)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -842,6 +845,16 @@ fn locked_registry<'a>(lock: &'a ProjectDepLock, name: &str) -> Option<&'a Locke
     lock.packages
         .iter()
         .find(|p| p.name == name && p.source.starts_with("registry:"))
+}
+
+fn registry_pins(lock: &ProjectDepLock) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for p in &lock.packages {
+        if p.source.starts_with("registry:") {
+            out.insert(p.name.clone(), p.version.clone());
+        }
+    }
+    out
 }
 
 fn manifest_ranges(configs: &[&ProjectConfig]) -> BTreeMap<String, String> {
@@ -1005,10 +1018,10 @@ impl ProjectDepLock {
         let (mut overrides, explicit) = update_overrides(&ranges, &old, selections, update_all)?;
         let targets = update_targets(&ranges, &old, selections, update_all);
         let have = existing_have(root);
-        let mut candidate = nodes_to_lock(collect_graph(root, config, &have, prefer, &overrides)?)?;
+        let mut candidate = nodes_to_lock(collect_graph(root, config, &have, prefer, &overrides, &BTreeMap::new())?)?;
         let held = hold_major_moves(&old, &candidate, &targets, &explicit, allow_major, &mut overrides);
         if !held.is_empty() {
-            candidate = nodes_to_lock(collect_graph(root, config, &have, prefer, &overrides)?)?;
+            candidate = nodes_to_lock(collect_graph(root, config, &have, prefer, &overrides, &BTreeMap::new())?)?;
         }
         let updated = summarize_update(&old, &candidate);
         Ok((candidate, UpdateSummary { updated, held }))
@@ -1031,11 +1044,11 @@ impl ProjectDepLock {
         let targets = update_targets(&ranges, &old, selections, update_all);
         let have = existing_have(ws_root);
         let mut candidate =
-            nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, &overrides)?)?;
+            nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, &overrides, &BTreeMap::new())?)?;
         let held = hold_major_moves(&old, &candidate, &targets, &explicit, allow_major, &mut overrides);
         if !held.is_empty() {
             candidate =
-                nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, &overrides)?)?;
+                nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, &overrides, &BTreeMap::new())?)?;
         }
         let updated = summarize_update(&old, &candidate);
         Ok((candidate, UpdateSummary { updated, held }))
@@ -1455,6 +1468,115 @@ mod tests {
         assert!(summary.updated.is_empty());
         assert!(summary.held.is_empty());
         assert_eq!(new_lock.to_rnx(), old.to_rnx());
+    }
+
+    fn dir_snapshot(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let mut entries: Vec<std::path::PathBuf> =
+                std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    let rel = path.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+                    out.push((rel, std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    fn offline_registry_app(tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
+        let dead = "http://127.0.0.1:9";
+        let dir = crate::scratch::dir(&format!("verify-offline-{tag}"));
+        let root = dir.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Project.config"),
+            format!(
+                "export default {{\n    project: {{\n        name: \"app\",\n        version: \"0.1.0\"\n    }},\n    dependencies: {{\n        \"@acme/widget\": {{ version: \"^1.0.0\" }}\n    }},\n    registry: {{ url: \"{dead}\" }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        (dir, root)
+    }
+
+    fn plant_widget_cache(integrity: &str) {
+        let dead = "http://127.0.0.1:9";
+        let cached = crate::fetch::cached_package_dir(dead, "@acme/widget", "1.2.0");
+        std::fs::create_dir_all(cached.join("src")).unwrap();
+        std::fs::write(
+            cached.join(crate::project::MANIFEST_FILE),
+            "export default {\n    project: {\n        name: \"@acme/widget\",\n        version: \"1.2.0\"\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            cached.join("src").join("main.rnx"),
+            "export fn hello(): Int { return 1; }\n",
+        )
+        .unwrap();
+        std::fs::write(cached.join(".rnx-integrity"), format!("@acme/widget\n1.2.0\n{integrity}\n"))
+            .unwrap();
+    }
+
+    fn offline_lock(root: &std::path::Path, integrity: &str) -> ProjectDepLock {
+        let cached = crate::fetch::cached_package_dir("http://127.0.0.1:9", "@acme/widget", "1.2.0");
+        let analysis = crate::security::analyze_dep_dir(&cached).unwrap();
+        let widget = LockedPackage {
+            name: "@acme/widget".to_string(),
+            version: "1.2.0".to_string(),
+            source: "registry:@acme/widget@1.2.0".to_string(),
+            checksum: integrity.to_string(),
+            artifact_digest: None,
+            license: Some("unknown".to_string()),
+            link: Some("static".to_string()),
+            dependencies: Vec::new(),
+            tier: analysis.tier.to_string(),
+            capabilities: analysis.capabilities.clone(),
+        };
+        let app = LockedPackage {
+            name: "app".to_string(),
+            version: "0.1.0".to_string(),
+            source: "root".to_string(),
+            checksum: crate::checksum::compute_package_checksum(root).unwrap(),
+            artifact_digest: None,
+            license: Some("unknown".to_string()),
+            link: Some("static".to_string()),
+            dependencies: vec!["@acme/widget 1.2.0".to_string()],
+            tier: "pure".to_string(),
+            capabilities: Vec::new(),
+        };
+        ProjectDepLock { version: LOCK_VERSION, packages: vec![app, widget] }
+    }
+
+    #[test]
+    fn verify_uses_locked_pins_offline() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("verify-pins");
+        let (_dir, root) = offline_registry_app("pins");
+        let integrity = "ab".repeat(32);
+        plant_widget_cache(&integrity);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = offline_lock(&root, &integrity);
+        verify_lock(&root, &cfg, &lock).unwrap();
+    }
+
+    #[test]
+    fn verify_never_writes_the_deplock() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("verify-write");
+        let (_dir, root) = offline_registry_app("write");
+        let integrity = "ab".repeat(32);
+        plant_widget_cache(&integrity);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = offline_lock(&root, &integrity);
+        lock.write(&root).unwrap();
+        let before = dir_snapshot(&root);
+        verify_lock(&root, &cfg, &lock).unwrap();
+        assert_eq!(dir_snapshot(&root), before, "verify must never write the deplock");
     }
 
     #[test]
