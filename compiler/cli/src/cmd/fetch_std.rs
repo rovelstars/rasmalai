@@ -1,3 +1,4 @@
+use diagnostics::{Code, Diagnostic};
 use frontend::project::RegistryConfig;
 use std::collections::BTreeMap;
 
@@ -18,31 +19,19 @@ pub(super) fn std_registry(
 }
 
 pub(super) fn run_fetch_std(registry: Option<String>, from: Option<std::path::PathBuf>) {
-    if let Some(dir) = from {
-        return run_fetch_std_from(&dir, registry.as_deref());
+    if from.is_some() {
+        let e = Diagnostic::new(
+            Code::E108,
+            "`rnx fetch-std --from` was removed; stage with `rnx vendor --stdlib <DIR>` and point `RNX_VENDOR_DIR` at it (or copy it over `vendor/`) instead of installing into the cache",
+        );
+        println!("{e}");
+        std::process::exit(1);
     }
     let (default, overrides) = std_registry(registry.as_deref());
     match frontend::stdlib_seed::seed_stdlib_cache(default.as_ref(), &overrides) {
         Ok(report) => {
             for (name, version) in &report.packages {
                 println!("Fetched {name}@{version}");
-            }
-            finish_fetch_std(&report);
-        }
-        Err(e) => {
-            println!("{e}");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn run_fetch_std_from(dir: &std::path::Path, registry: Option<&str>) {
-    let (default, overrides) = std_registry(registry);
-    let base = frontend::fetch::registry_base_for("@std/prelude", default.as_ref(), &overrides);
-    match frontend::stdlib_seed::install_std_vendor_tree(dir, &base) {
-        Ok(report) => {
-            for (name, version) in &report.packages {
-                println!("Installed {name}@{version}");
             }
             finish_fetch_std(&report);
         }
