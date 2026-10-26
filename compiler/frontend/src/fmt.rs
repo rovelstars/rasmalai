@@ -611,6 +611,38 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    fn import_source_breaks(&self, i: usize) -> bool {
+        if self.toks[i].kind != Fk::Str || !self.stack.is_empty() {
+            return false;
+        }
+        let prev_from = match self.prev_sig(i).map(|j| self.toks[j].text.as_str()) {
+            Some("from") => true,
+            Some("native") => {
+                matches!(self.prev_sig(i).and_then(|j| self.prev_sig(j)).map(|k| self.toks[k].text.as_str()), Some("from"))
+            }
+            _ => false,
+        };
+        if !prev_from {
+            return false;
+        }
+        let next = match self.next_sig(i) {
+            Some(j) => j,
+            None => return false,
+        };
+        if !matches!(self.toks[next].kind, Fk::Word) {
+            return false;
+        }
+        if !matches!(
+            self.toks[next].text.as_str(),
+            "import" | "export" | "fn" | "class" | "struct" | "record" | "trait"
+                | "enum" | "native" | "const" | "static" | "pub" | "public"
+                | "private" | "priv" | "unsafe" | "async" | "let"
+        ) {
+            return false;
+        }
+        !((i + 1)..next).any(|k| matches!(self.toks[k].kind, Fk::Line | Fk::Block))
+    }
+
     fn emit_wordlike(&mut self, i: usize) {
         let text = self.toks[i].text.clone();
         if !self.start {
@@ -972,6 +1004,9 @@ impl<'a> Emitter<'a> {
                 }
                 Fk::Word | Fk::Num | Fk::Str => {
                     self.emit_wordlike(i);
+                    if self.import_source_breaks(i) {
+                        self.br();
+                    }
                     i += 1;
                 }
             }
