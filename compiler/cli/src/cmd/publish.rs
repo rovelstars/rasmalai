@@ -176,7 +176,14 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
         }
     };
     let readme = frontend::pack::package_readme_text(dir, &cfg.name);
-    let frame = cli::publish::publish_frame(cfg, &readme, &files, &docs, asserted.as_deref());
+    let guides = match cli::publish::package_guides(dir, &manifest) {
+        Ok(g) => g,
+        Err(e) => {
+            println!("{e}");
+            std::process::exit(1);
+        }
+    };
+    let frame = cli::publish::publish_frame(cfg, &readme, &files, &docs, &guides, asserted.as_deref());
     match cli::publish::post_frame(&registry, &token, &frame, name) {
         Ok(cli::publish::PublishOutcome::Published {
             url,

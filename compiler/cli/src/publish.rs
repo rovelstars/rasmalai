@@ -432,6 +432,13 @@ pub fn package_docs(
     })
 }
 
+pub fn package_guides(
+    package_dir: &Path,
+    manifest: &frontend::project::Manifest,
+) -> Result<Vec<frontend::pack::PackageGuide>, Diagnostic> {
+    frontend::pack::package_guides(package_dir, manifest)
+}
+
 // The source tree the server canonicalizes: every file the pack would
 // ship, as UTF-8 text. The server derives the stored bytes itself, so the
 // client never supplies stored bytes under any path.
@@ -500,6 +507,7 @@ pub fn publish_frame(
     readme: &str,
     files: &[PublishFile],
     docs: &str,
+    guides: &[frontend::pack::PackageGuide],
     artifact_digest: Option<&str>,
 ) -> serde_json::Value {
     let file_values: Vec<serde_json::Value> = files
@@ -508,6 +516,19 @@ pub fn publish_frame(
         .collect();
     let docs_value: serde_json::Value =
         serde_json::from_str(docs).unwrap_or(serde_json::Value::Null);
+    let guide_values: Vec<serde_json::Value> = guides
+        .iter()
+        .map(|g| {
+            serde_json::json!({
+                "slug": g.slug,
+                "title": g.title,
+                "source": g.source,
+                "description": g.description,
+                "section": g.section,
+                "order": g.order,
+            })
+        })
+        .collect();
     let license = cfg.license.clone().unwrap_or_else(|| "MIT".to_string());
     serde_json::json!({
         "name": cfg.name,
@@ -516,6 +537,7 @@ pub fn publish_frame(
         "description": cfg.description,
         "readme": readme,
         "docs": docs_value,
+        "guides": guide_values,
         "engineRange": cfg.engine,
         "keywords": cfg.keywords,
         "tags": [],
@@ -767,7 +789,7 @@ mod tests {
         assert!(paths.contains(&"src/main.rnx"));
         assert!(paths.contains(&"Project.config"));
         assert!(paths.contains(&"README.md"));
-        let frame = publish_frame(&cfg, &readme, &files, &docs, None);
+        let frame = publish_frame(&cfg, &readme, &files, &docs, &[], None);
         assert_eq!(frame["name"], "probe");
         assert_eq!(frame["version"], "1.2.3");
         assert_eq!(frame["description"], "Probe package");
@@ -781,6 +803,44 @@ mod tests {
         assert!(file_paths.contains(&"src/main.rnx"));
         let main = frame["files"].as_array().unwrap().iter().find(|f| f["path"] == "src/main.rnx").unwrap();
         assert!(main["content"].as_str().unwrap().contains("return 0"));
+    }
+
+    #[test]
+    fn frame_carries_guides_as_raw_source_without_html() {
+        let dir = fixture_project("frame-guides", Some("# probe\n"));
+        let cfg = fixture_cfg(&dir);
+        let guides = vec![
+            frontend::pack::PackageGuide {
+                slug: "start".to_string(),
+                title: "Start".to_string(),
+                source: "# Start\n".to_string(),
+                description: "Log in first.".to_string(),
+                section: Some("Basics".to_string()),
+                order: None,
+            },
+            frontend::pack::PackageGuide {
+                slug: "deep-dive".to_string(),
+                title: "Deep Dive".to_string(),
+                source: "Body.\n".to_string(),
+                description: String::new(),
+                section: None,
+                order: Some("2".to_string()),
+            },
+        ];
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &guides, None);
+        let carried = frame["guides"].as_array().unwrap();
+        assert_eq!(carried.len(), 2);
+        assert_eq!(carried[0]["slug"], "start");
+        assert_eq!(carried[0]["title"], "Start");
+        assert_eq!(carried[0]["source"], "# Start\n");
+        assert_eq!(carried[0]["description"], "Log in first.");
+        assert_eq!(carried[0]["section"], "Basics");
+        assert!(carried[0]["order"].is_null(), "{}", carried[0]["order"]);
+        assert_eq!(carried[1]["order"], "2");
+        assert!(carried[1]["section"].is_null(), "{}", carried[1]["section"]);
+        for entry in carried {
+            assert!(entry.get("html").is_none(), "{entry}");
+        }
     }
 
     #[test]
@@ -882,10 +942,10 @@ mod tests {
     fn artifact_frame_carries_digest_or_null() {
         let dir = fixture_project("frame-art", None);
         let cfg = fixture_cfg(&dir);
-        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", None);
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &[], None);
         assert!(frame["artifactDigest"].is_null(), "{}", frame["artifactDigest"]);
         let digest = format!("sha256:{}", "cd".repeat(32));
-        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", Some(&digest));
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &[], Some(&digest));
         assert_eq!(frame["artifactDigest"], digest);
     }
 
@@ -1121,7 +1181,7 @@ mod tests {
         let dir = license_project("infer", "", Some("Licensed under the Apache License, Version 2.0\n"));
         let cfg = fixture_cfg(&dir);
         assert_eq!(publish_license(&cfg, &dir).unwrap(), "Apache-2.0");
-        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", None);
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &[], None);
         assert_eq!(frame["license"], "MIT");
     }
 

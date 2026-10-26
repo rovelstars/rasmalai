@@ -335,6 +335,168 @@ pub fn package_readme_text(package_dir: &Path, fallback_name: &str) -> String {
     format!("# {fallback_name}\n")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageGuide {
+    pub slug: String,
+    pub title: String,
+    pub source: String,
+    pub description: String,
+    pub section: Option<String>,
+    pub order: Option<String>,
+}
+
+fn guide_slug_for_stem(stem: &str) -> Option<String> {
+    let mut out = String::new();
+    for c in stem.to_ascii_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.len() >= 1 && out.len() <= 64 && out.as_bytes()[0] != b'-' {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn split_guide_frontmatter(text: &str) -> (Vec<(String, String)>, &str) {
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return (Vec::new(), text);
+    };
+    let mut fields = Vec::new();
+    let mut consumed = 0usize;
+    for line in rest.split_inclusive('\n') {
+        consumed += line.len();
+        let trimmed = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
+        if trimmed == "---" {
+            let body = rest[consumed..].trim_start_matches(['\n', '\r']);
+            return (fields, body);
+        }
+        if let Some(colon) = trimmed.find(':') {
+            let key = trimmed[..colon].trim();
+            let mut value = trimmed[colon + 1..].trim().to_string();
+            if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+                value = value[1..value.len() - 1].to_string();
+            }
+            if matches!(key, "title" | "description" | "section" | "order") {
+                fields.push((key.to_string(), value));
+            }
+        }
+    }
+    (Vec::new(), text)
+}
+
+fn guide_field<'a>(fields: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+}
+
+fn humanize_guide_stem(stem: &str) -> String {
+    stem.split(['-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn guide_title_for_body(body: &str, fields: &[(String, String)], stem: &str) -> String {
+    for line in body.lines() {
+        if let Some(heading) = line.strip_prefix("# ") {
+            let heading = heading.trim();
+            if !heading.is_empty() {
+                return heading.to_string();
+            }
+        }
+    }
+    if let Some(title) = guide_field(fields, "title") {
+        let title = title.trim();
+        if !title.is_empty() {
+            return title.to_string();
+        }
+    }
+    humanize_guide_stem(stem)
+}
+
+pub fn package_guides(package_dir: &Path, manifest: &Manifest) -> Result<Vec<PackageGuide>, Diagnostic> {
+    let project = manifest.project.as_ref().ok_or_else(|| {
+        Diagnostic::new(Code::E108, "rnx pack needs a [project] manifest".to_string())
+    })?;
+    let docs = project.entries.docs.as_deref().map(|d| d.trim_end_matches('/')).unwrap_or("");
+    if docs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let docs_dir = package_dir.join(docs);
+    if !docs_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    walk_md(&docs_dir, &mut found)?;
+    let mut rels = std::collections::BTreeSet::new();
+    for abs in &found {
+        let rel = abs.strip_prefix(package_dir).unwrap_or(abs).to_string_lossy().replace('\\', "/");
+        let depth = rel.strip_prefix(&format!("{docs}/")).unwrap_or(&rel);
+        if depth.split('/').count() > 2 {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("entries.docs allows at most one nesting level (`{rel}` is too deep)"),
+            ));
+        }
+        rels.insert(rel);
+    }
+    let mut guides = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for rel in &rels {
+        let bytes = std::fs::read(package_dir.join(rel)).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot read {rel}: {e}"))
+        })?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            Diagnostic::new(Code::E108, format!("cannot publish {rel}: not valid UTF-8"))
+        })?;
+        let stem = Path::new(rel)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some(slug) = guide_slug_for_stem(&stem) else {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("guide `{rel}` maps to an unusable slug (name the file with lowercase letters, digits, and dashes, at most 64 characters)"),
+            ));
+        };
+        if !seen.insert(slug.clone()) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("duplicate guide slug `{slug}` (from `{rel}`; rename one of the files sharing the name)"),
+            ));
+        }
+        let (fields, body) = split_guide_frontmatter(&text);
+        let title = guide_title_for_body(body, &fields, &stem);
+        let opt = |key: &str| {
+            guide_field(&fields, key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
+        };
+        guides.push(PackageGuide {
+            slug,
+            title,
+            source: body.to_string(),
+            description: guide_field(&fields, "description").unwrap_or("").to_string(),
+            section: opt("section"),
+            order: opt("order"),
+        });
+    }
+    guides.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(guides)
+}
+
 pub fn build_package_tar(
     package_dir: &Path,
     manifest: &Manifest,
@@ -622,6 +784,130 @@ mod tests {
         assert_eq!(package_readme_text(&dir, "probe"), "plain\n");
         let dir = fixture_dir("readme-none", None);
         assert_eq!(package_readme_text(&dir, "probe"), "# probe\n");
+    }
+
+    fn fixture_guides_dir(tag: &str, files: &[(&str, &str)]) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("pack-guides-{tag}"));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.2.3\"\n    },\n    entries: {\n        main: \"src/main.rnx\",\n        docs: \"docs\"\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int { return 0; }\n").unwrap();
+        for (rel, text) in files {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn guides_empty_without_docs_entry() {
+        let dir = fixture_dir("guides-none", None);
+        let manifest = fixture_manifest(&dir);
+        assert_eq!(package_guides(&dir, &manifest).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn guides_derive_slug_title_and_sort() {
+        let dir = fixture_guides_dir(
+            "sort",
+            &[
+                ("docs/zebra.md", "# Zebra\n\nStripes.\n"),
+                ("docs/apple.md", "# Apple\n\nFruit.\n"),
+                ("docs/sub/nested.md", "# Nested\n\nOne level down.\n"),
+            ],
+        );
+        let manifest = fixture_manifest(&dir);
+        let guides = package_guides(&dir, &manifest).unwrap();
+        let slugs: Vec<&str> = guides.iter().map(|g| g.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["apple", "nested", "zebra"]);
+        assert_eq!(guides[0].title, "Apple");
+        assert_eq!(guides[0].source, "# Apple\n\nFruit.\n");
+        assert_eq!(guides[0].description, "");
+        assert_eq!(guides[0].section, None);
+        assert_eq!(guides[0].order, None);
+    }
+
+    #[test]
+    fn guides_title_prefers_heading_then_frontmatter_then_filename() {
+        let dir = fixture_guides_dir(
+            "titles",
+            &[
+                ("docs/aaa.md", "---\ntitle: \"Frontmatter\"\n---\n\n# Heading\n"),
+                ("docs/bbb.md", "---\ntitle: \"Frontmatter\"\n---\n\nNo heading here.\n"),
+                ("docs/my_quick-start.md", "Body without heading or frontmatter.\n"),
+            ],
+        );
+        let manifest = fixture_manifest(&dir);
+        let guides = package_guides(&dir, &manifest).unwrap();
+        let by_slug = |slug: &str| guides.iter().find(|g| g.slug == slug).unwrap().title.clone();
+        assert_eq!(by_slug("aaa"), "Heading");
+        assert_eq!(by_slug("bbb"), "Frontmatter");
+        assert_eq!(by_slug("my-quick-start"), "My Quick Start");
+        let front = guides.iter().find(|g| g.slug == "bbb").unwrap();
+        assert_eq!(front.source, "No heading here.\n");
+        assert_eq!(front.description, "");
+    }
+
+    #[test]
+    fn guides_frontmatter_carries_description_section_order() {
+        let dir = fixture_guides_dir(
+            "meta",
+            &[(
+                "docs/start.md",
+                "---\ntitle: \"Start\"\ndescription: \"Log in first.\"\nsection: \"Basics\"\norder: \"2\"\nicon: \"Rocket\"\n---\n\n# Start\n",
+            )],
+        );
+        let manifest = fixture_manifest(&dir);
+        let guides = package_guides(&dir, &manifest).unwrap();
+        assert_eq!(guides.len(), 1);
+        assert_eq!(guides[0].description, "Log in first.");
+        assert_eq!(guides[0].section.as_deref(), Some("Basics"));
+        assert_eq!(guides[0].order.as_deref(), Some("2"));
+        assert!(!guides[0].source.contains("icon"), "{}", guides[0].source);
+    }
+
+    #[test]
+    fn guides_slug_mapping_folds_punctuation() {
+        assert_eq!(guide_slug_for_stem("Hello World!").as_deref(), Some("hello-world"));
+        assert_eq!(guide_slug_for_stem("a--b__c").as_deref(), Some("a-b-c"));
+        assert_eq!(guide_slug_for_stem("UPPER").as_deref(), Some("upper"));
+        assert_eq!(guide_slug_for_stem("---a---").as_deref(), Some("a"));
+        assert_eq!(guide_slug_for_stem("!!!"), None);
+        assert_eq!(guide_slug_for_stem(""), None);
+        assert_eq!(guide_slug_for_stem(&"a".repeat(64)).unwrap().len(), 64);
+        assert_eq!(guide_slug_for_stem(&"a".repeat(65)), None);
+    }
+
+    #[test]
+    fn guides_reject_unmappable_names_duplicates_depth_and_bytes() {
+        let dir = fixture_guides_dir("bad-slug", &[("docs/!!!.md", "# Nope\n")]);
+        let manifest = fixture_manifest(&dir);
+        let err = package_guides(&dir, &manifest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("docs/!!!.md"), "{}", err.message);
+        let dir = fixture_guides_dir(
+            "dup-slug",
+            &[("docs/a b.md", "# One\n"), ("docs/sub/a-b.md", "# Two\n")],
+        );
+        let manifest = fixture_manifest(&dir);
+        let err = package_guides(&dir, &manifest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("duplicate guide slug `a-b`"), "{}", err.message);
+        let dir = fixture_guides_dir("too-deep", &[("docs/a/b/c.md", "# Deep\n")]);
+        let manifest = fixture_manifest(&dir);
+        let err = package_guides(&dir, &manifest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("one nesting level"), "{}", err.message);
+        let dir = fixture_guides_dir("nonutf", &[("docs/blob.md", "# Blob\n")]);
+        std::fs::write(dir.join("docs").join("blob.md"), [0xff, 0xfe, 0x00]).unwrap();
+        let manifest = fixture_manifest(&dir);
+        let err = package_guides(&dir, &manifest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("not valid UTF-8"), "{}", err.message);
     }
 
     #[test]
