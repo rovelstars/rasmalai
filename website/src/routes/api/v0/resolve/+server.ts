@@ -138,6 +138,9 @@ export async function POST({ request, url, platform }) {
 		if (msg.includes('resolve raced')) {
 			return err('unavailable', 'resolution raced with a mutation, retry', 503, requestId);
 		}
+		if (msg.includes('withdrawn (std-purge)')) {
+			return err('withdrawn', msg, 410, requestId);
+		}
 		if (msg.includes('does not exist')) return err('not-found', msg, 404, requestId);
 		if (msg.includes('satisfies') || msg.includes('conflicting')) {
 			return err('unsatisfiable', msg, 422, requestId);

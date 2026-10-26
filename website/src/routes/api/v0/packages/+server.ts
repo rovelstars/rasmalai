@@ -187,6 +187,13 @@ export async function POST({ request, platform, url }) {
 	} catch {
 		return frameError(400, 'invalid JSON publish body');
 	}
+	// The frame carries the idempotency key as `requestId`; the
+	// `X-RNX-Request-ID` header the manual documents is accepted as a
+	// fallback when the frame leaves it empty.
+	const headerRequestId = request.headers.get('X-RNX-Request-ID') ?? request.headers.get('x-rnx-request-id') ?? '';
+	if (headerRequestId && typeof (raw as Record<string, unknown>)['requestId'] !== 'string') {
+		(raw as Record<string, unknown>)['requestId'] = headerRequestId;
+	}
 	const parsed = parsePublishFrame(raw, caps);
 	if (!parsed.ok) return frameError(parsed.error.status, parsed.error.message);
 	const frame = parsed.frame;
@@ -196,6 +203,13 @@ export async function POST({ request, platform, url }) {
 		const name = parsePackageName(frame.name);
 		if (name && name.scope && !scopes.includes(name.scope)) {
 			return frameError(403, `scope @${name.scope} is not yours`);
+		}
+		// The `std` scope is reserved for the standard library: no session
+		// user can own it (usernames `std`/`org` are refused at signup), so
+		// a session publish naming it is refused here rather than trusted
+		// to the ownership table. The org token still seeds the stdlib.
+		if (name && name.scope === 'std') {
+			return frameError(403, 'scope @std is reserved for the standard library');
 		}
 	}
 

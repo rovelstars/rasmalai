@@ -309,6 +309,17 @@ pub enum Command {
         #[arg(long)]
         artifact: Option<String>,
     },
+    /// Remove a version published in the last 72 hours (`name@version`)
+    Unpublish {
+        /// Version coordinate to remove
+        target: String,
+        /// Registry base URL
+        #[arg(long, default_value = "https://rasmalai.rovelstars.com")]
+        registry: String,
+        /// Publisher authentication token (or RNX_TOKEN)
+        #[arg(long, env = "RNX_TOKEN")]
+        token: Option<String>,
+    },
     /// Vendor git dependencies into vendor/
     Vendor {
         /// Package selection

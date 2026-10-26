@@ -502,6 +502,14 @@ pub fn publish_license(cfg: &frontend::project::ProjectConfig, package_dir: &Pat
     Ok("MIT".to_string())
 }
 
+pub fn new_request_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("req-{}-{nanos}", std::process::id())
+}
+
 pub fn publish_frame(
     cfg: &frontend::project::ProjectConfig,
     readme: &str,
@@ -509,6 +517,7 @@ pub fn publish_frame(
     docs: &str,
     guides: &[frontend::pack::PackageGuide],
     artifact_digest: Option<&str>,
+    request_id: Option<&str>,
 ) -> serde_json::Value {
     let file_values: Vec<serde_json::Value> = files
         .iter()
@@ -543,6 +552,7 @@ pub fn publish_frame(
         "tags": [],
         "license": license,
         "artifactDigest": artifact_digest,
+        "requestId": request_id.unwrap_or(""),
     })
 }
 
@@ -601,6 +611,62 @@ pub fn post_frame(
             "publish failed: registry timed out after 30s".to_string(),
         )),
         Err(e) => Err(Diagnostic::new(Code::E108, format!("publish failed: {e}"))),
+    }
+}
+
+pub enum UnpublishOutcome {
+    Removed,
+    Rejected { status: u16, message: String },
+}
+
+pub fn post_unpublish(
+    registry: &str,
+    token: &str,
+    name: &str,
+    version: &str,
+    request_id: &str,
+) -> Result<UnpublishOutcome, Diagnostic> {
+    let mut base = registry.trim().trim_end_matches('/').to_string();
+    for suffix in ["/api/v0/packages", "/api/packages"] {
+        if let Some(root) = base.strip_suffix(suffix) {
+            base = root.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    let url = format!("{base}/api/v0/packages/{name}@{version}/unpublish");
+    let config = ureq::config::Config::builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .build();
+    let agent: ureq::Agent = config.into();
+    let res = agent
+        .post(&url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .header("X-RNX-Protocol", PUBLISH_PROTOCOL)
+        .header("X-RNX-Request-ID", request_id)
+        .send("{}");
+    match res {
+        Ok(mut response) => {
+            let status = response.status().as_u16();
+            let body = response.body_mut().read_to_string().unwrap_or_default();
+            if status == 200 {
+                Ok(UnpublishOutcome::Removed)
+            } else {
+                let message = extract_json_string(&body, "error")
+                    .or_else(|| extract_json_string(&body, "message"))
+                    .unwrap_or_else(|| short_body(&body));
+                Ok(UnpublishOutcome::Rejected { status, message })
+            }
+        }
+        Err(ureq::Error::StatusCode(status)) => {
+            Ok(UnpublishOutcome::Rejected { status, message: format!("HTTP {status}") })
+        }
+        Err(ureq::Error::Timeout(_)) => Err(Diagnostic::new(
+            Code::E108,
+            "unpublish failed: registry timed out after 30s".to_string(),
+        )),
+        Err(e) => Err(Diagnostic::new(Code::E108, format!("unpublish failed: {e}"))),
     }
 }
 
@@ -789,8 +855,11 @@ mod tests {
         assert!(paths.contains(&"src/main.rnx"));
         assert!(paths.contains(&"Project.config"));
         assert!(paths.contains(&"README.md"));
-        let frame = publish_frame(&cfg, &readme, &files, &docs, &[], None);
+        let frame = publish_frame(&cfg, &readme, &files, &docs, &[], None, None);
         assert_eq!(frame["name"], "probe");
+        assert_eq!(frame["requestId"], "");
+        let keyed = publish_frame(&cfg, &readme, &files, &docs, &[], None, Some("req-1-2"));
+        assert_eq!(keyed["requestId"], "req-1-2");
         assert_eq!(frame["version"], "1.2.3");
         assert_eq!(frame["description"], "Probe package");
         assert_eq!(frame["keywords"], serde_json::json!(["http", "cli-2"]));
@@ -827,7 +896,7 @@ mod tests {
                 order: Some("2".to_string()),
             },
         ];
-        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &guides, None);
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &guides, None, None);
         let carried = frame["guides"].as_array().unwrap();
         assert_eq!(carried.len(), 2);
         assert_eq!(carried[0]["slug"], "start");
@@ -840,6 +909,55 @@ mod tests {
         assert!(carried[1]["section"].is_null(), "{}", carried[1]["section"]);
         for entry in carried {
             assert!(entry.get("html").is_none(), "{entry}");
+        }
+    }
+
+    #[test]
+    fn request_ids_are_unique_per_invocation() {
+        let a = new_request_id();
+        let b = new_request_id();
+        assert!(a.starts_with("req-"), "{a}");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn unpublish_posts_to_versioned_path_with_request_id() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        request.extend_from_slice(&chunk[..n]);
+                        if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(request);
+            let body = "{\"success\": true, \"version\": \"1.2.3\", \"status\": \"unpublished\"}";
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+        });
+        let outcome = post_unpublish(&format!("http://{addr}"), "tok", "probe", "1.2.3", "req-9-9").unwrap();
+        let request = String::from_utf8_lossy(&rx.recv().unwrap()).into_owned();
+        let head = request.split("\r\n\r\n").next().unwrap_or("").to_string();
+        assert!(head.contains("POST /api/v0/packages/probe@1.2.3/unpublish "), "{head}");
+        assert!(head.to_ascii_lowercase().contains("x-rnx-request-id: req-9-9"), "{head}");
+        match outcome {
+            UnpublishOutcome::Removed => {}
+            UnpublishOutcome::Rejected { status, message } => panic!("rejected {status}: {message}"),
         }
     }
 
@@ -942,10 +1060,10 @@ mod tests {
     fn artifact_frame_carries_digest_or_null() {
         let dir = fixture_project("frame-art", None);
         let cfg = fixture_cfg(&dir);
-        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &[], None);
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &[], None, None);
         assert!(frame["artifactDigest"].is_null(), "{}", frame["artifactDigest"]);
         let digest = format!("sha256:{}", "cd".repeat(32));
-        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &[], Some(&digest));
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &[], Some(&digest), None);
         assert_eq!(frame["artifactDigest"], digest);
     }
 
@@ -1181,7 +1299,7 @@ mod tests {
         let dir = license_project("infer", "", Some("Licensed under the Apache License, Version 2.0\n"));
         let cfg = fixture_cfg(&dir);
         assert_eq!(publish_license(&cfg, &dir).unwrap(), "Apache-2.0");
-        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &[], None);
+        let frame = publish_frame(&cfg, "# probe\n", &[], "{}", &[], None, None);
         assert_eq!(frame["license"], "MIT");
     }
 

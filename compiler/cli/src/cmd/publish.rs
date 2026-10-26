@@ -183,7 +183,8 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
             std::process::exit(1);
         }
     };
-    let frame = cli::publish::publish_frame(cfg, &readme, &files, &docs, &guides, asserted.as_deref());
+    let request_id = cli::publish::new_request_id();
+    let frame = cli::publish::publish_frame(cfg, &readme, &files, &docs, &guides, asserted.as_deref(), Some(&request_id));
     match cli::publish::post_frame(&registry, &token, &frame, name) {
         Ok(cli::publish::PublishOutcome::Published {
             url,

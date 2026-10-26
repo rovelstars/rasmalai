@@ -9,6 +9,10 @@ import {
 	getDependents,
 	yankVersion,
 	recordTombstone,
+	unpublishVersion,
+	specialDeleteAudit,
+	specialDeletedVersions,
+	mutationAlreadyApplied,
 	checkPublishToken,
 	purgeUrls,
 	purgeConfigured,
@@ -112,7 +116,14 @@ export async function GET({ params, platform, setHeaders, url }) {
 		sub === 'api'
 			? await getVersionRow(env, full, version)
 			: await getVersionIndexRow(env, full, version);
-	if (!found) return notFound(`package ${full}@${version} does not exist`);
+	if (!found) {
+		// A staff hard removal deletes the row but leaves the audit entry,
+		// so the read answers the 410 variant instead of a plain 404. Only
+		// a removed number qualifies: a never-published number still 404s.
+		const purged = await specialDeletedVersions(env, full, [version]);
+		if (purged.has(version)) return withdrawn(version, 'std-purge');
+		return notFound(`package ${full}@${version} does not exist`);
+	}
 	if (found.withdrawn) {
 		return withdrawn(version, readWithdrawReason(found.row.manifestJson));
 	}
@@ -252,19 +263,34 @@ function adminToken(env: Record<string, string | undefined>, provided: string): 
 	return safeEqual(provided, configured);
 }
 
+// The idempotency key of an owner/admin mutation. The publish frame
+// carries it as `requestId`; the other mutations accept it as a JSON
+// body field or as the `X-RNX-Request-ID` header the manual documents.
+async function readRequestId(request: Request): Promise<string> {
+	const header = request.headers.get('X-RNX-Request-ID') ?? request.headers.get('x-rnx-request-id') ?? '';
+	if (request.method !== 'POST') return header;
+	try {
+		const body = (await request.clone().json()) as Record<string, unknown>;
+		if (typeof body['requestId'] === 'string') return body['requestId'];
+	} catch {
+		// no JSON body: the header alone decides
+	}
+	return header;
+}
+
 export async function POST({ params, request, platform, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const parsed = parsePath(params.path ?? '');
 	if (!parsed) return notFound('invalid package path');
 	const { full, rest } = parsed;
 	const [version, action] = rest;
-	if (!version || (action !== 'yank' && action !== 'takedown') || rest.length !== 2) {
+	if (!version || (action !== 'yank' && action !== 'takedown' && action !== 'unpublish') || rest.length !== 2) {
 		return notFound('unknown mutation');
 	}
 	const auth = request.headers.get('Authorization') ?? '';
 	const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
 
-	if (action === 'yank') {
+	if (action === 'unpublish') {
 		const tokenOk = checkPublishToken(env, token);
 		let user: { id: number; username: string; isAdmin: boolean } | null = null;
 		if (!tokenOk) {
@@ -277,8 +303,6 @@ export async function POST({ params, request, platform, url }) {
 			}
 		}
 		const found = await getVersionIndexRow(env, full, version);
-		if (!found) return notFound(`package ${full}@${version} does not exist`);
-		if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
 		if (!tokenOk) {
 			const name = parsePackageName(full);
 			if (name && name.scope) {
@@ -293,7 +317,68 @@ export async function POST({ params, request, platform, url }) {
 				}
 			}
 		}
-		const ok = await yankVersion(env, full, version);
+		const unpublishRequestId = await readRequestId(request);
+		if (await mutationAlreadyApplied(env, 'unpublish', full, version, unpublishRequestId)) {
+			return json({ success: true, version, status: 'unpublished', duplicate: true }, { headers: headers() });
+		}
+		if (!found) return notFound(`package ${full}@${version} does not exist`);
+		if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
+		const result = await unpublishVersion(env, full, version, unpublishRequestId);
+		if (!result.ok && result.code === 'not-found') return notFound(`package ${full}@${version} does not exist`);
+		if (!result.ok && result.code === 'withdrawn') return withdrawn(version, 'tombstoned');
+		if (!result.ok && result.code === 'too-old') {
+			return json(
+				{ code: 'unpublish-window-closed', message: `version ${version} is past the 72-hour unpublish window` },
+				{ status: 409, headers: headers() }
+			);
+		}
+		const purge = await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
+			fullName: full,
+			verify: { url: `${url.origin}/api/v0/packages/${full}@${version}`, status: 404 }
+		});
+		if (purgeConfigured(env) && !purge.verified) {
+			return json(
+				{ code: 'unavailable', message: 'the edge still serves the old copy, retry the purge' },
+				{ status: 503, headers: headers() }
+			);
+		}
+		return json({ success: true, version, status: 'unpublished' }, { headers: headers() });
+	}
+
+	if (action === 'yank') {
+		const tokenOk = checkPublishToken(env, token);
+		let user: { id: number; username: string; isAdmin: boolean } | null = null;
+		if (!tokenOk) {
+			user = await sessionUser(env, readSessionCookie(request.headers.get('Cookie')));
+			if (!user) {
+				return json({ code: 'unauthorized', message: 'invalid publisher token' }, { status: 401, headers: headers() });
+			}
+			if (!checkBrowserOrigin(request, url)) {
+				return json({ code: 'bad-origin', message: 'bad origin' }, { status: 403, headers: headers() });
+			}
+		}
+		const found = await getVersionIndexRow(env, full, version);
+		if (!tokenOk) {
+			const name = parsePackageName(full);
+			if (name && name.scope) {
+				const scopes = await userScopes(env, user!.id);
+				if (!scopes.includes(name.scope)) {
+					return json({ code: 'forbidden', message: `scope @${name.scope} is not yours` }, { status: 403, headers: headers() });
+				}
+			} else {
+				const owner = await getPackageOwner(env, name?.scope ?? '', name?.name ?? '');
+				if (owner !== user!.username) {
+					return json({ code: 'forbidden', message: `package ${full} is owned by someone else` }, { status: 403, headers: headers() });
+				}
+			}
+		}
+		const yankRequestId = await readRequestId(request);
+		if (await mutationAlreadyApplied(env, 'yank', full, version, yankRequestId)) {
+			return json({ success: true, version, status: 'yanked', duplicate: true }, { headers: headers() });
+		}
+		if (!found) return notFound(`package ${full}@${version} does not exist`);
+		if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
+		const ok = await yankVersion(env, full, version, yankRequestId);
 		if (!ok) {
 			return json({ code: 'conflict', message: `version ${version} is not live` }, { status: 409, headers: headers() });
 		}
@@ -317,16 +402,24 @@ export async function POST({ params, request, platform, url }) {
 		return json({ code: 'unauthorized', message: 'invalid admin token' }, { status: 401, headers: headers() });
 	}
 	const found = await getVersionIndexRow(env, full, version);
-	if (!found) return notFound(`package ${full}@${version} does not exist`);
-	if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
 	let reason = '';
+	let takedownRequestId = '';
 	try {
-		const body = (await request.json()) as Record<string, unknown>;
+		const body = (await request.clone().json()) as Record<string, unknown>;
 		reason = typeof body['reason'] === 'string' ? body['reason'] : '';
+		if (typeof body['requestId'] === 'string') takedownRequestId = body['requestId'];
 	} catch {
 		reason = '';
 	}
-	await recordTombstone(env, full, version, reason);
+	if (!takedownRequestId) {
+		takedownRequestId = request.headers.get('X-RNX-Request-ID') ?? request.headers.get('x-rnx-request-id') ?? '';
+	}
+	if (await mutationAlreadyApplied(env, 'takedown', full, version, takedownRequestId)) {
+		return json({ success: true, version, status: 'tombstoned', duplicate: true }, { headers: headers() });
+	}
+	if (!found) return notFound(`package ${full}@${version} does not exist`);
+	if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
+	await recordTombstone(env, full, version, reason, takedownRequestId);
 	const purge = await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
 		fullName: full,
 		prefixes: [`${url.origin}/api/v0/packages/${full}@${version}`],
