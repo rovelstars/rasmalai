@@ -31,7 +31,15 @@ export default {
 }
 ```
 
-With that manifest the upload holds `Project.config`, the two entry files, the rest of `src/**/*.rnx`, every guide under `docs/`, plus the readme and license. A file the manifest does not cover and the rules above do not include stays home.
+With that manifest the upload holds `Project.config`, the two entry files, the rest of `src/**/*.rnx`, every guide under `docs/`, plus the readme and license. A file the manifest does not cover and the rules below do not include stays home.
+
+## Custom guides ride the docs folder
+
+Every `*.md` directly under `entries.docs`, plus one nesting level down, becomes one guide in the publish frame, sorted by slug. The frame carries raw markdown source only — slug, title, source, description, section, order. The client never sends rendered html; the server renders the markdown and sanitizes it on accept, and the package page injects that stored html. The `/{version}/guides` routes serve the index, one guide as html, or sanitized source with `?format=source`.
+
+- Slug: the filename without `.md`, lowercased, with each run of other characters folded to one dash and leading and trailing dashes dropped. It must match `^[a-z0-9][a-z0-9-]{0,63}$`. A file that maps to nothing usable, two files that map to the same slug, or a file nested deeper than one level fails the publish with `E108` naming the file.
+- Title: the first `# ` heading, else the frontmatter `title:`, else the filename with dashes and underscores turned into spaced, capitalized words.
+- Optional frontmatter uses the same `---` block shape as site content, and only `title:`, `description:`, `section:`, and `order:` are read. Unknown keys are ignored, and a leading `---` line always opens frontmatter, so start the file with a heading when the guide itself opens with a rule. Blank section and order values are stored as null.
 
 ## What never ships
 
