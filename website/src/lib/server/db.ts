@@ -386,7 +386,7 @@ export async function ensureSchema(db: Client): Promise<void> {
 	return schemaPromise;
 }
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 async function checkSchemaVersion(db: Client): Promise<boolean> {
 	try {
