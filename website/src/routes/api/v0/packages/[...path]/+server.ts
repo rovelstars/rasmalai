@@ -8,6 +8,9 @@ import {
 	getPackageOwner,
 	getDependents,
 	yankVersion,
+	YANK_CAUSES,
+	normalizeYankCause,
+	UNPUBLISH_WINDOW_SECONDS,
 	recordTombstone,
 	unpublishVersion,
 	specialDeleteAudit,
@@ -143,6 +146,7 @@ export async function GET({ params, platform, setHeaders, url }) {
 				name: full,
 				version: row.version,
 				status: row.status,
+				yankCause: row.status === 'yanked' && row.yankCause !== '' ? row.yankCause : null,
 				checksum: row.checksum,
 				tarballSha256: row.tarballSha256,
 				artifactDigest: row.artifactDigest === '' ? null : row.artifactDigest,
@@ -347,8 +351,9 @@ export async function POST({ params, request, platform, url }) {
 
 	if (action === 'yank') {
 		const tokenOk = checkPublishToken(env, token);
+		const isAdminToken = adminToken(env, token);
 		let user: { id: number; username: string; isAdmin: boolean } | null = null;
-		if (!tokenOk) {
+		if (!tokenOk && !isAdminToken) {
 			user = await sessionUser(env, readSessionCookie(request.headers.get('Cookie')));
 			if (!user) {
 				return json({ code: 'unauthorized', message: 'invalid publisher token' }, { status: 401, headers: headers() });
@@ -357,8 +362,9 @@ export async function POST({ params, request, platform, url }) {
 				return json({ code: 'bad-origin', message: 'bad origin' }, { status: 403, headers: headers() });
 			}
 		}
+		const isAdmin = isAdminToken || user?.isAdmin === true;
 		const found = await getVersionIndexRow(env, full, version);
-		if (!tokenOk) {
+		if (!isAdmin && !tokenOk) {
 			const name = parsePackageName(full);
 			if (name && name.scope) {
 				const scopes = await userScopes(env, user!.id);
@@ -372,14 +378,68 @@ export async function POST({ params, request, platform, url }) {
 				}
 			}
 		}
-		const yankRequestId = await readRequestId(request);
+		let causeRaw: unknown = '';
+		let yankRequestId = '';
+		try {
+			const body = (await request.clone().json()) as Record<string, unknown>;
+			causeRaw = body['cause'] ?? body['reason'] ?? '';
+			if (typeof body['requestId'] === 'string') yankRequestId = body['requestId'];
+		} catch {
+			causeRaw = '';
+		}
+		if (!yankRequestId) {
+			yankRequestId = request.headers.get('X-RNX-Request-ID') ?? request.headers.get('x-rnx-request-id') ?? '';
+		}
 		if (await mutationAlreadyApplied(env, 'yank', full, version, yankRequestId)) {
-			return json({ success: true, version, status: 'yanked', duplicate: true }, { headers: headers() });
+			const stored = found && found.row.status === 'yanked' && found.row.yankCause !== '' ? found.row.yankCause : null;
+			return json({ success: true, version, status: 'yanked', yankCause: stored, duplicate: true }, { headers: headers() });
 		}
 		if (!found) return notFound(`package ${full}@${version} does not exist`);
 		if (found.withdrawn) return withdrawn(version, readWithdrawReason(found.row.manifestJson));
-		const ok = await yankVersion(env, full, version, yankRequestId);
-		if (!ok) {
+		if (isAdmin) {
+			const cause = normalizeYankCause(causeRaw);
+			if (!cause) {
+				return json(
+					{
+						code: 'invalid-yank-cause',
+						message: `admin yank needs a recorded security cause: one of ${YANK_CAUSES.join(' | ')}`
+					},
+					{ status: 400, headers: headers() }
+				);
+			}
+			const result = await yankVersion(env, full, version, yankRequestId, { cause, allowLate: true });
+			if (!result.ok && result.code === 'not-found') return notFound(`package ${full}@${version} does not exist`);
+			if (!result.ok && result.code === 'withdrawn') return withdrawn(version, readWithdrawReason(found.row.manifestJson));
+			if (!result.ok) {
+				return json({ code: 'conflict', message: `version ${version} is not live` }, { status: 409, headers: headers() });
+			}
+			const purge = await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
+				fullName: full,
+				verify: { url: `${url.origin}/api/v0/packages/${full}@${version}`, bodyStatus: 'yanked' }
+			});
+			if (purgeConfigured(env) && !purge.verified) {
+				return json(
+					{ code: 'unavailable', message: 'the edge still serves the old copy, retry the purge' },
+					{ status: 503, headers: headers() }
+				);
+			}
+			return json({ success: true, version, status: 'yanked', yankCause: result.yankCause }, { headers: headers() });
+		}
+		const result = await yankVersion(env, full, version, yankRequestId);
+		if (!result.ok && result.code === 'not-found') return notFound(`package ${full}@${version} does not exist`);
+		if (!result.ok && result.code === 'withdrawn') return withdrawn(version, readWithdrawReason(found.row.manifestJson));
+		if (!result.ok && result.code === 'too-old') {
+			const ageHours = Math.floor((Math.floor(Date.now() / 1000) - Number(result.createdAt ?? 0)) / 3600);
+			const windowHours = UNPUBLISH_WINDOW_SECONDS / 3600;
+			return json(
+				{
+					code: 'yank-window-closed',
+					message: `version ${version} is ${ageHours} hours old; the owner yank window closed ${windowHours} hours after publish. Ask the registry admin to yank with a recorded security cause (${YANK_CAUSES.join(' | ')}).`
+				},
+				{ status: 409, headers: headers() }
+			);
+		}
+		if (!result.ok) {
 			return json({ code: 'conflict', message: `version ${version} is not live` }, { status: 409, headers: headers() });
 		}
 		const purge = await purgeUrls(env, packagePointerUrls(url.origin, full, version), {
@@ -395,7 +455,7 @@ export async function POST({ params, request, platform, url }) {
 				{ status: 503, headers: headers() }
 			);
 		}
-		return json({ success: true, version, status: 'yanked' }, { headers: headers() });
+		return json({ success: true, version, status: 'yanked', yankCause: null }, { headers: headers() });
 	}
 
 	if (!adminToken(env, token)) {

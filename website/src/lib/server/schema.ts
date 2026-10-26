@@ -37,6 +37,7 @@ export const packageVersions = sqliteTable('package_versions', {
 	docJson: text('doc_json').notNull(),
 	checksum: text('checksum').notNull(),
 	status: text('status').notNull().default('live'),
+	yankCause: text('yank_cause').notNull().default(''),
 	createdAt: integer('created_at').notNull(),
 	semverMajor: integer('semver_major').notNull().default(0),
 	semverMinor: integer('semver_minor').notNull().default(0),

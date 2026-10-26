@@ -246,6 +246,114 @@ describe('mutation idempotency', () => {
 	});
 });
 
+describe('yank window', () => {
+	const WINDOW_SECONDS = 72 * 3600;
+	function backdate(full: string, createdAt: number): void {
+		fake.db.prepare('UPDATE package_versions SET created_at = ? WHERE package_id = ?').run(createdAt, `pkg_${full}`);
+	}
+	function oldTimestamp(extraSeconds: number): number {
+		return Math.floor(Date.now() / 1000) - WINDOW_SECONDS - extraSeconds;
+	}
+
+	it('lets the owner yank inside the window and serves the yanked status', async () => {
+		await seedPackage(fake.env, '@acme/freshyank', '1.0.0');
+		const res = await mutation('@acme/freshyank@1.0.0/yank');
+		assert.equal(res.status, 200);
+		assert.equal(((await res.json()) as { yankCause: unknown }).yankCause, null);
+		const meta = await read('@acme/freshyank@1.0.0');
+		assert.equal(meta.status, 200);
+		const body = (await meta.json()) as Record<string, unknown>;
+		assert.equal(body['status'], 'yanked');
+		assert.equal(body['yankCause'], null);
+	});
+
+	it('refuses an owner yank one second past the window with the age, the window, and the admin path', async () => {
+		await seedPackage(fake.env, '@acme/staleyank', '1.0.0');
+		backdate('@acme/staleyank', oldTimestamp(1));
+		const res = await mutation('@acme/staleyank@1.0.0/yank');
+		assert.equal(res.status, 409);
+		const body = (await res.json()) as { code: string; message: string };
+		assert.equal(body.code, 'yank-window-closed');
+		assert.match(body.message, /hours old/);
+		assert.match(body.message, /72 hours/);
+		assert.match(body.message, /admin/);
+		assert.match(body.message, /vulnerability \| cve \| malicious \| legal/);
+		const meta = await read('@acme/staleyank@1.0.0');
+		assert.equal(((await meta.json()) as { status: string }).status, 'live');
+	});
+
+	it('rejects an admin yank without a recorded cause, at any age', async () => {
+		await seedPackage(fake.env, '@acme/nocause-fresh', '1.0.0');
+		const fresh = await mutation('@acme/nocause-fresh@1.0.0/yank', { token: 'admin', body: {} });
+		assert.equal(fresh.status, 400);
+		assert.equal(((await fresh.json()) as { code: string }).code, 'invalid-yank-cause');
+		await seedPackage(fake.env, '@acme/nocause-old', '1.0.0');
+		backdate('@acme/nocause-old', oldTimestamp(3600));
+		const old = await mutation('@acme/nocause-old@1.0.0/yank', { token: 'admin', body: { reason: 'not a cause' } });
+		assert.equal(old.status, 400);
+		assert.match(((await old.json()) as { message: string }).message, /vulnerability \| cve \| malicious \| legal/);
+	});
+
+	it('records and serves every admin cause on late versions', async () => {
+		const causes = ['vulnerability', 'cve', 'malicious', 'legal'];
+		for (const [i, cause] of causes.entries()) {
+			const name = `@acme/latecause${i}`;
+			await seedPackage(fake.env, name, '1.0.0');
+			backdate(name, oldTimestamp(3600));
+			const res = await mutation(`${name}@1.0.0/yank`, { token: 'admin', body: { cause } });
+			assert.equal(res.status, 200);
+			assert.equal(((await res.json()) as { yankCause: string }).yankCause, cause);
+			const meta = await read(`${name}@1.0.0`);
+			assert.equal(meta.status, 200);
+			const body = (await meta.json()) as Record<string, unknown>;
+			assert.equal(body['status'], 'yanked');
+			assert.equal(body['yankCause'], cause);
+			const audit = fake.db
+				.prepare("SELECT details_json AS d FROM audit_log WHERE action = 'yank' AND full_name = ? AND version = '1.0.0'")
+				.get(name) as { d: string };
+			assert.match(String(audit.d), new RegExp(`"cause":"${cause}"`));
+			clearVersionIndex();
+			const resolved = await resolve({ [name]: '1.0.0' });
+			assert.equal(resolved.status, 200);
+			const graph = (await resolved.json()) as { levels: Array<Array<Record<string, unknown>>> };
+			const nodes = graph.levels.flat();
+			assert.equal(
+				nodes.some((n) => n['yanked'] === true),
+				true
+			);
+			assert.equal(
+				nodes.find((n) => n['full'] === name)?.['yankCause'],
+				cause
+			);
+		}
+	});
+
+	it('keeps serving late-yanked metadata and pins to exact requirements', async () => {
+		await seedPackage(fake.env, '@acme/pinnedlate', '1.0.0');
+		backdate('@acme/pinnedlate', oldTimestamp(3600));
+		const yanked = await mutation('@acme/pinnedlate@1.0.0/yank', { token: 'admin', body: { cause: 'CVE' } });
+		assert.equal(yanked.status, 200);
+		assert.equal(((await yanked.json()) as { yankCause: string }).yankCause, 'cve');
+		const manifest = await read('@acme/pinnedlate@1.0.0/manifest');
+		assert.equal(manifest.status, 200);
+		clearVersionIndex();
+		const resolved = await resolve({ '@acme/pinnedlate': '1.0.0' });
+		assert.equal(resolved.status, 200);
+	});
+
+	it('keeps unpublish, burned numbers, and replay unchanged', async () => {
+		await seedPackage(fake.env, '@acme/yankunpub', '1.0.0');
+		const yanked = await mutation('@acme/yankunpub@1.0.0/yank');
+		assert.equal(yanked.status, 200);
+		const first = await mutation('@acme/yankunpub@1.0.0/unpublish', { body: { requestId: 'req-yu-1' } });
+		assert.equal(first.status, 200);
+		const second = await mutation('@acme/yankunpub@1.0.0/unpublish', { body: { requestId: 'req-yu-1' } });
+		assert.equal(second.status, 200);
+		assert.equal(((await second.json()) as { duplicate?: boolean }).duplicate, true);
+		assert.equal(await versionReuseBlocked(fake.env, '@acme/yankunpub', '1.0.0'), true);
+	});
+});
+
 describe('publish idempotency key transport', () => {
 	it('stores the header key when the frame leaves it empty, and prefers the frame', async () => {
 		const first = await publish('@acme/keyed', '1.0.0', publishFrame('@acme/keyed', '1.0.0'), {

@@ -25,7 +25,7 @@ Retries are safe. Publish takes a client-generated idempotency key — the `requ
 
 Yank is reversible-looking but one-way, and takedown is forever. Both keep the number burned per the rule above.
 
-`POST /api/v0/packages/<name>@<version>/yank` flips a live version to `yanked`. The metadata still serves, now with `"status": "yanked"`. Pinned requirements keep resolving — yanked versions stay in the candidate set — but the latest pointer and the catalog skip them, so new floating ranges move past. Yanking a version that is not live fails with 409 (`version <v> is not live`).
+`POST /api/v0/packages/<name>@<version>/yank` flips a live version to `yanked` when the caller may do it: the owner (or org token) inside the 72-hour window after publish, the registry admin with a recorded security cause after it. The metadata still serves, now with `"status": "yanked"` and — for an admin yank — `"yankCause"` naming one of `vulnerability`, `cve`, `malicious`, `legal`. Pinned requirements keep resolving — yanked versions stay in the candidate set — but the latest pointer and the catalog skip them, so new floating ranges move past. An owner yank past the window fails with 409 (`version <v> is N hours old; the owner yank window closed 72 hours after publish…`), and an admin yank without a cause fails with 400. Yanking a version that is not live fails with 409 (`version <v> is not live`).
 
 `POST /api/v0/packages/<name>@<version>/takedown` needs the admin token. It writes a tombstone row carrying the reason and every later read of that version answers 410 `{ code: "withdrawn", reason }` with a one-year immutable cache. The number never comes back.
 
@@ -123,10 +123,10 @@ The web playground carries no standard library inside its wasm engine either: en
 |---|---|---|
 | `200` / `201` | version is live | metadata or stored manifest digest |
 | `302` | name without version | redirect to the latest versioned URL, never content |
-| `400` | bad input | `invalid package name`, `bad-range` |
+| `400` | bad input | `invalid package name`, `bad-range`, `admin yank needs a recorded security cause` |
 | `403` | not the owner | `package <name> is owned by someone else`, `scope @<scope> is not yours` |
 | `404` | missing name, version, guide, or file index | JSON error |
-| `409` | version reuse or bad yank | `version <v> already published (versions are immutable)`, `version <v> is not live` |
+| `409` | version reuse, gated yank, or bad yank | `version <v> already published (versions are immutable)`, `version <v> is N hours old; the owner yank window closed 72 hours after publish…`, `version <v> is not live` |
 | `410` | tombstoned version | `{ code: "withdrawn", reason }`, cached immutably for a year |
 | `413` | the request is larger than the server accepts | `payload-too-large` |
 | `503` | the registry changed while the answer was computed | `resolution raced with a mutation, retry` |
