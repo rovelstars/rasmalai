@@ -1272,7 +1272,8 @@ export async function getLatestVersion(
 export async function yankVersion(
 	env: Record<string, string | undefined>,
 	full: string,
-	version: string
+	version: string,
+	requestId: string = ''
 ): Promise<boolean> {
 	const parsed = parsePackageName(full);
 	const db = await getDdb(env);
@@ -1291,8 +1292,8 @@ export async function yankVersion(
 				)
 			),
 		db.run(
-			sql`INSERT INTO audit_log (action, full_name, version, created_at)
-			      SELECT 'yank', ${parsed.full}, ${version}, ${now} WHERE changes() > 0`
+			sql`INSERT INTO audit_log (action, full_name, version, request_id, created_at)
+			      SELECT 'yank', ${parsed.full}, ${version}, ${requestId}, ${now} WHERE changes() > 0`
 		)
 	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 	// A yank does not change the candidate set: a yanked version stays a
@@ -2585,6 +2586,16 @@ export async function resolveGraph(
 	const memo = new Map<string, ResolveNode>();
 	const resolved: Record<string, string> = {};
 
+	// A name with no candidate versions is usually "does not exist", but a
+	// name the staff hard-removed answers the 410 `withdrawn (std-purge)`
+	// variant instead. The audit check runs once, only when empties exist.
+	const emptyFulls = [...candidates.entries()].filter(([, v]) => v.length === 0).map(([k]) => k);
+	let stdPurged = new Set<string>();
+	if (emptyFulls.length > 0 && raw !== null) {
+		budget.spend(1, 'special-delete check');
+		stdPurged = await specialDeleteAudit(env, emptyFulls);
+	}
+
 	const visit = (full: string, range: string): string => {
 		const known = resolved[full];
 		if (known) {
@@ -2596,6 +2607,9 @@ export async function resolveGraph(
 		const versions = candidates.get(full) ?? [];
 		const pick = maxSatisfying(versions, range);
 		if (!pick) {
+			if (stdPurged.has(full)) {
+				throw new Error(`package ${full} was withdrawn (std-purge); upgrade to a newer version`);
+			}
 			throw new Error(
 				versions.length === 0
 					? `package ${full} does not exist`
@@ -2786,7 +2800,7 @@ export async function versionReuseBlocked(
 			and(
 				eq(a.fullName, parsed.full),
 				eq(a.version, version),
-				inArray(a.action, ['takedown', 'transfer', 'special-delete', 'publish'])
+				inArray(a.action, ['takedown', 'transfer', 'special-delete', 'publish', 'unpublish'])
 			)
 		)
 		.get();
@@ -2797,7 +2811,8 @@ export async function recordTombstone(
 	env: Record<string, string | undefined>,
 	full: string,
 	version: string,
-	reason: string
+	reason: string,
+	requestId: string = ''
 ): Promise<void> {
 	const parsed = parsePackageName(full);
 	const db = await getDdb(env);
@@ -2833,6 +2848,7 @@ export async function recordTombstone(
 			fullName: parsed.full,
 			version,
 			detailsJson: JSON.stringify({ reason }),
+			requestId,
 			createdAt: now
 		}),
 		// A takedown takes the version out of the candidate set, so the
@@ -2844,4 +2860,243 @@ export async function recordTombstone(
 			.where(eq(s.packages.id, id))
 	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 	noteMutation();
+}
+
+export const UNPUBLISH_WINDOW_SECONDS = 72 * 3600;
+
+export type UnpublishResult = { ok: true } | { ok: false; code: 'not-found' | 'withdrawn' | 'too-old'; createdAt?: number };
+
+// Self-serve unpublish inside the 72-hour window. The version row is
+// hard-deleted, the number stays burned (the audit log keeps the publish
+// entry, so versionReuseBlocked still refuses a re-mint), and an
+// `unpublish` audit entry records who removed it. Past the window the
+// version is permanent history: yank it or take it down instead.
+export async function unpublishVersion(
+	env: Record<string, string | undefined>,
+	full: string,
+	version: string,
+	requestId: string = ''
+): Promise<UnpublishResult> {
+	const parsed = parsePackageName(full);
+	const db = await getDdb(env);
+	if (!parsed || !db) throw new Error('invalid package name or missing database');
+	const id = packageId(parsed.scope, parsed.name);
+	const v = s.packageVersions;
+	const row = await db
+		.select({ status: v.status, createdAt: v.createdAt })
+		.from(v)
+		.where(and(eq(v.packageId, id), eq(v.version, version)))
+		.get();
+	if (!row) return { ok: false, code: 'not-found' };
+	if (row.status === 'tombstoned') return { ok: false, code: 'withdrawn' };
+	const now = Math.floor(Date.now() / 1000);
+	if (now - Number(row.createdAt ?? 0) > UNPUBLISH_WINDOW_SECONDS) {
+		return { ok: false, code: 'too-old', createdAt: Number(row.createdAt ?? 0) };
+	}
+	await db.batch([
+		db.delete(s.versionCapabilities).where(eq(s.versionCapabilities.versionId, `ver_${id}_${version}`)),
+		db.delete(v).where(and(eq(v.packageId, id), eq(v.version, version))),
+		db.insert(s.auditLog).values({
+			action: 'unpublish',
+			fullName: parsed.full,
+			version,
+			detailsJson: JSON.stringify({ at: now }),
+			requestId,
+			createdAt: now
+		}),
+		db
+			.update(s.packages)
+			.set({ mutationCount: sql`${s.packages.mutationCount} + 1` })
+			.where(eq(s.packages.id, id))
+	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	noteMutation();
+	return { ok: true };
+}
+
+// Staff-only hard removal, `@std/*` only. The row is deleted, the purge
+// broadcasts, and the audit entry survives: a later read answers 410
+// `withdrawn (std-purge)` instead of 404, and the number stays burned.
+export async function specialDeleteVersion(
+	env: Record<string, string | undefined>,
+	full: string,
+	version: string,
+	actor: string
+): Promise<boolean> {
+	const parsed = parsePackageName(full);
+	const db = await getDdb(env);
+	if (!parsed || !db) throw new Error('invalid package name or missing database');
+	if (parsed.scope !== 'std') throw new Error('special delete is @std-only');
+	const id = packageId(parsed.scope, parsed.name);
+	const v = s.packageVersions;
+	const now = Math.floor(Date.now() / 1000);
+	const applied = await db.batch([
+		db.delete(s.versionCapabilities).where(eq(s.versionCapabilities.versionId, `ver_${id}_${version}`)),
+		db.delete(v).where(and(eq(v.packageId, id), eq(v.version, version))),
+		db.insert(s.auditLog).values({
+			action: 'special-delete',
+			fullName: parsed.full,
+			version,
+			detailsJson: JSON.stringify({ actor, at: now }),
+			createdAt: now
+		}),
+		db
+			.update(s.packages)
+			.set({ mutationCount: sql`${s.packages.mutationCount} + 1` })
+			.where(eq(s.packages.id, id))
+	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	noteMutation();
+	return (applied[1]?.rowsAffected ?? 0) > 0;
+}
+
+// Names in this set lost a version to staff hard removal. Reads answer
+// the 410 `withdrawn (std-purge)` variant instead of 404 for them.
+export async function specialDeleteAudit(
+	env: Record<string, string | undefined>,
+	fulls: string[]
+): Promise<Set<string>> {
+	const out = new Set<string>();
+	const db = await getDdb(env);
+	if (!db || fulls.length === 0) return out;
+	for (const batch of chunked([...new Set(fulls)], 900)) {
+		const rows = await db
+			.select({ fullName: s.auditLog.fullName })
+			.from(s.auditLog)
+			.where(and(eq(s.auditLog.action, 'special-delete'), inArray(s.auditLog.fullName, batch)));
+		for (const r of rows) out.add(r.fullName);
+	}
+	return out;
+}
+
+// The versions of one package lost to staff hard removal. A version read
+// answers the 410 variant only for a version that was actually removed:
+// a never-published number of the same package still answers 404.
+export async function specialDeletedVersions(
+	env: Record<string, string | undefined>,
+	full: string,
+	versions: string[]
+): Promise<Set<string>> {
+	const out = new Set<string>();
+	const db = await getDdb(env);
+	const uniq = [...new Set(versions)];
+	if (!db || uniq.length === 0) return out;
+	for (const batch of chunked(uniq, 900)) {
+		const rows = await db
+			.select({ version: s.auditLog.version })
+			.from(s.auditLog)
+			.where(
+				and(
+					eq(s.auditLog.action, 'special-delete'),
+					eq(s.auditLog.fullName, full),
+					inArray(s.auditLog.version, batch)
+				)
+			);
+		for (const r of rows) out.add(r.version);
+	}
+	return out;
+}
+
+// Retry safety for the owner/admin mutations. When the caller repeats a
+// mutation with the same idempotency key, the earlier audit entry is the
+// proof it already applied, and the repeat answers success without a
+// second write.
+export async function mutationAlreadyApplied(
+	env: Record<string, string | undefined>,
+	action: string,
+	full: string,
+	version: string,
+	requestId: string
+): Promise<boolean> {
+	if (!requestId) return false;
+	const db = await getDdb(env);
+	if (!db) return false;
+	const row = await db
+		.select({ one: sql`1` })
+		.from(s.auditLog)
+		.where(
+			and(
+				eq(s.auditLog.action, action),
+				eq(s.auditLog.fullName, full),
+				eq(s.auditLog.version, version),
+				eq(s.auditLog.requestId, requestId)
+			)
+		)
+		.get();
+	return row !== undefined;
+}
+
+export interface PruneResult {
+	downloads: number;
+	audit: number;
+}
+
+// Growth bound for the two ever-growing operational tables. Versioned
+// history (publish, unpublish, takedown, transfer, special-delete,
+// advisory rows) is never pruned: versionReuseBlocked reads the publish
+// entries to keep numbers burned, and takedowns/transfers are forensics.
+export async function pruneOldRows(
+	env: Record<string, string | undefined>,
+	nowSec: number = Math.floor(Date.now() / 1000)
+): Promise<PruneResult> {
+	const db = await getDdb(env);
+	if (!db) return { downloads: 0, audit: 0 };
+	const downloadCutoff = dayString(nowSec - 730 * 86400);
+	const auditCutoff = nowSec - 365 * 86400;
+	let downloads = 0;
+	let audit = 0;
+	try {
+		const r = await db.delete(s.downloadDaily).where(lt(s.downloadDaily.day, downloadCutoff));
+		downloads = r.rowsAffected ?? 0;
+	} catch {
+		downloads = 0;
+	}
+	try {
+		const r = await db
+			.delete(s.auditLog)
+			.where(
+				and(
+					lt(s.auditLog.createdAt, auditCutoff),
+					inArray(s.auditLog.action, ['purge-skipped', 'purge-failed', 'gc-sweep'])
+				)
+			);
+		audit = r.rowsAffected ?? 0;
+	} catch {
+		audit = 0;
+	}
+	return { downloads, audit };
+}
+
+// Operator-fed download counts. Edge analytics never write per-download
+// rows; the single batched daily rollup per package lands here instead,
+// from whatever counter source the operator wires up.
+export async function recordDownloadRollup(
+	env: Record<string, string | undefined>,
+	day: string,
+	counts: Record<string, number>
+): Promise<number> {
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('invalid day (expected YYYY-MM-DD)');
+	const db = await getDdb(env);
+	if (!db) throw new Error('missing database');
+	const entries = Object.entries(counts).filter(
+		([full, n]) => parsePackageName(full) && Number.isInteger(n) && n >= 0
+	);
+	if (entries.length === 0) return 0;
+	const stmts: Array<BatchItem<'sqlite'>> = [];
+	for (const [full, n] of entries) {
+		const parsed = parsePackageName(full);
+		if (!parsed) continue;
+		stmts.push(
+			db
+				.insert(s.downloadDaily)
+				.values({ packageId: packageId(parsed.scope, parsed.name), day, downloads: n })
+				.onConflictDoUpdate({
+					target: [s.downloadDaily.packageId, s.downloadDaily.day],
+					set: { downloads: sql`excluded.downloads` }
+				})
+		);
+	}
+	if (stmts.length === 0) return 0;
+	for (const batch of chunked(stmts, 100)) {
+		await db.batch(batch as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+	}
+	return stmts.length;
 }

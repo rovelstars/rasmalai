@@ -52,11 +52,24 @@ function decodeArg(cell: Json): string | number | bigint | null | Buffer {
 }
 
 export async function startFakeLibsql(): Promise<FakeLibsql> {
+	return startFakeLibsqlWith({ schema: true });
+}
+
+// A database as a fresh deployment would find it: empty, with no tables
+// at all. The first query runs the migration ladder, which has to create
+// every table, backfill every additive column, and stamp the version.
+export async function startEmptyFakeLibsql(): Promise<FakeLibsql> {
+	return startFakeLibsqlWith({ schema: false });
+}
+
+async function startFakeLibsqlWith({ schema }: { schema: boolean }): Promise<FakeLibsql> {
 	const db = new DatabaseSync(':memory:');
 	db.exec('PRAGMA foreign_keys = ON');
-	for (const stmt of BASE_SCHEMA.split(';')) {
-		const sql = stmt.trim();
-		if (sql) db.exec(sql);
+	if (schema) {
+		for (const stmt of BASE_SCHEMA.split(';')) {
+			const sql = stmt.trim();
+			if (sql) db.exec(sql);
+		}
 	}
 	const counters: FakeCounters = { statements: 0, roundTrips: 0, rowsRead: 0, bytesRead: 0 };
 	const statements: string[] = [];

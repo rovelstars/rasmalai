@@ -19,7 +19,7 @@ The first publish of a name claims its owner. A later publish of the same packag
 
 A version looks like `1.2.3` with an optional prerelease tail (`1.2.3-beta.1`). Publishing an already-used `name@version` fails with 409 and the message `version <v> already published (versions are immutable)`. There is no re-mint: not by the owner, not after a yank, not after a takedown, not after a scope transfer. The server blocks reuse against live rows, tombstones, and the audit log together, so even a deleted-then-republished version keeps its number burned.
 
-Retries are safe. Publish accepts an `X-RNX-Request-ID` idempotency key; repeating a publish with the same key returns success with `duplicate: true` instead of a second row.
+Retries are safe. Publish takes a client-generated idempotency key — the `requestId` frame field, or the `X-RNX-Request-ID` header when the frame leaves it empty — and repeating a publish with the same key returns success with `duplicate: true` instead of a second row. Yank, takedown, and unpublish take the same key as a JSON body field or that header.
 
 ## Yanked versus taken down
 

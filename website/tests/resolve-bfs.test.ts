@@ -179,9 +179,12 @@ describe('resolveGraph round trips', () => {
 		// Published rows are not needed to count: unresolved names still batch.
 		await assert.rejects(() => resolveGraph(fake.env, reqs, []), /does not exist/);
 		// 200 names = 4 candidate chunks (50 per statement) + 0 picked rows,
-		// and each level is a single HTTP request.
-		assert.equal(fake.counters.roundTrips, 1);
-		assert.ok(fake.counters.statements <= 6, `${fake.counters.statements} statements`);
+		// and each level is a single HTTP request, plus one audit batch: a
+		// name with no candidates is either missing or staff-removed, and
+		// the `withdrawn (std-purge)` variant needs the audit to tell them
+		// apart. The success path never pays for it.
+		assert.equal(fake.counters.roundTrips, 2);
+		assert.ok(fake.counters.statements <= 9, `${fake.counters.statements} statements`);
 	});
 
 	it('spends one batch per level on a three-level graph', async () => {
@@ -256,9 +259,10 @@ describe('resolveGraph cost', () => {
 		fake.reset();
 		await assert.rejects(() => resolveGraph(fake.env, reqs, []), /does not exist/);
 		// 200 names are one candidate chunk of 450 (900 bound params, two
-		// per name), and no picked rows.
-		assert.equal(fake.counters.roundTrips, 1);
-		assert.equal(fake.counters.statements, 3, fake.statements.join(' | '));
+		// per name), no picked rows, and one audit batch for the
+		// never-existed vs staff-removed discriminator (zero rows read).
+		assert.equal(fake.counters.roundTrips, 2);
+		assert.equal(fake.counters.statements, 4, fake.statements.join(' | '));
 		assert.equal(fake.counters.rowsRead, 0);
 	});
 

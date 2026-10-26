@@ -77,6 +77,7 @@ mod setup;
 mod task;
 mod test;
 mod unpack;
+mod unpublish;
 mod update;
 mod vendor;
 
@@ -108,6 +109,7 @@ use self::setup::run_setup;
 use self::task::run_task;
 use self::test::run_test;
 use self::unpack::run_unpack;
+use self::unpublish::run_unpublish;
 use self::update::run_update;
 use self::vendor::run_vendor;
 
@@ -230,6 +232,9 @@ pub(super) fn dispatch(
             }
             cli::args::Command::Publish { registry, token, artifact } => {
                 run_publish(registry, token, artifact);
+            }
+            cli::args::Command::Unpublish { target, registry, token } => {
+                run_unpublish(target, registry, token);
             }
             cli::args::Command::Unpack { archive, out_dir } => {
                 run_unpack(archive, out_dir);
