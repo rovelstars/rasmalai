@@ -184,6 +184,235 @@ pub fn missing_std_packages() -> Vec<String> {
     missing
 }
 
+pub fn unpinned_std_version(pkg: &str) -> String {
+    read_std_pin()
+        .and_then(|pin| pin.packages.get(pkg).cloned())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+pub fn vendor_covers_std() -> bool {
+    let anchor = std::env::current_dir()
+        .map(|cwd| fetch::cache_anchor(&cwd))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    std_package_names().iter().all(|pkg| {
+        let version = unpinned_std_version(pkg);
+        match fetch::local_override_dir(pkg, &anchor) {
+            Some(dir) => {
+                fetch::check_local_override_silent(pkg, &dir, &version, Some(&version))
+            }
+            None => false,
+        }
+    })
+}
+
+fn vendor_tree_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, Diagnostic> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let mut entries: Vec<PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(&current).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot read `{}`: {e}", current.display()),
+            )
+        })? {
+            let entry = entry.map_err(|e| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("cannot read `{}`: {e}", current.display()),
+                )
+            })?;
+            entries.push(entry.path());
+        }
+        entries.sort();
+        for path in entries {
+            let file_type = std::fs::symlink_metadata(&path).map_err(|e| {
+                Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", path.display()))
+            })?;
+            if file_type.file_type().is_symlink() {
+                continue;
+            }
+            if file_type.file_type().is_dir() {
+                stack.push(path);
+            } else if file_type.file_type().is_file() {
+                let rel = path.strip_prefix(dir).map_err(|e| {
+                    Diagnostic::new(
+                        Code::E108,
+                        format!("cannot read `{}`: {e}", path.display()),
+                    )
+                })?;
+                let name = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let bytes = std::fs::read(&path).map_err(|e| {
+                    Diagnostic::new(
+                        Code::E108,
+                        format!("cannot read `{}`: {e}", path.display()),
+                    )
+                })?;
+                files.push((name, bytes));
+            }
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(files)
+}
+
+pub fn install_std_vendor_tree(src: &Path, base: &str) -> Result<StdSeedReport, Diagnostic> {
+    let mut packages: Vec<(String, String)> = Vec::with_capacity(std_package_names().len());
+    for full in std_package_names() {
+        let dir = src.join(&full);
+        let cfg = crate::project::ProjectConfig::load_from_dir(&dir)?.ok_or_else(|| {
+            Diagnostic::new(
+                Code::E108,
+                format!("vendor tree `{}` has no package `{full}`", src.display()),
+            )
+        })?;
+        if cfg.name != full {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "vendor tree `{}` names package `{}` but `{full}` was expected",
+                    dir.display(),
+                    cfg.name
+                ),
+            ));
+        }
+        let version = cfg.version.clone();
+        let files = vendor_tree_files(&dir)?;
+        if files.is_empty() {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("vendor tree `{}` has no files", dir.display()),
+            ));
+        }
+        let mut digest_entries = Vec::with_capacity(files.len());
+        for (name, bytes) in &files {
+            digest_entries.push(crate::checksum::DigestEntry {
+                name: name.clone(),
+                size: bytes.len() as u64,
+                dir: false,
+                chunks: vec![crate::checksum::Sha256::hexdigest(bytes)],
+            });
+        }
+        let digest = crate::checksum::manifest_digest_hex(&digest_entries)?;
+        let dest = fetch::cached_package_dir(base, &full, &version);
+        let _ = std::fs::remove_dir_all(&dest);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("cannot create `{}`: {e}", parent.display()),
+                )
+            })?;
+        }
+        for (name, bytes) in &files {
+            let path = dest.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    Diagnostic::new(
+                        Code::E108,
+                        format!("cannot write `{}`: {e}", path.display()),
+                    )
+                })?;
+            }
+            std::fs::write(&path, bytes).map_err(|e| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("cannot write `{}`: {e}", path.display()),
+                )
+            })?;
+        }
+        std::fs::write(dest.join(".rnx-integrity"), format!("{full}\n{version}\n{digest}\n"))
+            .map_err(|e| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("cannot write `{}`: {e}", dest.display()),
+                )
+            })?;
+        packages.push((full, version));
+    }
+    packages.sort();
+    let pin = StdPin {
+        date_secs: now_secs(),
+        registry: base.to_string(),
+        packages: packages.iter().cloned().collect(),
+    };
+    let path = std_pin_path();
+    write_std_pin(&path, &pin)?;
+    Ok(StdSeedReport {
+        packages,
+        pin_path: path,
+        registry: base.to_string(),
+    })}
+
+fn std_stage_permissions(name: &str) -> Option<&'static str> {
+    match name {
+        "fs" => Some(
+            "permissions: [{ perm: \"unsafe:raw_memory\", reason: \"mmap is backed by a raw address\" }]",
+        ),
+        "io" => Some(
+            "permissions: [\"term:read\", \"term:write\", { perm: \"env:read:NO_COLOR\", reason: \"color detection reads NO_COLOR\" }, { perm: \"env:read:COLORTERM\", reason: \"color detection reads COLORTERM\" }, { perm: \"env:read:TERM\", reason: \"color detection reads TERM\" }]",
+        ),
+        "process" => Some(
+            "permissions: [{ perm: \"env:read:*\", reason: \"flattenEnv reads caller-provided keys\" }]",
+        ),
+        _ => None,
+    }
+}
+
+pub fn stage_std_vendor_tree(out: &Path) -> Result<Vec<String>, Diagnostic> {
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let mut staged = Vec::new();
+    for top in std_package_tops() {
+        let full = format!("@std/{top}");
+        let main = stdlib::source(&top).ok_or_else(|| {
+            Diagnostic::new(
+                Code::E108,
+                format!("toolchain carries no source for `{full}`"),
+            )
+        })?;
+        let dir = out.join(&full);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", src.display()))
+        })?;
+        std::fs::write(src.join("lib.rnx"), main).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", src.display()))
+        })?;
+        if top == "net" {
+            let http = stdlib::source("net/http").ok_or_else(|| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("toolchain carries no source for `{full}/http`"),
+                )
+            })?;
+            std::fs::write(src.join("http.rnx"), http).map_err(|e| {
+                Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", src.display()))
+            })?;
+        }
+        let mut config = format!(
+            "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\",\n        description: \"Standard library package {full}, staged from the toolchain sources.\"\n    }},\n    entries: {{\n        main: \"src/lib.rnx\"\n    }}"
+        );
+        if let Some(permissions) = std_stage_permissions(&top) {
+            config.push_str(",\n    ");
+            config.push_str(permissions);
+        }
+        config.push_str("\n}\n");
+        std::fs::write(dir.join(crate::project::MANIFEST_FILE), config).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot write `{}`: {e}", dir.display()),
+            )
+        })?;
+        staged.push(full);
+    }
+    staged.sort();
+    Ok(staged)
+}
+
 fn write_std_pin(path: &Path, pin: &StdPin) -> Result<(), Diagnostic> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -392,6 +621,93 @@ mod tests {
             .iter()
             .map(|full| node_json(full, version, integrity, false))
             .collect()
+    }
+
+    #[test]
+    fn install_populates_cache_for_offline_pinned_resolves() {
+        let (_guard, _dir) = isolate_cache("stdinstall");
+        let out = crate::scratch::dir("stdinstall-out");
+        stage_std_vendor_tree(out.path()).unwrap();
+        let base = fetch::expand_registry_base("");
+        let report = install_std_vendor_tree(out.path(), &base).unwrap();
+        assert_eq!(report.packages.len(), std_package_tops().len());
+        assert_eq!(report.registry, base);
+        assert_eq!(report.pin_path, std_pin_path());
+        assert!(missing_std_packages().is_empty());
+        let cli = env!("CARGO_PKG_VERSION");
+        for full in std_package_names() {
+            let dir = fetch::cached_package_dir(&base, &full, cli);
+            assert!(dir.join(crate::project::MANIFEST_FILE).is_file(), "{}", dir.display());
+            let integrity = std::fs::read_to_string(dir.join(".rnx-integrity")).unwrap();
+            let mut lines = integrity.lines();
+            assert_eq!(lines.next(), Some(full.as_str()));
+            assert_eq!(lines.next(), Some(cli));
+            assert!(lines.next().is_some_and(|s| s.len() == 64));
+            let (found, _, version) = fetch::resolve_registry_package(
+                &full,
+                "*",
+                None,
+                &BTreeMap::new(),
+                Some(cli.to_string()),
+                &[],
+                None,
+            )
+            .expect("installed cache serves pinned resolves with no network");
+            assert_eq!(version, cli);
+            assert_eq!(found, std::fs::canonicalize(&dir).unwrap());
+        }
+    }
+
+    #[test]
+    fn install_rejects_an_incomplete_tree() {
+        let (_guard, _dir) = isolate_cache("stdinstallbad");
+        let out = crate::scratch::dir("stdinstallbad-out");
+        stage_std_vendor_tree(out.path()).unwrap();
+        std::fs::remove_dir_all(out.path().join("@std/fs")).unwrap();
+        let err = install_std_vendor_tree(out.path(), &fetch::expand_registry_base(""))
+            .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("@std/fs"), "{}", err.message);
+    }
+
+    #[test]
+    fn stage_writes_a_resolvable_vendor_tree() {
+        let (_guard, _dir) = isolate_cache("stdstage");
+        let out = crate::scratch::dir("stdstage-out");
+        let staged = stage_std_vendor_tree(out.path()).unwrap();
+        assert_eq!(staged, std_package_names());
+        let cli = env!("CARGO_PKG_VERSION");
+        for full in &staged {
+            let dir = out.path().join(full);
+            let cfg = crate::project::ProjectConfig::load_from_dir(&dir)
+                .unwrap()
+                .expect("staged package carries a manifest");
+            assert_eq!(&cfg.name, full);
+            assert_eq!(cfg.version, cli);
+            let top = full.strip_prefix("@std/").unwrap();
+            let want = stdlib::source(top).expect("embedded source exists");
+            let main = std::fs::read(dir.join("src").join("lib.rnx")).unwrap();
+            assert_eq!(main, want.as_bytes());
+        }
+        let net_http = std::fs::read(out.path().join("@std/net").join("src").join("http.rnx")).unwrap();
+        assert_eq!(net_http, stdlib::source("net/http").unwrap().as_bytes());
+        let _vendor = set_vendor_dir(out.path());
+        assert!(vendor_covers_std());
+        let dead = RegistryConfig { url: "http://127.0.0.1:9".to_string(), token_env: None, ca_cert: None };
+        let anchor = crate::scratch::dir("stdstage-anchor");
+        let (dir, _, version) = fetch::resolve_registry_package(
+            "@std/fs",
+            "*",
+            Some(&dead),
+            &BTreeMap::new(),
+            None,
+            &[],
+            Some(anchor.path()),
+        )
+        .expect("staged stdlib resolves with no network");
+        assert_eq!(version, cli);
+        assert_eq!(dir, std::fs::canonicalize(out.path().join("@std/fs")).unwrap());
+        assert!(fetch::local_override_used("@std/fs"));
     }
 
     fn start_std_registry(version: &str) -> (MockRegistry, String, RegistryConfig) {
