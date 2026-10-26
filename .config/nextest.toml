@@ -9,8 +9,8 @@
 #   test runs even after a failure, so one red test never hides another.
 # - `retries` stays 0 for everything. Do NOT add blanket retries: a retry
 #   that masks a real failure is worse than the flake it hides.
-# - The single override below is the only sanctioned retry, and it names the
-#   test it quarantines.
+#   Quarantine-by-retry is banned: timing-based assertions must be rewritten
+#   as complexity invariants or deleted, never retried.
 
 [profile.ci]
 fail-fast = false
@@ -20,14 +20,3 @@ fail-fast = false
 # so this stays far clear of false positives.
 slow-timeout = { period = "15m", terminate-after = 1 }
 retries = 0
-
-[[profile.ci.overrides]]
-# QUARANTINE: `check_test::test_check_latency_comparison` asserts that
-# `rnx check` is faster than `rnx build` by comparing two wall-clock
-# measurements taken back-to-back. Under parallel load the scheduler can
-# stall the `check` run and flip the comparison, so this test flakes even
-# when the compiler is correct. It gets retries (2) instead of a fix because
-# the assertion itself is timing-based; every other test fails fast on its
-# first failure with no retries.
-filter = "test(test_check_latency_comparison)"
-retries = 2

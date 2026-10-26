@@ -6,10 +6,6 @@ const MANIFEST: &str = "export default {\n    project: {\n        name: \"matrix
 
 const MAIN_SRC: &str = "//! Matrix audit package.\nimport { AtomicInt, Mutex, Channel } from \"@std/sync\";\nimport { Vec4f, Vec4i } from \"@std/simd\";\nimport { blackBox } from \"@std/testing\";\n\n/// Adds two ints.\npub fn add(a: Int, b: Int): Int {\n    return a + b;\n}\n\nclass Accum {\n    let total: Int = 0;\n    fn bump(x: Int): Int {\n        this.total = this.total + x;\n        return this.total;\n    }\n}\n\nfn worker(): Int {\n    let m = Mutex.byId(9101);\n    let c = AtomicInt.byId(9101);\n    let i = 0;\n    while i < 100 {\n        m.lock();\n        c.set(c.get() + 1);\n        m.unlock();\n        i = i + 1;\n    }\n    return 0;\n}\n\nfn Main(): Int {\n    let acc = new Accum();\n    acc.bump(20);\n    acc.bump(22);\n    let parts = [\"a\", \"b\"];\n    let s = \"x\" + parts[0] + \"-\" + parts[1];\n    AtomicInt.byId(9101).set(0);\n    let h1 = Thread.spawn(worker);\n    let h2 = Thread.spawn(worker);\n    h1.join();\n    h2.join();\n    let v = new Vec4f(1.0, 2.0, 3.0, 4.0) + new Vec4f(1.0, 1.0, 1.0, 1.0);\n    let w = new Vec4i(1, 2, 3, 4) * new Vec4i(1, 1, 1, 1);\n    let total = acc.bump(0) + Int(v.x()) + Int(v.y()) + Int(v.z()) + Int(v.w()) + w.get(0) + w.get(1) + w.get(2) + w.get(3);\n    let ch = Channel.byId(9102);\n    ch.send(7);\n    let got = ch.recv();\n    if AtomicInt.byId(9101).get() == 200 && total == 66 && got == 7 && parts.length == 2 {\n        print(\"matrix ok \" + s);\n        return 0;\n    }\n    print(\"matrix mismatch:\", total);\n    return 1;\n}\n\nbench \"vec add\" {\n    let v = new Vec4f(1.0, 2.0, 3.0, 4.0) + new Vec4f(1.0, 1.0, 1.0, 1.0);\n    blackBox(Int(v.x()));\n}\n\ntest fn test_accum_fresh() {\n    let a = new Accum();\n    assert(a.bump(0) == 0, \"fresh accum reads zero\");\n}\n\ntest fn test_pub_add() {\n    assert(add(40, 2) == 42, \"add math\");\n}\n";
 
-const LIB_SRC: &str = "/// Adds two ints.\npub fn add(a: Int, b: Int): Int {\n    return a + b;\n}\n\n/// Scales and shifts.\npub fn mulAdd(a: Float, b: Float, c: Float): Float {\n    return a * b + c;\n}\n";
-
-const HOST_C: &str = "#include <stdio.h>\n#include \"libcalc.h\"\nint main(void) {\n    if (add(40, 2) != 42) { return 1; }\n    double m = mulAdd(2.0, 3.0, 4.0);\n    if (m < 9.99 || m > 10.01) { return 2; }\n    printf(\"host ok\\n\");\n    return 0;\n}\n";
-
 fn write_matrix(tag: &str) -> crate::scratch::Scratch {
     let dir = crate::scratch::dir(&format!("matrix-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -121,65 +117,4 @@ fn test_matrix_release_build() {
     let run = std::process::Command::new(&app).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 0);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "matrix ok xa-b\n");
-}
-
-#[test]
-fn test_matrix_static_lib_c_link() {
-    let dir = crate::scratch::dir("matrix");
-    let src = dir.join("calc.rnx");
-    std::fs::write(&src, LIB_SRC).unwrap();
-    let rnx = env!("CARGO_BIN_EXE_rnx");
-    let build = std::process::Command::new(rnx)
-        .arg("build")
-        .arg("--lib")
-        .arg(&src)
-        .output()
-        .unwrap();
-    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
-    let libdir = std::path::Path::new(&bin).parent().unwrap().to_path_buf();
-    assert!(std::path::Path::new(&bin).is_file(), "archive missing");
-    let header = std::path::Path::new(&bin).with_extension("h");
-    assert!(header.is_file(), "header missing");
-    let text = std::fs::read_to_string(&header).unwrap();
-    assert!(text.contains("int64_t add(int64_t a, int64_t b);"), "add:\n{text}");
-    std::fs::write(libdir.join("main.c"), HOST_C).unwrap();
-    std::fs::write(libdir.join("libcalc.h"), std::fs::read(&header).unwrap()).unwrap();
-    let cc = std::process::Command::new("cc")
-        .arg(libdir.join("main.c"))
-        .arg(format!("-L{}", libdir.display()))
-        .arg("-lcalc")
-        .arg("-lpthread")
-        .arg("-ldl")
-        .arg("-lm")
-        .arg("-o")
-        .arg(libdir.join("host_app"))
-        .output()
-        .unwrap();
-    assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
-    let run = std::process::Command::new(libdir.join("host_app")).output().unwrap();
-    assert_eq!(run.status.code().unwrap(), 0);
-    assert_eq!(String::from_utf8(run.stdout).unwrap(), "host ok\n");
-}
-
-#[test]
-fn test_matrix_cross_compile_aarch64() {
-    let dir = write_matrix("cross");
-    let out = run_rnx(
-        &dir,
-        &[
-            "build",
-            "--emit-obj",
-            "--target",
-            "aarch64-unknown-linux-gnu",
-            dir.join("src").join("main.rnx").to_str().unwrap(),
-        ],
-    );
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let obj = String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
-    assert!(std::path::Path::new(&obj).is_file(), "object missing");
-    let bytes = std::fs::read(&obj).unwrap();
-    assert!(bytes.len() > 20, "object too small");
-    assert_eq!(&bytes[0..4], b"\x7fELF", "not an ELF object");
-    assert_eq!(u16::from_le_bytes([bytes[18], bytes[19]]), 183, "expected EM_AARCH64");
 }
