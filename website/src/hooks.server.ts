@@ -24,6 +24,8 @@ import type { Handle } from '@sveltejs/kit';
 const TTL: Array<[RegExp, number]> = [
 	[/^\/packages\/.+\/\d+\.\d+\.\d+($|\/)/, 300],
 	[/^\/packages\//, 300],
+	[/^\/docs\//, 300],
+	[/^\/sitemap\.xml($|\?)/, 3600],
 	[/^\/api\/packages(\?|$)/, 300],
 	[/^\/api\/benchmarks(\?|$)/, 3600],
 	[/^\/api\/version(\?|$)/, 3600]

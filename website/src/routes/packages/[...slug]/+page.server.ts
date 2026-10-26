@@ -1,5 +1,4 @@
 import { error, redirect } from '@sveltejs/kit';
-import { dev } from '$app/environment';
 import { getPackage, getVersionDoc } from '$lib/server/db';
 import { splitNameVersion } from '$lib/server/registry';
 
@@ -41,7 +40,13 @@ export async function load({ platform, params, url, setHeaders }) {
 		const tab = url.searchParams.get('tab');
 		redirect(308, `/packages/${full}@${legacy}${tab ? `?tab=${tab}` : ''}`);
 	}
-	if (dev && full.startsWith('@std/')) {
+	let isDev = false;
+	try {
+		isDev = (await import('$app/environment')).dev === true;
+	} catch {
+		isDev = false;
+	}
+	if (isDev && full.startsWith('@std/')) {
 		const { localStdPackage } = await import('$lib/server/std-local');
 		const local = localStdPackage(full);
 		if (!local) error(404, 'package not found');
