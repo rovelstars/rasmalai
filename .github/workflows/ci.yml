@@ -50,7 +50,7 @@ jobs:
         with:
           key: host
 
-      - name: Cache seeded stdlib
+      - name: Cache global build pools
         uses: actions/cache@v6
         with:
           path: ~/.cache/rnx
@@ -74,13 +74,52 @@ jobs:
           command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           ulimit -c unlimited
-          seeded=""
-          for i in 1 2 3; do
-            if cargo run -q -p cli -- fetch-std; then seeded=1; break; fi
-            sleep 20
-          done
-          [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
+          # The standard library comes from the repo, never the network:
+          # stage the in-repo sources, then install them into the global
+          # cache exactly where `fetch-std` would put registry downloads.
+          cargo run -q -p cli -- vendor --stdlib "${{ runner.temp }}/std-vendor"
+          cargo run -q -p cli -- fetch-std --from "${{ runner.temp }}/std-vendor"
+          # A dead registry URL from here on, so any network access fails
+          # loud instead of silently fetching. The nextest suite itself runs
+          # without this override and keeps exercising the registry paths
+          # with mocks.
+          export RNX_REGISTRY="http://127.0.0.1:9"
           cargo run -q -p cli -- doc --json --stdlib --out-dir website/static/data
+          mkdir -p "${{ runner.temp }}/offline-probe/src"
+          cat > "${{ runner.temp }}/offline-probe/Project.config" <<'EOF'
+          export default {
+              project: { name: "probe", version: "0.1.0" }
+          }
+          EOF
+          cat > "${{ runner.temp }}/offline-probe/src/main.rnx" <<'EOF'
+          import { Clock } from "@std/time";
+
+          fn Main(): Int {
+              let clock = Clock.virtual(0);
+              clock.tick(2500000);
+              return clock.now().toMillis();
+          }
+          EOF
+          # Probe 1: the installed cache serves a build with no network.
+          cargo run -q -p cli -- build "${{ runner.temp }}/offline-probe/src/main.rnx"
+          set +e
+          "${{ runner.temp }}/offline-probe/.rnx-cache/build/dev/probe"
+          code=$?
+          set -e
+          [ "$code" -eq 2 ] || { echo "probe binary returned $code (want 2)"; exit 1; }
+          # Probe 2: the staged tree alone (empty cache) resolves through
+          # the local-source override and warns once per package.
+          rm -rf "${{ runner.temp }}/offline-probe/.rnx-cache" "${{ runner.temp }}/rnx-empty-cache"
+          mkdir -p "${{ runner.temp }}/rnx-empty-cache"
+          export RNX_CACHE_HOME="${{ runner.temp }}/rnx-empty-cache"
+          export RNX_VENDOR_DIR="${{ runner.temp }}/std-vendor"
+          cargo run -q -p cli -- build "${{ runner.temp }}/offline-probe/src/main.rnx"
+          set +e
+          "${{ runner.temp }}/offline-probe/.rnx-cache/build/dev/probe"
+          code=$?
+          set -e
+          [ "$code" -eq 2 ] || { echo "probe binary returned $code (want 2)"; exit 1; }
+          unset RNX_VENDOR_DIR RNX_CACHE_HOME RNX_REGISTRY
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             FILTER="$(bash .github/scripts/affected-tests.sh "origin/${{ github.base_ref }}")"
             HEALTH="$(bash .github/scripts/main-health.sh || printf 'MAIN_GREEN\nINFLIGHT_NONE\n')"

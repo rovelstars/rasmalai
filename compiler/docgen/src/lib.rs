@@ -11,6 +11,9 @@ pub fn ensure_stdlib_seeded() -> Result<bool, diagnostics::Diagnostic> {
     if frontend::stdlib_seed::missing_std_packages().is_empty() {
         return Ok(false);
     }
+    if frontend::stdlib_seed::vendor_covers_std() {
+        return Ok(false);
+    }
     let (default, overrides) = frontend::stdlib_seed::std_registry_from_env();
     let base = frontend::fetch::registry_base_for("@std/prelude", default.as_ref(), &overrides);
     match frontend::stdlib_seed::seed_stdlib_cache(default.as_ref(), &overrides) {
@@ -89,6 +92,7 @@ mod tests {
         lock: Option<std::sync::MutexGuard<'static, ()>>,
         prev_cache: Option<String>,
         prev_registry: Option<String>,
+        prev_vendor: Option<String>,
         prev_proxies: Vec<(String, Option<String>)>,
     }
 
@@ -103,6 +107,10 @@ mod tests {
                 match self.prev_registry.clone() {
                     Some(v) => std::env::set_var("RNX_REGISTRY", v),
                     None => std::env::remove_var("RNX_REGISTRY"),
+                }
+                match self.prev_vendor.clone() {
+                    Some(v) => std::env::set_var(frontend::fetch::LOCAL_VENDOR_ENV, v),
+                    None => std::env::remove_var(frontend::fetch::LOCAL_VENDOR_ENV),
                 }
             }
             for (key, prev) in self.prev_proxies.drain(..) {
@@ -125,9 +133,11 @@ mod tests {
         let dir = crate::scratch::dir(&format!("docgen-{tag}"));
         let prev_cache = std::env::var("RNX_CACHE_HOME").ok();
         let prev_registry = std::env::var("RNX_REGISTRY").ok();
+        let prev_vendor = std::env::var(frontend::fetch::LOCAL_VENDOR_ENV).ok();
         unsafe {
             std::env::set_var("RNX_CACHE_HOME", dir.path());
             std::env::remove_var("RNX_REGISTRY");
+            std::env::remove_var(frontend::fetch::LOCAL_VENDOR_ENV);
         }
         let mut prev_proxies = Vec::new();
         for key in [
@@ -145,7 +155,7 @@ mod tests {
         }
         frontend::stdvfs::clear();
         (
-            EnvGuard { lock: Some(lock), prev_cache, prev_registry, prev_proxies },
+            EnvGuard { lock: Some(lock), prev_cache, prev_registry, prev_vendor, prev_proxies },
             dir,
         )
     }
@@ -430,5 +440,23 @@ mod tests {
         let a = std::fs::read(first_out).unwrap();
         let b = std::fs::read(second_out).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn vendored_stdlib_generates_docs_with_no_network() {
+        let (_guard, dir) = isolate("vendored");
+        let vendor = crate::scratch::dir("docgen-vendor");
+        let staged = frontend::stdlib_seed::stage_std_vendor_tree(vendor.path())
+            .expect("stage in-repo stdlib");
+        assert_eq!(staged.len(), frontend::stdlib_seed::std_package_names().len());
+        unsafe {
+            std::env::set_var(frontend::fetch::LOCAL_VENDOR_ENV, vendor.path());
+            std::env::set_var("RNX_REGISTRY", "http://127.0.0.1:9");
+        }
+        let path = crate::generate_stdlib_docs_json(&dir.join("out"))
+            .expect("vendored stdlib docs generate with no network");
+        assert!(path.is_file());
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("hello") || body.contains("fs"));
     }
 }

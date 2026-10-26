@@ -2179,6 +2179,10 @@ pub fn vendor_scope(package: Option<&str>) -> Result<Vec<String>, Diagnostic> {
     frontend::fetch::vendor_all(&scope_root)
 }
 
+pub fn stage_std_vendor(dir: &std::path::Path) -> Result<Vec<String>, Diagnostic> {
+    frontend::stdlib_seed::stage_std_vendor_tree(dir)
+}
+
 pub enum AddResult {
     Added(String),
     Failed(Diagnostic),
@@ -2396,6 +2400,7 @@ fn add_registry_package(
         &consumer.registries,
         None,
         &have,
+        None,
     ) {
         Ok(resolved) => resolved,
         Err(e) => return AddResult::Failed(e),

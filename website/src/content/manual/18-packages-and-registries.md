@@ -367,6 +367,25 @@ export default {
 }
 ```
 
+## Local source overrides
+
+A `vendor/<pkg>/` directory containing a `Project.config` wins over the registry cache for a registry (`version`) dependency, with no flag and no manifest change — the same rule that already applies to git dependencies. `RNX_VENDOR_DIR` names one extra lookup directory with the same layout (`<dir>/<pkg>/Project.config`); it is checked before the project `vendor/` directory. The first hit takes the source, and resolution performs zero network requests for that package.
+
+```rnx
+export default {
+    project: { name: "colony", version: "0.4.0" },
+    dependencies: {
+        "@acme/widget": { version: "^1.2.0" }
+    }
+}
+```
+
+With `vendor/@acme/widget/Project.config` present (or `RNX_VENDOR_DIR` pointing at a tree that contains `@acme/widget/`), the build uses that source tree instead of downloading `@acme/widget`. Every use prints ``warning: using local source for `@acme/widget@1.2.0` from `<dir>` (registry cache overridden)``, once per package per process. The version rules are fail-closed: a lockfile pin or an exact requirement admits only that exact version, and a range admits only a version that satisfies it — anything else is `E108` naming both versions, never a silent substitution. A vendored package whose manifest declares `artifacts` is also `E108`: vendored OCI blobs are not supported, so resolve from the registry instead.
+
+The override is read live from disk on every build, so editing the vendored tree takes effect on the next build with no invalidation step: dependency fingerprints hash the vendored manifest bytes and the content digest, and the expected dep root points at the vendor directory, so switching between vendored and registry sources (or editing either side) rebuilds instead of reusing a stale product. Builds stay offline while every dependency resolves locally. `rnx lock` and `rnx add` ignore overrides on purpose: the lockfile keeps pinning registry versions, and a locked build fails loudly when the vendored source does not match the pin.
+
+`rnx vendor --stdlib <DIR>` stages every `@std/*` package from the toolchain's own embedded sources into `<DIR>/@std/<name>/`, ready to serve as an override tree. Point `RNX_VENDOR_DIR` at the staged directory (or copy it over a project's `vendor/`) and `@std/*` imports compile with no registry access. `rnx fetch-std --from <DIR>` installs a staged tree into the global cache instead, in exactly the layout registry downloads would populate (same package directories, same pin file, content-addressed integrity digests over the staged bytes): dependency fingerprints, lockfiles, and every downstream tool then behave exactly as if the packages had been seeded from the registry, with no network involved. The staged tree carries the toolchain version and the same permission declarations as the published packages, but it holds author sources rather than the registry's canonical minified bytes, and it ships no `docs/` directory — the first vendored build recompiles instead of reusing registry-built products, which is the correct outcome for different bytes.
+
 A native dependency names a system library and never mixes with `git`, `version`, or `url` (a `link` key may ride alongside any shape: `static`, `dynamic`, or `auto`, with `dynamic` reserved for native entries):
 
 ```rnx

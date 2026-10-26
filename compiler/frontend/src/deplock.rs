@@ -241,6 +241,7 @@ fn collect_into(
                             &cfg.registries,
                             None,
                             have,
+                            None,
                         )?;
                     (dep_root, dep_cfg, Some(format!("registry:{dep_name}@{resolved}")))
                 }

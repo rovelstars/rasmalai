@@ -1925,6 +1925,7 @@ fn resolve_std_with_registries(
     });
     let have = crate::fetch::scan_cache_have();
     let mut detail: Option<Diagnostic> = None;
+    let anchor = std_vendor_anchor(from);
     match crate::fetch::resolve_registry_package(
         &pkg,
         &requirement,
@@ -1932,6 +1933,7 @@ fn resolve_std_with_registries(
         &merged,
         pinned.clone(),
         &have,
+        Some(&anchor),
     ) {
         Ok((dep_root, dep_cfg, _)) => {
             if let Ok(target) =
@@ -2002,6 +2004,16 @@ fn std_ctx_for(
     (default, merged, explicit, locked)
 }
 
+fn std_vendor_anchor(from: &Path) -> PathBuf {
+    let root = package_ctx_of(from)
+        .ok()
+        .flatten()
+        .map(|(root, _)| root)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    crate::fetch::cache_anchor(&root)
+}
+
 pub(crate) fn exact_version(range: &str) -> Option<String> {
     let r = range.trim();
     if r.is_empty() || r == "*" || r == "latest" {
@@ -2048,10 +2060,23 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
     let top = rest.split('/').next().unwrap_or(rest.as_str());
     let pkg = format!("@std/{top}");
     let base = crate::fetch::registry_base_for(&pkg, default.as_ref(), &overrides);
-    let version = crate::stdlib_seed::read_std_pin()
-        .and_then(|pin| pin.packages.get(&pkg).cloned())
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let version = crate::stdlib_seed::unpinned_std_version(&pkg);
     let have = crate::fetch::scan_cache_have();
+    let anchor = std_vendor_anchor(Path::new("."));
+    if let Some((dir, cfg, _)) =
+        crate::fetch::resolve_local_override(&pkg, &version, Some(&version), &anchor)?
+    {
+        let sub = rest.split_once('/').map(|(_, s)| s.to_string());
+        let source = format!("@std/{rest}");
+        let target =
+            resolve_subpath_target(&dir, sub.as_deref(), &cfg, &pkg, &source)?;
+        return std::fs::read_to_string(&target).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot read `{}`: {e}", target.display()),
+            )
+        });
+    }
     match crate::fetch::resolve_registry_package(
         &pkg,
         &version,
@@ -2059,6 +2084,7 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
         &overrides,
         Some(version.clone()),
         &have,
+        Some(&anchor),
     ) {
         Ok(_) => crate::stdvfs::std_source(&rest)
             .ok_or_else(|| std_cache_miss_error(&format!("@std/{rest}"), &base)),
@@ -2131,6 +2157,14 @@ fn std_overlay_get(virtual_path: &Path) -> Option<PathBuf> {
         .unwrap_or_else(|e| e.into_inner())
         .get(virtual_path)
         .cloned()
+}
+
+#[cfg(test)]
+pub fn clear_std_overlays() {
+    STD_OVERLAY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 fn resolve_relative(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
@@ -2228,6 +2262,7 @@ fn resolve_package(
                 project::find_workspace_root(&proj_root).unwrap_or_else(|| proj_root.clone());
             let pinned = locked_registry_version(&scope_root, &pkg);
             let have = crate::fetch::scan_cache_have();
+            let anchor = crate::fetch::cache_anchor(&proj_root);
             let (dep_root, dep_cfg, _) = crate::fetch::resolve_registry_package(
                 &pkg,
                 version,
@@ -2235,6 +2270,7 @@ fn resolve_package(
                 &cfg.registries,
                 pinned,
                 &have,
+                Some(&anchor),
             )?;
             (dep_root, dep_cfg, crate::depcache::KIND_SEMVER.to_string())
         }
@@ -2434,6 +2470,17 @@ fn dep_sub_specs(cfg: &ProjectConfig) -> Vec<String> {
         .collect()
 }
 
+fn vendored_dep_version(kind: &str, pkg: &str, entry_root: &Path) -> Option<String> {
+    use crate::depcache::{KIND_SEMVER, KIND_STD};
+    if kind != KIND_SEMVER && kind != KIND_STD {
+        return None;
+    }
+    let anchor = crate::fetch::cache_anchor(entry_root);
+    let dir = crate::fetch::local_override_dir(pkg, &anchor)?;
+    let cfg = ProjectConfig::load_from_dir(&dir).ok()??;
+    (cfg.name == pkg).then(|| cfg.version.clone())
+}
+
 fn dep_version_key(
     kind: &str,
     pkg: &str,
@@ -2452,6 +2499,9 @@ fn dep_version_key(
         };
     }
     if kind == KIND_SEMVER {
+        if let Some(vendored) = vendored_dep_version(kind, pkg, entry_root) {
+            return Some(vendored);
+        }
         let requirement = match entry_cfg.dependencies.get(pkg) {
             Some(crate::project::DependencySpec::Semver { version, .. }) => version.clone(),
             _ => return None,
@@ -2463,6 +2513,9 @@ fn dep_version_key(
         return exact_version(&requirement);
     }
     if kind == KIND_STD {
+        if let Some(vendored) = vendored_dep_version(kind, pkg, entry_root) {
+            return Some(vendored);
+        }
         let scope_root = dep_scope_root(entry_root);
         if let Some(locked) = locked_registry_version(&scope_root, pkg) {
             return Some(locked);
@@ -2534,6 +2587,10 @@ fn dep_expected_root(
         return std::fs::canonicalize(&dir).ok();
     }
     if kind == KIND_SEMVER {
+        let anchor = crate::fetch::cache_anchor(entry_root);
+        if let Some(dir) = crate::fetch::local_override_dir(pkg, &anchor) {
+            return std::fs::canonicalize(&dir).ok();
+        }
         let base = crate::fetch::registry_base_for(
             pkg,
             entry_cfg.registry.as_ref(),
@@ -4289,6 +4346,99 @@ mod tests {
                 .unwrap_err();
         assert!(err.message.contains("unknown standard library module"));
         assert_eq!(std_overlay_get(&PathBuf::from("@std/nope")), None);
+    }
+
+    fn project_shell(tag: &str) -> (crate::scratch::Scratch, PathBuf) {
+        let root = crate::scratch::dir(&format!("modshell-{tag}"));
+        std::fs::write(
+            root.join("Project.config"),
+            "export default {\n    project: {\n        name: \"probe\",\n        version: \"0.1.0\"\n    }\n}\n",
+        )
+        .unwrap();
+        let from = root.join("src").join("main.rnx");
+        std::fs::create_dir_all(from.parent().unwrap()).unwrap();
+        std::fs::write(&from, "fn Main(): Int { return 1; }\n").unwrap();
+        (root, from)
+    }
+
+    fn write_std_vendor(root: &std::path::Path, top: &str, version: &str, main: &str) -> PathBuf {
+        let dir = root.join("vendor").join(format!("@std/{top}"));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join(crate::project::MANIFEST_FILE),
+            format!(
+                "export default {{\n    project: {{\n        name: \"@std/{top}\",\n        version: \"{version}\"\n    }},\n    entries: {{\n        main: \"src/main.rnx\"\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), main).unwrap();
+        dir
+    }
+
+    #[test]
+    fn std_vendor_override_resolves_offline() {
+        let (_guard, _cache) = testkit::isolate_cache("stdvendor");
+        let (root, from) = project_shell("stdvendor");
+        let cli = env!("CARGO_PKG_VERSION");
+        let vendor = write_std_vendor(root.path(), "time", cli, "vendored time\n");
+        let (target, dep, meta) =
+            resolve_std_with_registries(&from, "@std/time", "time", None, &dead_overrides())
+                .expect("vendored stdlib must resolve with no network");
+        assert_eq!(target, PathBuf::from("@std/time"));
+        assert!(dep.is_none());
+        assert_eq!(meta.map(|(_, kind)| kind), Some(crate::depcache::KIND_STD.to_string()));
+        let real = std_overlay_get(&PathBuf::from("@std/time"))
+            .expect("std overlay must point at the vendored file");
+        assert_eq!(real, std::fs::canonicalize(vendor.join("src").join("main.rnx")).unwrap());
+        let served = read_source(&PathBuf::from("@std/time")).unwrap();
+        assert_eq!(served, "vendored time\n");
+        assert!(crate::fetch::local_override_used("@std/time"));
+        drop(root);
+    }
+
+    #[test]
+    fn std_vendor_version_mismatch_fails_closed() {
+        let (_guard, _cache) = testkit::isolate_cache("stdvendermismatch");
+        let (root, from) = project_shell("stdvendermismatch");
+        write_std_vendor(root.path(), "time", "9.9.9", "future\n");
+        let err =
+            resolve_std_with_registries(&from, "@std/time", "time", None, &dead_overrides())
+                .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("9.9.9"), "{}", err.message);
+        assert_eq!(std_overlay_get(&PathBuf::from("@std/time")), None);
+        drop(root);
+    }
+
+    #[test]
+    fn semver_vendor_override_beats_registry_cache() {
+        let (_guard, _cache) = testkit::isolate_cache("modvendor");
+        let server = start_widget_server();
+        plant_prelude_cache(&server.base);
+        let root = registry_app("vendorlive", &server.base);
+        let entry = root.join("src").join("main.rnx");
+        let graph = ModuleGraph::build(&entry).unwrap();
+        assert!(graph.files.iter().any(|f| f.path.ends_with("src/main.rnx")));
+        let served = server.requests().len();
+        assert!(served > 0);
+        let vendor = root.join("vendor").join("@acme/widget");
+        std::fs::create_dir_all(vendor.join("src")).unwrap();
+        std::fs::write(
+            vendor.join(crate::project::MANIFEST_FILE),
+            "export default {\n    project: {\n        name: \"@acme/widget\",\n        version: \"1.2.0\"\n    },\n    entries: {\n        main: \"src/main.rnx\"\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            vendor.join("src").join("main.rnx"),
+            "export fn hello(): Int { return 2; }\n",
+        )
+        .unwrap();
+        let (target, dep_root, _) = resolve_package(&entry, "@acme/widget").unwrap();
+        assert_eq!(dep_root.unwrap(), std::fs::canonicalize(&vendor).unwrap());
+        assert_eq!(target, std::fs::canonicalize(vendor.join("src").join("main.rnx")).unwrap());
+        assert!(crate::fetch::local_override_used("@acme/widget"));
+        assert_eq!(server.requests().len(), served);
+        drop(root);
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub const REGISTRY_SPEC: u32 = 0;
 pub const DEFAULT_REGISTRY_DOMAIN: &str = "rasmalai.rovelstars.com";
+pub const LOCAL_VENDOR_ENV: &str = "RNX_VENDOR_DIR";
 const RESOLVE_INLINE_CHUNKS: &str = "resolve-inline-chunks";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
@@ -17,6 +18,155 @@ const POOL_MAX_PER_HOST: usize = 16;
 
 pub fn cache_anchor(proj_root: &Path) -> PathBuf {
     project::find_workspace_root_strict(proj_root).unwrap_or_else(|| proj_root.to_path_buf())
+}
+
+fn override_marks() -> &'static std::sync::Mutex<BTreeSet<String>> {
+    static MARKS: std::sync::OnceLock<std::sync::Mutex<BTreeSet<String>>> =
+        std::sync::OnceLock::new();
+    MARKS.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()))
+}
+
+pub(crate) fn note_local_override(full: &str, version: &str, dir: &Path) {
+    let key = format!("{full}@{version} from {}", dir.display());
+    let mut marks = override_marks().lock().unwrap_or_else(|e| e.into_inner());
+    if marks.insert(key) {
+        eprintln!(
+            "warning: using local source for `{full}@{version}` from `{}` (registry cache overridden)",
+            dir.display()
+        );
+    }
+}
+
+pub fn local_override_used(full: &str) -> bool {
+    let marks = override_marks().lock().unwrap_or_else(|e| e.into_inner());
+    marks.iter().any(|k| k.starts_with(&format!("{full}@")))
+}
+
+pub fn local_override_dir(pkg: &str, anchor: &Path) -> Option<PathBuf> {
+    if let Some(dir) = std::env::var(LOCAL_VENDOR_ENV)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        let candidate = PathBuf::from(dir).join(pkg);
+        if candidate
+            .join(crate::project::MANIFEST_FILE)
+            .is_file()
+        {
+            return Some(candidate);
+        }
+    }
+    let candidate = anchor.join("vendor").join(pkg);
+    if candidate
+        .join(crate::project::MANIFEST_FILE)
+        .is_file()
+    {
+        return Some(candidate);
+    }
+    None
+}
+
+fn check_local_override(
+    pkg: &str,
+    dir: &Path,
+    range: &str,
+    pinned: Option<&str>,
+) -> Result<(ProjectConfig, String), Diagnostic> {
+    let cfg = ProjectConfig::load_from_dir(dir)?.ok_or_else(|| {
+        Diagnostic::new(
+            Code::E108,
+            format!(
+                "local source for `{pkg}` at `{}` has no Project.config",
+                dir.display()
+            ),
+        )
+    })?;
+    if cfg.name != pkg {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!(
+                "local source at `{}` names package `{}` but `{pkg}` was requested",
+                dir.display(),
+                cfg.name
+            ),
+        ));
+    }
+    if cfg.artifacts.is_some() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!(
+                "local source for `{pkg}@{}` declares `artifacts`; vendored OCI artifacts are not supported",
+                cfg.version
+            ),
+        )
+        .with_hint("resolve the package from the registry or drop the `artifacts` table from the vendored Project.config"));
+    }
+    if !is_valid_range(range) {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!(
+                "requirement for `{pkg}` is not a valid range (*, latest, X.Y.Z, ^, ~, >=)"
+            ),
+        ));
+    }
+    let exact = crate::modules::exact_version(range);
+    let pin = pinned.or(exact.as_deref());
+    match pin {
+        Some(want) => {
+            if cfg.version != want {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "local source for `{pkg}` is version `{}` but `{want}` is required",
+                        cfg.version
+                    ),
+                )
+                .with_hint("update the vendored source or the required version so they agree"));
+            }
+        }
+        None => {
+            if !engine_satisfied(range, &cfg.version) {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "local source for `{pkg}` is version `{}` which does not satisfy `{range}`",
+                        cfg.version
+                    ),
+                )
+                .with_hint("update the vendored source or the required range so they agree"));
+            }
+        }
+    }
+    let version = cfg.version.clone();
+    Ok((cfg, version))
+}
+
+pub(crate) fn check_local_override_silent(
+    pkg: &str,
+    dir: &Path,
+    range: &str,
+    pinned: Option<&str>,
+) -> bool {
+    check_local_override(pkg, dir, range, pinned).is_ok()
+}
+
+pub fn resolve_local_override(
+    pkg: &str,
+    range: &str,
+    pinned: Option<&str>,
+    anchor: &Path,
+) -> Result<Option<(PathBuf, ProjectConfig, String)>, Diagnostic> {
+    let Some(dir) = local_override_dir(pkg, anchor) else {
+        return Ok(None);
+    };
+    let (cfg, version) = check_local_override(pkg, &dir, range, pinned)?;
+    let canonical = std::fs::canonicalize(&dir).map_err(|e| {
+        Diagnostic::new(
+            Code::E108,
+            format!("cannot read `{}`: {e}", dir.display()),
+        )
+    })?;
+    note_local_override(pkg, &version, &canonical);
+    Ok(Some((canonical, cfg, version)))
 }
 
 pub fn short_rev(rev: &str) -> String {
@@ -2575,7 +2725,13 @@ pub fn resolve_registry_package(
     overrides: &BTreeMap<String, RegistryConfig>,
     pinned: Option<String>,
     have: &[HaveEntry],
+    anchor: Option<&Path>,
 ) -> Result<(PathBuf, ProjectConfig, String), Diagnostic> {
+    if let Some(root) = anchor {
+        if let Some(found) = resolve_local_override(pkg, range, pinned.as_deref(), root)? {
+            return Ok(found);
+        }
+    }
     if let Some(pin) = pinned.as_deref() {
         // Pinned versions skip the network when the cache already holds
         // them: the integrity file is written only after a verified
@@ -2699,6 +2855,7 @@ pub(crate) mod testkit {
     pub struct EnvGuard {
         lock: Option<std::sync::MutexGuard<'static, ()>>,
         prev_cache: Option<String>,
+        prev_vendor: Option<String>,
         prev_proxies: Vec<(String, Option<String>)>,
     }
 
@@ -2708,6 +2865,10 @@ pub(crate) mod testkit {
                 match self.prev_cache.clone() {
                     Some(v) => std::env::set_var("RNX_CACHE_HOME", v),
                     None => std::env::remove_var("RNX_CACHE_HOME"),
+                }
+                match self.prev_vendor.clone() {
+                    Some(v) => std::env::set_var(crate::fetch::LOCAL_VENDOR_ENV, v),
+                    None => std::env::remove_var(crate::fetch::LOCAL_VENDOR_ENV),
                 }
             }
             for (key, prev) in self.prev_proxies.drain(..) {
@@ -2724,10 +2885,13 @@ pub(crate) mod testkit {
 
     pub fn isolate_cache(tag: &str) -> (EnvGuard, crate::scratch::Scratch) {
         let lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        crate::modules::clear_std_overlays();
         let dir = crate::scratch::dir(&format!("reg-{tag}"));
         let prev_cache = std::env::var("RNX_CACHE_HOME").ok();
+        let prev_vendor = std::env::var(crate::fetch::LOCAL_VENDOR_ENV).ok();
         unsafe {
             std::env::set_var("RNX_CACHE_HOME", dir.path());
+            std::env::remove_var(crate::fetch::LOCAL_VENDOR_ENV);
         }
         let mut prev_proxies = Vec::new();
         for key in [
@@ -2743,7 +2907,33 @@ pub(crate) mod testkit {
                 std::env::remove_var(key);
             }
         }
-        (EnvGuard { lock: Some(lock), prev_cache, prev_proxies }, dir)
+        (
+            EnvGuard { lock: Some(lock), prev_cache, prev_vendor, prev_proxies },
+            dir,
+        )
+    }
+
+    pub struct VendorDirGuard {
+        prev: Option<String>,
+    }
+
+    impl Drop for VendorDirGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.prev.clone() {
+                    Some(v) => std::env::set_var(crate::fetch::LOCAL_VENDOR_ENV, v),
+                    None => std::env::remove_var(crate::fetch::LOCAL_VENDOR_ENV),
+                }
+            }
+        }
+    }
+
+    pub fn set_vendor_dir(dir: &std::path::Path) -> VendorDirGuard {
+        let prev = std::env::var(crate::fetch::LOCAL_VENDOR_ENV).ok();
+        unsafe {
+            std::env::set_var(crate::fetch::LOCAL_VENDOR_ENV, dir);
+        }
+        VendorDirGuard { prev }
     }
 
     fn status_text(status: u16) -> &'static str {
@@ -3938,16 +4128,203 @@ mod tests {
         let default = registry_cfg(&server.base);
         let empty = BTreeMap::new();
         let (dir, _, ver) =
-            resolve_registry_package("@acme/widget", "^1.0.0", Some(&default), &empty, None, &[]).unwrap();
+            resolve_registry_package("@acme/widget", "^1.0.0", Some(&default), &empty, None, &[], None).unwrap();
         assert_eq!(ver, "1.2.0");
         assert!(dir.is_dir());
         let served = server.requests().len();
         assert!(served > 0);
         let (dir2, _, ver2) =
-            resolve_registry_package("@acme/widget", "^1.0.0", Some(&default), &empty, Some("1.2.0".to_string()), &[]).unwrap();
+            resolve_registry_package("@acme/widget", "^1.0.0", Some(&default), &empty, Some("1.2.0".to_string()), &[], None).unwrap();
         assert_eq!(ver2, "1.2.0");
         assert_eq!(dir2, dir);
         assert_eq!(server.requests().len(), served);
+    }
+
+    fn write_vendor_package(root: &Path, full: &str, version: &str, main: &str) -> PathBuf {
+        let dir = root.join(full);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join(crate::project::MANIFEST_FILE),
+            format!(
+                "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }},\n    entries: {{\n        main: \"src/main.rnx\"\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), main).unwrap();
+        dir
+    }
+
+    #[test]
+    fn vendor_override_beats_warm_cache_with_no_network() {
+        let (_guard, _dir) = isolate_cache("vendorbeat");
+        let (manifest, pairs, digest, _, _) = fixture_tree("@acme/vendor-a", "1.2.0");
+        let node = node_json("@acme/vendor-a", "1.2.0", &digest, false);
+        let server = start_tree(&[node], &manifest, pairs);
+        let default = registry_cfg(&server.base);
+        let empty = BTreeMap::new();
+        let (cached, _, _) = resolve_registry_package(
+            "@acme/vendor-a",
+            "^1.0.0",
+            Some(&default),
+            &empty,
+            None,
+            &[],
+            None,
+        )
+        .unwrap();
+        let served = server.requests().len();
+        assert!(served > 0);
+        let anchor = crate::scratch::dir("vendorbeat-anchor");
+        let vendor =
+            write_vendor_package(&anchor.join("vendor"), "@acme/vendor-a", "1.2.0", "vendored\n");
+        let (dir, _, ver) = resolve_registry_package(
+            "@acme/vendor-a",
+            "^1.0.0",
+            Some(&default),
+            &empty,
+            Some("1.2.0".to_string()),
+            &[],
+            Some(&anchor),
+        )
+        .unwrap();
+        assert_eq!(ver, "1.2.0");
+        assert_eq!(dir, std::fs::canonicalize(&vendor).unwrap());
+        assert_ne!(dir, cached);
+        assert!(local_override_used("@acme/vendor-a"));
+        assert_eq!(server.requests().len(), served);
+    }
+
+    #[test]
+    fn vendor_env_dir_wins_over_project_vendor() {
+        let (_guard, _dir) = isolate_cache("vendorenv");
+        let dead = registry_cfg("http://127.0.0.1:9");
+        let empty = BTreeMap::new();
+        let anchor = crate::scratch::dir("vendorenv-anchor");
+        write_vendor_package(&anchor.join("vendor"), "@acme/vendor-b", "9.9.9", "stale\n");
+        let env_root = crate::scratch::dir("vendorenv-env");
+        let env_pkg = write_vendor_package(&env_root, "@acme/vendor-b", "1.2.0", "env\n");
+        let _env = set_vendor_dir(env_root.path());
+        let (dir, _, ver) = resolve_registry_package(
+            "@acme/vendor-b",
+            "^1.0.0",
+            Some(&dead),
+            &empty,
+            Some("1.2.0".to_string()),
+            &[],
+            Some(&anchor),
+        )
+        .unwrap();
+        assert_eq!(ver, "1.2.0");
+        assert_eq!(dir, std::fs::canonicalize(&env_pkg).unwrap());
+        assert!(local_override_used("@acme/vendor-b"));
+    }
+
+    #[test]
+    fn vendor_version_mismatch_fails_closed() {
+        let (_guard, _dir) = isolate_cache("vendormismatch");
+        let dead = registry_cfg("http://127.0.0.1:9");
+        let empty = BTreeMap::new();
+        let anchor = crate::scratch::dir("vendormismatch-anchor");
+        write_vendor_package(&anchor.join("vendor"), "@acme/vendor-c", "2.0.0", "new\n");
+        let err = resolve_registry_package(
+            "@acme/vendor-c",
+            "^1.0.0",
+            Some(&dead),
+            &empty,
+            Some("1.2.0".to_string()),
+            &[],
+            Some(&anchor),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("2.0.0"), "{}", err.message);
+        assert!(err.message.contains("1.2.0"), "{}", err.message);
+        let err = resolve_registry_package(
+            "@acme/vendor-c",
+            "^1.0.0",
+            Some(&dead),
+            &empty,
+            None,
+            &[],
+            Some(&anchor),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("does not satisfy"), "{}", err.message);
+    }
+
+    #[test]
+    fn vendor_name_mismatch_and_artifacts_fail_closed() {
+        let (_guard, _dir) = isolate_cache("vendorbad");
+        let dead = registry_cfg("http://127.0.0.1:9");
+        let empty = BTreeMap::new();
+        let anchor = crate::scratch::dir("vendorbad-anchor");
+        write_vendor_package(&anchor.join("vendor"), "@acme/vendor-d", "1.0.0", "x\n");
+        std::fs::write(
+            anchor
+                .join("vendor")
+                .join("@acme/vendor-d")
+                .join(crate::project::MANIFEST_FILE),
+            "export default {\n    project: {\n        name: \"@acme/other\",\n        version: \"1.0.0\"\n    }\n}\n",
+        )
+        .unwrap();
+        let err = resolve_registry_package(
+            "@acme/vendor-d",
+            "*",
+            Some(&dead),
+            &empty,
+            None,
+            &[],
+            Some(&anchor),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("@acme/other"), "{}", err.message);
+        let art = anchor.join("vendor").join("@acme/vendor-e");
+        std::fs::create_dir_all(art.join("src")).unwrap();
+        std::fs::write(
+            art.join(crate::project::MANIFEST_FILE),
+            "export default {\n    project: {\n        name: \"@acme/vendor-e\",\n        version: \"1.0.0\"\n    },\n    artifacts: \"ghcr.io/org/e\"\n}\n",
+        )
+        .unwrap();
+        std::fs::write(art.join("src").join("main.rnx"), "x\n").unwrap();
+        let err = resolve_registry_package(
+            "@acme/vendor-e",
+            "*",
+            Some(&dead),
+            &empty,
+            None,
+            &[],
+            Some(&anchor),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("artifacts"), "{}", err.message);
+    }
+
+    #[test]
+    fn missing_vendor_falls_through_to_registry() {
+        let (_guard, _dir) = isolate_cache("vendorfall");
+        let (manifest, pairs, digest, _, _) = fixture_tree("@acme/vendor-f", "1.0.0");
+        let node = node_json("@acme/vendor-f", "1.0.0", &digest, false);
+        let server = start_tree(&[node], &manifest, pairs);
+        let default = registry_cfg(&server.base);
+        let empty = BTreeMap::new();
+        let anchor = crate::scratch::dir("vendorfall-anchor");
+        let (dir, _, ver) = resolve_registry_package(
+            "@acme/vendor-f",
+            "*",
+            Some(&default),
+            &empty,
+            None,
+            &[],
+            Some(&anchor),
+        )
+        .unwrap();
+        assert_eq!(ver, "1.0.0");
+        assert!(dir.is_dir());
+        assert!(!local_override_used("@acme/vendor-f"));
+        assert!(!server.requests().is_empty());
     }
 
     #[test]

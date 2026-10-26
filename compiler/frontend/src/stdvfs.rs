@@ -57,6 +57,20 @@ pub fn std_source(rest: &str) -> Option<String> {
     cached_std_source(&key)
 }
 
+fn vendor_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
+    let version = crate::stdlib_seed::unpinned_std_version(pkg);
+    let anchor = std::env::current_dir()
+        .map(|cwd| crate::fetch::cache_anchor(&cwd))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let dir = crate::fetch::local_override_dir(pkg, &anchor)?;
+    if !crate::fetch::check_local_override_silent(pkg, &dir, &version, Some(&version)) {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+    crate::fetch::note_local_override(pkg, &version, &canonical);
+    read_cached_module(&canonical, sub)
+}
+
 fn cached_std_source(key: &str) -> Option<String> {
     if !stdlib::MODULES.contains(&key) {
         return None;
@@ -65,6 +79,9 @@ fn cached_std_source(key: &str) -> Option<String> {
         Some((top, s)) => (format!("@std/{top}"), Some(s)),
         None => (format!("@std/{key}"), None),
     };
+    if let Some(src) = vendor_std_source(&pkg, sub) {
+        return Some(src);
+    }
     if let Some(pin) = crate::stdlib_seed::read_std_pin() {
         if let Some(version) = pin.packages.get(&pkg) {
             let dir = crate::fetch::cached_package_dir(&pin.registry, &pkg, version);

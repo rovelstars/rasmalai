@@ -150,6 +150,7 @@ fn offline_dep_dir(
             &entry_cfg.registries,
             locked.get(dep_name).cloned(),
             &[],
+            Some(&crate::fetch::cache_anchor(pkg_dir)),
         )
         .ok()
         .map(|(dir, _, _)| dir),

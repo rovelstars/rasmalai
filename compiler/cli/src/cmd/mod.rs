@@ -206,8 +206,8 @@ pub(super) fn dispatch(
             cli::args::Command::Fetch { package } => {
                 run_fetch(package);
             }
-            cli::args::Command::FetchStd { registry } => {
-                run_fetch_std(registry);
+            cli::args::Command::FetchStd { registry, from } => {
+                run_fetch_std(registry, from);
             }
             cli::args::Command::Doctor { repair_std, registry } => {
                 run_doctor(repair_std, registry);
@@ -239,8 +239,8 @@ pub(super) fn dispatch(
             cli::args::Command::Unpack { archive, out_dir } => {
                 run_unpack(archive, out_dir);
             }
-            cli::args::Command::Vendor { package } => {
-                run_vendor(package);
+            cli::args::Command::Vendor { package, stdlib } => {
+                run_vendor(package, stdlib);
             }
             cli::args::Command::Audit {
                 path,
