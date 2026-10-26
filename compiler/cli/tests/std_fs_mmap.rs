@@ -99,7 +99,7 @@ fn test_fs_mmap_needs_unsafe() {
 
 #[test]
 fn test_fs_mmap_sigbus_doc() {
-    let src = include_str!("../../stdlib/src/fs.rnx");
+    let src = include_str!("../../stdlib/src/fs/lib.rnx");
     assert!(src.contains("SIGBUS"), "fs.rnx must state the SIGBUS contract");
     assert!(
         src.contains("never truncate a mapped file"),

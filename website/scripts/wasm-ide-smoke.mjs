@@ -9,7 +9,7 @@ const glue = await import(join(wasmDir, 'wasm_playground.js'));
 const bytes = await readFile(join(wasmDir, 'wasm_playground_bg.wasm'));
 await glue.default(bytes);
 
-const preludeSrc = await readFile(join(dir, '..', '..', 'compiler', 'stdlib', 'src', 'prelude.rnx'), 'utf8');
+const preludeSrc = await readFile(join(dir, '..', '..', 'compiler', 'stdlib', 'src', 'prelude', 'lib.rnx'), 'utf8');
 const provided = JSON.parse(glue.std_provide('prelude', preludeSrc));
 assert.equal(provided.ok, true, JSON.stringify(provided));
 

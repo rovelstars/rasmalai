@@ -172,9 +172,8 @@ fn stdlib_module_list_matches_docs() {
     let mut shipped: Vec<String> = std::fs::read_dir(crate_dir().join("../stdlib/src"))
         .unwrap()
         .filter_map(|e| e.ok())
+        .filter(|e| e.path().join("lib.rnx").is_file())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".rnx"))
-        .map(|n| n.trim_end_matches(".rnx").to_string())
         .collect();
     shipped.sort();
     let mut expected: Vec<String> = EXPECTED_MODULES.iter().map(|n| n.to_string()).collect();

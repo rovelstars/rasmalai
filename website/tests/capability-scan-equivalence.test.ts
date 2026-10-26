@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectCapabilityUse, type CapabilityEvidence } from '../src/lib/server/permissions.js';
 
@@ -107,8 +107,10 @@ describe('capability scan equivalence', () => {
 		const std = join(import.meta.dirname, '..', '..', 'compiler', 'stdlib', 'src');
 		const files: Array<{ name: string; text: string }> = [];
 		for (const e of readdirSync(std, { withFileTypes: true })) {
-			if (!e.isFile() || !e.name.endsWith('.rnx')) continue;
-			files.push({ name: `src/${e.name}`, text: readFileSync(join(std, e.name), 'utf8') });
+			if (!e.isDirectory()) continue;
+			const lib = join(std, e.name, 'lib.rnx');
+			if (!existsSync(lib)) continue;
+			files.push({ name: `src/${e.name}.rnx`, text: readFileSync(lib, 'utf8') });
 		}
 		const sub = readFileSync(join(std, 'net', 'http.rnx'), 'utf8');
 		files.push({ name: 'src/http.rnx', text: sub });

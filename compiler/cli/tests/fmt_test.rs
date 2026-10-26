@@ -374,9 +374,9 @@ fn test_fmt_breaks_semiless_import_tail() {
 fn corpus_paths() -> Vec<(&'static str, std::path::PathBuf)> {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     [
-        ("stdlib-prelude", root.join("../stdlib/src/prelude.rnx")),
-        ("stdlib-collections", root.join("../stdlib/src/collections.rnx")),
-        ("stdlib-json", root.join("../stdlib/src/json.rnx")),
+        ("stdlib-prelude", root.join("../stdlib/src/prelude/lib.rnx")),
+        ("stdlib-collections", root.join("../stdlib/src/collections/lib.rnx")),
+        ("stdlib-json", root.join("../stdlib/src/json/lib.rnx")),
         (
             "sqlite-index",
             root.join("tests/fixtures/fmt_convergence/sqlite_index.rnx"),
