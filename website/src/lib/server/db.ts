@@ -36,6 +36,7 @@ export interface VersionMeta {
 	version: string;
 	checksum: string;
 	status: string;
+	yankCause?: string;
 	createdAt: number;
 }
 
@@ -95,6 +96,7 @@ CREATE TABLE IF NOT EXISTS package_versions (
     doc_json TEXT NOT NULL,
     checksum TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'live',
+    yank_cause TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     manifest_digest TEXT NOT NULL DEFAULT '',
     verdict_key TEXT NOT NULL DEFAULT '',
@@ -424,6 +426,9 @@ async function migrateSchema(db: Client): Promise<void> {
 	if (!vnames.has('status')) {
 		await db.execute("ALTER TABLE package_versions ADD COLUMN status TEXT NOT NULL DEFAULT 'live'");
 	}
+	if (!vnames.has('yank_cause')) {
+		await db.execute("ALTER TABLE package_versions ADD COLUMN yank_cause TEXT NOT NULL DEFAULT ''");
+	}
 	const backfill: Array<[string, string]> = [
 		['semver_major', 'INTEGER NOT NULL DEFAULT 0'],
 		['semver_minor', 'INTEGER NOT NULL DEFAULT 0'],
@@ -678,6 +683,7 @@ export async function getPackage(
 			version: s.packageVersions.version,
 			checksum: s.packageVersions.checksum,
 			status: s.packageVersions.status,
+			yankCause: s.packageVersions.yankCause,
 			createdAt: s.packageVersions.createdAt
 		})
 		.from(s.packageVersions)
@@ -687,6 +693,7 @@ export async function getPackage(
 		version: v.version,
 		checksum: v.checksum,
 		status: v.status ?? 'live',
+		yankCause: v.yankCause ?? '',
 		createdAt: v.createdAt
 	}));
 	if (versions.length === 0) return null;
@@ -1039,6 +1046,7 @@ export interface VersionRow {
 	id: string;
 	version: string;
 	status: string;
+	yankCause: string;
 	checksum: string;
 	tarballSha256: string;
 	manifestDigest: string;
@@ -1067,6 +1075,7 @@ function versionIndexColumns(v: typeof s.packageVersions) {
 		id: v.id,
 		version: v.version,
 		status: v.status,
+		yankCause: v.yankCause,
 		checksum: v.checksum,
 		tarballSha256: v.tarballSha256,
 		manifestDigest: v.manifestDigest,
@@ -1106,6 +1115,7 @@ export async function getVersionRow(
 		id: r.id,
 		version: r.version,
 		status: r.status ?? 'live',
+		yankCause: r.yankCause ?? '',
 		checksum: r.checksum ?? '',
 		tarballSha256: r.tarballSha256 ?? '',
 		manifestDigest: r.manifestDigest ?? '',
@@ -1146,6 +1156,7 @@ export async function getVersionIndexRow(
 		id: r.id,
 		version: r.version,
 		status: r.status ?? 'live',
+		yankCause: r.yankCause ?? '',
 		checksum: r.checksum ?? '',
 		tarballSha256: r.tarballSha256 ?? '',
 		manifestDigest: r.manifestDigest ?? '',
@@ -1269,38 +1280,90 @@ export async function getLatestVersion(
 	return selectLatestVersion(rows.map((r) => ({ version: r.version, status: r.status ?? 'live' })));
 }
 
+// One window for owner-initiated disappearance: unpublish and owner
+// yank share this clock and this source of truth, the version row
+// `created_at` the publish wrote. Epoch seconds, UTC by construction.
+export const UNPUBLISH_WINDOW_SECONDS = 72 * 3600;
+
+export const YANK_CAUSES = ['vulnerability', 'cve', 'malicious', 'legal'] as const;
+export type YankCause = (typeof YANK_CAUSES)[number];
+
+export function normalizeYankCause(raw: unknown): YankCause | null {
+	if (typeof raw !== 'string') return null;
+	const cause = raw.trim().toLowerCase();
+	return (YANK_CAUSES as readonly string[]).includes(cause) ? (cause as YankCause) : null;
+}
+
+export type YankResult =
+	| { ok: true; yankCause: string; alreadyYanked: boolean }
+	| { ok: false; code: 'not-found' | 'withdrawn' | 'not-live' | 'too-old'; createdAt?: number };
+
+// Owner yank is time-gated on the same 72-hour clock as unpublish: one
+// window, not two, read from the version row `created_at` the publish
+// wrote. After the window closes only the registry admin may yank, and
+// only with a recorded security cause. An admin cause on an already
+// yanked version updates the record instead of conflicting, so a late
+// finding still lands on the version it describes.
 export async function yankVersion(
 	env: Record<string, string | undefined>,
 	full: string,
 	version: string,
-	requestId: string = ''
-): Promise<boolean> {
+	requestId: string = '',
+	opts: { cause?: string; allowLate?: boolean } = {}
+): Promise<YankResult> {
 	const parsed = parsePackageName(full);
 	const db = await getDdb(env);
 	if (!parsed || !db) throw new Error('invalid package name or missing database');
 	const id = packageId(parsed.scope, parsed.name);
+	const v = s.packageVersions;
+	const row = await db
+		.select({ status: v.status, yankCause: v.yankCause, createdAt: v.createdAt })
+		.from(v)
+		.where(and(eq(v.packageId, id), eq(v.version, version)))
+		.get();
+	if (!row) return { ok: false, code: 'not-found' };
+	if (row.status === 'tombstoned') return { ok: false, code: 'withdrawn' };
 	const now = Math.floor(Date.now() / 1000);
+	const cause = opts.cause ?? '';
+	if (row.status === 'yanked') {
+		if (cause !== '' && cause !== (row.yankCause ?? '')) {
+			const detailsJson = JSON.stringify({ cause, at: now });
+			await db.batch([
+				db
+					.update(v)
+					.set({ yankCause: cause })
+					.where(and(eq(v.packageId, id), eq(v.version, version), eq(v.status, 'yanked'))),
+				db.run(
+					sql`INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
+					      SELECT 'yank', ${parsed.full}, ${version}, ${detailsJson}, ${requestId}, ${now} WHERE changes() > 0`
+				)
+			] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+			noteMutation();
+			return { ok: true, yankCause: cause, alreadyYanked: true };
+		}
+		return { ok: false, code: 'not-live' };
+	}
+	if (row.status !== 'live') return { ok: false, code: 'not-live' };
+	if (!opts.allowLate && now - Number(row.createdAt ?? 0) > UNPUBLISH_WINDOW_SECONDS) {
+		return { ok: false, code: 'too-old', createdAt: Number(row.createdAt ?? 0) };
+	}
+	const detailsJson = JSON.stringify(cause !== '' ? { cause, at: now } : { at: now });
 	const applied = await db.batch([
 		db
-			.update(s.packageVersions)
-			.set({ status: 'yanked' })
-			.where(
-				and(
-					eq(s.packageVersions.packageId, id),
-					eq(s.packageVersions.version, version),
-					eq(s.packageVersions.status, 'live')
-				)
-			),
+			.update(v)
+			.set({ status: 'yanked', yankCause: cause })
+			.where(and(eq(v.packageId, id), eq(v.version, version), eq(v.status, 'live'))),
 		db.run(
-			sql`INSERT INTO audit_log (action, full_name, version, request_id, created_at)
-			      SELECT 'yank', ${parsed.full}, ${version}, ${requestId}, ${now} WHERE changes() > 0`
+			sql`INSERT INTO audit_log (action, full_name, version, details_json, request_id, created_at)
+			      SELECT 'yank', ${parsed.full}, ${version}, ${detailsJson}, ${requestId}, ${now} WHERE changes() > 0`
 		)
 	] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 	// A yank does not change the candidate set: a yanked version stays a
 	// candidate, and the picked row is read fresh on every resolve. The
 	// per-package mutation count therefore does not move.
 	noteMutation();
-	return (applied[0]?.rowsAffected ?? 0) > 0;
+	if ((applied[0]?.rowsAffected ?? 0) === 0) return { ok: false, code: 'not-live' };
+	return { ok: true, yankCause: cause, alreadyYanked: false };
 }
 
 export interface TransferAuditEntry {
@@ -1837,6 +1900,10 @@ export interface ResolveNode {
 	engineRange: string;
 	deps: string[];
 	yanked: boolean;
+	// Present only when a yank carries a recorded security cause. Live
+	// versions and owner yanks inside the window omit it, so payloads
+	// without a cause keep their byte-for-byte shape.
+	yankCause?: string | null;
 	artifactDigest?: string | null;
 	entries?: TarEntryRef[];
 }
@@ -2023,6 +2090,7 @@ function resolveSubrequestLimit(env: Record<string, string | undefined>): number
 interface ResolveRow {
 	version: string;
 	status: string;
+	yankCause: string;
 	manifestDigest: string;
 	artifactDigest: string;
 	artifactMeta: string;
@@ -2056,7 +2124,7 @@ function pickedRowSql(): string {
 	// needed for an inline answer, and it is read in a second, bounded phase
 	// once the closure is known (see attachInlineEntries).
 	return `SELECT p.scope AS scope, p.name AS name,
-	v.version AS version, v.status AS status, v.manifest_digest AS manifest_digest,
+	v.version AS version, v.status AS status, v.yank_cause AS yank_cause, v.manifest_digest AS manifest_digest,
 	v.artifact_digest AS artifact_digest, v.artifact_meta AS artifact_meta,
 	v.engine_range AS engine_range, v.manifest_json AS manifest_json,
 	p.mutation_count AS mutation_count,
@@ -2146,6 +2214,7 @@ async function resolvePickedRows(
 			out.set(`${full}@${version}`, {
 				version,
 				status: String(row['status'] ?? 'live'),
+				yankCause: String(row['yank_cause'] ?? ''),
 				manifestDigest: String(row['manifest_digest'] ?? ''),
 				artifactDigest: String(row['artifact_digest'] ?? ''),
 				artifactMeta: String(row['artifact_meta'] ?? ''),
@@ -2579,6 +2648,7 @@ export async function resolveGraph(
 			deps,
 			yanked: row.status === 'yanked'
 		};
+		if (row.status === 'yanked' && row.yankCause !== '') node.yankCause = row.yankCause;
 		if (row.artifactDigest !== '') node.artifactDigest = row.artifactDigest;
 		return node;
 	};
@@ -2862,8 +2932,6 @@ export async function recordTombstone(
 	noteMutation();
 }
 
-export const UNPUBLISH_WINDOW_SECONDS = 72 * 3600;
-
 export type UnpublishResult = { ok: true } | { ok: false; code: 'not-found' | 'withdrawn' | 'too-old'; createdAt?: number };
 
 // Self-serve unpublish inside the 72-hour window. The version row is
@@ -3030,7 +3098,7 @@ export interface PruneResult {
 }
 
 // Growth bound for the two ever-growing operational tables. Versioned
-// history (publish, unpublish, takedown, transfer, special-delete,
+// history (publish, unpublish, yank, takedown, transfer, special-delete,
 // advisory rows) is never pruned: versionReuseBlocked reads the publish
 // entries to keep numbers burned, and takedowns/transfers are forensics.
 export async function pruneOldRows(

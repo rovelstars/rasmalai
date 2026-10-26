@@ -26,15 +26,19 @@ The resolver picks the highest satisfying version, walks manifests transitively,
 
 A prerelease only resolves when someone asks for it by its full name. Floating ranges skip prereleases entirely, and `latest` is computed as the highest stable version — publishing `1.3.0-beta.1` never moves the `latest` pointer. Named channels arrive with dist-tags: `latest` will auto-advance on stable publishes but never on prereleases, `rnx publish --tag beta` will move one tag without touching `latest`, and tag names will work in requirement position. Until servers advertise the `dist-tags` capability, there are no named tags and the computed-`latest` behavior above is the whole story.
 
-## Yank warns forever
+## Yank warns forever, but late yanks need staff
 
-Yanking a live version flips its status without removing anything. The metadata still serves, now marked `yanked`; pinned requirements keep resolving to it, but every such build prints a warning naming the version and its suggested replacement; floating ranges and the `latest` pointer move past it. Yanking a version that is not live fails — and like everything else here, a yanked number can never be re-published.
+Yanking a version flips its status without removing anything. The metadata still serves, now marked `yanked`; pinned requirements keep resolving to it, but every such build prints a warning naming the version and its suggested replacement; floating ranges and the `latest` pointer move past it. Like everything else here, a yanked number can never be re-published.
+
+An owner yank is self-serve only inside the 72-hour window after publish — the same window and the same publish-timestamp clock as unpublish below, not a second clock. Past the window the owner call fails with `409 yank-window-closed`, naming the version age, the window, and the admin path. Only the registry admin may yank that late, and only with a recorded security cause: one of `vulnerability`, `cve`, `malicious`, `legal`. The cause is stored on the version status and in the audit entry, so every later read says why the yank landed. Yanking a version that is not live fails either way.
+
+Deprecation and advisory notices stay available to owners at any age: flagging a problem is never time-boxed, only disappearing is.
 
 ## The 72-hour unpublish window
 
 Mistakes in the first 72 hours after publish — a wrong tarball, a leaked secret, a version cut from the wrong branch — can be self-serve unpublished by the owner. Past that window the version is permanent history: yank it, publish a fixed successor, and let pins age out. Unpublish burns the number either way.
 
-Within the window, the owner removes the version with `rnx unpublish <name>@<version>`; the command disappears the version, burns the number, and leaves an audit entry.
+Within the window, the owner removes the version with `rnx unpublish <name>@<version>`; the command disappears the version, burns the number, and leaves an audit entry. The owner-yank window above shares this clock: one 72-hour window from the publish timestamp, not two.
 
 ## Staff-only hard removal
 
