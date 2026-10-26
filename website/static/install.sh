@@ -137,7 +137,7 @@ elif [ -x "$BIN_DIR/rnx.exe" ]; then
 else
   fail "installed but no runnable binary found in $BIN_DIR"
 fi
-INSTALLED_VERSION="$("$BIN" --version 2>/dev/null | cut -d' ' -f2)"
+INSTALLED_VERSION="$("$BIN" --version 2>/dev/null | head -n 1 | cut -d' ' -f2)"
 [ -z "$INSTALLED_VERSION" ] && INSTALLED_VERSION="$VERSION"
 
 if "$BIN" download >/dev/null 2>&1; then

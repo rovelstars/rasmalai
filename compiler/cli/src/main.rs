@@ -13,6 +13,7 @@ fn main() {
         diagnostics::theme::force_plain_output();
     }
     let cmd = cli::args::Cli::command()
+        .long_version(Box::leak(cli::version::long_version().into_boxed_str()) as &str)
         .color(if plain {
             clap::ColorChoice::Never
         } else {

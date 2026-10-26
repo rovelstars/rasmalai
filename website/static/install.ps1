@@ -50,7 +50,7 @@ try {
   $Bin = Join-Path $BinDir "rnx.exe"
   if (-not (Test-Path $Bin)) { throw "installed but rnx.exe is missing in $BinDir" }
 
-  $Installed = (& $Bin --version 2>$null) -replace '^rnx\s+', ''
+  $Installed = ((& $Bin --version 2>$null | Select-Object -First 1) -replace '^rnx\s+', '')
   if ([string]::IsNullOrEmpty($Installed)) { $Installed = $Version }
 
   & $Bin download 2>$null | Out-Null

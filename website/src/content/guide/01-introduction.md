@@ -28,7 +28,7 @@ The script detects your OS and CPU and places `rnx` in `~/.local/bin` (`%LOCALAP
 rnx --version
 ```
 
-You should see something like `rnx 0.1.0`. If the terminal says the command was not found, the installer directory is not on your `PATH` yet — open a fresh terminal (installers update `PATH` for new shells only) and try again. Still stuck? Jump to [Troubleshooting](/guide/11-troubleshooting-and-reinstall), which walks through reinstalling cleanly per OS.
+You should see `rnx 0.2.0` on the first line, followed by the build record: commit hash, build timestamp, install kind, target triple, and backend versions. If the terminal says the command was not found, the installer directory is not on your `PATH` yet — open a fresh terminal (installers update `PATH` for new shells only) and try again. Still stuck? Jump to [Troubleshooting](/guide/11-troubleshooting-and-reinstall), which walks through reinstalling cleanly per OS.
 
 > [!TIP]
 > Not ready to install? Every example in this guide runs in the browser Playground — no setup at all. Installing is still worth it: the real toolchain adds files, packages, and tests.
