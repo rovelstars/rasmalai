@@ -241,8 +241,11 @@ pub enum Command {
     /// Download standard library packages into the global registry cache
     FetchStd {
         /// Registry endpoint URL (or RNX_REGISTRY)
-        #[arg(long, env = "RNX_REGISTRY")]
+        #[arg(long, env = "RNX_REGISTRY", conflicts_with = "local")]
         registry: Option<String>,
+        /// Seed the global cache from the toolchain's embedded sources (zero network)
+        #[arg(long)]
+        local: bool,
         #[arg(long = "from", value_name = "DIR", hide = true)]
         from: Option<PathBuf>,
     },

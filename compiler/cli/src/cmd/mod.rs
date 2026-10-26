@@ -206,8 +206,8 @@ pub(super) fn dispatch(
             cli::args::Command::Fetch { package } => {
                 run_fetch(package);
             }
-            cli::args::Command::FetchStd { registry, from } => {
-                run_fetch_std(registry, from);
+            cli::args::Command::FetchStd { registry, local, from } => {
+                run_fetch_std(registry, local, from);
             }
             cli::args::Command::Doctor { repair_std, registry } => {
                 run_doctor(repair_std, registry);

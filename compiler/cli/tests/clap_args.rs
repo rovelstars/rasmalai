@@ -53,6 +53,7 @@ fn test_fetch_std_from_removed_points_at_vendor() {
     assert!(stdout.contains("RNX_VENDOR_DIR"), "{stdout}");
     let (_, stdout, _) = run(&["fetch-std", "--help"], &dir);
     assert!(!stdout.contains("--from"), "{stdout}");
+    assert!(stdout.contains("--local"), "{stdout}");
 }
 
 #[test]
