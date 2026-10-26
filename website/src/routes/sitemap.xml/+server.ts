@@ -31,6 +31,9 @@ export async function GET() {
 		urls.map((u) => `  <url><loc>${BASE}${u}</loc></url>`).join('\n') +
 		`\n</urlset>\n`;
 	return new Response(body, {
-		headers: { 'content-type': 'application/xml; charset=utf-8' }
+		headers: {
+			'content-type': 'application/xml; charset=utf-8',
+			'Cache-Control': 'public, max-age=60, s-maxage=3600'
+		}
 	});
 }

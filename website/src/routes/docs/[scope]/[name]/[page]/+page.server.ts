@@ -69,7 +69,7 @@ function guidesFromStored(raw: string): GuideOut[] {
 		.map((g) => ({ slug: g.slug, title: g.title, html: g.html, source: g.source }));
 }
 
-export async function load({ params, platform, url, fetch }) {
+export async function load({ params, platform, url, fetch, setHeaders }) {
 	if (!PAGES.includes(params.page as (typeof PAGES)[number])) error(404, 'doc page not found');
 	const scope = params.scope ?? '';
 	const name = params.name ?? '';
@@ -88,6 +88,7 @@ export async function load({ params, platform, url, fetch }) {
 		const { localStdPackage } = await import('$lib/server/std-local');
 		const local = localStdPackage(full);
 		if (!local) error(404, 'package not found');
+		setHeaders({ 'Cache-Control': 'no-store' });
 		return {
 			full,
 			scope,
@@ -106,6 +107,7 @@ export async function load({ params, platform, url, fetch }) {
 			const meta = pkg.versions[0];
 			const doc = await getVersionDoc(env, pkg.name, meta.version);
 			if (doc) {
+				setHeaders({ 'Cache-Control': 'public, max-age=300, s-maxage=300' });
 				return {
 					full,
 					scope,
@@ -133,6 +135,7 @@ export async function load({ params, platform, url, fetch }) {
 				if (mods.length > 0) {
 					const mod = mods.find((m) => m.name === name) ?? null;
 					const firstLine = (mod?.docs.description ?? '').split('\n')[0];
+					setHeaders({ 'Cache-Control': 'public, max-age=300, s-maxage=300' });
 					return {
 						full,
 						scope,

@@ -228,7 +228,8 @@ describe('generalized docs serving', () => {
 			params: { scope, name, page },
 			platform: { env: fake.env },
 			url: new URL(`https://registry.test/docs/${scope}/${name}/${page}`),
-			fetch: globalThis.fetch
+			fetch: globalThis.fetch,
+			setHeaders: () => {}
 		} as never);
 	}
 
