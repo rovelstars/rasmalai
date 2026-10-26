@@ -75,15 +75,17 @@ jobs:
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           ulimit -c unlimited
           # The standard library comes from the repo, never the network:
-          # stage the in-repo sources, then install them into the global
-          # cache exactly where `fetch-std` would put registry downloads.
-          cargo run -q -p cli -- vendor --stdlib "${{ runner.temp }}/std-vendor"
-          cargo run -q -p cli -- fetch-std --from "${{ runner.temp }}/std-vendor"
-          # A dead registry URL from here on, so any network access fails
-          # loud instead of silently fetching. The nextest suite itself runs
+          # stage the in-repo sources, then resolve every build straight
+          # from that staged tree through the vendor override. A dead
+          # registry URL from here on, so any network access fails loud
+          # instead of silently fetching. The nextest suite itself runs
           # without this override and keeps exercising the registry paths
           # with mocks.
+          cargo run -q -p cli -- vendor --stdlib "${{ runner.temp }}/std-vendor"
+          export RNX_VENDOR_DIR="${{ runner.temp }}/std-vendor"
           export RNX_REGISTRY="http://127.0.0.1:9"
+          export RNX_CACHE_HOME="${{ runner.temp }}/rnx-empty-cache"
+          mkdir -p "${{ runner.temp }}/rnx-empty-cache"
           cargo run -q -p cli -- doc --json --stdlib --out-dir website/static/data
           mkdir -p "${{ runner.temp }}/offline-probe/src"
           cat > "${{ runner.temp }}/offline-probe/Project.config" <<'EOF'
@@ -100,20 +102,10 @@ jobs:
               return clock.now().toMillis();
           }
           EOF
-          # Probe 1: the installed cache serves a build with no network.
-          cargo run -q -p cli -- build "${{ runner.temp }}/offline-probe/src/main.rnx"
-          set +e
-          "${{ runner.temp }}/offline-probe/.rnx-cache/build/dev/probe"
-          code=$?
-          set -e
-          [ "$code" -eq 2 ] || { echo "probe binary returned $code (want 2)"; exit 1; }
-          # Probe 2: the staged tree alone (empty cache) resolves through
-          # the local-source override and warns once per package.
-          rm -rf "${{ runner.temp }}/offline-probe/.rnx-cache" "${{ runner.temp }}/rnx-empty-cache"
-          mkdir -p "${{ runner.temp }}/rnx-empty-cache"
-          export RNX_CACHE_HOME="${{ runner.temp }}/rnx-empty-cache"
-          export RNX_VENDOR_DIR="${{ runner.temp }}/std-vendor"
-          cargo run -q -p cli -- build "${{ runner.temp }}/offline-probe/src/main.rnx"
+          # The staged tree alone (empty cache, dead registry) resolves
+          # through the local-source override and warns once per package.
+          cargo run -q -p cli -- build "${{ runner.temp }}/offline-probe/src/main.rnx" 2>"${{ runner.temp }}/probe-stderr.txt"
+          grep -q "using local source" "${{ runner.temp }}/probe-stderr.txt" || { echo "probe build printed no local-source warning"; cat "${{ runner.temp }}/probe-stderr.txt"; exit 1; }
           set +e
           "${{ runner.temp }}/offline-probe/.rnx-cache/build/dev/probe"
           code=$?

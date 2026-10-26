@@ -44,6 +44,18 @@ fn test_help_exits_zero() {
 }
 
 #[test]
+fn test_fetch_std_from_removed_points_at_vendor() {
+    let dir = crate::scratch::dir("clap-from");
+    let (code, stdout, _) = run(&["fetch-std", "--from", "some-dir"], &dir);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(stdout.contains("was removed"), "{stdout}");
+    assert!(stdout.contains("vendor --stdlib"), "{stdout}");
+    assert!(stdout.contains("RNX_VENDOR_DIR"), "{stdout}");
+    let (_, stdout, _) = run(&["fetch-std", "--help"], &dir);
+    assert!(!stdout.contains("--from"), "{stdout}");
+}
+
+#[test]
 fn test_typo_suggests_subcommand() {
     let dir = crate::scratch::dir("clap-typo");
     let (code, _, stderr) = run(&["chck"], &dir);

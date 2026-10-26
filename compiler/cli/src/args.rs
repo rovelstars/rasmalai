@@ -243,8 +243,7 @@ pub enum Command {
         /// Registry endpoint URL (or RNX_REGISTRY)
         #[arg(long, env = "RNX_REGISTRY")]
         registry: Option<String>,
-        /// Install every @std/* package from a local vendor tree instead of the registry
-        #[arg(long = "from", value_name = "DIR")]
+        #[arg(long = "from", value_name = "DIR", hide = true)]
         from: Option<PathBuf>,
     },
     /// Check toolchain health and optionally repair the stdlib cache
@@ -328,7 +327,7 @@ pub enum Command {
         /// Package selection
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
-        /// Stage every @std/* package from the toolchain sources into DIR (local registry override)
+        /// Stage every @std/* package from the toolchain sources into DIR (local source override)
         #[arg(long = "stdlib", value_name = "DIR")]
         stdlib: Option<PathBuf>,
     },
