@@ -6,6 +6,56 @@ fn fmt(src: &str) -> String {
     frontend::fmt::format_source(src).unwrap_or_else(|e| panic!("format failed: {e}"))
 }
 
+fn minify_src(src: &str) -> String {
+    frontend::minify::minify_source(src)
+        .unwrap_or_else(|e| panic!("minify failed: {e:?}"))
+}
+
+fn scrub_spans_and_docs(dbg: &str) -> String {
+    let mut out = String::with_capacity(dbg.len());
+    let bytes = dbg.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if dbg[i..].starts_with("Span { start: ") {
+            out.push_str("Span{}");
+            let tail = &dbg[i + "Span { start: ".len()..];
+            match tail.find(" }") {
+                Some(end) => i += "Span { start: ".len() + end + 2,
+                None => i = bytes.len(),
+            }
+        } else if dbg[i..].starts_with("docs: \"") {
+            out.push_str("docs: \"\"");
+            let mut j = i + "docs: \"".len();
+            while j < bytes.len() {
+                if bytes[j] == b'\\' {
+                    j += 2;
+                } else if bytes[j] == b'"' {
+                    j += 1;
+                    break;
+                } else {
+                    j += 1;
+                }
+            }
+            i = j;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn decl_signature(src: &str) -> String {
+    let module = frontend::parser::Parser::parse_module(src)
+        .unwrap_or_else(|e| panic!("parse failed: {e}"));
+    let kinds: Vec<String> = module
+        .decls
+        .iter()
+        .map(|d| scrub_spans_and_docs(&format!("{:?}", d.node)))
+        .collect();
+    format!("{} decls\n{}", kinds.len(), kinds.join("\n"))
+}
+
 fn write_tmp(tag: &str, name: &str, src: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
     let dir = crate::scratch::dir(&format!("fmt-{tag}"));
     let file = dir.join(name);
@@ -230,4 +280,92 @@ fn test_fmt_unary_and_control_spacing() {
     assert_eq!(out, again, "unary formatting not idempotent");
     frontend::parser::Parser::parse_module(&out)
         .unwrap_or_else(|e| panic!("formatted unary fails to parse: {e}"));
+}
+
+const JOINED_SRC: &str = "import { Map } from \"@std/collections\";\nimport { Clock } from \"@std/time\";\nimport { Aye, Bee } from \"@std/cee\";\nimport { fn f(x: Int): Int as g, fn h(x: Int): Int as k } from native \"libx\";\nexport const K: Int = 1; export const J: Int = 2;\nexport fn alpha(x: Int): Int { return x + 1; } export fn beta(y: Int): Int { let t = y * 2; return t - 1; }\npub class Pair {\n    let a: Int;\n    let b: Int;\n    init(a: Int, b: Int) { this.a = a; this.b = b; }\n    fn sum(): Int { return this.a + this.b; }\n} enum E { Ok(Int), Err(String), }\ninterface I { fn run(): Int; }\nfn flow(n: Int): Int { let i = 0; while i < n { if i == 2 { i = i + 1; } else if i == 3 { i = i + 10; } else { i = i + 100; } i = i + 1; } for x in [1, 2, 3] { i = i + x; } return i; }\nfn looped(ok: Bool): Int { do { print(\"x\"); } while ok; return 0; }\nfn guarded(v: Int?): Int { guard let x = v else { return -1; } return x; }\nfn tried(ok: Bool): Int { try { if ok { return 1; } return 2; } catch(e) { return 3; } finally { print(\"done\"); } return 4; }\nfn switched(x: Int): Int { switch x { case 1: return 10; case 2: return 20; default: return 0; } }\nfn lambdas(): Int { let a = (x) => x * 2; let d = () => { return 42; }; return a(21) + d(); }\nfn checks(v: Any): Int { if v is Int { return 1; } let s = v as String; return 0; }\n";
+
+#[test]
+fn test_fmt_converges_on_joined_statements() {
+    let formatted = fmt(JOINED_SRC);
+    assert_eq!(fmt(&formatted), formatted, "not idempotent");
+    let min = minify_src(JOINED_SRC);
+    assert!(
+        !min.contains('\n') || min.contains('"'),
+        "minified fixture should carry no newlines outside strings: {min:?}"
+    );
+    let refmt = fmt(&min);
+    assert_eq!(fmt(&refmt), refmt, "reformat not idempotent");
+    assert_eq!(
+        refmt, formatted,
+        "fmt(minify(x)) != fmt(x):\n--- fmt(x):\n{formatted}\n--- fmt(minify(x)):\n{refmt}"
+    );
+    assert_eq!(
+        decl_signature(&refmt),
+        decl_signature(&formatted),
+        "AST drift between fmt(x) and fmt(minify(x))"
+    );
+    for line in refmt.lines() {
+        assert_eq!(line, line.trim_end(), "trailing whitespace on {line:?}");
+    }
+    assert!(
+        !refmt.lines().any(|l| l.len() > 120),
+        "unbroken long line remains"
+    );
+    for stay in [
+        "import { Map } from \"@std/collections\";",
+        "} else if",
+        "} else {",
+        "} while ok;",
+        "} catch (e) {",
+        "} finally {",
+        "} from native \"libx\";",
+    ] {
+        assert!(refmt.contains(stay), "lost same-line continuation {stay:?} in:\n{refmt}");
+    }
+}
+
+fn corpus_paths() -> Vec<(&'static str, std::path::PathBuf)> {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    [
+        ("stdlib-prelude", root.join("../stdlib/src/prelude.rnx")),
+        ("stdlib-collections", root.join("../stdlib/src/collections.rnx")),
+        ("stdlib-json", root.join("../stdlib/src/json.rnx")),
+        (
+            "sqlite-index",
+            root.join("tests/fixtures/fmt_convergence/sqlite_index.rnx"),
+        ),
+        (
+            "sqlite-gen",
+            root.join("tests/fixtures/fmt_convergence/sqlite_gen.rnx"),
+        ),
+    ]
+    .into_iter()
+    .collect()
+}
+
+#[test]
+fn test_fmt_converges_on_corpus() {
+    for (tag, path) in corpus_paths() {
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let formatted = fmt(&src);
+        assert_eq!(
+            fmt(&formatted),
+            formatted,
+            "{tag}: fmt output not idempotent"
+        );
+        let min = minify_src(&src);
+        let refmt = fmt(&min);
+        assert_eq!(fmt(&refmt), refmt, "{tag}: reformat not idempotent");
+        assert_eq!(
+            decl_signature(&refmt),
+            decl_signature(&formatted),
+            "{tag}: AST drift between fmt(x) and fmt(minify(x))"
+        );
+        assert_eq!(
+            minify_src(&refmt),
+            minify_src(&formatted),
+            "{tag}: token streams differ between fmt(x) and fmt(minify(x))"
+        );
+    }
 }

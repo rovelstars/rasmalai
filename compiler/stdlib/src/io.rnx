@@ -24,7 +24,10 @@
 import { Result } from "@std/prelude";
 import { Env } from "@std/env";
 import { ByteBuffer } from "@std/bytes";
-import { File, OpenMode } from "@std/fs";
+import {
+    File,
+    OpenMode
+} from "@std/fs";
 import { Map } from "@std/collections";
 
 /**

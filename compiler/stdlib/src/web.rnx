@@ -8,7 +8,9 @@
 //! `WebSocket` is out of scope until the network RFC lands (see
 //! requirements 12_STDLIB).
 import {
-    ArrayIter, Iterable, Iterator
+    ArrayIter,
+    Iterable,
+    Iterator
 } from "@std/prelude";
 import {
     Map

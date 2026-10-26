@@ -43,7 +43,9 @@
 //! print(seen.len(), seen.values().join(", "));
 //! ```
 import {
-    ArrayIter, Iterable, Iterator
+    ArrayIter,
+    Iterable,
+    Iterator
 } from "@std/prelude";
 
 /**

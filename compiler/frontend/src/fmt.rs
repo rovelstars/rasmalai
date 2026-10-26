@@ -354,6 +354,42 @@ fn is_control_keyword(w: &str) -> bool {
     )
 }
 
+fn brace_group_has_top_comma(toks: &[Ft], i: usize) -> bool {
+    let mut bdepth = 1usize;
+    let mut pdepth = 0usize;
+    let mut j = i + 1;
+    while j < toks.len() && bdepth > 0 {
+        match toks[j].kind {
+            Fk::LBrace => bdepth += 1,
+            Fk::RBrace => bdepth -= 1,
+            Fk::LParen | Fk::LBrack => pdepth += 1,
+            Fk::RParen | Fk::RBrack if pdepth > 0 => pdepth -= 1,
+            Fk::Comma if bdepth == 1 && pdepth == 0 => return true,
+            _ => {}
+        }
+        j += 1;
+    }
+    false
+}
+
+fn generic_depths(toks: &[Ft], generic: &[bool]) -> Vec<usize> {
+    let mut depths = vec![0usize; toks.len()];
+    let mut d = 0usize;
+    for (i, tok) in toks.iter().enumerate() {
+        depths[i] = d;
+        if generic[i] && tok.kind == Fk::Op {
+            match tok.text.as_str() {
+                "<" => d += 1,
+                ">" => d = d.saturating_sub(1),
+                ">>" => d = d.saturating_sub(2),
+                ">>>" => d = d.saturating_sub(3),
+                _ => {}
+            }
+        }
+    }
+    depths
+}
+
 fn brace_group_is_single_line(toks: &[Ft], i: usize) -> bool {
     let mut depth = 1usize;
     let mut j = i + 1;
@@ -470,6 +506,7 @@ struct Emitter<'a> {
     toks: &'a [Ft],
     m: Vec<Option<usize>>,
     generic: Vec<bool>,
+    gdepth: &'a [usize],
     out: String,
     indent: usize,
     start: bool,
@@ -502,6 +539,18 @@ impl<'a> Emitter<'a> {
 
     fn has_newline_between(&self, i: usize, j: usize) -> bool {
         (i + 1..j).any(|k| self.toks[k].kind == Fk::Newline)
+    }
+
+    fn comma_breaks(&self, i: usize) -> bool {
+        if self.gdepth[i] > 0 {
+            return false;
+        }
+        match self.stack.last() {
+            Some((inline_group, _, open)) => {
+                !inline_group && self.toks[*open].kind == Fk::LBrace
+            }
+            None => false,
+        }
     }
 
     fn nl(&mut self) {
@@ -541,6 +590,25 @@ impl<'a> Emitter<'a> {
             self.next_sig(i).map(|j| self.toks[j].kind),
             Some(Fk::RBrace) | Some(Fk::RParen) | Some(Fk::RBrack) | None
         )
+    }
+
+    fn rbrace_breaks(&self, i: usize) -> bool {
+        let mut j = i + 1;
+        while j < self.toks.len() && self.stripped.contains(&j) {
+            j += 1;
+        }
+        if j < self.toks.len() && matches!(self.toks[j].kind, Fk::Line | Fk::Block) {
+            return false;
+        }
+        match self.next_sig(i).map(|k| (&self.toks[k].kind, self.toks[k].text.as_str())) {
+            Some((Fk::Word, w)) => !matches!(
+                w,
+                "else" | "catch" | "finally" | "while" | "from" | "as" | "is"
+            ),
+            Some((Fk::Hash, _)) | Some((Fk::LBrace, _)) | Some((Fk::Num, _))
+            | Some((Fk::Str, _)) | None => true,
+            _ => false,
+        }
     }
 
     fn emit_wordlike(&mut self, i: usize) {
@@ -639,10 +707,10 @@ impl<'a> Emitter<'a> {
                     }
                     self.ensure_indent();
                     self.out.push('{');
-                    let pos = self.out.len();
                     let inline_group = matches!(self.prev_sig(i), Some(j) if self.toks[j].kind == Fk::Word && matches!(self.toks[j].text.as_str(), "import" | "export" | "default"))
+                        && !brace_group_has_top_comma(&self.toks, i)
                         && brace_group_is_single_line(&self.toks, i);
-                    self.stack.push((inline_group, self.indent, pos));
+                    self.stack.push((inline_group, self.indent, i));
                     if inline_group {
                         self.sp();
                     } else {
@@ -675,6 +743,9 @@ impl<'a> Emitter<'a> {
                         self.ensure_indent();
                         self.out.push('}');
                     }
+                    if self.rbrace_breaks(i) {
+                        self.br();
+                    }
                     i += 1;
                 }
                 Fk::LParen => {
@@ -702,7 +773,7 @@ impl<'a> Emitter<'a> {
                         }
                         self.ensure_indent();
                         self.out.push('(');
-                        self.stack.push((false, self.indent, self.out.len()));
+                        self.stack.push((false, self.indent, i));
                         i += 1;
                     }
                 }
@@ -723,7 +794,7 @@ impl<'a> Emitter<'a> {
                     }
                     self.ensure_indent();
                     self.out.push('[');
-                    self.stack.push((false, self.indent, self.out.len()));
+                    self.stack.push((false, self.indent, i));
                     i += 1;
                 }
                 Fk::Comma => {
@@ -731,7 +802,9 @@ impl<'a> Emitter<'a> {
                     match self.next_sig(i).map(|j| self.toks[j].kind) {
                         Some(Fk::RBrace) | Some(Fk::RParen) | Some(Fk::RBrack) | None => {}
                         _ => {
-                            if self.has_newline_between(i, self.next_sig(i).unwrap()) {
+                            if self.has_newline_between(i, self.next_sig(i).unwrap())
+                                || self.comma_breaks(i)
+                            {
                                 self.br();
                             } else {
                                 self.sp();
@@ -910,10 +983,12 @@ pub fn format_source(src: &str) -> Result<String, String> {
     let toks = tokenize(src)?;
     let m = match_parens(&toks);
     let generic = match_generic_brackets(&toks);
+    let gdepth = generic_depths(&toks, &generic);
     let mut e = Emitter {
         toks: &toks,
         m,
         generic,
+        gdepth: &gdepth,
         out: String::new(),
         indent: 0,
         start: true,
