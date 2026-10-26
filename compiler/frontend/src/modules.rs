@@ -4310,7 +4310,7 @@ mod tests {
         ));
         // Locked mismatch beats a satisfying range: the lock is exact.
         assert!(!super::embedded_allowed(
-            &Some("0.2.0".to_string()),
+            &Some("9.9.9".to_string()),
             "^0.1.0",
             cli,
             false
