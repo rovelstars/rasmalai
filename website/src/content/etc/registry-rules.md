@@ -71,6 +71,13 @@ Every version must include `LICENSE` or `LICENSE.txt` at the package root. An up
 
 Rejections fail the publish with `E108` and a message naming the offending file; the CLI surfaces them verbatim.
 
+## Two rules that count before they bite
+
+Two predicates run report-only on every publish: they count and log, and the publish still succeeds. The enforcement flip — rejecting new violating publishes, filing `critical` advisories on stored violators, and walking the yank ladder — is a separate change that starts from these counts. Fix each trip now and the flip passes you by.
+
+- **S103: bare `__rnx_*` references.** A non-`@std` package that calls a runtime internal directly instead of through its owning `@std/*` wrapper trips the count, once per use, attributed per file. Only `@std/*`-named frames are exempt; a `@std/`-prefixed file smuggled into any other frame still counts. Declared `from native` aliases are exempt, and `__ffi_*` names never count. The `rnx publish` pre-check already refuses these before anything is sent, so a count here means the frame was hand-built around the CLI. Fix: call the owning `@std/*` wrapper instead of the `__rnx_*` internal, and republish — versions are immutable, so the fix ships as the next number.
+- **Top-level `registry`/`registries` keys.** A `Project.config` that carries either key trips the count. The CLI strips these keys when it packs, so a count here also means a hand-built frame — and the keys would otherwise be stored verbatim and served at install. Registry choice stays with the installer, never with stored bytes. Fix: delete both keys from `Project.config` and republish the next version.
+
 ## Entries must match both ways
 
 The entries manifest fails closed in both directions:
