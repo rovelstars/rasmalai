@@ -164,7 +164,7 @@ impl<'a> Builder<'a> {
                         && matches!(short, "Int" | "Float" | "FastFloat" | "Bool" | "String" | "Char" | "Array" | "GenRef");
                     if !primitive_stub {
                         // Direct class calls are rejected with E204 in
-                        // semantic analysis; lowering keeps the legacy
+                        // semantic analysis; lowering keeps the earlier
                         // construction path for direct-lower users.
                         return self.lower_construct(*ci, args, span);
                     }

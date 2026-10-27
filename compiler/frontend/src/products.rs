@@ -646,9 +646,13 @@ mod tests {
                 .join("1.2.0")
                 .join("tool")
         );
-        let cached =
-            crate::fetch::cached_package_dir("https://reg.example.com", "@acme/widget", "1.2.0");
-        assert_eq!(cached.file_name(), Some(dir.iter().nth_back(1).unwrap()));
+        let under = crate::fetch::package_dir_under(
+            &products_root(),
+            "https://reg.example.com",
+            "@acme/widget",
+            "1.2.0",
+        );
+        assert_eq!(under.file_name(), Some(dir.iter().nth_back(1).unwrap()));
         let git = product_dir(KIND_GIT, "", "mydep", "deadbeef", "tool").expect("git layout");
         assert_eq!(git.iter().nth_back(3).unwrap(), GIT_SCOPE);
     }

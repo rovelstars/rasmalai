@@ -1507,25 +1507,18 @@ mod tests {
     }
 
     fn plant_widget_cache(integrity: &str) {
-        let dead = "http://127.0.0.1:9";
-        let cached = crate::fetch::cached_package_dir(dead, "@acme/widget", "1.2.0");
-        std::fs::create_dir_all(cached.join("src")).unwrap();
-        std::fs::write(
-            cached.join(crate::project::MANIFEST_FILE),
-            "export default {\n    project: {\n        name: \"@acme/widget\",\n        version: \"1.2.0\"\n    }\n}\n",
-        )
-        .unwrap();
-        std::fs::write(
-            cached.join("src").join("main.rnx"),
+        crate::fetch::testkit::plant_store_package(
+            "@acme/widget",
+            "1.2.0",
+            integrity,
+            "",
             "export fn hello(): Int { return 1; }\n",
-        )
-        .unwrap();
-        std::fs::write(cached.join(".rnx-integrity"), format!("@acme/widget\n1.2.0\n{integrity}\n"))
-            .unwrap();
+        );
     }
 
     fn offline_lock(root: &std::path::Path, integrity: &str) -> ProjectDepLock {
-        let cached = crate::fetch::cached_package_dir("http://127.0.0.1:9", "@acme/widget", "1.2.0");
+        let cached = crate::fetch::find_cached_package_dir("http://127.0.0.1:9", "@acme/widget", "1.2.0")
+            .expect("planted widget is cached");
         let analysis = crate::security::analyze_dep_dir(&cached).unwrap();
         let widget = LockedPackage {
             name: "@acme/widget".to_string(),

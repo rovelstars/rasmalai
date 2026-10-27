@@ -179,8 +179,10 @@ pub fn verify_std_package_bytes(dir: &Path) -> Result<bool, Diagnostic> {
     if pinned != &cfg.version {
         return Ok(false);
     }
-    let cached = super::fetch::find_cached_package_dir(&pin.registry, &cfg.name, pinned)
-        .unwrap_or_else(|| super::fetch::cached_package_dir(&pin.registry, &cfg.name, pinned));
+    let Some(cached) = super::fetch::find_cached_package_dir(&pin.registry, &cfg.name, pinned)
+    else {
+        return Ok(false);
+    };
     if super::fetch::cached_integrity(&cached).is_none() {
         return Ok(false);
     }
@@ -723,15 +725,14 @@ mod tests {
 
     fn seed_verified_package(full: &str, version: &str, main: &[u8]) -> (String, PathBuf) {
         let base = "http://127.0.0.1:9".to_string();
-        let dir = crate::fetch::cached_package_dir(&base, full, version);
-        let config = format!(
-            "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }},\n    entries: {{\n        main: \"src/main.rnx\"\n    }}\n}}\n"
-        );
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join(crate::project::MANIFEST_FILE), config).unwrap();
-        std::fs::write(dir.join("src").join("main.rnx"), main).unwrap();
         let digest = crate::checksum::Sha256::hexdigest(main);
-        std::fs::write(dir.join(".rnx-integrity"), format!("{full}\n{version}\n{digest}\n")).unwrap();
+        let dir = plant_store_package(
+            full,
+            version,
+            &digest,
+            "",
+            std::str::from_utf8(main).unwrap_or("export fn hello(): Int { return 1; }\n"),
+        );
         crate::stdlib_seed::pin_report(
             &crate::stdlib_seed::std_pin_path(),
             base.clone(),

@@ -26,7 +26,7 @@ rnx run --backend cranelift tools/rnx-bindgen/src/main.rnx -- \
   [--include <dir>]... [--clang-flags "<flags>"]
 ```
 
-Repeatable filters: `--prefix <pfx>` (keep; empty means the legacy zlib
+Repeatable filters: `--prefix <pfx>` (keep; empty means the built-in zlib
 allowlist for functions and everything for structs/defines), `--skip <name>`
 (exact function name to drop). Skip list exists because headers declare
 functions the shipped `.so` does not export (extension-gated APIs such as

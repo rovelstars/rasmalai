@@ -19,12 +19,8 @@ pub(super) fn run_cache(action: cli::args::CacheAction) {
                     std::process::exit(1);
                 }
             }
-            let freed_legacy = frontend::fetch::prune_legacy_registry_lru(cap);
-            println!(
-                "pruned {} legacy registry-tree bytes (usage now {} bytes)",
-                freed_legacy,
-                frontend::fetch::legacy_registry_usage_bytes()
-            );
+            let freed_old = frontend::fetch::prune_old_registry_tree();
+            println!("removed old registry/ tree ({} bytes freed)", freed_old);
             let freed_objects = frontend::products::prune_global_objects_lru(cap);
             println!(
                 "pruned {} product-object bytes (usage now {} bytes)",
@@ -53,10 +49,9 @@ pub(super) fn run_cache(action: cli::args::CacheAction) {
             let global = cache::global_cache_dir();
             println!("global: {} ({} bytes)", global.display(), cache::cache_usage_bytes(&global));
             println!(
-                "store: {} ({} bytes; {} legacy registry-tree bytes)",
+                "store: {} ({} bytes)",
                 frontend::fetch::store_root().display(),
-                frontend::fetch::store_usage_bytes(),
-                frontend::fetch::legacy_registry_usage_bytes()
+                frontend::fetch::store_usage_bytes()
             );
             let (product_files, product_bytes) = frontend::products::products_usage();
             println!("products: {product_files} files ({product_bytes} bytes)");

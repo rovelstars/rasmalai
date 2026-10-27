@@ -113,8 +113,13 @@ pub fn stdlib_sources_digest() -> Vec<u8> {
                 hasher.update(full.as_bytes());
                 hasher.update(&(version.len() as u64).to_le_bytes());
                 hasher.update(version.as_bytes());
-                let dir = crate::fetch::find_cached_package_dir(&pin.registry, full, version)
-                    .unwrap_or_else(|| crate::fetch::cached_package_dir(&pin.registry, full, version));
+                let dir = match crate::fetch::find_cached_package_dir(&pin.registry, full, version) {
+                    Some(dir) => dir,
+                    None => {
+                        hasher.update(&0u64.to_le_bytes());
+                        continue;
+                    }
+                };
                 hash_cached_package(&mut hasher, &dir);
             }
         }
@@ -503,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn src_tree_files_digest_matches_legacy_fold() {
+    fn src_tree_files_digest_matches_fold() {
         let dir = crate::scratch::dir("src-files");
         src_tree_fixture(&dir);
         let (digest, files) = hash_src_tree_files(&dir);

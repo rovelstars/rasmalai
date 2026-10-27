@@ -990,21 +990,13 @@ mod tests {
     fn doc_snapshot_covers_declared_bindgen_outputs() {
         let (_guard, _cache) = crate::fetch::testkit::isolate_cache("gendocs");
         let pin = env!("CARGO_PKG_VERSION");
-        let prelude =
-            crate::fetch::cached_package_dir(&crate::fetch::expand_registry_base(""), "@std/prelude", pin);
-        std::fs::create_dir_all(prelude.join("src")).unwrap();
-        std::fs::write(
-            prelude.join("Project.config"),
-            format!(
-                "export default {{\n    project: {{\n        name: \"@std/prelude\",\n        version: \"{pin}\"\n    }}\n}}\n"
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            prelude.join("src").join("main.rnx"),
+        crate::fetch::testkit::plant_store_package(
+            "@std/prelude",
+            pin,
+            &"ef".repeat(32),
+            "",
             "export fn hello(): Int { return 1; }\n",
-        )
-        .unwrap();
+        );
         let dir = fixture_bindgen_dir("gendocs", "            \"src/gen\": { title: \"sqlite3.rnx\" }");
         std::fs::create_dir_all(dir.join("src").join("gen")).unwrap();
         std::fs::write(
