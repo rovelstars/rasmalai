@@ -48,7 +48,7 @@ fn bare_prelude_types_check_clean_with_zero_imports() {
 #[test]
 fn removed_str_spelling_fails_e303() {
     for src in [
-        "fn Main(): Int {\nlet legacy: Str = \"hi\";\nreturn 0;\n}\n",
+        "fn Main(): Int {\nlet text: Str = \"hi\";\nreturn 0;\n}\n",
         "fn take(s: Str): Int { return 0; }\nfn Main(): Int { return 0; }\n",
         "fn give(): Str { return \"hi\"; }\nfn Main(): Int { return 0; }\n",
     ] {

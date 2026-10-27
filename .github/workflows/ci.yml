@@ -59,7 +59,7 @@ jobs:
           # in-tree records which compiler revision emitted them. Hashing the
           # compiler sources is what stops a codegen change from restoring
           # products that still pass validate_dep_product.
-          key: rnx-global-v1-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'compiler/*/Cargo.toml', 'compiler/*/build.rs', 'compiler/*/src/**', 'compiler/runtime/bundle/**') }}
+          key: rnx-global-v2-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'compiler/*/Cargo.toml', 'compiler/*/build.rs', 'compiler/*/src/**', 'compiler/runtime/bundle/**') }}
 
       - name: Ensure jq (affected-tests + main-health selectors)
         # Both CI selectors shell out to jq. ubuntu runners ship it today,

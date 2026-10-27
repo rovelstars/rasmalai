@@ -499,12 +499,12 @@ pub enum Command {
 /// Build cache management
 #[derive(Subcommand, Debug, Clone)]
 pub enum CacheAction {
-    /// Prune least-recently-used global cache entries over the byte cap (including old registry/ trees; the content-addressed store/ is retained)
+    /// Prune least-recently-used global cache entries over the byte cap (also removes the old registry/ tree left by previous versions; the content-addressed store/ is retained)
     Prune {
         /// Keep at most this many bytes (default 2 GiB)
         #[arg(long)]
         max_bytes: Option<u64>,
     },
-    /// Show global and project cache usage (including the store/ and legacy registry/ split)
+    /// Show global and project cache usage (global store/ plus project cache)
     Status,
 }

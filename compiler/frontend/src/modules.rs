@@ -2536,8 +2536,7 @@ fn dep_expected_root(
             entry_cfg.registry.as_ref(),
             &entry_cfg.registries,
         );
-        let dir = crate::fetch::find_cached_package_dir(&base, pkg, version_key)
-            .unwrap_or_else(|| crate::fetch::cached_package_dir(&base, pkg, version_key));
+        let dir = crate::fetch::find_cached_package_dir(&base, pkg, version_key)?;
         return std::fs::canonicalize(&dir).ok();
     }
     if kind == KIND_WORKSPACE {
@@ -4219,24 +4218,15 @@ mod tests {
         std::env::temp_dir().join(format!("rnx-nostd-{}-missing", std::process::id()))
     }
 
-    fn plant_prelude_cache(base: &str) {
+    fn plant_prelude_cache(_base: &str) {
         let pin = env!("CARGO_PKG_VERSION");
-        let dir = crate::fetch::cached_package_dir(base, "@std/prelude", pin);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(
-            dir.join(crate::project::MANIFEST_FILE),
-            format!(
-                "export default {{\n    project: {{\n        name: \"@std/prelude\",\n        version: \"{pin}\"\n    }}\n}}\n"
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("src").join("main.rnx"),
+        testkit::plant_store_package(
+            "@std/prelude",
+            pin,
+            &"ef".repeat(32),
+            "",
             "export fn hello(): Int { return 1; }\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join(".rnx-integrity"), format!("@std/prelude\n{pin}\ntest\n"))
-            .unwrap();
+        );
     }
 
     #[test]

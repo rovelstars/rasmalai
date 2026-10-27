@@ -97,14 +97,12 @@ fn cached_std_source(key: &str) -> Option<String> {
     if let Some(src) = project_std_source(&pkg, sub) {
         return Some(src);
     }
-    if let Some(pin) = crate::stdlib_seed::read_std_pin() {
-        if let Some(version) = pin.packages.get(&pkg) {
-            let dir = crate::fetch::find_cached_package_dir(&pin.registry, &pkg, version)
-                .unwrap_or_else(|| crate::fetch::cached_package_dir(&pin.registry, &pkg, version));
-            if let Some(src) = read_cached_module(&dir, sub) {
-                return Some(src);
-            }
-        }
+    if let Some(pin) = crate::stdlib_seed::read_std_pin()
+        && let Some(version) = pin.packages.get(&pkg)
+        && let Some(dir) = crate::fetch::find_cached_package_dir(&pin.registry, &pkg, version)
+        && let Some(src) = read_cached_module(&dir, sub)
+    {
+        return Some(src);
     }
     if let Some(src) = find_scanned_project_std_source(&pkg, sub) {
         return Some(src);
@@ -172,39 +170,7 @@ fn find_scanned_project_std_source(pkg: &str, sub: Option<&str>) -> Option<Strin
 }
 
 fn find_scanned_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
-    let root = crate::fetch::registry_cache_root();
-    let hosts = std::fs::read_dir(&root).ok()?;
     let mut best: Option<(SemKey, PathBuf)> = None;
-    let mut consider = |dir: PathBuf, best: &mut Option<(SemKey, PathBuf)>| {
-        if !dir.join(crate::project::MANIFEST_FILE).is_file() {
-            return;
-        }
-        let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let Some(next) = sem_key(&name) else {
-            return;
-        };
-        let replace = match &*best {
-            None => true,
-            Some((cur, _)) => next > *cur,
-        };
-        if replace {
-            *best = Some((next, dir));
-        }
-    };
-    for host in hosts.flatten() {
-        let pkg_dir = host.path().join(pkg);
-        let versions = match std::fs::read_dir(&pkg_dir) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        for entry in versions.flatten() {
-            let dir = entry.path();
-            if !dir.is_dir() {
-                continue;
-            }
-            consider(dir, &mut best);
-        }
-    }
     for have in crate::fetch::store_have() {
         if have.full != pkg {
             continue;

@@ -663,7 +663,7 @@ pub fn download_packages(
             have.dedup_by(|a, b| a.full == b.full && a.version == b.version);
             (root, have)
         }
-        None => (registry_cache_root(), scan_cache_have()),
+        None => (store_root(), scan_cache_have()),
     };
     Ok(ensure_registry_requirements_in(&root, requirements, default_registry, overrides, &have)?
         .into_iter()
@@ -2195,10 +2195,6 @@ pub fn registry_cache_root() -> PathBuf {
     crate::cache::global_cache_dir().join("registry")
 }
 
-pub fn cached_package_dir(base: &str, full: &str, version: &str) -> PathBuf {
-    package_dir_under(&registry_cache_root(), base, full, version)
-}
-
 pub fn store_root() -> PathBuf {
     crate::cache::global_cache_dir().join("store")
 }
@@ -2554,14 +2550,7 @@ pub fn store_have() -> Vec<HaveEntry> {
 }
 
 pub fn find_cached_package_dir(base: &str, full: &str, version: &str) -> Option<PathBuf> {
-    if let Some(dir) = find_store_pkg(base, full, version) {
-        return Some(dir);
-    }
-    let dir = cached_package_dir(base, full, version);
-    if dir.join(crate::project::MANIFEST_FILE).is_file() {
-        return Some(dir);
-    }
-    None
+    find_store_pkg(base, full, version)
 }
 
 fn dir_tree_usage_bytes(root: &Path) -> u64 {
@@ -2591,61 +2580,17 @@ fn dir_tree_usage_bytes(root: &Path) -> u64 {
     total
 }
 
-pub fn legacy_registry_usage_bytes() -> u64 {
-    dir_tree_usage_bytes(&registry_cache_root())
+pub fn prune_old_registry_tree() -> u64 {
+    let root = registry_cache_root();
+    let freed = dir_tree_usage_bytes(&root);
+    if std::fs::remove_dir_all(&root).is_err() {
+        return 0;
+    }
+    freed
 }
 
 pub fn store_usage_bytes() -> u64 {
     dir_tree_usage_bytes(&store_root())
-}
-
-fn legacy_version_dirs() -> Vec<(PathBuf, u64, u64)> {
-    let root = registry_cache_root();
-    let mut dirs = Vec::new();
-    let mut stack = vec![root];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for path in paths {
-            if !path.is_dir() {
-                continue;
-            }
-            if path.join(crate::project::MANIFEST_FILE).is_file() {
-                let usage = dir_tree_usage_bytes(&path);
-                let age = std::fs::metadata(&path)
-                    .ok()
-                    .and_then(|m| m.accessed().or_else(|_| m.modified()).ok())
-                    .and_then(|t| t.elapsed().ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                dirs.push((path, age, usage));
-            } else {
-                stack.push(path);
-            }
-        }
-    }
-    dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    dirs
-}
-
-pub fn prune_legacy_registry_lru(keep_bytes: u64) -> u64 {
-    let dirs = legacy_version_dirs();
-    let mut total: u64 = dirs.iter().map(|(_, _, usage)| usage).sum();
-    let mut freed = 0u64;
-    for (path, _, usage) in dirs {
-        if total <= keep_bytes {
-            break;
-        }
-        if std::fs::remove_dir_all(&path).is_ok() {
-            total -= usage.min(total);
-            freed += usage;
-        }
-    }
-    freed
 }
 
 fn integrity_path(dir: &Path) -> PathBuf {
@@ -2715,11 +2660,7 @@ pub fn cached_integrity(dir: &Path) -> Option<String> {
 }
 
 pub fn scan_cache_have() -> Vec<HaveEntry> {
-    let mut out = scan_have_under(&registry_cache_root());
-    out.extend(store_have());
-    out.sort_by(|a, b| (&a.full, &a.version).cmp(&(&b.full, &b.version)));
-    out.dedup_by(|a, b| a.full == b.full && a.version == b.version);
-    out
+    store_have()
 }
 
 fn engine_error(full: &str, version: &str, range: &str) -> Diagnostic {
@@ -3533,20 +3474,23 @@ fn ensure_node(
     node: &ResolveNode,
     share: &FetchShare,
 ) -> Result<PathBuf, Diagnostic> {
-    let global = cache_root == registry_cache_root();
-    if global && let Some(hit) = store_hit_for_node(node) {
-        check_engine(node)?;
-        warn_if_yanked(node);
-        return canonical_cached(&hit);
-    }
-    let dir = package_dir_under(cache_root, base, &node.full, &node.version);
-    if dir.join(crate::project::MANIFEST_FILE).is_file()
-        && cached_integrity(&dir).as_deref() == Some(node.integrity.as_str())
-        && node_artifacts_ready(&dir, node.artifact_digest.as_deref())
-    {
-        check_engine(node)?;
-        warn_if_yanked(node);
-        return canonical_cached(&dir);
+    let global = cache_root == store_root();
+    if global {
+        if let Some(hit) = store_hit_for_node(node) {
+            check_engine(node)?;
+            warn_if_yanked(node);
+            return canonical_cached(&hit);
+        }
+    } else {
+        let dir = package_dir_under(cache_root, base, &node.full, &node.version);
+        if dir.join(crate::project::MANIFEST_FILE).is_file()
+            && cached_integrity(&dir).as_deref() == Some(node.integrity.as_str())
+            && node_artifacts_ready(&dir, node.artifact_digest.as_deref())
+        {
+            check_engine(node)?;
+            warn_if_yanked(node);
+            return canonical_cached(&dir);
+        }
     }
     check_engine(node)?;
     warn_if_yanked(node);
@@ -3618,6 +3562,7 @@ fn ensure_node(
     if global {
         return install_store_tree(node, &downloaded, base);
     }
+    let dir = package_dir_under(cache_root, base, &node.full, &node.version);
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
@@ -3654,7 +3599,7 @@ pub fn ensure_registry_requirements(
     have: &[HaveEntry],
 ) -> Result<Vec<FetchedPackage>, Diagnostic> {
     ensure_registry_requirements_in(
-        &registry_cache_root(),
+        &store_root(),
         requirements,
         default_registry,
         overrides,
@@ -3800,12 +3745,6 @@ pub fn resolve_registry_package(
         if let Some(dir) = find_store_pkg(&base, pkg, pin)
             && let Some(found) = pinned_cache_hit(&dir, pkg, pin)
         {
-            check_cached_engine(&found.1, pkg, pin)?;
-            warn_if_cached_yanked(&found.0, pkg, pin);
-            return Ok(found);
-        }
-        let dir = cached_package_dir(&base, pkg, pin);
-        if let Some(found) = pinned_cache_hit(&dir, pkg, pin) {
             check_cached_engine(&found.1, pkg, pin)?;
             warn_if_cached_yanked(&found.0, pkg, pin);
             return Ok(found);
@@ -4744,6 +4683,28 @@ pub(crate) mod testkit {
     pub fn registry_cfg(url: &str) -> RegistryConfig {
         RegistryConfig { url: url.to_string(), token_env: None, ca_cert: None }
     }
+
+    pub fn plant_store_package(
+        full: &str,
+        version: &str,
+        integrity: &str,
+        engine: &str,
+        main: &str,
+    ) -> PathBuf {
+        let dir = super::store_pkg_dir(integrity).expect("planted package needs a hex digest");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join(crate::project::MANIFEST_FILE),
+            format!(
+                "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\",\n        engine: \"{engine}\"\n    }},\n    entries: {{\n        main: \"src/main.rnx\"\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), main).unwrap();
+        std::fs::write(dir.join(".rnx-integrity"), format!("{full}\n{version}\n{integrity}\n"))
+            .unwrap();
+        dir
+    }
 }
 
 #[cfg(test)]
@@ -5066,7 +5027,7 @@ mod tests {
         assert!(dir.join("Project.config").is_file(), "{}", dir.display());
         assert_eq!(fetched[0].dir, std::fs::canonicalize(&dir).unwrap());
         assert!(
-            !cached_package_dir(&cfg.url, "@acme/widget", "1.2.0")
+            !package_dir_under(&registry_cache_root(), &cfg.url, "@acme/widget", "1.2.0")
                 .join("Project.config")
                 .is_file(),
             "new downloads land in store/, not in the old registry/ tree"
@@ -5094,7 +5055,7 @@ mod tests {
         let local = project_package_dir(&scope, &cfg.url, "@acme/widget", "1.2.0");
         assert!(local.join("Project.config").is_file(), "{}", local.display());
         assert!(
-            !cached_package_dir(&cfg.url, "@acme/widget", "1.2.0")
+            !package_dir_under(&registry_cache_root(), &cfg.url, "@acme/widget", "1.2.0")
                 .join("Project.config")
                 .is_file(),
             "local download must not write the global cache"
@@ -5156,7 +5117,7 @@ mod tests {
         let store_dir = store_pkg_dir(&digest).expect("store dir for the manifest digest");
         assert_eq!(fetched[0].dir, std::fs::canonicalize(&store_dir).unwrap());
         assert!(
-            !cached_package_dir(&cfg.url, "@acme/widget", "1.2.0").exists(),
+            !package_dir_under(&registry_cache_root(), &cfg.url, "@acme/widget", "1.2.0").exists(),
             "new downloads must not land in the old registry/ tree"
         );
         assert!(store_index_path().is_file(), "installs record the pointer map");
@@ -5164,9 +5125,9 @@ mod tests {
             find_store_pkg(&cfg.url, "@acme/widget", "1.2.0"),
             Some(store_dir.clone())
         );
-        let legacy_root = registry_cache_root();
-        let _ = std::fs::remove_dir_all(&legacy_root);
-        assert!(!legacy_root.exists());
+        let old_root = registry_cache_root();
+        let _ = std::fs::remove_dir_all(&old_root);
+        assert!(!old_root.exists());
         let dead = registry_cfg("http://127.0.0.1:9");
         let have = scan_cache_have();
         assert!(
@@ -5193,12 +5154,28 @@ mod tests {
     }
 
     #[test]
-    fn store_read_falls_back_to_legacy_tree() {
+    fn old_registry_tree_is_never_read() {
         let (_guard, _dir) = isolate_cache("storefallback");
-        plant_pinned_cache("http://127.0.0.1:9", "@acme/widget", "1.2.0", "");
+        let old = package_dir_under(
+            &registry_cache_root(),
+            "http://127.0.0.1:9",
+            "@acme/widget",
+            "1.2.0",
+        );
+        std::fs::create_dir_all(old.join("src")).unwrap();
+        std::fs::write(
+            old.join(crate::project::MANIFEST_FILE),
+            "export default {\n    project: {\n        name: \"@acme/widget\",\n        version: \"1.2.0\"\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(old.join("src").join("main.rnx"), "export fn hello(): Int { return 1; }\n")
+            .unwrap();
+        std::fs::write(old.join(".rnx-integrity"), "@acme/widget\n1.2.0\ntest\n").unwrap();
         assert!(find_store_pkg("http://127.0.0.1:9", "@acme/widget", "1.2.0").is_none());
+        assert!(find_cached_package_dir("http://127.0.0.1:9", "@acme/widget", "1.2.0").is_none());
+        assert!(scan_cache_have().is_empty());
         let dead = registry_cfg("http://127.0.0.1:9");
-        let (dir, _, version) = resolve_registry_package(
+        let err = resolve_registry_package(
             "@acme/widget",
             "^1.0.0",
             Some(&dead),
@@ -5207,12 +5184,8 @@ mod tests {
             &[],
             None,
         )
-        .expect("the old registry/ tree still serves pinned resolves");
-        assert_eq!(version, "1.2.0");
-        assert_eq!(
-            dir,
-            std::fs::canonicalize(cached_package_dir(&dead.url, "@acme/widget", "1.2.0")).unwrap()
-        );
+        .unwrap_err();
+        assert_eq!(err.code, Code::E113);
     }
 
     #[test]
@@ -5302,10 +5275,10 @@ mod tests {
     }
 
     #[test]
-    fn prune_reclaims_legacy_trees_but_keeps_the_store() {
+    fn prune_removes_old_tree_but_keeps_the_store() {
         let (_guard, _dir) = isolate_cache("storeprune");
         for (full, version) in [("@acme/old", "1.0.0"), ("@acme/older", "2.0.0")] {
-            let dir = cached_package_dir("http://127.0.0.1:9", full, version);
+            let dir = package_dir_under(&registry_cache_root(), "http://127.0.0.1:9", full, version);
             std::fs::create_dir_all(dir.join("src")).unwrap();
             std::fs::write(
                 dir.join(crate::project::MANIFEST_FILE),
@@ -5330,16 +5303,15 @@ mod tests {
         .unwrap();
         let _ = server;
         let store_dir = store_pkg_dir(&digest).expect("store dir for the manifest digest");
-        let legacy_before = legacy_registry_usage_bytes();
-        assert!(legacy_before > 0);
-        assert_eq!(prune_legacy_registry_lru(u64::MAX), 0);
-        assert!(cached_package_dir("http://127.0.0.1:9", "@acme/old", "1.0.0").is_dir());
-        let freed = prune_legacy_registry_lru(0);
-        assert_eq!(freed, legacy_before);
-        assert_eq!(legacy_registry_usage_bytes(), 0);
+        assert!(registry_cache_root().is_dir());
+        let freed = prune_old_registry_tree();
+        assert!(freed > 0);
+        assert!(!registry_cache_root().exists());
+        assert_eq!(prune_old_registry_tree(), 0);
         assert!(
-            !cached_package_dir("http://127.0.0.1:9", "@acme/old", "1.0.0").exists(),
-            "prune reclaims the old registry/ trees"
+            !package_dir_under(&registry_cache_root(), "http://127.0.0.1:9", "@acme/old", "1.0.0")
+                .exists(),
+            "prune removes the old registry/ tree wholesale"
         );
         assert!(
             store_dir.join("Project.config").is_file(),
@@ -5598,26 +5570,21 @@ mod tests {
         );
     }
 
-    fn plant_pinned_cache(base: &str, full: &str, version: &str, engine: &str) -> PathBuf {
-        let dir = cached_package_dir(base, full, version);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(
-            dir.join(crate::project::MANIFEST_FILE),
-            format!(
-                "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\",\n        engine: \"{engine}\"\n    }},\n    entries: {{\n        main: \"src/main.rnx\"\n    }}\n}}\n"
-            ),
+    fn plant_pinned_cache(full: &str, version: &str, engine: &str) -> PathBuf {
+        plant_store_package(
+            full,
+            version,
+            &"cd".repeat(32),
+            engine,
+            "export fn hello(): Int { return 1; }\n",
         )
-        .unwrap();
-        std::fs::write(dir.join("src").join("main.rnx"), "export fn hello(): Int { return 1; }\n").unwrap();
-        std::fs::write(dir.join(".rnx-integrity"), format!("{full}\n{version}\ntest\n")).unwrap();
-        dir
     }
 
     #[test]
     fn pinned_cache_hit_enforces_engine_after_upgrade() {
         let (_guard, _dir) = isolate_cache("pinengine");
         let dead = registry_cfg("http://127.0.0.1:9");
-        plant_pinned_cache(&dead.url, "@acme/widget", "1.2.0", ">=99.0.0");
+        plant_pinned_cache("@acme/widget", "1.2.0", ">=99.0.0");
         let err = resolve_registry_package(
             "@acme/widget",
             "^1.0.0",
@@ -6231,9 +6198,10 @@ mod tests {
             "{}",
             err.message
         );
-        assert!(!cached_package_dir(&default.url, "@acme/widget", "1.0.0")
-            .join(crate::project::MANIFEST_FILE)
-            .is_file());
+        assert!(
+            find_cached_package_dir(&default.url, "@acme/widget", "1.0.0").is_none(),
+            "a failed download must leave nothing resolvable in the store"
+        );
         let logged = server.requests();
         let chunks: Vec<_> = logged
             .iter()
