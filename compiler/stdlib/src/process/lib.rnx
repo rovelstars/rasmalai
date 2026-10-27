@@ -59,7 +59,6 @@ import {
     fn __rnx_process_write_stdin(handle: Int, buf: Int, off: Int, len: Int): Int,
 } from runtime "process";
 
-
 /**
  * Stdio wiring for one child stream: inherit the host descriptor,
  * create a pipe, or connect to the null device.

@@ -7,7 +7,6 @@
 //!
 //! Tests are not this module's job: write `test fn` blocks, check values with
 //! the `assert(cond, message)` builtin, and run them with `rnx test`.
-
 import {
     fn __rnx_debug_live_count(): Int,
 } from runtime "testing";

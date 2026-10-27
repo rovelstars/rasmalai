@@ -288,14 +288,17 @@ pub fn vendor_covers_std() -> bool {
 
 fn std_stage_permissions(name: &str) -> Option<&'static str> {
     match name {
+        "env" => Some(
+            "permissions: [{ perm: \"env:read:*\", reason: \"Env.get reads caller-provided keys\" }]",
+        ),
         "fs" => Some(
-            "permissions: [{ perm: \"unsafe:raw_memory\", reason: \"mmap is backed by a raw address\" }]",
+            "permissions: [{ perm: \"fs:read:*\", reason: \"File reads and directory scans take caller-provided paths\" }, { perm: \"fs:write:*\", reason: \"File writes, creates, and removals take caller-provided paths\" }, { perm: \"fs:delegated\", reason: \"path helpers pass caller paths through to fs sinks\" }, \"term:read\", \"term:write\", { perm: \"unsafe:raw_memory\", reason: \"mmap is backed by a raw address\" }]",
         ),
         "io" => Some(
-            "permissions: [\"term:read\", \"term:write\", { perm: \"env:read:NO_COLOR\", reason: \"color detection reads NO_COLOR\" }, { perm: \"env:read:COLORTERM\", reason: \"color detection reads COLORTERM\" }, { perm: \"env:read:TERM\", reason: \"color detection reads TERM\" }]",
+            "permissions: [\"term:read\", \"term:write\", { perm: \"env:read:NO_COLOR\", reason: \"color detection reads NO_COLOR\" }, { perm: \"env:read:COLORTERM\", reason: \"color detection reads COLORTERM\" }, { perm: \"env:read:TERM\", reason: \"color detection reads TERM\" }, { perm: \"fs:read:*\", reason: \"stdin and file handles read through @std/fs\" }, { perm: \"fs:write:*\", reason: \"stdout and file handles write through @std/fs\" }, { perm: \"fs:delegated\", reason: \"file-handle helpers pass caller paths through to fs sinks\" }, { perm: \"unsafe:raw_memory\", reason: \"wrapped File handles include raw-memory mappings\" }]",
         ),
         "process" => Some(
-            "permissions: [{ perm: \"env:read:*\", reason: \"flattenEnv reads caller-provided keys\" }]",
+            "permissions: [{ perm: \"env:read:*\", reason: \"flattenEnv reads caller-provided keys\" }, { perm: \"sys:exec:*\", reason: \"Process.spawn and Process.run execute caller-provided binaries\" }]",
         ),
         _ => None,
     }

@@ -21,7 +21,6 @@
 //! let xs: Array<Int> = [];
 //! print(xs.find((x: Int): Bool => x > 0) ?? -1);
 //! ```
-
 import {
     fn __rnx_bytes_alloc(cap: Int): Int,
     fn __rnx_bytes_read_string(handle: Int, off: Int, len: Int): String,

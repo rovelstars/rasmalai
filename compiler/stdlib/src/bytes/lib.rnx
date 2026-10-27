@@ -30,7 +30,6 @@
 //! else. `slice` copies a range out into a new buffer, and `copyWithin`
 //! shifts a range inside the buffer that already exists. `address` hands
 //! the raw pointer to `Pointer.fromAddress` for `unsafe` work and C calls.
-
 import {
     fn __rnx_bytes_alloc(cap: Int): Int,
     fn __rnx_bytes_cap(handle: Int): Int,

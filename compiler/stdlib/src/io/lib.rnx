@@ -37,7 +37,6 @@ import {
     fn __rnx_io_winsize(): Array<Int>,
 } from runtime "io";
 
-
 /**
 * Output color tiers, richest to plainest.
 *
