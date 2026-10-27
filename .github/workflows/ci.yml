@@ -119,6 +119,12 @@ jobs:
           set -e
           [ "$code" -eq 2 ] || { echo "probe binary returned $code (want 2)"; exit 1; }
           unset RNX_VENDOR_DIR RNX_CACHE_HOME RNX_REGISTRY
+          # Warm the global registry cache for the suite below: a fresh
+          # source tree hashes to a new cache key, so the first run on a
+          # new revision starts cold and every stdlib auto-seed would fail
+          # before any download is attempted. Seeding pins the exact
+          # engine-compatible versions the suite builds against.
+          cargo run -q -p cli -- download
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             FILTER="$(bash .github/scripts/affected-tests.sh "origin/${{ github.base_ref }}")"
             HEALTH="$(bash .github/scripts/main-health.sh || printf 'MAIN_GREEN\nINFLIGHT_NONE\n')"
