@@ -464,6 +464,27 @@ fn best_cached_version(have: &[HaveEntry], name: &str, range: &str) -> Option<St
     best.map(|(_, version)| version)
 }
 
+fn checkout_vendor_root(scope_root: &Path, name: &str, range: &str) -> Option<PathBuf> {
+    if !name.starts_with("@std/") {
+        return None;
+    }
+    let src_root = find_stdlib_checkout(scope_root)?;
+    let checkout_version = env!("CARGO_PKG_VERSION");
+    let matches = match crate::modules::locked_registry_version(scope_root, name).as_deref() {
+        Some(want) => want == checkout_version,
+        None => engine_satisfied(range, checkout_version),
+    };
+    matches.then_some(src_root)
+}
+
+fn stage_checkout_vendor(src_root: &Path, dest: &Path, name: &str) -> Option<String> {
+    let out = dest.join(name);
+    let _ = std::fs::remove_dir_all(&out);
+    let version = crate::stdlib_seed::stage_std_checkout_package(src_root, name, &out).ok()?;
+    let cfg = ProjectConfig::load_from_dir(&out).ok()??;
+    (cfg.name == name).then(|| format!("{name}@{version}"))
+}
+
 fn vendor_registry_package(
     scope_root: &Path,
     dest: &Path,
@@ -472,6 +493,13 @@ fn vendor_registry_package(
     default_registry: Option<&RegistryConfig>,
     overrides: &BTreeMap<String, RegistryConfig>,
 ) -> Result<String, Diagnostic> {
+    // The checkout is the `@std/*` source of truth: a registry copy at the
+    // same version predates whatever is under development here.
+    if let Some(src_root) = checkout_vendor_root(scope_root, name, range)
+        && let Some(staged) = stage_checkout_vendor(&src_root, dest, name)
+    {
+        return Ok(staged);
+    }
     let anchor = cache_anchor(scope_root);
     let mut have = scan_cache_have();
     have.extend(scan_have_under(&project_registry_root(scope_root)));
@@ -4977,6 +5005,45 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(bad.code, Code::E108);
+    }
+
+    #[test]
+    fn vendor_prefers_checkout_sources_over_a_live_registry() {
+        let (_guard, _dir) = isolate_cache("vendorprefer");
+        let cli = env!("CARGO_PKG_VERSION");
+        let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib/src");
+        assert!(
+            src.join("fs").join("lib.rnx").is_file(),
+            "{}",
+            src.display()
+        );
+        let (server, cfg) = tree_server("@std/fs", "9.9.9");
+        let scope = scope_scratch("prefer");
+        let dest = scope.join("staged");
+        let done = vendor_packages(
+            &scope,
+            &dest,
+            &["@std/fs".to_string()],
+            Some(&cfg),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(done, vec![format!("@std/fs@{cli}")]);
+        assert!(server.resolve_bodies().is_empty());
+        let want = std::fs::read(src.join("fs").join("lib.rnx")).unwrap();
+        assert_eq!(
+            std::fs::read(dest.join("@std/fs").join("src").join("lib.rnx")).unwrap(),
+            want
+        );
+        let explicit = vendor_packages(
+            &scope,
+            &scope.join("staged-explicit"),
+            &["@std/fs@9.9.9".to_string()],
+            Some(&cfg),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(explicit, vec!["@std/fs@9.9.9".to_string()]);
     }
 
     #[test]
