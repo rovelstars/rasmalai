@@ -1002,6 +1002,13 @@ fn hold_major_moves(
     held
 }
 
+fn with_update_engine_remedy(err: Diagnostic) -> Diagnostic {
+    if err.code == Code::E114 || err.message.contains("for engine") {
+        return err.with_hint("upgrade the toolchain to a version the range admits, or relax the required range and run `rnx update` again");
+    }
+    err
+}
+
 impl ProjectDepLock {
     pub fn update_lock(
         root: &Path,
@@ -1018,10 +1025,16 @@ impl ProjectDepLock {
         let (mut overrides, explicit) = update_overrides(&ranges, &old, selections, update_all)?;
         let targets = update_targets(&ranges, &old, selections, update_all);
         let have = existing_have(root);
-        let mut candidate = nodes_to_lock(collect_graph(root, config, &have, prefer, &overrides, &BTreeMap::new())?)?;
+        let mut candidate = nodes_to_lock(
+            collect_graph(root, config, &have, prefer, &overrides, &BTreeMap::new())
+                .map_err(with_update_engine_remedy)?,
+        )?;
         let held = hold_major_moves(&old, &candidate, &targets, &explicit, allow_major, &mut overrides);
         if !held.is_empty() {
-            candidate = nodes_to_lock(collect_graph(root, config, &have, prefer, &overrides, &BTreeMap::new())?)?;
+            candidate = nodes_to_lock(
+                collect_graph(root, config, &have, prefer, &overrides, &BTreeMap::new())
+                    .map_err(with_update_engine_remedy)?,
+            )?;
         }
         let updated = summarize_update(&old, &candidate);
         Ok((candidate, UpdateSummary { updated, held }))
@@ -1043,12 +1056,16 @@ impl ProjectDepLock {
         let (mut overrides, explicit) = update_overrides(&ranges, &old, selections, update_all)?;
         let targets = update_targets(&ranges, &old, selections, update_all);
         let have = existing_have(ws_root);
-        let mut candidate =
-            nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, &overrides, &BTreeMap::new())?)?;
+        let mut candidate = nodes_to_lock(
+            collect_workspace_graph(ws_root, members, &have, prefer, &overrides, &BTreeMap::new())
+                .map_err(with_update_engine_remedy)?,
+        )?;
         let held = hold_major_moves(&old, &candidate, &targets, &explicit, allow_major, &mut overrides);
         if !held.is_empty() {
-            candidate =
-                nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, &overrides, &BTreeMap::new())?)?;
+            candidate = nodes_to_lock(
+                collect_workspace_graph(ws_root, members, &have, prefer, &overrides, &BTreeMap::new())
+                    .map_err(with_update_engine_remedy)?,
+            )?;
         }
         let updated = summarize_update(&old, &candidate);
         Ok((candidate, UpdateSummary { updated, held }))
@@ -1884,6 +1901,7 @@ mod tests {
             });
         update_point_registry(&root, deps, "", &server_b.base);
         let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let before = std::fs::read_to_string(root.join(LOCK_FILE)).unwrap();
         let err = ProjectDepLock::update_lock(
             &root,
             &cfg_b,
@@ -1892,7 +1910,269 @@ mod tests {
             false,
         )
         .unwrap_err();
+        assert!(err.message.contains("@acme/widget"), "{}", err.message);
+        assert!(err.message.contains(">=99.0.0"), "{}", err.message);
+        assert!(err.message.contains(env!("CARGO_PKG_VERSION")), "{}", err.message);
         assert!(err.message.contains("needs engine"), "{}", err.message);
+        let hint = err.hint.clone().unwrap_or_default();
+        assert!(hint.contains("upgrade the toolchain"), "{hint}");
+        assert!(hint.contains("relax"), "{hint}");
+        assert_eq!(
+            std::fs::read_to_string(root.join(LOCK_FILE)).unwrap(),
+            before,
+            "a failed update must leave the deplock untouched"
+        );
+    }
+
+    #[test]
+    fn update_picks_engine_compatible_max_and_sends_engine() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-engmax");
+        let (manifest_a, pairs_a, _, node_a) = update_mock("1.2.0", "@acme/widget", "");
+        let server_a =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_a]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_a),
+                chunk_override: Some(pairs_a),
+            });
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" }\n";
+        let (_dir, root) = update_app("engmax", deps, "", &server_a.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        ProjectDepLock::resolve(&root, &cfg)
+            .unwrap()
+            .write(&root)
+            .unwrap();
+        let (manifest_b, pairs_b, _, node_b) = update_mock("1.2.5", "@acme/widget", "");
+        let server_b =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_b]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_b),
+                chunk_override: Some(pairs_b),
+            });
+        update_point_registry(&root, deps, "", &server_b.base);
+        let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let (new_lock, summary) = ProjectDepLock::update_lock(
+            &root,
+            &cfg_b,
+            crate::native::NativePrefer::None,
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(summary.updated.len(), 1);
+        assert_eq!(summary.updated[0].new, "1.2.5");
+        assert!(summary.held.is_empty());
+        assert_eq!(
+            new_lock
+                .packages
+                .iter()
+                .find(|p| p.name == "@acme/widget")
+                .unwrap()
+                .version,
+            "1.2.5"
+        );
+        let bodies = server_b.resolve_bodies();
+        assert!(!bodies.is_empty());
+        for body in &bodies {
+            let engine = body.get("engine").and_then(|v| v.as_str()).unwrap_or_default();
+            assert_eq!(engine, env!("CARGO_PKG_VERSION"), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn update_unsatisfiable_for_engine_names_package_range_and_remedy() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-eng422");
+        let (manifest_a, pairs_a, _, node_a) = update_mock("1.2.0", "@acme/widget", "");
+        let server_a =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_a]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_a),
+                chunk_override: Some(pairs_a),
+            });
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" }\n";
+        let (_dir, root) = update_app("eng422", deps, "", &server_a.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        ProjectDepLock::resolve(&root, &cfg)
+            .unwrap()
+            .write(&root)
+            .unwrap();
+        let current = env!("CARGO_PKG_VERSION");
+        let server_b =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 422,
+                resolve_body: format!(
+                    "{{\"code\": \"unsatisfiable\", \"message\": \"no version of @acme/widget satisfies ^1.0.0 for engine {current} (have 1.3.0)\"}}"
+                ),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: None,
+                chunk_override: None,
+            });
+        update_point_registry(&root, deps, "", &server_b.base);
+        let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let before = std::fs::read_to_string(root.join(LOCK_FILE)).unwrap();
+        let err = ProjectDepLock::update_lock(
+            &root,
+            &cfg_b,
+            crate::native::NativePrefer::None,
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("@acme/widget"), "{}", err.message);
+        assert!(err.message.contains("^1.0.0"), "{}", err.message);
+        assert!(err.message.contains(current), "{}", err.message);
+        let hint = err.hint.clone().unwrap_or_default();
+        assert!(hint.contains("upgrade the toolchain"), "{hint}");
+        assert!(hint.contains("relax"), "{hint}");
+        assert_eq!(
+            std::fs::read_to_string(root.join(LOCK_FILE)).unwrap(),
+            before,
+            "a failed update must leave the deplock untouched"
+        );
+    }
+
+    #[test]
+    fn update_major_flag_does_not_override_engine() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-engmajor");
+        let (manifest_a, pairs_a, _, node_a) = update_mock("1.2.0", "@acme/widget", "");
+        let server_a =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_a]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_a),
+                chunk_override: Some(pairs_a),
+            });
+        let deps = "        \"@acme/widget\": { version: \"*\" }\n";
+        let (_dir, root) = update_app("engmajor", deps, "", &server_a.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        ProjectDepLock::resolve(&root, &cfg)
+            .unwrap()
+            .write(&root)
+            .unwrap();
+        let (manifest_b, pairs_b, _, node_b) = update_mock("2.0.0", "@acme/widget", ">=99.0.0");
+        let server_b =
+            crate::fetch::testkit::MockRegistry::start(crate::fetch::testkit::MockConfig {
+                version_spec: 0,
+                capabilities: vec!["tombstones"],
+                resolve_status: 200,
+                resolve_body: crate::fetch::testkit::resolve_json_static(&[node_b]),
+                manifest_status: 200,
+                fallback_tarball: Vec::new(),
+                manifest_error: String::new(),
+                manifest_override: Some(manifest_b),
+                chunk_override: Some(pairs_b),
+            });
+        update_point_registry(&root, deps, "", &server_b.base);
+        let cfg_b = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        for allow_major in [false, true] {
+            let err = ProjectDepLock::update_lock(
+                &root,
+                &cfg_b,
+                crate::native::NativePrefer::None,
+                &[],
+                allow_major,
+            )
+            .unwrap_err();
+            assert!(err.message.contains("needs engine"), "allow_major={allow_major}: {}", err.message);
+            let hint = err.hint.clone().unwrap_or_default();
+            assert!(hint.contains("upgrade the toolchain"), "allow_major={allow_major}: {hint}");
+        }
+        let pinned = ProjectDepLock::load(&root).unwrap().unwrap();
+        assert_eq!(
+            pinned
+                .packages
+                .iter()
+                .find(|p| p.name == "@acme/widget")
+                .unwrap()
+                .version,
+            "1.2.0"
+        );
+    }
+
+    #[test]
+    fn verify_keeps_pins_when_an_update_is_available() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-verify");
+        let (manifest_old, pairs_old, digest_old, _) = update_mock("1.2.0", "@acme/widget", "");
+        let (manifest_new, pairs_new, digest_new, _) = update_mock("1.3.0", "@acme/widget", "");
+        let node_old =
+            crate::fetch::testkit::node_engine_json("@acme/widget", "1.2.0", &digest_old, false, "");
+        let node_new =
+            crate::fetch::testkit::node_engine_json("@acme/widget", "1.3.0", &digest_new, false, "");
+        let body_old = crate::fetch::testkit::resolve_json_static(&[node_old]);
+        let body_new = crate::fetch::testkit::resolve_json_static(&[node_new]);
+        let mut chunks = std::collections::BTreeMap::new();
+        chunks.insert("@acme/widget@1.2.0".to_string(), (manifest_old, pairs_old));
+        chunks.insert("@acme/widget@1.3.0".to_string(), (manifest_new, pairs_new));
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server = crate::fetch::testkit::MockRegistry::start_dynamic(
+            chunks,
+            move |reqs| {
+                let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if reqs.get("@acme/widget").map(String::as_str) == Some("1.2.0") || n == 0 {
+                    body_old.clone()
+                } else {
+                    body_new.clone()
+                }
+            },
+        );
+        let deps = "        \"@acme/widget\": { version: \"^1.0.0\" }\n";
+        let (_dir, root) = update_app("verify", deps, "", &server.base);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let old = ProjectDepLock::resolve(&root, &cfg).unwrap();
+        assert_eq!(
+            old.packages
+                .iter()
+                .find(|p| p.name == "@acme/widget")
+                .unwrap()
+                .version,
+            "1.2.0"
+        );
+        old.write(&root).unwrap();
+        let lock = ProjectDepLock::load(&root).unwrap().unwrap();
+        let before = dir_snapshot(&root);
+        verify_lock(&root, &cfg, &lock).unwrap();
+        assert_eq!(
+            dir_snapshot(&root),
+            before,
+            "verification must never rewrite the deplock, even when an update is available"
+        );
+        assert_eq!(
+            ProjectDepLock::load(&root)
+                .unwrap()
+                .unwrap()
+                .packages
+                .iter()
+                .find(|p| p.name == "@acme/widget")
+                .unwrap()
+                .version,
+            "1.2.0"
+        );
     }
 
     #[test]

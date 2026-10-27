@@ -16,6 +16,7 @@ struct VersionFiles {
     manifest: String,
     pairs: Vec<(String, Vec<u8>)>,
     digest: String,
+    engine_range: String,
 }
 
 fn version_files(full: &str, version: &str, marker: u32) -> VersionFiles {
@@ -55,14 +56,22 @@ fn version_files(full: &str, version: &str, marker: u32) -> VersionFiles {
         manifest,
         pairs,
         digest,
+        engine_range: String::new(),
     }
+}
+
+fn version_files_engine(full: &str, version: &str, marker: u32, engine_range: &str) -> VersionFiles {
+    let mut files = version_files(full, version, marker);
+    files.engine_range = engine_range.to_string();
+    files
 }
 
 fn node_json(full: &str, files: &VersionFiles) -> String {
     format!(
-        "{{\"full\": \"{full}\", \"version\": \"{v}\", \"path\": \"{full}@{v}/chunks\", \"integrity\": \"{d}\", \"engineRange\": \"\", \"deps\": [], \"yanked\": false}}",
+        "{{\"full\": \"{full}\", \"version\": \"{v}\", \"path\": \"{full}@{v}/chunks\", \"integrity\": \"{d}\", \"engineRange\": \"{e}\", \"deps\": [], \"yanked\": false}}",
         v = files.version,
-        d = files.digest
+        d = files.digest,
+        e = files.engine_range
     )
 }
 
@@ -75,6 +84,47 @@ fn parse_triple(version: &str) -> Option<(u64, u64, u64)> {
         return None;
     }
     Some((major, minor, patch))
+}
+
+fn engine_ok(range: &str, engine: &str) -> bool {
+    let range = range.trim();
+    if range.is_empty() || range == "*" {
+        return true;
+    }
+    let v = match parse_triple(engine) {
+        Some(v) => v,
+        None => return false,
+    };
+    if let Some(rest) = range.strip_prefix(">=") {
+        return match parse_triple(rest.trim()) {
+            Some(b) => v >= b,
+            None => false,
+        };
+    }
+    if let Some(rest) = range.strip_prefix('^') {
+        let b = match parse_triple(rest.trim()) {
+            Some(b) => b,
+            None => return false,
+        };
+        if v < b {
+            return false;
+        }
+        if b.0 > 0 {
+            return v.0 == b.0;
+        }
+        if b.1 > 0 {
+            return v.0 == 0 && v.1 == b.1;
+        }
+        return v == b;
+    }
+    if let Some(rest) = range.strip_prefix('~') {
+        let b = match parse_triple(rest.trim()) {
+            Some(b) => b,
+            None => return false,
+        };
+        return v >= b && v.0 == b.0 && v.1 == b.1;
+    }
+    parse_triple(range).is_some_and(|b| v == b)
 }
 
 fn satisfies(version: &str, range: &str) -> bool {
@@ -185,21 +235,38 @@ fn serve(packages: BTreeMap<String, Vec<VersionFiles>>) -> String {
                 } else if method == "POST" && route == "/api/v0/resolve" {
                     let value: serde_json::Value =
                         serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                    let engine = value
+                        .get("engine")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     let mut resolved = BTreeMap::new();
                     let mut nodes = Vec::new();
-                    let mut bad = None;
+                    let mut bad: Option<(u16, &str, &str, String)> = None;
                     if let Some(reqs) = value.get("requirements").and_then(|v| v.as_object()) {
                         for (full, range) in reqs {
                             let range = range.as_str().unwrap_or_default();
                             match packages.get(full) {
                                 None => {
-                                    bad = Some(format!("package {full} does not exist"));
+                                    bad = Some((
+                                        404,
+                                        "Not Found",
+                                        "not-found",
+                                        format!("package {full} does not exist"),
+                                    ));
                                     break;
                                 }
                                 Some(versions) => {
                                     let mut best: Option<&VersionFiles> = None;
+                                    let mut compatible = 0usize;
                                     for cand in versions {
                                         if !satisfies(&cand.version, range) {
+                                            continue;
+                                        }
+                                        compatible += 1;
+                                        if !engine.is_empty()
+                                            && !engine_ok(&cand.engine_range, &engine)
+                                        {
                                             continue;
                                         }
                                         let take = match &best {
@@ -215,9 +282,25 @@ fn serve(packages: BTreeMap<String, Vec<VersionFiles>>) -> String {
                                     }
                                     match best {
                                         None => {
-                                            bad = Some(format!(
-                                                "no version of {full} satisfies {range}"
-                                            ));
+                                            if compatible > 0 && !engine.is_empty() {
+                                                bad = Some((
+                                                    422,
+                                                    "Unprocessable Entity",
+                                                    "unsatisfiable",
+                                                    format!(
+                                                        "no version of {full} satisfies {range} for engine {engine}"
+                                                    ),
+                                                ));
+                                            } else {
+                                                bad = Some((
+                                                    404,
+                                                    "Not Found",
+                                                    "not-found",
+                                                    format!(
+                                                        "no version of {full} satisfies {range}"
+                                                    ),
+                                                ));
+                                            }
                                             break;
                                         }
                                         Some(pick) => {
@@ -230,10 +313,10 @@ fn serve(packages: BTreeMap<String, Vec<VersionFiles>>) -> String {
                         }
                     }
                     match bad {
-                        Some(message) => {
+                        Some((status, text, code, message)) => {
                             let body =
-                                format!("{{\"code\": \"not-found\", \"message\": \"{message}\"}}");
-                            respond(404, "Not Found", body.as_bytes());
+                                format!("{{\"code\": \"{code}\", \"message\": \"{message}\"}}");
+                            respond(status, text, body.as_bytes());
                         }
                         None => {
                             let body = format!(
@@ -525,4 +608,139 @@ fn update_keeps_consumer_native_override() {
     );
     let text = std::fs::read_to_string(root.join("Project.deplock")).unwrap();
     assert!(text.contains("source: \"native:z\""), "{text}");
+}
+
+#[test]
+fn update_picks_highest_engine_compatible() {
+    let mut packages = BTreeMap::new();
+    packages.insert(
+        "@acme/widget".to_string(),
+        vec![
+            version_files("@acme/widget", "1.2.0", 120),
+            version_files("@acme/widget", "1.2.5", 125),
+            version_files_engine("@acme/widget", "1.3.0", 130, ">=99.0.0"),
+        ],
+    );
+    let url = serve(packages);
+    let (_dir, root, cache) = proj(
+        "engmax",
+        "        \"@acme/widget\": { version: \"1.2.0\" }\n",
+        "",
+        &url,
+    );
+    let out = run(&root, &cache, &["lock"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    write_manifest(
+        &root,
+        "        \"@acme/widget\": { version: \"^1.0.0\" }\n",
+        "",
+        &url,
+    );
+    let out = run(&root, &cache, &["update"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(
+        combined(&out).contains("updated @acme/widget 1.2.0 -> 1.2.5"),
+        "{}",
+        combined(&out)
+    );
+    let text = std::fs::read_to_string(root.join("Project.deplock")).unwrap();
+    assert!(text.contains("version: \"1.2.5\""), "{text}");
+    assert!(!text.contains("1.3.0"), "{text}");
+}
+
+#[test]
+fn update_fails_closed_when_only_incompatible_satisfies() {
+    let mut old_pkgs = BTreeMap::new();
+    old_pkgs.insert(
+        "@acme/widget".to_string(),
+        vec![version_files("@acme/widget", "1.2.0", 120)],
+    );
+    let old_url = serve(old_pkgs);
+    let (_dir, root, cache) = proj(
+        "engfail",
+        "        \"@acme/widget\": { version: \"1.2.0\" }\n",
+        "",
+        &old_url,
+    );
+    let out = run(&root, &cache, &["lock"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    let mut new_pkgs = BTreeMap::new();
+    new_pkgs.insert(
+        "@acme/widget".to_string(),
+        vec![version_files_engine("@acme/widget", "1.3.0", 130, ">=99.0.0")],
+    );
+    let new_url = serve(new_pkgs);
+    write_manifest(
+        &root,
+        "        \"@acme/widget\": { version: \"^1.0.0\" }\n",
+        "",
+        &new_url,
+    );
+    let before = std::fs::read_to_string(root.join("Project.deplock")).unwrap();
+    let out = run(&root, &cache, &["update"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    let text = combined(&out);
+    assert!(text.contains("@acme/widget"), "{text}");
+    assert!(text.contains("^1.0.0"), "{text}");
+    assert!(text.contains("for engine "), "{text}");
+    assert!(text.contains("upgrade the toolchain"), "{text}");
+    assert!(text.contains("relax"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("Project.deplock")).unwrap(),
+        before,
+        "a failed update must leave the deplock untouched"
+    );
+}
+
+#[test]
+fn update_major_hold_names_move_and_respects_engine_filter() {
+    let mut old_pkgs = BTreeMap::new();
+    old_pkgs.insert(
+        "@acme/widget".to_string(),
+        vec![version_files("@acme/widget", "1.2.0", 120)],
+    );
+    let old_url = serve(old_pkgs);
+    let (_dir, root, cache) = proj(
+        "engmajor",
+        "        \"@acme/widget\": { version: \"1.2.0\" }\n",
+        "",
+        &old_url,
+    );
+    let out = run(&root, &cache, &["lock"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    let mut new_pkgs = BTreeMap::new();
+    new_pkgs.insert(
+        "@acme/widget".to_string(),
+        vec![
+            version_files("@acme/widget", "1.2.0", 120),
+            version_files("@acme/widget", "2.0.0", 200),
+            version_files_engine("@acme/widget", "3.0.0", 300, ">=99.0.0"),
+        ],
+    );
+    let new_url = serve(new_pkgs);
+    write_manifest(
+        &root,
+        "        \"@acme/widget\": { version: \"*\" }\n",
+        "",
+        &new_url,
+    );
+    let out = run(&root, &cache, &["update"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(
+        combined(&out).contains("held @acme/widget at 1.2.0 (major move to 2.0.0 needs --major)"),
+        "{}",
+        combined(&out)
+    );
+    let text = std::fs::read_to_string(root.join("Project.deplock")).unwrap();
+    assert!(text.contains("version: \"1.2.0\""), "{text}");
+    let out = run(&root, &cache, &["update", "--major"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(
+        combined(&out).contains("updated @acme/widget 1.2.0 -> 2.0.0"),
+        "{}",
+        combined(&out)
+    );
+    let text = std::fs::read_to_string(root.join("Project.deplock")).unwrap();
+    assert!(text.contains("version: \"2.0.0\""), "{text}");
+    assert!(!text.contains("3.0.0"), "{text}");
 }
