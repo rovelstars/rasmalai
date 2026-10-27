@@ -977,6 +977,39 @@ fn is_server_std(path: &std::path::Path) -> bool {
     path.to_string_lossy().starts_with("@std/")
 }
 
+fn s103_symbol(message: &str) -> String {
+    let mut rest = message;
+    while let Some(start) = rest.find('`') {
+        rest = &rest[start + 1..];
+        match rest.find('`') {
+            Some(end) if rest[..end].starts_with("__rnx_") => return rest[..end].to_string(),
+            Some(end) => rest = &rest[end + 1..],
+            None => break,
+        }
+    }
+    String::new()
+}
+
+fn registries_keys_in_config(text: &str) -> Vec<String> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    let (project, _) = match frontend::project::parse_manifest_for_publish(text) {
+        Ok(parsed) => parsed,
+        Err(_) => return Vec::new(),
+    };
+    let mut keys = Vec::new();
+    if let Some(cfg) = project {
+        if cfg.registry.is_some() {
+            keys.push("registry".to_string());
+        }
+        if !cfg.registries.is_empty() {
+            keys.push("registries".to_string());
+        }
+    }
+    keys
+}
+
 // Whole-tree capability facts for one publish. Every file parses (any
 // failure rejects the publish), the module graph resolves over the entry
 // roots, and the real capability analyzer runs over the merged non-std
@@ -1069,32 +1102,59 @@ pub fn analyze_project(files_json: &str, entries_json: &str) -> String {
         docs: String::new(),
         warnings: Vec::new(),
     };
-    // S103: bare `__rnx_*` references are forbidden outside `@std/*`.
-    // The stdlib's own publishes are exempt (the server gates `@std/`
-    // names to the org token, so an `@std/` frame is trusted bytes);
-    // every other frame is scanned per file with frame-wide declared
-    // names as the scope, so merged-span collisions cannot misattribute.
+    // S103 and registry keys are report-only: counted and surfaced, never
+    // rejections. A non-`@std` frame trips S103 on bare `__rnx_*` uses in
+    // every file it ships, including `@std/`-prefixed paths (a name prefix
+    // alone never exempts; only the `@std/` frame name does, and the route
+    // 403-gates that scope to the org token). Declared `from native`
+    // aliases are exempt by the scope checker, and `__ffi_*` names never
+    // auto-resolve, so neither trips the count.
     let package_name = entries
         .get("packageName")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    if !package_name.starts_with("@std/") {
-        let entry_src = files.get(&main_norm).map(|s| s.as_str()).unwrap_or("");
+    let std_frame = package_name.starts_with("@std/");
+    let mut s103_files = serde_json::Map::new();
+    let mut s103_count = 0usize;
+    if !std_frame {
         let mut frame: Vec<(std::path::PathBuf, frontend::ast::Module)> = Vec::new();
         for (path, module) in &parsed {
-            if path.starts_with("@std/") {
-                continue;
-            }
             frame.push((std::path::PathBuf::from(path), module.clone()));
         }
         let refs: Vec<(&std::path::Path, &frontend::ast::Module)> = frame
             .iter()
             .map(|(path, module)| (path.as_path(), module))
             .collect();
-        if let Some(first) = frontend::security::s103_frame(&refs).first() {
-            return server_err(project_hook(&files, entry_src, first));
+        let mut by_file: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for diag in frontend::security::s103_frame(&refs) {
+            s103_count += 1;
+            let file = diag
+                .file
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            by_file
+                .entry(file)
+                .or_default()
+                .push(s103_symbol(&diag.message));
+        }
+        for (file, mut names) in by_file {
+            names.sort();
+            names.dedup();
+            s103_files.insert(
+                file,
+                serde_json::Value::Array(
+                    names.into_iter().map(serde_json::Value::String).collect(),
+                ),
+            );
         }
     }
+    let registries_keys = registries_keys_in_config(
+        entries
+            .get("configText")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+    );
     let merged_src = files.values().cloned().collect::<Vec<_>>().join("\n");
     let mut capabilities = std::collections::BTreeSet::new();
     match frontend::capabilities::analyze_with_fuel(&tree, &merged_src, "project", 4_000_000) {
@@ -1169,6 +1229,10 @@ pub fn analyze_project(files_json: &str, entries_json: &str) -> String {
         "capabilities": caps,
         "perFile": per_file,
         "unreachable": unreachable,
+        "reportOnly": {
+            "s103": {"count": s103_count, "files": s103_files},
+            "registries": {"keys": registries_keys},
+        },
     })
     .to_string()
 }
@@ -1539,8 +1603,48 @@ mod tests {
         assert_eq!(out["ok"], false, "{out}");
     }
 
+    fn report_only(out: &serde_json::Value) -> &serde_json::Value {
+        out.get("reportOnly").expect("reportOnly verdicts")
+    }
+
+    fn s103_report(out: &serde_json::Value) -> (u64, Vec<(String, Vec<String>)>) {
+        let s103 = &report_only(out)["s103"];
+        let count = s103["count"].as_u64().unwrap_or(999);
+        let mut files: Vec<(String, Vec<String>)> = s103["files"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(path, names)| {
+                let mut symbols: Vec<String> = names
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                symbols.sort();
+                (path, symbols)
+            })
+            .collect();
+        files.sort();
+        (count, files)
+    }
+
+    fn registries_keys(out: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = report_only(out)["registries"]["keys"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        keys.sort();
+        keys
+    }
+
     #[test]
-    fn analyze_rejects_bare_rnx_reference() {
+    fn analyze_counts_bare_rnx_reference_report_only() {
         let _serial = serial();
         let files = serde_json::json!({
             "main.rnx": "fn Main(): Int { return __rnx_clock_mono(); }\n",
@@ -1548,12 +1652,19 @@ mod tests {
         .to_string();
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
-        assert_eq!(out["ok"], false, "{out}");
-        assert!(out["error"].as_str().unwrap_or_default().contains("S103"), "{out}");
+        assert_eq!(out["ok"], true, "{out}");
+        let (count, by_file) = s103_report(&out);
+        assert_eq!(count, 1, "{out}");
+        assert_eq!(
+            by_file,
+            vec![("main.rnx".to_string(), vec!["__rnx_clock_mono".to_string()])],
+            "{out}"
+        );
+        assert!(registries_keys(&out).is_empty(), "{out}");
     }
 
     #[test]
-    fn analyze_rejects_bare_rnx_in_unreached_file() {
+    fn analyze_counts_bare_rnx_in_unreached_file() {
         let _serial = serial();
         let files = serde_json::json!({
             "main.rnx": "fn Main(): Int { return 0; }\n",
@@ -1562,8 +1673,33 @@ mod tests {
         .to_string();
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
-        assert_eq!(out["ok"], false, "{out}");
-        assert!(out["error"].as_str().unwrap_or_default().contains("S103"), "{out}");
+        assert_eq!(out["ok"], true, "{out}");
+        let (count, by_file) = s103_report(&out);
+        assert_eq!(count, 1, "{out}");
+        assert_eq!(
+            by_file,
+            vec![("extra.rnx".to_string(), vec!["__rnx_clock_mono".to_string()])],
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn analyze_counts_std_prefixed_spoof_in_non_std_frame() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "@std/shim.rnx": "export fn shim(): Int { return __rnx_clock_mono(); }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"@std/shim.rnx\", \"bins\": {}}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let (count, by_file) = s103_report(&out);
+        assert_eq!(count, 1, "{out}");
+        assert_eq!(
+            by_file,
+            vec![("@std/shim.rnx".to_string(), vec!["__rnx_clock_mono".to_string()])],
+            "{out}"
+        );
     }
 
     #[test]
@@ -1576,6 +1712,54 @@ mod tests {
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}, \"packageName\": \"@std/probe\"}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
         assert_eq!(out["ok"], true, "{out}");
+        let (count, _) = s103_report(&out);
+        assert_eq!(count, 0, "{out}");
+    }
+
+    #[test]
+    fn analyze_ignores_declared_ffi_alias() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "import { fn clock(): Int as __ffi_clock } from native \"rt\";\nfn Main(): Int { return __ffi_clock(); }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let (count, _) = s103_report(&out);
+        assert_eq!(count, 0, "{out}");
+    }
+
+    #[test]
+    fn analyze_reports_registry_keys_report_only() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "fn Main(): Int { return 0; }\n",
+        })
+        .to_string();
+        let config = "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.0.0\"\n    },\n    entries: { main: \"main.rnx\" },\n    registry: { url: \"https://rnx.example.invalid\" },\n    registries: { \"@acme\": { url: \"https://acme.example.invalid\" } }\n}\n";
+        let entries = serde_json::json!({"main": "main.rnx", "bins": {}, "configText": config}).to_string();
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, &entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(registries_keys(&out), vec!["registries".to_string(), "registry".to_string()], "{out}");
+        let (count, _) = s103_report(&out);
+        assert_eq!(count, 0, "{out}");
+    }
+
+    #[test]
+    fn analyze_reports_no_registry_keys_for_plain_config() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "fn Main(): Int { return 0; }\n",
+        })
+        .to_string();
+        let config = "export default {\n    project: {\n        name: \"probe\",\n        version: \"1.0.0\"\n    },\n    entries: { main: \"main.rnx\" }\n}\n";
+        let entries = serde_json::json!({"main": "main.rnx", "bins": {}, "configText": config}).to_string();
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, &entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        assert!(registries_keys(&out).is_empty(), "{out}");
+        let (count, _) = s103_report(&out);
+        assert_eq!(count, 0, "{out}");
     }
 
     #[test]

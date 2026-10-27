@@ -74,6 +74,20 @@ Idempotency: every mutation takes a client-generated `requestId`. Publish reads 
 
 `@std` is reserved: session publishes naming `@std/*` fail with 403 even when the scope check would pass. Only the org token seeds the standard library.
 
+## Report-only publish rules
+
+Two predicates run on every whole-tree analysis and count without rejecting: bare `__rnx_*` uses in non-`@std` frames (rule S103), and top-level `registry`/`registries` keys in the frame `Project.config`. A violating publish still returns 201; the success body carries the verdicts under `reportOnly`, and the worker logs one JSON line per violating publish:
+
+```json
+{"scope":"publish-report-only","requestId":"req-1-2","name":"colony","version":"0.4.0","s103":{"count":1,"files":{"src/main.rnx":["__rnx_clock_mono"]}},"registries":{"keys":[]}}
+```
+
+The `@std` exemption follows the frame name, never a file path: only a `@std/*`-named frame (which the route above gates to the org token) skips the S103 count, so smuggling a `@std/`-prefixed file into any other frame still counts. Declared `from native` aliases are exempt, and `__ffi_*` names never count. Missing or unparseable config text counts nothing — the config gate upstream already rejects what it cannot parse.
+
+`GET /api/admin/publish-rules` (admin token) replays both predicates over the live set — one full whole-tree re-analysis per package, sequential — and returns per-rule counts plus the violating package names. It is read-only and bounded: `?limit=` caps the packages per call (default 200, max 1000), each package caps at 8 MiB of reassembled source, and anything skipped lands in `skipped` with a reason instead of failing the call. Whole-tree analysis costs about 0.25 ms per KiB of canonical source plus one chunk read per stored file; page through with repeated calls on a large registry.
+
+These counts are the input to the enforcement flip, which is a separate change: new violating publishes start failing with 400, stored S103 violators gain `critical` advisories, and the spec yank ladder takes over. Until that change lands, the counts only measure. The upload rules page tells publishers how to fix each trip before the flip.
+
 ## Mutations
 
 All of them purge the affected edge URLs, and all of them report success only after the purge verifies (when purge credentials are configured). Without credentials the mutation commits, the audit row says `purge-skipped`, and the origin stays authoritative.

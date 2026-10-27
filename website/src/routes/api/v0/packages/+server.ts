@@ -365,6 +365,10 @@ export async function POST({ request, platform, url }) {
 	let capabilities: DeclaredPermission[];
 	let factRows: CanonicalFact[];
 	let edges: { edges: string[]; permsDigest: string; files: Array<{ path: string; hash: string }> };
+	// Report-only verdicts from the whole-tree analysis (S103, registry
+	// keys). They ride the success body for the publisher and the worker
+	// log for the operator, and never reject: enforcement is a later flip.
+	let reportOnly: Awaited<ReturnType<typeof analyzeTree>>['reportOnly'] | null = null;
 	const manifestJson = JSON.stringify({
 		deps: facts.dependencies,
 		permissions: facts.permissions.map((p) => (p.reason ? { perm: p.perm, reason: p.reason } : p.perm))
@@ -391,7 +395,8 @@ export async function POST({ request, platform, url }) {
 			analysis = await analyzeTree(env, rnxFiles, {
 				main: facts.entries.main,
 				bins: facts.entries.bins,
-				packageName: frame.name
+				packageName: frame.name,
+				configText: sources['Project.config'] ?? ''
 			});
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
@@ -440,6 +445,7 @@ export async function POST({ request, platform, url }) {
 			permsDigest,
 			files: files.map((f) => ({ path: f.name, hash: fileHashes.get(f.name) ?? '' }))
 		};
+		reportOnly = analysis.reportOnly;
 	}
 	const existing = await existingChunkHashes(env, chunked.units.map((u) => u.hash));
 	const missing = chunked.units.filter((u) => !existing.has(u.hash));
@@ -487,7 +493,19 @@ export async function POST({ request, platform, url }) {
 	for (const dep of extractDepNames(manifestJson)) {
 		await purgeUrls(env, [`${url.origin}/api/v0/packages/${dep}/dependents`], { fullName: dep });
 	}
-	return json({ success: true, url: `/packages/${frame.name}`, version: frame.version, manifestDigest: digest, artifactDigest: frame.artifactDigest ?? null }, { status: 201, headers: specHeaders() });
+	if (reportOnly && (reportOnly.s103.count > 0 || reportOnly.registries.keys.length > 0)) {
+		console.warn(
+			JSON.stringify({
+				scope: 'publish-report-only',
+				requestId: frame.requestId,
+				name: frame.name,
+				version: frame.version,
+				s103: reportOnly.s103,
+				registries: reportOnly.registries
+			})
+		);
+	}
+	return json({ success: true, url: `/packages/${frame.name}`, version: frame.version, manifestDigest: digest, artifactDigest: frame.artifactDigest ?? null, reportOnly }, { status: 201, headers: specHeaders() });
 }
 
 function canonicalFilesFor(canonical: Record<string, string>, names: string[]): CanonicalFile[] {
