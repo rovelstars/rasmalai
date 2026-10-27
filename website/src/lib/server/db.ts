@@ -2005,10 +2005,17 @@ const VERSION_INDEX_MAX_VERSION_STRINGS = 50_000;
 // and a resolve may use the list only when the counter it reads back from
 // the picked row still matches. A counter that moved means the candidate
 // set changed, and the list is re-read.
+//
+// A resolve that names an engine reads through an engine-scoped key: the
+// stored list is already filtered to the versions that engine accepts, so
+// a key for another engine (or none) must never serve it. The key carries
+// the exact engine string the client sent, never a normalized range: two
+// engines that accept the same versions still memoize separately.
 interface VersionIndexEntry {
 	at: number;
 	token: number;
 	versions: string[];
+	total: number;
 }
 
 const versionIndex = new Map<string, VersionIndexEntry>();
@@ -2027,26 +2034,30 @@ export function clearVersionIndex(): void {
 	versionIndexVersionStrings = 0;
 }
 
-function versionIndexGet(full: string): VersionIndexEntry | null {
-	const hit = versionIndex.get(full);
+function versionIndexKey(full: string, engine: string | undefined): string {
+	return engine === undefined ? full : `${full} ${engine}`;
+}
+
+function versionIndexGet(key: string): VersionIndexEntry | null {
+	const hit = versionIndex.get(key);
 	if (!hit) return null;
 	if (Date.now() - hit.at >= VERSION_INDEX_TTL_MS) {
-		versionIndexDrop(full);
+		versionIndexDrop(key);
 		return null;
 	}
 	return hit;
 }
 
-function versionIndexDrop(full: string): void {
-	const hit = versionIndex.get(full);
+function versionIndexDrop(key: string): void {
+	const hit = versionIndex.get(key);
 	if (!hit) return;
 	versionIndexVersionStrings -= hit.versions.length;
-	versionIndex.delete(full);
+	versionIndex.delete(key);
 }
 
-function versionIndexSet(full: string, versions: string[], token: number): void {
-	versionIndexDrop(full);
-	versionIndex.set(full, { at: Date.now(), token, versions });
+function versionIndexSet(key: string, versions: string[], total: number, token: number): void {
+	versionIndexDrop(key);
+	versionIndex.set(key, { at: Date.now(), token, versions, total });
 	versionIndexVersionStrings += versions.length;
 	while (versionIndexVersionStrings > VERSION_INDEX_MAX_VERSION_STRINGS) {
 		const oldest = versionIndex.keys().next();
@@ -2109,6 +2120,7 @@ function isWithdrawn(row: ResolveRow): boolean {
 }
 
 const CANDIDATE_SQL_HEAD = `SELECT p.scope AS scope, p.name AS name, v.version AS version,
+	v.engine_range AS engine_range,
 	p.mutation_count AS mutation_count
 	FROM package_versions v JOIN packages p ON p.id = v.package_id
 	WHERE v.status IN ('live', 'yanked') AND (`;
@@ -2137,6 +2149,9 @@ function pickedRowSql(): string {
 // reading it. The count is the proof that the list is still current.
 interface CandidateList {
 	versions: string[];
+	// Versions before engine filtering: zero means the name has no rows at
+	// all, which answers "does not exist" even when an engine is set.
+	total: number;
 	token: number;
 }
 
@@ -2144,10 +2159,21 @@ interface CandidateList {
 // for it is always read fresh.
 const NO_TOKEN = -1;
 
+// A version the engine accepts. An empty range accepts every engine; the
+// comparison itself is the same range check the client runs after the
+// download, so the server never invents a second range dialect.
+function engineKeeps(engine: string | undefined, engineRange: string): boolean {
+	if (engine === undefined) return true;
+	const range = engineRange.trim();
+	if (range === '') return true;
+	return satisfiesRange(engine, range);
+}
+
 async function resolveCandidates(
 	raw: Client | null,
 	fulls: string[],
-	budget: SubrequestBudget
+	budget: SubrequestBudget,
+	engine: string | undefined
 ): Promise<Map<string, CandidateList>> {
 	const out = new Map<string, CandidateList>();
 	const want: Array<{ full: string; scope: string; name: string }> = [];
@@ -2156,10 +2182,10 @@ async function resolveCandidates(
 		// An unparseable name has no packages row, which is the same answer as
 		// an empty candidate list and keeps `package X does not exist` intact.
 		if (parsed) want.push({ full, scope: parsed.scope, name: parsed.name });
-		else out.set(full, { versions: [], token: NO_TOKEN });
+		else out.set(full, { versions: [], total: 0, token: NO_TOKEN });
 	}
 	if (raw === null || want.length === 0) {
-		for (const w of want) out.set(w.full, { versions: [], token: NO_TOKEN });
+		for (const w of want) out.set(w.full, { versions: [], total: 0, token: NO_TOKEN });
 		return out;
 	}
 	const groups = chunked(want, Math.max(1, Math.floor(RESOLVE_SQL_MAX_PARAMS / 2)));
@@ -2170,19 +2196,32 @@ async function resolveCandidates(
 			args: group.flatMap((w) => [w.scope, w.name])
 		}))
 	);
+	const seen = new Map<string, { versions: string[]; ranges: string[]; token: number }>();
 	for (let i = 0; i < groups.length; i++) {
 		for (const row of results[i].rows) {
 			const scope = String(row['scope'] ?? '');
 			const name = String(row['name'] ?? '');
 			const full = scope ? `@${scope}/${name}` : name;
-			const entry = out.get(full) ?? { versions: [], token: NO_TOKEN };
+			const entry = seen.get(full) ?? { versions: [], ranges: [], token: NO_TOKEN };
 			entry.versions.push(String(row['version']));
+			entry.ranges.push(String(row['engine_range'] ?? ''));
 			// Every row of a package carries the count of its packages row.
 			entry.token = Number(row['mutation_count'] ?? 0);
-			out.set(full, entry);
+			seen.set(full, entry);
 		}
 	}
-	for (const w of want) if (!out.has(w.full)) out.set(w.full, { versions: [], token: NO_TOKEN });
+	for (const w of want) {
+		const got = seen.get(w.full);
+		if (!got) {
+			out.set(w.full, { versions: [], total: 0, token: NO_TOKEN });
+			continue;
+		}
+		out.set(w.full, {
+			versions: got.versions.filter((v, i) => engineKeeps(engine, got.ranges[i])),
+			total: got.versions.length,
+			token: got.token
+		});
+	}
 	return out;
 }
 
@@ -2335,6 +2374,10 @@ function resolveEntries(text: string): TarEntryRef[] | null {
 export interface ResolveOptions {
 	inlineChunks?: boolean;
 	advertiseChunks?: boolean;
+	// The toolchain version the client resolved with, as an exact X.Y.Z.
+	// It filters every candidate list to the versions that engine accepts.
+	// Absent means the client never sent one: the resolve is unfiltered.
+	engine?: string;
 }
 
 // Why an inline answer was refused. The client falls back to one manifest
@@ -2420,6 +2463,14 @@ export async function resolveGraph(
 	chunksDeclined: InlineDecline | null;
 }> {
 	const inline = options.inlineChunks === true;
+	// The toolchain version the client resolved with. It filters the
+	// candidate lists to the versions that engine accepts, using the same
+	// range check the client runs after the download. Absent means the
+	// client never sent one and the resolve behaves as it always did.
+	const engine = options.engine?.trim() ? options.engine.trim() : undefined;
+	if (engine !== undefined && parseSemver(engine) === null) {
+		throw new Error(`invalid engine version "${options.engine}" (expected X.Y.Z)`);
+	}
 	const budget = new SubrequestBudget(resolveSubrequestLimit(env));
 	// The schema check of a cold isolate is one round trip of its own.
 	budget.spend(1, 'schema check');
@@ -2435,6 +2486,7 @@ export async function resolveGraph(
 	}
 
 	const candidates = new Map<string, string[]>();
+	const unfiltered = new Map<string, number>();
 	const rows = new Map<string, ResolveRow>();
 	const depCache = new Map<string, Array<[string, string]>>();
 	const ranges = new Map<string, string[]>();
@@ -2480,25 +2532,31 @@ export async function resolveGraph(
 		const missing: string[] = [];
 		for (const full of frontier) {
 			if (candidates.has(full)) continue;
-			const hit = versionIndexGet(full);
+			const hit = versionIndexGet(versionIndexKey(full, engine));
 			if (hit) memoHit.push([full, hit]);
 			else missing.push(full);
 		}
 		const tokens = new Map<string, number>();
 		const fromMemo = new Set<string>();
 		if (missing.length > 0) {
-			const fresh = await resolveCandidates(raw, missing, budget);
+			const fresh = await resolveCandidates(raw, missing, budget, engine);
 			for (const [full, list] of fresh) {
 				// The candidate list is copied: the memo keeps its own copy.
 				candidates.set(full, [...list.versions]);
+				unfiltered.set(full, list.total);
 				tokens.set(full, list.token);
 				// An empty list is not memoized. It is the answer for a name
 				// that does not exist, and that answer is always read fresh.
-				if (list.versions.length > 0) versionIndexSet(full, list.versions, list.token);
+				// A list an engine filtered to empty stays unmemoized too:
+				// another engine must never read it.
+				if (list.versions.length > 0) {
+					versionIndexSet(versionIndexKey(full, engine), list.versions, list.total, list.token);
+				}
 			}
 		}
 		for (const [full, hit] of memoHit) {
 			candidates.set(full, [...hit.versions]);
+			unfiltered.set(full, hit.total);
 			tokens.set(full, hit.token);
 			fromMemo.add(full);
 		}
@@ -2539,13 +2597,15 @@ export async function resolveGraph(
 			(full) => fromMemo.has(full) && (picksByName.get(full) ?? []).length === 0
 		);
 		if (unpicked.length > 0) {
-			const fresh = await resolveCandidates(raw, unpicked, budget);
+			const fresh = await resolveCandidates(raw, unpicked, budget, engine);
 			for (const [full, list] of fresh) {
 				candidates.set(full, [...list.versions]);
+				unfiltered.set(full, list.total);
 				tokens.set(full, list.token);
 				fromMemo.delete(full);
-				if (list.versions.length > 0) versionIndexSet(full, list.versions, list.token);
-				else versionIndexDrop(full);
+				const key = versionIndexKey(full, engine);
+				if (list.versions.length > 0) versionIndexSet(key, list.versions, list.total, list.token);
+				else versionIndexDrop(key);
 			}
 			for (const full of unpicked) {
 				const picked = pickFor(full);
@@ -2579,15 +2639,17 @@ export async function resolveGraph(
 		// keeps racing answers "resolve raced" instead of a wrong version.
 		let pending = [...repair].sort();
 		for (let round = 0; round < RESOLVE_REPAIR_ROUNDS && pending.length > 0; round++) {
-			const fresh = await resolveCandidates(raw, pending, budget);
+			const fresh = await resolveCandidates(raw, pending, budget, engine);
 			const again: Array<{ full: string; version: string }> = [];
 			for (const full of pending) {
-				const list = fresh.get(full) ?? { versions: [], token: NO_TOKEN };
+				const list = fresh.get(full) ?? { versions: [], total: 0, token: NO_TOKEN };
 				candidates.set(full, [...list.versions]);
+				unfiltered.set(full, list.total);
 				tokens.set(full, list.token);
 				fromMemo.delete(full);
-				if (list.versions.length > 0) versionIndexSet(full, list.versions, list.token);
-				else versionIndexDrop(full);
+				const key = versionIndexKey(full, engine);
+				if (list.versions.length > 0) versionIndexSet(key, list.versions, list.total, list.token);
+				else versionIndexDrop(key);
 				const pickedAgain = pickFor(full);
 				picksByName.set(full, pickedAgain);
 				for (const version of pickedAgain) again.push({ full, version });
@@ -2679,6 +2741,14 @@ export async function resolveGraph(
 		if (!pick) {
 			if (stdPurged.has(full)) {
 				throw new Error(`package ${full} was withdrawn (std-purge); upgrade to a newer version`);
+			}
+			// An engine that filters every version out answers
+			// unsatisfiable, naming the package, the range and the engine.
+			// The "satisfies" wording stays: existing clients key on it.
+			// A name with no versions at all is still "does not exist".
+			if (engine !== undefined && (unfiltered.get(full) ?? 0) > 0) {
+				const have = versions.length > 0 ? ` (have ${versions.slice(0, 5).join(', ')})` : '';
+				throw new Error(`no version of ${full} satisfies ${range} for engine ${engine}${have}`);
 			}
 			throw new Error(
 				versions.length === 0

@@ -3,6 +3,7 @@ import { resolveGraph, type HaveEntry } from '$lib/server/db';
 import {
 	specHeaders,
 	isValidRange,
+	parseSemver,
 	isTransientStoreError,
 	MAX_RESOLVE_BODY_BYTES,
 	MAX_RESOLVE_REQUIREMENTS,
@@ -115,10 +116,23 @@ export async function POST({ request, url, platform }) {
 	// included absent.
 	const wantChunks = body['chunks'];
 	const inlineChunks = wantChunks === true;
+	// `engine` is the toolchain version the client resolved with, as an
+	// exact X.Y.Z. The server filters every candidate list to the versions
+	// that engine accepts; a client that never sends one gets the
+	// unfiltered answer it always got.
+	const rawEngine = body['engine'];
+	let engine: string | undefined;
+	if (rawEngine !== undefined) {
+		if (typeof rawEngine !== 'string' || parseSemver(rawEngine.trim()) === null) {
+			return err('bad-request', 'invalid engine version (expected X.Y.Z)', 400, requestId);
+		}
+		engine = rawEngine.trim();
+	}
 	try {
 		const { resolved, levels, chunks, chunksDeclined } = await resolveGraph(env, requirements, have, {
 			inlineChunks,
-			advertiseChunks: wantChunks !== undefined
+			advertiseChunks: wantChunks !== undefined,
+			engine
 		});
 		// base omitted: clients default to the request origin + /api/v0/packages.
 		// A future multi-registry response may send an absolute URL (other
@@ -146,6 +160,7 @@ export async function POST({ request, url, platform }) {
 			return err('unsatisfiable', msg, 422, requestId);
 		}
 		if (msg.includes('invalid package name')) return err('bad-request', msg, 400, requestId);
+		if (msg.includes('invalid engine version')) return err('bad-request', msg, 400, requestId);
 		if (isTransientStoreError(msg)) {
 			return err('unavailable', 'resolution store unavailable, retry', 503, requestId);
 		}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { startFakeLibsql, type FakeLibsql } from './libsql-fake.js';
 import { POST } from '../src/routes/api/v0/resolve/+server.ts';
 import { seedPackage, seedPayload, type CanonicalPublishPayload } from './publish-helpers.js';
-import { clearVersionIndex } from '../src/lib/server/db.js';
+import { clearVersionIndex, versionIndexEntries } from '../src/lib/server/db.js';
 
 // The route is the wire contract of the registry: an old client must keep
 // the body it always got, and a client that asks for something the server
@@ -93,6 +93,69 @@ describe('resolve route body', () => {
 		const body = (await res.json()) as Record<string, unknown>;
 		assert.equal(body['chunks'], 'inline');
 		assert.equal('chunksDeclined' in body, false);
+	});
+});
+
+describe('resolve route engine filter', () => {
+	it('filters candidates to the versions the engine accepts', async () => {
+		await seedPackage(fake.env, payload('@acme/eng', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/eng', '2.0.0', { engineRange: '>=99.0.0' }));
+		const res = await call({ requirements: { '@acme/eng': '*' }, engine: '0.2.0' });
+		assert.equal(res.status, 200);
+		const body = (await res.json()) as Record<string, unknown>;
+		assert.deepEqual(body['resolved'], { '@acme/eng': '1.0.0' });
+		const levels = body['levels'] as Array<Array<Record<string, unknown>>>;
+		assert.equal(levels[0][0]['version'], '1.0.0');
+		assert.equal(levels[0][0]['engineRange'], '');
+	});
+
+	it('resolves unfiltered when the client sends no engine', async () => {
+		await seedPackage(fake.env, payload('@acme/engplain', '1.0.0'));
+		await seedPackage(fake.env, payload('@acme/engplain', '2.0.0', { engineRange: '>=99.0.0' }));
+		const res = await call({ requirements: { '@acme/engplain': '*' } });
+		assert.equal(res.status, 200);
+		const body = (await res.json()) as Record<string, unknown>;
+		assert.deepEqual(body['resolved'], { '@acme/engplain': '2.0.0' });
+	});
+
+	it('answers an engine mismatch as unsatisfiable, naming package, range and engine', async () => {
+		await seedPackage(fake.env, payload('@acme/engonly', '2.0.0', { engineRange: '>=99.0.0' }));
+		const res = await call({ requirements: { '@acme/engonly': '^2.0.0' }, engine: '0.2.0' });
+		assert.equal(res.status, 422);
+		const body = (await res.json()) as Record<string, unknown>;
+		assert.equal(body['code'], 'unsatisfiable');
+		assert.match(String(body['message']), /@acme\/engonly/);
+		assert.match(String(body['message']), /\^2\.0\.0/);
+		assert.match(String(body['message']), /0\.2\.0/);
+		assert.match(String(body['message']), /satisfies/);
+	});
+
+	it('rejects a malformed engine version', async () => {
+		const res = await call({ requirements: { '@acme/eng': '*' }, engine: 'banana' });
+		assert.equal(res.status, 400);
+		const body = (await res.json()) as Record<string, unknown>;
+		assert.equal(body['code'], 'bad-request');
+	});
+
+	it('still answers a missing package as not-found when an engine is set', async () => {
+		const res = await call({ requirements: { '@acme/engghost': '*' }, engine: '0.2.0' });
+		assert.equal(res.status, 404);
+		const body = (await res.json()) as Record<string, unknown>;
+		assert.equal(body['code'], 'not-found');
+		assert.match(String(body['message']), /does not exist/);
+	});
+
+	it('memoizes engine-filtered lists under the exact engine string', async () => {
+		await seedPackage(fake.env, payload('@acme/engmemo', '1.0.0', { engineRange: '>=0.1.0' }));
+		clearVersionIndex();
+		assert.equal(versionIndexEntries(), 0);
+		const reqs = { requirements: { '@acme/engmemo': '*' } };
+		assert.equal((await call({ ...reqs, engine: '0.2.0' })).status, 200);
+		assert.equal(versionIndexEntries(), 1);
+		assert.equal((await call({ ...reqs, engine: '0.2.1' })).status, 200);
+		assert.equal(versionIndexEntries(), 2);
+		assert.equal((await call(reqs)).status, 200);
+		assert.equal(versionIndexEntries(), 3);
 	});
 });
 

@@ -1945,6 +1945,10 @@ fn json_string(value: &JsonValue, key: &str) -> String {
         .to_string()
 }
 
+fn engine_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 fn resolve_request_body(
     requirements: &BTreeMap<String, String>,
     have: &[HaveEntry],
@@ -1970,6 +1974,7 @@ fn resolve_request_body(
         ));
     }
     out.push(']');
+    out.push_str(&format!(", \"engine\": \"{}\"", json_escape(engine_version())));
     if inline_chunks {
         out.push_str(", \"chunks\": true");
     }
@@ -6285,6 +6290,68 @@ mod tests {
         let parsed = parse_json(with_have.as_bytes()).unwrap();
         assert_eq!(parsed.get("chunks").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(parsed.get("have").and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
+    }
+
+    #[test]
+    fn resolve_body_carries_the_toolchain_engine_version() {
+        let reqs = requirements_for("a", "*");
+        let body = resolve_request_body(&reqs, &[], false);
+        let parsed = parse_json(body.as_bytes()).unwrap();
+        let engine = parsed.get("engine").and_then(|v| v.as_str()).unwrap_or_default();
+        assert_eq!(engine, env!("CARGO_PKG_VERSION"));
+        assert!(parse_semver(engine).is_some(), "{engine}");
+    }
+
+    #[test]
+    fn resolve_request_sends_the_engine_to_the_registry() {
+        let (_guard, _dir) = isolate_cache("enginesend");
+        let (server, cfg) = tree_server("@acme/widget", "1.2.0");
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "^1.0.0"),
+            Some(&cfg),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        let bodies = server.resolve_bodies();
+        assert_eq!(bodies.len(), 1);
+        let engine = bodies[0].get("engine").and_then(|v| v.as_str()).unwrap_or_default();
+        assert_eq!(engine, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn resolve_422_engine_unsatisfiable_is_reported_as_the_registry_explained_it() {
+        let (_guard, _dir) = isolate_cache("engine422");
+        let server = MockRegistry::start(MockConfig {
+            version_spec: 0,
+            capabilities: vec!["tombstones"],
+            resolve_status: 422,
+            resolve_body: "{\"code\": \"unsatisfiable\", \"message\": \"no version of @acme/widget satisfies ^1.0.0 for engine 0.2.0 (have 1.2.0)\"}"
+                .to_string(),
+            manifest_status: 200,
+            fallback_tarball: Vec::new(),
+            manifest_error: String::new(),
+            manifest_override: None,
+            chunk_override: None,
+        });
+        let err = resolve_requirements(
+            &server.base,
+            &requirements_for("@acme/widget", "^1.0.0"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("no version of @acme/widget satisfies ^1.0.0 for engine 0.2.0"),
+            "{}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("does not understand"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
