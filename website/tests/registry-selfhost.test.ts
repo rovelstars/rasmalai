@@ -8,15 +8,12 @@ import {
 import { POST as publishPOST } from '../src/routes/api/v0/packages/+server.ts';
 import { POST as resolvePOST } from '../src/routes/api/v0/resolve/+server.ts';
 import { POST as gcPOST } from '../src/routes/api/admin/gc/+server.ts';
-import { POST as downloadsPOST } from '../src/routes/api/admin/downloads/+server.ts';
 import { DELETE as specialDELETE } from '../src/routes/api/scopes/[scope]/[target]/+server.ts';
 import { GET as versionGET } from '../src/routes/api/version/+server.ts';
 import { seedPackage } from './publish-helpers.js';
 import {
 	clearVersionIndex,
-	dayString,
 	getVersionIndexRow,
-	listPackages,
 	versionReuseBlocked
 } from '../src/lib/server/db.js';
 
@@ -391,9 +388,7 @@ describe('admin garbage collection', () => {
 		assert.deepEqual(dryBody['wouldDelete'], ['a'.repeat(64)]);
 		const kept = fake.db.prepare("SELECT count(*) AS c FROM chunks WHERE hash = ?").get('a'.repeat(64)) as { c: number };
 		assert.equal(Number(kept.c), 1);
-		const ancient = dayString(Math.floor(Date.now() / 1000) - 731 * 86400);
 		await seedPackage(fake.env, '@acme/prunee', '1.0.0');
-		fake.db.prepare("INSERT INTO download_daily (package_id, day, downloads) VALUES ('pkg_@acme/prunee', ?, 5)").run(ancient);
 		fake.db
 			.prepare("INSERT INTO audit_log (action, full_name, version, details_json, created_at) VALUES ('purge-skipped', '', '', '{}', ?)")
 			.run(Math.floor(Date.now() / 1000) - 366 * 86400);
@@ -409,36 +404,10 @@ describe('admin garbage collection', () => {
 		assert.equal(run.status, 200);
 		const runBody = (await run.json()) as Record<string, unknown>;
 		assert.equal(runBody['deleted'], 1);
-		assert.deepEqual(runBody['pruned'], { downloads: 1, audit: 1 });
+		assert.deepEqual(runBody['pruned'], { audit: 1 });
 		const after = fake.db
 			.prepare("SELECT count(*) AS c FROM audit_log WHERE action = 'publish'")
 			.get() as { c: number };
 		assert.equal(Number(after.c), Number(before.c), 'version history rows are never pruned');
-	});
-});
-
-describe('admin download rollup', () => {
-	it('records one batched daily row per package and the catalog reads it', async () => {
-		await seedPackage(fake.env, '@acme/counted', '1.0.0');
-		const day = dayString(Math.floor(Date.now() / 1000));
-		const request = new Request('https://registry.test/api/admin/downloads', {
-			method: 'POST',
-			headers: { authorization: 'Bearer admin', 'content-type': 'application/json' },
-			body: JSON.stringify({ day, counts: { '@acme/counted': 41 } })
-		});
-		const res = await downloadsPOST({ request, platform: { env: adminEnv() } } as never);
-		assert.equal(res.status, 200);
-		assert.equal(((await res.json()) as { recorded: number }).recorded, 1);
-		const catalog = await listPackages(fake.env);
-		const row = catalog.find((p) => p.name === '@acme/counted');
-		assert.ok(row);
-		assert.equal(row.downloads, 41);
-		const bad = new Request('https://registry.test/api/admin/downloads', {
-			method: 'POST',
-			headers: { authorization: 'Bearer admin', 'content-type': 'application/json' },
-			body: JSON.stringify({ day: 'yesterday', counts: {} })
-		});
-		const badRes = await downloadsPOST({ request: bad, platform: { env: adminEnv() } } as never);
-		assert.equal(badRes.status, 400);
 	});
 });

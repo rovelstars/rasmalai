@@ -117,8 +117,6 @@ export async function GET({ platform, setHeaders, url }) {
 	if (search && search.trim() !== '') filters.search = search;
 	if (keyword && keyword.trim() !== '') filters.keyword = keyword;
 	if (license && license !== '') filters.license = license;
-	const minDownloads = num(url.searchParams.get('minDownloads'));
-	if (minDownloads !== undefined) filters.minDownloads = Math.floor(minDownloads);
 	const updatedSince = num(url.searchParams.get('updatedSince'));
 	if (updatedSince !== undefined) filters.updatedSinceDays = updatedSince;
 	let packages: Awaited<ReturnType<typeof listPackages>> = [];
@@ -137,7 +135,6 @@ export async function GET({ platform, setHeaders, url }) {
 				versionCount: p.versionCount,
 				updatedAt: p.updatedAt,
 				keywords: p.keywords,
-				downloads: p.downloads,
 				dependents: p.dependents
 			}))
 		},

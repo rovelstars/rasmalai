@@ -22,7 +22,6 @@ export interface PackageSummary {
 	author: string;
 	repository: string;
 	license: string;
-	downloads: number;
 	stars: number;
 	tags: string[];
 	keywords: string[];
@@ -308,7 +307,6 @@ export interface PackageFilter {
 	search?: string;
 	keyword?: string;
 	license?: string;
-	minDownloads?: number;
 	updatedSinceDays?: number;
 }
 
@@ -323,7 +321,6 @@ export function matchesPackageFilter(
 	}
 	if (f.keyword && !p.keywords.includes(f.keyword)) return false;
 	if (f.license && p.license !== f.license) return false;
-	if (f.minDownloads !== undefined && p.downloads < f.minDownloads) return false;
 	if (f.updatedSinceDays !== undefined && p.updatedAt < nowSec - f.updatedSinceDays * 86400) return false;
 	return true;
 }
@@ -528,7 +525,6 @@ interface SummarySource {
 	author: string;
 	repository: string | null;
 	license: string;
-	downloads: number;
 	stars: number;
 	tags: string;
 	keywords: string | null;
@@ -547,7 +543,6 @@ function toSummary(
 		author: r.author,
 		repository: r.repository ?? '',
 		license: r.license ?? 'MIT',
-		downloads: r.downloads ?? 0,
 		stars: r.stars ?? 0,
 		tags: (r.tags ?? '')
 			.split(',')
@@ -585,17 +580,6 @@ export async function listPackages(
 		list.push({ version: v.version, status: v.status ?? 'live' });
 		byPkg.set(v.packageId, list);
 	}
-	let sums = new Map<string, number>();
-	try {
-		const ds = await db
-			.select({ packageId: s.downloadDaily.packageId, n: sum(s.downloadDaily.downloads) })
-			.from(s.downloadDaily)
-			.where(gte(s.downloadDaily.day, dayString(now - 30 * 86400)))
-			.groupBy(s.downloadDaily.packageId);
-		for (const r of ds) sums.set(r.packageId, Number(r.n ?? 0));
-	} catch {
-		sums = new Map();
-	}
 	let depCounts = new Map<string, number>();
 	try {
 		const dc = await db
@@ -617,7 +601,6 @@ export async function listPackages(
 				author: r.author,
 				repository: r.repository,
 				license: r.license,
-				downloads: sums.get(r.id) ?? 0,
 				stars: r.stars,
 				tags: r.tags,
 				keywords: r.keywords,
@@ -712,7 +695,6 @@ export async function getPackage(
 				author: row.author,
 				repository: row.repository,
 				license: row.license,
-				downloads: row.downloads,
 				stars: row.stars,
 				tags: row.tags,
 				keywords: row.keywords,
@@ -923,7 +905,6 @@ export async function publishCanonicalVersion(
 				licenseId: p.license
 					? sql`(SELECT id FROM licenses WHERE spdx = ${p.license})`
 					: null,
-				downloads: 0,
 				stars: 0,
 				tags: p.tags.join(','),
 				keywords,
@@ -1443,9 +1424,6 @@ export async function transferScope(
 		);
 		stmts.push(
 			db.update(s.packageDeps).set({ packageId: r.newId }).where(eq(s.packageDeps.packageId, r.oldId))
-		);
-		stmts.push(
-			db.update(s.downloadDaily).set({ packageId: r.newId }).where(eq(s.downloadDaily.packageId, r.oldId))
 		);
 	}
 	for (const r of renames) {
@@ -3163,11 +3141,10 @@ export async function mutationAlreadyApplied(
 }
 
 export interface PruneResult {
-	downloads: number;
 	audit: number;
 }
 
-// Growth bound for the two ever-growing operational tables. Versioned
+// Growth bound for the ever-growing operational tables. Versioned
 // history (publish, unpublish, yank, takedown, transfer, special-delete,
 // advisory rows) is never pruned: versionReuseBlocked reads the publish
 // entries to keep numbers burned, and takedowns/transfers are forensics.
@@ -3176,17 +3153,9 @@ export async function pruneOldRows(
 	nowSec: number = Math.floor(Date.now() / 1000)
 ): Promise<PruneResult> {
 	const db = await getDdb(env);
-	if (!db) return { downloads: 0, audit: 0 };
-	const downloadCutoff = dayString(nowSec - 730 * 86400);
+	if (!db) return { audit: 0 };
 	const auditCutoff = nowSec - 365 * 86400;
-	let downloads = 0;
 	let audit = 0;
-	try {
-		const r = await db.delete(s.downloadDaily).where(lt(s.downloadDaily.day, downloadCutoff));
-		downloads = r.rowsAffected ?? 0;
-	} catch {
-		downloads = 0;
-	}
 	try {
 		const r = await db
 			.delete(s.auditLog)
@@ -3200,41 +3169,5 @@ export async function pruneOldRows(
 	} catch {
 		audit = 0;
 	}
-	return { downloads, audit };
-}
-
-// Operator-fed download counts. Edge analytics never write per-download
-// rows; the single batched daily rollup per package lands here instead,
-// from whatever counter source the operator wires up.
-export async function recordDownloadRollup(
-	env: Record<string, string | undefined>,
-	day: string,
-	counts: Record<string, number>
-): Promise<number> {
-	if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('invalid day (expected YYYY-MM-DD)');
-	const db = await getDdb(env);
-	if (!db) throw new Error('missing database');
-	const entries = Object.entries(counts).filter(
-		([full, n]) => parsePackageName(full) && Number.isInteger(n) && n >= 0
-	);
-	if (entries.length === 0) return 0;
-	const stmts: Array<BatchItem<'sqlite'>> = [];
-	for (const [full, n] of entries) {
-		const parsed = parsePackageName(full);
-		if (!parsed) continue;
-		stmts.push(
-			db
-				.insert(s.downloadDaily)
-				.values({ packageId: packageId(parsed.scope, parsed.name), day, downloads: n })
-				.onConflictDoUpdate({
-					target: [s.downloadDaily.packageId, s.downloadDaily.day],
-					set: { downloads: sql`excluded.downloads` }
-				})
-		);
-	}
-	if (stmts.length === 0) return 0;
-	for (const batch of chunked(stmts, 100)) {
-		await db.batch(batch as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
-	}
-	return stmts.length;
+	return { audit };
 }

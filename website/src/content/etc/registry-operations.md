@@ -102,15 +102,13 @@ Numbers never come back: the reuse check reads live rows, tombstones, and the au
 
 ## Garbage collection
 
-`POST /api/admin/gc` (admin token) runs the three-phase sweep: mark orphan chunks past the 30-day grace window, re-verify each batch against the live version rows (a chunk claimed mid-sweep is skipped, never deleted), then delete with one audit row per sweep. `?dry_run=1` (or `{"dry_run": true}`) lists what would be deleted and touches nothing. The same call prunes `download_daily` rows older than two years and operational audit noise (`purge-skipped`, `purge-failed`, `gc-sweep`) older than one year. Version history — publish, unpublish, takedown, transfer, special-delete — is never pruned: the reuse check depends on it.
+`POST /api/admin/gc` (admin token) runs the three-phase sweep: mark orphan chunks past the 30-day grace window, re-verify each batch against the live version rows (a chunk claimed mid-sweep is skipped, never deleted), then delete with one audit row per sweep. `?dry_run=1` (or `{"dry_run": true}`) lists what would be deleted and touches nothing. The same call prunes operational audit noise (`purge-skipped`, `purge-failed`, `gc-sweep`) older than one year. Version history — publish, unpublish, takedown, transfer, special-delete — is never pruned: the reuse check depends on it.
 
 Deletes live on this path only. No other code path deletes chunk bytes.
 
-## Advisories and downloads
+## Advisories
 
 `POST /api/v0/advisories` (admin token, protocol header) files an advisory; `POST /api/v0/advisories/<id>/withdraw` withdraws it. `GET /api/v0/advisories` serves the active set plus the operator's Ed25519 signature over the canonical byte form. Clients pin the key with `RNX_ADVISORY_KEY` and fail closed on a bad signature. `rnx audit` matches the locked deplock — versions and artifact pins — against the feed: `critical` fails the operation, everything else warns.
-
-Download counts come from the edge, never from per-download writes. Whatever counter source the deployment uses lands one batched daily row per package at `POST /api/admin/downloads` (admin token, `{"day": "YYYY-MM-DD", "counts": {"@scope/name": n}}`), and the catalog reads the trailing-30-day sums. Until an operator wires a source, counts read zero — approximate by design, and never load-bearing.
 
 ## Verification
 

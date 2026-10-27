@@ -9,7 +9,7 @@
 	import ModuleDocs from '$lib/components/ModuleDocs.svelte';
 	import type { DocModule } from '$lib/docs/api';
 	import { displayModuleName, isGeneratedModule } from '$lib/docs/api';
-	import { shortDownloads, humanDate } from '$lib/packages-meta';
+	import { humanDate } from '$lib/packages-meta';
 import { PlaygroundRunner } from '$lib/playground/runner';
 import { isFormattablePackagePath, selectPackageText } from '$lib/packages-format';
 	import { untar, gunzip, isGzip } from '$lib/docs/untar';
@@ -405,9 +405,6 @@ import { importSnippet } from '$lib/docs/stdlib';
 			<span class="rounded border border-aura-border px-1.5 py-0.5 font-mono text-[11px] text-aura-muted"
 				>{pkg.license}</span
 			>
-			<span class="tabular ml-auto font-mono text-xs text-aura-muted"
-				>{shortDownloads(pkg.downloads)} downloads</span
-			>
 		</div>
 		<p class="mt-2 text-sm text-aura-muted">{pkg.description}</p>
 		<p class="mt-2 flex items-center gap-1.5 font-mono text-xs text-aura-muted">
@@ -677,10 +674,6 @@ import { importSnippet } from '$lib/docs/stdlib';
 						<dd class="tabular font-mono" title={isoDate(pkg.versions[0]?.createdAt ?? 0)}>
 							{humanDate(pkg.versions[0]?.createdAt ?? 0)}
 						</dd>
-					</div>
-					<div class="flex justify-between gap-2">
-						<dt class="text-aura-muted">downloads</dt>
-						<dd class="tabular font-mono">{shortDownloads(pkg.downloads)}</dd>
 					</div>
 					<div class="flex justify-between gap-2">
 						<dt class="text-aura-muted">versions</dt>

@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { STD_MODULES } from '$lib/docs/stdlib';
-	import { shortDownloads, humanDate } from '$lib/packages-meta';
+	import { humanDate } from '$lib/packages-meta';
 
 	let { data } = $props();
 
@@ -12,7 +12,6 @@
 		author: string;
 		license: string;
 		keywords: string[];
-		downloads: number;
 		latest: string;
 		updatedAt: number;
 		versionCount: number;
@@ -21,9 +20,8 @@
 
 	let query = $state('');
 	let licenseFilter = $state('');
-	let minDownloads = $state(0);
 	let updatedSinceDays = $state(0);
-	let sort = $state<'downloads' | 'updated' | 'alpha'>('downloads');
+	let sort = $state<'updated' | 'alpha'>('updated');
 	let publishOpen = $state(false);
 	let extraByName = $state<Record<string, Partial<FeedPackage>>>({});
 	let urlReady = $state(false);
@@ -46,7 +44,6 @@
 				if (typeof p['name'] !== 'string') continue;
 				const entry: Partial<FeedPackage> = {};
 				if (Array.isArray(p['keywords'])) entry.keywords = (p['keywords'] as unknown[]).filter((k): k is string => typeof k === 'string');
-				if (typeof p['downloads'] === 'number') entry.downloads = p['downloads'];
 				if (typeof p['latest'] === 'string') entry.latest = p['latest'];
 				if (typeof p['updatedAt'] === 'number') entry.updatedAt = p['updatedAt'];
 				if (typeof p['versionCount'] === 'number') entry.versionCount = p['versionCount'];
@@ -77,7 +74,6 @@
 	function searchFor(term: string) {
 		query = term;
 		licenseFilter = '';
-		minDownloads = 0;
 		updatedSinceDays = 0;
 		syncUrl();
 		const el = document.getElementById('package-search');
@@ -96,7 +92,6 @@
 				author: extra.author ?? p.author,
 				license: extra.license ?? p.license,
 				keywords: extra.keywords ?? kw,
-				downloads: extra.downloads ?? p.downloads,
 				latest: extra.latest ?? p.latest,
 				updatedAt: extra.updatedAt ?? p.updatedAt,
 				versionCount: extra.versionCount ?? p.versionCount,
@@ -106,7 +101,7 @@
 	});
 
 	let searching = $derived(
-		query.trim() !== '' || licenseFilter !== '' || minDownloads > 0 || updatedSinceDays > 0
+		query.trim() !== '' || licenseFilter !== '' || updatedSinceDays > 0
 	);
 
 	let keywordCounts = $derived.by(() => {
@@ -132,7 +127,6 @@
 		const cutoff = updatedSinceDays > 0 ? Date.now() / 1000 - updatedSinceDays * 86400 : 0;
 		let list = feed.filter((p) => {
 			if (licenseFilter && p.license !== licenseFilter) return false;
-			if (p.downloads < minDownloads) return false;
 			if (cutoff > 0 && p.updatedAt < cutoff) return false;
 			if (!q) return true;
 			return (
@@ -142,15 +136,13 @@
 			);
 		});
 		list = [...list].sort((a, b) => {
-			if (sort === 'downloads') return b.downloads - a.downloads;
 			if (sort === 'updated') return b.updatedAt - a.updatedAt;
 			return a.name.localeCompare(b.name);
 		});
 		return list;
 	});
 
-	let popular = $derived([...feed].sort((a, b) => b.downloads - a.downloads).slice(0, 8));
-	let totalDownloads = $derived(feed.reduce((sum, p) => sum + p.downloads, 0));
+	let recent = $derived([...feed].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 8));
 
 	function isoDate(ts: number): string {
 		if (!ts) return '';
@@ -180,7 +172,7 @@
 			<h1 class="text-3xl font-bold tracking-tight">Packages</h1>
 			<p class="mt-2 max-w-[65ch] text-aura-muted">
 				Libraries published for the Rasmalai toolchain. Search by name, description, or
-				keyword — or browse what the community downloads most.
+				keyword — or browse recently updated libraries.
 			</p>
 		</div>
 		<button
@@ -217,16 +209,6 @@
 				{/each}
 			</select>
 			<select
-				bind:value={minDownloads}
-				class="rounded-md border border-aura-border bg-aura-surface px-2.5 py-1.5 text-sm"
-				aria-label="Minimum downloads"
-			>
-				<option value={0}>Any downloads</option>
-				<option value={100}>100+ downloads</option>
-				<option value={1000}>1k+ downloads</option>
-				<option value={10000}>10k+ downloads</option>
-			</select>
-			<select
 				bind:value={updatedSinceDays}
 				class="rounded-md border border-aura-border bg-aura-surface px-2.5 py-1.5 text-sm"
 				aria-label="Updated since"
@@ -242,7 +224,6 @@
 				class="rounded-md border border-aura-border bg-aura-surface px-2.5 py-1.5 text-sm"
 				aria-label="Sort packages"
 			>
-				<option value="downloads">Most downloads</option>
 				<option value="updated">Recently updated</option>
 				<option value="alpha">Alphabetical</option>
 			</select>
@@ -278,7 +259,7 @@
 							>v{p.latest}</span
 						>
 						<span class="tabular ml-auto font-mono text-xs text-aura-muted">
-							{shortDownloads(p.downloads)} downloads · {p.license}
+							{p.license}
 						</span>
 					</div>
 					<p class="mt-1 text-sm text-aura-muted">{p.description}</p>
@@ -321,14 +302,13 @@
 			{/if}
 		</ul>
 	{:else}
-		<section class="mt-8" aria-labelledby="popular-heading">
+		<section class="mt-8" aria-labelledby="recent-heading">
 			<div class="flex items-baseline justify-between gap-4">
-				<h2 id="popular-heading" class="text-lg font-bold tracking-tight">Popular libraries</h2>
-				<p class="font-mono text-[11px] text-aura-muted">ranked by downloads</p>
+				<h2 id="recent-heading" class="text-lg font-bold tracking-tight">Recently updated</h2>
 			</div>
-			{#if popular.length > 0}
+			{#if recent.length > 0}
 				<ol class="panel mt-3 divide-y divide-aura-border">
-					{#each popular as p, i}
+					{#each recent as p, i}
 						<li class="flex items-baseline gap-3 px-4 py-2.5">
 							<span class="tabular w-6 shrink-0 text-right font-mono text-xs text-aura-muted">{i + 1}</span>
 							<a
@@ -338,7 +318,7 @@
 							>
 							<span class="hidden min-w-0 flex-1 truncate text-sm text-aura-muted md:inline">{p.description}</span>
 							<span class="tabular ml-auto shrink-0 font-mono text-xs text-aura-muted"
-								>{shortDownloads(p.downloads)} downloads</span
+								>v{p.latest}</span
 							>
 						</li>
 					{/each}
@@ -388,14 +368,10 @@
 
 		<section class="mt-10" aria-labelledby="numbers-heading">
 			<h2 id="numbers-heading" class="text-lg font-bold tracking-tight">By the numbers</h2>
-			<dl class="mt-3 grid gap-2 sm:grid-cols-2">
+			<dl class="mt-3 grid gap-2">
 				<div class="panel px-4 py-5 text-center">
 					<dt class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">packages</dt>
 					<dd class="tabular mt-1 font-mono text-2xl font-bold">{feed.length}</dd>
-				</div>
-				<div class="panel px-4 py-5 text-center">
-					<dt class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">downloads, last 30 days</dt>
-					<dd class="tabular mt-1 font-mono text-2xl font-bold">{shortDownloads(totalDownloads)}</dd>
 				</div>
 			</dl>
 		</section>
@@ -403,7 +379,8 @@
 		<section class="mt-10" aria-labelledby="std-heading">
 			<h2 id="std-heading" class="text-lg font-bold tracking-tight">Standard library</h2>
 			<p class="mt-1 text-sm text-aura-muted">
-				Embedded in the toolchain today — registry versions are on the way. Full reference lives under
+				The standard library ships through the registry — `rnx download` seeds it into the
+				local cache. Full reference lives under
 				<a href="/docs/@std/prelude/overview" class="text-aura-purple hover:underline">docs</a>.
 			</p>
 			<ul class="mt-3 flex flex-wrap gap-1.5">
