@@ -11,6 +11,8 @@ icon: "Terminal"
 
 One static binary — `rnx` — covers editing, running, testing, formatting, documenting, and shipping. Installation places `rnx` on `PATH`; `rnx --version` confirms the install and prints the build record (commit hash, build timestamp, install kind, target triple, backend versions) after the `rnx <version>` first line. Scaffolding creates the manifest and entry file:
 
+Distributors building `rnx` for a managed install set two build-time variables. `RNX_INSTALLATION_MANAGED` carries the reason shown after `install: managed:` — for example how the package was installed and how to upgrade it; unset, the install reads `install: standalone`. `RNX_INSTALLATION_NO_TIMESTAMP` (any non-empty value) leaves the timestamp out, so the record reads `built: unknown`; it wins over `SOURCE_DATE_EPOCH` when both are set.
+
 ```sh
 rnx init hello
 cd hello
