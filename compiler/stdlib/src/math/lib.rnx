@@ -8,7 +8,6 @@
 //! print(v.length());
 //! print(Math.sin(Math.PI() / 2.0));
 //! ```
-
 import {
     fn __rnx_math_atan2(x: Float, y: Float): Float,
     fn __rnx_math_ceil(x: Float): Float,

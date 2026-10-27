@@ -13,7 +13,6 @@
 //! print(Env.get("NOT_SET_ANYWHERE") == "");
 //! print(Env.cwd().len() > 0);
 //! ```
-
 import {
     fn __rnx_env_args_count(): Int,
     fn __rnx_env_args_get(i: Int): String,

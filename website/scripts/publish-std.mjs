@@ -4,7 +4,10 @@
 // and analyses the upload), so chunks-fetch, jsdoc, and the code browser
 // work for stdlib. Idempotent: already-published versions come back 409
 // and are skipped. Re-run after every release; new versions publish, old
-// ones skip.
+// ones skip. Every staged package declares engine >= the publishing CLI,
+// so older toolchains (which cannot parse the current stdlib sources)
+// keep resolving the older compatible line instead of installing bytes
+// they cannot compile.
 //
 //   RNX_BIN=/path/to/rnx SITE_URL=https://... PUBLISH_TOKEN=... node scripts/publish-std.mjs
 // RNX_BIN defaults to `cargo run -q -p cli` from the repo root.
@@ -46,20 +49,37 @@ modules.sort();
 // net/http.rnx is a submodule file, not a package: it ships inside @std/net.
 const SUBMODULES = { net: ['http.rnx'] };
 
-// Declared permissions per std module, mirroring the server usage scan
-// (website/src/lib/server/permissions.ts) over minified sources. Only
-// modules whose shipped code observably uses a capability sink declare
-// one; everything else publishes with no permissions key (pure).
+// Declared permissions per std module: the union of the analyzer verdict
+// (`rnx audit`, the same predicate as the server capability-coverage gate)
+// and the textual backstop scan (website/src/lib/server/permissions.ts)
+// over shipped sources. Only modules whose shipped code observably uses a
+// capability sink declare one; everything else publishes with no
+// permissions key (pure).
 const PERMISSIONS = {
-	fs: [{ perm: 'unsafe:raw_memory', reason: 'mmap is backed by a raw address' }],
+	env: [{ perm: 'env:read:*', reason: 'Env.get reads caller-provided keys' }],
+	fs: [
+		{ perm: 'fs:read:*', reason: 'File reads and directory scans take caller-provided paths' },
+		{ perm: 'fs:write:*', reason: 'File writes, creates, and removals take caller-provided paths' },
+		{ perm: 'fs:delegated', reason: 'path helpers pass caller paths through to fs sinks' },
+		'term:read',
+		'term:write',
+		{ perm: 'unsafe:raw_memory', reason: 'mmap is backed by a raw address' }
+	],
 	io: [
 		'term:read',
 		'term:write',
 		{ perm: 'env:read:NO_COLOR', reason: 'color detection reads NO_COLOR' },
 		{ perm: 'env:read:COLORTERM', reason: 'color detection reads COLORTERM' },
-		{ perm: 'env:read:TERM', reason: 'color detection reads TERM' }
+		{ perm: 'env:read:TERM', reason: 'color detection reads TERM' },
+		{ perm: 'fs:read:*', reason: 'stdin and file handles read through @std/fs' },
+		{ perm: 'fs:write:*', reason: 'stdout and file handles write through @std/fs' },
+		{ perm: 'fs:delegated', reason: 'file-handle helpers pass caller paths through to fs sinks' },
+		{ perm: 'unsafe:raw_memory', reason: 'wrapped File handles include raw-memory mappings' }
 	],
-	process: [{ perm: 'env:read:*', reason: 'flattenEnv reads caller-provided keys' }]
+	process: [
+		{ perm: 'env:read:*', reason: 'flattenEnv reads caller-provided keys' },
+		{ perm: 'sys:exec:*', reason: 'Process.spawn and Process.run execute caller-provided binaries' }
+	]
 };
 
 function renderPermissions(name) {
@@ -115,7 +135,7 @@ while (pending.length > 0) {
 			cpSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'));
 			writeFileSync(
 				join(dir, 'Project.config'),
-				`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))}\n    },\n    entries: {\n        main: "src/lib.rnx",\n        docs: "docs"\n    }${renderPermissions(name)}\n}\n`
+				`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))},\n        engine: ">=${cliVersion}"\n    },\n    entries: {\n        main: "src/lib.rnx",\n        docs: "docs"\n    }${renderPermissions(name)}\n}\n`
 			);
 			rnx(['fmt', join(dir, 'Project.config')], dir);
 			for (const f of [join(dir, 'src', 'lib.rnx'), ...(SUBMODULES[name] ?? []).map((s) => join(dir, 'src', s))]) {

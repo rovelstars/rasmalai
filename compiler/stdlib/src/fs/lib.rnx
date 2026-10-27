@@ -76,7 +76,6 @@ import {
     fn __rnx_os_cpu_count(): Int,
 } from runtime "os";
 
-
 /**
 * Open modes for File.open.
 */

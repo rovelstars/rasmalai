@@ -70,7 +70,6 @@ import {
     fn __rnx_thread_join_val(t: Int): Any,
 } from runtime "sync";
 
-
 /**
 * A 64-bit integer cell shared through the registry, with atomic access.
 *

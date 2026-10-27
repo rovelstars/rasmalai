@@ -55,7 +55,7 @@ export function hasApi(): boolean {
 	return cached !== null;
 }
 
-export const ENGINE_VERSION = '0.2.0';
+export const ENGINE_VERSION = '0.2.1';
 export const STD_LICENSE = 'MIT';
 
 export interface StdModuleMeta {

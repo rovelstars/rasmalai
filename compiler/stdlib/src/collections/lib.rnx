@@ -61,7 +61,6 @@ import {
     fn __rnx_gmap_values(handle: Int): Array<Any>,
 } from runtime "core";
 
-
 /**
 * Insertion-ordered hash table from keys to values. Build one with
 * `new Map<K, V>()`, fill it with `set`, and read it back with `get` or

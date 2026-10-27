@@ -19,7 +19,6 @@
 //! clock.tick(2500000);
 //! print(clock.now().toMillis());
 //! ```
-
 import {
     fn __rnx_clock_mono(): Int,
 } from runtime "time";

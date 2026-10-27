@@ -52,7 +52,6 @@ import {
     fn __rnx_json_unwrap(handle: Int): Int,
 } from runtime "json";
 
-
 /**
 * JSON codec. A number with neither fraction nor exponent decodes to
 * `Int`, every other number to `Float`; object keys are byte-sorted,
