@@ -346,6 +346,17 @@ pub fn rehydrate_project_version(text: &str, version: &str) -> Result<String, Di
     Ok(replace_spans(text, spans, version))
 }
 
+pub fn set_project_version(text: &str, version: &str) -> Result<String, Diagnostic> {
+    let spans = version_spans_in_project_table(text)?;
+    if spans.is_empty() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            "cannot set Project.config version: no `version` in `project` table",
+        ));
+    }
+    Ok(replace_spans(text, spans, version))
+}
+
 pub fn publish_facts(text: &str) -> Result<PublishFacts, Diagnostic> {
     let (project, _) =
         super::parse_manifest(text).map_err(|e| Diagnostic::new(Code::E108, e))?;

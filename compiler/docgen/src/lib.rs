@@ -82,6 +82,7 @@ pub fn generate_stdlib_docs_json(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex, OnceLock};
@@ -166,9 +167,9 @@ mod tests {
         }
     }
 
-    fn fixture_tree(version: &str) -> (String, Vec<(String, Vec<u8>)>, String) {
+    fn fixture_tree(full: &str, version: &str) -> (String, Vec<(String, Vec<u8>)>, String) {
         let original = format!(
-            "export default {{\n    project: {{\n        name: \"@std/seed\",\n        version: \"{version}\"\n    }}\n}}\n"
+            "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }}\n}}\n"
         );
         let stored = original.replace(
             &format!("version: \"{version}\""),
@@ -235,9 +236,18 @@ mod tests {
     }
 
     struct TreeFixture {
-        manifest: String,
-        pairs: Vec<(String, Vec<u8>)>,
-        digest: String,
+        trees: BTreeMap<String, (String, Vec<(String, Vec<u8>)>)>,
+    }
+
+    fn fixture_for(names: &[String], version: &str) -> (Vec<String>, TreeFixture) {
+        let mut trees = BTreeMap::new();
+        let mut nodes = Vec::new();
+        for full in names {
+            let (manifest, pairs, digest) = fixture_tree(full, version);
+            nodes.push(node_json(full, version, &digest));
+            trees.insert(format!("{full}@{version}"), (manifest, pairs));
+        }
+        (nodes, TreeFixture { trees })
     }
 
     struct MockRegistry {
@@ -282,10 +292,21 @@ mod tests {
                             with_spec,
                         );
                     } else if method == "GET" && route.ends_with("/chunks") {
-                        respond(&mut stream, 200, "application/json", fixture.manifest.as_bytes(), with_spec);
+                        let body = fixture
+                            .trees
+                            .iter()
+                            .find(|(key, _)| route.contains(key.as_str()))
+                            .map(|(_, (manifest, _))| manifest.as_bytes())
+                            .unwrap_or_default();
+                        respond(&mut stream, 200, "application/json", body, with_spec);
                     } else if method == "GET" && route.contains("/chunk/") {
                         let hash = route.rsplit('/').next().unwrap_or_default().to_string();
-                        let hit = fixture.pairs.iter().find(|(h, _)| h == &hash).map(|(_, b)| b.clone());
+                        let hit = fixture
+                            .trees
+                            .values()
+                            .flat_map(|(_, pairs)| pairs)
+                            .find(|(h, _)| h == &hash)
+                            .map(|(_, b)| b.clone());
                         match hit {
                             Some(bytes) => respond(
                                 &mut stream,
@@ -391,20 +412,12 @@ mod tests {
         let _ = stream.flush();
     }
 
-    fn std_nodes(version: &str, integrity: &str) -> Vec<String> {
-        frontend::stdlib_seed::std_package_names()
-            .iter()
-            .map(|full| node_json(full, version, integrity))
-            .collect()
-    }
-
     #[test]
     fn cold_cache_seeds_once_then_generates_docs() {
         let (_guard, dir) = isolate("cold");
-        let (manifest, pairs, digest) = fixture_tree("1.0.0");
-        let fixture = TreeFixture { manifest, pairs, digest };
-        let digest = fixture.digest.clone();
-        let server = MockRegistry::start(resolve_json_static(&std_nodes("1.0.0", &digest)), fixture);
+        let names = frontend::stdlib_seed::std_package_names();
+        let (nodes, fixture) = fixture_for(&names, "1.0.0");
+        let server = MockRegistry::start(resolve_json_static(&nodes), fixture);
         set_registry(&server.base);
         let path =
             crate::generate_stdlib_docs_json(&dir.join("out")).expect("docs generate on cold cache");
@@ -418,20 +431,15 @@ mod tests {
     #[test]
     fn warm_cache_generates_docs_without_network() {
         let (_guard, dir) = isolate("warm");
-        let (manifest, pairs, digest) = fixture_tree("1.0.0");
-        let fixture = TreeFixture { manifest, pairs, digest };
-        let digest = fixture.digest.clone();
-        let first = MockRegistry::start(resolve_json_static(&std_nodes("1.0.0", &digest)), fixture);
+        let names = frontend::stdlib_seed::std_package_names();
+        let (nodes, fixture) = fixture_for(&names, "1.0.0");
+        let first = MockRegistry::start(resolve_json_static(&nodes), fixture);
         set_registry(&first.base);
         let first_out =
             crate::generate_stdlib_docs_json(&dir.join("out-first")).expect("initial seed");
         assert_eq!(first.resolve_posts(), 1);
-        let (manifest2, pairs2, digest2) = fixture_tree("1.0.0");
-        let nodes2 = std_nodes("1.0.0", &digest2);
-        let second = MockRegistry::start(
-            resolve_json_static(&nodes2),
-            TreeFixture { manifest: manifest2, pairs: pairs2, digest: digest2 },
-        );
+        let (nodes2, fixture2) = fixture_for(&names, "1.0.0");
+        let second = MockRegistry::start(resolve_json_static(&nodes2), fixture2);
         set_registry(&second.base);
         frontend::stdvfs::clear();
         let second_out =

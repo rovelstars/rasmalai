@@ -113,7 +113,8 @@ pub fn stdlib_sources_digest() -> Vec<u8> {
                 hasher.update(full.as_bytes());
                 hasher.update(&(version.len() as u64).to_le_bytes());
                 hasher.update(version.as_bytes());
-                let dir = crate::fetch::cached_package_dir(&pin.registry, full, version);
+                let dir = crate::fetch::find_cached_package_dir(&pin.registry, full, version)
+                    .unwrap_or_else(|| crate::fetch::cached_package_dir(&pin.registry, full, version));
                 hash_cached_package(&mut hasher, &dir);
             }
         }
@@ -427,22 +428,15 @@ mod tests {
         let (_guard, _dir) = testkit::isolate_cache("digestpin");
         let empty = stdlib_sources_digest();
         let pin = env!("CARGO_PKG_VERSION");
-        let (manifest, pairs, digest, _pc, _main) = testkit::fixture_tree("@std/seed", pin);
-        let nodes: Vec<String> = crate::stdlib_seed::std_package_names()
-            .iter()
-            .map(|full| testkit::node_json(full, pin, &digest, false))
-            .collect();
-        let server = testkit::MockRegistry::start(testkit::MockConfig {
-            version_spec: 0,
-            capabilities: vec!["tombstones"],
-            resolve_status: 200,
-            resolve_body: testkit::resolve_json_static(&nodes),
-            manifest_status: 200,
-            fallback_tarball: Vec::new(),
-            manifest_error: String::new(),
-            manifest_override: Some(manifest),
-            chunk_override: Some(pairs),
-        });
+        let mut chunks = BTreeMap::new();
+        let mut nodes = Vec::new();
+        for full in crate::stdlib_seed::std_package_names() {
+            let (manifest, pairs, digest, _pc, _main) = testkit::fixture_tree(&full, pin);
+            nodes.push(testkit::node_json(&full, pin, &digest, false));
+            chunks.insert(format!("{full}@{pin}"), (manifest, pairs));
+        }
+        let body = testkit::resolve_json_static(&nodes);
+        let server = testkit::MockRegistry::start_dynamic(chunks, move |_| body.clone());
         let cfg = testkit::registry_cfg(&server.base);
         let report =
             crate::stdlib_seed::seed_stdlib_cache(Some(&cfg), &BTreeMap::new()).unwrap();
@@ -451,7 +445,8 @@ mod tests {
         assert_ne!(empty, seeded);
         assert_eq!(stdlib_sources_digest(), seeded);
         let (first_full, first_version) = report.packages.first().cloned().unwrap();
-        let dir = crate::fetch::cached_package_dir(&report.registry, &first_full, &first_version);
+        let dir = crate::fetch::find_cached_package_dir(&report.registry, &first_full, &first_version)
+            .expect("seeded package is cached");
         let target = dir.join("src").join("main.rnx");
         assert!(target.is_file());
         let mut bytes = std::fs::read(&target).unwrap();

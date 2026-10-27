@@ -431,7 +431,7 @@ pub enum Command {
         #[arg(long, env = "RNX_MEMORY_CAP", value_parser = crate::parse_memory_cap)]
         memory_cap: Option<u64>,
     },
-    /// Inspect and prune the build cache
+    /// Inspect and prune the build cache (global content-addressed store plus project pools)
     Cache {
         #[command(subcommand)]
         action: CacheAction,
@@ -499,12 +499,12 @@ pub enum Command {
 /// Build cache management
 #[derive(Subcommand, Debug, Clone)]
 pub enum CacheAction {
-    /// Prune least-recently-used global cache entries over the byte cap
+    /// Prune least-recently-used global cache entries over the byte cap (including old registry/ trees; the content-addressed store/ is retained)
     Prune {
         /// Keep at most this many bytes (default 2 GiB)
         #[arg(long)]
         max_bytes: Option<u64>,
     },
-    /// Show global and project cache usage
+    /// Show global and project cache usage (including the store/ and legacy registry/ split)
     Status,
 }
