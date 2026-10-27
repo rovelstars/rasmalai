@@ -6,7 +6,7 @@
 //
 // Three banner shapes: the home banner (og-banner.png, the default for
 // every page without its own), doc sections (guide/manual/@std), and
-// registry packages (name, version, downloads, description, best-effort
+// registry packages (name, version, description, best-effort
 // from the live catalog API). og/manifest.json maps page keys to files;
 // src/lib/docs/og.ts resolves a pathname through that manifest with a
 // default-banner fallback, so a skipped variant can never 404 an embed.
@@ -53,13 +53,6 @@ function headSize(text) {
 function trunc(text, n) {
 	const t = String(text ?? '').replace(/\s+/g, ' ').trim();
 	return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t;
-}
-
-function shortDownloads(n) {
-	if (!Number.isFinite(n) || n < 0) return '';
-	if (n >= 1000000) return `${(n / 1000000).toFixed(1).replace(/\.0$/, '')}M`;
-	if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`;
-	return `${n}`;
 }
 
 function chrome(kicker, headline, subline, meta) {
@@ -172,9 +165,7 @@ try {
 	for (const p of pkgs) {
 		if (!p || typeof p.name !== 'string') continue;
 		const file = `og-pkg-${slugFile(p.name.replace(/^@/, ''))}.png`;
-		const stats = [p.latest ? `v${p.latest}` : null, shortDownloads(p.downloads) ? `${shortDownloads(p.downloads)} downloads` : null]
-			.filter(Boolean)
-			.join(' · ');
+		const stats = [p.latest ? `v${p.latest}` : null].filter(Boolean).join(' · ');
 		render(
 			chrome('Package', trunc(p.name, 40), trunc(p.description ?? '', 120), stats || null),
 			file

@@ -13,26 +13,6 @@ const MONTHS = [
 	'December'
 ];
 
-function trim1(v: number): string {
-	const s = v.toFixed(1);
-	return s.endsWith('.0') ? s.slice(0, -2) : s;
-}
-
-export function shortDownloads(n: number): string {
-	if (!Number.isFinite(n) || n < 0) return '0';
-	const m = Math.floor(n);
-	if (m < 1000) return String(m);
-	if (m < 1_000_000) {
-		if (m / 1000 >= 999.95) return `${trim1(m / 1_000_000)}M`;
-		return `${trim1(m / 1000)}k`;
-	}
-	if (m < 1_000_000_000) {
-		if (m / 1_000_000 >= 999.95) return `${trim1(m / 1_000_000_000)}B`;
-		return `${trim1(m / 1_000_000)}M`;
-	}
-	return `${trim1(m / 1_000_000_000)}B`;
-}
-
 function ordinal(day: number): string {
 	if (day >= 11 && day <= 13) return `${day}th`;
 	switch (day % 10) {

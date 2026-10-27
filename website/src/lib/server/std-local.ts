@@ -77,7 +77,6 @@ export function localStdPackage(full: string): { pkg: PackageDetail; doc: Versio
 			author: 'Rovel Stars',
 			repository: 'https://github.com/rovelstars/rasmalai',
 			license: 'MIT',
-			downloads: 0,
 			stars: 0,
 			tags: ['stdlib'],
 			keywords: ['stdlib'],

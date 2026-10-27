@@ -9,7 +9,7 @@ import {
 	type PackageSummary
 } from '../src/lib/server/db.js';
 import { decodeFileView } from '../src/lib/server/chunks.js';
-import { humanDate, shortDownloads } from '../src/lib/packages-meta.js';
+import { humanDate } from '../src/lib/packages-meta.js';
 
 function tarEntry(name: string, data: Uint8Array, typeflag = '0', prefix = ''): Uint8Array {
 	const header = new Uint8Array(512);
@@ -32,7 +32,6 @@ function summary(over: Partial<PackageSummary> = {}): PackageSummary {
 		author: 'anon',
 		repository: '',
 		license: 'MIT',
-		downloads: 0,
 		stars: 0,
 		tags: [],
 		keywords: [],
@@ -116,32 +115,6 @@ describe('decodeFileView', () => {
 describe('dayString', () => {
 	it('formats UTC days', () => {
 		assert.equal(dayString(1741564800), '2025-03-10');
-	});
-});
-
-describe('shortDownloads', () => {
-	const vectors: Array<[number, string]> = [
-		[0, '0'],
-		[999, '999'],
-		[1000, '1k'],
-		[1200, '1.2k'],
-		[15400, '15.4k'],
-		[999999, '1M'],
-		[1000000, '1M'],
-		[3400000, '3.4M'],
-		[1000000000, '1B'],
-		[2500000000, '2.5B']
-	];
-	for (const [n, want] of vectors) {
-		it(`${n} -> ${want}`, () => {
-			assert.equal(shortDownloads(n), want);
-		});
-	}
-
-	it('floors fractions and guards junk', () => {
-		assert.equal(shortDownloads(1999.9), '2k');
-		assert.equal(shortDownloads(NaN), '0');
-		assert.equal(shortDownloads(-5), '0');
 	});
 });
 
