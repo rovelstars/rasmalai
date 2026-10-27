@@ -133,4 +133,23 @@ describe('publish runtime-internal rule (rejection)', () => {
 		);
 		assert.equal(res.status, 201);
 	});
+
+	it('accepts cross-file protocol conformance the client pre-check lets through', async () => {
+		const body = frame(
+			'conformance-pair',
+			'1.0.0',
+			'import { Pager, Page } from "./util";\n\nexport fn first(): Pager {\n    return new Page();\n}\n\nfn Main(): Int {\n    return first().next();\n}\n'
+		) as { files: Array<{ path: string; content: string }> };
+		body.files.push({
+			path: 'src/util.rnx',
+			content:
+				'export interface Pager {\n    fn next(): Int;\n}\n\nexport class Page with Pager {\n    fn next(): Int {\n        return 1;\n    }\n}\n'
+		});
+		const res = await publishPOST({
+			request: request(body),
+			platform: { env: fake.env },
+			url: new URL('https://registry.test/api/v0/packages')
+		} as never);
+		assert.equal(res.status, 201);
+	});
 });
