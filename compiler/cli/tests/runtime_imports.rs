@@ -99,6 +99,32 @@ fn publish_precheck_rejects_runtime_import_before_network() {
 }
 
 #[test]
+fn publish_precheck_accepts_cross_file_conformance_before_network() {
+    let dir = pkg(
+        "publish-crossfile",
+        "import {\n    Pager,\n    Page\n} from \"./types\";\n\nexport fn first(): Pager {\n    return new Page();\n}\n\nfn Main(): Int {\n    return first().next();\n}\n",
+    );
+    std::fs::write(
+        dir.join("src").join("types.rnx"),
+        "export interface Pager {\n    fn next(): Int;\n}\n\nexport class Page with Pager {\n    fn next(): Int {\n        return 1;\n    }\n}\n",
+    )
+    .unwrap();
+    let (code, text) = run(
+        &[
+            "publish",
+            "--registry",
+            "http://127.0.0.1:9",
+            "--token",
+            "probe-token",
+        ],
+        &dir,
+    );
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("publish failed"), "{text}");
+    assert!(!text.contains("declare runtime internals"), "{text}");
+}
+
+#[test]
 fn publish_precheck_rejects_bare_rnx_before_network() {
     let dir = pkg(
         "publish-bare",

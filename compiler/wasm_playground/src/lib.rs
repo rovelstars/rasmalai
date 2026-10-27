@@ -1070,10 +1070,13 @@ pub fn analyze_project(files_json: &str, entries_json: &str) -> String {
                 continue;
             };
             for d in frontend::semantic::check(module) {
-                if d.code == diagnostics::Code::E303 && d.message.contains("__rnx_") {
+                if !frontend::security::publish_precheck_reports(&d) {
+                    continue;
+                }
+                if d.code == diagnostics::Code::E303 {
                     return server_err(format!("E303: {path}: {}", d.message));
                 }
-                if d.code == diagnostics::Code::E108 && d.message.contains("runtime") {
+                if d.code == diagnostics::Code::E108 {
                     return server_err(format!("E108: {path}: {}", d.message));
                 }
             }
@@ -1694,6 +1697,36 @@ mod tests {
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}, \"packageName\": \"@std/probe\"}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
         assert_eq!(out["ok"], true, "{out}");
+    }
+
+    #[test]
+    fn analyze_accepts_prelude_protocol_conformance() {
+        let _serial = serial();
+        frontend::stdvfs::clear();
+        assert!(std_provide("prelude", &genuine("prelude")).contains("\"ok\":true"));
+        let files = serde_json::json!({
+            "main.rnx": "import { ArrayIter, Iterable, Iterator } from \"@std/prelude\";\n\nexport class Bag<T> with Iterable<T> {\n    let items: Array<T>;\n    init(items: Array<T>) {\n        this.items = items;\n    }\n    fn iterator(): Iterator<T> {\n        return new ArrayIter<T>(this.items);\n    }\n}\n\nfn Main(): Int {\n    return 0;\n}\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}, \"packageName\": \"@std/probe\"}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        frontend::stdvfs::clear();
+    }
+
+    #[test]
+    fn analyze_accepts_prelude_extended_builtin_method() {
+        let _serial = serial();
+        frontend::stdvfs::clear();
+        assert!(std_provide("prelude", &genuine("prelude")).contains("\"ok\":true"));
+        let files = serde_json::json!({
+            "main.rnx": "export fn hasPrefix(s: String, prefix: String): Bool {\n    return s.startsWith(prefix);\n}\n\nfn Main(): Int {\n    if hasPrefix(\"abc\", \"a\") {\n        return 1;\n    }\n    return 0;\n}\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}, \"packageName\": \"@std/probe\"}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        frontend::stdvfs::clear();
     }
 
     #[test]

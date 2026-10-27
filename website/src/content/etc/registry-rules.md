@@ -81,6 +81,8 @@ One predicate runs report-only on every publish: it counts and logs, and the pub
 
 A non-`@std` package that names a runtime internal is refused outright, before anything is sent. Naming one bare (`__rnx_foo()` with no declaration) is a scope error (`E303`) pointing at the declared form; declaring one with `import { fn name(params): Ret } from runtime "mod"` outside registry-verified `@std/*` is an `E108` naming the owning `@std/*` wrapper. The `rnx publish` pre-check applies the same rule to every file in the upload, so a hand-built frame around the CLI cannot smuggle runtime access in. Only `@std/*`-named frames are exempt, and only for bytes that arrived through registry-verified `@std` provision; a `@std/`-prefixed file smuggled into any other frame is still rejected. Declared `from native` aliases are unaffected, and `__ffi_*` names never counted. Fix: call the owning `@std/*` wrapper instead of the `__rnx_*` internal, and republish — versions are immutable, so the fix ships as the next number.
 
+The pre-check runs each file on its own, so it reports only what one file can prove: parse errors, bare `__rnx_*` uses, and bad `from runtime` declarations. Anything that needs the merged picture — protocol conformance, methods extended onto builtins from another file, unresolved imports — is the server's whole-tree analysis to judge, with the dependency closure the client never holds. The two predicates match by construction: the client never rejects what the server would accept, and whatever the client lets through still faces the server, which fails closed.
+
 ## Entries must match both ways
 
 The entries manifest fails closed in both directions:

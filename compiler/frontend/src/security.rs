@@ -458,6 +458,14 @@ pub fn scan_dep_runtime_imports(dir: &Path) -> Result<Vec<Diagnostic>, Diagnosti
     Ok(out)
 }
 
+pub fn publish_precheck_reports(diag: &Diagnostic) -> bool {
+    match diag.code {
+        Code::E303 => diag.message.contains("__rnx_"),
+        Code::E108 => diag.message.contains("runtime"),
+        _ => false,
+    }
+}
+
 pub fn scan_publish_sources(
     sources: &[(PathBuf, String)],
     is_std: bool,
@@ -474,6 +482,9 @@ pub fn scan_publish_sources(
         })?;
         for mut diag in crate::semantic::check(&module) {
             if diag.code.is_warning() {
+                continue;
+            }
+            if !publish_precheck_reports(&diag) {
                 continue;
             }
             if diag.file.is_none() {
@@ -1109,5 +1120,80 @@ mod tests {
         mirror_tree(&cached, mirror.path());
         assert!(verify_std_package_bytes(mirror.path()).unwrap());
         assert!(scan_dep_runtime_imports(mirror.path()).unwrap().is_empty());
+    }
+
+    fn publish_sources(path: &str, src: &str) -> Vec<(PathBuf, String)> {
+        vec![(PathBuf::from(path), src.to_string())]
+    }
+
+    fn unfiltered_errors(src: &str) -> Vec<Diagnostic> {
+        let module = crate::parser::Parser::parse_module(src).unwrap();
+        crate::semantic::check(&module)
+            .into_iter()
+            .filter(|d| !d.code.is_warning())
+            .collect()
+    }
+
+    #[test]
+    fn publish_precheck_accepts_prelude_protocol_conformance() {
+        let src = "import { ArrayIter, Iterable, Iterator } from \"@std/prelude\";\n\nexport class Bag<T> with Iterable<T> {\n    let items: Array<T>;\n    init(items: Array<T>) {\n        this.items = items;\n    }\n    fn iterator(): Iterator<T> {\n        return new ArrayIter<T>(this.items);\n    }\n}\n";
+        assert!(
+            unfiltered_errors(src).iter().any(|d| d.code == Code::E304),
+            "fixture must exercise the isolated conformance blind spot"
+        );
+        let hits = scan_publish_sources(&publish_sources("src/lib.rnx", src), true).unwrap();
+        assert!(hits.is_empty(), "prelude-declared conformance is server-verified: {hits:?}");
+    }
+
+    #[test]
+    fn publish_precheck_accepts_prelude_extended_builtin_method() {
+        let src = "export fn hasPrefix(s: String, prefix: String): Bool {\n    return s.startsWith(prefix);\n}\n";
+        assert!(
+            unfiltered_errors(src).iter().any(|d| d.code == Code::E108),
+            "fixture must exercise the isolated method blind spot"
+        );
+        let hits = scan_publish_sources(&publish_sources("src/lib.rnx", src), true).unwrap();
+        assert!(hits.is_empty(), "prelude-extended methods are server-verified: {hits:?}");
+    }
+
+    #[test]
+    fn publish_precheck_accepts_local_cross_file_conformance() {
+        let main = "import { Pager, Page } from \"./types\";\n\nexport fn first(): Pager {\n    return new Page();\n}\n\nfn Main(): Int {\n    return first().next();\n}\n";
+        let types = "export interface Pager {\n    fn next(): Int;\n}\n\nexport class Page with Pager {\n    fn next(): Int {\n        return 1;\n    }\n}\n";
+        let sources = vec![
+            (PathBuf::from("src/main.rnx"), main.to_string()),
+            (PathBuf::from("src/types.rnx"), types.to_string()),
+        ];
+        let hits = scan_publish_sources(&sources, false).unwrap();
+        assert!(hits.is_empty(), "cross-file decls resolve in the merged graph: {hits:?}");
+    }
+
+    #[test]
+    fn publish_precheck_rejects_bare_rnx_use() {
+        let src = "fn Main(): Int {\n    return __rnx_clock_mono();\n}\n";
+        let hits = scan_publish_sources(&publish_sources("src/main.rnx", src), false).unwrap();
+        assert!(
+            hits.iter().any(|d| d.code == Code::E303 && d.message.contains("__rnx_clock_mono")),
+            "{hits:?}"
+        );
+    }
+
+    #[test]
+    fn publish_precheck_rejects_declared_runtime_import_outside_std() {
+        let src = "import { fn __rnx_clock_mono(): Int } from runtime \"time\";\nfn Main(): Int {\n    return __rnx_clock_mono();\n}\n";
+        let hits = scan_publish_sources(&publish_sources("src/main.rnx", src), false).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].code, Code::E108);
+        assert!(hits[0].message.contains("__rnx_clock_mono"), "{}", hits[0].message);
+    }
+
+    #[test]
+    fn publish_precheck_rejects_unknown_runtime_module_in_std_frame() {
+        let src = "import { fn probe(): Int } from runtime \"bogus\";\nfn Main(): Int {\n    return probe();\n}\n";
+        let hits = scan_publish_sources(&publish_sources("src/lib.rnx", src), true).unwrap();
+        assert!(
+            hits.iter().any(|d| d.code == Code::E108 && d.message.contains("runtime")),
+            "{hits:?}"
+        );
     }
 }
