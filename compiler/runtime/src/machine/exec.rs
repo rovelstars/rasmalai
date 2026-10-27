@@ -2,6 +2,14 @@ use super::*;
 
 impl<'a> Machine<'a> {
     pub(super) fn exec(&mut self, fr: &mut Frame, ins: &Instr) -> Result<(), ExecError> {
+        if let Some(f) = self.fuel {
+            if f == 0 {
+                return Err(ExecError::Fatal(
+                    "comptime fuel exhausted".to_string(),
+                ));
+            }
+            self.fuel = Some(f - 1);
+        }
         match ins {
             Instr::Const { dst, lit , ..} => {
                 fr.locals[*dst as usize] = match lit {

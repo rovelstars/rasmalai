@@ -5,6 +5,7 @@ mod scratch;
 pub mod args;
 pub mod audit;
 pub mod check;
+pub mod comptime;
 pub mod delta;
 pub mod dev;
 pub mod fix;
@@ -55,6 +56,8 @@ pub fn check_source(src: &str) -> CheckReport {
         }
     };
     let mut errors: Vec<Diagnostic> = Vec::new();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    errors.extend(crate::comptime::expand_all(&mut module, &cwd, None, None));
     errors.extend(frontend::desugar::desugar(&mut module));
     match lir::lower::lower(&module) {
         Ok(mut lm) => {
@@ -166,6 +169,15 @@ pub fn run_source(src: &str, entry: &str, args: Vec<Value>) -> RunResult {
     cmdline.extend(args.iter().map(|v| v.display()));
     runtime::native::rnx_set_args(&cmdline);
     let mut module = frontend::modules::ModuleGraph::from_source(src).expect("checked");
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let exp = crate::comptime::expand_all(&mut module, &cwd, None, None);
+    let exp_errs: Vec<Diagnostic> = exp.into_iter().filter(|d| !d.code.is_warning()).collect();
+    if !exp_errs.is_empty() {
+        return RunResult {
+            outcome: RunOutcome::Compile(exp_errs),
+            output: Vec::new(),
+        };
+    }
     frontend::desugar::desugar(&mut module);
     let mut lowered = lir::lower::lower(&module).expect("checked");
     let entry = resolve_entry(&lowered, entry);
@@ -212,6 +224,13 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::E303 => "declare the variable with `let` or check the spelling",
         Code::E304 => "return a value matching the declared return type",
         Code::E305 => "convert explicitly with `.asFast()` or `.asStrict()`",
+        Code::E117 => "simplify the comptime fn; it ran past the step budget",
+        Code::E118 => "flatten the comptime recursion below the depth cap",
+        Code::E119 => "split the expansion across smaller macros",
+        Code::E120 => "stop the macro from emitting macros that expand forever",
+        Code::E121 => "rename the existing member or drop the derive",
+        Code::E122 => "keep comptime pure: literals, TypeInfo, and file bytes via EmbedBytes! only",
+        Code::E123 => "fix the asserted expression or drop the StaticAssert!",
         Code::E402 => "align the file schema with the declared record type",
         Code::E501 => "pass --token <token> or set RNX_TOKEN in your environment",
         Code::S101 => "approve the capability and re-lock, or remove the offending use",
@@ -254,6 +273,12 @@ pub fn build_object(src: &str, entry: &str, release: bool) -> Result<Vec<u8>, Ve
         return Err(report.errors);
     }
     let mut module = frontend::modules::ModuleGraph::from_source(src).expect("checked");
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let exp = crate::comptime::expand_all(&mut module, &cwd, None, None);
+    let exp_errs: Vec<Diagnostic> = exp.into_iter().filter(|d| !d.code.is_warning()).collect();
+    if !exp_errs.is_empty() {
+        return Err(exp_errs);
+    }
     frontend::desugar::desugar(&mut module);
     let mut lowered = lir::lower::lower(&module).expect("checked");
     let entry = resolve_entry(&lowered, entry);
@@ -283,6 +308,7 @@ pub struct CompileConfig {
     pub debug: bool,
     pub jobs: usize,
     pub memory_cap: u64,
+    pub expand_macros: bool,
 }
 
 impl Default for CompileConfig {
@@ -294,6 +320,7 @@ impl Default for CompileConfig {
             debug: false,
             jobs: default_jobs(),
             memory_cap: default_memory_cap(),
+            expand_macros: false,
         }
     }
 }
@@ -425,6 +452,7 @@ pub fn load_program_cfg(
         Err(e) => return Err(vec![e]),
     };
     profiler.stop();
+    let base_dir = runtime::comptime::base_dir_for(&graph.root);
     let mut total_lines = 0;
     for f in &graph.files {
         if let Ok(src) = std::fs::read_to_string(&f.path) {
@@ -455,6 +483,17 @@ pub fn load_program_cfg(
     let mut module = module;
     frontend::harness::strip_tests(&mut module);
     frontend::harness::strip_benches(&mut module);
+    let dump = runtime::comptime::dump_dir_for(&base_dir, cfg.expand_macros);
+    let exp_diags = crate::comptime::expand_all(&mut module, &base_dir, dump, Some(&mut profiler));
+    let mut exp_errs: Vec<Diagnostic> = Vec::new();
+    for d in exp_diags {
+        if !d.code.is_warning() {
+            exp_errs.push(d);
+        }
+    }
+    if !exp_errs.is_empty() {
+        return Err(exp_errs);
+    }
     let mut errors = frontend::desugar::desugar(&mut module);
     let mut warnings = Vec::new();
     if errors.is_empty() {
@@ -651,6 +690,7 @@ pub fn build_lib_files_cfg(
         Err(e) => return Err(vec![e]),
     };
     profiler.stop();
+    let base_dir = runtime::comptime::base_dir_for(&graph.root);
     let mut total_lines = 0;
     for f in &graph.files {
         if let Ok(src) = std::fs::read_to_string(&f.path) {
@@ -686,6 +726,17 @@ pub fn build_lib_files_cfg(
         Err(e) => return Err(vec![e]),
     };
     let package = package_name_for(path);
+    let dump = runtime::comptime::dump_dir_for(&base_dir, cfg.expand_macros);
+    let exp_diags = crate::comptime::expand_all(&mut module, &base_dir, dump, Some(&mut profiler));
+    let mut exp_errs: Vec<Diagnostic> = Vec::new();
+    for d in exp_diags {
+        if !d.code.is_warning() {
+            exp_errs.push(d);
+        }
+    }
+    if !exp_errs.is_empty() {
+        return Err(exp_errs);
+    }
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         let mut warnings = Vec::new();
@@ -1933,6 +1984,7 @@ pub fn load_test_program_cfg(
         Err(e) => return Err(vec![e]),
     };
     profiler.stop();
+    let base_dir = runtime::comptime::base_dir_for(&graph.root);
     let mut total_lines = 0;
     for f in &graph.files {
         if let Ok(src) = std::fs::read_to_string(&f.path) {
@@ -1959,6 +2011,17 @@ pub fn load_test_program_cfg(
         frontend::harness::generate_test_harness(&mut module, filter, exact, &display_files)
     {
         return Err(vec![e]);
+    }
+    let dump = runtime::comptime::dump_dir_for(&base_dir, cfg.expand_macros);
+    let exp_diags = crate::comptime::expand_all(&mut module, &base_dir, dump, Some(&mut profiler));
+    let mut exp_errs: Vec<Diagnostic> = Vec::new();
+    for d in exp_diags {
+        if !d.code.is_warning() {
+            exp_errs.push(d);
+        }
+    }
+    if !exp_errs.is_empty() {
+        return Err(exp_errs);
     }
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
@@ -2028,6 +2091,7 @@ pub fn load_bench_program_cfg(
         Err(e) => return Err(vec![e]),
     };
     profiler.stop();
+    let base_dir = runtime::comptime::base_dir_for(&graph.root);
     let mut total_lines = 0;
     for f in &graph.files {
         if let Ok(src) = std::fs::read_to_string(&f.path) {
@@ -2044,6 +2108,17 @@ pub fn load_bench_program_cfg(
     };
     if let Err(e) = frontend::bench::generate_bench_harness(&mut module, &benches) {
         return Err(vec![e]);
+    }
+    let dump = runtime::comptime::dump_dir_for(&base_dir, cfg.expand_macros);
+    let exp_diags = crate::comptime::expand_all(&mut module, &base_dir, dump, Some(&mut profiler));
+    let mut exp_errs: Vec<Diagnostic> = Vec::new();
+    for d in exp_diags {
+        if !d.code.is_warning() {
+            exp_errs.push(d);
+        }
+    }
+    if !exp_errs.is_empty() {
+        return Err(exp_errs);
     }
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {

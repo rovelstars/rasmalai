@@ -1735,9 +1735,37 @@ impl<'a> Builder<'a> {
                 Ok((dst, Simple::Other))
             }
             "StaticAssert" => {
+                if let Some(first) = args.first() {
+                    if let Ok(v) = frontend::macros::eval_const(&first.node) {
+                        if !v.truthy().unwrap_or(false) {
+                            let msg = args.get(1).and_then(|a| {
+                                frontend::macros::as_str_lit(&a.node)
+                            }).unwrap_or_else(|| "static assertion failed".to_string());
+                            return self.fail(self.err(
+                                Code::E123,
+                                format!("static assertion failed: {msg}"),
+                                first.span,
+                            ));
+                        }
+                    }
+                }
                 let dst = self.local(LirType::Null);
                 self.emit(Instr::Const { span,  dst, lit: Lit::Null });
                 Ok((dst, Simple::Other))
+            }
+            "CompTime" => {
+                return self.fail(self.err(
+                    Code::E122,
+                    "`CompTime!` runs only in static initializers",
+                    span,
+                ));
+            }
+            "EmbedBytes" => {
+                return self.fail(self.err(
+                    Code::E122,
+                    "`EmbedBytes!` must expand in Phase A before lowering",
+                    span,
+                ));
             }
             "PanicIf" => {
                 if args.is_empty() {

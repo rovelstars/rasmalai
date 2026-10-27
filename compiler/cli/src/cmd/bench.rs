@@ -20,6 +20,7 @@ pub(super) fn run_bench(package: Option<String>, filter: Option<String>, backend
                 debug: false,
                 jobs: cli::resolve_jobs(jobs),
                 memory_cap: cli::resolve_memory_cap(memory_cap),
+                expand_macros: false,
             };
             if verbose {
                 eprintln!("rnx: jobs={} memory-cap={} bytes", cfg.jobs, cfg.memory_cap);

@@ -202,10 +202,20 @@ fn resolve_targets(paths: &[PathBuf], package: Option<&str>) -> Result<Vec<(Path
     Ok(targets)
 }
 
+
+fn entry_parent(entry: &std::path::Path) -> std::path::PathBuf {
+    if entry.is_file() {
+        entry.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."))
+    } else {
+        entry.to_path_buf()
+    }
+}
+
 pub fn run_check(
     paths: &[PathBuf],
     package: Option<&str>,
     json: bool,
+    expand_macros: bool,
     quiet: bool,
 ) -> CheckOutcome {
     let mut stdout = String::new();
@@ -240,7 +250,7 @@ pub fn run_check(
             continue;
         }
         let name = package_name(entry, member.as_deref());
-        let (diags, is_err) = match frontend::check::check_package(entry) {
+        let (diags, is_err) = match frontend::check::check_package_with_dump(entry, expand_macros.then(|| entry_parent(entry).join(".rnx-cache").join("expansions"))) {
             Ok(warnings) => (warnings, false),
             Err(errors) => (errors, true),
         };

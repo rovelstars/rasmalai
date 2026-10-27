@@ -23,7 +23,7 @@ pub mod doc;
 pub mod lexer;
 pub mod lint;
 pub mod lsp_completion;
-pub mod license;
+pub mod macros;pub mod license;
 pub mod minify;
 pub mod objects;
 pub mod oci;

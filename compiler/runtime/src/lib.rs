@@ -3,6 +3,7 @@
 mod scratch;
 
 pub mod machine;
+pub mod comptime;
 pub mod native;
 pub use native::guard;
 pub mod lir_pipeline;

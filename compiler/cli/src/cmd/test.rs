@@ -57,6 +57,7 @@ pub(super) fn run_test(filter: Option<String>, package: Option<String>, opt_leve
                 debug: false,
                 jobs: cli::resolve_jobs(jobs),
                 memory_cap: cli::resolve_memory_cap(memory_cap),
+                expand_macros: false,
             };
             for (pkg_root, _) in &targets {
                 let (lowered, mut profiler) = match cli::load_test_program_cfg(
