@@ -1261,6 +1261,77 @@ export async function getLatestVersion(
 	return selectLatestVersion(rows.map((r) => ({ version: r.version, status: r.status ?? 'live' })));
 }
 
+export interface ScanSnapshot {
+	version: string;
+	status: string;
+	tarManifestJson: string;
+	withdrawn: boolean;
+}
+
+export async function getScanSnapshots(
+	env: Record<string, string | undefined>,
+	fulls: string[]
+): Promise<Map<string, ScanSnapshot | null>> {
+	const out = new Map<string, ScanSnapshot | null>();
+	const want: Array<{ full: string; scope: string; name: string }> = [];
+	const seen = new Set<string>();
+	for (const full of fulls) {
+		if (seen.has(full)) continue;
+		seen.add(full);
+		out.set(full, null);
+		const parsed = parsePackageName(full);
+		if (parsed) want.push({ full, scope: parsed.scope, name: parsed.name });
+	}
+	await getDdb(env);
+	const raw = getClient(env);
+	if (!raw || want.length === 0) return out;
+	const head = `SELECT p.scope AS scope, p.name AS name, v.version AS version, v.status AS status,
+	v.tar_manifest_json AS tar_manifest_json,
+	(SELECT 1 FROM tombstones t WHERE t.package_id = p.id AND t.version = v.version) AS withdrawn
+	FROM package_versions v JOIN packages p ON p.id = v.package_id
+	WHERE `;
+	const groups = chunked(want, 450);
+	const results = await raw.batch(
+		groups.map((group) => ({
+			sql: `${head}${group.map(() => '(p.scope = ? AND p.name = ?)').join(' OR ')}`,
+			args: group.flatMap((w) => [w.scope, w.name])
+		}))
+	);
+	const byFull = new Map<
+		string,
+		Array<{ version: string; status: string; tarManifestJson: string; withdrawn: boolean }>
+	>();
+	for (const result of results) {
+		for (const row of result.rows) {
+			const scope = String(row['scope'] ?? '');
+			const name = String(row['name'] ?? '');
+			const full = scope ? `@${scope}/${name}` : name;
+			const list = byFull.get(full) ?? [];
+			list.push({
+				version: String(row['version'] ?? ''),
+				status: String(row['status'] ?? 'live'),
+				tarManifestJson: String(row['tar_manifest_json'] ?? '[]'),
+				withdrawn: row['withdrawn'] !== null && row['withdrawn'] !== undefined
+			});
+			byFull.set(full, list);
+		}
+	}
+	for (const w of want) {
+		const rows = byFull.get(w.full) ?? [];
+		const latest = selectLatestVersion(rows);
+		if (!latest) continue;
+		const picked = rows.find((r) => r.version === latest);
+		if (!picked) continue;
+		out.set(w.full, {
+			version: latest,
+			status: picked.status,
+			tarManifestJson: picked.tarManifestJson,
+			withdrawn: picked.status === 'tombstoned' || picked.withdrawn
+		});
+	}
+	return out;
+}
+
 // One window for owner-initiated disappearance: unpublish and owner
 // yank share this clock and this source of truth, the version row
 // `created_at` the publish wrote. Epoch seconds, UTC by construction.
@@ -1538,6 +1609,50 @@ export async function getChunkBytes(
 	return bytes;
 }
 
+export async function getChunkBytesBatched(
+	env: Record<string, string | undefined>,
+	hashes: string[]
+): Promise<Map<string, Uint8Array | null>> {
+	const out = new Map<string, Uint8Array | null>();
+	for (const h of hashes) {
+		if (!out.has(h)) out.set(h, null);
+	}
+	const uniq = [...out.keys()].filter((h) => /^[0-9a-f]{64}$/.test(h));
+	if (uniq.length === 0) return out;
+	await getDdb(env);
+	const raw = getClient(env);
+	if (raw) {
+		const groups = chunked(uniq, 200);
+		const results = await raw.batch(
+			groups.map((group) => ({
+				sql: `SELECT hash AS hash, bytes AS bytes FROM chunks WHERE hash IN (${group.map(() => '?').join(',')})`,
+				args: group
+			}))
+		);
+		for (const result of results) {
+			for (const row of result.rows) {
+				const hash = String(row['hash'] ?? '');
+				const value = row['bytes'];
+				const inline =
+					value instanceof Uint8Array ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : null;
+				if (inline && inline.length > 0) out.set(hash, inline);
+			}
+		}
+	}
+	const bucket = r2Bucket(env);
+	if (bucket) {
+		for (const [hash, bytes] of out) {
+			if (bytes) continue;
+			if (!/^[0-9a-f]{64}$/.test(hash)) continue;
+			const fetched = await r2Get(bucket, hash);
+			if (!fetched) continue;
+			if ((await sha256Hex(fetched)) !== hash) throw new Error(`chunk ${hash} failed integrity check`);
+			out.set(hash, fetched);
+		}
+	}
+	return out;
+}
+
 export async function storedChunkBytes(
 	env: Record<string, string | undefined>
 ): Promise<number> {
@@ -1571,25 +1686,32 @@ export async function getPublishedPackageSources(
 	} catch {
 		return null;
 	}
-	const files: Record<string, string> = {};
-	let total = 0;
+	const pending: Array<{ rest: string; hashes: string[] }> = [];
+	const allHashes: string[] = [];
 	for (const e of entries) {
 		if (!e || e.dir || !e.name.endsWith('.rnx')) continue;
 		const stem = e.name.split('/').pop()?.replace(/\.rnx$/, '') ?? '';
 		if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(stem)) continue;
 		const rest = stem === 'lib' ? top : `${top}/${stem}`;
+		pending.push({ rest, hashes: e.chunks ?? [] });
+		for (const h of e.chunks ?? []) allHashes.push(h);
+	}
+	if (pending.length === 0) return null;
+	const blobs = await getChunkBytesBatched(env, allHashes);
+	const files: Record<string, string> = {};
+	let total = 0;
+	for (const p of pending) {
 		const parts: number[] = [];
-		for (const h of e.chunks ?? []) {
-			const bytes = await getChunkBytes(env, h);
+		for (const h of p.hashes) {
+			const bytes = blobs.get(h);
 			if (!bytes) return null;
 			for (const b of bytes) parts.push(b);
 		}
 		const text = new TextDecoder().decode(new Uint8Array(parts));
 		total += text.length;
 		if (total > MAX_DEP_SOURCES_BYTES) throw new Error(`dependency @std/${top} sources exceed the analysis budget`);
-		files[rest] = text;
+		files[p.rest] = text;
 	}
-	if (Object.keys(files).length === 0) return null;
 	return { version: latest, files };
 }
 

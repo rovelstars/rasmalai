@@ -1,5 +1,5 @@
-import { analyzeTree, configFacts } from './analysis.js';
-import { getChunkBytes, getLatestVersion, getVersionRow, listPackages } from './db.js';
+import { analyzeTree, configFacts, type DepSourceCache } from './analysis.js';
+import { getChunkBytesBatched, getScanSnapshots, listPackages } from './db.js';
 import type { TarEntryRef } from './chunks.js';
 
 // Report-only rule scan over stored packages. The registry-key predicate
@@ -10,9 +10,12 @@ import type { TarEntryRef } from './chunks.js';
 // carrying it could only predate enforcement. The scan is read-only: it
 // reassembles stored bytes through the chunk table and writes nothing.
 //
-// Cost: one whole-tree re-analysis per scanned package plus one chunk
-// read per stored file, all sequential. Whole-tree analysis costs about
-// 0.25 ms per KiB of canonical source (spec section 8c); chunk reads
+// Cost: one whole-tree re-analysis per scanned package, all sequential.
+// Store reads are batched (one version snapshot round trip and one chunk
+// round trip per scan, plus one cached dep load per @std top), so the
+// store round trips of a scan stay flat as the package count grows instead
+// of dying at the platform subrequest ceiling partway through. Whole-tree
+// analysis costs about 0.25 ms per KiB of canonical source; chunk reads
 // are content-addressed and deduplicated. The per-package byte cap and
 // the package limit bound a single call; a registry larger than the
 // limit reports truncated: true and the operator pages through with
@@ -49,23 +52,26 @@ export function parseScanLimit(raw: string | null | undefined): number {
 	return Math.min(Math.floor(n), SCAN_MAX_LIMIT);
 }
 
-async function readStoredSources(
-	env: Record<string, string | undefined>,
-	entries: TarEntryRef[]
-): Promise<{ config: string; rnx: Record<string, string> } | null> {
+function sortEntries(entries: TarEntryRef[]): TarEntryRef[] {
+	return [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+function reassembleSources(
+	entries: TarEntryRef[],
+	blobs: Map<string, Uint8Array | null>
+): { config: string; rnx: Record<string, string> } | null {
 	const text = new TextDecoder();
 	let config: string | null = null;
 	const rnx: Record<string, string> = {};
 	let total = 0;
-	const ordered = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-	for (const entry of ordered) {
+	for (const entry of sortEntries(entries)) {
 		if (!entry || entry.dir) continue;
 		const wantConfig = entry.name === 'Project.config';
 		const wantRnx = entry.name.endsWith('.rnx');
 		if (!wantConfig && !wantRnx) continue;
 		const parts: number[] = [];
 		for (const hash of entry.chunks ?? []) {
-			const bytes = await getChunkBytes(env, hash);
+			const bytes = blobs.get(hash);
 			if (!bytes) return null;
 			for (const b of bytes) parts.push(b);
 		}
@@ -95,55 +101,93 @@ export async function scanPublishReportOnly(
 		registries: { count: 0, packages: [] },
 		budget: { maxPackages: limit, maxPackageBytes: SCAN_MAX_PACKAGE_BYTES }
 	};
-	for (const full of names.slice(0, limit)) {
-		let version: string | null = null;
+	const slice = names.slice(0, limit);
+	const snapshots = await getScanSnapshots(env, slice);
+	const manifests = new Map<string, TarEntryRef[]>();
+	const pending: string[] = [];
+	for (const full of slice) {
+		const snap = snapshots.get(full);
+		if (!snap) {
+			scan.skipped.push({ name: full, version: null, reason: 'no-live-version' });
+			continue;
+		}
+		if (snap.withdrawn) {
+			scan.skipped.push({ name: full, version: snap.version, reason: 'withdrawn' });
+			continue;
+		}
+		let manifest: TarEntryRef[];
 		try {
-			version = await getLatestVersion(env, full);
-			if (!version) {
-				scan.skipped.push({ name: full, version, reason: 'no-live-version' });
-				continue;
-			}
-			const found = await getVersionRow(env, full, version);
-			if (!found || found.withdrawn) {
-				scan.skipped.push({ name: full, version, reason: 'withdrawn' });
-				continue;
-			}
-			let manifest: TarEntryRef[];
-			try {
-				manifest = JSON.parse(found.row.tarManifestJson) as TarEntryRef[];
-				if (!Array.isArray(manifest)) throw new Error('not an array');
-			} catch {
-				scan.skipped.push({ name: full, version, reason: 'unreadable-manifest' });
-				continue;
-			}
-			const stored = await readStoredSources(env, manifest);
+			manifest = JSON.parse(snap.tarManifestJson) as TarEntryRef[];
+			if (!Array.isArray(manifest)) throw new Error('not an array');
+		} catch {
+			scan.skipped.push({ name: full, version: snap.version, reason: 'unreadable-manifest' });
+			continue;
+		}
+		manifests.set(full, manifest);
+	}
+	const allHashes: string[] = [];
+	for (const full of slice) {
+		const manifest = manifests.get(full);
+		if (!manifest) continue;
+		let size = 0;
+		const hashes: string[] = [];
+		for (const entry of sortEntries(manifest)) {
+			if (!entry || entry.dir) continue;
+			if (entry.name !== 'Project.config' && !entry.name.endsWith('.rnx')) continue;
+			size += entry.size ?? 0;
+			for (const hash of entry.chunks ?? []) hashes.push(hash);
+		}
+		if (size > SCAN_MAX_PACKAGE_BYTES) {
+			scan.skipped.push({
+				name: full,
+				version: snapshots.get(full)?.version ?? null,
+				reason: 'over-scan-budget-or-missing-bytes'
+			});
+			continue;
+		}
+		allHashes.push(...hashes);
+		pending.push(full);
+	}
+	const blobs = await getChunkBytesBatched(env, allHashes);
+	const depCache: DepSourceCache = new Map();
+	for (const full of pending) {
+		const snap = snapshots.get(full);
+		const manifest = manifests.get(full);
+		if (!snap || !manifest) continue;
+		try {
+			const stored = reassembleSources(manifest, blobs);
 			if (!stored) {
-				scan.skipped.push({ name: full, version, reason: 'over-scan-budget-or-missing-bytes' });
+				scan.skipped.push({ name: full, version: snap.version, reason: 'over-scan-budget-or-missing-bytes' });
 				continue;
 			}
 			if (Object.keys(stored.rnx).length === 0) {
-				scan.skipped.push({ name: full, version, reason: 'no-rnx-sources' });
+				scan.skipped.push({ name: full, version: snap.version, reason: 'no-rnx-sources' });
 				continue;
 			}
 			const facts = await configFacts(stored.config);
-			const analysis = await analyzeTree(env, stored.rnx, {
-				main: facts.entries.main,
-				bins: facts.entries.bins,
-				packageName: full,
-				configText: stored.config
-			});
+			const analysis = await analyzeTree(
+				env,
+				stored.rnx,
+				{
+					main: facts.entries.main,
+					bins: facts.entries.bins,
+					packageName: full,
+					configText: stored.config
+				},
+				depCache
+			);
 			scan.scanned += 1;
 			if (analysis.reportOnly.registries.keys.length > 0) {
 				scan.registries.count += 1;
 				scan.registries.packages.push({
 					name: full,
-					version,
+					version: snap.version,
 					keys: [...analysis.reportOnly.registries.keys].sort()
 				});
 			}
 		} catch (e) {
 			const message = e instanceof Error ? e.message : String(e);
-			scan.skipped.push({ name: full, version, reason: `analysis-failed: ${message.slice(0, 160)}` });
+			scan.skipped.push({ name: full, version: snap.version, reason: `analysis-failed: ${message.slice(0, 160)}` });
 		}
 	}
 	return scan;

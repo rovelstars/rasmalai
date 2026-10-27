@@ -117,6 +117,8 @@ export interface TreeAnalysis {
 	reportOnly: ReportOnlyVerdicts;
 }
 
+export type DepSourceCache = Map<string, { version: string; files: Record<string, string> } | null>;
+
 function parseReportOnly(out: Record<string, unknown>): ReportOnlyVerdicts {
 	const fallback: ReportOnlyVerdicts = { registries: { keys: [] } };
 	const raw = out['reportOnly'];
@@ -168,7 +170,8 @@ export async function configFacts(text: string): Promise<ConfigFacts> {
 export async function analyzeTree(
 	env: Record<string, string | undefined>,
 	files: Record<string, string>,
-	entries: { main: string; bins: Record<string, string>; packageName?: string; configText?: string }
+	entries: { main: string; bins: Record<string, string>; packageName?: string; configText?: string },
+	depCache?: DepSourceCache
 ): Promise<TreeAnalysis> {
 	const wasm = await serverWasm();
 	// @std/* imports resolve from provided sources, mirroring the
@@ -196,7 +199,12 @@ export async function analyzeTree(
 			const rest = missing.replace(/^@std\//, '');
 			if (provided.has(rest)) throw e;
 			provided.add(rest);
-			const dep = await getPublishedPackageSources(env, `@std/${rest.split('/')[0]}`);
+			const full = `@std/${rest.split('/')[0]}`;
+			let dep = depCache?.get(full);
+			if (dep === undefined) {
+				dep = await getPublishedPackageSources(env, full);
+				depCache?.set(full, dep);
+			}
 			if (!dep) throw new Error(`${msg} (hint: @std/${rest.split('/')[0]} is not published; publish it first)`);
 			for (const [name, source] of Object.entries(dep.files)) {
 				parseWasmOut(wasm.std_provide(name, source), 'std_provide');
