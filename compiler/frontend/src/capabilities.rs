@@ -3,7 +3,7 @@ use crate::ast::{
     IfCond, ImportSource, InterpPart, Module, Param, Spanned, Stmt, SwitchExprBody, Type, UnOp,
 };
 use diagnostics::{Code, Diagnostic, Span};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const DEFAULT_FUEL: u64 = 500_000;
@@ -224,7 +224,7 @@ fn is_delegated_taint(t: &Taint) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Sink {
+pub enum Sink {
     FsReadArg(usize),
     FsWriteArg(usize),
     FsOpen,
@@ -436,14 +436,30 @@ struct FnInfo<'a> {
     body: &'a FnBody,
 }
 
-struct Analyzer<'a> {
+#[derive(Debug, Clone)]
+pub(crate) enum ImportTarget {
+    Runtime { sym: String },
+    Fn { file: usize, name: String },
+    Native,
+    External,
+}
+
+struct FileCtx<'a> {
+    path: std::path::PathBuf,
+    display: String,
     source: &'a str,
-    file: String,
-    fns: HashMap<String, FnInfo<'a>>,
-    order: Vec<String>,
+    aliases: BTreeMap<String, ImportTarget>,
+    namespaces: BTreeMap<String, usize>,
+    stars: Vec<usize>,
+}
+
+struct Analyzer<'a> {
+    files: Vec<FileCtx<'a>>,
+    fns: BTreeMap<(usize, String), FnInfo<'a>>,
+    order: Vec<(usize, String)>,
     caps: BTreeSet<Capability>,
     traces: Vec<CallChain>,
-    seen_trace: BTreeSet<(String, u32)>,
+    seen_trace: BTreeSet<(usize, String, u32)>,
     fuel: u64,
     fuel_limit: u64,
 }
@@ -459,36 +475,37 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
-    fn node(&self, symbol: &str, span: Span) -> CallTraceNode {
-        let (line, col) = line_col(self.source, span.start);
+    fn node(&self, f: usize, symbol: &str, span: Span) -> CallTraceNode {
+        let (line, col) = line_col(self.files[f].source, span.start);
         CallTraceNode {
-            file: self.file.clone(),
+            file: self.files[f].display.clone(),
             line,
             col,
             symbol: symbol.to_string(),
-            expression_snippet: snippet(self.source, span),
+            expression_snippet: snippet(self.files[f].source, span),
         }
     }
 
-    fn origin_node(&self, symbol: &str, span: Span) -> CallTraceNode {
-        let (line, col) = line_col(self.source, span.start);
+    fn origin_node(&self, f: usize, symbol: &str, span: Span) -> CallTraceNode {
+        let (line, col) = line_col(self.files[f].source, span.start);
         CallTraceNode {
-            file: self.file.clone(),
+            file: self.files[f].display.clone(),
             line,
             col,
             symbol: symbol.to_string(),
-            expression_snippet: signature_of(self.source, span),
+            expression_snippet: signature_of(self.files[f].source, span),
         }
     }
 
     fn record(
         &mut self,
+        f: usize,
         capability: Capability,
         is_delegated: bool,
         nodes: Vec<CallTraceNode>,
         span: Span,
     ) {
-        let key = (capability.to_string(), span.start);
+        let key = (f, capability.to_string(), span.start);
         if !self.seen_trace.insert(key) {
             return;
         }
@@ -536,45 +553,93 @@ pub fn analyze_with_fuel(
     file: &str,
     fuel: u64,
 ) -> Result<CapabilityAnalysisReport, SecurityDiagnostic> {
-    let mut an = Analyzer {
+    let input = GraphInput {
+        path: std::path::PathBuf::from(file),
+        module,
         source,
-        file: file.to_string(),
-        fns: HashMap::new(),
+    };
+    let report = analyze_file_graph(&[input], fuel)?;
+    Ok(report)
+}
+
+pub struct GraphInput<'a> {
+    pub path: std::path::PathBuf,
+    pub module: &'a Module,
+    pub source: &'a str,
+}
+
+pub fn analyze_file_graph(
+    files: &[GraphInput],
+    fuel: u64,
+) -> Result<CapabilityAnalysisReport, SecurityDiagnostic> {
+    let total_fuel = fuel.saturating_mul(files.len().max(1) as u64);
+    let index: BTreeMap<std::path::PathBuf, usize> = files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.path.clone(), i))
+        .collect();
+    let index_ref: BTreeMap<&std::path::Path, usize> = index
+        .iter()
+        .map(|(p, i)| (p.as_path(), *i))
+        .collect();
+    let mut an = Analyzer {
+        files: files
+            .iter()
+            .map(|f| FileCtx {
+                path: f.path.clone(),
+                display: f.path.to_string_lossy().replace('\\', "/"),
+                source: f.source,
+                aliases: BTreeMap::new(),
+                namespaces: BTreeMap::new(),
+                stars: Vec::new(),
+            })
+            .collect(),
+        fns: BTreeMap::new(),
         order: Vec::new(),
         caps: BTreeSet::new(),
         traces: Vec::new(),
         seen_trace: BTreeSet::new(),
-        fuel,
-        fuel_limit: fuel,
+        fuel: total_fuel,
+        fuel_limit: total_fuel,
     };
-    collect_fns(module, &mut an)?;
-    let entries: Vec<String> = an
+    for (i, input) in files.iter().enumerate() {
+        build_aliases(&mut an, i, input.module, &index_ref);
+    }
+    for (i, input) in files.iter().enumerate() {
+        collect_fns(&mut an, i, input.module)?;
+    }
+    let entries: Vec<(usize, String)> = an
         .order
         .iter()
-        .filter(|n| an.fns.get(*n).is_some_and(|f| f.is_entry))
+        .filter(|(f, n)| an.fns.get(&(*f, n.clone())).is_some_and(|f| f.is_entry))
         .cloned()
         .collect();
-    for entry in entries {
+    for (f, entry) in entries {
         let (origin, nparams) = {
-            let f = &an.fns[&entry];
-            (an.origin_node(&entry, f.decl_span), f.params.len())
+            let info = &an.fns[&(f, entry.clone())];
+            (an.origin_node(f, &entry, info.decl_span), info.params.len())
         };
-        let mut stack = vec![entry.clone()];
+        let mut stack = vec![(f, entry.clone())];
         enter_fn(
             &mut an,
+            f,
             &entry,
             vec![Taint::Param; nparams],
             vec![origin],
             &mut stack,
         )?;
     }
-    let mut top_env: Vec<(String, Taint)> = Vec::new();
-    let mut top_stack = vec!["<top-level>".to_string()];
-    for decl in &module.decls {
-        if let Decl::Stmt(s) = &decl.node {
-            let origin = an.origin_node("<top-level>", decl.span);
-            walk_stmt(&mut an, s, &[], &mut top_env, &[origin], &mut top_stack)?;
+    let mut top_stack: Vec<(usize, String)> = Vec::new();
+    for (f, input) in files.iter().enumerate() {
+        let mut top_env: Vec<(String, Taint)> = Vec::new();
+        top_stack.push((f, "<top-level>".to_string()));
+        for decl in &input.module.decls {
+            if let Decl::Stmt(s) = &decl.node {
+                let origin = an.origin_node(f, "<top-level>", decl.span);
+                walk_stmt(&mut an, f, s, &[], &mut top_env, &[origin], &mut top_stack)?;
+            }
         }
+        top_stack.pop();
     }
     let tier = an
         .caps
@@ -589,37 +654,143 @@ pub fn analyze_with_fuel(
     })
 }
 
-fn collect_fns<'a>(module: &'a Module, an: &mut Analyzer<'a>) -> Result<(), SecurityDiagnostic> {
+fn build_aliases(
+    an: &mut Analyzer,
+    f: usize,
+    module: &Module,
+    index: &BTreeMap<&std::path::Path, usize>,
+) {
+    for decl in &module.decls {
+        let import = match &decl.node {
+            Decl::Import(d) => d,
+            _ => continue,
+        };
+        match &import.source {
+            ImportSource::Native(_) => {
+                for local in crate::modules::native_import_locals(&import.clause) {
+                    an.files[f]
+                        .aliases
+                        .entry(local)
+                        .or_insert(ImportTarget::Native);
+                }
+            }
+            ImportSource::Runtime(_) => {
+                for local in crate::modules::runtime_import_locals(&import.clause) {
+                    let sym = match &import.clause {
+                        crate::ast::ImportClause::Named(specs) => specs
+                            .iter()
+                            .find(|s| crate::modules::import_local_name(s) == local)
+                            .map(|s| s.name.clone())
+                            .unwrap_or_else(|| local.clone()),
+                        _ => local.clone(),
+                    };
+                    an.files[f]
+                        .aliases
+                        .entry(local)
+                        .or_insert(ImportTarget::Runtime { sym });
+                }
+            }
+            ImportSource::Module(source) => {
+                let target = match crate::modules::resolve_import_target(
+                    &an.files[f].path,
+                    source,
+                ) {
+                    Some(t) => t,
+                    None => {
+                        mark_external(an, f, &import.clause);
+                        continue;
+                    }
+                };
+                let Some(&t) = index.get(target.as_path()) else {
+                    mark_external(an, f, &import.clause);
+                    continue;
+                };
+                match &import.clause {
+                    crate::ast::ImportClause::Named(specs)
+                    | crate::ast::ImportClause::DefaultAndNamed(_, specs) => {
+                        for spec in specs {
+                            let local = crate::modules::import_local_name(spec);
+                            an.files[f].aliases.entry(local).or_insert(ImportTarget::Fn {
+                                file: t,
+                                name: spec.name.clone(),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                match &import.clause {
+                    crate::ast::ImportClause::Default(d) => {
+                        an.files[f].namespaces.entry(d.clone()).or_insert(t);
+                    }
+                    crate::ast::ImportClause::Namespace(ns) => {
+                        an.files[f].namespaces.entry(ns.clone()).or_insert(t);
+                    }
+                    crate::ast::ImportClause::DefaultAndNamed(d, _) => {
+                        an.files[f].namespaces.entry(d.clone()).or_insert(t);
+                    }
+                    crate::ast::ImportClause::Star => {
+                        if !an.files[f].stars.contains(&t) {
+                            an.files[f].stars.push(t);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn mark_external(an: &mut Analyzer, f: usize, clause: &crate::ast::ImportClause) {
+    match clause {
+        crate::ast::ImportClause::Named(specs)
+        | crate::ast::ImportClause::DefaultAndNamed(_, specs) => {
+            for spec in specs {
+                let local = crate::modules::import_local_name(spec);
+                an.files[f]
+                    .aliases
+                    .entry(local)
+                    .or_insert(ImportTarget::External);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_fns<'a>(
+    an: &mut Analyzer<'a>,
+    f: usize,
+    module: &'a Module,
+) -> Result<(), SecurityDiagnostic> {
     let decls: &'a [Spanned<Decl>] = &module.decls;
     for decl in decls {
         an.burn()?;
         match &decl.node {
-            Decl::Fn(f) => {
-                register_fn(an, f, f.name.clone(), decl.span)?;
+            Decl::Fn(func) => {
+                register_fn(an, f, func, func.name.clone(), decl.span)?;
             }
             Decl::Class { name, members, .. } => {
-                collect_methods(an, name, members)?;
+                collect_methods(an, f, name, members)?;
             }
             Decl::Extension { target, members, .. } => {
                 let owner = target.path.last().cloned().unwrap_or_default();
-                collect_methods(an, &owner, members)?;
+                collect_methods(an, f, &owner, members)?;
             }
             Decl::Import(d) => {
                 if let ImportSource::Native(lib) = &d.source {
-                    let node = an.node(&format!("native:{lib}"), decl.span);
-                    an.record(Capability::UnsafeFfi, false, vec![node], decl.span);
+                    let node = an.node(f, &format!("native:{lib}"), decl.span);
+                    an.record(f, Capability::UnsafeFfi, false, vec![node], decl.span);
                 }
             }
             Decl::ExportFrom(d) => {
                 if let ImportSource::Native(lib) = &d.source {
-                    let node = an.node(&format!("native:{lib}"), decl.span);
-                    an.record(Capability::UnsafeFfi, false, vec![node], decl.span);
+                    let node = an.node(f, &format!("native:{lib}"), decl.span);
+                    an.record(f, Capability::UnsafeFfi, false, vec![node], decl.span);
                 }
             }
             Decl::Const { value, .. } => {
                 let mut env = Vec::new();
-                let mut stack = vec![String::new()];
-                walk_expr(an, value, &[], &mut env, &[], &mut stack)?;
+                let mut stack = vec![(f, String::new())];
+                walk_expr(an, f, value, &[], &mut env, &[], &mut stack)?;
             }
             _ => {}
         }
@@ -629,25 +800,26 @@ fn collect_fns<'a>(module: &'a Module, an: &mut Analyzer<'a>) -> Result<(), Secu
 
 fn register_fn<'a>(
     an: &mut Analyzer<'a>,
-    f: &'a FnDecl,
+    f: usize,
+    func: &'a FnDecl,
     full: String,
     span: Span,
 ) -> Result<(), SecurityDiagnostic> {
-    let entry = matches!(f.access, Access::Internal | Access::Export);
-    if f.is_unsafe {
-        let node = an.node(&full, span);
-        an.record(Capability::UnsafeRawMemory, false, vec![node], span);
+    let entry = matches!(func.access, Access::Internal | Access::Export);
+    if func.is_unsafe {
+        let node = an.node(f, &full, span);
+        an.record(f, Capability::UnsafeRawMemory, false, vec![node], span);
     }
-    check_params(an, &full, &f.params)?;
-    an.order.push(full.clone());
+    check_params(an, f, &full, &func.params)?;
+    an.order.push((f, full.clone()));
     an.fns.insert(
-        full.clone(),
+        (f, full.clone()),
         FnInfo {
             name: full,
-            params: f.params.iter().map(|p| p.name.clone()).collect(),
+            params: func.params.iter().map(|p| p.name.clone()).collect(),
             is_entry: entry,
             decl_span: span,
-            body: &f.body,
+            body: &func.body,
         },
     );
     Ok(())
@@ -655,13 +827,14 @@ fn register_fn<'a>(
 
 fn collect_methods<'a>(
     an: &mut Analyzer<'a>,
+    f: usize,
     owner: &str,
     members: &'a [Spanned<ClassMember>],
 ) -> Result<(), SecurityDiagnostic> {
     for m in members {
         an.burn()?;
-        if let ClassMember::Method(f) = &m.node {
-            register_fn(an, f, format!("{owner}.{}", f.name), m.span)?;
+        if let ClassMember::Method(func) = &m.node {
+            register_fn(an, f, func, format!("{owner}.{}", func.name), m.span)?;
         }
     }
     Ok(())
@@ -669,6 +842,7 @@ fn collect_methods<'a>(
 
 fn check_params(
     an: &mut Analyzer,
+    f: usize,
     owner: &str,
     params: &[Param],
 ) -> Result<(), SecurityDiagnostic> {
@@ -677,31 +851,94 @@ fn check_params(
         if let Some(ty) = &p.ty
             && is_raw_memory_type(ty)
         {
-            let node = an.node(owner, p.span);
-            an.record(Capability::UnsafeRawMemory, false, vec![node], p.span);
+            let node = an.node(f, owner, p.span);
+            an.record(f, Capability::UnsafeRawMemory, false, vec![node], p.span);
         }
     }
     Ok(())
 }
 
-fn resolve_local<'a>(an: &'a Analyzer<'a>, dotted: &str) -> Option<&'a FnInfo<'a>> {
-    if let Some(f) = an.fns.get(dotted) {
-        return Some(f);
+#[derive(Debug, Clone)]
+pub(crate) enum Callee {
+    Runtime { sym: String, file: usize },
+    Local { file: usize, name: String },
+    Native,
+    Sink,
+}
+
+fn resolve_local<'a>(an: &'a Analyzer<'a>, f: usize, dotted: &str) -> Option<(usize, &'a FnInfo<'a>)> {
+    if let Some(info) = an.fns.get(&(f, dotted.to_string())) {
+        return Some((f, info));
     }
     if !dotted.contains('.') {
         return None;
     }
     let tail = dotted.rsplit('.').next().unwrap_or(dotted);
-    let mut hit: Option<&'a FnInfo<'a>> = None;
-    for (name, f) in &an.fns {
+    let mut hit: Option<(usize, &'a FnInfo<'a>)> = None;
+    for ((ff, name), info) in &an.fns {
+        if *ff != f {
+            continue;
+        }
         if name == tail || name.ends_with(&format!(".{tail}")) {
             if hit.is_some() {
                 return None;
             }
-            hit = Some(f);
+            hit = Some((*ff, info));
         }
     }
     hit
+}
+
+fn resolve_callee(an: &Analyzer, f: usize, dotted: &str) -> Callee {
+    let (head, rest) = match dotted.split_once('.') {
+        Some((h, r)) => (h, Some(r)),
+        None => (dotted, None),
+    };
+    if let Some(target) = an.files[f].aliases.get(head) {
+        match target {
+            ImportTarget::Runtime { sym } => {
+                if rest.is_none() {
+                    return Callee::Runtime { sym: sym.clone(), file: f };
+                }
+                return Callee::Sink;
+            }
+            ImportTarget::Fn { file, name } => {
+                let want = match rest {
+                    None => name.clone(),
+                    Some(r) => {
+                        let qualified = format!("{name}.{r}");
+                        if an.fns.contains_key(&(*file, qualified.clone())) {
+                            qualified
+                        } else {
+                            return Callee::Sink;
+                        }
+                    }
+                };
+                if an.fns.contains_key(&(*file, want.clone())) {
+                    return Callee::Local { file: *file, name: want };
+                }
+                return Callee::Sink;
+            }
+            ImportTarget::Native => return Callee::Native,
+            ImportTarget::External => return Callee::Sink,
+        }
+    }
+    if let Some(&t) = an.files[f].namespaces.get(head) {
+        if let Some(r) = rest
+            && an.fns.contains_key(&(t, r.to_string()))
+        {
+            return Callee::Local { file: t, name: r.to_string() };
+        }
+        return Callee::Sink;
+    }
+    if rest.is_none() {
+        for &t in &an.files[f].stars {
+            if an.fns.contains_key(&(t, dotted.to_string())) {
+                return Callee::Local { file: t, name: dotted.to_string() };
+            }
+        }
+    }
+    Callee::Sink
 }
 
 fn taint_of(
@@ -772,6 +1009,7 @@ fn arg_taints(
 
 fn classify_sink(
     an: &mut Analyzer,
+    f: usize,
     sink: Sink,
     call_span: Span,
     args: &[CallArg],
@@ -788,8 +1026,8 @@ fn classify_sink(
     let mutated = |i: usize| matches!(taints.get(i), Some(Taint::Derived));
     let mut chain = |cap: Capability, is_delegated: bool| {
         let mut full = nodes.to_vec();
-        full.push(an.node(symbol, call_span));
-        an.record(cap, is_delegated, full, call_span);
+        full.push(an.node(f, symbol, call_span));
+        an.record(f, cap, is_delegated, full, call_span);
     };
     match sink {
         Sink::FsReadArg(i) => {
@@ -898,15 +1136,19 @@ fn classify_sink(
 
 fn enter_fn(
     an: &mut Analyzer,
+    target_file: usize,
     name: &str,
     arg_taints: Vec<Taint>,
     nodes: Vec<CallTraceNode>,
-    stack: &mut Vec<String>,
+    stack: &mut Vec<(usize, String)>,
 ) -> Result<(), SecurityDiagnostic> {
     an.burn()?;
     let (params, body) = {
-        let f = an.fns.get(name).expect("resolved");
-        (f.params.clone(), f.body)
+        let info = an
+            .fns
+            .get(&(target_file, name.to_string()))
+            .expect("resolved");
+        (info.params.clone(), info.body)
     };
     let mut env: Vec<(String, Taint)> = params
         .iter()
@@ -919,22 +1161,23 @@ fn enter_fn(
         })
         .collect();
     match body {
-        FnBody::Block(b) => walk_block(an, b, &params, &mut env, &nodes, stack),
-        FnBody::Expr(e) => walk_expr(an, e, &params, &mut env, &nodes, stack),
+        FnBody::Block(b) => walk_block(an, target_file, b, &params, &mut env, &nodes, stack),
+        FnBody::Expr(e) => walk_expr(an, target_file, e, &params, &mut env, &nodes, stack),
     }
 }
 
 fn walk_block(
     an: &mut Analyzer,
+    f: usize,
     block: &Block,
     params: &[String],
     env: &mut Vec<(String, Taint)>,
     nodes: &[CallTraceNode],
-    stack: &mut Vec<String>,
+    stack: &mut Vec<(usize, String)>,
 ) -> Result<(), SecurityDiagnostic> {
     for stmt in &block.stmts {
         an.burn()?;
-        walk_stmt(an, stmt, params, env, nodes, stack)?;
+        walk_stmt(an, f, stmt, params, env, nodes, stack)?;
     }
     Ok(())
 }
@@ -957,26 +1200,27 @@ fn bind_let(
 
 fn walk_stmt(
     an: &mut Analyzer,
+    f: usize,
     stmt: &Spanned<Stmt>,
     params: &[String],
     env: &mut Vec<(String, Taint)>,
     nodes: &[CallTraceNode],
-    stack: &mut Vec<String>,
+    stack: &mut Vec<(usize, String)>,
 ) -> Result<(), SecurityDiagnostic> {
     an.burn()?;
     match &stmt.node {
         Stmt::Var { name, value, .. } => {
-            walk_expr(an, value, params, env, nodes, stack)?;
+            walk_expr(an, f, value, params, env, nodes, stack)?;
             bind_let(an, name, value, env, params)?;
         }
         Stmt::DestructureTuple { value, .. }
         | Stmt::DestructureRecord { value, .. }
         | Stmt::DestructureArray { value, .. } => {
-            walk_expr(an, value, params, env, nodes, stack)?;
+            walk_expr(an, f, value, params, env, nodes, stack)?;
         }
         Stmt::Assign { target, value, .. } => {
-            walk_expr(an, target, params, env, nodes, stack)?;
-            walk_expr(an, value, params, env, nodes, stack)?;
+            walk_expr(an, f, target, params, env, nodes, stack)?;
+            walk_expr(an, f, value, params, env, nodes, stack)?;
             if let Expr::Ident(n) = &target.node {
                 let t = match taint_of(an, value, env, params)? {
                     Taint::Param => Taint::Param,
@@ -991,89 +1235,89 @@ fn walk_stmt(
             }
         }
         Stmt::Expr(e) => {
-            walk_expr(an, e, params, env, nodes, stack)?;
+            walk_expr(an, f, e, params, env, nodes, stack)?;
         }
         Stmt::If { cond, then, otherwise } => {
             match cond {
-                IfCond::Expr(e) => walk_expr(an, e, params, env, nodes, stack)?,
-                IfCond::Let { value, .. } => walk_expr(an, value, params, env, nodes, stack)?,
+                IfCond::Expr(e) => walk_expr(an, f, e, params, env, nodes, stack)?,
+                IfCond::Let { value, .. } => walk_expr(an, f, value, params, env, nodes, stack)?,
             }
-            walk_block(an, then, params, env, nodes, stack)?;
+            walk_block(an, f, then, params, env, nodes, stack)?;
             if let Some(e) = otherwise {
                 match e {
-                    Else::Block(b) => walk_block(an, b, params, env, nodes, stack)?,
-                    Else::If(s) => walk_stmt(an, s, params, env, nodes, stack)?,
+                    Else::Block(b) => walk_block(an, f, b, params, env, nodes, stack)?,
+                    Else::If(s) => walk_stmt(an, f, s, params, env, nodes, stack)?,
                 }
             }
         }
         Stmt::For { iter, body, .. } => {
-            walk_expr(an, iter, params, env, nodes, stack)?;
-            walk_block(an, body, params, env, nodes, stack)?;
+            walk_expr(an, f, iter, params, env, nodes, stack)?;
+            walk_block(an, f, body, params, env, nodes, stack)?;
         }
         Stmt::While { cond, body } | Stmt::DoWhile { cond, body } => {
-            walk_expr(an, cond, params, env, nodes, stack)?;
-            walk_block(an, body, params, env, nodes, stack)?;
+            walk_expr(an, f, cond, params, env, nodes, stack)?;
+            walk_block(an, f, body, params, env, nodes, stack)?;
         }
         Stmt::Switch {
             scrutinee,
             cases,
             default,
         } => {
-            walk_expr(an, scrutinee, params, env, nodes, stack)?;
+            walk_expr(an, f, scrutinee, params, env, nodes, stack)?;
             for c in cases {
                 an.burn()?;
                 if let Some(g) = &c.guard {
-                    walk_expr(an, g, params, env, nodes, stack)?;
+                    walk_expr(an, f, g, params, env, nodes, stack)?;
                 }
                 for s in &c.body {
                     an.burn()?;
-                    walk_stmt(an, s, params, env, nodes, stack)?;
+                    walk_stmt(an, f, s, params, env, nodes, stack)?;
                 }
             }
             if let Some(d) = default {
                 for s in d {
                     an.burn()?;
-                    walk_stmt(an, s, params, env, nodes, stack)?;
+                    walk_stmt(an, f, s, params, env, nodes, stack)?;
                 }
             }
         }
         Stmt::Return(e) => {
             if let Some(e) = e {
-                walk_expr(an, e, params, env, nodes, stack)?;
+                walk_expr(an, f, e, params, env, nodes, stack)?;
             }
         }
         Stmt::Assert(e) => {
-            walk_expr(an, e, params, env, nodes, stack)?;
+            walk_expr(an, f, e, params, env, nodes, stack)?;
         }
         Stmt::Defer(b) => {
-            walk_block(an, b, params, env, nodes, stack)?;
+            walk_block(an, f, b, params, env, nodes, stack)?;
         }
         Stmt::Guard { value, otherwise, .. } => {
-            walk_expr(an, value, params, env, nodes, stack)?;
-            walk_block(an, otherwise, params, env, nodes, stack)?;
+            walk_expr(an, f, value, params, env, nodes, stack)?;
+            walk_block(an, f, otherwise, params, env, nodes, stack)?;
         }
         Stmt::Try { body, catch, finally } => {
-            walk_block(an, body, params, env, nodes, stack)?;
+            walk_block(an, f, body, params, env, nodes, stack)?;
             if let Some((_, b)) = catch {
-                walk_block(an, b, params, env, nodes, stack)?;
+                walk_block(an, f, b, params, env, nodes, stack)?;
             }
             if let Some(b) = finally {
-                walk_block(an, b, params, env, nodes, stack)?;
+                walk_block(an, f, b, params, env, nodes, stack)?;
             }
         }
         Stmt::Throw(e) => {
             if let Some(e) = e {
-                walk_expr(an, e, params, env, nodes, stack)?;
+                walk_expr(an, f, e, params, env, nodes, stack)?;
             }
         }
         Stmt::UnsafeBlock(b) => {
-            let node = an.node("unsafe", stmt.span);
-            an.record(Capability::UnsafeRawMemory, false, {
+            let node = an.node(f, "unsafe", stmt.span);
+            an.record(f, Capability::UnsafeRawMemory, false, {
                 let mut full = nodes.to_vec();
                 full.push(node);
                 full
             }, stmt.span);
-            walk_block(an, b, params, env, nodes, stack)?;
+            walk_block(an, f, b, params, env, nodes, stack)?;
         }
         Stmt::Break | Stmt::Continue | Stmt::Fallthrough | Stmt::Pass | Stmt::Empty => {}
     }
@@ -1082,124 +1326,125 @@ fn walk_stmt(
 
 fn walk_expr(
     an: &mut Analyzer,
+    f: usize,
     expr: &Spanned<Expr>,
     params: &[String],
     env: &mut Vec<(String, Taint)>,
     nodes: &[CallTraceNode],
-    stack: &mut Vec<String>,
+    stack: &mut Vec<(usize, String)>,
 ) -> Result<(), SecurityDiagnostic> {
     an.burn()?;
     match &expr.node {
         Expr::Ident(n) if n == "Pointer" || n == "Address" => {
             let mut full = nodes.to_vec();
-            full.push(an.node(n, expr.span));
-            an.record(Capability::UnsafeRawMemory, false, full, expr.span);
+            full.push(an.node(f, n, expr.span));
+            an.record(f, Capability::UnsafeRawMemory, false, full, expr.span);
         }
         Expr::Member { base, .. } => {
             if let Some(b) = dotted_name(&base.node)
                 && (b == "Pointer" || b == "Address")
             {
                 let mut full = nodes.to_vec();
-                full.push(an.node(&b, base.span));
-                an.record(Capability::UnsafeRawMemory, false, full, base.span);
+                full.push(an.node(f, &b, base.span));
+                an.record(f, Capability::UnsafeRawMemory, false, full, base.span);
             }
-            walk_expr(an, base, params, env, nodes, stack)?;
+            walk_expr(an, f, base, params, env, nodes, stack)?;
         }
         Expr::Call { callee, args, .. } => {
-            walk_expr(an, callee, params, env, nodes, stack)?;
+            walk_expr(an, f, callee, params, env, nodes, stack)?;
             for a in args {
                 an.burn()?;
-                walk_expr(an, &a.value, params, env, nodes, stack)?;
+                walk_expr(an, f, &a.value, params, env, nodes, stack)?;
             }
             if let Some(dotted) = dotted_name(&callee.node) {
-                visit_call(an, &dotted, expr.span, args, params, env, nodes, stack)?;
+                visit_call(an, f, &dotted, expr.span, args, params, env, nodes, stack)?;
             }
         }
         Expr::New { args, .. } => {
             for a in args {
                 an.burn()?;
-                walk_expr(an, &a.value, params, env, nodes, stack)?;
+                walk_expr(an, f, &a.value, params, env, nodes, stack)?;
             }
         }
         Expr::OptCall { base, args, .. } => {
-            walk_expr(an, base, params, env, nodes, stack)?;
+            walk_expr(an, f, base, params, env, nodes, stack)?;
             for a in args {
                 an.burn()?;
-                walk_expr(an, &a.value, params, env, nodes, stack)?;
+                walk_expr(an, f, &a.value, params, env, nodes, stack)?;
             }
         }
         Expr::Interp(parts) => {
             for p in parts {
                 an.burn()?;
                 if let InterpPart::Expr(e) = p {
-                    walk_expr(an, e, params, env, nodes, stack)?;
+                    walk_expr(an, f, e, params, env, nodes, stack)?;
                 }
             }
         }
         Expr::Array(elems) => {
             for e in elems {
                 an.burn()?;
-                walk_expr(an, &e.expr, params, env, nodes, stack)?;
+                walk_expr(an, f, &e.expr, params, env, nodes, stack)?;
             }
         }
         Expr::Record(fields) => {
             for e in fields {
                 an.burn()?;
-                walk_expr(an, e.value(), params, env, nodes, stack)?;
+                walk_expr(an, f, e.value(), params, env, nodes, stack)?;
             }
         }
         Expr::MapLiteral(entries) => {
             for e in entries {
                 an.burn()?;
-                walk_expr(an, e.value(), params, env, nodes, stack)?;
+                walk_expr(an, f, e.value(), params, env, nodes, stack)?;
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            walk_expr(an, lhs, params, env, nodes, stack)?;
-            walk_expr(an, rhs, params, env, nodes, stack)?;
+            walk_expr(an, f, lhs, params, env, nodes, stack)?;
+            walk_expr(an, f, rhs, params, env, nodes, stack)?;
         }
         Expr::Unary { op, rhs } => {
             if matches!(op, UnOp::AddrOf) {
                 let mut full = nodes.to_vec();
-                full.push(an.node("addrof", expr.span));
-                an.record(Capability::UnsafeRawMemory, false, full, expr.span);
+                full.push(an.node(f, "addrof", expr.span));
+                an.record(f, Capability::UnsafeRawMemory, false, full, expr.span);
             }
-            walk_expr(an, rhs, params, env, nodes, stack)?;
+            walk_expr(an, f, rhs, params, env, nodes, stack)?;
         }
         Expr::Postfix { expr: inner, .. } => {
-            walk_expr(an, inner, params, env, nodes, stack)?;
+            walk_expr(an, f, inner, params, env, nodes, stack)?;
         }
         Expr::Ternary {
             cond,
             then,
             otherwise,
         } => {
-            walk_expr(an, cond, params, env, nodes, stack)?;
-            walk_expr(an, then, params, env, nodes, stack)?;
-            walk_expr(an, otherwise, params, env, nodes, stack)?;
+            walk_expr(an, f, cond, params, env, nodes, stack)?;
+            walk_expr(an, f, then, params, env, nodes, stack)?;
+            walk_expr(an, f, otherwise, params, env, nodes, stack)?;
         }
         Expr::Coalesce { lhs, rhs } => {
-            walk_expr(an, lhs, params, env, nodes, stack)?;
-            walk_expr(an, rhs, params, env, nodes, stack)?;
+            walk_expr(an, f, lhs, params, env, nodes, stack)?;
+            walk_expr(an, f, rhs, params, env, nodes, stack)?;
         }
         Expr::OptChain { base, .. } => {
-            walk_expr(an, base, params, env, nodes, stack)?;
+            walk_expr(an, f, base, params, env, nodes, stack)?;
         }
         Expr::Range { lo, hi, .. } => {
-            walk_expr(an, lo, params, env, nodes, stack)?;
-            walk_expr(an, hi, params, env, nodes, stack)?;
+            walk_expr(an, f, lo, params, env, nodes, stack)?;
+            walk_expr(an, f, hi, params, env, nodes, stack)?;
         }
         Expr::Index { base, index } => {
-            walk_expr(an, base, params, env, nodes, stack)?;
-            walk_expr(an, index, params, env, nodes, stack)?;
+            walk_expr(an, f, base, params, env, nodes, stack)?;
+            walk_expr(an, f, index, params, env, nodes, stack)?;
         }
         Expr::Cast { expr: inner, .. } | Expr::Is { base: inner, .. } => {
-            walk_expr(an, inner, params, env, nodes, stack)?;
+            walk_expr(an, f, inner, params, env, nodes, stack)?;
         }
         Expr::Macro { args, .. } => {
             for a in args {
                 an.burn()?;
-                walk_expr(an, a, params, env, nodes, stack)?;
+                walk_expr(an, f, a, params, env, nodes, stack)?;
             }
         }
         Expr::Closure {
@@ -1213,43 +1458,43 @@ fn walk_expr(
                 .collect();
             let cnames: Vec<String> = cparams.iter().map(|p| p.name.clone()).collect();
             match body {
-                FnBody::Block(b) => walk_block(an, b, &cnames, &mut cenv, nodes, stack)?,
-                FnBody::Expr(e) => walk_expr(an, e, &cnames, &mut cenv, nodes, stack)?,
+                FnBody::Block(b) => walk_block(an, f, b, &cnames, &mut cenv, nodes, stack)?,
+                FnBody::Expr(e) => walk_expr(an, f, e, &cnames, &mut cenv, nodes, stack)?,
             }
         }
         Expr::UnsafeBlock(b) => {
-            let node = an.node("unsafe", expr.span);
-            an.record(Capability::UnsafeRawMemory, false, {
+            let node = an.node(f, "unsafe", expr.span);
+            an.record(f, Capability::UnsafeRawMemory, false, {
                 let mut full = nodes.to_vec();
                 full.push(node);
                 full
             }, expr.span);
-            walk_block(an, b, params, env, nodes, stack)?;
+            walk_block(an, f, b, params, env, nodes, stack)?;
         }
         Expr::Await(inner) | Expr::Propagate(inner) => {
-            walk_expr(an, inner, params, env, nodes, stack)?;
+            walk_expr(an, f, inner, params, env, nodes, stack)?;
         }
         Expr::Tuple(elems) => {
             for e in elems {
                 an.burn()?;
-                walk_expr(an, e, params, env, nodes, stack)?;
+                walk_expr(an, f, e, params, env, nodes, stack)?;
             }
         }
         Expr::TupleGet { base, .. } => {
-            walk_expr(an, base, params, env, nodes, stack)?;
+            walk_expr(an, f, base, params, env, nodes, stack)?;
         }
         Expr::Switch {
             scrutinee, cases, ..
         } => {
-            walk_expr(an, scrutinee, params, env, nodes, stack)?;
+            walk_expr(an, f, scrutinee, params, env, nodes, stack)?;
             for c in cases {
                 an.burn()?;
                 if let Some(g) = &c.guard {
-                    walk_expr(an, g, params, env, nodes, stack)?;
+                    walk_expr(an, f, g, params, env, nodes, stack)?;
                 }
                 match &c.body {
-                    SwitchExprBody::Expr(e) => walk_expr(an, e, params, env, nodes, stack)?,
-                    SwitchExprBody::Block(b) => walk_block(an, b, params, env, nodes, stack)?,
+                    SwitchExprBody::Expr(e) => walk_expr(an, f, e, params, env, nodes, stack)?,
+                    SwitchExprBody::Block(b) => walk_block(an, f, b, params, env, nodes, stack)?,
                 }
             }
         }
@@ -1267,21 +1512,47 @@ fn walk_expr(
 
 fn visit_call(
     an: &mut Analyzer,
+    f: usize,
     dotted: &str,
     call_span: Span,
     args: &[CallArg],
     params: &[String],
     env: &mut Vec<(String, Taint)>,
     nodes: &[CallTraceNode],
-    stack: &mut Vec<String>,
+    stack: &mut Vec<(usize, String)>,
 ) -> Result<(), SecurityDiagnostic> {
     an.burn()?;
+    match resolve_callee(an, f, dotted) {
+        Callee::Runtime { sym, file } => {
+            if let Some(decl) = crate::runtime::lookup(&sym) {
+                let taints = arg_taints(an, args, env, params)?;
+                for sink in decl.sinks {
+                    classify_sink(an, file, *sink, call_span, args, &taints, nodes, &sym)?;
+                }
+            }
+            return Ok(());
+        }
+        Callee::Local { file: tf, name: tname } => {
+            if stack.contains(&(tf, tname.clone())) {
+                return Ok(());
+            }
+            let taints = arg_taints(an, args, env, params)?;
+            let mut full = nodes.to_vec();
+            full.push(an.node(f, &tname, call_span));
+            stack.push((tf, tname.clone()));
+            let r = enter_fn(an, tf, &tname, taints, full, stack);
+            stack.pop();
+            return r;
+        }
+        Callee::Native => return Ok(()),
+        Callee::Sink => {}
+    }
     if let Some(sink) = sink_for(dotted) {
         let taints = arg_taints(an, args, env, params)?;
-        return classify_sink(an, sink, call_span, args, &taints, nodes, dotted);
+        return classify_sink(an, f, sink, call_span, args, &taints, nodes, dotted);
     }
-    let target = match resolve_local(an, dotted) {
-        Some(f) => f.name.clone(),
+    let target = match resolve_local(an, f, dotted) {
+        Some((tf, info)) => (tf, info.name.clone()),
         None => return Ok(()),
     };
     if stack.contains(&target) {
@@ -1289,9 +1560,9 @@ fn visit_call(
     }
     let taints = arg_taints(an, args, env, params)?;
     let mut full = nodes.to_vec();
-    full.push(an.node(&target, call_span));
+    full.push(an.node(f, &target.1, call_span));
     stack.push(target.clone());
-    let r = enter_fn(an, &target, taints, full, stack);
+    let r = enter_fn(an, target.0, &target.1, taints, full, stack);
     stack.pop();
     r
 }

@@ -220,7 +220,9 @@ fn s401_locked_spawn_denied_and_allowed() {
         .unwrap();
     assert_eq!(allowed.status.code(), Some(0), "{}", combined(&allowed));
     let lock_path = app.join("Project.deplock");
-    let stripped = lock_text.replace("capabilities: [\"sys:exec:sh\"]", "capabilities: []");
+    let stripped = lock_text
+        .replace(", \"sys:exec:sh\"", "")
+        .replace("\"sys:exec:sh\", ", "");
     write(&lock_path, &stripped);
     let denied = Command::new(rnx())
         .arg("run")

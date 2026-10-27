@@ -21,7 +21,7 @@ fn run(args: &[&str], dir: &std::path::Path) -> (i32, String) {
 }
 
 fn pkg(tag: &str, main: &str) -> crate::scratch::Scratch {
-    let dir = crate::scratch::dir(&format!("s103-{tag}"));
+    let dir = crate::scratch::dir(&format!("rtcli-{tag}"));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("Project.config"),
@@ -41,9 +41,21 @@ fn audit_rejects_bare_rnx_reference() {
     );
     let (code, text) = run(&["audit", "--path", &dir.to_string_lossy()], &dir);
     assert_eq!(code, 1, "{text}");
-    assert!(text.contains("S103"), "{text}");
     assert!(text.contains("__rnx_clock_mono"), "{text}");
-    assert!(text.contains("@std"), "{text}");
+    assert!(text.contains("undefined variable"), "{text}");
+    assert!(text.contains("@std/*"), "{text}");
+}
+
+#[test]
+fn audit_rejects_declared_runtime_import_in_user_code() {
+    let dir = pkg(
+        "audit-rt",
+        "import { fn __rnx_clock_mono(): Int } from runtime \"time\"\nfn Main(): Int {\n    return __rnx_clock_mono();\n}\n",
+    );
+    let (code, text) = run(&["audit", "--path", &dir.to_string_lossy()], &dir);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("__rnx_clock_mono"), "{text}");
+    assert!(text.contains("@std/time"), "{text}");
 }
 
 #[test]
@@ -51,24 +63,45 @@ fn audit_passes_without_bare_rnx_references() {
     let dir = pkg("audit-good", "fn Main(): Int {\n    return 0;\n}\n");
     let (code, text) = run(&["audit", "--path", &dir.to_string_lossy()], &dir);
     assert_eq!(code, 0, "{text}");
-    assert!(!text.contains("S103"), "{text}");
+    assert!(!text.contains("__rnx_"), "{text}");
 }
 
 #[test]
 fn audit_passes_for_declared_native_alias() {
     let dir = pkg(
         "audit-alias",
-        "import { fn clock(): Int as __rnx_clock } from native \"rt\"\nfn Main(): Int {\n    return __rnx_clock();\n}\n",
+        "import { fn clock(): Int as __rnx_clock } from native \"rt\"\nunsafe fn tick(): Int {\n    return __rnx_clock();\n}\nfn Main(): Int {\n    unsafe {\n        return tick();\n    }\n}\n",
     );
     let (code, text) = run(&["audit", "--path", &dir.to_string_lossy()], &dir);
     assert_eq!(code, 0, "{text}");
-    assert!(!text.contains("S103"), "{text}");
+    assert!(!text.contains("__rnx_"), "{text}");
 }
 
 #[test]
-fn publish_precheck_rejects_bare_rnx_reference_before_network() {
+fn publish_precheck_rejects_runtime_import_before_network() {
     let dir = pkg(
         "publish-bad",
+        "import { fn __rnx_clock_mono(): Int } from runtime \"time\"\nfn Main(): Int {\n    return __rnx_clock_mono();\n}\n",
+    );
+    let (code, text) = run(
+        &[
+            "publish",
+            "--registry",
+            "http://127.0.0.1:9",
+            "--token",
+            "probe-token",
+        ],
+        &dir,
+    );
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("__rnx_clock_mono"), "{text}");
+    assert!(!text.contains("cannot reach registry"), "{text}");
+}
+
+#[test]
+fn publish_precheck_rejects_bare_rnx_before_network() {
+    let dir = pkg(
+        "publish-bare",
         "fn Main(): Int {\n    return __rnx_clock_mono();\n}\n",
     );
     let (code, text) = run(
@@ -82,7 +115,6 @@ fn publish_precheck_rejects_bare_rnx_reference_before_network() {
         &dir,
     );
     assert_eq!(code, 1, "{text}");
-    assert!(text.contains("S103"), "{text}");
     assert!(text.contains("__rnx_clock_mono"), "{text}");
     assert!(!text.contains("cannot reach registry"), "{text}");
 }

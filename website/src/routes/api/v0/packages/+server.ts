@@ -362,9 +362,11 @@ export async function POST({ request, platform, url }) {
 	let capabilities: DeclaredPermission[];
 	let factRows: CanonicalFact[];
 	let edges: { edges: string[]; permsDigest: string; files: Array<{ path: string; hash: string }> };
-	// Report-only verdicts from the whole-tree analysis (S103, registry
-	// keys). They ride the success body for the publisher and the worker
-	// log for the operator, and never reject: enforcement is a later flip.
+	// Report-only verdicts from the whole-tree analysis (registry keys).
+	// They ride the success body for the publisher and the worker log for
+	// the operator, and never reject: enforcement is a later flip.
+	// Runtime access is enforced, never counted: a violating frame fails
+	// analysis before it can reach this point.
 	let reportOnly: Awaited<ReturnType<typeof analyzeTree>>['reportOnly'] | null = null;
 	const manifestJson = JSON.stringify({
 		deps: facts.dependencies,
@@ -490,14 +492,13 @@ export async function POST({ request, platform, url }) {
 	for (const dep of extractDepNames(manifestJson)) {
 		await purgeUrls(env, [`${url.origin}/api/v0/packages/${dep}/dependents`], { fullName: dep });
 	}
-	if (reportOnly && (reportOnly.s103.count > 0 || reportOnly.registries.keys.length > 0)) {
+	if (reportOnly && reportOnly.registries.keys.length > 0) {
 		console.warn(
 			JSON.stringify({
 				scope: 'publish-report-only',
 				requestId: frame.requestId,
 				name: frame.name,
 				version: frame.version,
-				s103: reportOnly.s103,
 				registries: reportOnly.registries
 			})
 		);

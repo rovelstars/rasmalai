@@ -60,6 +60,16 @@ pub fn native_import_locals(clause: &A::ImportClause) -> Vec<String> {
     }
 }
 
+/// Local names declared by the named clause of a runtime import. Runtime
+/// imports only allow the plain named form; the combiner treats them like
+/// native locals (identity-mapped, never re-exported).
+pub fn runtime_import_locals(clause: &A::ImportClause) -> Vec<String> {
+    match clause {
+        A::ImportClause::Named(specs) => specs.iter().map(import_local_name).collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn mangle(key: &str, name: &str) -> String {
     if key.is_empty() {
         name.to_string()
@@ -679,6 +689,7 @@ impl ModuleGraph {
                             index.get(&target).map(|ti| self.files[*ti].key.clone()).unwrap_or_default()
                         }
                         A::ImportSource::Native(_) => String::new(),
+                A::ImportSource::Runtime(_) => String::new(),
                     };
                     namespaces.entry(d.clone()).or_insert(nskey);
                     continue;
@@ -739,6 +750,13 @@ impl ModuleGraph {
                     }
                     continue;
                 }
+                A::ImportSource::Runtime(_) => {
+                    for spec in &named {
+                        let local = import_local_name(spec);
+                        aliases.entry(local.clone()).or_insert(local.clone());
+                    }
+                    continue;
+                }
                 A::ImportSource::Module(source) => {
                     let target = resolve_source(&f.path, base, source)
                         .map_err(|mut e: Diagnostic| {
@@ -760,7 +778,7 @@ impl ModuleGraph {
                         if spec.native_fn.is_some() {
                             return Err(Diagnostic::new(
                                 Code::E108,
-                                "type annotations are forbidden on module imports; use `from native` for foreign C ABI",
+                                "type annotations are forbidden on module imports; use `from native` for foreign C ABI or `from runtime` for runtime internals",
                             )
                             .with_span(import.source_span)
                             .with_file(f.path.clone()));
@@ -1790,6 +1808,14 @@ fn package_ctx_of(file: &Path) -> Result<Option<(PathBuf, ProjectConfig)>, Diagn
 
 fn resolve_import(from: &Path, source: &str) -> Result<(PathBuf, Option<PathBuf>), Diagnostic> {
     resolve_import_meta(from, source).map(|(target, dep_root, _)| (target, dep_root))
+}
+
+pub(crate) fn graph_file_source(path: &Path) -> Option<String> {
+    read_source(path).ok()
+}
+
+pub(crate) fn resolve_import_target(from: &Path, source: &str) -> Option<PathBuf> {
+    resolve_import_meta(from, source).map(|(target, _, _)| target).ok()
 }
 
 fn resolve_import_meta(

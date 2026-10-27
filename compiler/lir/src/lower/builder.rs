@@ -39,6 +39,7 @@ impl<'a> Builder<'a> {
         extensions: &'a BTreeMap<(String, String), usize>,
         ext_self: &'a BTreeMap<String, A::Type>,
         mod_consts: &'a BTreeMap<String, (Lit, LirType, Simple)>,
+        runtime_alias: &'a BTreeMap<String, String>,
         id: usize,
         prefix: String,
     ) -> Builder<'a> {
@@ -68,6 +69,7 @@ impl<'a> Builder<'a> {
             extensions,
             ext_self,
             mod_consts,
+            runtime_alias,
             func,
             blocks: vec![Vec::new()],
             terms: vec![None],

@@ -73,12 +73,12 @@ fn build_stdlib_object() -> Result<Vec<u8>, Diagnostic> {
     }
     let mut errors = Vec::new();
     for diag in frontend::semantic::check(&module) {
-        if diag.code.is_warning() || diag.code == diagnostics::Code::S103 {
+        if diag.code.is_warning() {
             continue;
         }
         errors.push(diag);
     }
-    errors.extend(frontend::security::s103_graph(&graph));
+    errors.extend(frontend::security::verify_runtime_imports(&graph));
     if !errors.is_empty() {
         return Err(first_diag(errors, "prebuilt stdlib: typecheck failed"));
     }

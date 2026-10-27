@@ -138,7 +138,6 @@ Without `fn decay(this)`, a self-capturing closure warns as `W104`. A mutual str
 |---|---|---|
 | `S101` | deduced capabilities exceed the `Project.deplock` ledger | approve the capability and re-lock, or remove the use |
 | `S102` | capability outside the `[permissions]` ceiling | narrow the code or deliberately widen the ceiling |
-| `S103` | bare `__rnx_*` reference outside `@std/*` | call the owning `@std/*` wrapper instead of the `__rnx_*` internal |
 | `S201` | delegated argument modified before reaching a sink | pass it through untouched or request the ambient grant |
 | `S301` | dependency code targeting `Project.config`, `Project.deplock`, `.git`, or cache dirs | never target those paths; the abort is the enforcement |
 | `S401` | unapproved child process execution | add a covering `sys:exec:<name>` grant with explicit approval |
@@ -219,13 +218,12 @@ print(fast * 2.0.asFast());
 
 ## Security codes (S101-S501)
 
-Capability and permission failures. The full model — capability grammar, `[permissions]` ceilings, tiers, and the `rnx audit` / `rnx lock` workflow — is specified in [Project and Toolchain](/manual/16-project-and-toolchain).
+Capability and permission failures. The full model — capability grammar, `[permissions]` ceilings, tiers, and the `rnx audit` / `rnx lock` workflow — is specified in [Project and Toolchain](/manual/16-project-and-toolchain). Summaries are transitive: each module is charged its own sinks plus the summaries of the modules it imports (bare, renamed, and chained calls attribute identically), so ceilings must cover the transitive closure. Runtime internals (`__rnx_*`) are never referenced bare: the only legal declaration is `import { fn name(params): Ret } from runtime "mod"` inside registry-verified `@std/*`, and any other frame is rejected with `E108` naming the owning `@std/*` wrapper.
 
 | Code | Severity | Cause | Resolution |
 |---|---|---|---|
 | `S101` | error | capability mismatch: deduced capabilities exceed the `Project.deplock` ledger | approve the capability and re-lock, or remove the offending use |
 | `S102` | error | permission ceiling exceeded: a capability outside `[permissions] allowed` | narrow the package code or deliberately widen the ceiling |
-| `S103` | error | bare runtime-internal reference: a non-`@std` package references an undeclared `__rnx_*` symbol (declared `from native` aliases are exempt; `__ffi_*` aliases get no auto-resolve, so an undeclared `__ffi_*` use is a scope error instead) | call the owning `@std/*` wrapper instead of the `__rnx_*` internal |
 | `S201` | error | untrusted path mutation: a delegated argument modified before reaching a sink | pass the delegated value through untouched or request the ambient grant |
 | `S301` | runtime trap | protected path violation: dependency code targeting `Project.config`, `Project.deplock`, `.git`, or cache dirs | never target those paths from dependency code; the abort is the intended enforcement |
 | `S401` | runtime trap | unapproved child process execution | add a covering `sys:exec:<name>` grant with explicit approval |

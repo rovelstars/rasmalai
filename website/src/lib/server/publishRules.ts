@@ -2,12 +2,13 @@ import { analyzeTree, configFacts } from './analysis.js';
 import { getChunkBytes, getLatestVersion, getVersionRow, listPackages } from './db.js';
 import type { TarEntryRef } from './chunks.js';
 
-// Report-only rule scan over stored packages. The S103 and registry-key
-// predicates run here exactly as they run on the publish path (one full
-// section-7b analysis per package, same wasm entries), so the counts the
-// operator reads are the counts the flip would enforce on. The scan is
-// read-only: it reassembles stored bytes through the chunk table and
-// writes nothing.
+// Report-only rule scan over stored packages. The registry-key predicate
+// runs here exactly as it runs on the publish path (one full section-7b
+// analysis per package, same wasm entries), so the count the operator
+// reads is the count the flip would enforce on. Runtime access is not
+// counted: it fails whole-tree analysis outright, so a stored package
+// carrying it could only predate enforcement. The scan is read-only: it
+// reassembles stored bytes through the chunk table and writes nothing.
 //
 // Cost: one whole-tree re-analysis per scanned package plus one chunk
 // read per stored file, all sequential. Whole-tree analysis costs about
@@ -20,13 +21,6 @@ import type { TarEntryRef } from './chunks.js';
 export const SCAN_DEFAULT_LIMIT = 200;
 export const SCAN_MAX_LIMIT = 1000;
 export const SCAN_MAX_PACKAGE_BYTES = 8 * 1024 * 1024;
-
-export interface S103PackageHit {
-	name: string;
-	version: string;
-	count: number;
-	files: Record<string, string[]>;
-}
 
 export interface RegistriesPackageHit {
 	name: string;
@@ -45,7 +39,6 @@ export interface PublishRulesScan {
 	skipped: SkippedPackage[];
 	truncated: boolean;
 	limit: number;
-	s103: { count: number; packages: S103PackageHit[] };
 	registries: { count: number; packages: RegistriesPackageHit[] };
 	budget: { maxPackages: number; maxPackageBytes: number };
 }
@@ -99,7 +92,6 @@ export async function scanPublishReportOnly(
 		skipped: [],
 		truncated: names.length > limit,
 		limit,
-		s103: { count: 0, packages: [] },
 		registries: { count: 0, packages: [] },
 		budget: { maxPackages: limit, maxPackageBytes: SCAN_MAX_PACKAGE_BYTES }
 	};
@@ -141,15 +133,6 @@ export async function scanPublishReportOnly(
 				configText: stored.config
 			});
 			scan.scanned += 1;
-			if (analysis.reportOnly.s103.count > 0) {
-				scan.s103.count += 1;
-				scan.s103.packages.push({
-					name: full,
-					version,
-					count: analysis.reportOnly.s103.count,
-					files: analysis.reportOnly.s103.files
-				});
-			}
 			if (analysis.reportOnly.registries.keys.length > 0) {
 				scan.registries.count += 1;
 				scan.registries.packages.push({

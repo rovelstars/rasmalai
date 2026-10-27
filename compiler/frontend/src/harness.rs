@@ -112,6 +112,7 @@ pub fn generate_test_harness(
     module.decls.retain(|d| !matches!(&d.node, A::Decl::Fn(f) if f.name == "Main"));
     module.decls.retain(|d| !matches!(&d.node, A::Decl::Stmt(_)));
     module.decls.push(synthesize_main(&names, files));
+    crate::runtime::ensure_import(module, "__rnx_clock_mono");
     Ok(names)
 }
 

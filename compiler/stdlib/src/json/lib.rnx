@@ -42,6 +42,17 @@ import {
     ByteBuffer
 } from "@std/bytes";
 
+import {
+    fn __rnx_gmap_free(handle: Int): Void,
+} from runtime "core";
+import {
+    fn __rnx_json_parse(text: String): Any,
+    fn __rnx_json_stringify(value: Any): String,
+    fn __rnx_json_stringify_into(value: Any, buf: Int, pos: Int): Int,
+    fn __rnx_json_unwrap(handle: Int): Int,
+} from runtime "json";
+
+
 /**
 * JSON codec. A number with neither fraction nor exponent decodes to
 * `Int`, every other number to `Float`; object keys are byte-sorted,

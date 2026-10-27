@@ -76,17 +76,17 @@ Idempotency: every mutation takes a client-generated `requestId`. Publish reads 
 
 ## Report-only publish rules
 
-Two predicates run on every whole-tree analysis and count without rejecting: bare `__rnx_*` uses in non-`@std` frames (rule S103), and top-level `registry`/`registries` keys in the frame `Project.config`. A violating publish still returns 201; the success body carries the verdicts under `reportOnly`, and the worker logs one JSON line per violating publish:
+One predicate runs on every whole-tree analysis and counts without rejecting: top-level `registry`/`registries` keys in the frame `Project.config`. A violating publish still returns 201; the success body carries the verdict under `reportOnly`, and the worker logs one JSON line per violating publish:
 
 ```json
-{"scope":"publish-report-only","requestId":"req-1-2","name":"colony","version":"0.4.0","s103":{"count":1,"files":{"src/main.rnx":["__rnx_clock_mono"]}},"registries":{"keys":[]}}
+{"scope":"publish-report-only","requestId":"req-1-2","name":"colony","version":"0.4.0","registries":{"keys":[]}}
 ```
 
-The `@std` exemption follows the frame name, never a file path: only a `@std/*`-named frame (which the route above gates to the org token) skips the S103 count, so smuggling a `@std/`-prefixed file into any other frame still counts. Declared `from native` aliases are exempt, and `__ffi_*` names never count. Missing or unparseable config text counts nothing — the config gate upstream already rejects what it cannot parse.
+Missing or unparseable config text counts nothing — the config gate upstream already rejects what it cannot parse.
 
-`GET /api/admin/publish-rules` (admin token) replays both predicates over the live set — one full whole-tree re-analysis per package, sequential — and returns per-rule counts plus the violating package names. It is read-only and bounded: `?limit=` caps the packages per call (default 200, max 1000), each package caps at 8 MiB of reassembled source, and anything skipped lands in `skipped` with a reason instead of failing the call. Whole-tree analysis costs about 0.25 ms per KiB of canonical source plus one chunk read per stored file; page through with repeated calls on a large registry.
+Runtime access is enforced, not counted. A frame that names a runtime internal outside registry-verified `@std/*` — bare (`__rnx_foo()` with no declaration, an `E303` pointing at the declared form) or declared (`import { fn name(params): Ret } from runtime "mod"`, an `E108` naming the owning `@std/*` wrapper) — fails whole-tree analysis, so the publish never reaches 201. Only a `@std/*`-named frame (which the route above gates to the org token) may carry `from runtime` imports, and only for bytes that arrived through registry-verified `@std` provision; a `@std/`-prefixed file smuggled into any other frame is still rejected. Declared `from native` aliases are unaffected, and `__ffi_*` names never counted.
 
-These counts are the input to the enforcement flip, which is a separate change: new violating publishes start failing with 400, stored S103 violators gain `critical` advisories, and the spec yank ladder takes over. Until that change lands, the counts only measure. The upload rules page tells publishers how to fix each trip before the flip.
+`GET /api/admin/publish-rules` (admin token) replays the registry-key predicate over the live set — one full whole-tree re-analysis per package, sequential — and returns the count plus the violating package names. It is read-only and bounded: `?limit=` caps the packages per call (default 200, max 1000), each package caps at 8 MiB of reassembled source, and anything skipped lands in `skipped` with a reason instead of failing the call. Whole-tree analysis costs about 0.25 ms per KiB of canonical source plus one chunk read per stored file; page through with repeated calls on a large registry.
 
 ## Mutations
 

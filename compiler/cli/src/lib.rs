@@ -66,16 +66,13 @@ pub fn check_source(src: &str) -> CheckReport {
     let mut warnings: Vec<Diagnostic> = Vec::new();
     let mut kept: Vec<Diagnostic> = Vec::new();
     for d in frontend::semantic::check(&module) {
-        if d.code == diagnostics::Code::S103 {
-            continue;
-        }
         if d.code.is_warning() {
             warnings.push(d);
         } else {
             kept.push(d);
         }
     }
-    kept.extend(frontend::security::s103_graph(&graph));
+    kept.extend(frontend::security::verify_runtime_imports(&graph));
     errors.extend(kept);
     errors.sort_by(|a, b| a.code.as_str().cmp(b.code.as_str()).then(a.message.cmp(&b.message)));
     errors.dedup_by(|a, b| a.code == b.code && a.message == b.message && a.span == b.span);
@@ -219,7 +216,6 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::E501 => "pass --token <token> or set RNX_TOKEN in your environment",
         Code::S101 => "approve the capability and re-lock, or remove the offending use",
         Code::S102 => "narrow the package code or deliberately widen the `[permissions]` ceiling",
-        Code::S103 => "call the owning `@std/*` wrapper instead of the `__rnx_*` internal",
         Code::S201 => "pass the delegated value through untouched or request the ambient grant",
         Code::S301 => "never target `Project.config`, `Project.deplock`, `.git`, or cache dirs from dependency code",
         Code::S401 => "add a covering `sys:exec:<name>` grant with explicit approval",
@@ -463,16 +459,13 @@ pub fn load_program_cfg(
     let mut warnings = Vec::new();
     if errors.is_empty() {
         for d in frontend::semantic::check(&module) {
-            if d.code == diagnostics::Code::S103 {
-                continue;
-            }
             if d.code.is_warning() {
                 warnings.push(d);
             } else {
                 errors.push(d);
             }
         }
-        errors.extend(frontend::security::s103_graph(&graph));
+        errors.extend(frontend::security::verify_runtime_imports(&graph));
     }
     profiler.stop();
     if !errors.is_empty() {
@@ -697,16 +690,13 @@ pub fn build_lib_files_cfg(
     if errors.is_empty() {
         let mut warnings = Vec::new();
         for d in frontend::semantic::check(&module) {
-            if d.code == diagnostics::Code::S103 {
-                continue;
-            }
             if d.code.is_warning() {
                 warnings.push(d);
             } else {
                 errors.push(d);
             }
         }
-        errors.extend(frontend::security::s103_graph(&graph));
+        errors.extend(frontend::security::verify_runtime_imports(&graph));
         let _ = warnings;
     }
     profiler.stop();
@@ -1973,14 +1963,11 @@ pub fn load_test_program_cfg(
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         for d in frontend::semantic::check(&module) {
-            if d.code == diagnostics::Code::S103 {
-                continue;
-            }
             if !d.code.is_warning() {
                 errors.push(d);
             }
         }
-        errors.extend(frontend::security::s103_graph(&graph));
+        errors.extend(frontend::security::verify_runtime_imports(&graph));
     }
     profiler.stop();
     if !errors.is_empty() {
@@ -2061,14 +2048,11 @@ pub fn load_bench_program_cfg(
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         for d in frontend::semantic::check(&module) {
-            if d.code == diagnostics::Code::S103 {
-                continue;
-            }
             if !d.code.is_warning() {
                 errors.push(d);
             }
         }
-        errors.extend(frontend::security::s103_graph(&graph));
+        errors.extend(frontend::security::verify_runtime_imports(&graph));
     }
     profiler.stop();
     if !errors.is_empty() {

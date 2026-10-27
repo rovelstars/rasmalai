@@ -479,6 +479,9 @@ pub fn expand_async(module: &mut Module, diags: &mut Vec<Diagnostic>) {
     }    for entry in ["Main", "main"] {
         expand_entry_driver(module, entry);
     }
+    if !asyncs.is_empty() {
+        crate::runtime::ensure_import(module, "__rnx_any_box");
+    }
 }
 
 const LIFT_BUILTINS: &[&str] = &[

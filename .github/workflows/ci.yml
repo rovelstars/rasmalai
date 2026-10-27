@@ -118,7 +118,13 @@ jobs:
           code=$?
           set -e
           [ "$code" -eq 2 ] || { echo "probe binary returned $code (want 2)"; exit 1; }
-          unset RNX_VENDOR_DIR RNX_CACHE_HOME RNX_REGISTRY
+          unset RNX_CACHE_HOME RNX_REGISTRY
+          # RNX_VENDOR_DIR stays exported for the suite below: the
+          # standard library under test is the checkout staged above,
+          # never the registry cache, so `@std/*` resolution exercises
+          # the edited sources (including declared `from runtime`
+          # imports) with no registry access. Tests that assert clean
+          # stderr filter the one-time "using local source" warning.
           # Warm the global registry cache for the suite below: a fresh
           # source tree hashes to a new cache key, so the first run on a
           # new revision starts cold and every stdlib auto-seed would fail

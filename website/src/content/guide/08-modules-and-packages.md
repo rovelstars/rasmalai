@@ -56,6 +56,17 @@ That prints `entries: 1`. Every file pulled in through `import` is declarative-o
 
 **Common mistake:** putting script logic in an imported helper file and wondering why nothing runs — or worse, getting `E112` and deleting the code. Imported files declare; only the entry executes. Move the statements into a function, import it, call it.
 
+## Two foreign import forms
+
+Most imports name a module path (`"./util"`, `"@std/fs"`). Two `from` forms declare functions the package does not define:
+
+```rnx
+import { fn puts(text: String): Int } from native "c";
+import { fn __rnx_clock_mono(): Int } from runtime "time";
+```
+
+`from native "lib"` declares a foreign C function for the linker or JIT (see [Hardware and FFI](/manual/13-hardware-and-ffi)). `from runtime "mod"` declares a compiler runtime internal — and it only works inside registry-verified `@std/*` sources, where the signature is checked against the runtime manifest (module, arity, and types). Anywhere else it fails closed with `E108` naming the owning `@std/*` wrapper, and a bare `__rnx_*` use with no declaration is an `E303` scope error pointing at the declared form. User code never needs the second line: call the `@std/*` wrapper and the capability audit follows the call through it.
+
 ## The standard library is seeded, not embedded
 
 `@std/` imports resolve from a global cache the installer seeds — nothing to install by hand, versions pinned automatically. Seventeen modules ship with the compiler:

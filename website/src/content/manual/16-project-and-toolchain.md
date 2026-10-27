@@ -148,7 +148,7 @@ Bare and scoped specifiers name registry or path dependencies from the nearest `
 
 ## Permissions and capability audits
 
-Every package carries a statically deduced capability surface: what files, sockets, processes, environment variables, and `unsafe` operations its code can reach. Capabilities are strings in `domain:action:scope` form:
+Every package carries a statically deduced capability surface: what files, sockets, processes, environment variables, and `unsafe` operations its code can reach. The surface is transitive: each module is charged its own sinks plus the summaries of everything it imports — through `@std/*` wrappers and wrapper libraries alike — resolved through imports (bare, renamed, and chained calls attribute identically), so a `[permissions]` ceiling must cover the whole transitive closure and a `Project.deplock` entry records the per-package summary. Capabilities are strings in `domain:action:scope` form:
 
 - `fs:read:<path>`, `fs:write:<path>`, `fs:delegated` (operates only on caller-provided paths)
 - `net:http:<host>`, `net:ws:<host>`, `net:delegated`

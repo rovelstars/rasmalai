@@ -42,9 +42,15 @@ fn check_matches_run_on_lowering_failure() {
     let run = run_backend(&file, "interpreter");
     assert_eq!(check.status.code(), Some(1), "check must reject lowering failures");
     assert_eq!(run.status.code(), Some(1), "run must reject lowering failures");
+    fn scrub(text: &str) -> String {
+        text.lines()
+            .filter(|l| !l.starts_with("warning: using local source for `@std/"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
     assert_eq!(
-        String::from_utf8_lossy(&check.stderr),
-        String::from_utf8_lossy(&run.stdout),
+        scrub(&String::from_utf8_lossy(&check.stderr)),
+        scrub(&String::from_utf8_lossy(&run.stdout)),
         "check and run must report the identical diagnostic"
     );
 }

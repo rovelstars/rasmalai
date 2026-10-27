@@ -37,6 +37,29 @@ import {
     Env
 } from "@std/env";
 
+import {
+    fn __rnx_process_all_env_count(): Int,
+    fn __rnx_process_all_env_get(index: Int): String,
+    fn __rnx_process_chdir(path: String): Int,
+    fn __rnx_process_close_stdin(handle: Int): Void,
+    fn __rnx_process_exit_code(handle: Int): Int,
+    fn __rnx_process_forget(handle: Int): Void,
+    fn __rnx_process_kill(handle: Int, sig: Int): Int,
+    fn __rnx_process_pid(): Int,
+    fn __rnx_process_pid_of(handle: Int): Int,
+    fn __rnx_process_read_stderr(handle: Int, buf: Int, off: Int, len: Int): Int,
+    fn __rnx_process_read_stdout(handle: Int, buf: Int, off: Int, len: Int): Int,
+    fn __rnx_process_remove_env(key: String): Void,
+    fn __rnx_process_run(command: String, args: Array<String>, cwd: String, env: Array<String>, si: Int, so: Int, se: Int): Int,
+    fn __rnx_process_spawn(command: String, args: Array<String>, cwd: String, env: Array<String>, si: Int, so: Int, se: Int): Int,
+    fn __rnx_process_take_stderr(handle: Int): Int,
+    fn __rnx_process_take_stdout(handle: Int): Int,
+    fn __rnx_process_try_wait(handle: Int): Int,
+    fn __rnx_process_wait(handle: Int): Int,
+    fn __rnx_process_write_stdin(handle: Int, buf: Int, off: Int, len: Int): Int,
+} from runtime "process";
+
+
 /**
  * Stdio wiring for one child stream: inherit the host descriptor,
  * create a pipe, or connect to the null device.

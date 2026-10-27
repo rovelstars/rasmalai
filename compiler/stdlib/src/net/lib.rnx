@@ -51,6 +51,35 @@
 //! print(ip);
 //! ```
 import { Promise } from "@std/prelude";
+
+import {
+    fn __rnx_dns_lookup_error(slot: Int): String,
+    fn __rnx_dns_lookup_get(slot: Int): String,
+    fn __rnx_dns_lookup_start(host: String): Int,
+    fn __rnx_dns_lookup_wait(slot: Int): Int,
+    fn __rnx_net_close(handle: Int): Int,
+    fn __rnx_net_connect_start(host: String, port: Int): Int,
+    fn __rnx_net_connect_wait(handle: Int): Int,
+    fn __rnx_net_error_text(handle: Int): String,
+    fn __rnx_net_listener_accept_start(handle: Int): Int,
+    fn __rnx_net_listener_accept_wait(slot: Int): Int,
+    fn __rnx_net_listener_bind(host: String, port: Int): Int,
+    fn __rnx_net_listener_close(handle: Int): Int,
+    fn __rnx_net_listener_port(handle: Int): Int,
+    fn __rnx_net_recv_get(handle: Int, idx: Int): Int,
+    fn __rnx_net_recv_or_wait(handle: Int, max: Int): Int,
+    fn __rnx_net_send_or_wait(handle: Int, byte: Int): Int,
+    fn __rnx_net_take_error(handle: Int): Int,
+    fn __rnx_tls_close(handle: Int): Int,
+    fn __rnx_tls_connect_start(tcp: Int, domain: String): Int,
+    fn __rnx_tls_error_text(handle: Int): String,
+    fn __rnx_tls_handshake_start(handle: Int): Int,
+    fn __rnx_tls_handshake_wait(slot: Int): Int,
+    fn __rnx_tls_recv_get(handle: Int, idx: Int): Int,
+    fn __rnx_tls_recv_or_wait(handle: Int, max: Int): Int,
+    fn __rnx_tls_send_or_wait(handle: Int, byte: Int): Int,
+} from runtime "net";
+
 /**
 * A connected TCP socket. Both peers look the same: the client gets one
 * from `TcpStream.connect()`, the server from `TcpListener.accept()`.
@@ -208,9 +237,9 @@ class TcpStream {
     * The reactor handle behind this stream.
     *
     * `TlsStream.connect()` needs the handle to move a connected stream into
-    * a TLS session, and a thread that speaks the raw `__rnx_net_*` builtins
-    * takes it as the socket argument. It means nothing outside the process
-    * that opened the socket.
+    * a TLS session, and a thread that speaks the raw runtime socket
+    * builtins takes it as the socket argument. It means nothing outside the
+    * process that opened the socket.
     *
     * @returns handle number, the same one the constructor was given.
     * @example
