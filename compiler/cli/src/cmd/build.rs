@@ -161,7 +161,7 @@ fn env_flag_enabled(name: &str) -> bool {
     }
 }
 
-pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, deny_perf_lints: Vec<String>, show_perf_notes: bool, fix: bool, fix_force: bool, fix_keep_backup: bool, verbose: bool, quiet: bool, prefer: frontend::native::NativePrefer) {
+pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, deny_perf_lints: Vec<String>, show_perf_notes: bool, fix: bool, fix_force: bool, fix_keep_backup: bool, expand_macros: bool, verbose: bool, quiet: bool, prefer: frontend::native::NativePrefer) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let deny_raw: Vec<String> = if deny_perf_lints.is_empty() {
@@ -245,6 +245,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 debug,
                 jobs: cli::resolve_jobs(jobs),
                 memory_cap: cli::resolve_memory_cap(memory_cap),
+                expand_macros,
             };
             if verbose {
                 eprintln!("rnx: jobs={} memory-cap={} bytes", cfg.jobs, cfg.memory_cap);

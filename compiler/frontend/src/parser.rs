@@ -708,6 +708,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                     extends,
                     with,
                     members,
+                    attrs,
                 })
             }
             TokenKind::Struct => {
@@ -740,13 +741,13 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                     }
                 }
                 self.expect(&TokenKind::RBrace, "`}`")?;
-                let _ = attrs;
                 Ok(Decl::Struct {
                     docs: String::new(),
                     access,
                     name,
                     type_params,
                     members,
+                    attrs,
                 })
             }
             TokenKind::Record => {
@@ -769,13 +770,13 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                     }
                 }
                 self.expect(&TokenKind::RParen, "`)`")?;
-                let _ = attrs;
                 Ok(Decl::Record {
                     docs: String::new(),
                     access,
                     name,
                     type_params,
                     fields,
+                    attrs,
                 })
             }
             TokenKind::Extension => {
@@ -959,13 +960,13 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                     }
                 }
                 self.expect(&TokenKind::RBrace, "`}`")?;
-                let _ = attrs;
                 Ok(Decl::Enum {
                     docs: String::new(),
                     access,
                     name,
                     type_params,
                     members,
+                    attrs,
                 })
             }
             TokenKind::Fn => {

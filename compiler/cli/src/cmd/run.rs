@@ -2,7 +2,7 @@ use super::*;
 use cli::RunOutcome;
 use runtime::value::Value;
 
-pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: Option<String>, locked: bool, opt_level: String, backend: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, verbose: bool, rest: Vec<String>, prefer: frontend::native::NativePrefer) {
+pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: Option<String>, locked: bool, opt_level: String, backend: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, expand_macros: bool, verbose: bool, rest: Vec<String>, prefer: frontend::native::NativePrefer) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let backend = match backend.as_str() {
@@ -55,6 +55,7 @@ pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: 
                 debug: false,
                 jobs: cli::resolve_jobs(jobs),
                 memory_cap: cli::resolve_memory_cap(memory_cap),
+                expand_macros,
             };
             if verbose {
                 eprintln!("rnx: jobs={} memory-cap={} bytes", cfg.jobs, cfg.memory_cap);

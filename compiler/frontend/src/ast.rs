@@ -44,6 +44,7 @@ pub enum Decl {
         extends: Option<Type>,
         with: Vec<Type>,
         members: Vec<Spanned<ClassMember>>,
+        attrs: Vec<Attr>,
         docs: String,
     },
     Struct {
@@ -51,6 +52,7 @@ pub enum Decl {
         name: String,
         type_params: Vec<String>,
         members: Vec<Spanned<ClassMember>>,
+        attrs: Vec<Attr>,
         docs: String,
     },
     Trait {
@@ -77,6 +79,7 @@ pub enum Decl {
         name: String,
         type_params: Vec<String>,
         members: Vec<EnumMember>,
+        attrs: Vec<Attr>,
         docs: String,
     },
     Record {
@@ -84,6 +87,7 @@ pub enum Decl {
         name: String,
         type_params: Vec<String>,
         fields: Vec<RecordField>,
+        attrs: Vec<Attr>,
         docs: String,
     },
     Fn(FnDecl),

@@ -18,6 +18,9 @@ pub struct Machine<'a> {
     pub output: Vec<String>,
     pub error_span: Option<Span>,
     pub error_func: Option<String>,
+    pub fuel: Option<u64>,
+    pub max_depth: Option<u32>,
+    depth: u32,
     ptr_seq: i64,
     json_maps: BTreeSet<i64>,
 }
@@ -80,6 +83,9 @@ impl<'a> Machine<'a> {
             output: Vec::new(),
             error_span: None,
             error_func: None,
+            fuel: None,
+            max_depth: None,
+            depth: 0,
             ptr_seq: 0,
             json_maps: BTreeSet::new(),
         }
@@ -184,6 +190,21 @@ impl<'a> Machine<'a> {
                 crate::native::STACK_EXHAUSTED_MSG.to_string(),
             ));
         }
+        self.depth += 1;
+        if let Some(max) = self.max_depth {
+            if self.depth > max {
+                self.depth -= 1;
+                return Err(ExecError::Fatal(format!(
+                    "comptime call depth exceeds {max}"
+                )));
+            }
+        }
+        let out = self.run_fn_inner(fi, args);
+        self.depth -= 1;
+        out
+    }
+
+    fn run_fn_inner(&mut self, fi: usize, args: Vec<Value>) -> Result<Vec<Value>, ExecError> {
         let nlocals = self.module.functions[fi].locals.len();
         let mut locals = vec![Value::Null; nlocals];
         for (i, a) in args.into_iter().enumerate() {

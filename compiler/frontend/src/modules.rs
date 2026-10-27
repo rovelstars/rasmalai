@@ -471,6 +471,7 @@ impl ModuleGraph {
                     extends: None,
                     with: Vec::new(),
                     members: Vec::new(),
+                    attrs: Vec::new(),
                     docs: String::new(),
                 },
                 diagnostics::Span { start: 0, end: 0 },

@@ -62,6 +62,13 @@ fix: declare the variable with `let` or check the spelling
 | `E114` | error | the package's `engine` range does not admit the running toolchain | run `rnx update` to move to a compatible version, or `rnx download` to re-seed the cache |
 | `E115` | error | a registry range floats with no locked version in `Project.deplock` | run `rnx lock` to pin every registry dependency, then build again |
 | `E116` | error | a chunk manifest lists more than 4096 entries | run `rnx update` to move past this version or ask the maintainer to split the package |
+| `E117` | error | a `#[CompTime]` function ran past the 1,000,000-step fuel budget | simplify the comptime function |
+| `E118` | error | a `#[CompTime]` function exceeded the call depth cap of 64 | flatten the comptime recursion |
+| `E119` | error | a macro expansion produced more than 10,000 nodes | split the expansion across smaller macros |
+| `E120` | error | macro expansion did not reach a fixed point after 8 rounds | stop the macro from emitting macros that expand forever |
+| `E121` | error | a derived method would collide with an existing member | rename the existing member or drop the derive |
+| `E122` | error | comptime sandbox or file-input violation (`EmbedBytes!` path, foreign call, I/O in build-time code) | keep comptime pure: literals, type info, and `EmbedBytes!` bytes only |
+| `E123` | error | a `StaticAssert!` condition is false or not constant | fix the asserted expression or drop the assertion |
 
 The `E108` declaration rule, corrected:
 

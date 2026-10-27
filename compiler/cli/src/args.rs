@@ -82,6 +82,9 @@ pub enum Command {
         /// Print per-pass compile timings to stderr
         #[arg(long)]
         time_passes: bool,
+        /// Dump macro expansions before/after to `.rnx-cache/expansions/`
+        #[arg(long)]
+        expand_macros: bool,
         /// Write a Chrome trace event file
         #[arg(long)]
         trace: Option<PathBuf>,
@@ -126,6 +129,9 @@ pub enum Command {
         /// Emit machine-readable JSON diagnostics
         #[arg(long)]
         json: bool,
+        /// Dump macro expansions before/after to `.rnx-cache/expansions/`
+        #[arg(long)]
+        expand_macros: bool,
     },
     /// Compile and execute the immediate entry module
     Run {
@@ -149,6 +155,9 @@ pub enum Command {
         /// Print per-pass compile timings to stderr
         #[arg(long)]
         time_passes: bool,
+        /// Dump macro expansions before/after to `.rnx-cache/expansions/`
+        #[arg(long)]
+        expand_macros: bool,
         /// Write a Chrome trace event file
         #[arg(long)]
         trace: Option<PathBuf>,

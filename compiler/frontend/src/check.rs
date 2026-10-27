@@ -71,6 +71,13 @@ pub fn check_source(src: &str) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
 }
 
 pub fn check_package(root: &Path) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
+    check_package_with_dump(root, None)
+}
+
+pub fn check_package_with_dump(
+    root: &Path,
+    dump: Option<std::path::PathBuf>,
+) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     use crate::modules::merged_decl_files;
     let graph = match ModuleGraph::build_collecting(root) {
         Ok(g) => g,
@@ -81,7 +88,18 @@ pub fn check_package(root: &Path) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
         Ok(m) => m,
         Err(e) => return Err(vec![e]),
     };
+    let base = root
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let mut opts = crate::macros::MacroOptions::new(base);
+    opts.dump_dir = dump;
     let mut diags = module.warnings.clone();
+    diags.extend(crate::macros::expand_phase_a(&mut module, &mut opts));
+    if diags.iter().any(|d| !d.code.is_warning()) {
+        return split(diags);
+    }
+    diags.extend(crate::macros::expand_phase_b(&mut module, &mut opts, None));
     diags.extend(crate::desugar::desugar_with_files(&mut module, &files));
     diags.extend(semantic::check_with_files(&module, &files));
     diags.extend(crate::security::verify_runtime_imports(&graph));
