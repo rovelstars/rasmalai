@@ -61,7 +61,7 @@ pub fn blackBox(val: Any): Any {
 *
 * @returns live allocations at the call instant.
 * @example
-* import { liveCount } from "@std/testing";
+* import { liveCount, blackBox } from "@std/testing";
 *
 * fn Main(): Int {
 *     let before = liveCount();
