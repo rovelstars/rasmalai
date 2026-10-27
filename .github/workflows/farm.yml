@@ -77,6 +77,19 @@ jobs:
       - name: Build rnx
         run: cargo build -p cli
 
+      - name: Stage checkout stdlib
+        run: |
+          # The canary below must build against the checkout sources, never
+          # the published registry snapshot: after a breaking stdlib change
+          # the two differ and the old snapshot no longer compiles.
+          ./target/debug/rnx vendor \
+            @std/prelude @std/simd @std/collections @std/math \
+            @std/fs @std/bytes @std/time @std/random \
+            @std/sync @std/env @std/process @std/os \
+            @std/testing @std/web @std/net @std/json @std/io \
+            --dir "${{ runner.temp }}/std-vendor"
+          echo "RNX_VENDOR_DIR=${{ runner.temp }}/std-vendor" >> "$GITHUB_ENV"
+
       - name: Seed stdlib
         run: |
           seeded=""
@@ -201,6 +214,18 @@ jobs:
             if cargo run -q -p cli -- download; then seeded=1; break; fi
           done
           [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
+
+      - name: Stage checkout stdlib
+        run: |
+          # The probe tests below compile against the checkout sources, not
+          # the seeded registry snapshot (see the build job above).
+          cargo run -q -p cli -- vendor \
+            @std/prelude @std/simd @std/collections @std/math \
+            @std/fs @std/bytes @std/time @std/random \
+            @std/sync @std/env @std/process @std/os \
+            @std/testing @std/web @std/net @std/json @std/io \
+            --dir "${{ runner.temp }}/std-vendor"
+          echo "RNX_VENDOR_DIR=${{ runner.temp }}/std-vendor" >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@v7
         with:
