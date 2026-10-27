@@ -2536,7 +2536,8 @@ fn dep_expected_root(
             entry_cfg.registry.as_ref(),
             &entry_cfg.registries,
         );
-        let dir = crate::fetch::cached_package_dir(&base, pkg, version_key);
+        let dir = crate::fetch::find_cached_package_dir(&base, pkg, version_key)
+            .unwrap_or_else(|| crate::fetch::cached_package_dir(&base, pkg, version_key));
         return std::fs::canonicalize(&dir).ok();
     }
     if kind == KIND_WORKSPACE {
@@ -5095,7 +5096,7 @@ mod tests {
     }
 
     #[test]
-    fn precompile_std_dead_registry_is_fail_open() {
+    fn precompile_std_dead_registry_uses_seeded_store() {
         let _serial = DEP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (_guard, _dir) = testkit::isolate_cache("stddeadpre");
         crate::depcache::reset_stats();
@@ -5108,11 +5109,13 @@ mod tests {
         drop(_reg);
         let _dead = EnvVarGuard::set("RNX_REGISTRY", "http://127.0.0.1:9");
         let pre = crate::products::precompile_std().expect("must not fail hard offline");
+        assert_eq!(pre.entries, 1);
         assert_eq!(
-            pre.populated, 0,
-            "unreachable registry must not mint products from thin air"
+            pre.populated,
+            crate::stdlib_seed::std_package_names().len() as u64,
+            "a seeded store serves the offline build from verified cached bytes"
         );
-        assert!(crate::products::product_files().is_empty());
+        assert!(!crate::products::product_files().is_empty());
         assert!(!crate::products::std_scaffold_dir().exists());
     }
 

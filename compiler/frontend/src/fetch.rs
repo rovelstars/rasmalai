@@ -2199,6 +2199,455 @@ pub fn cached_package_dir(base: &str, full: &str, version: &str) -> PathBuf {
     package_dir_under(&registry_cache_root(), base, full, version)
 }
 
+pub fn store_root() -> PathBuf {
+    crate::cache::global_cache_dir().join("store")
+}
+
+fn store_cas_dir() -> PathBuf {
+    store_root().join("cas")
+}
+
+fn store_pkgs_dir() -> PathBuf {
+    store_root().join("pkgs")
+}
+
+fn store_index_path() -> PathBuf {
+    store_root().join("registry.index.json")
+}
+
+fn normalize_hex64(raw: &str) -> Option<String> {
+    let hex = raw.trim().to_ascii_lowercase();
+    if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(hex)
+    } else {
+        None
+    }
+}
+
+pub fn cas_blob_path(hash: &str) -> Option<PathBuf> {
+    let hex = normalize_hex64(hash)?;
+    Some(store_cas_dir().join(&hex[..2]).join(&hex[2..]))
+}
+
+pub fn store_pkg_dir(integrity: &str) -> Option<PathBuf> {
+    let hex = normalize_hex64(integrity)?;
+    Some(store_pkgs_dir().join(hex))
+}
+
+pub fn cas_get(hash: &str) -> Result<Option<Vec<u8>>, Diagnostic> {
+    let Some(path) = cas_blob_path(hash) else {
+        return Err(Diagnostic::new(Code::E108, format!("bad chunk hash `{hash}`")));
+    };
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("cannot read chunk `{hash}`: {e}"),
+            ));
+        }
+    };
+    if bytes.len() > MAX_CHUNK_BYTES {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("chunk {hash} exceeds size limits"),
+        ));
+    }
+    if Sha256::hexdigest(&bytes) != hash.to_ascii_lowercase() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("chunk {hash} failed its integrity check"),
+        ));
+    }
+    Ok(Some(bytes))
+}
+
+fn unique_tmp_name(tag: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(".tmp-{tag}-{}-{nanos}-{n}", std::process::id())
+}
+
+#[cfg(unix)]
+fn set_store_file_mode(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = if path.is_dir() { 0o755 } else { 0o644 };
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+fn set_store_file_mode(_path: &Path) {}
+
+fn write_store_modes(root: &Path) {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        set_store_file_mode(&dir);
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() {
+                set_store_file_mode(&path);
+            }
+        }
+    }
+}
+
+pub fn cas_put(hash: &str, bytes: &[u8]) -> Result<(), Diagnostic> {
+    let Some(path) = cas_blob_path(hash) else {
+        return Err(Diagnostic::new(Code::E108, format!("bad chunk hash `{hash}`")));
+    };
+    if bytes.len() > MAX_CHUNK_BYTES {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("chunk {hash} exceeds size limits"),
+        ));
+    }
+    if Sha256::hexdigest(bytes) != hash.to_ascii_lowercase() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("chunk {hash} failed its integrity check"),
+        ));
+    }
+    if matches!(cas_get(hash), Ok(Some(_))) {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
+        })?;
+    }
+    let tmp = path.with_file_name(format!("{}.{}", unique_tmp_name("cas"), "part"));
+    std::fs::write(&tmp, bytes).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", tmp.display()))
+    })?;
+    set_store_file_mode(&tmp);
+    match std::fs::rename(&tmp, &path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            if matches!(cas_get(hash), Ok(Some(_))) {
+                let _ = std::fs::remove_file(&tmp);
+                Ok(())
+            } else {
+                std::fs::rename(&tmp, &path).map_err(|e| {
+                    Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", path.display()))
+                })
+            }
+        }
+    }
+}
+
+fn store_integrity_matches(dir: &Path, full: &str, version: &str, integrity: &str) -> bool {
+    if !dir.join(crate::project::MANIFEST_FILE).is_file() {
+        return false;
+    }
+    let text = match std::fs::read_to_string(integrity_path(dir)) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    let mut lines = text.lines();
+    let ok = matches!((lines.next(), lines.next(), lines.next()), (Some(f), Some(v), Some(d))
+        if f == full && v == version && d.trim().eq_ignore_ascii_case(integrity));
+    if !ok {
+        return false;
+    }
+    match dir.file_name().and_then(|n| n.to_str()) {
+        Some(name) => name.eq_ignore_ascii_case(integrity),
+        None => false,
+    }
+}
+
+fn store_hit_for_node(node: &ResolveNode) -> Option<PathBuf> {
+    let dir = store_pkg_dir(&node.integrity)?;
+    if !store_integrity_matches(&dir, &node.full, &node.version, &node.integrity) {
+        return None;
+    }
+    if !node_artifacts_ready(&dir, node.artifact_digest.as_deref()) {
+        return None;
+    }
+    Some(dir)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoreIndexEntry {
+    base: String,
+    full: String,
+    version: String,
+    integrity: String,
+}
+
+fn read_store_index() -> Vec<StoreIndexEntry> {
+    let text = match std::fs::read_to_string(store_index_path()) {
+        Ok(text) => text,
+        Err(_) => return Vec::new(),
+    };
+    let value = match parse_json(text.as_bytes()) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let Some(items) = value.get("entries").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let field = |key: &str| item.get(key).and_then(|v| v.as_str()).unwrap_or_default();
+        let (base, full, version, integrity) =
+            (field("base"), field("full"), field("version"), field("integrity"));
+        if base.is_empty() || full.is_empty() || version.is_empty() {
+            continue;
+        }
+        let Some(hex) = normalize_hex64(integrity) else {
+            continue;
+        };
+        let Some(dir) = store_pkg_dir(&hex) else {
+            continue;
+        };
+        if !store_integrity_matches(&dir, full, version, &hex) {
+            continue;
+        }
+        out.push(StoreIndexEntry {
+            base: base.to_string(),
+            full: full.to_string(),
+            version: version.to_string(),
+            integrity: hex,
+        });
+    }
+    out.sort_by(|a, b| (&a.base, &a.full, &a.version).cmp(&(&b.base, &b.full, &b.version)));
+    out.dedup_by(|a, b| a.base == b.base && a.full == b.full && a.version == b.version);
+    out
+}
+
+fn note_store_install(base: &str, full: &str, version: &str, integrity: &str) {
+    let Some(hex) = normalize_hex64(integrity) else {
+        return;
+    };
+    let mut entries = read_store_index();
+    if let Some(hit) =
+        entries.iter_mut().find(|e| e.base == base && e.full == full && e.version == version)
+    {
+        hit.integrity = hex;
+    } else {
+        entries.push(StoreIndexEntry {
+            base: base.to_string(),
+            full: full.to_string(),
+            version: version.to_string(),
+            integrity: hex,
+        });
+    }
+    entries.sort_by(|a, b| (&a.base, &a.full, &a.version).cmp(&(&b.base, &b.full, &b.version)));
+    let mut body = String::from("{\"version\": 1, \"entries\": [");
+    for (i, e) in entries.iter().enumerate() {
+        if i > 0 {
+            body.push_str(", ");
+        }
+        body.push_str(&format!(
+            "{{\"base\": \"{}\", \"full\": \"{}\", \"version\": \"{}\", \"integrity\": \"{}\"}}",
+            json_escape(&e.base),
+            json_escape(&e.full),
+            json_escape(&e.version),
+            e.integrity
+        ));
+    }
+    body.push_str("]}");
+    let path = store_index_path();
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let tmp = path.with_file_name(unique_tmp_name("index"));
+    if std::fs::write(&tmp, body.as_bytes()).is_err() {
+        return;
+    }
+    set_store_file_mode(&tmp);
+    if std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+pub fn find_store_pkg(base: &str, full: &str, version: &str) -> Option<PathBuf> {
+    for entry in read_store_index() {
+        if entry.base == base && entry.full == full && entry.version == version {
+            let dir = store_pkg_dir(&entry.integrity)?;
+            if store_integrity_matches(&dir, full, version, &entry.integrity) {
+                return Some(dir);
+            }
+        }
+    }
+    let root = store_pkgs_dir();
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(_) => return None,
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    for name in names {
+        let Some(hex) = normalize_hex64(&name) else {
+            continue;
+        };
+        let Some(dir) = store_pkg_dir(&hex) else {
+            continue;
+        };
+        if store_integrity_matches(&dir, full, version, &hex) {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+pub fn store_have() -> Vec<HaveEntry> {
+    let root = store_pkgs_dir();
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let mut out = Vec::new();
+    for name in names {
+        let Some(hex) = normalize_hex64(&name) else {
+            continue;
+        };
+        let Some(dir) = store_pkg_dir(&hex) else {
+            continue;
+        };
+        let text = match std::fs::read_to_string(integrity_path(&dir)) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+        let mut lines = text.lines();
+        match (lines.next(), lines.next(), lines.next()) {
+            (Some(full), Some(version), Some(integrity))
+                if !full.is_empty() && !version.is_empty() && !integrity.is_empty() =>
+            {
+                if !integrity.trim().eq_ignore_ascii_case(&hex) {
+                    continue;
+                }
+                out.push(HaveEntry {
+                    full: full.to_string(),
+                    version: version.to_string(),
+                    integrity: integrity.trim().to_string(),
+                });
+            }
+            _ => continue,
+        }
+    }
+    out.sort_by(|a, b| (&a.full, &a.version).cmp(&(&b.full, &b.version)));
+    out.dedup_by(|a, b| a.full == b.full && a.version == b.version);
+    out
+}
+
+pub fn find_cached_package_dir(base: &str, full: &str, version: &str) -> Option<PathBuf> {
+    if let Some(dir) = find_store_pkg(base, full, version) {
+        return Some(dir);
+    }
+    let dir = cached_package_dir(base, full, version);
+    if dir.join(crate::project::MANIFEST_FILE).is_file() {
+        return Some(dir);
+    }
+    None
+}
+
+fn dir_tree_usage_bytes(root: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.file_type().is_dir() {
+                stack.push(path);
+            } else if meta.file_type().is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+pub fn legacy_registry_usage_bytes() -> u64 {
+    dir_tree_usage_bytes(&registry_cache_root())
+}
+
+pub fn store_usage_bytes() -> u64 {
+    dir_tree_usage_bytes(&store_root())
+}
+
+fn legacy_version_dirs() -> Vec<(PathBuf, u64, u64)> {
+    let root = registry_cache_root();
+    let mut dirs = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            if !path.is_dir() {
+                continue;
+            }
+            if path.join(crate::project::MANIFEST_FILE).is_file() {
+                let usage = dir_tree_usage_bytes(&path);
+                let age = std::fs::metadata(&path)
+                    .ok()
+                    .and_then(|m| m.accessed().or_else(|_| m.modified()).ok())
+                    .and_then(|t| t.elapsed().ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                dirs.push((path, age, usage));
+            } else {
+                stack.push(path);
+            }
+        }
+    }
+    dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    dirs
+}
+
+pub fn prune_legacy_registry_lru(keep_bytes: u64) -> u64 {
+    let dirs = legacy_version_dirs();
+    let mut total: u64 = dirs.iter().map(|(_, _, usage)| usage).sum();
+    let mut freed = 0u64;
+    for (path, _, usage) in dirs {
+        if total <= keep_bytes {
+            break;
+        }
+        if std::fs::remove_dir_all(&path).is_ok() {
+            total -= usage.min(total);
+            freed += usage;
+        }
+    }
+    freed
+}
+
 fn integrity_path(dir: &Path) -> PathBuf {
     dir.join(".rnx-integrity")
 }
@@ -2266,7 +2715,11 @@ pub fn cached_integrity(dir: &Path) -> Option<String> {
 }
 
 pub fn scan_cache_have() -> Vec<HaveEntry> {
-    scan_have_under(&registry_cache_root())
+    let mut out = scan_have_under(&registry_cache_root());
+    out.extend(store_have());
+    out.sort_by(|a, b| (&a.full, &a.version).cmp(&(&b.full, &b.version)));
+    out.dedup_by(|a, b| a.full == b.full && a.version == b.version);
+    out
 }
 
 fn engine_error(full: &str, version: &str, range: &str) -> Diagnostic {
@@ -2530,8 +2983,22 @@ impl FetchShare {
         if let Some(hit) = self.chunks.lock().unwrap_or_else(|e| e.into_inner()).get(hash) {
             return Ok(hit.clone());
         }
+        match cas_get(hash) {
+            Ok(Some(bytes)) => {
+                self.chunks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(hash.to_string(), bytes.clone());
+                return Ok(bytes);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                let _ = cas_blob_path(hash).map(std::fs::remove_file);
+            }
+        }
         let url = format!("{chunk_base}/chunk/{hash}");
         let bytes = fetch_chunk(&url, hash, full, version, direct)?;
+        let _ = cas_put(hash, &bytes);
         self.chunks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2923,6 +3390,142 @@ fn api_base_for(response_base: &str, request_base: &str) -> String {
     b.trim_end_matches('/').to_string()
 }
 
+fn install_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+fn read_store_identity(dir: &Path) -> Option<(String, String, String)> {
+    let text = std::fs::read_to_string(integrity_path(dir)).ok()?;
+    let mut lines = text.lines();
+    match (lines.next(), lines.next(), lines.next()) {
+        (Some(full), Some(version), Some(integrity))
+            if !full.is_empty() && !version.is_empty() && !integrity.is_empty() =>
+        {
+            Some((full.to_string(), version.to_string(), integrity.trim().to_string()))
+        }
+        _ => None,
+    }
+}
+
+fn adopt_store_tree(node: &ResolveNode, dest: &Path, base: &str) -> Result<PathBuf, Diagnostic> {
+    let path = dest.join(crate::project::MANIFEST_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", path.display()))
+    })?;
+    let restamped = crate::project::redact::set_project_version(&text, &node.version).map_err(|e| {
+        Diagnostic::new(
+            Code::E108,
+            format!("package `{}` ships a Project.config without the published version marker", node.full),
+        )
+        .with_hint(e.message.clone())
+    })?;
+    std::fs::write(&path, restamped).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", path.display()))
+    })?;
+    set_store_file_mode(&path);
+    std::fs::write(integrity_path(dest), format!("{}\n{}\n{}\n", node.full, node.version, node.integrity))
+        .map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dest.display()))
+        })?;
+    set_store_file_mode(&integrity_path(dest));
+    if node.yanked {
+        std::fs::write(yanked_marker_path(dest), "yanked\n").map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dest.display()))
+        })?;
+    } else {
+        let _ = std::fs::remove_file(yanked_marker_path(dest));
+    }
+    note_store_install(base, &node.full, &node.version, &node.integrity);
+    if let Some(digest) = node.artifact_digest.as_deref() {
+        ensure_node_artifacts(dest, node, digest)?;
+    }
+    canonical_cached(dest)
+}
+
+fn install_store_tree(node: &ResolveNode, tree: &DirectTree, base: &str) -> Result<PathBuf, Diagnostic> {
+    let Some(dest) = store_pkg_dir(&node.integrity) else {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("registry sent a bad integrity digest for `{}@{}`", node.full, node.version),
+        ));
+    };
+    let _guard = install_lock().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(hit) = store_hit_for_node(node) {
+        return canonical_cached(&hit);
+    }
+    if dest.is_dir() {
+        match read_store_identity(&dest) {
+            Some((full, _, integrity)) if integrity.eq_ignore_ascii_case(&node.integrity) => {
+                if full != node.full {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        format!(
+                            "checksum mismatch for package `{}@{}`: the store holds different bytes under this integrity",
+                            node.full, node.version
+                        ),
+                    ));
+                }
+                if dest.join(crate::project::MANIFEST_FILE).is_file() {
+                    return adopt_store_tree(node, &dest, base);
+                }
+            }
+            _ => {}
+        }
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+    let parent = store_pkgs_dir();
+    std::fs::create_dir_all(&parent).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
+    })?;
+    let tmp = parent.join(unique_tmp_name("pkg"));
+    write_direct_tree(tree, &node.full, &tmp)?;
+    rehydrate_manifest_version(&tmp, &node.full, &node.version)?;
+    std::fs::write(integrity_path(&tmp), format!("{}\n{}\n{}\n", node.full, node.version, node.integrity))
+        .map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", tmp.display()))
+        })?;
+    if node.yanked {
+        std::fs::write(yanked_marker_path(&tmp), "yanked\n").map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", tmp.display()))
+        })?;
+    }
+    write_store_modes(&tmp);
+    if store_hit_for_node(node).is_some() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return canonical_cached(&dest);
+    }
+    match std::fs::rename(&tmp, &dest) {
+        Ok(()) => {}
+        Err(_) => {
+            if let Some(hit) = store_hit_for_node(node) {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return canonical_cached(&hit);
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "checksum mismatch for package `{}@{}`: the store holds different bytes under this integrity",
+                    node.full, node.version
+                ),
+            ));
+        }
+    }
+    if node.yanked {
+        std::fs::write(yanked_marker_path(&dest), "yanked\n").map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", dest.display()))
+        })?;
+    } else {
+        let _ = std::fs::remove_file(yanked_marker_path(&dest));
+    }
+    note_store_install(base, &node.full, &node.version, &node.integrity);
+    if let Some(digest) = node.artifact_digest.as_deref() {
+        ensure_node_artifacts(&dest, node, digest)?;
+    }
+    canonical_cached(&dest)
+}
+
 fn ensure_node(
     cache_root: &Path,
     base: &str,
@@ -2930,6 +3533,12 @@ fn ensure_node(
     node: &ResolveNode,
     share: &FetchShare,
 ) -> Result<PathBuf, Diagnostic> {
+    let global = cache_root == registry_cache_root();
+    if global && let Some(hit) = store_hit_for_node(node) {
+        check_engine(node)?;
+        warn_if_yanked(node);
+        return canonical_cached(&hit);
+    }
     let dir = package_dir_under(cache_root, base, &node.full, &node.version);
     if dir.join(crate::project::MANIFEST_FILE).is_file()
         && cached_integrity(&dir).as_deref() == Some(node.integrity.as_str())
@@ -3006,6 +3615,9 @@ fn ensure_node(
         }
         other => other,
     }?;
+    if global {
+        return install_store_tree(node, &downloaded, base);
+    }
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
@@ -3184,6 +3796,13 @@ pub fn resolve_registry_package(
                 warn_if_cached_yanked(&found.0, pkg, pin);
                 return Ok(found);
             }
+        }
+        if let Some(dir) = find_store_pkg(&base, pkg, pin)
+            && let Some(found) = pinned_cache_hit(&dir, pkg, pin)
+        {
+            check_cached_engine(&found.1, pkg, pin)?;
+            warn_if_cached_yanked(&found.0, pkg, pin);
+            return Ok(found);
         }
         let dir = cached_package_dir(&base, pkg, pin);
         if let Some(found) = pinned_cache_hit(&dir, pkg, pin) {
@@ -4428,7 +5047,10 @@ mod tests {
     #[test]
     fn download_seeds_the_global_cache_by_default() {
         let (_guard, _dir) = isolate_cache("dlglobal");
-        let (_server, cfg) = tree_server("@acme/widget", "1.2.0");
+        let (manifest, pairs, digest, _, _) = fixture_tree("@acme/widget", "1.2.0");
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
+        let server = start_tree(&[node], &manifest, pairs.clone());
+        let cfg = registry_cfg(&server.base);
         let fetched = download_packages(
             &requirements_for("@acme/widget", "1.2.0"),
             Some(&cfg),
@@ -4439,9 +5061,20 @@ mod tests {
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].name, "@acme/widget");
         assert_eq!(fetched[0].version, "1.2.0");
-        let dir = cached_package_dir(&cfg.url, "@acme/widget", "1.2.0");
+        let _ = server;
+        let dir = store_pkg_dir(&digest).expect("store dir for the manifest digest");
         assert!(dir.join("Project.config").is_file(), "{}", dir.display());
-        assert!(cached_integrity(&dir).is_some());
+        assert_eq!(fetched[0].dir, std::fs::canonicalize(&dir).unwrap());
+        assert!(
+            !cached_package_dir(&cfg.url, "@acme/widget", "1.2.0")
+                .join("Project.config")
+                .is_file(),
+            "new downloads land in store/, not in the old registry/ tree"
+        );
+        assert_eq!(cached_integrity(&dir).as_deref(), Some(digest.as_str()));
+        for (hash, _) in &pairs {
+            assert!(cas_blob_path(hash).expect("cas path").is_file(), "{hash}");
+        }
     }
 
     #[test]
@@ -4494,10 +5127,225 @@ mod tests {
             Some(&bare),
         )
         .expect("an anchor without the project cache falls back to the network");
+        let have = scan_cache_have();
+        let want = have
+            .iter()
+            .find(|h| h.full == "@acme/widget" && h.version == "1.2.0")
+            .expect("the network fetch lands in the global store");
         assert_eq!(
             global_dir,
-            std::fs::canonicalize(cached_package_dir(&cfg.url, "@acme/widget", "1.2.0")).unwrap()
+            std::fs::canonicalize(store_pkg_dir(&want.integrity).unwrap()).unwrap()
         );
+    }
+
+    #[test]
+    fn store_roundtrip_serves_offline_from_store_with_dead_registry() {
+        let (_guard, _dir) = isolate_cache("storeround");
+        let (manifest, pairs, digest, _, _) = fixture_tree("@acme/widget", "1.2.0");
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
+        let server = start_tree(&[node], &manifest, pairs);
+        let cfg = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "1.2.0"),
+            Some(&cfg),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        let store_dir = store_pkg_dir(&digest).expect("store dir for the manifest digest");
+        assert_eq!(fetched[0].dir, std::fs::canonicalize(&store_dir).unwrap());
+        assert!(
+            !cached_package_dir(&cfg.url, "@acme/widget", "1.2.0").exists(),
+            "new downloads must not land in the old registry/ tree"
+        );
+        assert!(store_index_path().is_file(), "installs record the pointer map");
+        assert_eq!(
+            find_store_pkg(&cfg.url, "@acme/widget", "1.2.0"),
+            Some(store_dir.clone())
+        );
+        let legacy_root = registry_cache_root();
+        let _ = std::fs::remove_dir_all(&legacy_root);
+        assert!(!legacy_root.exists());
+        let dead = registry_cfg("http://127.0.0.1:9");
+        let have = scan_cache_have();
+        assert!(
+            have.iter().any(|h| h.full == "@acme/widget"
+                && h.version == "1.2.0"
+                && h.integrity == digest),
+            "the store scan feeds the have list"
+        );
+        let (dir, _, version) = resolve_registry_package(
+            "@acme/widget",
+            "^1.0.0",
+            Some(&dead),
+            &BTreeMap::new(),
+            Some("1.2.0".to_string()),
+            &have,
+            None,
+        )
+        .expect("the store serves the pinned resolve with no network");
+        assert_eq!(version, "1.2.0");
+        assert_eq!(dir, std::fs::canonicalize(&store_dir).unwrap());
+        assert!(dir.join("src").join("main.rnx").is_file());
+        assert_eq!(cached_integrity(&dir).as_deref(), Some(digest.as_str()));
+        let _ = server;
+    }
+
+    #[test]
+    fn store_read_falls_back_to_legacy_tree() {
+        let (_guard, _dir) = isolate_cache("storefallback");
+        plant_pinned_cache("http://127.0.0.1:9", "@acme/widget", "1.2.0", "");
+        assert!(find_store_pkg("http://127.0.0.1:9", "@acme/widget", "1.2.0").is_none());
+        let dead = registry_cfg("http://127.0.0.1:9");
+        let (dir, _, version) = resolve_registry_package(
+            "@acme/widget",
+            "^1.0.0",
+            Some(&dead),
+            &BTreeMap::new(),
+            Some("1.2.0".to_string()),
+            &[],
+            None,
+        )
+        .expect("the old registry/ tree still serves pinned resolves");
+        assert_eq!(version, "1.2.0");
+        assert_eq!(
+            dir,
+            std::fs::canonicalize(cached_package_dir(&dead.url, "@acme/widget", "1.2.0")).unwrap()
+        );
+    }
+
+    #[test]
+    fn store_concurrent_first_use_writes_once() {
+        use std::collections::BTreeSet;
+        let (_guard, _dir) = isolate_cache("storeconcurrent");
+        let (manifest, pairs, digest, _, _) = fixture_tree("@acme/widget", "1.2.0");
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
+        let server = MockRegistry::start_routed(RoutedConfig {
+            version_spec: 0,
+            resolve_body: resolve_json_static(&[node]),
+            packages: vec![RoutedPackage {
+                full: "@acme/widget".to_string(),
+                version: "1.2.0".to_string(),
+                tarball: Vec::new(),
+                manifest_override: Some(manifest),
+                chunk_override: Some(pairs),
+                latency_ms: 0,
+            }],
+        });
+        let cfg = registry_cfg(&server.base);
+        std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        ensure_registry_requirements(
+                            &requirements_for("@acme/widget", "1.2.0"),
+                            Some(&cfg),
+                            &BTreeMap::new(),
+                            &[],
+                        )
+                        .unwrap()
+                    })
+                })
+                .collect();
+            let mut dirs = BTreeSet::new();
+            for h in handles {
+                let fetched = h.join().unwrap();
+                assert_eq!(fetched.len(), 1);
+                dirs.insert(fetched[0].dir.clone());
+            }
+            assert_eq!(dirs.len(), 1, "concurrent first use converges on one store tree");
+        });
+        let store_dir = store_pkg_dir(&digest).expect("store dir for the manifest digest");
+        assert_eq!(cached_integrity(&store_dir).as_deref(), Some(digest.as_str()));
+        assert!(store_dir.join("src").join("main.rnx").is_file());
+        let have = scan_cache_have();
+        assert_eq!(have.len(), 1);
+        assert_eq!(have[0].integrity, digest);
+    }
+
+    #[test]
+    fn store_corrupt_blob_is_rejected_and_heals_on_refetch() {
+        let (_guard, _dir) = isolate_cache("storecorrupt");
+        assert!(cas_blob_path("zz").is_none());
+        assert!(cas_blob_path(&"ab".repeat(31)).is_none());
+        let bytes = b"chunk bytes".to_vec();
+        let hash = Sha256::hexdigest(&bytes);
+        cas_put(&hash, &bytes).unwrap();
+        assert_eq!(cas_get(&hash).unwrap(), Some(bytes.clone()));
+        assert!(cas_put(&hash, b"other bytes").is_err());
+        let path = cas_blob_path(&hash).expect("cas path");
+        std::fs::write(&path, b"tampered").unwrap();
+        let err = cas_get(&hash).unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("failed its integrity check"), "{}", err.message);
+        let (manifest, pairs, digest, _, _) = fixture_tree("@acme/widget", "1.2.0");
+        let (first_hash, first_bytes) = pairs[0].clone();
+        let corrupt_at = cas_blob_path(&first_hash).expect("cas path");
+        if let Some(parent) = corrupt_at.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&corrupt_at, b"tampered").unwrap();
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
+        let server = start_tree(&[node], &manifest, pairs);
+        let cfg = registry_cfg(&server.base);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("@acme/widget", "1.2.0"),
+            Some(&cfg),
+            &BTreeMap::new(),
+            &[],
+        )
+        .expect("the corrupt blob is dropped and refetched from the network");
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(cas_get(&first_hash).unwrap(), Some(first_bytes));
+        assert!(fetched[0].dir.join("src").join("main.rnx").is_file());
+    }
+
+    #[test]
+    fn prune_reclaims_legacy_trees_but_keeps_the_store() {
+        let (_guard, _dir) = isolate_cache("storeprune");
+        for (full, version) in [("@acme/old", "1.0.0"), ("@acme/older", "2.0.0")] {
+            let dir = cached_package_dir("http://127.0.0.1:9", full, version);
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(
+                dir.join(crate::project::MANIFEST_FILE),
+                format!(
+                    "export default {{\n    project: {{\n        name: \"{full}\",\n        version: \"{version}\"\n    }}\n}}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(dir.join("src").join("main.rnx"), vec![b'x'; 64]).unwrap();
+            std::fs::write(dir.join(".rnx-integrity"), format!("{full}\n{version}\ntest\n")).unwrap();
+        }
+        let (manifest, pairs, digest, _, _) = fixture_tree("@acme/widget", "1.2.0");
+        let node = node_json("@acme/widget", "1.2.0", &digest, false);
+        let server = start_tree(&[node], &manifest, pairs);
+        let cfg = registry_cfg(&server.base);
+        ensure_registry_requirements(
+            &requirements_for("@acme/widget", "1.2.0"),
+            Some(&cfg),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let _ = server;
+        let store_dir = store_pkg_dir(&digest).expect("store dir for the manifest digest");
+        let legacy_before = legacy_registry_usage_bytes();
+        assert!(legacy_before > 0);
+        assert_eq!(prune_legacy_registry_lru(u64::MAX), 0);
+        assert!(cached_package_dir("http://127.0.0.1:9", "@acme/old", "1.0.0").is_dir());
+        let freed = prune_legacy_registry_lru(0);
+        assert_eq!(freed, legacy_before);
+        assert_eq!(legacy_registry_usage_bytes(), 0);
+        assert!(
+            !cached_package_dir("http://127.0.0.1:9", "@acme/old", "1.0.0").exists(),
+            "prune reclaims the old registry/ trees"
+        );
+        assert!(
+            store_dir.join("Project.config").is_file(),
+            "prune must not touch the content-addressed store"
+        );
+        assert!(store_usage_bytes() > 0);
     }
 
     fn artifact_fixture_tree(

@@ -179,7 +179,8 @@ pub fn verify_std_package_bytes(dir: &Path) -> Result<bool, Diagnostic> {
     if pinned != &cfg.version {
         return Ok(false);
     }
-    let cached = super::fetch::cached_package_dir(&pin.registry, &cfg.name, pinned);
+    let cached = super::fetch::find_cached_package_dir(&pin.registry, &cfg.name, pinned)
+        .unwrap_or_else(|| super::fetch::cached_package_dir(&pin.registry, &cfg.name, pinned));
     if super::fetch::cached_integrity(&cached).is_none() {
         return Ok(false);
     }

@@ -477,13 +477,18 @@ mod tests {
     // `always_stale` is set, even origin-direct reads get the stale
     // generation, reproducing a genuinely inconsistent registry.
     fn start_generation_server(always_stale: bool) -> (GenerationServer, RegistryConfig) {
-        let (fresh_manifest, fresh_pairs, fresh_digest, _, _) = fixture_tree("@std/seed", "1.0.0");
-        let (stale_manifest, stale_pairs, _stale_digest, _, _) = fixture_tree_with_main(
-            "@std/seed",
-            "0.0.9",
-            b"export fn hello(): Int { return 0; }\n",
-        );
-        let resolve_body = resolve_json_static(&std_nodes("1.0.0", &fresh_digest));
+        let mut trees: BTreeMap<String, (String, Vec<(String, Vec<u8>)>, String, String, Vec<(String, Vec<u8>)>)> =
+            BTreeMap::new();
+        let mut nodes = Vec::new();
+        for full in std_package_names() {
+            let (fresh_manifest, fresh_pairs, fresh_digest, _, _) = fixture_tree(&full, "1.0.0");
+            let (stale_manifest, stale_pairs, _, _, _) =
+                fixture_tree_with_main(&full, "0.0.9", b"export fn hello(): Int { return 0; }\n");
+            nodes.push(node_json(&full, "1.0.0", &fresh_digest, false));
+            trees.insert(full, (fresh_manifest, fresh_pairs, fresh_digest, stale_manifest, stale_pairs));
+        }
+        let resolve_body = resolve_json_static(&nodes);
+        let trees = Arc::new(trees);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let log: Arc<Mutex<Vec<(String, String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -521,17 +526,30 @@ mod tests {
                 } else if method == "POST" && route == "/api/v0/resolve" {
                     respond(&mut stream, 200, resolve_body.as_bytes(), true);
                 } else if method == "GET" && route.ends_with("/chunks") {
-                    let body = if direct { &fresh_manifest } else { &stale_manifest };
-                    respond(&mut stream, 200, body.as_bytes(), true);
+                    let body = trees
+                        .iter()
+                        .find(|(full, _)| route.contains(&format!("{full}@1.0.0")))
+                        .map(|(_, t)| if direct { &t.0 } else { &t.3 })
+                        .map(String::as_bytes)
+                        .unwrap_or_default();
+                    respond(&mut stream, 200, body, true);
                 } else if method == "GET" && route.contains("/chunk/") {
                     let hash = route.rsplit('/').next().unwrap_or_default();
                     let mut hit: Option<Vec<u8>> = None;
-                    for pairs in [&fresh_pairs, &stale_pairs] {
-                        for (h, b) in pairs {
-                            if h == hash {
-                                hit = Some(b.clone());
+                    for (_, t) in trees.iter() {
+                        for pairs in [&t.1, &t.4] {
+                            for (h, b) in pairs {
+                                if h == hash {
+                                    hit = Some(b.clone());
+                                    break;
+                                }
+                            }
+                            if hit.is_some() {
                                 break;
                             }
+                        }
+                        if hit.is_some() {
+                            break;
                         }
                     }
                     match hit {
@@ -604,13 +622,6 @@ mod tests {
         );
     }
 
-    fn std_nodes(version: &str, integrity: &str) -> Vec<String> {
-        std_package_names()
-            .iter()
-            .map(|full| node_json(full, version, integrity, false))
-            .collect()
-    }
-
     fn checkout_src() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib/src")
     }
@@ -657,25 +668,24 @@ mod tests {
         assert!(fetch::local_override_used("@std/fs"));
     }
 
-    fn start_std_registry(version: &str) -> (MockRegistry, String, RegistryConfig) {
-        let (manifest, pairs, digest, _, _) = fixture_tree("@std/seed", version);
-        let server = MockRegistry::start(MockConfig {
-            version_spec: 0,
-            capabilities: vec!["tombstones"],
-            resolve_status: 200,
-            resolve_body: resolve_json_static(&std_nodes(version, &digest)),
-            manifest_status: 200,
-            fallback_tarball: Vec::new(),
-            manifest_error: String::new(),
-            manifest_override: Some(manifest),
-            chunk_override: Some(pairs),
-        });
+    fn start_std_registry(version: &str) -> (MockRegistry, BTreeMap<String, String>, RegistryConfig) {
+        let mut chunks = BTreeMap::new();
+        let mut digests = BTreeMap::new();
+        let mut nodes = Vec::new();
+        for full in std_package_names() {
+            let (manifest, pairs, digest, _, _) = fixture_tree(&full, version);
+            nodes.push(node_json(&full, version, &digest, false));
+            chunks.insert(format!("{full}@{version}"), (manifest, pairs));
+            digests.insert(full, digest);
+        }
+        let body = resolve_json_static(&nodes);
+        let server = MockRegistry::start_dynamic(chunks, move |_| body.clone());
         let cfg = RegistryConfig {
             url: server.base.clone(),
             token_env: None,
             ca_cert: None,
         };
-        (server, digest, cfg)
+        (server, digests, cfg)
     }
 
     #[test]
@@ -694,7 +704,7 @@ mod tests {
     #[test]
     fn seed_populates_cache_and_writes_pin_in_one_round_trip() {
         let (_guard, _dir) = isolate_cache("stdseed");
-        let (server, sha, cfg) = start_std_registry("1.0.0");
+        let (server, digests, cfg) = start_std_registry("1.0.0");
         let report = seed_stdlib_cache(Some(&cfg), &BTreeMap::new()).unwrap();
         assert_eq!(report.packages.len(), std_package_tops().len());
         assert!(report.packages.iter().all(|(_, v)| v == "1.0.0"));
@@ -704,7 +714,8 @@ mod tests {
         let body = &server.resolve_bodies()[0];
         for name in std_package_names() {
             assert_eq!(requirement(body, &name), "*");
-            let dir = fetch::cached_package_dir(&report.registry, &name, "1.0.0");
+            let dir = fetch::find_cached_package_dir(&report.registry, &name, "1.0.0")
+                .expect("seeded package is cached");
             assert!(
                 dir.join(crate::project::MANIFEST_FILE).is_file(),
                 "{}",
@@ -720,16 +731,19 @@ mod tests {
         }
         let have = fetch::scan_cache_have();
         assert_eq!(have.len(), std_package_tops().len());
-        assert!(have.iter().all(|h| h.integrity == sha));
+        for h in &have {
+            assert_eq!(digests.get(&h.full).map(String::as_str), Some(h.integrity.as_str()), "{}", h.full);
+        }
         assert!(missing_std_packages().is_empty());
     }
 
     #[test]
     fn reseed_restores_a_deleted_package() {
         let (_guard, _dir) = isolate_cache("stdrepair");
-        let (_server, _sha, cfg) = start_std_registry("1.0.0");
+        let (_server, _digests, cfg) = start_std_registry("1.0.0");
         let report = seed_stdlib_cache(Some(&cfg), &BTreeMap::new()).unwrap();
-        let victim = fetch::cached_package_dir(&report.registry, "@std/fs", "1.0.0");
+        let victim = fetch::find_cached_package_dir(&report.registry, "@std/fs", "1.0.0")
+            .expect("seeded package is cached");
         assert!(victim.is_dir());
         std::fs::remove_dir_all(&victim).unwrap();
         assert_eq!(missing_std_packages(), vec!["@std/fs@1.0.0".to_string()]);

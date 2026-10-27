@@ -131,7 +131,8 @@ fn offline_dep_dir(
                 entry_cfg.registry.as_ref(),
                 &entry_cfg.registries,
             );
-            let dir = crate::fetch::cached_package_dir(&base, dep_name, &pinned);
+            let dir = crate::fetch::find_cached_package_dir(&base, dep_name, &pinned)
+                .unwrap_or_else(|| crate::fetch::cached_package_dir(&base, dep_name, &pinned));
             std::fs::canonicalize(&dir).ok()
         }
         crate::project::DependencySpec::Url { .. } | crate::project::DependencySpec::Native { .. } => None,

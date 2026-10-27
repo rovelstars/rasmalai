@@ -99,7 +99,8 @@ fn cached_std_source(key: &str) -> Option<String> {
     }
     if let Some(pin) = crate::stdlib_seed::read_std_pin() {
         if let Some(version) = pin.packages.get(&pkg) {
-            let dir = crate::fetch::cached_package_dir(&pin.registry, &pkg, version);
+            let dir = crate::fetch::find_cached_package_dir(&pin.registry, &pkg, version)
+                .unwrap_or_else(|| crate::fetch::cached_package_dir(&pin.registry, &pkg, version));
             if let Some(src) = read_cached_module(&dir, sub) {
                 return Some(src);
             }
@@ -174,6 +175,22 @@ fn find_scanned_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
     let root = crate::fetch::registry_cache_root();
     let hosts = std::fs::read_dir(&root).ok()?;
     let mut best: Option<(SemKey, PathBuf)> = None;
+    let mut consider = |dir: PathBuf, best: &mut Option<(SemKey, PathBuf)>| {
+        if !dir.join(crate::project::MANIFEST_FILE).is_file() {
+            return;
+        }
+        let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let Some(next) = sem_key(&name) else {
+            return;
+        };
+        let replace = match &*best {
+            None => true,
+            Some((cur, _)) => next > *cur,
+        };
+        if replace {
+            *best = Some((next, dir));
+        }
+    };
     for host in hosts.flatten() {
         let pkg_dir = host.path().join(pkg);
         let versions = match std::fs::read_dir(&pkg_dir) {
@@ -185,20 +202,22 @@ fn find_scanned_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
             if !dir.is_dir() {
                 continue;
             }
-            if !dir.join(crate::project::MANIFEST_FILE).is_file() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(next) = sem_key(&name) else {
-                continue;
-            };
-            let replace = match &best {
-                None => true,
-                Some((cur, _)) => next > *cur,
-            };
-            if replace {
-                best = Some((next, dir));
-            }
+            consider(dir, &mut best);
+        }
+    }
+    for have in crate::fetch::store_have() {
+        if have.full != pkg {
+            continue;
+        }
+        let Some(next) = sem_key(&have.version) else {
+            continue;
+        };
+        let replace = match &best {
+            None => true,
+            Some((cur, _)) => next > *cur,
+        };
+        if replace && let Some(dir) = crate::fetch::store_pkg_dir(&have.integrity) {
+            best = Some((next, dir));
         }
     }
     let (_, dir) = best?;
@@ -285,22 +304,15 @@ mod tests {
             return;
         }
         let pin = env!("CARGO_PKG_VERSION");
-        let (manifest, pairs, digest, _pc, _main) = testkit::fixture_tree("@std/seed", pin);
-        let nodes: Vec<String> = crate::stdlib_seed::std_package_names()
-            .iter()
-            .map(|full| testkit::node_json(full, pin, &digest, false))
-            .collect();
-        let server = testkit::MockRegistry::start(testkit::MockConfig {
-            version_spec: 0,
-            capabilities: vec!["tombstones"],
-            resolve_status: 200,
-            resolve_body: testkit::resolve_json_static(&nodes),
-            manifest_status: 200,
-            fallback_tarball: Vec::new(),
-            manifest_error: String::new(),
-            manifest_override: Some(manifest),
-            chunk_override: Some(pairs),
-        });
+        let mut chunks = BTreeMap::new();
+        let mut nodes = Vec::new();
+        for full in crate::stdlib_seed::std_package_names() {
+            let (manifest, pairs, digest, _pc, _main) = testkit::fixture_tree(&full, pin);
+            nodes.push(testkit::node_json(&full, pin, &digest, false));
+            chunks.insert(format!("{full}@{pin}"), (manifest, pairs));
+        }
+        let body = testkit::resolve_json_static(&nodes);
+        let server = testkit::MockRegistry::start_dynamic(chunks, move |_| body.clone());
         let cfg = testkit::registry_cfg(&server.base);
         let report = crate::stdlib_seed::seed_stdlib_cache(Some(&cfg), &BTreeMap::new()).unwrap();
         assert!(!report.packages.is_empty());
