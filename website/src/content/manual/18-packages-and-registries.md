@@ -135,14 +135,17 @@ Every response carries an `rnx-registry-spec: 0` header. A client meeting a spec
 
 ## Resolving a dependency graph
 
-`POST /api/v0/resolve` takes one request with a `requirements` map and a `have` list of already-fetched versions:
+`POST /api/v0/resolve` takes one request with a `requirements` map, a `have` list of already-fetched versions, and the client's toolchain version as `engine`:
 
 ```json
 {
   "requirements": { "sqlite3": "^3.45.0", "@acme/ui": "~1.2.0" },
-  "have": [{ "full": "sqlite3", "version": "3.45.0", "integrity": "sha256:..." }]
+  "have": [{ "full": "sqlite3", "version": "3.45.0", "integrity": "sha256:..." }],
+  "engine": "0.2.0"
 }
 ```
+
+`engine` is the exact `rnx` version sending the request, `X.Y.Z` like a pinned requirement. The server keeps only the candidate versions whose `engine` range accepts it and picks the highest satisfying one per requirement; a request without the field resolves unfiltered, exactly as before. Every node still carries its own `engineRange`, and the client verifies each downloaded version against its own toolchain anyway, so a version that slips through the server filter still fails closed at install time.
 
 The server picks the highest satisfying version for each requirement, walks manifests transitively, and returns `resolved` plus depth-leveled `levels`. Each node carries its chunk-manifest `path`, `integrity` digest, engine range, and a `yanked` flag. Clients fetch the manifest, pull content chunks in parallel, write files straight to disk, verify the manifest digest, and rehydrate `Project.config` to the resolved version. Installed `.rnx` bytes are canonical minified form, not author formatting. Entries in `have` whose integrity still matches skip dependency expansion, so repeated resolves only fetch the delta.
 
@@ -150,7 +153,7 @@ A `have` entry never hides a status change. A version that was yanked after the 
 
 ### What a resolve answer means
 
-A resolve answer is a snapshot of the registry taken while the request runs. The server keeps a short-lived memo of the candidate versions of each package so that a repeat resolve does not read them again, and every memo entry carries the mutation count of the package it was built from. Before the answer is written, that count is checked against the row the server reads for the picked version. If it moved, another publish, takedown or transfer changed the package, and the candidate list is read again instead of being trusted.
+A resolve answer is a snapshot of the registry taken while the request runs. The server keeps a short-lived memo of the candidate versions of each package so that a repeat resolve does not read them again, and every memo entry carries the mutation count of the package it was built from. Before the answer is written, that count is checked against the row the server reads for the picked version. Lists filtered for one engine memoize under that exact engine string, so another engine never reads them. If it moved, another publish, takedown or transfer changed the package, and the candidate list is read again instead of being trusted.
 
 The rules that follow from that:
 
@@ -168,7 +171,7 @@ Ranges use a small grammar: `*`, `latest`, an exact `X.Y.Z`, `^X.Y.Z`, `~X.Y.Z`,
 - `~1.2.3` means at least `1.2.3` with the same major and minor.
 - `>=1.2.3` means that version or newer.
 
-Conflicting ranges for one package fail the whole resolve as `unsatisfiable`; a dependency cycle fails as `cycle`.
+Conflicting ranges for one package fail the whole resolve as `unsatisfiable`; a dependency cycle fails as `cycle`. A requirement no version satisfies for the requesting engine fails as `unsatisfiable` too, naming the package, the range, and the engine — `no version of sqlite3 satisfies ^3.45.0 for engine 0.2.0` — while a package with no versions at all still answers `not-found`.
 
 ## Inline chunk lists
 
@@ -214,7 +217,7 @@ The resolve endpoint is anonymous, so it caps what a request may cost before it 
 | Entries in `requirements` | 512 | 413 `payload-too-large` |
 | Entries in `have` | 256 | 413 `payload-too-large` |
 
-An oversized body is refused on its declared length, before a byte of it is read, and the stream is cut off at the same ceiling for a body that arrives without one. The counts are checked before the names are parsed, so a request with a hundred thousand requirements never pays for validating them.
+An oversized body is refused on its declared length, before a byte of it is read, and the stream is cut off at the same ceiling for a body that arrives without one. The counts are checked before the names are parsed, so a request with a hundred thousand requirements never pays for validating them. An `engine` that is not an exact `X.Y.Z` is a 400 `bad-request`.
 
 A resolve also has a runtime budget: the traversal stops at 64 levels, 512 packages, 512 packages in one level and 4096 candidate versions, and the request may spend 50 calls to the store. A closure that needs more answers 422 `budget-exceeded` with the reason in the message. The last limit is the platform's own: one request may make 50 external calls on the free plan, so the resolver counts them and refuses itself rather than being cut off mid-answer.
 
