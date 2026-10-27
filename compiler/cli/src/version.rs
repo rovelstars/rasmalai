@@ -1,7 +1,7 @@
 pub const SHORT: &str = env!("CARGO_PKG_VERSION");
 pub const COMMIT: &str = env!("RNX_COMMIT");
 pub const BUILD_TIMESTAMP: &str = env!("RNX_BUILD_TIMESTAMP");
-pub const INSTALL_REASON: &str = env!("RNX_DISTRO_MANAGED_REASON");
+pub const INSTALL_REASON: &str = env!("RNX_INSTALLATION_MANAGED_REASON");
 pub const TARGET_TRIPLE: &str = env!("RNX_TARGET_TRIPLE");
 
 pub fn short_line() -> String {
@@ -118,6 +118,23 @@ mod tests {
         assert_eq!(lines[0], "0.2.0");
         assert_eq!(lines[1], "commit: unknown");
         assert_eq!(lines[3], "install: managed:managed by apt: apt upgrade rnx");
+    }
+
+    #[test]
+    fn long_shape_unknown_built_from_opt_out() {
+        let mut rec = record("94399f4", "standalone");
+        rec.built = "";
+        let text = render_long(&rec);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 6);
+        assert_eq!(lines[2], "built: unknown");
+    }
+
+    #[test]
+    fn install_kind_empty_reason_is_standalone() {
+        assert_eq!(install_kind_label(Some("")), "standalone");
+        let text = render_long(&record("94399f4", &install_kind_label(None)));
+        assert!(text.lines().any(|l| l == "install: standalone"), "{text}");
     }
 
     #[test]

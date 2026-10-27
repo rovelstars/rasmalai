@@ -21,7 +21,8 @@ fn format_unix_utc(secs: u64) -> String {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=RNX_DISTRO_MANAGED");
+    println!("cargo:rerun-if-env-changed=RNX_INSTALLATION_MANAGED");
+    println!("cargo:rerun-if-env-changed=RNX_INSTALLATION_NO_TIMESTAMP");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     let commit = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -33,19 +34,26 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=RNX_COMMIT={commit}");
-    let secs = std::env::var("SOURCE_DATE_EPOCH")
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_secs())
-        });
+    let stamped = std::env::var("RNX_INSTALLATION_NO_TIMESTAMP")
+        .unwrap_or_default()
+        .is_empty();
+    let secs = if stamped {
+        std::env::var("SOURCE_DATE_EPOCH")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs())
+            })
+    } else {
+        None
+    };
     let built = secs.map(format_unix_utc).unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=RNX_BUILD_TIMESTAMP={built}");
-    let reason = std::env::var("RNX_DISTRO_MANAGED").unwrap_or_default();
-    println!("cargo:rustc-env=RNX_DISTRO_MANAGED_REASON={reason}");
+    let reason = std::env::var("RNX_INSTALLATION_MANAGED").unwrap_or_default();
+    println!("cargo:rustc-env=RNX_INSTALLATION_MANAGED_REASON={reason}");
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
     println!("cargo:rustc-env=RNX_TARGET_TRIPLE={target}");
 }
