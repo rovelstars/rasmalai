@@ -159,7 +159,6 @@ struct VarInfo {
 struct ScopeCheck<'a> {
     module: &'a Module,
     globals: BTreeSet<String>,
-    extra_globals: BTreeSet<String>,
     consts: BTreeSet<String>,
     let_names: BTreeSet<String>,
     classes: BTreeSet<String>,
@@ -167,6 +166,7 @@ struct ScopeCheck<'a> {
     statics: BTreeSet<(String, String)>,
     fields: BTreeSet<(String, String)>,
     fn_rets: BTreeMap<String, Option<String>>,
+    runtime_any: BTreeSet<String>,
     fn_arity: BTreeMap<String, (usize, usize)>,
     ctors: BTreeMap<String, (usize, usize)>,
     fn_params: BTreeMap<String, Vec<(String, Option<String>)>>,
@@ -180,7 +180,6 @@ struct ScopeCheck<'a> {
     async_methods: BTreeSet<(String, String)>,
     scopes: Vec<BTreeMap<String, VarInfo>>,
     used_prelude: BTreeSet<String>,
-    emit_s103: bool,
     allow_this: bool,
     expected: Option<String>,
     enum_hint: Option<String>,
@@ -312,22 +311,19 @@ fn collect_let_names(module: &Module) -> BTreeSet<String> {
 }
 
 fn run_scope_check<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck<'m> {
-    run_scope_check_with(module, files, &BTreeSet::new(), false)
+    run_scope_check_with(module, files)
 }
 
-fn run_scope_check_with<'m>(
-    module: &'m Module,
-    files: &DeclFiles,
-    extra_globals: &BTreeSet<String>,
-    emit_s103: bool,
-) -> ScopeCheck<'m> {
+fn run_scope_check_with<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck<'m> {
     let mut globals = BTreeSet::new();
     let mut consts = BTreeSet::new();
     let mut classes = BTreeSet::new();
     let mut fn_rets: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut runtime_any: BTreeSet<String> = BTreeSet::new();
     let mut async_fns: BTreeSet<String> = BTreeSet::new();
     let mut async_methods: BTreeSet<(String, String)> = BTreeSet::new();
     let mut conforms: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut runtime_issues: Vec<Diagnostic> = Vec::new();
     for decl in &module.decls {
         match &decl.node {
             Decl::Fn(f) => {
@@ -386,6 +382,33 @@ fn run_scope_check_with<'m>(
                         globals.insert(local);
                     }
                 }
+                if let ImportSource::Runtime(module) = &d.source {
+                    for local in crate::modules::runtime_import_locals(&d.clause) {
+                        globals.insert(local);
+                    }
+                    match &d.clause {
+                        ImportClause::Named(specs) => {
+                            for spec in specs {
+                                if let Some(sig) = &spec.native_fn {
+                                    let local =
+                                        sig.alias.clone().unwrap_or_else(|| sig.name.clone());
+                                    fn_rets.insert(local.clone(), sig.ret.as_ref().and_then(ty_name));
+                                    if crate::runtime::lookup(&sig.name)
+                                        .is_some_and(|d| d.ret == "Any")
+                                    {
+                                        runtime_any.insert(local);
+                                    }
+                                    if let Some(diag) =
+                                        crate::security::check_runtime_sig(module, sig, d.source_span)
+                                    {
+                                        runtime_issues.push(diag);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             Decl::ExportFrom(d) => {
                 if let ImportSource::Native(_) = &d.source
@@ -396,6 +419,18 @@ fn run_scope_check_with<'m>(
                         globals.insert(local.clone());
                         fn_rets.insert(local, sig.ret.as_ref().and_then(ty_name));
                     }
+                }
+                if let ImportSource::Runtime(module) = &d.source {
+                    runtime_issues.push(
+                        Diagnostic::new(
+                            Code::E108,
+                            "runtime functions cannot be re-exported; import them where they are used",
+                        )
+                        .with_span(d.source_span)
+                        .with_hint(format!(
+                            "use `import {{ fn name(params): Ret }} from runtime \"{module}\"`"
+                        )),
+                    );
                 }
             }
             Decl::ExportList(specs) => {
@@ -450,6 +485,26 @@ fn run_scope_check_with<'m>(
                     .map(|p| (p.name.clone(), p.ty.as_ref().and_then(ty_name)))
                     .collect(),
             );
+        }
+        if let Decl::Import(d) = &decl.node
+            && matches!(d.source, ImportSource::Runtime(_))
+            && let ImportClause::Named(specs) = &d.clause
+        {
+            for spec in specs {
+                if let Some(sig) = &spec.native_fn {
+                    let local = sig.alias.clone().unwrap_or_else(|| sig.name.clone());
+                    let total = sig.params.len();
+                    let mandatory = sig.params.iter().filter(|p| p.default.is_none()).count();
+                    fn_arity.insert(local.clone(), (mandatory, total));
+                    fn_params.insert(
+                        local,
+                        sig.params
+                            .iter()
+                            .map(|p| (p.name.clone(), p.ty.as_ref().and_then(ty_name)))
+                            .collect(),
+                    );
+                }
+            }
         }
     }
     for decl in &module.decls {
@@ -543,7 +598,6 @@ fn run_scope_check_with<'m>(
     let mut checker = ScopeCheck {
         module,
         globals,
-        extra_globals: extra_globals.clone(),
         consts,
         let_names: collect_let_names(module),
         classes,
@@ -551,6 +605,7 @@ fn run_scope_check_with<'m>(
         statics,
         fields,
         fn_rets,
+        runtime_any,
         fn_arity,
         ctors,
         fn_params,
@@ -564,13 +619,15 @@ fn run_scope_check_with<'m>(
         async_methods,
         scopes: Vec::new(),
         used_prelude: BTreeSet::new(),
-        emit_s103,
         allow_this: false,
         expected: None,
         enum_hint: None,
         stmt_span: Span { start: 0, end: 0 },
         diags: Vec::new(),
     };
+    for diag in runtime_issues {
+        checker.diags.push(diag);
+    }
     for decl in &module.decls {
         if let Decl::Extension { target, members, .. } = &decl.node {
             let tname = target
@@ -686,19 +743,4 @@ fn check_scopes(module: &Module, diags: &mut Vec<Diagnostic>, files: &DeclFiles)
             .cmp(b.code.as_str())
             .then(a.message.cmp(&b.message))
     });
-}
-
-pub fn check_with_files_and_globals(
-    module: &Module,
-    files: &DeclFiles,
-    extra_globals: &BTreeSet<String>,
-) -> Vec<Diagnostic> {
-    let mut diags = run_scope_check_with(module, files, extra_globals, true).diags;
-    diags.sort_by(|a, b| {
-        a.code
-            .as_str()
-            .cmp(b.code.as_str())
-            .then(a.message.cmp(&b.message))
-    });
-    diags
 }

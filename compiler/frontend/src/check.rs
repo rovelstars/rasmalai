@@ -31,7 +31,11 @@ pub fn check_source_all(src: &str) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
     let mut diags = module.warnings.clone();
     diags.extend(desugar(&mut module));
     diags.extend(semantic::check(&module));
-    diags.extend(crate::security::s103_frame(&[(std::path::Path::new(""), &module)]));
+    for r in crate::security::collect_runtime_imports(&module) {
+        diags.push(crate::security::runtime_frame_rejection(
+            &r.module, &r.symbol, r.span,
+        ));
+    }
     partition(diags)
 }
 
@@ -58,7 +62,11 @@ pub fn check_source(src: &str) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     let mut diags = module.warnings.clone();
     diags.extend(desugar(&mut module));
     diags.extend(semantic::check(&module));
-    diags.extend(crate::security::s103_frame(&[(std::path::Path::new(""), &module)]));
+    for r in crate::security::collect_runtime_imports(&module) {
+        diags.push(crate::security::runtime_frame_rejection(
+            &r.module, &r.symbol, r.span,
+        ));
+    }
     split(diags)
 }
 
@@ -76,11 +84,7 @@ pub fn check_package(root: &Path) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     let mut diags = module.warnings.clone();
     diags.extend(crate::desugar::desugar_with_files(&mut module, &files));
     diags.extend(semantic::check_with_files(&module, &files));
-    // S103 needs per-file attribution (merged decl spans collide across
-    // files), so merged S103 verdicts are recomputed per graph file
-    // instead of trusted from the merged walk.
-    diags.retain(|d| d.code != diagnostics::Code::S103);
-    diags.extend(crate::security::s103_graph(&graph));
+    diags.extend(crate::security::verify_runtime_imports(&graph));
     if diags.iter().all(|d| d.code.is_warning()) {
         diags.extend(graph.isolation_errors());
     }

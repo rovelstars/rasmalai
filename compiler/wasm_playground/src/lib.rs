@@ -13,12 +13,8 @@ fn check_merged(source: &str) -> Result<(Vec<Diagnostic>, Vec<Diagnostic>), Diag
     let graph = frontend::modules::ModuleGraph::from_source_graph(source)?;
     let mut module = graph.resolve()?;
     let mut diags = frontend::desugar::desugar(&mut module);
-    diags.extend(
-        frontend::semantic::check(&module)
-            .into_iter()
-            .filter(|d| d.code != diagnostics::Code::S103),
-    );
-    diags.extend(frontend::security::s103_graph(&graph));
+    diags.extend(frontend::semantic::check(&module));
+    diags.extend(frontend::security::verify_runtime_imports(&graph));
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     for d in diags {
@@ -77,7 +73,8 @@ fn role_of(kind: &TokenKind) -> &'static str {
         | TokenKind::Extends
         | TokenKind::With
         | TokenKind::Comptime
-        | TokenKind::Native => "keyword",
+        | TokenKind::Native
+        | TokenKind::Runtime => "keyword",
         TokenKind::Int(_)
         | TokenKind::Float(_)
         | TokenKind::StrText(_)
@@ -616,11 +613,7 @@ fn project_merged(
         let mut diags = merged.warnings.clone();
         diags.extend(frontend::desugar::desugar_with_files(&mut merged, &files_map));
         diags.extend(frontend::semantic::check_with_files(&merged, &files_map));
-        // S103 needs per-file attribution (merged decl spans collide
-        // across files), so merged S103 verdicts are recomputed per
-        // graph file instead of trusted from the merged walk.
-        diags.retain(|d| d.code != diagnostics::Code::S103);
-        diags.extend(frontend::security::s103_graph(&graph));
+        diags.extend(frontend::security::verify_runtime_imports(&graph));
         if diags.iter().all(|d| d.code.is_warning()) {
             diags.extend(graph.isolation_errors());
         }
@@ -973,23 +966,6 @@ pub fn publish_config_facts(text: &str) -> String {
     .to_string()
 }
 
-fn is_server_std(path: &std::path::Path) -> bool {
-    path.to_string_lossy().starts_with("@std/")
-}
-
-fn s103_symbol(message: &str) -> String {
-    let mut rest = message;
-    while let Some(start) = rest.find('`') {
-        rest = &rest[start + 1..];
-        match rest.find('`') {
-            Some(end) if rest[..end].starts_with("__rnx_") => return rest[..end].to_string(),
-            Some(end) => rest = &rest[end + 1..],
-            None => break,
-        }
-    }
-    String::new()
-}
-
 fn registries_keys_in_config(text: &str) -> Vec<String> {
     if text.trim().is_empty() {
         return Vec::new();
@@ -1072,100 +1048,123 @@ pub fn analyze_project(files_json: &str, entries_json: &str) -> String {
             return server_err(project_hook(&files, entry_src, &diag));
         }
     };
-    let merged = match graph.resolve() {
-        Ok(m) => m,
-        Err(e) => {
-            let entry_src = files.get(&main_norm).map(|s| s.as_str()).unwrap_or("");
-            return server_err(project_hook(&files, entry_src, &e));
-        }
-    };
+    if let Err(e) = graph.resolve() {
+        let entry_src = files.get(&main_norm).map(|s| s.as_str()).unwrap_or("");
+        return server_err(project_hook(&files, entry_src, &e));
+    }
     let reachable: std::collections::BTreeSet<String> = graph
         .files
         .iter()
         .map(|f| project_display(&f.path))
         .collect();
-    let decl_files = frontend::modules::merged_decl_files(&graph);
-    let mut tree_decls = Vec::new();
-    for decl in &merged.decls {
-        let key = (decl.span.start, decl.span.end);
-        let std = decl_files
-            .get(&key)
-            .map(|p| is_server_std(p))
-            .unwrap_or(false);
-        if !std {
-            tree_decls.push(decl.clone());
-        }
-    }
-    let tree = frontend::ast::Module {
-        inner_attrs: merged.inner_attrs.clone(),
-        decls: tree_decls,
-        docs: String::new(),
-        warnings: Vec::new(),
-    };
-    // S103 and registry keys are report-only: counted and surfaced, never
-    // rejections. A non-`@std` frame trips S103 on bare `__rnx_*` uses in
-    // every file it ships, including `@std/`-prefixed paths (a name prefix
-    // alone never exempts; only the `@std/` frame name does, and the route
-    // 403-gates that scope to the org token). Declared `from native`
-    // aliases are exempt by the scope checker, and `__ffi_*` names never
-    // auto-resolve, so neither trips the count.
     let package_name = entries
         .get("packageName")
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let std_frame = package_name.starts_with("@std/");
-    let mut s103_files = serde_json::Map::new();
-    let mut s103_count = 0usize;
-    if !std_frame {
-        let mut frame: Vec<(std::path::PathBuf, frontend::ast::Module)> = Vec::new();
-        for (path, module) in &parsed {
-            frame.push((std::path::PathBuf::from(path), module.clone()));
-        }
-        let refs: Vec<(&std::path::Path, &frontend::ast::Module)> = frame
-            .iter()
-            .map(|(path, module)| (path.as_path(), module))
-            .collect();
-        let mut by_file: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        for diag in frontend::security::s103_frame(&refs) {
-            s103_count += 1;
-            let file = diag
-                .file
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-            by_file
-                .entry(file)
-                .or_default()
-                .push(s103_symbol(&diag.message));
-        }
-        for (file, mut names) in by_file {
-            names.sort();
-            names.dedup();
-            s103_files.insert(
-                file,
-                serde_json::Value::Array(
-                    names.into_iter().map(serde_json::Value::String).collect(),
-                ),
-            );
-        }
-    }
-    let registries_keys = registries_keys_in_config(
-        entries
-            .get("configText")
-            .and_then(|v| v.as_str())
-            .unwrap_or(""),
-    );
-    let merged_src = files.values().cloned().collect::<Vec<_>>().join("\n");
-    let mut capabilities = std::collections::BTreeSet::new();
-    match frontend::capabilities::analyze_with_fuel(&tree, &merged_src, "project", 4_000_000) {
-        Ok(report) => {
-            for cap in &report.capabilities {
-                capabilities.insert(cap.to_string());
+    {
+        let mut pending: Vec<&String> = parsed.keys().collect();
+        pending.sort();
+        for path in pending {
+            let Some(module) = parsed.get(path) else {
+                continue;
+            };
+            for d in frontend::semantic::check(module) {
+                if d.code == diagnostics::Code::E303 && d.message.contains("__rnx_") {
+                    return server_err(format!("E303: {path}: {}", d.message));
+                }
+                if d.code == diagnostics::Code::E108 && d.message.contains("runtime") {
+                    return server_err(format!("E108: {path}: {}", d.message));
+                }
+            }
+            if !std_frame {
+                let mut refs = frontend::security::collect_runtime_imports(module);
+                refs.sort_by(|a, b| a.symbol.cmp(&b.symbol).then(a.span.start.cmp(&b.span.start)));
+                for r in refs {
+                    let diag =
+                        frontend::security::runtime_frame_rejection(&r.module, &r.symbol, r.span);
+                    let hint = diag.hint.as_deref().unwrap_or("");
+                    return server_err(format!("E108: {path}: {} ({hint})", diag.message));
+                }
             }
         }
+    }
+    let mut std_sources: std::collections::BTreeMap<String, (String, frontend::ast::Module)> =
+        std::collections::BTreeMap::new();
+    {
+        let mut queue: Vec<String> = vec!["prelude".to_string()];
+        for module in parsed.values() {
+            for (spec, _) in frontend::modules::module_sources(&module.decls) {
+                if frontend::modules::is_std_spec(spec) {
+                    let rest = frontend::modules::std_rest(spec);
+                    if !rest.is_empty() && !queue.iter().any(|n| n == rest) {
+                        queue.push(rest.to_string());
+                    }
+                }
+            }
+        }
+        while let Some(rest) = queue.pop() {
+            if std_sources.contains_key(&rest) {
+                continue;
+            }
+            let src = match frontend::stdvfs::get(&rest) {
+                Some(s) => s,
+                None => match files.get(&format!("@std/{rest}")) {
+                    Some(s) => s.clone(),
+                    None => continue,
+                },
+            };
+            let module = match frontend::parser::Parser::parse_module(&src) {
+                Ok(m) => m,
+                Err(e) => {
+                    return server_err(format!("cannot parse @std/{rest}: {}", e.message));
+                }
+            };
+            for (spec, _) in frontend::modules::module_sources(&module.decls) {
+                if frontend::modules::is_std_spec(spec) {
+                    let dep = frontend::modules::std_rest(spec);
+                    if !dep.is_empty()
+                        && !std_sources.contains_key(dep)
+                        && !queue.iter().any(|n| n == dep)
+                    {
+                        queue.push(dep.to_string());
+                    }
+                }
+            }
+            std_sources.insert(rest, (src, module));
+        }
+    }
+    let mut ginputs: Vec<frontend::capabilities::GraphInput> = Vec::new();
+    for (path, module) in &parsed {
+        let Some(src) = files.get(path) else {
+            continue;
+        };
+        ginputs.push(frontend::capabilities::GraphInput {
+            path: std::path::PathBuf::from(path),
+            module,
+            source: src.as_str(),
+        });
+    }
+    for (rest, (src, module)) in &std_sources {
+        ginputs.push(frontend::capabilities::GraphInput {
+            path: std::path::PathBuf::from(format!("@std/{rest}")),
+            module,
+            source: src.as_str(),
+        });
+    }
+    ginputs.sort_by(|a, b| a.path.cmp(&b.path));
+    let report = match frontend::capabilities::analyze_file_graph(
+        &ginputs,
+        frontend::capabilities::DEFAULT_FUEL,
+    ) {
+        Ok(r) => r,
         Err(e) => {
             return server_err(format!("cannot analyse project: {}", e.message()));
         }
+    };
+    let mut capabilities = std::collections::BTreeSet::new();
+    for cap in report.capabilities.iter() {
+        capabilities.insert(cap.to_string());
     }
     let mut per_file = serde_json::Map::new();
     let mut unreachable = Vec::new();
@@ -1177,50 +1176,58 @@ pub fn analyze_project(files_json: &str, entries_json: &str) -> String {
             Some(m) => m,
             None => continue,
         };
-        let display = path.clone();
-        match frontend::capabilities::analyze(module, src, &display) {
-            Ok(report) => {
-                let mut local: Vec<String> =
-                    report.capabilities.iter().map(|c| c.to_string()).collect();
-                local.sort();
-                local.dedup();
-                for cap in &local {
-                    capabilities.insert(cap.clone());
-                }
-                let mut imports = Vec::new();
-                for decl in &module.decls {
-                    match &decl.node {
-                        frontend::ast::Decl::Import(d) => match &d.source {
-                            frontend::ast::ImportSource::Module(p) => {
-                                imports.push(format!("mod:{p}"));
-                            }
-                            frontend::ast::ImportSource::Native(lib) => {
-                                imports.push(format!("native:{lib}"));
-                            }
-                        },
-                        frontend::ast::Decl::ExportFrom(d) => {
-                            if let frontend::ast::ImportSource::Native(lib) = &d.source {
-                                imports.push(format!("native:{lib}"));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                imports.sort();
-                imports.dedup();
-                per_file.insert(
-                    path.clone(),
-                    serde_json::json!({"capabilities": local, "imports": imports}),
-                );
-            }
-            Err(e) => {
-                return server_err(format!("cannot analyse {path}: {}", e.message()));
+        let _ = (module, src);
+        let mut local: Vec<String> = Vec::new();
+        for trace in &report.traces {
+            if trace.nodes.iter().any(|n| n.file == *path) {
+                local.push(trace.capability.to_string());
             }
         }
+        local.sort();
+        local.dedup();
+        for cap in &local {
+            capabilities.insert(cap.clone());
+        }
+        let mut imports = Vec::new();
+        if let Some(module) = parsed.get(path) {
+            for decl in &module.decls {
+                match &decl.node {
+                    frontend::ast::Decl::Import(d) => match &d.source {
+                        frontend::ast::ImportSource::Module(p) => {
+                            imports.push(format!("mod:{p}"));
+                        }
+                        frontend::ast::ImportSource::Native(lib) => {
+                            imports.push(format!("native:{lib}"));
+                        }
+                        frontend::ast::ImportSource::Runtime(module) => {
+                            imports.push(format!("runtime:{module}"));
+                        }
+                    },
+                    frontend::ast::Decl::ExportFrom(d) => {
+                        if let frontend::ast::ImportSource::Native(lib) = &d.source {
+                            imports.push(format!("native:{lib}"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        imports.sort();
+        imports.dedup();
+        per_file.insert(
+            path.clone(),
+            serde_json::json!({"capabilities": local, "imports": imports}),
+        );
         if !reachable.contains(path) {
             unreachable.push(path.clone());
         }
     }
+    let registries_keys = registries_keys_in_config(
+        entries
+            .get("configText")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+    );
     unreachable.sort();
     let mut caps: Vec<String> = capabilities.into_iter().collect();
     caps.sort();
@@ -1230,7 +1237,6 @@ pub fn analyze_project(files_json: &str, entries_json: &str) -> String {
         "perFile": per_file,
         "unreachable": unreachable,
         "reportOnly": {
-            "s103": {"count": s103_count, "files": s103_files},
             "registries": {"keys": registries_keys},
         },
     })
@@ -1607,30 +1613,6 @@ mod tests {
         out.get("reportOnly").expect("reportOnly verdicts")
     }
 
-    fn s103_report(out: &serde_json::Value) -> (u64, Vec<(String, Vec<String>)>) {
-        let s103 = &report_only(out)["s103"];
-        let count = s103["count"].as_u64().unwrap_or(999);
-        let mut files: Vec<(String, Vec<String>)> = s103["files"]
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(path, names)| {
-                let mut symbols: Vec<String> = names
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect();
-                symbols.sort();
-                (path, symbols)
-            })
-            .collect();
-        files.sort();
-        (count, files)
-    }
-
     fn registries_keys(out: &serde_json::Value) -> Vec<String> {
         let mut keys: Vec<String> = report_only(out)["registries"]["keys"]
             .as_array()
@@ -1643,8 +1625,12 @@ mod tests {
         keys
     }
 
+    fn analyze_err(out: &serde_json::Value) -> String {
+        out.get("error").and_then(|v| v.as_str()).unwrap_or("").to_string()
+    }
+
     #[test]
-    fn analyze_counts_bare_rnx_reference_report_only() {
+    fn analyze_rejects_bare_rnx_reference() {
         let _serial = serial();
         let files = serde_json::json!({
             "main.rnx": "fn Main(): Int { return __rnx_clock_mono(); }\n",
@@ -1652,19 +1638,12 @@ mod tests {
         .to_string();
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
-        assert_eq!(out["ok"], true, "{out}");
-        let (count, by_file) = s103_report(&out);
-        assert_eq!(count, 1, "{out}");
-        assert_eq!(
-            by_file,
-            vec![("main.rnx".to_string(), vec!["__rnx_clock_mono".to_string()])],
-            "{out}"
-        );
-        assert!(registries_keys(&out).is_empty(), "{out}");
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(analyze_err(&out).contains("__rnx_clock_mono"), "{out}");
     }
 
     #[test]
-    fn analyze_counts_bare_rnx_in_unreached_file() {
+    fn analyze_rejects_bare_rnx_in_unreached_file() {
         let _serial = serial();
         let files = serde_json::json!({
             "main.rnx": "fn Main(): Int { return 0; }\n",
@@ -1673,18 +1652,12 @@ mod tests {
         .to_string();
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
-        assert_eq!(out["ok"], true, "{out}");
-        let (count, by_file) = s103_report(&out);
-        assert_eq!(count, 1, "{out}");
-        assert_eq!(
-            by_file,
-            vec![("extra.rnx".to_string(), vec!["__rnx_clock_mono".to_string()])],
-            "{out}"
-        );
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(analyze_err(&out).contains("__rnx_clock_mono"), "{out}");
     }
 
     #[test]
-    fn analyze_counts_std_prefixed_spoof_in_non_std_frame() {
+    fn analyze_rejects_std_prefixed_spoof_in_non_std_frame() {
         let _serial = serial();
         let files = serde_json::json!({
             "@std/shim.rnx": "export fn shim(): Int { return __rnx_clock_mono(); }\n",
@@ -1692,28 +1665,35 @@ mod tests {
         .to_string();
         let entries = "{\"main\": \"@std/shim.rnx\", \"bins\": {}}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
-        assert_eq!(out["ok"], true, "{out}");
-        let (count, by_file) = s103_report(&out);
-        assert_eq!(count, 1, "{out}");
-        assert_eq!(
-            by_file,
-            vec![("@std/shim.rnx".to_string(), vec!["__rnx_clock_mono".to_string()])],
-            "{out}"
-        );
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(analyze_err(&out).contains("__rnx_clock_mono"), "{out}");
     }
 
     #[test]
-    fn analyze_exempts_std_package_frames() {
+    fn analyze_rejects_undeclared_runtime_import_in_non_std_frame() {
         let _serial = serial();
         let files = serde_json::json!({
-            "main.rnx": "fn tick(): Int { return __rnx_clock_mono(); }\nfn Main(): Int { return tick(); }\n",
+            "main.rnx": "import { fn __rnx_clock_mono(): Int } from runtime \"time\";\nfn Main(): Int { return __rnx_clock_mono(); }\n",
+        })
+        .to_string();
+        let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
+        let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
+        assert_eq!(out["ok"], false, "{out}");
+        let err = analyze_err(&out);
+        assert!(err.contains("__rnx_clock_mono"), "{out}");
+        assert!(err.contains("@std/time"), "{out}");
+    }
+
+    #[test]
+    fn analyze_accepts_declared_runtime_import_in_std_frame() {
+        let _serial = serial();
+        let files = serde_json::json!({
+            "main.rnx": "import { fn __rnx_clock_mono(): Int } from runtime \"time\";\nfn Main(): Int { return __rnx_clock_mono(); }\n",
         })
         .to_string();
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}, \"packageName\": \"@std/probe\"}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
         assert_eq!(out["ok"], true, "{out}");
-        let (count, _) = s103_report(&out);
-        assert_eq!(count, 0, "{out}");
     }
 
     #[test]
@@ -1726,8 +1706,7 @@ mod tests {
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, entries)).unwrap();
         assert_eq!(out["ok"], true, "{out}");
-        let (count, _) = s103_report(&out);
-        assert_eq!(count, 0, "{out}");
+        assert!(registries_keys(&out).is_empty(), "{out}");
     }
 
     #[test]
@@ -1742,8 +1721,6 @@ mod tests {
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, &entries)).unwrap();
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(registries_keys(&out), vec!["registries".to_string(), "registry".to_string()], "{out}");
-        let (count, _) = s103_report(&out);
-        assert_eq!(count, 0, "{out}");
     }
 
     #[test]
@@ -1758,8 +1735,6 @@ mod tests {
         let out: serde_json::Value = serde_json::from_str(&analyze_project(&files, &entries)).unwrap();
         assert_eq!(out["ok"], true, "{out}");
         assert!(registries_keys(&out).is_empty(), "{out}");
-        let (count, _) = s103_report(&out);
-        assert_eq!(count, 0, "{out}");
     }
 
     #[test]

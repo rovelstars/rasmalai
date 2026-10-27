@@ -617,7 +617,7 @@ impl<'a> Emitter<'a> {
         }
         let prev_from = match self.prev_sig(i).map(|j| self.toks[j].text.as_str()) {
             Some("from") => true,
-            Some("native") => {
+            Some("native") | Some("runtime") => {
                 matches!(self.prev_sig(i).and_then(|j| self.prev_sig(j)).map(|k| self.toks[k].text.as_str()), Some("from"))
             }
             _ => false,

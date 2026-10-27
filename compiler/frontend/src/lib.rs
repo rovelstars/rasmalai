@@ -39,6 +39,7 @@ pub mod prelude;
 pub mod products;
 pub mod profiler;
 pub mod project;
+pub mod runtime;
 pub mod sarif;
 pub mod security;
 pub mod semantic;

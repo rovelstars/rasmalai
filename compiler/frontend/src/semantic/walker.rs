@@ -9,16 +9,10 @@ impl<'a> ScopeCheck<'a> {
                 return Some(info.ty.clone());
             }
         }
-        if self.globals.contains(name)
-            || self.extra_globals.contains(name)
-            || SCOPE_BUILTINS.contains(&name)
-        {
+        if self.globals.contains(name) || SCOPE_BUILTINS.contains(&name) {
             return Some(None);
         }
         if crate::prelude::provides(name) {
-            return Some(None);
-        }
-        if name.starts_with("__rnx_") {
             return Some(None);
         }
         None
@@ -33,52 +27,17 @@ impl<'a> ScopeCheck<'a> {
         None
     }
 
-    fn is_declared(&self, name: &str) -> bool {
-        for s in self.scopes.iter().rev() {
-            if s.contains_key(name) {
-                return true;
-            }
-        }
-        if self.globals.contains(name)
-            || self.extra_globals.contains(name)
-            || SCOPE_BUILTINS.contains(&name)
-        {
-            return true;
-        }
-        if crate::prelude::provides(name) {
-            return true;
-        }
-        false
-    }
-
-    fn check_bare_rnx(&mut self, name: &str, span: Span) -> bool {
-        if !self.emit_s103 {
-            return false;
-        }
-        if !name.starts_with("__rnx_") || self.is_declared(name) {
-            return false;
-        }
-        self.diags.push(crate::security::bare_rnx_error(name, self.span(span)));
-        true
-    }
-
     fn use_name(&mut self, name: &str) -> bool {
         for s in self.scopes.iter().rev() {
             if s.contains_key(name) {
                 return true;
             }
         }
-        if self.globals.contains(name)
-            || self.extra_globals.contains(name)
-            || SCOPE_BUILTINS.contains(&name)
-        {
+        if self.globals.contains(name) || SCOPE_BUILTINS.contains(&name) {
             return true;
         }
         if crate::prelude::provides(name) {
             self.used_prelude.insert(crate::prelude::short_name(name).to_string());
-            return true;
-        }
-        if name.starts_with("__rnx_") {
             return true;
         }
         false
@@ -220,7 +179,9 @@ impl<'a> ScopeCheck<'a> {
 
     fn err_undefined(&mut self, name: &str, span: Span) {
         let span = self.span(span);
-        let hint = if self.let_names.contains(name) {
+        let hint = if name.starts_with("__rnx_") {
+            "runtime internals are declared per module with `import { fn name(params): Ret } from runtime \"mod\"` inside registry-verified `@std/*` only; user code must call the owning `@std/*` wrapper"
+        } else if self.let_names.contains(name) {
             "a `let` in another function (or at the top level) stays local to it; share the value with `const` or pass it as a parameter"
         } else {
             "declare the variable with `let` or check the spelling"
@@ -528,9 +489,6 @@ impl<'a> ScopeCheck<'a> {
     }
 
     fn check_ident_use(&mut self, name: &str, span: Span) {
-        if self.check_bare_rnx(name, span) {
-            return;
-        }
         if name == "this" || name == "super" {
             if !self.allow_this {
                 let span = self.span(span);
@@ -615,6 +573,9 @@ impl<'a> ScopeCheck<'a> {
                     Expr::Ident(n) => {
                         if n == "typeOf" {
                             return Some("String".to_string());
+                        }
+                        if self.runtime_any.contains(n) {
+                            return None;
                         }
                         if let Some(ret) = self.fn_rets.get(n).cloned() {
                             return Self::promise_call_ret(ret, self.async_fns.contains(n));
@@ -882,7 +843,6 @@ impl<'a> ScopeCheck<'a> {
                         }
                         if starts_uppercase(n) {
                             self.use_name(n);
-                        } else if self.check_bare_rnx(n, callee.span) {
                         } else if !self.use_name(n) {
                             self.err_undefined(n, callee.span);
                         }

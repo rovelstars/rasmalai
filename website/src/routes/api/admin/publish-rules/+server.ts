@@ -3,13 +3,14 @@ import { safeEqual } from '$lib/server/auth';
 import { specHeaders } from '$lib/server/registry';
 import { parseScanLimit, scanPublishReportOnly } from '$lib/server/publishRules';
 
-// Operator surface for the report-only publish rules (S103 bare
-// `__rnx_*` uses, top-level `registry`/`registries` keys). One GET walks
-// the live set and counts what the enforcement flip would reject, so the
-// migration starts from measured counts instead of guesses. Read-only:
-// the scan reassembles stored bytes and writes nothing. Bounded per
-// call by `limit` (default 200, max 1000) plus the per-package byte cap
-// in publishRules.ts; a larger registry pages through repeated calls.
+// Operator surface for the report-only publish rule (top-level
+// `registry`/`registries` keys). One GET walks the live set and counts
+// what the enforcement flip would reject, so the migration starts from
+// measured counts instead of guesses. Runtime access needs no count: it
+// fails whole-tree analysis outright. Read-only: the scan reassembles
+// stored bytes and writes nothing. Bounded per call by `limit`
+// (default 200, max 1000) plus the per-package byte cap in
+// publishRules.ts; a larger registry pages through repeated calls.
 export async function GET({ request, platform, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const auth = request.headers.get('Authorization') ?? '';

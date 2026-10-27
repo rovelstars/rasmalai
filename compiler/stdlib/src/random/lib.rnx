@@ -1,4 +1,11 @@
 //! Deterministic seeded random streams and OS entropy.
+
+import {
+    fn __rnx_crypto_random_u64(): Int,
+    fn __rnx_prng_next(state: Array<Int>): Int,
+    fn __rnx_prng_seed(state: Array<Int>, seed: Int): Void,
+} from runtime "random";
+
 /**
 * Seeded Xoshiro256++ stream. Same seed replays the same sequence,
 * which makes randomized tests reproducible.

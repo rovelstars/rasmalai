@@ -8,6 +8,20 @@
 //! print(v.length());
 //! print(Math.sin(Math.PI() / 2.0));
 //! ```
+
+import {
+    fn __rnx_math_atan2(x: Float, y: Float): Float,
+    fn __rnx_math_ceil(x: Float): Float,
+    fn __rnx_math_cos(x: Float): Float,
+    fn __rnx_math_floor(x: Float): Float,
+    fn __rnx_math_log(x: Float): Float,
+    fn __rnx_math_pow(x: Float, y: Float): Float,
+    fn __rnx_math_round(x: Float): Float,
+    fn __rnx_math_sin(x: Float): Float,
+    fn __rnx_math_sqrt(x: Float): Float,
+    fn __rnx_math_tan(x: Float): Float,
+} from runtime "math";
+
 /**
 * Static numeric helpers: constants, comparisons, rounding, and the
 * runtime-backed transcendental functions. The class declares no init, so an

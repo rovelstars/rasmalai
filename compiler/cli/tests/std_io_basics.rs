@@ -251,7 +251,13 @@ fn std_io_piped_stdin_stdout() {
     let out = run.wait_with_output().unwrap();
     assert_eq!(out.status.code().unwrap(), 0, "run {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "done\npiped-ok\n", "run stdout");
-    assert_eq!(String::from_utf8(out.stderr).unwrap(), "edone\n", "run stderr");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let stderr: String = stderr
+        .lines()
+        .filter(|l| !l.starts_with("warning: using local source for `@std/"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(stderr, "edone\n", "run stderr");
 
     let build = Command::new(rnx).arg("build").arg(&main).output().unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));

@@ -168,20 +168,21 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
             std::process::exit(1);
         }
     };
-    if !frontend::security::is_std_package_name(&cfg.name) {
+    {
         let sources: Vec<(std::path::PathBuf, String)> = files
             .iter()
             .filter(|f| f.path.ends_with(".rnx"))
             .map(|f| (std::path::PathBuf::from(&f.path), f.content.clone()))
             .collect();
-        match frontend::security::s103_sources(&sources) {
+        let is_std = frontend::security::is_std_package_name(&cfg.name);
+        match frontend::security::scan_publish_sources(&sources, is_std) {
             Ok(hits) if hits.is_empty() => {}
             Ok(hits) => {
                 for d in &hits {
                     println!("{d}");
                 }
                 println!(
-                    "hint: call the owning `@std/*` wrapper instead of the `__rnx_*` internal (rule S103)"
+                    "hint: declare runtime internals with `import {{ fn name(params): Ret }} from runtime \"mod\"` inside registry-verified `@std/*` only"
                 );
                 std::process::exit(1);
             }

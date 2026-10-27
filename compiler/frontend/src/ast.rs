@@ -105,6 +105,7 @@ pub enum Decl {
 pub enum ImportSource {
     Module(String),
     Native(String),
+    Runtime(String),
 }
 
 #[derive(Clone, Debug)]

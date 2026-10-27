@@ -49,16 +49,188 @@ pub fn is_std_package_name(name: &str) -> bool {
     name.starts_with("@std/")
 }
 
-pub fn bare_rnx_error(name: &str, span: diagnostics::Span) -> Diagnostic {
-    Diagnostic::new(
-        Code::S103,
-        format!("cannot reference runtime-internal `{name}` outside `@std/*`"),
-    )
-    .with_span(span)
-    .with_hint("call the owning `@std/*` wrapper instead of the `__rnx_*` internal (rule S103)")
+fn sig_ty_name(ty: &crate::ast::Type) -> String {
+    let mut out = ty.path.join(".");
+    if !ty.args.is_empty() {
+        out.push('<');
+        out.push_str(
+            &ty.args
+                .iter()
+                .map(sig_ty_name)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        out.push('>');
+    }
+    if out.is_empty() {
+        out.push('?');
+    }
+    out
 }
 
-fn nearest_manifest_name(path: &Path) -> Option<String> {
+fn sig_ty_eq(declared: &str, manifest: &str) -> bool {
+    let norm = |s: &str| s.split_whitespace().collect::<String>();
+    if norm(declared) == norm(manifest) {
+        return true;
+    }
+    let short = |s: &str| {
+        let s = norm(s);
+        let s = s.strip_prefix("std.prelude.").unwrap_or(&s).to_string();
+        match s.rsplit_once('<') {
+            Some((head, _)) => head.rsplit('.').next().unwrap_or(&s).to_string(),
+            None => s.rsplit('.').next().unwrap_or(&s).to_string(),
+        }
+    };
+    let map = |s: String| {
+        if s == "Char" {
+            "String".to_string()
+        } else {
+            s
+        }
+    };
+    map(short(declared)) == map(short(manifest))
+}
+
+pub fn check_runtime_sig(
+    module: &str,
+    sig: &crate::ast::NativeFnSig,
+    span: diagnostics::Span,
+) -> Option<Diagnostic> {
+    if !crate::runtime::is_runtime_module(module) {
+        return Some(
+            Diagnostic::new(Code::E108, format!("unknown runtime module `{module}`"))
+                .with_span(span)
+                .with_hint("runtime modules are: bytes, core, env, fs, io, json, math, net, os, process, random, sync, testing, time"),
+        );
+    }
+    let Some(decl) = crate::runtime::lookup(&sig.name) else {
+        return Some(
+            Diagnostic::new(
+                Code::E108,
+                format!("unknown runtime symbol `{}` in module `{module}`", sig.name),
+            )
+            .with_span(span)
+            .with_hint(format!(
+                "call {} instead of the `__rnx_*` internal",
+                crate::runtime::owner_hint(module)
+            )),
+        );
+    };
+    if decl.module != module {
+        return Some(
+            Diagnostic::new(
+                Code::E108,
+                format!(
+                    "`{}` lives in runtime `{}` rather than `{module}`",
+                    sig.name, decl.module
+                ),
+            )
+            .with_span(span)
+            .with_hint(format!(
+                "import it with `import {{ fn {}(..): .. }} from runtime \"{}\"`",
+                sig.name, decl.module
+            )),
+        );
+    }
+    if sig.params.len() != decl.params.len() {
+        return Some(
+            Diagnostic::new(
+                Code::E108,
+                format!(
+                    "`{}` takes {} args, declared with {}",
+                    sig.name,
+                    decl.params.len(),
+                    sig.params.len()
+                ),
+            )
+            .with_span(span)
+            .with_hint(format!(
+                "declare it as `fn {}({}): {}`",
+                sig.name,
+                decl.params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| format!("p{i}: {t}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                decl.ret
+            )),
+        );
+    }
+    for (param, want) in sig.params.iter().zip(decl.params.iter()) {
+        let got = param.ty.as_ref().map(sig_ty_name).unwrap_or_else(|| "?".to_string());
+        if got != "?" && !sig_ty_eq(&got, want) {
+            return Some(
+                Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "`{}` param `{}` must be `{want}`, declared `{got}`",
+                        sig.name, param.name
+                    ),
+                )
+                .with_span(param.span)
+                .with_hint("match the runtime manifest signature"),
+            );
+        }
+    }
+    if let Some(ret) = &sig.ret {
+        let got = sig_ty_name(ret);
+        if !sig_ty_eq(&got, decl.ret) {
+            return Some(
+                Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "`{}` must return `{}`, declared `{got}`",
+                        sig.name, decl.ret
+                    ),
+                )
+                .with_span(span)
+                .with_hint("match the runtime manifest signature"),
+            );
+        }
+    }
+    None
+}
+
+pub struct RuntimeImportRef {
+    pub module: String,
+    pub symbol: String,
+    pub local: String,
+    pub span: diagnostics::Span,
+}
+
+pub fn collect_runtime_imports(module: &crate::ast::Module) -> Vec<RuntimeImportRef> {
+    let mut out = Vec::new();
+    for decl in &module.decls {
+        let crate::ast::Decl::Import(d) = &decl.node else {
+            continue;
+        };
+        let crate::ast::ImportSource::Runtime(module_name) = &d.source else {
+            continue;
+        };
+        let crate::ast::ImportClause::Named(specs) = &d.clause else {
+            continue;
+        };
+        for spec in specs {
+            let Some(sig) = &spec.native_fn else {
+                continue;
+            };
+            out.push(RuntimeImportRef {
+                module: module_name.clone(),
+                symbol: sig.name.clone(),
+                local: sig.alias.clone().unwrap_or_else(|| sig.name.clone()),
+                span: d.source_span,
+            });
+        }
+    }
+    out
+}
+
+fn is_std_path(path: &Path) -> bool {
+    path.to_string_lossy().starts_with("@std/")
+}
+
+fn owning_package_dir(path: &Path) -> Option<PathBuf> {
     let mut dir = if path.is_file() {
         path.parent()?.to_path_buf()
     } else {
@@ -66,8 +238,7 @@ fn nearest_manifest_name(path: &Path) -> Option<String> {
     };
     loop {
         if dir.join(crate::project::MANIFEST_FILE).is_file() {
-            let cfg = ProjectConfig::load_from_dir(&dir).ok()??;
-            return Some(cfg.name);
+            return Some(dir);
         }
         if !dir.pop() {
             return None;
@@ -75,42 +246,54 @@ fn nearest_manifest_name(path: &Path) -> Option<String> {
     }
 }
 
-pub fn file_in_std_package(path: &Path, cache: &mut BTreeMap<PathBuf, bool>) -> bool {
-    if let Some(hit) = cache.get(path) {
-        return *hit;
+pub(crate) fn runtime_import_allowed(path: &Path) -> bool {
+    if is_std_path(path) {
+        return true;
     }
-    let std = path.to_string_lossy().starts_with("@std/")
-        || nearest_manifest_name(path).is_some_and(|name| is_std_package_name(&name));
-    cache.insert(path.to_path_buf(), std);
-    std
+    let Some(dir) = owning_package_dir(path) else {
+        return false;
+    };
+    let Ok(Some(cfg)) = crate::project::ProjectConfig::load_from_dir(&dir) else {
+        return false;
+    };
+    if !is_std_package_name(&cfg.name) {
+        return false;
+    }
+    verify_std_package_bytes(&dir).unwrap_or(false)
 }
 
-pub fn s103_in_module(
-    module: &crate::ast::Module,
-    files: &diagnostics::DeclFiles,
-    extra_globals: &BTreeSet<String>,
-) -> Vec<Diagnostic> {
-    crate::semantic::check_with_files_and_globals(module, files, extra_globals)
-        .into_iter()
-        .filter(|d| d.code == Code::S103)
-        .collect()
+pub fn runtime_frame_rejection(module: &str, symbol: &str, span: diagnostics::Span) -> Diagnostic {
+    Diagnostic::new(
+        Code::E108,
+        format!("cannot import `{symbol}` from runtime `{module}` outside registry-verified `@std/*`; call {} instead of the `__rnx_*` internal", crate::runtime::owner_hint(module)),
+    )
+    .with_span(span)
+    .with_hint(format!(
+        "call {} instead of the `__rnx_*` internal",
+        crate::runtime::owner_hint(module)
+    ))
 }
 
-pub fn s103_frame(modules: &[(&Path, &crate::ast::Module)]) -> Vec<Diagnostic> {
-    let mut extra = BTreeSet::new();
-    for (_, module) in modules {
-        extra.extend(declared_rnx_names(module));
-    }
-    let mut out = Vec::new();
-    for (path, module) in modules {
-        for mut diag in s103_in_module(module, &diagnostics::DeclFiles::new(), &extra) {
-            if diag.file.is_none() && !path.as_os_str().is_empty() {
-                diag.file = Some(path.to_path_buf());
-            }
-            out.push(diag);
+pub fn verify_runtime_imports(graph: &crate::modules::ModuleGraph) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let mut files: Vec<&PathBuf> = graph.files.iter().map(|f| &f.path).collect();
+    files.sort();
+    for path in files {
+        let Some(file) = graph.files.iter().find(|f| &f.path == path) else {
+            continue;
+        };
+        if runtime_import_allowed(&file.path) {
+            continue;
+        }
+        let mut refs = collect_runtime_imports(&file.module);
+        refs.sort_by(|a, b| a.symbol.cmp(&b.symbol).then(a.span.start.cmp(&b.span.start)));
+        for r in refs {
+            let mut diag = runtime_frame_rejection(&r.module, &r.symbol, r.span);
+            diag.file = Some(file.path.clone());
+            diags.push(diag);
         }
     }
-    out.sort_by(|a, b| {
+    diags.sort_by(|a, b| {
         a.file.cmp(&b.file).then(
             a.span
                 .map(|s| s.start)
@@ -118,43 +301,7 @@ pub fn s103_frame(modules: &[(&Path, &crate::ast::Module)]) -> Vec<Diagnostic> {
                 .cmp(&b.span.map(|s| s.start).unwrap_or(0)),
         )
     });
-    out
-}
-
-pub fn s103_graph(graph: &crate::modules::ModuleGraph) -> Vec<Diagnostic> {
-    let mut cache: BTreeMap<PathBuf, bool> = BTreeMap::new();
-    let mut user: Vec<(PathBuf, crate::ast::Module)> = Vec::new();
-    for f in &graph.files {
-        if file_in_std_package(&f.path, &mut cache) {
-            continue;
-        }
-        user.push((f.path.clone(), f.module.clone()));
-    }
-    let refs: Vec<(&Path, &crate::ast::Module)> = user
-        .iter()
-        .map(|(path, module)| (path.as_path(), module))
-        .collect();
-    s103_frame(&refs)
-}
-
-fn collect_prefix_sources(dir: &Path) -> Result<Vec<(PathBuf, crate::ast::Module)>, Diagnostic> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_rnx(dir, &mut files);
-    files.sort();
-    let mut modules = Vec::with_capacity(files.len());
-    for path in &files {
-        let src = std::fs::read_to_string(path).map_err(|e| {
-            Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", path.display()))
-        })?;
-        let module = crate::parser::Parser::parse_module(&src).map_err(|e| {
-            Diagnostic::new(
-                Code::E108,
-                format!("cannot parse `{}`: {}", path.display(), e.message),
-            )
-        })?;
-        modules.push((path.clone(), module));
-    }
-    Ok(modules)
+    diags
 }
 
 pub fn verify_std_package_bytes(dir: &Path) -> Result<bool, Diagnostic> {
@@ -256,22 +403,16 @@ pub fn verify_std_package_bytes(dir: &Path) -> Result<bool, Diagnostic> {
     Ok(true)
 }
 
-pub fn scan_dep_prefix(dir: &Path) -> Result<Vec<Diagnostic>, Diagnostic> {
-    if verify_std_package_bytes(dir).unwrap_or(false) {
-        return Ok(Vec::new());
-    }
-    let modules = collect_prefix_sources(dir)?;
-    let refs: Vec<(&Path, &crate::ast::Module)> = modules
-        .iter()
-        .map(|(path, module)| (path.as_path(), module))
-        .collect();
-    Ok(s103_frame(&refs))
-}
-
-pub fn s103_sources(sources: &[(PathBuf, String)]) -> Result<Vec<Diagnostic>, Diagnostic> {
-    let mut modules = Vec::with_capacity(sources.len());
-    for (path, src) in sources {
-        let module = crate::parser::Parser::parse_module(src).map_err(|e| {
+fn collect_prefix_sources(dir: &Path) -> Result<Vec<(PathBuf, crate::ast::Module)>, Diagnostic> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rnx(dir, &mut files);
+    files.sort();
+    let mut modules = Vec::with_capacity(files.len());
+    for path in &files {
+        let src = std::fs::read_to_string(path).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", path.display()))
+        })?;
+        let module = crate::parser::Parser::parse_module(&src).map_err(|e| {
             Diagnostic::new(
                 Code::E108,
                 format!("cannot parse `{}`: {}", path.display(), e.message),
@@ -279,67 +420,86 @@ pub fn s103_sources(sources: &[(PathBuf, String)]) -> Result<Vec<Diagnostic>, Di
         })?;
         modules.push((path.clone(), module));
     }
-    let refs: Vec<(&Path, &crate::ast::Module)> = modules
-        .iter()
-        .map(|(path, module)| (path.as_path(), module))
-        .collect();
-    Ok(s103_frame(&refs))
+    Ok(modules)
 }
 
-pub fn declared_rnx_names(module: &crate::ast::Module) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    let mut take = |name: &str| {
-        if name.starts_with("__rnx_") {
-            out.insert(name.to_string());
+pub fn scan_dep_runtime_imports(dir: &Path) -> Result<Vec<Diagnostic>, Diagnostic> {
+    if verify_std_package_bytes(dir).unwrap_or(false) {
+        return Ok(Vec::new());
+    }
+    let modules = collect_prefix_sources(dir)?;
+    let mut out = Vec::new();
+    for (path, module) in &modules {
+        for mut diag in crate::semantic::check(module) {
+            if diag.code.is_warning() {
+                continue;
+            }
+            if diag.file.is_none() {
+                diag.file = Some(path.clone());
+            }
+            out.push(diag);
         }
-    };
-    for decl in &module.decls {
-        match &decl.node {
-            crate::ast::Decl::Fn(f) => take(&f.name),
-            crate::ast::Decl::Const { name, .. } => take(name),
-            crate::ast::Decl::Class { name, .. }
-            | crate::ast::Decl::Struct { name, .. }
-            | crate::ast::Decl::Enum { name, .. }
-            | crate::ast::Decl::Record { name, .. } => take(name),
-            crate::ast::Decl::Import(d) => {
-                for local in crate::modules::native_import_locals(&d.clause) {
-                    take(&local);
-                }
-                match &d.clause {
-                    crate::ast::ImportClause::Named(specs) => {
-                        for spec in specs {
-                            take(&crate::modules::import_local_name(spec));
-                        }
-                    }
-                    crate::ast::ImportClause::DefaultAndNamed(name, specs) => {
-                        take(name);
-                        for spec in specs {
-                            take(&crate::modules::import_local_name(spec));
-                        }
-                    }
-                    crate::ast::ImportClause::Namespace(ns)
-                    | crate::ast::ImportClause::Default(ns) => take(ns),
-                    _ => {}
-                }
-            }
-            crate::ast::Decl::ExportFrom(d) => {
-                if let crate::ast::ImportSource::Native(_) = &d.source {
-                    if let crate::ast::ExportClause::Native(sigs) = &d.clause {
-                        for sig in sigs {
-                            take(sig.alias.as_ref().unwrap_or(&sig.name));
-                        }
-                    }
-                }
-            }
-            crate::ast::Decl::ExportList(specs) => {
-                for spec in specs {
-                    take(spec.alias.as_ref().unwrap_or(&spec.name));
-                }
-            }
-            _ => {}
+        let mut refs = collect_runtime_imports(module);
+        refs.sort_by(|a, b| a.symbol.cmp(&b.symbol).then(a.span.start.cmp(&b.span.start)));
+        for r in refs {
+            let mut diag = runtime_frame_rejection(&r.module, &r.symbol, r.span);
+            diag.file = Some(path.clone());
+            out.push(diag);
         }
     }
-    out
+    out.sort_by(|a, b| {
+        a.file.cmp(&b.file).then(
+            a.span
+                .map(|s| s.start)
+                .unwrap_or(0)
+                .cmp(&b.span.map(|s| s.start).unwrap_or(0)),
+        )
+    });
+    Ok(out)
+}
+
+pub fn scan_publish_sources(
+    sources: &[(PathBuf, String)],
+    is_std: bool,
+) -> Result<Vec<Diagnostic>, Diagnostic> {
+    let mut out = Vec::new();
+    let mut sorted: Vec<&(PathBuf, String)> = sources.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, src) in sorted {
+        let module = crate::parser::Parser::parse_module(src).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot parse `{}`: {}", path.display(), e.message),
+            )
+        })?;
+        for mut diag in crate::semantic::check(&module) {
+            if diag.code.is_warning() {
+                continue;
+            }
+            if diag.file.is_none() {
+                diag.file = Some(path.clone());
+            }
+            out.push(diag);
+        }
+        if !is_std {
+            let mut refs = collect_runtime_imports(&module);
+            refs.sort_by(|a, b| a.symbol.cmp(&b.symbol).then(a.span.start.cmp(&b.span.start)));
+            for r in refs {
+                let mut diag = runtime_frame_rejection(&r.module, &r.symbol, r.span);
+                diag.file = Some(path.clone());
+                out.push(diag);
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        a.file.cmp(&b.file).then(
+            a.span
+                .map(|s| s.start)
+                .unwrap_or(0)
+                .cmp(&b.span.map(|s| s.start).unwrap_or(0)),
+        )
+    });
+    Ok(out)
 }
 
 pub struct DepDir {
@@ -391,12 +551,7 @@ fn git_cache_dir(root: &Path, name: &str) -> Option<PathBuf> {
     hits.into_iter().next()
 }
 
-fn is_std_path(path: &Path) -> bool {
-    path.to_string_lossy().starts_with("@std/")
-}
-
-pub fn verify_entry(entry: &Path) -> Vec<Diagnostic> {
-    let start = if entry.is_file() {
+pub fn verify_entry(entry: &Path) -> Vec<Diagnostic> {    let start = if entry.is_file() {
         entry.parent().unwrap_or(Path::new(".")).to_path_buf()
     } else {
         entry.to_path_buf()
@@ -430,60 +585,115 @@ fn verify_graph(
     lock: Option<&ProjectDepLock>,
     graph: &ModuleGraph,
 ) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
+    let mut diags = verify_runtime_imports(graph);
     let boundary_canon = std::fs::canonicalize(boundary).unwrap_or_else(|_| boundary.to_path_buf());
     let proj_canon = std::fs::canonicalize(proj_root).unwrap_or_else(|_| proj_root.to_path_buf());
     let deps = dep_dirs(boundary, config);
-    let mut local_caps: BTreeSet<Capability> = BTreeSet::new();
-    let mut local_traces: Vec<CallChain> = Vec::new();
-    let mut root_caps: BTreeSet<Capability> = BTreeSet::new();
-    let mut root_traces: Vec<CallChain> = Vec::new();
+
+    #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+    enum Owner {
+        Root,
+        Local,
+        Dep(String),
+        Std,
+        Outside,
+    }
+    fn owner_of(
+        path: &Path,
+        boundary_canon: &Path,
+        proj_canon: &Path,
+        deps: &[DepDir],
+    ) -> Owner {
+        if path.to_string_lossy().starts_with("@std/") {
+            return Owner::Std;
+        }
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if canon.starts_with(boundary_canon) {
+            if canon.starts_with(proj_canon) {
+                return Owner::Root;
+            }
+            return Owner::Local;
+        }
+        if let Some(d) = deps.iter().find(|d| canon.starts_with(&d.dir)) {
+            return Owner::Dep(d.name.clone());
+        }
+        Owner::Outside
+    }
+    let mut owner_by_display: BTreeMap<String, Owner> = BTreeMap::new();
+    for f in &graph.files {
+        let display = f.path.to_string_lossy().replace('\\', "/");
+        owner_by_display.insert(
+            display,
+            owner_of(&f.path, &boundary_canon, &proj_canon, &deps),
+        );
+    }
+
+    let mut owned_sources: Vec<(PathBuf, String)> = Vec::new();
+    let mut sorted_files: Vec<&crate::modules::ModuleFile> = graph.files.iter().collect();
+    sorted_files.sort_by(|a, b| a.path.cmp(&b.path));
+    for f in &sorted_files {
+        if let Some(src) = crate::modules::graph_file_source(&f.path) {
+            owned_sources.push((f.path.clone(), src));
+        }
+    }
+    let inputs: Vec<capabilities::GraphInput> = sorted_files
+        .iter()
+        .filter_map(|f| {
+            owned_sources
+                .iter()
+                .find(|(p, _)| p == &f.path)
+                .map(|(_, src)| capabilities::GraphInput {
+                    path: f.path.clone(),
+                    module: &f.module,
+                    source: src.as_str(),
+                })
+        })
+        .collect();
+    let report = match capabilities::analyze_file_graph(&inputs, capabilities::DEFAULT_FUEL) {
+        Ok(r) => r,
+        Err(e) => {
+            let span = diagnostics::Span { start: 0, end: 0 };
+            diags.push(e.to_diagnostic(span));
+            return diags;
+        }
+    };
+
+    let mut pkg_caps: BTreeMap<Owner, BTreeSet<Capability>> = BTreeMap::new();
+    let mut pkg_traces: BTreeMap<Owner, Vec<CallChain>> = BTreeMap::new();
+    for trace in &report.traces {
+        let mut owners: BTreeSet<Owner> = BTreeSet::new();
+        for node in &trace.nodes {
+            if let Some(owner) = owner_by_display.get(&node.file) {
+                owners.insert(owner.clone());
+            }
+        }
+        if owners.is_empty() {
+            continue;
+        }
+        for owner in owners {
+            pkg_caps
+                .entry(owner.clone())
+                .or_default()
+                .insert(trace.capability.clone());
+            pkg_traces.entry(owner).or_default().push(trace.clone());
+        }
+    }
+    let caps_of = |want: &Owner| pkg_caps.get(want).cloned().unwrap_or_default();
+    let traces_of = |want: &Owner| pkg_traces.get(want).cloned().unwrap_or_default();
+    let mut local_caps = caps_of(&Owner::Root);
+    local_caps.extend(caps_of(&Owner::Local).iter().cloned());
+    let mut local_traces = traces_of(&Owner::Root);
+    local_traces.extend(traces_of(&Owner::Local).iter().cloned());
+    let root_caps = caps_of(&Owner::Root);
+    let root_traces = traces_of(&Owner::Root);
     let mut dep_caps: BTreeMap<String, BTreeSet<Capability>> = BTreeMap::new();
     let mut dep_traces: BTreeMap<String, Vec<CallChain>> = BTreeMap::new();
-
-    for f in &graph.files {
-        if is_std_path(&f.path) {
-            continue;
-        }
-        let src = match std::fs::read_to_string(&f.path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let display = f.path.to_string_lossy().into_owned();
-        let report = match capabilities::analyze(&f.module, &src, &display) {
-            Ok(r) => r,
-            Err(e) => {
-                let span = diagnostics::Span { start: 0, end: 0 };
-                diags.push(e.to_diagnostic(span).with_file(f.path.clone()));
-                continue;
+    for (owner, caps) in &pkg_caps {
+        if let Owner::Dep(name) = owner {
+            dep_caps.insert(name.clone(), caps.clone());
+            if let Some(traces) = pkg_traces.get(owner) {
+                dep_traces.insert(name.clone(), traces.clone());
             }
-        };
-        if report.capabilities.is_empty() {
-            continue;
-        }
-        let canon = std::fs::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone());
-        if canon.starts_with(&boundary_canon) {
-            local_caps.extend(report.capabilities.iter().cloned());
-            local_traces.extend(report.traces.clone());
-            if canon.starts_with(&proj_canon) {
-                root_caps.extend(report.capabilities.iter().cloned());
-                root_traces.extend(report.traces);
-            }
-            continue;
-        }
-        let owner = deps
-            .iter()
-            .find(|d| canon.starts_with(&d.dir))
-            .map(|d| d.name.clone());
-        match owner {
-            Some(name) => {
-                dep_caps
-                    .entry(name.clone())
-                    .or_default()
-                    .extend(report.capabilities.iter().cloned());
-                dep_traces.entry(name).or_default().extend(report.traces);
-            }
-            None => continue,
         }
     }
 
@@ -660,8 +870,7 @@ pub fn analyze_dep_dir(dir: &Path) -> Result<DepAnalysis, Diagnostic> {
     let mut files: Vec<PathBuf> = Vec::new();
     collect_rnx(dir, &mut files);
     files.sort();
-    let mut caps: BTreeSet<Capability> = BTreeSet::new();
-    let mut traces: Vec<CallChain> = Vec::new();
+    let mut owned: Vec<(PathBuf, String, crate::ast::Module)> = Vec::new();
     for path in &files {
         let src = std::fs::read_to_string(path).map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot read `{}`: {e}", path.display()))
@@ -669,20 +878,100 @@ pub fn analyze_dep_dir(dir: &Path) -> Result<DepAnalysis, Diagnostic> {
         let module = crate::parser::Parser::parse_module(&src).map_err(|e| {
             Diagnostic::new(Code::E108, format!("cannot parse `{}`: {e}", path.display()))
         })?;
-        let display = path.to_string_lossy().into_owned();
-        match capabilities::analyze(&module, &src, &display) {
-            Ok(r) => {
-                caps.extend(r.capabilities);
-                traces.extend(r.traces);
+        owned.push((path.clone(), src, module));
+    }
+    let mut std_queue: Vec<String> = Vec::new();
+    for (_, _, module) in &owned {
+        for decl in &module.decls {
+            let crate::ast::Decl::Import(d) = &decl.node else {
+                continue;
+            };
+            let crate::ast::ImportSource::Module(source) = &d.source else {
+                continue;
+            };
+            if !crate::modules::is_std_spec(source) {
+                continue;
             }
-            Err(e) => {
-                let span = diagnostics::Span { start: 0, end: 0 };
-                let mut d = e.to_diagnostic(span);
-                d.message = format!("{}: {}", path.display(), d.message);
-                d.file = Some(path.clone());
-                return Err(d);
+            let rest = crate::modules::std_rest(source);
+            if !rest.is_empty() && !std_queue.iter().any(|n| n == rest) {
+                std_queue.push(rest.to_string());
             }
         }
+    }
+    let mut std_owned: Vec<(String, String, crate::ast::Module)> = Vec::new();
+    while let Some(rest) = std_queue.pop() {
+        if std_owned.iter().any(|(n, _, _)| n == &rest) {
+            continue;
+        }
+        let src = crate::modules::load_std_module_source(&rest).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot load `@std/{rest}` for capability analysis: {}", e.message),
+            )
+        })?;
+        let module = crate::parser::Parser::parse_module(&src).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot parse `@std/{rest}`: {}", e.message),
+            )
+        })?;
+        for decl in &module.decls {
+            let crate::ast::Decl::Import(d) = &decl.node else {
+                continue;
+            };
+            let crate::ast::ImportSource::Module(source) = &d.source else {
+                continue;
+            };
+            if !crate::modules::is_std_spec(source) {
+                continue;
+            }
+            let dep = crate::modules::std_rest(source);
+            if !dep.is_empty()
+                && !std_owned.iter().any(|(n, _, _)| n == &dep)
+                && !std_queue.iter().any(|n| n == &dep)
+            {
+                std_queue.push(dep.to_string());
+            }
+        }
+        std_owned.push((rest, src, module));
+    }
+    let mut inputs: Vec<capabilities::GraphInput> = Vec::new();
+    for (path, src, module) in &owned {
+        inputs.push(capabilities::GraphInput {
+            path: path.clone(),
+            module,
+            source: src.as_str(),
+        });
+    }
+    for (rest, src, module) in &std_owned {
+        inputs.push(capabilities::GraphInput {
+            path: PathBuf::from(format!("@std/{rest}")),
+            module,
+            source: src.as_str(),
+        });
+    }
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    let dir_prefix = dir.to_string_lossy().replace('\\', "/");
+    let report = match capabilities::analyze_file_graph(&inputs, capabilities::DEFAULT_FUEL) {
+        Ok(r) => r,
+        Err(e) => {
+            let span = diagnostics::Span { start: 0, end: 0 };
+            let d = e.to_diagnostic(span);
+            return Err(d);
+        }
+    };
+    let mut caps: BTreeSet<Capability> = BTreeSet::new();
+    let mut traces: Vec<CallChain> = Vec::new();
+    for trace in &report.traces {
+        let touches_dir = trace.nodes.iter().any(|n| {
+            let f = n.file.replace('\\', "/");
+            f == dir_prefix || f.starts_with(&format!("{dir_prefix}/"))
+        });
+        if !touches_dir {
+            continue;
+        }
+        caps.insert(trace.capability.clone());
+        traces.push(trace.clone());
     }
     let tier = tier_of_caps(&caps);
     let mut capabilities: Vec<String> = caps.iter().map(|c| c.to_string()).collect();
@@ -761,26 +1050,27 @@ mod tests {
     #[test]
     fn verified_std_bytes_pass_and_tampered_fail() {
         let (_guard, _dir) = isolate_cache("verifybytes");
-        let main = b"fn f(): Int {\n    return __rnx_probe();\n}\n";
+        let main = b"fn f(): Int {\n    return 1;\n}\n";
         let (_base, cached) = seed_verified_package("@std/probe", "1.0.0", main);
         let mirror = crate::scratch::dir("verify-mirror");
         mirror_tree(&cached, mirror.path());
         assert!(verify_std_package_bytes(mirror.path()).unwrap());
-        assert!(scan_dep_prefix(mirror.path()).unwrap().is_empty());
+        assert!(scan_dep_runtime_imports(mirror.path()).unwrap().is_empty());
         std::fs::write(
             mirror.path().join("src").join("main.rnx"),
             b"fn f(): Int {\n    return __rnx_probe_tampered();\n}\n",
         )
         .unwrap();
         assert!(!verify_std_package_bytes(mirror.path()).unwrap());
-        let hits = scan_dep_prefix(mirror.path()).unwrap();
-        assert_eq!(hits.len(), 1, "{hits:?}");
-        assert_eq!(hits[0].code, Code::S103);
-        assert!(hits[0].message.contains("__rnx_probe_tampered"), "{}", hits[0].message);
+        let hits = scan_dep_runtime_imports(mirror.path()).unwrap();
+        assert!(
+            hits.iter().any(|d| d.code == Code::E303),
+            "tampered bytes surface as scope errors: {hits:?}"
+        );
     }
 
     #[test]
-    fn unverifiable_std_claim_is_scanned() {
+    fn unverifiable_std_claim_rejects_runtime_import() {
         let (_guard, _dir) = isolate_cache("verifycold");
         let dir = crate::scratch::dir("verify-cold");
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -791,12 +1081,33 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join("src").join("main.rnx"),
-            "fn f(): Int {\n    return __rnx_probe();\n}\n",
+            "import { fn __rnx_clock_mono(): Int } from runtime \"time\"\nfn f(): Int {\n    return __rnx_clock_mono();\n}\n",
         )
         .unwrap();
         assert!(!verify_std_package_bytes(dir.path()).unwrap());
-        let hits = scan_dep_prefix(dir.path()).unwrap();
+        let hits = scan_dep_runtime_imports(dir.path()).unwrap();
         assert_eq!(hits.len(), 1, "{hits:?}");
-        assert_eq!(hits[0].code, Code::S103);
+        assert_eq!(hits[0].code, Code::E108);
+        assert!(hits[0].message.contains("__rnx_clock_mono"), "{}", hits[0].message);
+        assert!(
+            hits[0]
+                .hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains("@std/time"),
+            "{:?}",
+            hits[0].hint
+        );
+    }
+
+    #[test]
+    fn verified_std_tree_skips_runtime_scan() {
+        let (_guard, _dir) = isolate_cache("verifyrt");
+        let main = b"import { fn __rnx_clock_mono(): Int } from runtime \"time\"\nfn f(): Int {\n    return __rnx_clock_mono();\n}\n";
+        let (_base, cached) = seed_verified_package("@std/probe", "1.0.0", main);
+        let mirror = crate::scratch::dir("verify-rt-mirror");
+        mirror_tree(&cached, mirror.path());
+        assert!(verify_std_package_bytes(mirror.path()).unwrap());
+        assert!(scan_dep_runtime_imports(mirror.path()).unwrap().is_empty());
     }
 }

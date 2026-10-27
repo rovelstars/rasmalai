@@ -107,7 +107,6 @@ export interface ConfigFacts {
 }
 
 export interface ReportOnlyVerdicts {
-	s103: { count: number; files: Record<string, string[]> };
 	registries: { keys: string[] };
 }
 
@@ -119,32 +118,16 @@ export interface TreeAnalysis {
 }
 
 function parseReportOnly(out: Record<string, unknown>): ReportOnlyVerdicts {
-	const fallback: ReportOnlyVerdicts = { s103: { count: 0, files: {} }, registries: { keys: [] } };
+	const fallback: ReportOnlyVerdicts = { registries: { keys: [] } };
 	const raw = out['reportOnly'];
 	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fallback;
 	const node = raw as Record<string, unknown>;
-	const s103 = node['s103'];
 	const registries = node['registries'];
-	const files: Record<string, string[]> = {};
-	if (s103 && typeof s103 === 'object' && !Array.isArray(s103)) {
-		const table = (s103 as Record<string, unknown>)['files'];
-		if (table && typeof table === 'object' && !Array.isArray(table)) {
-			for (const [path, names] of Object.entries(table as Record<string, unknown>)) {
-				if (Array.isArray(names)) {
-					files[path] = names.filter((n): n is string => typeof n === 'string');
-				}
-			}
-		}
-	}
-	const count =
-		s103 && typeof s103 === 'object' && !Array.isArray(s103) && typeof (s103 as Record<string, unknown>)['count'] === 'number'
-			? ((s103 as Record<string, unknown>)['count'] as number)
-			: 0;
 	const keys =
 		registries && typeof registries === 'object' && !Array.isArray(registries) && Array.isArray((registries as Record<string, unknown>)['keys'])
 			? (((registries as Record<string, unknown>)['keys'] as unknown[]).filter((k): k is string => typeof k === 'string'))
 			: [];
-	return { s103: { count, files }, registries: { keys } };
+	return { registries: { keys } };
 }
 
 function parseWasmOut(raw: string, entry: string): Record<string, unknown> {

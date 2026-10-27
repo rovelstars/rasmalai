@@ -8,6 +8,17 @@ import {
     ByteBuffer
 } from "@std/bytes";
 
+import {
+    fn __rnx_os_arch(): String,
+    fn __rnx_os_cpu_count(): Int,
+    fn __rnx_os_homedir(): String,
+    fn __rnx_os_hostname(): String,
+    fn __rnx_os_platform(): String,
+    fn __rnx_os_tmpdir(): String,
+    fn __rnx_os_uptime(): Float,
+} from runtime "os";
+
+
 /**
 * Host OS surface: platform, architecture, host identity, directories,
 * CPU count, and uptime. All queries are read-only snapshots.

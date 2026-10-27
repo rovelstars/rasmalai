@@ -162,6 +162,7 @@ impl Parser {
                 | TokenKind::Import
                 | TokenKind::Export
                 | TokenKind::Native
+                | TokenKind::Runtime
                 | TokenKind::Const
                 | TokenKind::Static
                 | TokenKind::Public
@@ -374,6 +375,7 @@ impl Parser {
             TokenKind::From => "from",
             TokenKind::Export => "export",
             TokenKind::Native => "native",
+            TokenKind::Runtime => "runtime",
             TokenKind::In => "in",
             TokenKind::With => "with",
             TokenKind::Init => "init",
@@ -634,6 +636,14 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
             )
             .with_span(self.peek_span())
             .with_hint("use `import { fn name(params): Ret } from native \"lib\"`"));
+        }
+        if self.at(&TokenKind::Runtime) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                "bare `runtime \"mod\" { ... }` blocks are removed; declare runtime functions with `import { fn ... } from runtime \"mod\"`",
+            )
+            .with_span(self.peek_span())
+            .with_hint("use `import { fn name(params): Ret } from runtime \"mod\"`"));
         }
         let attrs = self.outer_attrs()?;
         let access = self.access();
@@ -1120,13 +1130,18 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
             let span = Span { start: str_start, end: self.peek_span().start };
             return Ok((ImportSource::Native(lib), span));
         }
+        if self.eat(&TokenKind::Runtime) {
+            let module = self.plain_string()?;
+            let span = Span { start: str_start, end: self.peek_span().start };
+            return Ok((ImportSource::Runtime(module), span));
+        }
         match self.peek().clone() {
             TokenKind::StrOpen => {
                 let path = self.plain_string()?;
                 let span = Span { start: str_start, end: self.peek_span().start };
                 Ok((ImportSource::Module(path), span))
             }
-            _ => Err(Diagnostic::new(Code::E108, "expected module string or `native \"lib\"`")
+            _ => Err(Diagnostic::new(Code::E108, "expected module string, `native \"lib\"`, or `runtime \"mod\"`")
                 .with_span(self.peek_span())),
         }
     }
@@ -1138,7 +1153,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
             if !matches!(source, ImportSource::Module(_)) {
                 return Err(Diagnostic::new(
                     Code::E108,
-                    "side-effect import requires a module path; native imports need `{ fn ... }` specifiers",
+                    "side-effect import requires a module path; native and runtime imports need `{ fn ... }` specifiers",
                 )
                 .with_span(source_span));
             }
@@ -1149,7 +1164,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                 source_span,
             }));
         }
-        if self.at(&TokenKind::Native) || self.at(&TokenKind::From) {
+        if self.at(&TokenKind::Native) || self.at(&TokenKind::Runtime) || self.at(&TokenKind::From) {
             return Err(Diagnostic::new(
                 Code::E108,
                 "expected `{` with function declarations after `import`",
@@ -1216,6 +1231,54 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                     .with_hint(
                         "use `import { fn name(params): Ret } from native \"lib\"`",
                     ));
+                }
+            }
+        }
+        if let ImportSource::Runtime(module) = &source {
+            match &clause {
+                ImportClause::Named(specs) | ImportClause::DefaultAndNamed(_, specs)
+                    if specs.iter().any(|s| s.is_export) =>
+                {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        "runtime imports cannot be re-exported; import them where they are used",
+                    )
+                    .with_span(source_span)
+                    .with_hint(format!(
+                        "keep `from runtime \"{module}\"` imports private to this module"
+                    )));
+                }
+                _ => {}
+            }
+            match clause {
+                ImportClause::Named(specs) => {
+                    let runtime_specs = self.reparse_native_specs(&specs, &source_span)?;
+                    self.eat_semi();
+                    return Ok(Decl::Import(ImportDecl {
+                        clause: ImportClause::Named(runtime_specs),
+                        source,
+                        source_span,
+                    }));
+                }
+                ImportClause::DefaultAndNamed(_, _) => {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        "runtime imports require `{ fn ... }` specifiers without a default name",
+                    )
+                    .with_span(source_span)
+                    .with_hint(format!(
+                        "use `import {{ fn name(params): Ret }} from runtime \"{module}\"`"
+                    )));
+                }
+                _ => {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        "runtime imports require `{ fn ... }` specifiers",
+                    )
+                    .with_span(source_span)
+                    .with_hint(format!(
+                        "use `import {{ fn name(params): Ret }} from runtime \"{module}\"`"
+                    )));
                 }
             }
         }
@@ -1320,6 +1383,14 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                 .with_span(source_span)
                 .with_hint("use `export { fn name(params): Ret } from native \"lib\"`"));
             }
+            if matches!(source, ImportSource::Runtime(_)) {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    "`export *` cannot re-export the runtime; import it where it is used",
+                )
+                .with_span(source_span)
+                .with_hint("use `import { fn name(params): Ret } from runtime \"mod\"`"));
+            }
             self.eat_semi();
             return Ok(Decl::ExportFrom(ExportFromDecl {
                 clause: ExportClause::All { alias },
@@ -1386,6 +1457,14 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                         source,
                         source_span,
                     }));
+                }
+                if matches!(source, ImportSource::Runtime(_)) {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        "runtime functions cannot be re-exported; import them where they are used",
+                    )
+                    .with_span(source_span)
+                    .with_hint("use `import { fn name(params): Ret } from runtime \"mod\"`"));
                 }
                 if saw_fn {
                     return Err(Diagnostic::new(
@@ -3273,6 +3352,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                 | Some(TokenKind::From)
                 | Some(TokenKind::Export)
                 | Some(TokenKind::Native)
+                | Some(TokenKind::Runtime)
                 | Some(TokenKind::In)
                 | Some(TokenKind::With)
                 | Some(TokenKind::Init)

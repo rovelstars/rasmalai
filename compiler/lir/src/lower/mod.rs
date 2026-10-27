@@ -31,6 +31,7 @@ pub fn lower(m: &A::Module) -> Result<Module, Diagnostic> {
         extensions: BTreeMap::new(),
         ext_self: BTreeMap::new(),
         mod_consts: BTreeMap::new(),
+        runtime_alias: BTreeMap::new(),
         diags: Vec::new(),
     };
     let expanded = l.expand_traits(m);
@@ -62,6 +63,7 @@ struct Lower {
     extensions: BTreeMap<(String, String), usize>,
     ext_self: BTreeMap<String, A::Type>,
     mod_consts: BTreeMap<String, (Lit, LirType, Simple)>,
+    runtime_alias: BTreeMap<String, String>,
     diags: Vec<Diagnostic>,
 }
 
@@ -356,259 +358,37 @@ fn genref_ty(t: &A::Type) -> LirType {
 }
 
 fn math_arity(n: &str) -> Option<usize> {
-    match n {
-        "__rnx_math_sqrt" | "__rnx_math_sin" | "__rnx_math_cos" | "__rnx_math_tan"
-        | "__rnx_math_floor" | "__rnx_math_ceil" | "__rnx_math_round" | "__rnx_math_log" => Some(1),
-        "__rnx_math_atan2" | "__rnx_math_pow" => Some(2),
-        _ => None,
+    let decl = frontend::runtime::lookup(n)?;
+    if decl.module != "math" || decl.ret != "Float" {
+        return None;
     }
+    if decl.params.iter().all(|p| *p == "Float") {
+        return Some(decl.params.len());
+    }
+    None
 }
 
 fn intrin_sig(n: &str) -> Option<(usize, LirType, Simple)> {
-    match n {
-        "__rnx_crypto_random_u64" => Some((0, LirType::I64, Simple::Int)),
-        "__rnx_prng_seed" => Some((2, LirType::Null, Simple::Other)),
-        "__rnx_prng_next" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_file_open" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_file_close" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_file_read_text" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_file_read_text_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_file_write_text" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_file_flush" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_file_seek" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_file_tell" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_file_from_handle" => Some((3, LirType::I64, Simple::Int)),
-        "__rnx_io_is_tty" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_io_pretty" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_io_winsize" => Some((0, LirType::Array(Box::new(LirType::I64)), Simple::Other)),
-        "__rnx_io_set_raw" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_path_exists" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_path_remove" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_fs_exists" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_fs_is_file" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_fs_is_dir" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_fs_stat" => Some((1, LirType::Array(Box::new(LirType::I64)), Simple::Other)),
-        "__rnx_fs_stat_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_read_dir" => Some((
-            1,
-            LirType::Array(Box::new(LirType::Str)),
-            Simple::Other,
-        )),
-        "__rnx_fs_read_dir_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_glob" => Some((
-            1,
-            LirType::Array(Box::new(LirType::Str)),
-            Simple::Other,
-        )),
-        "__rnx_fs_glob_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_read_link" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_read_link_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_remove" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_fs_remove_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_remove_all" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_fs_remove_all_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_mkdir_err" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_fs_copy_err" => Some((3, LirType::Str, Simple::Other)),
-        "__rnx_fs_move_err" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_fs_rename_err" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_fs_truncate_err" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_fs_chmod_err" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_fs_symlink_err" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_fs_fsync_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_read_text" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_read_text_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_write_text" => Some((3, LirType::I64, Simple::Int)),
-        "__rnx_fs_write_text_err" => Some((3, LirType::Str, Simple::Other)),
-        "__rnx_fs_read_bytes" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_fs_read_bytes_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_write_bytes" => Some((3, LirType::I64, Simple::Int)),
-        "__rnx_fs_write_bytes_err" => Some((3, LirType::Str, Simple::Other)),
-        "__rnx_fs_mmap" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_fs_mmap_err" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_fs_mmap_anon" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_fs_mmap_anon_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_fs_mmap_addr" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_fs_mmap_len" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_fs_mmap_flush" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_fs_mmap_close" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_fs_pool_depth" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_map_new" => Some((0, LirType::I64, Simple::Int)),
-        "__rnx_map_set" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_map_get" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_map_has" => Some((2, LirType::Bool, Simple::Other)),
-        "__rnx_map_delete" => Some((2, LirType::Bool, Simple::Other)),
-        "__rnx_map_len" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_map_clear" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_map_keys" => Some((1, LirType::Array(Box::new(LirType::Str)), Simple::Other)),
-        "__rnx_map_values" => Some((1, LirType::Array(Box::new(LirType::I64)), Simple::Other)),
-        "__rnx_sync_atomic_get" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_sync_atomic_set" => Some((2, LirType::Null, Simple::Other)),
-        "__rnx_sync_atomic_fetch_add" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_sync_atomic_cas" => Some((3, LirType::Bool, Simple::Other)),
-        "__rnx_sync_channel_send" => Some((2, LirType::Null, Simple::Other)),
-        "__rnx_sync_channel_send_str" => Some((2, LirType::Null, Simple::Other)),
-        "__rnx_sync_channel_send_obj" => Some((2, LirType::Null, Simple::Other)),
-        "__rnx_sync_channel_send_array" => Some((2, LirType::Null, Simple::Other)),
-        "__rnx_sync_channel_recv" => Some((1, LirType::Any, Simple::Other)),
-        "__rnx_sync_channel_try_recv" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_sync_channel_len" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_sync_channel_drop" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_mutex_lock" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_mutex_unlock" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_mutex_try_lock" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_rwlock_read_lock" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_rwlock_read_unlock" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_rwlock_write_lock" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_rwlock_write_unlock" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_rwlock_try_read_lock" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_rwlock_try_write_lock" => Some((1, LirType::Bool, Simple::Other)),
-        "__rnx_condvar_wait" => Some((2, LirType::Null, Simple::Other)),        "__rnx_condvar_wait_timeout" => Some((3, LirType::Bool, Simple::Other)),
-        "__rnx_condvar_notify_one" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_condvar_notify_all" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_barrier_wait" => Some((2, LirType::Bool, Simple::Other)),
-        "__rnx_string_len" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_string_slice" => Some((3, LirType::Str, Simple::Other)),
-        "__rnx_string_index_of" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_string_index_of_from" => Some((3, LirType::I64, Simple::Int)),
-        "__rnx_string_trim" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_string_concat" => Some((2, LirType::Str, Simple::Other)),
-        "__rnx_string_split" => Some((
-            2,
-            LirType::Array(Box::new(LirType::Str)),
-            Simple::Other,
-        )),
-        "__rnx_string_char_code_at" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_string_from_char_code" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_int_to_str" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_float_to_str" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_bool_to_str" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_bytes_alloc" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_bytes_data" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_bytes_free" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_bytes_len" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_bytes_cap" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_bytes_copy_within" => Some((4, LirType::Null, Simple::Other)),
-        "__rnx_bytes_read_u8" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_i8" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_u16le" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_u16be" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_i16le" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_i16be" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_u32le" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_u32be" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_i32le" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_i32be" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_i64le" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_read_i64be" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_bytes_write_u8" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_write_u16le" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_write_u16be" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_write_u32le" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_write_u32be" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_write_u64le" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_write_u64be" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_read_f32le" => Some((2, LirType::F64(FloatKind::Strict), Simple::Strict)),
-        "__rnx_bytes_read_f32be" => Some((2, LirType::F64(FloatKind::Strict), Simple::Strict)),
-        "__rnx_bytes_read_f64le" => Some((2, LirType::F64(FloatKind::Strict), Simple::Strict)),
-        "__rnx_bytes_read_f64be" => Some((2, LirType::F64(FloatKind::Strict), Simple::Strict)),
-        "__rnx_bytes_write_f32le" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_write_f32be" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_write_f64le" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_write_f64be" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_bytes_read_string" => Some((3, LirType::Str, Simple::Other)),
-        "__rnx_bytes_write_string" => Some((3, LirType::I64, Simple::Int)),
-        "__rnx_file_read_bytes" => Some((4, LirType::I64, Simple::Int)),
-        "__rnx_file_write_bytes" => Some((4, LirType::I64, Simple::Int)),
-        "__rnx_gmap_new" => Some((0, LirType::I64, Simple::Int)),
-        "__rnx_gmap_free" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_gmap_set" => Some((3, LirType::Null, Simple::Other)),
-        "__rnx_gmap_get" => Some((2, LirType::Any, Simple::Other)),
-        "__rnx_gmap_has" => Some((2, LirType::Bool, Simple::Other)),
-        "__rnx_gmap_delete" => Some((2, LirType::Bool, Simple::Other)),
-        "__rnx_gmap_len" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_gmap_clear" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_gmap_keys" => Some((1, LirType::Array(Box::new(LirType::Any)), Simple::Other)),
-        "__rnx_gmap_values" => Some((1, LirType::Array(Box::new(LirType::Any)), Simple::Other)),
-        "__rnx_array_len" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_array_pop" => Some((2, LirType::Any, Simple::Other)),
-        "__rnx_any_box" => Some((2, LirType::Any, Simple::Other)),
-        "__rnx_any_unbox" => Some((1, LirType::Any, Simple::Other)),
-        "__rnx_any_unbox_heap" => Some((1, LirType::Any, Simple::Other)),
-        "__rnx_any_release_box" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_any_retain" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_json_parse" => Some((1, LirType::Any, Simple::Other)),
-        "__rnx_json_parse_typed" => {
-            Some((2, LirType::Array(Box::new(LirType::Any)), Simple::Other))
-        }
-        "__rnx_json_stringify" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_json_stringify_into" => Some((3, LirType::I64, Simple::Int)),
-        "__rnx_json_unwrap" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_dns_lookup_start" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_dns_lookup_wait" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_dns_lookup_get" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_dns_lookup_error" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_thread_join_val" => Some((1, LirType::Any, Simple::Other)),
-        "__rnx_thread_join_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_task_await_val" => Some((1, LirType::Any, Simple::Other)),
-        "__rnx_task_await_err" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_pool_new" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_debug_live_count" => Some((0, LirType::I64, Simple::Int)),
-        "__rnx_env_args_count" => Some((0, LirType::I64, Simple::Int)),
-        "__rnx_env_args_get" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_env_get" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_env_set" => Some((2, LirType::Null, Simple::Other)),
-        "__rnx_env_cwd" => Some((0, LirType::Str, Simple::Other)),
-        "__rnx_host_version" => Some((0, LirType::Str, Simple::Other)),
-        "__rnx_net_connect_start" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_net_take_error" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_net_connect_wait" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_net_recv_or_wait" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_net_send_or_wait" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_net_recv_get" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_net_error_text" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_net_close" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_net_listener_bind" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_net_listener_port" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_net_listener_accept_start" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_net_listener_accept_wait" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_net_listener_close" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_tls_connect_start" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_tls_handshake_start" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_tls_handshake_wait" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_tls_recv_or_wait" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_tls_send_or_wait" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_tls_recv_get" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_tls_error_text" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_tls_close" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_env_exit" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_process_pid" => Some((0, LirType::I64, Simple::Int)),
-        "__rnx_process_remove_env" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_process_all_env_count" => Some((0, LirType::I64, Simple::Int)),
-        "__rnx_process_all_env_get" => Some((1, LirType::Str, Simple::Other)),
-        "__rnx_process_chdir" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_process_spawn" => Some((7, LirType::I64, Simple::Int)),
-        "__rnx_process_run" => Some((7, LirType::I64, Simple::Int)),
-        "__rnx_process_pid_of" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_process_write_stdin" => Some((4, LirType::I64, Simple::Int)),
-        "__rnx_process_read_stdout" => Some((4, LirType::I64, Simple::Int)),
-        "__rnx_process_read_stderr" => Some((4, LirType::I64, Simple::Int)),
-        "__rnx_process_close_stdin" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_process_wait" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_process_try_wait" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_process_kill" => Some((2, LirType::I64, Simple::Int)),
-        "__rnx_process_take_stdout" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_process_take_stderr" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_process_exit_code" => Some((1, LirType::I64, Simple::Int)),
-        "__rnx_process_forget" => Some((1, LirType::Null, Simple::Other)),
-        "__rnx_os_platform" => Some((0, LirType::Str, Simple::Other)),
-        "__rnx_os_arch" => Some((0, LirType::Str, Simple::Other)),
-        "__rnx_os_hostname" => Some((0, LirType::Str, Simple::Other)),
-        "__rnx_os_tmpdir" => Some((0, LirType::Str, Simple::Other)),
-        "__rnx_os_homedir" => Some((0, LirType::Str, Simple::Other)),
-        "__rnx_os_cpu_count" => Some((0, LirType::I64, Simple::Int)),
-        "__rnx_os_uptime" => Some((0, LirType::F64(FloatKind::Strict), Simple::Strict)),
-        _ => None,
-    }
+    let decl = frontend::runtime::lookup(n)?;
+    let ret = match decl.ret {
+        "Int" => LirType::I64,
+        "Bool" => LirType::Bool,
+        "String" => LirType::Str,
+        "Void" => LirType::Null,
+        "Float" => LirType::F64(FloatKind::Strict),
+        "Array<Int>" => LirType::Array(Box::new(LirType::I64)),
+        "Array<String>" => LirType::Array(Box::new(LirType::Str)),
+        "Array<Any>" => LirType::Array(Box::new(LirType::Any)),
+        "Array" => LirType::Array(Box::new(LirType::Any)),
+        "Any" => LirType::Any,
+        _ => return None,
+    };
+    let simple = match decl.ret {
+        "Int" => Simple::Int,
+        "Float" => Simple::Strict,
+        _ => Simple::Other,
+    };
+    Some((decl.params.len(), ret, simple))
 }
 
 fn simple_of(ty: &LirType) -> Simple {
@@ -724,6 +504,7 @@ struct Builder<'a> {
     extensions: &'a BTreeMap<(String, String), usize>,
     ext_self: &'a BTreeMap<String, A::Type>,
     mod_consts: &'a BTreeMap<String, (Lit, LirType, Simple)>,
+    runtime_alias: &'a BTreeMap<String, String>,
     func: Function,
     blocks: Vec<Vec<Instr>>,
     terms: Vec<Option<Terminator>>,
@@ -914,6 +695,17 @@ impl Lower {
                                 }
                             }
                             _ => {}
+                        }
+                    }
+                    if let A::ImportSource::Runtime(_) = &d.source
+                        && let A::ImportClause::Named(specs) = &d.clause
+                    {
+                        for spec in specs {
+                            if let Some(sig) = &spec.native_fn {
+                                let local =
+                                    sig.alias.clone().unwrap_or_else(|| sig.name.clone());
+                                self.runtime_alias.entry(local).or_insert_with(|| sig.name.clone());
+                            }
                         }
                     }
                 }
@@ -1456,7 +1248,7 @@ impl Lower {
             head += 1;
             let module = std::mem::replace(&mut self.out, Module::default());
             let prefix = module.functions.get(id).map(|f| format!("{}::", f.name)).unwrap_or_default();
-            let mut b = Builder::new(&module, &self.defaults, &self.param_info, &self.param_tys, &self.field_opt, &self.ret_tys, &self.nub_fields, &self.generic_fns, &self.extensions, &self.ext_self, &self.mod_consts, id, prefix);
+            let mut b = Builder::new(&module, &self.defaults, &self.param_info, &self.param_tys, &self.field_opt, &self.ret_tys, &self.nub_fields, &self.generic_fns, &self.extensions, &self.ext_self, &self.mod_consts, &self.runtime_alias, id, prefix);
             b.implicit_super = implicit_super.get(&id).copied();
             let is_closure_body = matches!(src, BodySrc::Closure(_));
             if let BodySrc::Fn(f) = &src {

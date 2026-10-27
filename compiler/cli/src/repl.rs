@@ -530,7 +530,11 @@ impl ReplSession {
             }
         }
         if let Ok(user) = frontend::parser::Parser::parse_module(&candidate) {
-            sem_errs.extend(frontend::security::s103_frame(&[(std::path::Path::new(""), &user)]));
+            for r in frontend::security::collect_runtime_imports(&user) {
+                sem_errs.push(frontend::security::runtime_frame_rejection(
+                    &r.module, &r.symbol, r.span,
+                ));
+            }
         }
         if !sem_errs.is_empty() {
             return ReplOut::Lines(self.render_errors(&sem_errs));
@@ -633,7 +637,11 @@ impl ReplSession {
             }
         }
         if let Ok(user) = frontend::parser::Parser::parse_module(&candidate) {
-            sem_errs.extend(frontend::security::s103_frame(&[(std::path::Path::new(""), &user)]));
+            for r in frontend::security::collect_runtime_imports(&user) {
+                sem_errs.push(frontend::security::runtime_frame_rejection(
+                    &r.module, &r.symbol, r.span,
+                ));
+            }
         }
         if !sem_errs.is_empty() {
             return self.render_errors(&sem_errs);

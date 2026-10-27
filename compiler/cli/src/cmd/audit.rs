@@ -34,12 +34,12 @@ pub(super) fn run_audit(
         let drift = cli::audit::lockfile_drift(&dir);
         print!("{}", cli::audit::render_audit_text(&report, &drift));
     }
-    match frontend::security::scan_dep_prefix(&dir) {
+    match frontend::security::scan_dep_runtime_imports(&dir) {
         Ok(hits) if hits.is_empty() => {}
         Ok(hits) => {
             eprint!("{}", cli::report::render_security_issues(&hits));
             eprintln!(
-                "hint: call the owning `@std/*` wrapper instead of the `__rnx_*` internal (rule S103)"
+                "hint: call the owning `@std/*` wrapper instead of the `__rnx_*` internal"
             );
             std::process::exit(1);
         }

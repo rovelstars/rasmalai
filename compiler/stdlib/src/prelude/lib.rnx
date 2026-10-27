@@ -21,6 +21,33 @@
 //! let xs: Array<Int> = [];
 //! print(xs.find((x: Int): Bool => x > 0) ?? -1);
 //! ```
+
+import {
+    fn __rnx_bytes_alloc(cap: Int): Int,
+    fn __rnx_bytes_read_string(handle: Int, off: Int, len: Int): String,
+    fn __rnx_bytes_write_string(handle: Int, off: Int, text: String): Int,
+} from runtime "bytes";
+import {
+    fn __rnx_any_unbox_heap(value: Any): Any,
+    fn __rnx_bytes_free(handle: Int): Void,
+    fn __rnx_host_version(): String,
+    fn __rnx_string_split(text: String, nd: String): Array<String>,
+} from runtime "core";
+import {
+    fn __rnx_env_args_count(): Int,
+    fn __rnx_env_args_get(i: Int): String,
+    fn __rnx_env_cwd(): String,
+    fn __rnx_env_exit(code: Int): Void,
+} from runtime "env";
+import {
+    fn __rnx_condvar_notify_all(id: Int): Void,
+    fn __rnx_condvar_wait_timeout(cond: Int, mutex: Int, millis: Int): Bool,
+    fn __rnx_mutex_lock(id: Int): Void,
+    fn __rnx_mutex_unlock(id: Int): Void,
+    fn __rnx_sync_atomic_fetch_add(id: Int, d: Int): Int,
+    fn __rnx_sync_atomic_set(id: Int, value: Int): Void,
+} from runtime "sync";
+
 /** Foundation integer type: a signed 64-bit whole number.
  *
  * Methods: `toString(): String`. Convert a float with `Int(x)`, which

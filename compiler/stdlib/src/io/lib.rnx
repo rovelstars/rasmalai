@@ -30,6 +30,14 @@ import {
 } from "@std/fs";
 import { Map } from "@std/collections";
 
+import {
+    fn __rnx_io_is_tty(fd: Int): Bool,
+    fn __rnx_io_pretty(value: Any, fd: Int): String,
+    fn __rnx_io_set_raw(fd: Int, enabled: Int): String,
+    fn __rnx_io_winsize(): Array<Int>,
+} from runtime "io";
+
+
 /**
 * Output color tiers, richest to plainest.
 *

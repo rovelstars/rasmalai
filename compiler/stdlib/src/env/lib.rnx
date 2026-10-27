@@ -13,6 +13,16 @@
 //! print(Env.get("NOT_SET_ANYWHERE") == "");
 //! print(Env.cwd().len() > 0);
 //! ```
+
+import {
+    fn __rnx_env_args_count(): Int,
+    fn __rnx_env_args_get(i: Int): String,
+    fn __rnx_env_cwd(): String,
+    fn __rnx_env_exit(code: Int): Void,
+    fn __rnx_env_get(key: String): String,
+    fn __rnx_env_set(key: String, val: String): Void,
+} from runtime "env";
+
 /**
 * The process's own environment: the argument list it was started with, the
 * environment variables it inherited or set, the directory it is running in,

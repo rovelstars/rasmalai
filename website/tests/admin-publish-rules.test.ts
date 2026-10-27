@@ -69,13 +69,15 @@ function scan(limit?: number): Promise<Response> {
 }
 
 describe('admin publish-rules report-only scan', () => {
-	it('counts stored S103 and registry-key carriers without rejecting anything', async () => {
-		const s103 = await publish(
-			'scan-s103-victim',
+	it('rejects runtime internals and counts registry-key carriers without rejecting them', async () => {
+		const rejected = await publish(
+			'scan-runtime-victim',
 			'1.0.0',
 			'fn Main(): Int {\n    return __rnx_clock_mono();\n}\n'
 		);
-		assert.equal(s103.status, 201);
+		assert.equal(rejected.status, 400);
+		const rejectedBody = (await rejected.json()) as { error?: string };
+		assert.match(rejectedBody.error ?? '', /__rnx_clock_mono/);
 		const carrier = await publish(
 			'scan-registry-carrier',
 			'1.0.0',
@@ -84,10 +86,10 @@ describe('admin publish-rules report-only scan', () => {
 		);
 		assert.equal(carrier.status, 201);
 		const carrierBody = (await carrier.json()) as {
-			reportOnly?: { registries?: { keys?: string[] }; s103?: { count?: number } };
+			reportOnly?: { registries?: { keys?: string[] } };
 		};
 		assert.deepEqual(carrierBody.reportOnly?.registries?.keys, ['registries']);
-		assert.equal(carrierBody.reportOnly?.s103?.count, 0);
+		assert.ok(!('s103' in (carrierBody.reportOnly ?? {})), JSON.stringify(carrierBody.reportOnly));
 		const clean = await publish('scan-clean', '1.0.0', 'fn Main(): Int {\n    return 0;\n}\n');
 		assert.equal(clean.status, 201);
 
@@ -98,18 +100,12 @@ describe('admin publish-rules report-only scan', () => {
 			skipped: unknown[];
 			truncated: boolean;
 			limit: number;
-			s103: { count: number; packages: Array<{ name: string; version: string; count: number; files: Record<string, string[]> }> };
 			registries: { count: number; packages: Array<{ name: string; version: string; keys: string[] }> };
 		};
-		assert.equal(body.scanned, 3);
+		assert.equal(body.scanned, 2);
 		assert.deepEqual(body.skipped, []);
 		assert.equal(body.truncated, false);
-		assert.equal(body.s103.count, 1);
-		assert.equal(body.s103.packages.length, 1);
-		assert.equal(body.s103.packages[0].name, 'scan-s103-victim');
-		assert.equal(body.s103.packages[0].version, '1.0.0');
-		assert.equal(body.s103.packages[0].count, 1);
-		assert.deepEqual(body.s103.packages[0].files, { 'src/main.rnx': ['__rnx_clock_mono'] });
+		assert.ok(!('s103' in body), JSON.stringify(Object.keys(body)));
 		assert.equal(body.registries.count, 1);
 		assert.equal(body.registries.packages.length, 1);
 		assert.equal(body.registries.packages[0].name, 'scan-registry-carrier');

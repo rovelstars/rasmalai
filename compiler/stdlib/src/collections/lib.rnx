@@ -48,6 +48,20 @@ import {
     Iterator
 } from "@std/prelude";
 
+import {
+    fn __rnx_gmap_clear(handle: Int): Void,
+    fn __rnx_gmap_delete(handle: Int, key: Any): Bool,
+    fn __rnx_gmap_free(handle: Int): Void,
+    fn __rnx_gmap_get(handle: Int, key: Any): Any,
+    fn __rnx_gmap_has(handle: Int, key: Any): Bool,
+    fn __rnx_gmap_keys(handle: Int): Array<Any>,
+    fn __rnx_gmap_len(handle: Int): Int,
+    fn __rnx_gmap_new(): Int,
+    fn __rnx_gmap_set(handle: Int, key: Any, value: Any): Void,
+    fn __rnx_gmap_values(handle: Int): Array<Any>,
+} from runtime "core";
+
+
 /**
 * Insertion-ordered hash table from keys to values. Build one with
 * `new Map<K, V>()`, fill it with `set`, and read it back with `get` or

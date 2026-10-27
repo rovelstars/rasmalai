@@ -420,6 +420,7 @@ impl<'a> Builder<'a> {
                         callee.span,
                     ));
                 }
+                let n: &str = self.runtime_alias.get(n.as_str()).map(String::as_str).unwrap_or(n);
                 if n == "__rnx_clock_mono" {
                     if !args.is_empty() {
                         return self.fail(self.err(

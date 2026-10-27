@@ -51,10 +51,14 @@ fn argv_forwards_identically_on_all_backends() {
         let code = out.status.code().unwrap();
         let stdout = String::from_utf8(out.stdout.clone()).unwrap();
         assert_eq!(code, 0, "{backend}: exit, stderr: {}", String::from_utf8_lossy(&out.stderr));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let unexpected: Vec<&str> = stderr
+            .lines()
+            .filter(|l| !l.starts_with("warning: using local source for `@std/"))
+            .collect();
         assert!(
-            out.stderr.is_empty(),
-            "{backend}: stderr must stay clean, got: {}",
-            String::from_utf8_lossy(&out.stderr)
+            unexpected.is_empty(),
+            "{backend}: stderr must stay clean, got: {stderr}"
         );
         let mut lines = stdout.lines();
         let user: Vec<&str> = lines.by_ref().skip(2).collect();

@@ -19,6 +19,64 @@ import {
     AtomicInt
 } from "@std/sync";
 
+import {
+    fn __rnx_file_close(handle: Int): Void,
+    fn __rnx_file_flush(handle: Int): Void,
+    fn __rnx_file_from_handle(fd: Int, readable: Int, writable: Int): Int,
+    fn __rnx_file_open(path: String, mode: Int): Int,
+    fn __rnx_file_read_bytes(handle: Int, buf: Int, off: Int, len: Int): Int,
+    fn __rnx_file_read_text(handle: Int): String,
+    fn __rnx_file_read_text_err(handle: Int): String,
+    fn __rnx_file_seek(handle: Int, pos: Int): Int,
+    fn __rnx_file_tell(handle: Int): Int,
+    fn __rnx_file_write_bytes(handle: Int, buf: Int, off: Int, len: Int): Int,
+    fn __rnx_file_write_text(handle: Int, text: String): Int,
+    fn __rnx_fs_chmod_err(path: String, mode: Int): String,
+    fn __rnx_fs_copy_err(src: String, dst: String, mode: Int): String,
+    fn __rnx_fs_exists(path: String): Bool,
+    fn __rnx_fs_fsync_err(path: String): String,
+    fn __rnx_fs_glob(pattern: String): Array<String>,
+    fn __rnx_fs_glob_err(pattern: String): String,
+    fn __rnx_fs_is_dir(path: String): Bool,
+    fn __rnx_fs_is_file(path: String): Bool,
+    fn __rnx_fs_mkdir_err(path: String, recursive: Int): String,
+    fn __rnx_fs_mmap(path: String, mode: Int): Int,
+    fn __rnx_fs_mmap_addr(handle: Int): Int,
+    fn __rnx_fs_mmap_anon(len: Int): Int,
+    fn __rnx_fs_mmap_anon_err(len: Int): String,
+    fn __rnx_fs_mmap_close(handle: Int): Void,
+    fn __rnx_fs_mmap_err(path: String, mode: Int): String,
+    fn __rnx_fs_mmap_flush(handle: Int): Void,
+    fn __rnx_fs_mmap_len(handle: Int): Int,
+    fn __rnx_fs_move_err(src: String, dst: String): String,
+    fn __rnx_fs_pool_depth(d: Int): Int,
+    fn __rnx_fs_read_bytes(path: String): Int,
+    fn __rnx_fs_read_bytes_err(path: String): String,
+    fn __rnx_fs_read_dir(path: String): Array<String>,
+    fn __rnx_fs_read_dir_err(path: String): String,
+    fn __rnx_fs_read_link(path: String): String,
+    fn __rnx_fs_read_link_err(path: String): String,
+    fn __rnx_fs_read_text(path: String): String,
+    fn __rnx_fs_read_text_err(path: String): String,
+    fn __rnx_fs_remove(path: String): Bool,
+    fn __rnx_fs_remove_all(path: String): Bool,
+    fn __rnx_fs_remove_all_err(path: String): String,
+    fn __rnx_fs_remove_err(path: String): String,
+    fn __rnx_fs_rename_err(src: String, dst: String): String,
+    fn __rnx_fs_stat(path: String): Array<Int>,
+    fn __rnx_fs_stat_err(path: String): String,
+    fn __rnx_fs_symlink_err(target: String, link: String): String,
+    fn __rnx_fs_truncate_err(path: String, len: Int): String,
+    fn __rnx_fs_write_bytes(path: String, handle: Int, mode: Int): Int,
+    fn __rnx_fs_write_bytes_err(path: String, handle: Int, mode: Int): String,
+    fn __rnx_fs_write_text(path: String, text: String, mode: Int): Int,
+    fn __rnx_fs_write_text_err(path: String, text: String, mode: Int): String,
+} from runtime "fs";
+import {
+    fn __rnx_os_cpu_count(): Int,
+} from runtime "os";
+
+
 /**
 * Open modes for File.open.
 */
@@ -1509,7 +1567,7 @@ fn fsPoolSize(): Int {
 
 /**
 * Worker count for the next pool ensure. The first call measures the
-* machine with `__rnx_os_cpu_count` and clamps into 1..8.
+* machine with the runtime CPU count and clamps into 1..8.
 * @returns worker count between 1 and 8.
 * @example
 * import fs from "@std/fs";

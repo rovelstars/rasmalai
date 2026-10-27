@@ -25,6 +25,12 @@ import {
     JSON
 } from "@std/json";
 
+import {
+    fn __rnx_int_to_str(v: Int): String,
+    fn __rnx_string_from_char_code(c: Int): String,
+} from runtime "core";
+
+
 /**
 * The HTTP status codes this module names. The grammar has no `= N`
 * discriminants, so the numbers live in `statusCode()`, the phrases in

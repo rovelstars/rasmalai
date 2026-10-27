@@ -30,6 +30,44 @@
 //! else. `slice` copies a range out into a new buffer, and `copyWithin`
 //! shifts a range inside the buffer that already exists. `address` hands
 //! the raw pointer to `Pointer.fromAddress` for `unsafe` work and C calls.
+
+import {
+    fn __rnx_bytes_alloc(cap: Int): Int,
+    fn __rnx_bytes_cap(handle: Int): Int,
+    fn __rnx_bytes_copy_within(handle: Int, target: Int, start: Int, end: Int): Void,
+    fn __rnx_bytes_data(handle: Int): Int,
+    fn __rnx_bytes_len(handle: Int): Int,
+    fn __rnx_bytes_read_f32be(handle: Int, off: Int): Float,
+    fn __rnx_bytes_read_f32le(handle: Int, off: Int): Float,
+    fn __rnx_bytes_read_f64be(handle: Int, off: Int): Float,
+    fn __rnx_bytes_read_f64le(handle: Int, off: Int): Float,
+    fn __rnx_bytes_read_i16be(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_i16le(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_i32be(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_i32le(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_i64be(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_i64le(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_i8(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_string(handle: Int, off: Int, len: Int): String,
+    fn __rnx_bytes_read_u16be(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_u16le(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_u32be(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_u32le(handle: Int, off: Int): Int,
+    fn __rnx_bytes_read_u8(handle: Int, off: Int): Int,
+    fn __rnx_bytes_write_f32be(handle: Int, off: Int, val: Float): Void,
+    fn __rnx_bytes_write_f32le(handle: Int, off: Int, val: Float): Void,
+    fn __rnx_bytes_write_f64be(handle: Int, off: Int, val: Float): Void,
+    fn __rnx_bytes_write_f64le(handle: Int, off: Int, val: Float): Void,
+    fn __rnx_bytes_write_string(handle: Int, off: Int, text: String): Int,
+    fn __rnx_bytes_write_u16be(handle: Int, off: Int, val: Int): Void,
+    fn __rnx_bytes_write_u16le(handle: Int, off: Int, val: Int): Void,
+    fn __rnx_bytes_write_u32be(handle: Int, off: Int, val: Int): Void,
+    fn __rnx_bytes_write_u32le(handle: Int, off: Int, val: Int): Void,
+    fn __rnx_bytes_write_u64be(handle: Int, off: Int, val: Int): Void,
+    fn __rnx_bytes_write_u64le(handle: Int, off: Int, val: Int): Void,
+    fn __rnx_bytes_write_u8(handle: Int, off: Int, val: Int): Void,
+} from runtime "bytes";
+
 /**
 * Fixed-size raw byte buffer. All offsets and sizes are plain `Int`;
 * integer lanes widen into 64-bit `Int` (signed lanes sign-extend,
@@ -61,8 +99,8 @@ class ByteBuffer {
     * Wrap an existing native buffer handle.
     *
     * Called by the static factories and by other standard library
-    * modules. Passing a handle that did not come from
-    * `__rnx_bytes_alloc` is undefined; use the factories instead.
+    * modules. Passing a handle that did not come from the runtime
+    * allocator is undefined; use the factories instead.
     */
     init(handle: Int) {
         this.handle = handle;

@@ -237,5 +237,9 @@ pub fn generate_bench_harness(
         attrs: Vec::new(),
     });
     module.decls.push(sp(main, Z));
+    if !benches.is_empty() {
+        crate::runtime::ensure_import(module, "__rnx_clock_mono");
+        crate::runtime::ensure_import(module, "__rnx_math_sqrt");
+    }
     Ok(())
 }
