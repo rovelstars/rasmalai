@@ -59,6 +59,15 @@ rnx fetch
 rnx check
 ```
 
+**The standard library cache went stale.** An `@std/*` import fails with the registry named, or `rnx doctor` reports missing packages. The binary carries no library sources, so everything `@std/*` comes from the global cache (`~/.cache/rnx`, or `$RNX_CACHE_HOME` when set). Check it, then repair it:
+
+```sh
+rnx doctor
+rnx doctor --repair-std
+```
+
+`rnx download` re-seeds the same cache from scratch: that is also the recovery when you installed while offline.
+
 **The editor disagrees with the terminal.** Stale squiggles, completions from another era — the language server is almost always holding onto a closed project. Restart it through the setup command rather than reinstalling anything:
 
 ```sh

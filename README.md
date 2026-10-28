@@ -83,6 +83,13 @@ cargo build --release
 
 The binary lands at `./target/release/rnx`.
 
+The installer also seeds the standard library into the global cache
+(`~/.cache/rnx`, or `$RNX_CACHE_HOME` when set) by running
+`rnx download` for you: the `rnx` binary carries no library sources, so
+every `@std/*` import resolves from that cache. An offline install warns
+instead of failing — run `rnx download` once online, or
+`rnx doctor --repair-std` to check and repair the cache at any time.
+
 Upgrade by re-running the same command you installed with — running it
 again with no version argument always moves you to the latest release:
 
