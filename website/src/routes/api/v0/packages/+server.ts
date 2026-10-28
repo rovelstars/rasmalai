@@ -49,6 +49,7 @@ import {
 	fileAllowed
 } from '$lib/server/canonical';
 import { canonicalizeTree, configFacts, analyzeTree } from '$lib/server/analysis';
+import { registriesKeysIn, registriesRejection } from '$lib/server/publishRules';
 import {
 	checkArtifactAgreement,
 	fetchArtifactIndex,
@@ -362,11 +363,8 @@ export async function POST({ request, platform, url }) {
 	let capabilities: DeclaredPermission[];
 	let factRows: CanonicalFact[];
 	let edges: { edges: string[]; permsDigest: string; files: Array<{ path: string; hash: string }> };
-	// Report-only verdicts from the whole-tree analysis (registry keys).
-	// They ride the success body for the publisher and the worker log for
-	// the operator, and never reject: enforcement is a later flip.
-	// Runtime access is enforced, never counted: a violating frame fails
-	// analysis before it can reach this point.
+	// Whole-tree verdicts the 201 body echoes back. Runtime access never
+	// reaches here: it fails analysis outright.
 	let reportOnly: Awaited<ReturnType<typeof analyzeTree>>['reportOnly'] | null = null;
 	const manifestJson = JSON.stringify({
 		deps: facts.dependencies,
@@ -446,6 +444,13 @@ export async function POST({ request, platform, url }) {
 		};
 		reportOnly = analysis.reportOnly;
 	}
+	// The registries gate shares its predicate with the admin scan, so the
+	// two agree by construction. The digest-reuse path above skips analysis
+	// with reportOnly null: safe because the digest covers the redacted
+	// config and redaction preserves the registry keys, so a violating
+	// frame cannot digest-match a clean latest.
+	const registryRejection = registriesRejection(registriesKeysIn(reportOnly));
+	if (registryRejection) return frameError(400, registryRejection);
 	const existing = await existingChunkHashes(env, chunked.units.map((u) => u.hash));
 	const missing = chunked.units.filter((u) => !existing.has(u.hash));
 	await r2PutChunks(env, missing);
@@ -491,17 +496,6 @@ export async function POST({ request, platform, url }) {
 	await purgeUrls(env, packagePointerUrls(url.origin, frame.name, frame.version), { fullName: frame.name });
 	for (const dep of extractDepNames(manifestJson)) {
 		await purgeUrls(env, [`${url.origin}/api/v0/packages/${dep}/dependents`], { fullName: dep });
-	}
-	if (reportOnly && reportOnly.registries.keys.length > 0) {
-		console.warn(
-			JSON.stringify({
-				scope: 'publish-report-only',
-				requestId: frame.requestId,
-				name: frame.name,
-				version: frame.version,
-				registries: reportOnly.registries
-			})
-		);
 	}
 	return json({ success: true, url: `/packages/${frame.name}`, version: frame.version, manifestDigest: digest, artifactDigest: frame.artifactDigest ?? null, reportOnly }, { status: 201, headers: specHeaders() });
 }

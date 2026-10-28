@@ -74,19 +74,15 @@ Idempotency: every mutation takes a client-generated `requestId`. Publish reads 
 
 `@std` is reserved: session publishes naming `@std/*` fail with 403 even when the scope check would pass. Only the org token seeds the standard library.
 
-## Report-only publish rules
+## Registry-key publish rule
 
-One predicate runs on every whole-tree analysis and counts without rejecting: top-level `registry`/`registries` keys in the frame `Project.config`. A violating publish still returns 201; the success body carries the verdict under `reportOnly`, and the worker logs one JSON line per violating publish:
-
-```json
-{"scope":"publish-report-only","requestId":"req-1-2","name":"colony","version":"0.4.0","registries":{"keys":[]}}
-```
+Top-level `registry`/`registries` keys in the frame `Project.config` fail the publish with `E108` naming the keys: stored packages must not pin registry choice, the installer chooses. The success body still carries the verdict under `reportOnly` (empty on every 201 now that the gate rejects first), and the same predicate drives the admin scan below, so the count reads zero by construction.
 
 Missing or unparseable config text counts nothing — the config gate upstream already rejects what it cannot parse.
 
 Runtime access is enforced, not counted. A frame that names a runtime internal outside registry-verified `@std/*` — bare (`__rnx_foo()` with no declaration, an `E303` pointing at the declared form) or declared (`import { fn name(params): Ret } from runtime "mod"`, an `E108` naming the owning `@std/*` wrapper) — fails whole-tree analysis, so the publish never reaches 201. Only a `@std/*`-named frame (which the route above gates to the org token) may carry `from runtime` imports, and only for bytes that arrived through registry-verified `@std` provision; a `@std/`-prefixed file smuggled into any other frame is still rejected. Declared `from native` aliases are unaffected, and `__ffi_*` names never counted.
 
-`GET /api/admin/publish-rules` (admin token) replays the registry-key predicate over the live set — one full whole-tree re-analysis per package, sequential — and returns the count plus the violating package names. It is read-only and bounded: `?limit=` caps the packages per call (default 200, max 1000), each package caps at 8 MiB of reassembled source, and anything skipped lands in `skipped` with a reason instead of failing the call. Whole-tree analysis costs about 0.25 ms per KiB of canonical source; store reads run as one batched version snapshot and one batched chunk read per scan (plus one cached dep load per `@std` top), so the store round trips stay flat as the package count grows instead of dying at the platform subrequest ceiling partway through. Page through with repeated calls on a large registry.
+`GET /api/admin/publish-rules` (admin token) replays the registry-key predicate over the live set — one full whole-tree re-analysis per package, sequential — and returns the count plus the violating package names. It is read-only and bounded: `?limit=` caps the packages per call (default 200, max 1000), each package caps at 8 MiB of reassembled source, and anything skipped lands in `skipped` with a reason instead of failing the call. Whole-tree analysis costs about 0.25 ms per KiB of canonical source; store reads run as one batched version snapshot and one batched chunk read per scan (plus one cached dep load per `@std` top), so the store round trips stay flat as the package count grows instead of dying at the platform subrequest ceiling partway through. Page through with repeated calls on a large registry. `POST /api/admin/publish-rules` (admin token) files the `critical` advisory for every counted violator that lacks one — cause plus remedy in the detail — and answers which ids it filed versus which were already present. Filing is idempotent: repeated calls converge instead of duplicating, and the GET never files, so the scan stays side-effect free.
 
 ## Mutations
 

@@ -71,11 +71,13 @@ Every version must include `LICENSE` or `LICENSE.txt` at the package root. An up
 
 Rejections fail the publish with `E108` and a message naming the offending file; the CLI surfaces them verbatim.
 
-## One rule that counts before it bites
+## Stored packages never pin the registry
 
-One predicate runs report-only on every publish: it counts and logs, and the publish still succeeds. The enforcement flip — rejecting new violating publishes, filing `critical` advisories on stored violators, and walking the yank ladder — is a separate change that starts from this count. Fix the trip now and the flip passes you by.
+A `Project.config` that carries top-level `registry` or `registries` keys fails the publish with `E108` naming the keys. The keys would otherwise be stored verbatim and served at install, and registry choice stays with the installer, never with stored bytes. A rejection also means a hand-built frame. Fix: delete both keys from `Project.config` and republish the next version (versions are immutable, so the fix ships as the next number).
 
-- **Top-level `registry`/`registries` keys.** A `Project.config` that carries either key trips the count. The CLI strips these keys when it packs, so a count here also means a hand-built frame — and the keys would otherwise be stored verbatim and served at install. Registry choice stays with the installer, never with stored bytes. Fix: delete both keys from `Project.config` and republish the next version.
+The publish gate and the admin scan share one predicate over the whole-tree analysis verdict, so the scan count reads zero by construction: anything the scan would count, the gate rejects first.
+
+Stored violators — packages published before the gate — get `critical` advisories naming the cause and the remedy; `rnx audit` fails on them. An advisory informs, it never yanks: removal still runs the normal yank ladder.
 
 ## Runtime imports are rejected, not counted
 
