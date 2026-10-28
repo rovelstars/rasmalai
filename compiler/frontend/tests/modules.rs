@@ -425,7 +425,7 @@ fn resolve_renames_module_const_used_in_own_fn() {
     }).collect();
     assert!(consts.contains(&"lib.K".to_string()), "const decl must mangle with its uses: {consts:?}");
     assert!(!consts.contains(&"K".to_string()), "stale short const decl: {consts:?}");
-    let mut diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check_with_files(&m, &frontend::modules::merged_decl_files(&g));
     diags.extend(frontend::security::verify_runtime_imports(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
 }
@@ -444,7 +444,7 @@ fn namespace_as_value_becomes_new() {
         Decl::Class { name, .. } => name == "__ns_lib.ns",
         _ => false,
     }));
-    let mut diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check_with_files(&m, &frontend::modules::merged_decl_files(&g));
     diags.extend(frontend::security::verify_runtime_imports(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
 }
@@ -453,11 +453,11 @@ fn namespace_as_value_becomes_new() {
 fn missing_import_in_dep_fails_despite_user_import() {
     let dir = tree("isolation", &[
         ("main.rnx", "import { useClock } from \"./liba\";\nimport { Clock } from \"@std/time\";\nfn Main(): Int { return 0; }\n"),
-        ("liba.rnx", "export fn useClock(): Clock { return Clock.mono(); }\n"),
+        ("liba.rnx", "fn useClock(): Clock { return Clock.mono(); }\n"),
     ]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     let m = g.resolve().unwrap();
-    let mut diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check_with_files(&m, &frontend::modules::merged_decl_files(&g));
     diags.extend(frontend::security::verify_runtime_imports(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "merged check is blind to the leak by design: {diags:?}");
     let iso = g.isolation_errors();
@@ -473,13 +473,13 @@ fn missing_import_in_dep_fails_despite_user_import() {
 fn sibling_type_use_without_import_fails() {
     let dir = tree("sibiso", &[
         ("main.rnx", "import { a } from \"./a\";\nimport { c } from \"./c\";\nfn Main(): Int { return a().id + c(); }\n"),
-        ("a.rnx", "export fn a(): Widget { return new Widget(1); }\n"),
+        ("a.rnx", "fn a(): Widget { return new Widget(1); }\n"),
         ("b.rnx", "class Widget { let id: Int; init(id: Int) { this.id = id; } }\nfn makeWidget(): Widget { return new Widget(1); }\n"),
         ("c.rnx", "import { Widget, makeWidget } from \"./b\";\nexport fn c(): Int { let w: Widget = makeWidget(); return w.id; }\n"),
     ]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
     let m = g.resolve().unwrap();
-    let mut diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check_with_files(&m, &frontend::modules::merged_decl_files(&g));
     diags.extend(frontend::security::verify_runtime_imports(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "merged check is blind to the leak by design: {diags:?}");
     let iso = g.isolation_errors();
@@ -564,7 +564,7 @@ fn packages_deep_nested_submodule() {
     assert!(names.contains(&"dep_math.src.folder.mod.modded".to_string()), "{names:?}");
     assert!(names.contains(&"dep_math.src.alt.index.indexed".to_string()), "{names:?}");
     assert!(names.contains(&"dep_math.src.lib.add".to_string()), "{names:?}");
-    let mut diags = frontend::semantic::check(&m);
+    let mut diags = frontend::semantic::check_with_files(&m, &frontend::modules::merged_decl_files(&g));
     diags.extend(frontend::security::verify_runtime_imports(&g));
     assert!(diags.iter().all(|x| x.code.is_warning()), "{diags:?}");
 }

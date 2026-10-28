@@ -1294,10 +1294,10 @@ fn finish_object(
 }
 
 pub fn emit_library(lir: &Module, name: &str, opt: OptLevel, target: Option<&str>) -> Result<Vec<u8>, Diagnostic> {
-    emit_library_with_debug(lir, name, opt, target, None)
+    emit_library_with_debug(lir, name, opt, target, None, "")
 }
 
-pub fn emit_library_with_debug(lir: &Module, name: &str, opt: OptLevel, target: Option<&str>, debug: Option<&DebugInfo>) -> Result<Vec<u8>, Diagnostic> {
+pub fn emit_library_with_debug(lir: &Module, name: &str, opt: OptLevel, target: Option<&str>, debug: Option<&DebugInfo>, lib_prefix: &str) -> Result<Vec<u8>, Diagnostic> {
     runtime::native::rnx_set_closure_epoch(0);
     for f in &lir.functions {
         check_supported(lir, f)?;
@@ -1313,6 +1313,49 @@ pub fn emit_library_with_debug(lir: &Module, name: &str, opt: OptLevel, target: 
     let version = version_target_for(target, release);
     let (module, funcs) = build_module(&context, lir, name, release, debug, version.as_deref())?;
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let ptr_t = context.ptr_type(inkwell::AddressSpace::default());
+    let void_t = context.void_type();
+    let ensure_init = decl_helper(&module, "rnx_ensure_init", void_t.fn_type(&[], false));
+    let export_push = decl_helper(&module, 
+        "rnx_export_push",
+        void_t.fn_type(&[ptr_t.into()], false),
+    );
+    let export_pop = decl_helper(&module, "rnx_export_pop", void_t.fn_type(&[], false));
+    let export_clear = decl_helper(&module, "rnx_export_clear", void_t.fn_type(&[], false));
+    let export_drain = decl_helper(&module, 
+        "rnx_export_drain",
+        context.i8_type().fn_type(&[], false),
+    );
+    let setjmp_fn = decl_helper(&module, 
+        "_setjmp",
+        context.i32_type().fn_type(&[ptr_t.into()], false),
+    );
+    {
+        use inkwell::attributes::{Attribute, AttributeLoc};
+        let twice = context.create_enum_attribute(
+            Attribute::get_named_enum_kind_id("returns_twice"),
+            0,
+        );
+        setjmp_fn.add_attribute(AttributeLoc::Function, twice);
+    }
+    let from_cstr = decl_helper(&module, 
+        "rnx_string_from_cstr",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+    );
+    let release_str = decl_helper(&module, 
+        "rnx_release_str",
+        void_t.fn_type(&[ptr_t.into()], false),
+    );
+    let helpers = CWrapperHelpers {
+        ensure_init,
+        export_push,
+        export_pop,
+        export_clear,
+        export_drain,
+        setjmp_fn,
+        from_cstr,
+        release_str,
+    };
     for (fi, f) in lir.functions.iter().enumerate() {
         if !f.is_pub {
             continue;
@@ -1330,7 +1373,12 @@ pub fn emit_library_with_debug(lir: &Module, name: &str, opt: OptLevel, target: 
             short.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
         internal.as_global_value().set_name(&format!("__rnx_impl_{fi}_{sanitized}"));
         internal.set_linkage(inkwell::module::Linkage::Internal);
-        emit_c_wrapper(&context, &module, internal, &short, &f.params, &f.ret, release)?;
+        let symbol = if lib_prefix.is_empty() {
+            short.clone()
+        } else {
+            format!("{lib_prefix}_{short}")
+        };
+        emit_c_wrapper(&context, &module, &helpers, internal, &short, &symbol, &f.params, &f.ret, release)?;
     }
     for (fi, f) in lir.functions.iter().enumerate() {
         if f.is_pub {
@@ -1347,6 +1395,14 @@ pub fn emit_library_with_debug(lir: &Module, name: &str, opt: OptLevel, target: 
     finish_object(&module, name, opt, target)
 }
 
+fn decl_helper<'ctx>(
+    module: &LlModule<'ctx>,
+    name: &str,
+    ty: inkwell::types::FunctionType<'ctx>,
+) -> FunctionValue<'ctx> {
+    module.get_function(name).unwrap_or_else(|| module.add_function(name, ty, None))
+}
+
 fn validate_c_export(f: &Function, short: &str) -> Result<(), Diagnostic> {
     if f.throws {
         return Err(Diagnostic::new(
@@ -1361,7 +1417,9 @@ fn validate_c_export(f: &Function, short: &str) -> Result<(), Diagnostic> {
         ));
     }
     for (i, p) in f.params.iter().enumerate() {
-        if !matches!(p, LirType::I64 | LirType::I8 | LirType::F64(_) | LirType::Bool | LirType::Str) {
+        let ok = matches!(p, LirType::I64 | LirType::I8 | LirType::F64(_) | LirType::Bool | LirType::Str)
+            || matches!(p, LirType::Pointer(inner) if matches!(inner.as_ref(), LirType::I8));
+        if !ok {
             return Err(Diagnostic::new(
                 Code::E108,
                 format!("pub fn `{short}` param {i} has non-C-ABI type"),
@@ -1377,11 +1435,24 @@ fn validate_c_export(f: &Function, short: &str) -> Result<(), Diagnostic> {
     Ok(())
 }
 
+struct CWrapperHelpers<'ctx> {
+    ensure_init: FunctionValue<'ctx>,
+    export_push: FunctionValue<'ctx>,
+    export_pop: FunctionValue<'ctx>,
+    export_clear: FunctionValue<'ctx>,
+    export_drain: FunctionValue<'ctx>,
+    setjmp_fn: FunctionValue<'ctx>,
+    from_cstr: FunctionValue<'ctx>,
+    release_str: FunctionValue<'ctx>,
+}
+
 fn emit_c_wrapper<'ctx>(
     context: &'ctx Context,
     module: &LlModule<'ctx>,
+    helpers: &CWrapperHelpers<'ctx>,
     internal: FunctionValue<'ctx>,
     short: &str,
+    symbol: &str,
     params: &[LirType],
     ret: &LirType,
     release: bool,
@@ -1398,6 +1469,7 @@ fn emit_c_wrapper<'ctx>(
             LirType::F64(_) => f64t.into(),
             LirType::Bool => i8t.into(),
             LirType::Str => ptr_t.into(),
+            LirType::Pointer(inner) if matches!(inner.as_ref(), LirType::I8) => ptr_t.into(),
             _ => {
                 return Err(Diagnostic::new(
                     Code::E108,
@@ -1418,27 +1490,25 @@ fn emit_c_wrapper<'ctx>(
             ));
         }
     };
-    let wrap = module.add_function(short, cty, None);
+    let wrap = module.add_function(symbol, cty, None);
     if release {
-        wrap.set_section(Some(&format!(".text.{short}")));
+        wrap.set_section(Some(&format!(".text.{symbol}")));
     }
-    let from_cstr = if params.iter().any(|p| matches!(p, LirType::Str)) {
-        Some(module.add_function(
-            "rnx_string_from_cstr",
-            ptr_t.fn_type(&[ptr_t.into()], false),
-            None,
-        ))
-    } else {
-        None
-    };
-    let release_str = if from_cstr.is_some() {
-        Some(module.add_function("rnx_release_str", void_t.fn_type(&[ptr_t.into()], false), None))
-    } else {
-        None
-    };
+    let ensure_init = helpers.ensure_init;
+    let export_push = helpers.export_push;
+    let export_pop = helpers.export_pop;
+    let export_clear = helpers.export_clear;
+    let export_drain = helpers.export_drain;
+    let setjmp_fn = helpers.setjmp_fn;
+    let from_cstr = helpers.from_cstr;
+    let release_str = helpers.release_str;
     let builder = context.create_builder();
-    let bb = context.append_basic_block(wrap, "entry");
-    builder.position_at_end(bb);
+    let entry = context.append_basic_block(wrap, "entry");
+    let run_bb = context.append_basic_block(wrap, "run");
+    let panic_bb = context.append_basic_block(wrap, "panic");
+    builder.position_at_end(entry);
+    builder.build_call(ensure_init, &[], "").map_err(err)?;
+    builder.build_call(export_clear, &[], "").map_err(err)?;
     let mut args: Vec<BasicMetadataValueEnum> = Vec::with_capacity(params.len());
     let mut strings: Vec<PointerValue> = Vec::new();
     for (i, p) in params.iter().enumerate() {
@@ -1458,7 +1528,7 @@ fn emit_c_wrapper<'ctx>(
             }
             LirType::Str => {
                 let site = builder
-                    .build_call(from_cstr.expect("str converter"), &[pv.into()], "")
+                    .build_call(from_cstr, &[pv.into()], "")
                     .map_err(err)?;
                 let ptr = match site.try_as_basic_value() {
                     ValueKind::Basic(v) => v.into_pointer_value(),
@@ -1473,6 +1543,12 @@ fn emit_c_wrapper<'ctx>(
                 args.push(n.into());
                 strings.push(ptr);
             }
+            LirType::Pointer(inner) if matches!(inner.as_ref(), LirType::I8) => {
+                let addr = builder
+                    .build_ptr_to_int(pv.into_pointer_value(), i64t, "p")
+                    .map_err(err)?;
+                args.push(addr.into());
+            }
             _ => {
                 return Err(Diagnostic::new(
                     Code::E108,
@@ -1481,11 +1557,48 @@ fn emit_c_wrapper<'ctx>(
             }
         }
     }
-    let site = builder.build_call(internal, &args, "r").map_err(err)?;
-    if let Some(free) = release_str {
-        for s in &strings {
-            builder.build_call(free, &[(*s).into()], "").map_err(err)?;
+    let buf = builder.build_alloca(i8t.array_type(512), "trap").map_err(err)?;
+    let slot = builder.build_bit_cast(buf, ptr_t, "slot").map_err(err)?.into_pointer_value();
+    let site = builder.build_call(setjmp_fn, &[slot.into()], "sj").map_err(err)?;
+    let jumped = match site.try_as_basic_value() {
+        ValueKind::Basic(v) => v.into_int_value(),
+        ValueKind::Instruction(_) => {
+            return Err(Diagnostic::new(Code::E108, "llvm subset: setjmp returned void"));
         }
+    };
+    let panicked = builder
+        .build_int_compare(inkwell::IntPredicate::NE, jumped, context.i32_type().const_zero(), "panicked")
+        .map_err(err)?;
+    builder.build_conditional_branch(panicked, panic_bb, run_bb).map_err(err)?;
+    builder.position_at_end(run_bb);
+    builder.build_call(export_push, &[slot.into()], "").map_err(err)?;
+    let site = builder.build_call(internal, &args, "r").map_err(err)?;
+    builder.build_call(export_pop, &[], "").map_err(err)?;
+    let drained_i8 = match builder
+        .build_call(export_drain, &[], "drained")
+        .map_err(err)?
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(v) => v.into_int_value(),
+        ValueKind::Instruction(_) => {
+            return Err(Diagnostic::new(Code::E108, "llvm subset: drain returned void"));
+        }
+    };
+    let drained = builder
+        .build_int_compare(
+            inkwell::IntPredicate::NE,
+            drained_i8,
+            context.i8_type().const_zero(),
+            "haserr",
+        )
+        .map_err(err)?;
+    let ok_bb = context.append_basic_block(wrap, "ok");
+    builder
+        .build_conditional_branch(drained, panic_bb, ok_bb)
+        .map_err(err)?;
+    builder.position_at_end(ok_bb);
+    for s in &strings {
+        builder.build_call(release_str, &[(*s).into()], "").map_err(err)?;
     }
     match ret {
         LirType::I64 | LirType::I8 => {
@@ -1516,6 +1629,27 @@ fn emit_c_wrapper<'ctx>(
             };
             let b = builder.build_int_truncate(v, i8t, "b").map_err(err)?;
             builder.build_return(Some(&b)).map_err(err)?;
+        }
+        _ => {
+            builder.build_return(None).map_err(err)?;
+        }
+    }
+    builder.position_at_end(panic_bb);
+    for s in &strings {
+        builder.build_call(release_str, &[(*s).into()], "").map_err(err)?;
+    }
+    match ret {
+        LirType::I64 | LirType::I8 => {
+            let sentinel = i64t.const_int(i64::MIN as u64, false);
+            builder.build_return(Some(&sentinel)).map_err(err)?;
+        }
+        LirType::F64(_) => {
+            let nan = f64t.const_float(f64::NAN);
+            builder.build_return(Some(&nan)).map_err(err)?;
+        }
+        LirType::Bool => {
+            let no = i8t.const_zero();
+            builder.build_return(Some(&no)).map_err(err)?;
         }
         _ => {
             builder.build_return(None).map_err(err)?;

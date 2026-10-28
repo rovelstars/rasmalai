@@ -162,7 +162,7 @@ fn env_flag_enabled(name: &str) -> bool {
     }
 }
 
-pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, deny_perf_lints: Vec<String>, show_perf_notes: bool, fix: bool, fix_force: bool, fix_keep_backup: bool, expand_macros: bool, verbose: bool, quiet: bool, prefer: frontend::native::NativePrefer) {
+pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, lib_prefix: Option<String>, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, deny_perf_lints: Vec<String>, show_perf_notes: bool, fix: bool, fix_force: bool, fix_keep_backup: bool, expand_macros: bool, verbose: bool, quiet: bool, prefer: frontend::native::NativePrefer) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let deny_raw: Vec<String> = if deny_perf_lints.is_empty() {
@@ -179,6 +179,10 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             };
             if !deny.is_empty() && (lib || emit_obj) {
                 eprintln!("error: --deny-perf-lints is only supported for executable builds");
+                std::process::exit(2);
+            }
+            if lib_prefix.is_some() && !lib {
+                eprintln!("error: --lib-prefix needs --lib");
                 std::process::exit(2);
             }
             if fix && (lib || emit_obj) {
@@ -274,7 +278,30 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             }
             if lib {
                 let theme = diagnostics::theme::AuraTheme::active();
-                let built = match cli::build_lib_files_cfg(&input, release, opt_level, target_triple.as_deref(), &cfg) {
+                let mut input = input.clone();
+                let anchor = std::path::Path::new(&input)
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                if let Some(root) = frontend::project::find_project_root(&anchor)
+                    && let Ok(Some(cfg)) = frontend::project::ProjectConfig::load_from_dir(&root)
+                    && let Some(lib_entry) = cfg.entries.lib.as_deref()
+                {
+                    input = root.join(lib_entry).to_string_lossy().into_owned();
+                }
+                if let Some(prefix) = lib_prefix.as_deref()
+                    && !frontend::header::is_valid_prefix(prefix)
+                {
+                    println!(
+                        "{}",
+                        diagnostics::Diagnostic::new(
+                            diagnostics::Code::E108,
+                            format!("invalid --lib-prefix `{prefix}`; use [A-Za-z_][A-Za-z0-9_]*"),
+                        )
+                    );
+                    std::process::exit(1);
+                }
+                let built = match cli::build_lib_files_cfg(&input, release, opt_level, target_triple.as_deref(), lib_prefix.as_deref().unwrap_or(""), &cfg) {
                     Ok(b) => b,
                     Err(errs) => {
                         print!(

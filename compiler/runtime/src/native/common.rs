@@ -49,6 +49,9 @@ pub unsafe extern "C" fn rnx_assert(cond: i64, msg_bits: u64) {
     if assert_strict() {
         if msg_bits != 0 {
             let text = native_str(msg_bits as *const u8);
+            if super::export::export_depth() > 0 {
+                super::export::export_trap(text);
+            }
             let _ = writeln!(std::io::stderr(), "{text}");
         }
         let _ = std::io::stdout().flush();

@@ -68,7 +68,8 @@ pub fn check_source(src: &str) -> CheckReport {
     }
     let mut warnings: Vec<Diagnostic> = Vec::new();
     let mut kept: Vec<Diagnostic> = Vec::new();
-    for d in frontend::semantic::check(&module) {
+    let decl_files = frontend::modules::merged_decl_files(&graph);
+    for d in frontend::semantic::check_with_files(&module, &decl_files) {
         if d.code.is_warning() {
             warnings.push(d);
         } else {
@@ -497,7 +498,8 @@ pub fn load_program_cfg(
     let mut errors = frontend::desugar::desugar(&mut module);
     let mut warnings = Vec::new();
     if errors.is_empty() {
-        for d in frontend::semantic::check(&module) {
+        let decl_files = frontend::modules::merged_decl_files(&graph);
+        for d in frontend::semantic::check_with_files(&module, &decl_files) {
             if d.code.is_warning() {
                 warnings.push(d);
             } else {
@@ -593,16 +595,19 @@ fn collect_exports(
         if f.is_async {
             return Err(Diagnostic::new(
                 Code::E108,
-                format!("pub fn `{short}` is async and has no C ABI"),
+                format!("export fn `{short}` is async and has no C ABI"),
             )
             .with_span(decl.span));
         }
         if f.throws {
             return Err(Diagnostic::new(
                 Code::E108,
-                format!("pub fn `{short}` cannot throw in --lib mode"),
+                format!("export fn `{short}` cannot throw across the C boundary"),
             )
-            .with_span(decl.span));
+            .with_span(decl.span)
+            .with_hint(
+                "return a status code or sentinel and report details with rnx_last_error()",
+            ));
         }
         let mut params = Vec::with_capacity(f.params.len());
         for p in &f.params {
@@ -611,7 +616,10 @@ fn collect_exports(
                 None => {
                     return Err(Diagnostic::new(
                         Code::E108,
-                        format!("pub fn `{short}` param `{}` needs a C-ABI type annotation", p.name),
+                        format!(
+                            "export fn `{short}` param `{}` needs a C-ABI type annotation",
+                            p.name
+                        ),
                     )
                     .with_span(decl.span));
                 }
@@ -620,33 +628,57 @@ fn collect_exports(
                 Some(CABI::Void) | None => {
                     return Err(Diagnostic::new(
                         Code::E108,
-                        format!("pub fn `{short}` param `{}` has non-C-ABI type", p.name),
+                        format!(
+                            "export fn `{short}` param `{}` has non-C-ABI type; use Int, Float, Byte, Bool, String, or Pointer<Byte>",
+                            p.name
+                        ),
                     )
                     .with_span(decl.span));
                 }
                 Some(c) => params.push((p.name.clone(), c)),
             }
         }
+        for (name, c) in &params {
+            if !matches!(c, CABI::PtrByte) {
+                continue;
+            }
+            let want = format!("{name}_len");
+            let has_len = params.iter().any(|(n, t)| n == &want && matches!(t, CABI::Int));
+            if !has_len {
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!(
+                        "export fn `{short}` param `{name}` is Pointer<Byte> without an explicit length; add `{want}: Int`",
+                    ),
+                )
+                .with_span(decl.span));
+            }
+        }
         let ret = match &f.ret {
             Some(t) => match CABI::of_ast(t) {
-                Some(CABI::Str) | None => {
+                Some(CABI::Int) => CABI::Int,
+                Some(CABI::Float) => CABI::Float,
+                Some(CABI::Bool) => CABI::Bool,
+                Some(CABI::Void) => CABI::Void,
+                _ => {
                     return Err(Diagnostic::new(
                         Code::E108,
-                        format!("pub fn `{short}` has non-C-ABI return type"),
+                        format!(
+                            "export fn `{short}` has non-C-ABI return type; use Int, Float, Byte, Bool, or Void",
+                        ),
                     )
                     .with_span(decl.span));
                 }
-                Some(c) => c,
             },
             None => {
                 return Err(Diagnostic::new(
                     Code::E108,
-                    format!("pub fn `{short}` needs a C-ABI return type annotation"),
+                    format!("export fn `{short}` needs a C-ABI return type annotation"),
                 )
                 .with_span(decl.span));
             }
         };
-        out.push(ExportedFn { name: short, params, ret });
+        out.push(ExportedFn { name: short, params, ret, docs: f.docs.clone() });
     }
     Ok(out)
 }
@@ -667,7 +699,7 @@ pub fn build_lib_files(
     opt_level: u8,
     target: Option<&str>,
 ) -> Result<LibBuild, Vec<diagnostics::Diagnostic>> {
-    build_lib_files_cfg(path, release, opt_level, target, &CompileConfig::default())
+    build_lib_files_cfg(path, release, opt_level, target, "", &CompileConfig::default())
 }
 
 pub fn build_lib_files_cfg(
@@ -675,6 +707,7 @@ pub fn build_lib_files_cfg(
     release: bool,
     opt_level: u8,
     target: Option<&str>,
+    lib_prefix: &str,
     cfg: &CompileConfig,
 ) -> Result<LibBuild, Vec<diagnostics::Diagnostic>> {
     let opt_level = if release { opt_level.max(1) } else { opt_level };
@@ -740,7 +773,8 @@ pub fn build_lib_files_cfg(
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         let mut warnings = Vec::new();
-        for d in frontend::semantic::check(&module) {
+        let decl_files = frontend::modules::merged_decl_files(&graph);
+        for d in frontend::semantic::check_with_files(&module, &decl_files) {
             if d.code.is_warning() {
                 warnings.push(d);
             } else {
@@ -778,12 +812,19 @@ pub fn build_lib_files_cfg(
         if release { llvm::codegen::OptLevel::Release } else { llvm::codegen::OptLevel::Dev };
     let debug = if release { None } else { debug.as_ref() };
     profiler.start("codegen");
-    let object = llvm::codegen::emit_library_with_debug(&lowered, "rnx_module", opt, target, debug)
-        .map_err(|e| vec![e]);
+    let object = llvm::codegen::emit_library_with_debug(
+        &lowered,
+        "rnx_module",
+        opt,
+        target,
+        debug,
+        lib_prefix,
+    )
+    .map_err(|e| vec![e]);
     profiler.stop();
     let object = object?;
     profiler.finish();
-    let header = frontend::header::generate_c_header(&package, &exports);
+    let header = frontend::header::generate_c_header_prefixed(&package, &exports, lib_prefix);
     Ok(LibBuild { object, header, package, exports })
 }
 
@@ -2025,7 +2066,8 @@ pub fn load_test_program_cfg(
     }
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
-        for d in frontend::semantic::check(&module) {
+        let decl_files = frontend::modules::merged_decl_files(&graph);
+        for d in frontend::semantic::check_with_files(&module, &decl_files) {
             if !d.code.is_warning() {
                 errors.push(d);
             }
@@ -2122,7 +2164,8 @@ pub fn load_bench_program_cfg(
     }
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
-        for d in frontend::semantic::check(&module) {
+        let decl_files = frontend::modules::merged_decl_files(&graph);
+        for d in frontend::semantic::check_with_files(&module, &decl_files) {
             if !d.code.is_warning() {
                 errors.push(d);
             }

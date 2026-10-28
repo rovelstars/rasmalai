@@ -2747,6 +2747,9 @@ pub unsafe extern "C" fn rnx_fatal_span(msg: *const u8, start: u64, end: u64) {
         return;
     }
     let text = native_str(msg);
+    if super::export::export_depth() > 0 {
+        super::export::export_trap(text);
+    }
     PENDING_FATAL.with(|c| {
         let cur = c.take();
         match cur {

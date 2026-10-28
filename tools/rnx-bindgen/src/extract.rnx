@@ -74,7 +74,7 @@ fn isFloatType(t: String): Bool {
     return false;
 }
 
-export fn mapType(t: String): String {
+fn mapType(t: String): String {
     if t == "void" { return "Void"; }
     if t.indexOf("*") != -1 { return "Pointer<Byte>"; }
     if t.indexOf("(") != -1 { return "Pointer<Byte>"; }
@@ -89,7 +89,7 @@ export fn mapType(t: String): String {
     return "Pointer<Byte>";
 }
 
-export fn mapFieldType(t: String): String {
+fn mapFieldType(t: String): String {
     if t.indexOf("[") != -1 { return ""; }
     if t.indexOf("*") != -1 { return "Pointer<Byte>"; }
     if t.indexOf("(") != -1 { return "Pointer<Byte>"; }
@@ -143,7 +143,7 @@ fn isKeyword(name: String): Bool {
     return false;
 }
 
-export fn sanitize(name: String): String {
+fn sanitize(name: String): String {
     if name.length() == 0 { return "arg"; }
     if isKeyword(name) { return "_" + name; }
     return name;
@@ -203,7 +203,7 @@ fn fromSystemHeader(node: Map<String, Any>): Bool {
     return false;
 }
 
-export fn matchPrefix(name: String, prefixes: Array<String>): Bool {
+fn matchPrefix(name: String, prefixes: Array<String>): Bool {
     if prefixes.length() == 0 { return true; }
     let i = 0;
     while i < prefixes.length() {
@@ -218,7 +218,7 @@ fn foldLower(code: Int): Int {
     return code;
 }
 
-export fn matchPrefixFold(name: String, prefixes: Array<String>): Bool {
+fn matchPrefixFold(name: String, prefixes: Array<String>): Bool {
     if prefixes.length() == 0 { return true; }
     let i = 0;
     while i < prefixes.length() {
@@ -265,7 +265,7 @@ fn isVariadic(qual: String): Bool {
     return qual.slice(qual.length() - 4, qual.length()) == "...)";
 }
 
-export fn extractFunctions(astJson: String, prefixes: Array<String>): Array<FnDecl> {
+fn extractFunctions(astJson: String, prefixes: Array<String>): Array<FnDecl> {
     let found: Array<FnDecl> = [];
     let top: Any = JSON.parse(astJson);
     let root = JSON.asMap(top);
@@ -334,7 +334,7 @@ fn collectFields(node: Map<String, Any>, out: Array<StructField>): Bool {
     return true;
 }
 
-export fn extractStructs(astJson: String, prefixes: Array<String>): Array<StructDecl> {
+fn extractStructs(astJson: String, prefixes: Array<String>): Array<StructDecl> {
     let structs: Array<StructDecl> = [];
     let top: Any = JSON.parse(astJson);
     let root = JSON.asMap(top);
@@ -417,7 +417,7 @@ fn defineValueOk(text: String, pos: Int): Bool {
     return c == 32 || c == 9 || c == 47;
 }
 
-export fn extractDefines(headerText: String, prefixes: Array<String>): Array<ConstDecl> {
+fn extractDefines(headerText: String, prefixes: Array<String>): Array<ConstDecl> {
     let consts: Array<ConstDecl> = [];
     let lines = headerText.split("\n");
     let i = 0;

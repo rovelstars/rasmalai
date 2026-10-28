@@ -78,7 +78,8 @@ pub fn build_program(    path: &Path,
     frontend::harness::strip_benches(&mut module);
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
-        for d in frontend::semantic::check(&module) {
+        let decl_files = frontend::modules::merged_decl_files(&graph);
+        for d in frontend::semantic::check_with_files(&module, &decl_files) {
             if d.code.is_warning() {
                 continue;
             }

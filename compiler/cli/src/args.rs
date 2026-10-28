@@ -77,6 +77,9 @@ pub enum Command {
         /// Build a static library instead of an executable
         #[arg(long)]
         lib: bool,
+        /// Prefix every C export symbol with `<prefix>_` (only with --lib)
+        #[arg(long = "lib-prefix")]
+        lib_prefix: Option<String>,
         /// Emit an unlinked object file and skip linking
         #[arg(long)]
         emit_obj: bool,

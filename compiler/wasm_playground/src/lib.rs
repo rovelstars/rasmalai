@@ -13,7 +13,10 @@ fn check_merged(source: &str) -> Result<(Vec<Diagnostic>, Vec<Diagnostic>), Diag
     let graph = frontend::modules::ModuleGraph::from_source_graph(source)?;
     let mut module = graph.resolve()?;
     let mut diags = frontend::desugar::desugar(&mut module);
-    diags.extend(frontend::semantic::check(&module));
+    diags.extend(frontend::semantic::check_with_files(
+        &module,
+        &frontend::modules::merged_decl_files(&graph),
+    ));
     diags.extend(frontend::security::verify_runtime_imports(&graph));
     let mut warnings = Vec::new();
     let mut errors = Vec::new();

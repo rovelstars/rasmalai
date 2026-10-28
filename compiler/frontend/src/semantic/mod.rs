@@ -24,6 +24,7 @@ pub fn check_with_files(module: &Module, files: &DeclFiles) -> Vec<Diagnostic> {
     check_w108(module, &mut diags, files);
     check_cyclic_defaults(module, &mut diags, files);
     check_scopes(module, &mut diags, files);
+    check_export_cabi(module, &mut diags, files);
     let taint_from = diags.len();
     diags.extend(crate::unsafe_taint::check_module(module));
     for d in &mut diags[taint_from..] {
@@ -732,6 +733,148 @@ fn run_scope_check_with<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck
 
 pub fn prelude_uses(module: &Module) -> BTreeSet<String> {
     run_scope_check(module, &DeclFiles::new()).used_prelude
+}
+
+fn check_export_cabi(module: &Module, diags: &mut Vec<Diagnostic>, files: &DeclFiles) {
+    use crate::header::CABI;
+    let mut seen = BTreeSet::new();
+    for decl in &module.decls {
+        let f = match &decl.node {
+            Decl::Fn(f) => f,
+            _ => continue,
+        };
+        if f.access != Access::Export || f.is_test {
+            continue;
+        }
+        if let Some(path) = decl_file(files, decl.span)
+            && path.to_string_lossy().starts_with("@std/")
+        {
+            continue;
+        }
+        let from = diags.len();
+        let short = f.name.rsplit('.').next().unwrap_or(&f.name).to_string();
+        if !seen.insert(short.clone()) {
+            diags.push(
+                Diagnostic::new(Code::E108, format!("duplicate C export `{short}`"))
+                    .with_span(decl.span),
+            );
+        }
+        if f.is_async {
+            diags.push(
+                Diagnostic::new(
+                    Code::E108,
+                    format!("export fn `{short}` is async and has no C ABI"),
+                )
+                .with_span(decl.span),
+            );
+        } else if f.throws {
+            diags.push(
+                Diagnostic::new(
+                    Code::E108,
+                    format!("export fn `{short}` cannot throw across the C boundary"),
+                )
+                .with_span(decl.span)
+                .with_hint(
+                    "return a status code or sentinel and report details with rnx_last_error()",
+                ),
+            );
+        } else {
+            let mut ok = true;
+            for p in &f.params {
+                let t = match &p.ty {
+                    Some(t) => t,
+                    None => {
+                        diags.push(
+                            Diagnostic::new(
+                                Code::E108,
+                                format!(
+                                    "export fn `{short}` param `{}` needs a C-ABI type annotation",
+                                    p.name
+                                ),
+                            )
+                            .with_span(decl.span),
+                        );
+                        ok = false;
+                        continue;
+                    }
+                };
+                match CABI::of_ast(t) {
+                    Some(CABI::Void) | None => {
+                        let shown = ty_name(t).unwrap_or_else(|| "unknown".to_string());
+                        diags.push(
+                            Diagnostic::new(
+                                Code::E108,
+                                format!(
+                                    "export fn `{short}` param `{}` has non-C-ABI type `{shown}`; use Int, Float, Byte, Bool, String, or Pointer<Byte>",
+                                    p.name
+                                ),
+                            )
+                            .with_span(decl.span),
+                        );
+                        ok = false;
+                    }
+                    _ => {}
+                }
+            }
+            if ok {
+                for p in &f.params {
+                    let is_ptr = p
+                        .ty
+                        .as_ref()
+                        .is_some_and(|t| matches!(CABI::of_ast(t), Some(CABI::PtrByte)));
+                    if !is_ptr {
+                        continue;
+                    }
+                    let want = format!("{}_len", p.name);
+                    let has_len = f.params.iter().any(|q| {
+                        q.name == want
+                            && q.ty
+                                .as_ref()
+                                .is_some_and(|t| matches!(CABI::of_ast(t), Some(CABI::Int)))
+                    });
+                    if !has_len {
+                        diags.push(
+                            Diagnostic::new(
+                                Code::E108,
+                                format!(
+                                    "export fn `{short}` param `{}` is Pointer<Byte> without an explicit length; add `{want}: Int`",
+                                    p.name
+                                ),
+                            )
+                            .with_span(decl.span),
+                        );
+                    }
+                }
+            }
+            match &f.ret {
+                None => {
+                    diags.push(
+                        Diagnostic::new(
+                            Code::E108,
+                            format!("export fn `{short}` needs a C-ABI return type annotation"),
+                        )
+                        .with_span(decl.span),
+                    );
+                }
+                Some(t) => match CABI::of_ast(t) {
+                    Some(CABI::Int) | Some(CABI::Float) | Some(CABI::Bool) | Some(CABI::Void) => {}
+                    _ => {
+                        let shown = ty_name(t).unwrap_or_else(|| "unknown".to_string());
+                        diags.push(
+                            Diagnostic::new(
+                                Code::E108,
+                                format!(
+                                    "export fn `{short}` has non-C-ABI return type `{shown}`; use Int, Float, Byte, Bool, or Void",
+                                    ),
+                            )
+                            .with_span(decl.span),
+                        );
+                    }
+                },
+            }
+        }
+        tag_new(&mut *diags, from, decl_file(files, decl.span));
+    }
 }
 
 fn check_scopes(module: &Module, diags: &mut Vec<Diagnostic>, files: &DeclFiles) {

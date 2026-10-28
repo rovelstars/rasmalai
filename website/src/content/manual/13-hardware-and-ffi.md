@@ -123,7 +123,15 @@ unsafe {
 
 ## Shipping C-compatible libraries
 
-The reverse direction — calling Rasmalai from C — is `rnx build --lib`. Top-level `export fn` items with C-compatible signatures (`Int`/`Float`/`Bool`/`Void`, `String` params converted from `const char*`) compile to C-ABI wrappers in a static archive bundled with the runtime, plus a `<basename>.h` header with `RNX_<PACKAGE>_H` guards. Any other type in an `export` signature fails with `E108`, keeping the boundary honest by construction. (`pub`/`public` still parse as deprecated aliases with `W204`.)
+The reverse direction — calling Rasmalai from C — is `rnx build --lib`. It compiles `entries.lib` (a passed path is a fallback only when the manifest names no lib entry) to a static archive plus a `<basename>.h` header, instead of an executable. Normal builds never provide C symbols.
+
+`export` is the only opt-in: every top-level `export fn` must already be C-representable, enforced at check time with `E108` in all builds. Async functions, throwing functions, unannotated or `Void` parameters, and anything outside `Int`/`Float`/`Byte`/`Bool`/`String`/`Pointer<Byte>` (params) and `Int`/`Float`/`Byte`/`Bool`/`Void` (returns) fail with a diagnostic naming the function and parameter. Each `Pointer<Byte>` parameter needs a sibling `<name>_len: Int` length. (`pub`/`public` still parse as deprecated aliases with `W204`.)
+
+Each export becomes a C wrapper with a true C signature (`Int` to `int64_t`, `Float` to `double`, `Bool` to `bool`, `Void` to `void`, `String` params to `const char*` copied in for the call, `Pointer<Byte>` to `const uint8_t*` borrowed for the call only). The header carries `RNX_<PACKAGE>_H` guards, `RNX_ABI_VERSION`, `rnx_init`/`rnx_last_error` declarations, and any `/** */` doc comments from the exports. `--lib-prefix <p>` renames every export to `p_<name>`; bare names stay the default.
+
+Ownership: the host owns every buffer it passes in. Borrowed pointers are valid for the call only — copy what you keep. Nothing heap-owned crosses back: `String` and `Pointer` returns are rejected, and throwing exports are rejected at compile time.
+
+Embedding: `rnx_init(argc, argv)` is available for argv control, but a host that never calls it still works — the first wrapper call runs a thread-safe once-guard that installs guard pages and readies the runtime. Wrappers never unwind or abort into the host: a panic or uncaught throw inside an export returns the sentinel for its type (`INT64_MIN`, `false`, quiet NaN, nothing for `Void`) and stores the message for `rnx_last_error()`, which is per-thread, cleared on entry, and carries only the message. Check it after any sentinel return.
 
 ## Auditing the surface
 
