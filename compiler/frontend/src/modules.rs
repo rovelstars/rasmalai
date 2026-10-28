@@ -1888,6 +1888,14 @@ fn resolve_std_with_registries(
         clear_std_overlay(&virtual_path);
         return Ok((virtual_path, None, meta));
     }
+    if crate::sysroot::has_std_source(rest) {
+        clear_std_overlay(&virtual_path);
+        return Ok((virtual_path, None, meta));
+    }
+    if let Some(err) = crate::sysroot::validation_error() {
+        return Err(Diagnostic::new(Code::E108, format!("invalid sysroot: {err}"))
+            .with_hint("point RNX_SYSROOT or --sysroot at a sysroot root carrying sysroot.json"));
+    }
     let (default_owned, owned_overrides, explicit, locked) = std_ctx_for(from, &pkg);
     let default_ref = default.or(default_owned.as_ref());
     let mut merged = owned_overrides;
@@ -1897,8 +1905,8 @@ fn resolve_std_with_registries(
     let base = crate::fetch::registry_base_for(&pkg, default_ref, &merged);
     let pin_ver = crate::stdlib_seed::read_std_pin()
         .and_then(|pin| pin.packages.get(&pkg).cloned());
-    let cli = env!("CARGO_PKG_VERSION").to_string();
-    let requirement = explicit.clone().or_else(|| pin_ver.clone()).unwrap_or(cli);
+    let fallback = crate::stdvfs::pin_version();
+    let requirement = explicit.clone().or_else(|| pin_ver.clone()).unwrap_or(fallback);
     let pinned = locked.or_else(|| match &explicit {
         None => pin_ver.or_else(|| exact_version(&requirement)),
         Some(range) => exact_version(range),

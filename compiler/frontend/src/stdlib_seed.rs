@@ -268,6 +268,7 @@ pub fn missing_std_packages() -> Vec<String> {
 pub fn unpinned_std_version(pkg: &str) -> String {
     read_std_pin()
         .and_then(|pin| pin.packages.get(pkg).cloned())
+        .or_else(crate::sysroot::manifest_std_version)
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 

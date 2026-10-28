@@ -32,6 +32,7 @@ pub mod lsp_symbols;
 pub mod semantic_tokens;
 pub mod stdlib_seed;
 pub mod stdvfs;
+pub mod sysroot;
 pub mod modules;
 pub mod native;
 pub mod parser;
