@@ -1810,12 +1810,6 @@ impl<'a> Builder<'a> {
                 }
                 Ok((dst, Simple::Other))
             }
-            "t" => {
-                if args.is_empty() {
-                    return self.fail(self.err(Code::E108, "`t!` needs a string", span));
-                }
-                self.lower_expr(&args[0].node, args[0].span)
-            }
             _ => self.fail(self.err(Code::E108, format!("macro `{name}!` pending"), span)),
         }
     }
