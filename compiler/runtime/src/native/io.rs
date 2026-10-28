@@ -70,6 +70,9 @@ pub unsafe extern "C" fn rnx_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
             String::from_utf8_lossy(bytes).into_owned()
         }
     };
+    if super::export::export_depth() > 0 {
+        super::export::export_trap(msg);
+    }
     let _ = writeln!(std::io::stderr(), "rnx panic: {msg}");
     let trace = std::backtrace::Backtrace::capture();
     if matches!(trace.status(), std::backtrace::BacktraceStatus::Captured) {
@@ -814,9 +817,13 @@ pub fn path_remove_impl(path: &str) -> bool {
 }
 
 pub(crate) fn s301_trap(display: &str) -> ! {
-    eprintln!(
+    let msg = format!(
         "panic [S301]: Protected Path Violation\n  Attempted modifying access to protected file or directory: '{display}'\n  Protected project configurations and VCS metadata cannot be modified at runtime."
     );
+    if super::export::export_depth() > 0 {
+        super::export::export_trap(msg);
+    }
+    eprintln!("{msg}");
     let _ = std::io::stderr().flush();
     std::process::exit(1);
 }
@@ -1087,9 +1094,13 @@ pub(crate) fn spawn_allowed(cmd: &str) -> bool {
 }
 
 pub(crate) fn s401_trap(cmd: &str) -> ! {
-    eprintln!(
+    let msg = format!(
         "panic [S401]: Unapproved Child Process\n  Attempted to spawn `{cmd}` without a covering `sys:exec` grant.\n  Approve the binary in Project.deplock or run without `--locked`."
     );
+    if super::export::export_depth() > 0 {
+        super::export::export_trap(msg);
+    }
+    eprintln!("{msg}");
     let _ = std::io::stderr().flush();
     std::process::exit(1);
 }

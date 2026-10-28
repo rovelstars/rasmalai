@@ -10,7 +10,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scr
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
-    let c = frontend::semantic::check(&m);
+    let c = frontend::semantic::check_with_files(&m, &frontend::modules::merged_decl_files(&g));
     assert!(c.iter().all(|x| x.code.is_warning()), "{c:?}");
     let mut out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     lir::opt::optimize_lir(&mut out, 1, "Main");
@@ -27,7 +27,7 @@ fn sem_err(src: &str, tag: &str) -> diagnostics::Diagnostic {
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
-    let errs: Vec<_> = frontend::semantic::check(&m)
+    let errs: Vec<_> = frontend::semantic::check_with_files(&m, &frontend::modules::merged_decl_files(&g))
         .into_iter()
         .filter(|x| !x.code.is_warning())
         .collect();

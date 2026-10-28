@@ -166,6 +166,7 @@ pub(super) fn dispatch(
                 entry,
                 release,
                 lib,
+                lib_prefix,
                 emit_obj,
                 target: target_triple,
                 locked,
@@ -184,7 +185,7 @@ pub(super) fn dispatch(
                 fix_keep_backup,
                 expand_macros,
             } => {
-                run_build(path, entry, release, lib, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, deny_perf_lints, show_perf_notes, fix, fix_force, fix_keep_backup, expand_macros, verbose, quiet, prefer);
+                run_build(path, entry, release, lib, lib_prefix, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, deny_perf_lints, show_perf_notes, fix, fix_force, fix_keep_backup, expand_macros, verbose, quiet, prefer);
             }
             cli::args::Command::Init { name } => {
                 run_init(name);

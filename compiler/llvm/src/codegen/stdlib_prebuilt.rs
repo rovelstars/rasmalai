@@ -72,7 +72,8 @@ fn build_stdlib_object() -> Result<Vec<u8>, Diagnostic> {
         return Err(first_diag(desugared, "prebuilt stdlib: desugar failed"));
     }
     let mut errors = Vec::new();
-    for diag in frontend::semantic::check(&module) {
+    let decl_files = frontend::modules::merged_decl_files(&graph);
+    for diag in frontend::semantic::check_with_files(&module, &decl_files) {
         if diag.code.is_warning() {
             continue;
         }

@@ -1,6 +1,6 @@
 import { Process } from "@std/process";
 
-export fn runClangAst(header: String, includes: Array<String>, rawFlags: String): String {
+fn runClangAst(header: String, includes: Array<String>, rawFlags: String): String {
     let args: Array<String> = ["-Xclang", "-ast-dump=json", "-fsyntax-only", "-Wno-everything"];
     let i = 0;
     while i < includes.length() {

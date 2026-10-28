@@ -10,7 +10,7 @@ fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scr
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
-    let c = frontend::semantic::check(&m);
+    let c = frontend::semantic::check_with_files(&m, &frontend::modules::merged_decl_files(&g));
     assert!(c.iter().all(|x| x.code.is_warning()), "{c:?}");
     let mut out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     lir::opt::optimize_lir(&mut out, 1, "Main");
@@ -62,7 +62,7 @@ fn check_diagnostic(src: &str, want_code: &str, want_msg: &str, tag: &str) {
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
-    let c = frontend::semantic::check(&m);
+    let c = frontend::semantic::check_with_files(&m, &frontend::modules::merged_decl_files(&g));
     assert!(
         c.iter().any(|x| x.code.as_str() == want_code && x.message.contains(want_msg)),
         "{c:?}"
