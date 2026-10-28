@@ -8,8 +8,8 @@
 
 	let { children } = $props();
 
-	let modName = $derived(page.params.name ?? '');
-	let scope = $derived(page.params.scope ?? '');
+	let modName = $derived((page.data.module as string | undefined) ?? page.params.name ?? '');
+	let scope = $derived((page.data.scope as string | undefined) ?? page.params.scope ?? '');
 	let full = $derived(page.data.full ?? `${scope}/${modName}`);
 	let meta = $derived.by(() => {
 		if (scope !== '@std') return null;
@@ -44,7 +44,7 @@
 		{ slug: 'api', title: 'API Reference' }
 	];
 
-	let currentSection = $derived(page.params.page ?? 'overview');
+	let currentSection = $derived((page.data.page as string | undefined) ?? page.params.page ?? 'overview');
 	let tryCode = $derived.by(() => {
 		if (scope !== '@std') return null;
 		try {

@@ -13,6 +13,8 @@ import {
 	overviewMarkdown
 } from '../src/lib/docs/module-doc.ts';
 import { load as docsLoad } from '../src/routes/docs/[scope]/[name]/[page]/+page.server.ts';
+import { load as bareRedirectLoad } from '../src/routes/docs/[name]/+page.server.ts';
+import { load as twoSegServerLoad } from '../src/routes/docs/[scope]/[name]/+page.server.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const ROUTES = join(ROOT, 'src', 'routes');
@@ -266,5 +268,181 @@ describe('generalized docs serving', () => {
 		await rejects404(call('@acme', 'widgets', 'changelog'));
 		await rejects404(call('widgets', 'overview', 'api'));
 		await rejects404(call('@std', 'nope', 'overview'));
+	});
+
+	function bareDocJson() {
+		return JSON.stringify({
+			modules: [
+				{
+					name: 'barewidgets',
+					docs: { description: 'Barewidgets for every dashboard.', tags: [] },
+					functions: [{ name: 'make', docs: { description: 'Build one.', tags: [] } }],
+					classes: [],
+					enums: [],
+					constants: []
+				}
+			]
+		});
+	}
+
+	function bareGuidesJson() {
+		const r = normalizeGuideEntry({
+			slug: 'overview',
+			title: 'Barewidgets',
+			source: '# Barewidgets\n\nShipped guide body.\n'
+		});
+		assert.equal(r.ok, true);
+		if (!r.ok) throw new Error('fixture guide must normalize');
+		return JSON.stringify([r.entry]);
+	}
+
+	function headers() {
+		const seen: Record<string, string> = {};
+		return {
+			seen,
+			setHeaders(h: Record<string, string>) {
+				Object.assign(seen, h);
+			}
+		};
+	}
+
+	async function redirectTo(p: Promise<unknown>) {
+		try {
+			await p;
+		} catch (e) {
+			const r = e as { status?: number; location?: string };
+			if (typeof r?.status === 'number' && typeof r?.location === 'string') {
+				return { status: r.status, location: r.location };
+			}
+			throw e;
+		}
+		assert.fail('expected a redirect');
+	}
+
+	function bareRedirect(name: string) {
+		return Promise.resolve().then(() => bareRedirectLoad({ params: { name } } as never));
+	}
+
+	function bareServerCall(name: string, page: string, h: { setHeaders: (v: Record<string, string>) => void }) {
+		return twoSegServerLoad({
+			params: { scope: name, name: page },
+			platform: { env: fake.env },
+			setHeaders: h.setHeaders
+		} as never);
+	}
+
+	it('redirects /docs/<name> to its overview', async () => {
+		const r = await redirectTo(bareRedirect('barewidgets'));
+		assert.equal(r.status, 308);
+		assert.equal(r.location, '/docs/barewidgets/overview');
+	});
+
+	it('404s reserved and invalid bare redirect names', async () => {
+		for (const name of ['tracks', 'coming-from', 'Bad Name!', '', '@std']) {
+			await rejects404(bareRedirect(name));
+		}
+	});
+
+	it('keeps the scoped two-segment redirect intact', async () => {
+		const r = await redirectTo(
+			twoSegServerLoad({
+				params: { scope: '@acme', name: 'widgets' },
+				platform: { env: fake.env },
+				setHeaders: () => {}
+			} as never)
+		);
+		assert.equal(r.status, 308);
+		assert.equal(r.location, '/docs/@acme/widgets/overview');
+	});
+
+	it('404s bad two-segment shapes', async () => {
+		const h = headers();
+		const bareCall = (scope: string, name: string) =>
+			twoSegServerLoad({
+				params: { scope, name },
+				platform: { env: fake.env },
+				setHeaders: h.setHeaders
+			} as never);
+		await rejects404(bareCall('barewidgets', 'changelog'));
+		await rejects404(bareCall('Bad Name!', 'overview'));
+		await rejects404(bareCall('tracks', 'overview'));
+		await rejects404(bareCall('@acme', 'Bad!'));
+	});
+
+	it('serves a bare package with the scoped shape', async () => {
+		fake.reset();
+		await seedPackage(fake.env, 'barewidgets', '1.0.0', {
+			description: 'Barewidgets for every dashboard.',
+			docJson: bareDocJson(),
+			guidesJson: bareGuidesJson()
+		});
+		const h = headers();
+		const data = (await bareServerCall('barewidgets', 'overview', h)) as Record<string, unknown>;
+		assert.equal(data['full'], 'barewidgets');
+		assert.equal(data['scope'], '');
+		assert.equal(data['module'], 'barewidgets');
+		assert.equal(data['version'], '1.0.0');
+		assert.equal(data['description'], 'Barewidgets for every dashboard.');
+		assert.equal((data['mod'] as { name: string }).name, 'barewidgets');
+		assert.equal((data['guides'] as Array<{ slug: string }>)[0].slug, 'overview');
+		assert.equal(data['fromGuide'], 'overview');
+		assert.ok(String(data['html']).includes('Shipped guide body.'));
+		assert.equal(h.seen['Cache-Control'], 'public, max-age=300, s-maxage=300');
+		assert.equal(Object.keys(h.seen).some((k) => k.toLowerCase() === 'set-cookie'), false);
+	});
+
+	it('serves getting-started and api for bare packages', async () => {
+		fake.reset();
+		await seedPackage(fake.env, 'barewidgets', '1.0.0', {
+			description: 'Barewidgets for every dashboard.',
+			docJson: bareDocJson()
+		});
+		const start = (await bareServerCall('barewidgets', 'getting-started', headers())) as Record<
+			string,
+			unknown
+		>;
+		assert.ok(String(start['html']).includes('<code>barewidgets</code>'));
+		assert.ok(String(start['html']).includes('to your manifest dependencies'));
+		const api = (await bareServerCall('barewidgets', 'api', headers())) as Record<string, unknown>;
+		assert.notEqual(api['mod'], null);
+		assert.ok(
+			(api['toc'] as Array<{ id: string }>).some((t) => t.id === 'fn-make'),
+			'api toc carries the function anchor'
+		);
+	});
+
+	it('404s unknown bare packages, bad pages, and reserved names', async () => {
+		fake.reset();
+		const h = headers();
+		await rejects404(bareServerCall('missing', 'overview', h));
+		await seedPackage(fake.env, 'barewidgets', '1.0.0', { docJson: bareDocJson() });
+		await rejects404(bareServerCall('barewidgets', 'changelog', h));
+		await rejects404(bareServerCall('tracks', 'overview', h));
+		await rejects404(bareServerCall('Bad Name!', 'overview', h));
+		assert.deepEqual(h.seen, {});
+	});
+
+	it('returns a redirect for scoped packages, the page lives one level down', async () => {
+		fake.reset();
+		await seedPackage(fake.env, '@acme/widgets', '2.0.0', { docJson: bareDocJson() });
+		const r = await redirectTo(
+			twoSegServerLoad({
+				params: { scope: '@acme', name: 'widgets' },
+				platform: { env: fake.env },
+				setHeaders: () => {}
+			} as never)
+		);
+		assert.equal(r.status, 308);
+		assert.equal(r.location, '/docs/@acme/widgets/overview');
+	});
+
+	it('keeps the bare docs server load free of per-user branches', () => {
+		const src = readFileSync(
+			join(ROUTES, 'docs', '[scope]', '[name]', '+page.server.ts'),
+			'utf8'
+		);
+		for (const token of ['Cookie', 'Set-Cookie', 'sessionUser', 'readSessionCookie']) {
+			assert.equal(src.includes(token), false, `bare docs load must not reference ${token}`);
+		}
 	});
 });
