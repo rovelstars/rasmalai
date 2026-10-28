@@ -172,11 +172,14 @@ fn mcp_inspect_package_capabilities() {
         .collect();
     let payload: serde_json::Value =
         serde_json::from_str(&texts.join("\n")).expect("tool returns json");
-    assert_eq!(payload["tier"], "delegated");
-    assert_eq!(payload["capabilities"], serde_json::json!(["fs:delegated"]));
-    assert_eq!(payload["has_hazard"], false);
-    assert!(!payload["summary"].as_str().unwrap_or("").is_empty());
-    let traces = payload["traces"].as_array().expect("traces");
+    assert_eq!(payload["status"], "ok", "{payload:?}");
+    assert!(payload["drift"].as_array().is_some(), "{payload:?}");
+    let caps = &payload["capabilities"];
+    assert_eq!(caps["tier"], "delegated");
+    assert_eq!(caps["capabilities"], serde_json::json!(["fs:delegated"]));
+    assert_eq!(caps["has_hazard"], false);
+    assert!(!caps["summary"].as_str().unwrap_or("").is_empty());
+    let traces = caps["traces"].as_array().expect("traces");
     assert_eq!(traces.len(), 1);
     assert_eq!(traces[0]["nodes"][0]["symbol"], "loadData");
 }

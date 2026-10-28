@@ -103,19 +103,27 @@ fn handshake(s: &mut Session) {
 }
 
 #[test]
-fn mcp_lists_ten_tools() {
+fn mcp_lists_expected_tools() {
     let mut s = Session::start();
     handshake(&mut s);
     let resp = s.request("tools/list", serde_json::json!({}));
-    let names: Vec<String> = resp["result"]["tools"]
+    let mut names: Vec<String> = resp["result"]["tools"]
         .as_array()
         .expect("tools array")
         .iter()
         .map(|t| t["name"].as_str().expect("name").to_string())
         .collect();
-    for want in ["check", "run", "fmt", "explain", "version", "rasmalai_lookup_symbol", "inspect_package_capabilities", "eval_code", "hot_reload", "get_diagnostics"] {
-        assert!(names.contains(&want.to_string()), "missing tool {want}: {names:?}");
-    }
+    names.sort();
+    let mut expected: Vec<String> = [
+        "check", "run", "fmt", "explain", "version", "rasmalai_lookup_symbol",
+        "inspect_package_capabilities", "eval_code", "hot_reload", "get_diagnostics",
+        "build", "test", "lint", "doc", "doctor", "cache_status", "package_resolve",
+    ]
+    .iter()
+    .map(|n| n.to_string())
+    .collect();
+    expected.sort();
+    assert_eq!(names, expected, "tools/list must match the documented set");
 }
 
 #[test]
@@ -126,13 +134,27 @@ fn mcp_check_ok_and_error() {
         "check",
         serde_json::json!({ "source": "fn Main(): Int {\n    return 40 + 2;\n}\n" }),
     );
-    assert!(Session::content_text(&ok).contains("ok"), "{ok:?}");
+    let ok_text = Session::content_text(&ok);
+    let ok_json: serde_json::Value = serde_json::from_str(&ok_text).expect("check returns JSON");
+    assert_eq!(ok_json["status"], "ok", "{ok_text:?}");
+    assert!(ok_json["errors"].as_array().expect("errors").is_empty(), "{ok_text:?}");
     let bad = s.call(
         "check",
         serde_json::json!({ "source": "fn Main(): Int {\n    return nope;\n}\n" }),
     );
     let text = Session::content_text(&bad);
-    assert!(text.contains("E303"), "{text:?}");
+    let bad_json: serde_json::Value = serde_json::from_str(&text).expect("check returns JSON");
+    assert_eq!(bad_json["status"], "error", "{text:?}");
+    let errors = bad_json["errors"].as_array().expect("errors");
+    assert!(!errors.is_empty(), "{text:?}");
+    assert!(errors.iter().any(|e| e["code"] == "E303"), "{text:?}");
+    assert!(errors.iter().all(|e| e["line"].as_u64().unwrap_or(0) > 0), "{text:?}");
+    assert!(errors.iter().all(|e| !e["excerpt"].as_str().unwrap_or("").is_empty()), "{text:?}");
+    let pretty = s.call(
+        "check",
+        serde_json::json!({ "source": "fn Main(): Int {\n    return nope;\n}\n", "pretty": true }),
+    );
+    assert!(Session::content_text(&pretty).contains("E303"), "{pretty:?}");
 }
 
 #[test]
@@ -144,8 +166,26 @@ fn mcp_run_returns_value() {
         serde_json::json!({ "source": "fn Main(): Int {\n    print(40 + 2);\n    return 0;\n}\n" }),
     );
     let text = Session::content_text(&resp);
-    assert!(text.contains("42"), "{text:?}");
-    assert!(text.contains("=> 0"), "{text:?}");
+    let out: serde_json::Value = serde_json::from_str(&text).expect("run returns JSON");
+    assert_eq!(out["status"], "value", "{text:?}");
+    assert_eq!(out["value"], "0", "{text:?}");
+    let lines = out["stdout_lines"].as_array().expect("stdout_lines");
+    assert!(lines.iter().any(|l| l.as_str().unwrap_or("").contains("42")), "{text:?}");
+    assert_eq!(out["truncated_stdout"], false, "{text:?}");
+    let pretty = s.call(
+        "run",
+        serde_json::json!({ "source": "fn Main(): Int {\n    print(40 + 2);\n    return 0;\n}\n", "pretty": true }),
+    );
+    let pretty_text = Session::content_text(&pretty);
+    assert!(pretty_text.contains("42"), "{pretty_text:?}");
+    assert!(pretty_text.contains("=> 0"), "{pretty_text:?}");
+    let capped = s.call(
+        "run",
+        serde_json::json!({ "source": "fn Main(): Int {\n    print(40 + 2);\n    return 0;\n}\n", "max_output_bytes": 2 }),
+    );
+    let capped_text = Session::content_text(&capped);
+    let capped_json: serde_json::Value = serde_json::from_str(&capped_text).expect("run returns JSON");
+    assert_eq!(capped_json["truncated_stdout"], true, "{capped_text:?}");
 }
 
 #[test]

@@ -2729,6 +2729,40 @@ pub fn scan_cache_have() -> Vec<HaveEntry> {
     store_have()
 }
 
+pub struct CacheProbe {
+    pub requested: String,
+    pub range: String,
+    pub resolved: Option<String>,
+    pub cached_versions: Vec<String>,
+    pub engine_blocked: Vec<String>,
+}
+
+pub fn probe_cache(name: &str, range: &str) -> CacheProbe {
+    let range = if range.trim().is_empty() {
+        "*"
+    } else {
+        range.trim()
+    };
+    let trees = cached_selection_inventory(name);
+    let mut cached_versions: Vec<String> =
+        trees.iter().map(|t| t.version.clone()).collect();
+    cached_versions.sort();
+    cached_versions.dedup();
+    let verdict = judge_cached(name, range);
+    let engine_blocked: Vec<String> = verdict
+        .engine_blocked
+        .into_iter()
+        .map(|(v, e)| format!("{v} (needs engine {e})"))
+        .collect();
+    CacheProbe {
+        requested: name.to_string(),
+        range: range.to_string(),
+        resolved: verdict.pick.map(|(_, _, version)| version),
+        cached_versions,
+        engine_blocked,
+    }
+}
+
 fn engine_error(full: &str, version: &str, range: &str) -> Diagnostic {
     let current = env!("CARGO_PKG_VERSION");
     Diagnostic::new(

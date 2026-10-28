@@ -120,6 +120,13 @@ const EXPECTED_TOOLS: &[&str] = &[
     "get_diagnostics",
     "version",
     "inspect_package_capabilities",
+    "build",
+    "test",
+    "lint",
+    "doc",
+    "doctor",
+    "cache_status",
+    "package_resolve",
 ];
 
 #[test]
