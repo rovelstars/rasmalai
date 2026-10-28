@@ -125,6 +125,14 @@ describe('package html cache headers', () => {
 		} as never);
 		assert.equal(pinned.seen['Cache-Control'], 'public, max-age=86400, s-maxage=86400');
 		assert.equal(Object.keys(pinned.seen).some((k) => k.toLowerCase() === 'set-cookie'), false);
+		const pinnedOld = headers();
+		await packageLoad({
+			params: { slug: '@acme/gadget@1.0.0' },
+			platform: { env: fake.env },
+			url: new URL('https://registry.test/packages/@acme/gadget@1.0.0'),
+			setHeaders: pinnedOld.setHeaders
+		} as never);
+		assert.equal(pinnedOld.seen['Cache-Control'], 'public, max-age=86400, s-maxage=86400');
 	});
 
 	it('keeps the catalog aggregate on its hourly edge window', async () => {
