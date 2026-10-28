@@ -831,3 +831,110 @@ fn absolute_func_pointer_emits_dynamic_reloc() {
         "dynamic link misses R_X86_64_64 against close:\n{relocs}"
     );
 }
+
+const GNU_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+const MUSL_TRIPLE: &str = "x86_64-unknown-linux-musl";
+
+fn fixture_sysroot(dir: &Path, triple: &str) -> (sysroot::Sysroot, PathBuf) {
+    let root = dir.join("sys");
+    let packed = root.join("lib").join("rustlib").join(triple).join("lib");
+    std::fs::create_dir_all(&packed).unwrap();
+    std::fs::write(root.join("sysroot.json"), "{\"version\": 1}").unwrap();
+    (sysroot::Sysroot::custom(root), packed)
+}
+
+#[test]
+fn sysroot_host_link_is_byte_identical() {
+    let dir = fixture_dir("sysroot-parity");
+    let path = write_src(&dir, "main.rnx", MATH);
+    let objects = build_objects(&path, true, 1);
+    let mut inputs: Vec<LinkInput> = objects.iter().map(|b| LinkInput::ObjectBytes(b.clone())).collect();
+    inputs.push(LinkInput::ArchiveBytes(runtime::archive::BYTES.to_vec()));
+    for lib in ["pthread", "dl", "m", "c"] {
+        inputs.push(LinkInput::Lib(lib.to_string()));
+    }
+    let legacy = dir.join("legacy_static");
+    native::native_link_static(&inputs, &legacy, &native::StaticOpts::default()).unwrap();
+    let via = dir.join("sysroot_static");
+    native::native_link_static_in(&inputs, &via, &native::StaticOpts::default(), &sysroot::Sysroot::host())
+        .unwrap();
+    assert_eq!(
+        std::fs::read(&legacy).unwrap(),
+        std::fs::read(&via).unwrap(),
+        "host sysroot entry diverged from the legacy link path"
+    );
+    assert_eq!(run_bin(&via), (42, String::new()));
+    let _ = dir;
+}
+
+#[test]
+fn custom_sysroot_shadows_host_search_order() {
+    let dir = fixture_dir("sysroot-shadow");
+    let (sys, packed) = fixture_sysroot(&dir, GNU_TRIPLE);
+    std::fs::write(packed.join("marker.o"), b"marker").unwrap();
+    let dirs = native::system_search_dirs_for(&sys, GNU_TRIPLE);
+    assert_eq!(dirs.first(), Some(&packed));
+    let host_dirs = native::system_search_dirs_for(&sysroot::Sysroot::host(), GNU_TRIPLE);
+    assert_eq!(&dirs[1..], &host_dirs[..], "custom sysroot must preserve the host tail verbatim");
+    assert_eq!(
+        native::system_file_in(&sys, GNU_TRIPLE, "marker.o").unwrap(),
+        packed.join("marker.o")
+    );
+    assert!(native::system_file_in(&sys, GNU_TRIPLE, "crti.o").is_ok());
+    let _ = dir;
+}
+
+#[test]
+fn musl_selects_static_only_and_never_host_glibc() {
+    assert_eq!(sysroot::family_of(MUSL_TRIPLE), Some(sysroot::Family::Musl));
+    assert_eq!(sysroot::family_of(GNU_TRIPLE), Some(sysroot::Family::Gnu));
+    assert_eq!(sysroot::interp_for(MUSL_TRIPLE), Some("/lib/ld-musl-x86_64.so.1"));
+    assert_eq!(sysroot::interp_for(GNU_TRIPLE), Some("/lib64/ld-linux-x86-64.so.2"));
+    assert_eq!(sysroot::shared_lib_file(sysroot::Family::Musl, "c"), None);
+    assert_eq!(
+        sysroot::shared_lib_file(sysroot::Family::Gnu, "c"),
+        Some("libc.so.6")
+    );
+    let host_dirs = native::system_search_dirs_for(&sysroot::Sysroot::host(), MUSL_TRIPLE);
+    assert!(
+        host_dirs.is_empty(),
+        "musl on a gnu host must not inherit glibc search dirs: {host_dirs:?}"
+    );
+    let dir = fixture_dir("sysroot-musl");
+    let (sys, packed) = fixture_sysroot(&dir, MUSL_TRIPLE);
+    let mut opts = native::StaticOpts::default();
+    opts.target = MUSL_TRIPLE.to_string();
+    let err = native::native_link_fully_static_in(&[], &dir.join("out"), &opts, &sys).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("x86_64-unknown-linux-musl"),
+        "musl failure names the packed dir, got: {msg}"
+    );
+    assert!(packed.is_dir());
+    let dopts = native::DynamicOpts {
+        entry: "_start".to_string(),
+        icf: true,
+        target: MUSL_TRIPLE.to_string(),
+        lib_dirs: vec![],
+        libs: vec![],
+        runpath: None,
+        strip: false,
+    };
+    let err = native::native_link_dynamic(&[], &dir.join("out2"), &dopts).unwrap_err();
+    assert!(err.to_string().contains("fully static"), "unexpected: {err}");
+    let _ = dir;
+}
+
+#[test]
+fn musl_target_codegen_emits_objects() {
+    let dir = fixture_dir("musl-codegen");
+    let path = write_src(&dir, "main.rnx", MATH);
+    let mut cfg = cli::CompileConfig::default();
+    cfg.jobs = 1;
+    cfg.memory_cap = u64::MAX;
+    let built =
+        cli::build_files_staged_cfg(path.to_str().unwrap(), "Main", false, 1, Some(MUSL_TRIPLE), &cfg)
+            .unwrap_or_else(|e| panic!("musl codegen failed: {e:?}"));
+    assert!(!built.objects.is_empty());
+    let _ = dir;
+}

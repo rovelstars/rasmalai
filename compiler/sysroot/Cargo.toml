@@ -1,0 +1,8 @@
+[package]
+name = "sysroot"
+version = "0.2.1"
+edition.workspace = true
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"

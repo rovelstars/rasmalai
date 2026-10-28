@@ -10,6 +10,7 @@ use crate::LinkError;
 use crate::LinkInput;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use sysroot::{Family, Sysroot};
 
 pub struct StaticOpts {
     pub entry: String,
@@ -261,29 +262,52 @@ fn cached_system_dirs() -> Vec<PathBuf> {
     .clone()
 }
 
-fn system_search_dirs() -> Vec<PathBuf> {
+pub fn system_search_dirs_for(sysroot: &Sysroot, triple: &str) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(extra) = std::env::var("RNX_LIB_DIRS") {
-        for part in extra.split(':') {
-            if !part.is_empty() {
-                dirs.push(PathBuf::from(part));
+    if let Some(packed) = sysroot.target_lib_dir(triple) {
+        dirs.push(packed);
+    }
+    if triple == crate::host_triple().0 {
+        if let Ok(extra) = std::env::var("RNX_LIB_DIRS") {
+            for part in extra.split(':') {
+                if !part.is_empty() {
+                    dirs.push(PathBuf::from(part));
+                }
+            }
+        }
+        dirs.extend(cached_system_dirs());
+    } else if !sysroot.is_host() {
+        if let Ok(extra) = std::env::var("RNX_LIB_DIRS") {
+            for part in extra.split(':') {
+                if !part.is_empty() {
+                    dirs.push(PathBuf::from(part));
+                }
             }
         }
     }
-    dirs.extend(cached_system_dirs());
     dirs
 }
 
 pub fn system_file(name: &str) -> Result<PathBuf, LinkError> {
-    for dir in system_search_dirs() {
+    system_file_in(&Sysroot::host(), "x86_64-unknown-linux-gnu", name)
+}
+
+pub fn system_file_in(sysroot: &Sysroot, triple: &str, name: &str) -> Result<PathBuf, LinkError> {
+    let dirs = system_search_dirs_for(sysroot, triple);
+    for dir in &dirs {
         let cand = dir.join(name);
         if cand.is_file() {
             return Ok(cand);
         }
     }
+    if dirs.is_empty() {
+        return Err(LinkError::NoLinker(format!(
+            "system file `{name}` for target `{triple}` has no link search dirs: pack `lib/rustlib/{triple}/lib` into a sysroot (--sysroot) or point RNX_LIB_DIRS at the target libraries"
+        )));
+    }
     Err(LinkError::NoLinker(format!(
         "system file `{name}` not found in [{}]",
-        system_search_dirs().iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
+        dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
     )))
 }
 
@@ -294,7 +318,7 @@ enum CrtKind {
     StaticPie,
 }
 
-fn crt_objects(crt: CrtKind) -> Result<Vec<Input<'static>>, LinkError> {
+fn crt_objects_in(sysroot: &Sysroot, triple: &str, crt: CrtKind) -> Result<Vec<Input<'static>>, LinkError> {
     let names: &[&str] = match crt {
         CrtKind::Static => &["crt1.o", "crti.o", "crtbeginT.o"],
         CrtKind::DynPie => &["Scrt1.o", "crti.o", "crtbeginS.o"],
@@ -302,7 +326,7 @@ fn crt_objects(crt: CrtKind) -> Result<Vec<Input<'static>>, LinkError> {
     };
     let mut out = Vec::new();
     for n in names {
-        let path = system_file(n)?;
+        let path = system_file_in(sysroot, triple, n)?;
         let file = std::fs::File::open(&path).map_err(|e| LinkError::Io(format!("{}: {e}", path.display())))?;
         let map = unsafe { memmap2::Mmap::map(&file).map_err(|e| LinkError::Io(e.to_string()))? };
         out.push(Input { label: path.display().to_string(), command_line: true, storage: Storage::Map(map) });
@@ -310,14 +334,14 @@ fn crt_objects(crt: CrtKind) -> Result<Vec<Input<'static>>, LinkError> {
     Ok(out)
 }
 
-fn crt_end(crt: CrtKind) -> Result<Vec<Input<'static>>, LinkError> {
+fn crt_end_in(sysroot: &Sysroot, triple: &str, crt: CrtKind) -> Result<Vec<Input<'static>>, LinkError> {
     let names: &[&str] = match crt {
         CrtKind::Static => &["crtend.o", "crtn.o"],
         CrtKind::DynPie | CrtKind::StaticPie => &["crtendS.o", "crtn.o"],
     };
     let mut out = Vec::new();
     for n in names {
-        let path = system_file(n)?;
+        let path = system_file_in(sysroot, triple, n)?;
         let file = std::fs::File::open(&path).map_err(|e| LinkError::Io(format!("{}: {e}", path.display())))?;
         let map = unsafe { memmap2::Mmap::map(&file).map_err(|e| LinkError::Io(e.to_string()))? };
         out.push(Input { label: path.display().to_string(), command_line: true, storage: Storage::Map(map) });
@@ -325,24 +349,22 @@ fn crt_end(crt: CrtKind) -> Result<Vec<Input<'static>>, LinkError> {
     Ok(out)
 }
 
-fn archive_file(file: &str) -> Result<Vec<ArchiveInput<'static>>, LinkError> {
-    let path = system_file(file)?;
-    let f = std::fs::File::open(&path).map_err(|e| LinkError::Io(format!("{}: {e}", path.display())))?;
-    let map = unsafe { memmap2::Mmap::map(&f).map_err(|e| LinkError::Io(e.to_string()))? };
-    Ok(vec![ArchiveInput { label: path.display().to_string(), storage: Storage::Map(map), known_sha: None }])
+fn archive_file_in(sysroot: &Sysroot, triple: &str, file: &str) -> Result<Vec<ArchiveInput<'static>>, LinkError> {
+    let path = system_file_in(sysroot, triple, file)?;
+    let family = sysroot::family_of(triple).unwrap_or(Family::Gnu);
+    load_archive_path_in(sysroot, triple, family, &path)
 }
 
-fn system_archive(name: &str) -> Result<Vec<ArchiveInput<'static>>, LinkError> {
-    let file = match name {
-        "c" | "pthread" | "dl" => "libc.a",
-        "m" => "libm.a",
-        _ => return Err(LinkError::Native(format!("unsupported system library `-l{name}` in static native link"))),
+fn system_archive_in(sysroot: &Sysroot, triple: &str, family: Family, name: &str) -> Result<Vec<ArchiveInput<'static>>, LinkError> {
+    let file = match sysroot::sys_lib_file(family, name) {
+        Some(file) => file,
+        None => return Err(LinkError::Native(format!("unsupported system library `-l{name}` in static native link"))),
     };
-    let path = system_file(file)?;
-    load_archive_path(&path)
+    let path = system_file_in(sysroot, triple, file)?;
+    load_archive_path_in(sysroot, triple, family, &path)
 }
 
-fn load_archive_path(path: &Path) -> Result<Vec<ArchiveInput<'static>>, LinkError> {
+fn load_archive_path_in(sysroot: &Sysroot, triple: &str, family: Family, path: &Path) -> Result<Vec<ArchiveInput<'static>>, LinkError> {
     let bytes = std::fs::read(path).map_err(|e| LinkError::Io(format!("{}: {e}", path.display())))?;
     if bytes.starts_with(b"!<arch>") {
         let f = std::fs::File::open(path).map_err(|e| LinkError::Io(format!("{}: {e}", path.display())))?;
@@ -353,12 +375,29 @@ fn load_archive_path(path: &Path) -> Result<Vec<ArchiveInput<'static>>, LinkErro
     let mut out = Vec::new();
     for member in script_members(text, path)? {
         if member.starts_with("-l") {
-            out.extend(system_archive(member.trim_start_matches("-l"))?);
+            out.extend(system_archive_in(sysroot, triple, family, member.trim_start_matches("-l"))?);
         } else {
-            out.extend(load_archive_path(Path::new(&member))?);
+            out.extend(load_archive_path_in(sysroot, triple, family, &script_member_path(sysroot, path, &member))?);
         }
     }
     Ok(out)
+}
+
+fn script_member_path(sysroot: &Sysroot, script: &Path, member: &str) -> PathBuf {
+    let direct = Path::new(member);
+    if direct.is_absolute() {
+        if !sysroot.is_host() {
+            let rooted = sysroot.base_dir().join(member.trim_start_matches('/'));
+            if rooted.is_file() {
+                return rooted;
+            }
+        }
+        return direct.to_path_buf();
+    }
+    match script.parent() {
+        Some(dir) if dir.join(member).is_file() => dir.join(member),
+        _ => direct.to_path_buf(),
+    }
 }
 
 fn script_members(text: &str, path: &Path) -> Result<Vec<String>, LinkError> {
@@ -467,7 +506,16 @@ fn seed_synthetics(db: &mut SymDb) {
 }
 
 pub fn native_link_static(inputs: &[LinkInput], output: &Path, opts: &StaticOpts) -> Result<NativeStats, LinkError> {
-    static_link_inner(inputs, output, opts, CrtKind::DynPie, None)
+    native_link_static_in(inputs, output, opts, &Sysroot::discover(None))
+}
+
+pub fn native_link_static_in(
+    inputs: &[LinkInput],
+    output: &Path,
+    opts: &StaticOpts,
+    sysroot: &Sysroot,
+) -> Result<NativeStats, LinkError> {
+    static_link_inner(inputs, output, opts, CrtKind::DynPie, None, sysroot)
 }
 
 pub fn native_link_static_cached(
@@ -476,15 +524,24 @@ pub fn native_link_static_cached(
     opts: &StaticOpts,
     cache: &crate::plan::CacheCtx,
 ) -> Result<NativeStats, LinkError> {
-    static_link_inner(inputs, output, opts, CrtKind::DynPie, Some(cache))
+    static_link_inner(inputs, output, opts, CrtKind::DynPie, Some(cache), &Sysroot::discover(None))
 }
 
 pub fn native_link_fully_static(inputs: &[LinkInput], output: &Path, opts: &StaticOpts) -> Result<NativeStats, LinkError> {
-    static_link_inner(inputs, output, opts, CrtKind::Static, None)
+    native_link_fully_static_in(inputs, output, opts, &Sysroot::discover(None))
+}
+
+pub fn native_link_fully_static_in(
+    inputs: &[LinkInput],
+    output: &Path,
+    opts: &StaticOpts,
+    sysroot: &Sysroot,
+) -> Result<NativeStats, LinkError> {
+    static_link_inner(inputs, output, opts, CrtKind::Static, None, sysroot)
 }
 
 pub fn native_link_static_pie(inputs: &[LinkInput], output: &Path, opts: &StaticOpts) -> Result<NativeStats, LinkError> {
-    static_link_inner(inputs, output, opts, CrtKind::StaticPie, None)
+    static_link_inner(inputs, output, opts, CrtKind::StaticPie, None, &Sysroot::discover(None))
 }
 
 struct SharedSet {
@@ -493,9 +550,9 @@ struct SharedSet {
     loader: Option<DynLib>,
 }
 
-fn loader_dyn_lib() -> Option<DynLib> {
-    system_file("ld-linux-x86-64.so.2")
-        .or_else(|_| system_file("ld-linux.so.2"))
+fn loader_dyn_lib_in(sysroot: &Sysroot, triple: &str) -> Option<DynLib> {
+    system_file_in(sysroot, triple, "ld-linux-x86-64.so.2")
+        .or_else(|_| system_file_in(sysroot, triple, "ld-linux.so.2"))
         .ok()
         .and_then(|p| parse_dyn_lib(&p).ok())
 }
@@ -506,13 +563,27 @@ fn static_link_inner(
     opts: &StaticOpts,
     crt: CrtKind,
     cache: Option<&crate::plan::CacheCtx>,
+    sysroot: &Sysroot,
 ) -> Result<NativeStats, LinkError> {
-    if opts.target != "x86_64-unknown-linux-gnu" {
+    let family = sysroot::family_of(&opts.target).ok_or_else(|| {
+        LinkError::Native(format!("native backend not yet implemented for target `{}`", opts.target))
+    })?;
+    if !opts.target.starts_with("x86_64-") {
         return Err(LinkError::Native(format!(
             "native backend not yet implemented for target `{}`",
             opts.target
         )));
     }
+    let crt = match (family, crt) {
+        (Family::Musl, CrtKind::DynPie) => {
+            return Err(LinkError::Native(format!(
+                "target `{}` links fully static; musl has no dynamic C runtime",
+                opts.target
+            )));
+        }
+        (Family::Musl, _) => CrtKind::Static,
+        (_, crt) => crt,
+    };
     let fully_static = matches!(crt, CrtKind::Static | CrtKind::StaticPie);
     let pie = !matches!(crt, CrtKind::Static);
     let target = X86_64 { static_link: fully_static };
@@ -520,33 +591,39 @@ fn static_link_inner(
     let mut shared = SharedSet {
         early: Vec::new(),
         late: Vec::new(),
-        loader: tphase!("link-dynparse", loader_dyn_lib()),
+        loader: tphase!("link-dynparse", loader_dyn_lib_in(sysroot, &opts.target)),
     };
     if fully_static {
-        for name in ["libgcc.a", "libgcc_eh.a"] {
-            archives.extend(tphase!("link-archread", archive_file(name)?));
+        for name in sysroot::compiler_runtime_archives(family, true) {
+            archives.extend(tphase!("link-archread", archive_file_in(sysroot, &opts.target, name)?));
         }
         let mut seen_files: BTreeSet<String> = BTreeSet::new();
         for lib in pending_libs.iter().map(String::as_str).chain(["c", "m"]) {
-            let file = match lib {
-                "c" | "pthread" | "dl" => "libc.a",
-                "m" => "libm.a",
-                _ => "",
+            let file = match sysroot::sys_lib_file(family, lib) {
+                Some(file) => file,
+                None => {
+                    archives.extend(tphase!(
+                        "link-archread",
+                        system_archive_in(sysroot, &opts.target, family, lib)?
+                    ));
+                    continue;
+                }
             };
-            if file.is_empty() {
-                archives.extend(tphase!("link-archread", system_archive(lib)?));
-                continue;
-            }
             if seen_files.insert(file.to_string()) {
-                archives.extend(tphase!("link-archread", system_archive(lib)?));
+                archives.extend(tphase!(
+                    "link-archread",
+                    system_archive_in(sysroot, &opts.target, family, lib)?
+                ));
             }
         }
     } else {
-        archives.extend(tphase!("link-archread", archive_file("libgcc.a")?));
+        for name in sysroot::compiler_runtime_archives(family, false) {
+            archives.extend(tphase!("link-archread", archive_file_in(sysroot, &opts.target, name)?));
+        }
         let mut seen_sys: BTreeSet<&'static str> = BTreeSet::new();
         let mut push_sys = |name: &'static str, shared: &mut SharedSet| -> Result<(), LinkError> {
             if seen_sys.insert(name) {
-                let path = system_file(name)?;
+                let path = system_file_in(sysroot, &opts.target, name)?;
                 let lib = tphase!("link-dynparse", parse_dyn_lib(&path)?);
                 if name == "libgcc_s.so.1" {
                     shared.late.push(lib);
@@ -557,22 +634,30 @@ fn static_link_inner(
             Ok(())
         };
         for lib in pending_libs.iter().map(String::as_str).chain(["c", "m"]) {
-            match lib {
-                "c" | "pthread" | "dl" => push_sys("libc.so.6", &mut shared)?,
-                "m" => push_sys("libm.so.6", &mut shared)?,
-                _ => {
-                    let path = find_shlib(&[], lib)?;
+            match sysroot::shared_lib_file(family, lib) {
+                Some(name) => push_sys(name, &mut shared)?,
+                None if family == Family::Musl => {
+                    return Err(LinkError::Native(format!(
+                        "target `{}` links fully static; musl has no `{lib}` shared object",
+                        opts.target
+                    )));
+                }
+                None => {
+                    let path = find_shlib_in(&[], sysroot, &opts.target, lib)?;
                     if !shared.early.iter().any(|l| l.path == path) {
                         shared.early.push(tphase!("link-dynparse", parse_dyn_lib(&path)?));
                     }
                 }
             }
         }
-        push_sys("libgcc_s.so.1", &mut shared)?;
+        match sysroot::shared_lib_file(family, "gcc_s") {
+            Some(name) => push_sys(name, &mut shared)?,
+            None => {}
+        }
     }
-    let mut prefixed = tphase!("link-crt", crt_objects(crt)?);
+    let mut prefixed = tphase!("link-crt", crt_objects_in(sysroot, &opts.target, crt)?);
     prefixed.append(&mut objects);
-    prefixed.extend(tphase!("link-crtend", crt_end(crt)?));
+    prefixed.extend(tphase!("link-crtend", crt_end_in(sysroot, &opts.target, crt)?));
     objects = prefixed;
     let mut libs: Vec<&str> = pending_libs.iter().map(String::as_str).collect();
     libs.sort();
@@ -604,6 +689,7 @@ fn static_link_inner(
         crt == CrtKind::StaticPie,
         cache,
         &opts_desc,
+        static_interp(&opts.target)?,
     )
 }
 
@@ -717,6 +803,7 @@ fn link_all<'a>(
     force_dynamic: bool,
     cache: Option<&crate::plan::CacheCtx>,
     opts_desc: &str,
+    interp_path: &str,
 ) -> Result<NativeStats, LinkError> {
     let keep_debug = !strip && cmdline_has_debug(&objects);
     let mut db = SymDb::new();
@@ -932,7 +1019,7 @@ fn link_all<'a>(
         info.force_dynamic = force_dynamic;
         info
     } else {
-        tphase!("link-dyninfo", build_dyn_info(&g, &db, &shared.early, &shared.late, shared.loader.as_ref(), None, target)?)
+        tphase!("link-dyninfo", build_dyn_info(&g, &db, &shared.early, &shared.late, shared.loader.as_ref(), None, interp_path, target)?)
     };
     if force_dynamic && pie {
         dyn_info.osabi = 3;
@@ -1670,7 +1757,7 @@ fn parse_dyn_lib(path: &Path) -> Result<DynLib, LinkError> {
     Ok(DynLib { filename, path: path.to_path_buf(), syms, vernames })
 }
 
-fn find_shlib(lib_dirs: &[PathBuf], name: &str) -> Result<PathBuf, LinkError> {
+fn find_shlib_in(lib_dirs: &[PathBuf], sysroot: &Sysroot, triple: &str, name: &str) -> Result<PathBuf, LinkError> {
     for dir in lib_dirs {
         for candidate in [format!("lib{name}.so"), format!("lib{name}.so.1"), format!("lib{name}.so.6"), format!("{name}.so")] {
             let p = dir.join(&candidate);
@@ -1684,13 +1771,13 @@ fn find_shlib(lib_dirs: &[PathBuf], name: &str) -> Result<PathBuf, LinkError> {
         }
     }
     for candidate in [format!("lib{name}.so.1"), format!("lib{name}.so.6"), format!("lib{name}.so")] {
-        if let Ok(p) = system_file(&candidate) {
+        if let Ok(p) = system_file_in(sysroot, triple, &candidate) {
             return Ok(p);
         }
     }
     Err(LinkError::Native(format!(
         "shared library `{name}` not found in {lib_dirs:?} or [{}]",
-        system_search_dirs().iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
+        system_search_dirs_for(sysroot, triple).iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
     )))
 }
 
@@ -1699,6 +1786,21 @@ pub fn native_link_dynamic(
     output: &Path,
     opts: &DynamicOpts,
 ) -> Result<NativeStats, LinkError> {
+    native_link_dynamic_in(objects, output, opts, &Sysroot::discover(None))
+}
+
+pub fn native_link_dynamic_in(
+    objects: &[LinkInput],
+    output: &Path,
+    opts: &DynamicOpts,
+    sysroot: &Sysroot,
+) -> Result<NativeStats, LinkError> {
+    if matches!(sysroot::family_of(&opts.target), Some(Family::Musl)) {
+        return Err(LinkError::Native(format!(
+            "target `{}` links fully static; musl has no dynamic C runtime",
+            opts.target
+        )));
+    }
     if opts.target != "x86_64-unknown-linux-gnu" {
         return Err(LinkError::Native(format!(
             "native backend not yet implemented for target `{}`",
@@ -1709,13 +1811,13 @@ pub fn native_link_dynamic(
     let (mut cmd_objects, archives, pending) = tphase!("link-load", load_inputs(objects)?);
     let keep_debug = tphase!("link-debugscan", !opts.strip && cmdline_has_debug(&cmd_objects));
     let _ = pending;
-    let mut prefixed = tphase!("link-crt", crt_objects(CrtKind::DynPie)?);
+    let mut prefixed = tphase!("link-crt", crt_objects_in(sysroot, &opts.target, CrtKind::DynPie)?);
     prefixed.append(&mut cmd_objects);
-    prefixed.extend(tphase!("link-crtend", crt_end(CrtKind::DynPie)?));
+    prefixed.extend(tphase!("link-crtend", crt_end_in(sysroot, &opts.target, CrtKind::DynPie)?));
     let mut objects = prefixed;
     let mut lib_files: Vec<PathBuf> = Vec::new();
     for name in opts.libs.iter() {
-        lib_files.push(find_shlib(&opts.lib_dirs, name)?);
+        lib_files.push(find_shlib_in(&opts.lib_dirs, sysroot, &opts.target, name)?);
     }
     let mut dyn_libs: Vec<DynLib> = Vec::new();
     for path in lib_files.iter() {
@@ -1724,7 +1826,7 @@ pub fn native_link_dynamic(
     let mut sys_libs: Vec<DynLib> = Vec::new();
     let mut sys_paths: Vec<PathBuf> = Vec::new();
     for candidate in ["libc.so.6", "libm.so.6"] {
-        if let Ok(p) = system_file(candidate) {
+        if let Ok(p) = system_file_in(sysroot, &opts.target, candidate) {
             if !sys_paths.contains(&p) && !lib_files.contains(&p) {
                 sys_paths.push(p);
             }
@@ -1733,7 +1835,7 @@ pub fn native_link_dynamic(
     for path in sys_paths.iter() {
         sys_libs.push(tphase!("link-dynparse", parse_dyn_lib(path)?));
     }
-    let interp_lib: Option<DynLib> = tphase!("link-dynparse", loader_dyn_lib());
+    let interp_lib: Option<DynLib> = tphase!("link-dynparse", loader_dyn_lib_in(sysroot, &opts.target));
     let mut dyn_prov: BTreeMap<&str, &DynLib> = BTreeMap::new();
     for lib in dyn_libs.iter().chain(sys_libs.iter()) {
         for name in lib.syms.keys() {
@@ -1846,7 +1948,7 @@ pub fn native_link_dynamic(
     }
     graph::collect_commons(&mut g, &db);
     tphase!("link-eh", graph::compute_eh_plan(&mut g, &parsed)?);
-    let mut dyn_info = tphase!("link-dyninfo", build_dyn_info(&g, &db, &dyn_libs, &sys_libs, interp_lib.as_ref(), opts.runpath.as_deref(), &target)?);
+    let mut dyn_info = tphase!("link-dyninfo", build_dyn_info(&g, &db, &dyn_libs, &sys_libs, interp_lib.as_ref(), opts.runpath.as_deref(), static_interp(&opts.target)?, &target)?);
     if db.get("_init").and_then(|e| e.def.as_ref()).is_some_and(|d| d.obj != usize::MAX) {
         dyn_info.init_addr = 1;
     }
@@ -1893,6 +1995,12 @@ pub fn native_link_dynamic(
     })
 }
 
+fn static_interp(triple: &str) -> Result<&'static str, LinkError> {
+    sysroot::interp_for(triple).ok_or_else(|| {
+        LinkError::Native(format!("native backend has no loader path for target `{triple}`"))
+    })
+}
+
 fn build_dyn_info(
     g: &Graph,
     db: &SymDb,
@@ -1900,6 +2008,7 @@ fn build_dyn_info(
     sys_libs: &[DynLib],
     interp: Option<&DynLib>,
     runpath: Option<&str>,
+    interp_path: &str,
     _target: &dyn Target,
 ) -> Result<DynInfo, LinkError> {
     let mut needed: Vec<String> = Vec::new();
@@ -2047,7 +2156,7 @@ fn build_dyn_info(
     info.versym = if ver_list.is_empty() { Vec::new() } else { versym };
     info.verneed = verneed;
     info.verneed_num = verneed_num;
-    info.interp = Some("/lib64/ld-linux-x86-64.so.2".to_string());
+    info.interp = Some(interp_path.to_string());
     info.runpath = runpath.map(str::to_string);
     Ok(info)
 }

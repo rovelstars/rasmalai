@@ -11,6 +11,7 @@ members = [
     "compiler/llvm",
     "compiler/runtime",
     "compiler/stdlib",
+    "compiler/sysroot",
     "compiler/wasm_playground",
 ]
 exclude = [

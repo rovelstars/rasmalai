@@ -34,6 +34,16 @@ pub struct Cli {
     /// Resolve every native dependency from bundled OCI blobs (role-plus-platform match)
     #[arg(long, global = true, conflicts_with = "prefer_system")]
     pub prefer_bundled: bool,
+
+    /// Use a custom sysroot directory instead of probing the host
+    /// (`lib/rustlib/<triple>/lib` for link inputs, `share/rnx/std` for an
+    /// alternate standard library). Reads RNX_SYSROOT when the flag is absent.
+    #[arg(long, global = true, env = "RNX_SYSROOT")]
+    pub sysroot: Option<PathBuf>,
+
+    /// Print a toolchain value and exit (`sysroot` prints the effective root)
+    #[arg(long, global = true)]
+    pub print: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]

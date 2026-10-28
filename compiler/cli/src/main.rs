@@ -23,6 +23,30 @@ fn main() {
     let args = cli::args::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());    if args.verbose {
         eprintln!("rnx: verbose logging enabled");
     }
+    let sysroot = sysroot::Sysroot::discover(args.sysroot.as_deref());
+    if matches.value_source("sysroot") == Some(clap::parser::ValueSource::CommandLine) {
+        if let Some(dir) = args.sysroot.as_deref() {
+            unsafe { std::env::set_var(sysroot::ENV_VAR, dir) };
+        }
+    }
+    if let Some(what) = args.print.as_deref() {
+        if what == "sysroot" {
+            if let Err(e) = sysroot.validate() {
+                eprintln!("error: invalid sysroot: {e}");
+                std::process::exit(1);
+            }
+            println!("{}", sysroot.display_root());
+            return;
+        }
+        eprintln!("error: unsupported --print {what}; expected `sysroot`");
+        std::process::exit(2);
+    }
+    if !sysroot.is_host() {
+        if let Err(e) = sysroot.validate() {
+            eprintln!("error: invalid sysroot: {e}");
+            std::process::exit(1);
+        }
+    }
     let quiet = args.quiet;
     let verbose = args.verbose;
     let no_color = args.no_color;
