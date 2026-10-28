@@ -2410,7 +2410,45 @@ struct StoreIndexEntry {
     integrity: String,
 }
 
+fn store_index_memo(
+) -> &'static std::sync::Mutex<Option<(PathBuf, u64, u64, u64, Vec<StoreIndexEntry>)>> {
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<Option<(PathBuf, u64, u64, u64, Vec<StoreIndexEntry>)>>,
+    > = std::sync::OnceLock::new();
+    MEMO.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn store_index_stamp(path: &Path) -> Option<(u64, u64, u64)> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some((modified.as_secs(), u64::from(modified.subsec_nanos()), meta.len()))
+}
+
 fn read_store_index() -> Vec<StoreIndexEntry> {
+    let path = store_index_path();
+    if let Some((secs, nanos, len)) = store_index_stamp(&path) {
+        if let Some(hit) = store_index_memo().lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            && hit.0 == path
+            && hit.1 == secs
+            && hit.2 == nanos
+            && hit.3 == len
+        {
+            return hit.4.clone();
+        }
+    }
+    let entries = read_store_index_uncached();
+    if let Some((secs, nanos, len)) = store_index_stamp(&path) {
+        *store_index_memo().lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((path, secs, nanos, len, entries.clone()));
+    }
+    entries
+}
+
+fn read_store_index_uncached() -> Vec<StoreIndexEntry> {
     let text = match std::fs::read_to_string(store_index_path()) {
         Ok(text) => text,
         Err(_) => return Vec::new(),
@@ -2455,7 +2493,7 @@ fn note_store_install(base: &str, full: &str, version: &str, integrity: &str) {
     let Some(hex) = normalize_hex64(integrity) else {
         return;
     };
-    let mut entries = read_store_index();
+    let mut entries = read_store_index_uncached();
     if let Some(hit) =
         entries.iter_mut().find(|e| e.base == base && e.full == full && e.version == version)
     {
