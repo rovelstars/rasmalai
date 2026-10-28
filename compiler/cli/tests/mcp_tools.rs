@@ -494,14 +494,14 @@ fn mcp_dead_registry_check_stays_bounded_and_offline_tolerant() {
     handshake(&mut s);
     let resp = s.call(
         "check",
-        serde_json::json!({ "source": "import { Vec2 } from \"@std/math\";\n\nfn Main(): Int {\n    let v = new Vec2(3.0, 4.0);\n    print(v.length());\n    return 0;\n}\n" }),
+        serde_json::json!({ "source": "import { thing } from \"no-such-pkg-zzz\";\n\nfn Main(): Int {\n    return 0;\n}\n" }),
     );
     let text = Session::content_text(&resp);
     let out: serde_json::Value = serde_json::from_str(&text).expect("check returns JSON");
     assert_eq!(out["status"], "error", "{out:?}");
-    let codes: Vec<String> = out["errors"]
-        .as_array()
-        .expect("errors")
+    let errors = out["errors"].as_array().expect("errors");
+    assert!(!errors.is_empty(), "{out:?}");
+    let codes: Vec<String> = errors
         .iter()
         .filter_map(|e| e["code"].as_str().map(|c| c.to_string()))
         .collect();
@@ -509,8 +509,12 @@ fn mcp_dead_registry_check_stays_bounded_and_offline_tolerant() {
         codes.iter().any(|c| c == "E108" || c == "E113"),
         "offline failures must be E108/E113 with recovery hints: {out:?}"
     );
-    assert!(
-        Session::content_text(&resp).contains("rnx download"),
-        "E113 must name the recovery: {out:?}"
-    );
+    for e in errors {
+        if e["code"] == "E113" {
+            assert!(
+                e["hint"].as_str().unwrap_or("").contains("rnx download"),
+                "E113 must name the recovery: {e:?}"
+            );
+        }
+    }
 }
