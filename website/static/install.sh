@@ -10,6 +10,8 @@
 #     prefix, so `~/.local/bin/rnx` lands on PATH-adjacent ground).
 #   Windows (Git Bash/MSYS/Cygwin): root defaults to %LOCALAPPDATA%\rnx.
 # Pass --prefix DIR (or set RNX_PREFIX) to override the root.
+# Pass a version positionally (or set RNX_VERSION) to pin a release:
+#   sh install.sh v0.1.0
 set -u
 
 REPO="rovelstars/rasmalai"
@@ -27,12 +29,17 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     -h|--help)
-      echo "usage: install.sh [--prefix DIR]  (RNX_VERSION pins a release)"
+      echo "usage: install.sh [version] [--prefix DIR]  (RNX_VERSION pins a release)"
       exit 0
       ;;
     *)
-      echo "usage: install.sh [--prefix DIR]" >&2
-      exit 1
+      if [ -n "${VERSION_SET:-}" ]; then
+        echo "usage: install.sh [version] [--prefix DIR]" >&2
+        exit 1
+      fi
+      VERSION="$1"
+      VERSION_SET=1
+      shift
       ;;
   esac
 done

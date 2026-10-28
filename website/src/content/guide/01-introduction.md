@@ -16,7 +16,7 @@ One more thing worth knowing up front: rnx has one central promise. **Every valu
 
 ## Installing rnx
 
-Everything ships in one binary. Grab it with the installer for your OS:
+The toolchain is one binary plus a standard library cache that the installer seeds for you. Grab it with the installer for your OS:
 
 ```sh
 curl -fsSL https://rasmalai.rovelstars.com/install.sh | sh
@@ -28,7 +28,9 @@ The script detects your OS and CPU and places `rnx` in `~/.local/bin` (`%LOCALAP
 rnx --version
 ```
 
-You should see `rnx 0.2.0` on the first line, followed by the build record: commit hash, build timestamp, install kind, target triple, and backend versions. If the terminal says the command was not found, the installer directory is not on your `PATH` yet — open a fresh terminal (installers update `PATH` for new shells only) and try again. Still stuck? Jump to [Troubleshooting](/guide/11-troubleshooting-and-reinstall), which walks through reinstalling cleanly per OS.
+You should see `rnx 0.2.1` on the first line, followed by the build record: commit hash, build timestamp, install kind, target triple, and backend versions. If the terminal says the command was not found, the installer directory is not on your `PATH` yet — open a fresh terminal (installers update `PATH` for new shells only) and try again. Still stuck? Jump to [Troubleshooting](/guide/11-troubleshooting-and-reinstall), which walks through reinstalling cleanly per OS.
+
+The installer also seeds the standard library into the global cache (`~/.cache/rnx`, or `$RNX_CACHE_HOME` when set) by running `rnx download` for you. The `rnx` binary itself carries no library sources: every `@std/*` import resolves from that cache, so the first build after a fresh install works with no extra step. If you installed while offline, the installer warns instead of failing — run `rnx download` once you are online, or `rnx doctor --repair-std` to check and repair the cache at any time.
 
 > [!TIP]
 > Not ready to install? Every example in this guide runs in the browser Playground — no setup at all. Installing is still worth it: the real toolchain adds files, packages, and tests.
