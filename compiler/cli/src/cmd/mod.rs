@@ -57,6 +57,7 @@ mod build;
 mod cache;
 mod check;
 mod completions;
+mod cputier;
 mod dev;
 mod doc;
 mod doctor;
@@ -89,6 +90,7 @@ use self::build::run_build;
 use self::cache::{run_cache, run_clean};
 use self::check::run_check;
 use self::completions::run_completions;
+use self::cputier::run_cpu_tier;
 use self::dev::run_dev;
 use self::doc::run_doc;
 use self::doctor::run_doctor;
@@ -155,6 +157,9 @@ pub(super) fn dispatch(
             }
             cli::args::Command::Explain { code } => {
                 run_explain(code);
+            }
+            cli::args::Command::CpuTier => {
+                run_cpu_tier();
             }
             cli::args::Command::Build {
                 path,

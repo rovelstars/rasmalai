@@ -364,3 +364,105 @@ pub const TAG_CLOSURE: u32 = 5;
 pub const TAG_NULL: u32 = 6;
 pub const TAG_OBJ: u32 = 7;
 pub const TAG_ARRAY: u32 = 8;
+
+static CPU_TIER: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+
+fn detect_cpu_tier() -> u8 {
+    if let Some(pin) = std::env::var_os("RNX_CPU_TIER") {
+        if let Some(s) = pin.to_str() {
+            if let Ok(t) = s.trim().parse::<u8>() {
+                if t <= 3 {
+                    return t;
+                }
+            }
+        }
+    }
+    probe_cpu_tier()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn probe_cpu_tier() -> u8 {
+    let max_leaf = unsafe { std::arch::x86_64::__cpuid(0).eax };
+    if max_leaf < 1 {
+        return 0;
+    }
+    let l1 = unsafe { std::arch::x86_64::__cpuid(1) };
+    let ecx1 = l1.ecx;
+    let has = |b: u32| ecx1 & (1 << b) != 0;
+    let sse3 = has(0);
+    let ssse3 = has(9);
+    let cx16 = has(13);
+    let sse41 = has(19);
+    let sse42 = has(20);
+    let popcnt = has(23);
+    let fma = has(12);
+    let avx_hw = has(28);
+    let osxsave = has(27);
+    let xsave = has(26);
+    let xcr0: u64 = if avx_hw && osxsave && xsave {
+        unsafe { std::arch::x86_64::_xgetbv(0) }
+    } else {
+        0
+    };
+    let avx_os = xcr0 & 0x6 == 0x6;
+    let (mut avx2, mut bmi1, mut bmi2) = (false, false, false);
+    let (mut avx512f, mut avx512dq, mut avx512cd, mut avx512bw, mut avx512vl) =
+        (false, false, false, false, false);
+    if max_leaf >= 7 {
+        let l7 = unsafe { std::arch::x86_64::__cpuid_count(7, 0) };
+        avx2 = l7.ebx & (1 << 5) != 0;
+        bmi1 = l7.ebx & (1 << 3) != 0;
+        bmi2 = l7.ebx & (1 << 8) != 0;
+        avx512f = l7.ebx & (1 << 16) != 0;
+        avx512dq = l7.ebx & (1 << 17) != 0;
+        avx512cd = l7.ebx & (1 << 28) != 0;
+        avx512bw = l7.ebx & (1 << 30) != 0;
+        avx512vl = l7.ebx & (1u32 << 31) != 0;
+    }
+    let ext = unsafe { std::arch::x86_64::__cpuid(0x8000_0000) };
+    let mut sahf = false;
+    let mut lzcnt = false;
+    if ext.eax >= 0x8000_0001 {
+        let e = unsafe { std::arch::x86_64::__cpuid(0x8000_0001) };
+        sahf = e.edx & (1 << 29) != 0;
+        lzcnt = e.ecx & (1 << 5) != 0;
+    }
+    let movbe = has(22);
+    let f16c = has(29);
+    let v2 = sse3 && ssse3 && cx16 && sse41 && sse42 && popcnt && sahf;
+    let v3 = v2 && avx_os && avx2 && bmi1 && bmi2 && fma && lzcnt && movbe && f16c;
+    let avx512_os = xcr0 & 0xe0 == 0xe0;
+    let v4 = v3 && avx_os && avx512_os && avx512f && avx512dq && avx512cd && avx512bw && avx512vl;
+    if v4 {
+        3
+    } else if v3 {
+        2
+    } else if v2 {
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn probe_cpu_tier() -> u8 {
+    if std::arch::is_aarch64_feature_detected!("sve") {
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn probe_cpu_tier() -> u8 {
+    0
+}
+
+pub fn cpu_tier() -> u8 {
+    *CPU_TIER.get_or_init(detect_cpu_tier)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rnx_cpu_tier() -> i64 {
+    cpu_tier() as i64
+}

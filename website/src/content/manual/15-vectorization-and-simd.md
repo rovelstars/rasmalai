@@ -59,6 +59,30 @@ let v = new Vec4f(4.0, 9.0, 16.0, 25.0);
 print(v.sqrt().get(3), v.dot(Vec4f.splat(1.0)));
 ```
 
+## Portability contract
+
+Release artifacts target a fixed baseline ISA, so the same program runs
+on old and new CPUs alike: SSE2 on x86-64, NEON on aarch64. The baseline
+already covers every `Vec4f`/`Vec4i` operation with a single 128-bit
+instruction, and the object bytes do not depend on the build machine.
+
+Functions that contain loops additionally ship tiered versions on x86-64:
+a baseline body plus x86-64 micro-architecture levels v2, v3, and v4. A
+small dispatch stub checks the CPU once per call through a cached probe
+(`rnx cpu-tier` prints this machine's tier, 0-3) and tail-jumps to the
+best version. Loop bodies contain no dispatch, and the steady-state cost
+is one cached probe plus predictable branches per function call. Every
+tier computes identical values: same IR, `fp-contract=off`, no fast-math
+divergence. `RNX_CPU_TIER=0..3` pins the tier for testing; pins above the
+machine's tier are never selected implicitly.
+
+Numeric edges are specified, not accidental: `min`/`max` return the other
+lane when exactly one side is NaN (both NaN yields NaN with
+backend-defined payload bits, per the numerics chapter); integer lanes
+sign-extend on readout; an out-of-range lane index traps on every backend;
+an integer lane division by zero traps under the interpreter and JIT and
+is unspecified in LLVM AOT, so guard divisors first.
+
 ## Float discipline still applies
 
 Lane values are strict `Float`s. Mixing a `FastFloat` lane source without
@@ -80,7 +104,7 @@ boundary.
 | `x()` / `y()` / `z()` / `w()` | lane readout | — |
 | `get(i)` | indexed readout | out-of-range lanes trap |
 | `dot(other)` | pairwise products summed | scalar `Float` |
-| `min(other)` / `max(other)` | per-lane extrema | scalar or vector per overload |
+| `min(other)` / `max(other)` | per-lane extrema, other lane wins on single-sided NaN | vector per overload |
 | `sqrt()` | per-lane root | negative lanes yield NaN per IEEE-754 |
 
 ```rnx

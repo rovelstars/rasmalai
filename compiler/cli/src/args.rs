@@ -182,6 +182,8 @@ pub enum Command {
         /// Diagnostic code to explain
         code: Option<String>,
     },
+    /// Print the CPU tier (0-3) this machine reports for release tier dispatch
+    CpuTier,
     /// Scaffold a new Rasmalai project
     Init {
         /// Project name

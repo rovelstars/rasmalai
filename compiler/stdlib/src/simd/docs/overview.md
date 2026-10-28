@@ -24,3 +24,15 @@ print(v.dot(v));
 Reach for @std/simd when four floats (or ints) move together: graphics, physics, signal processing. Vec4f lives inline with plain operators — no heap, no ARC traffic, no intrinsics headers.
 
 It covers: Vec4f/Vec4i lanes; Reductions (dot/min/max); Zero-allocation ops.
+
+## Portability
+
+Every `Vec4f`/`Vec4i` operation is a single 128-bit instruction on the
+portable baseline (SSE2 on x86-64, NEON on aarch64), so release artifacts
+run on any CPU of the target architecture. Functions that contain loops
+additionally ship tiered versions (baseline plus x86-64 micro-architecture
+levels v2/v3/v4 on x86-64) with a startup-resolved dispatch stub; every tier
+computes identical values. `min`/`max` return the other lane when exactly
+one side is NaN, on all backends; lane reads sign-extend; an out-of-range
+lane index traps everywhere.
+
