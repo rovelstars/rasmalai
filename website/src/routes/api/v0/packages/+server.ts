@@ -55,7 +55,12 @@ import {
 	fetchArtifactIndex,
 	parseArtifactIndex
 } from '$lib/server/oci';
-import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
+import {
+	checkRateLimit,
+	LIST_RATE_LIMIT,
+	LIST_RATE_WINDOW_MS
+} from '$lib/server/rateLimit';
+import { sessionUser, readSessionCookie, userScopes, checkBrowserOrigin, clientIp } from '$lib/server/auth';
 
 const MAX_GUIDES_BYTES = 400 * 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024;
@@ -104,8 +109,24 @@ async function readBody(
 }
 
 // Public catalog for search and listings. Metadata only, never doc payloads.
-export async function GET({ platform, setHeaders, url }) {
+export async function GET({ request, platform, setHeaders, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
+	// The listing scans every package and version row, so an anonymous loop
+	// on it costs a full scan per request. The edge caches the answer for an
+	// hour, and a client past its per-minute share waits for the window.
+	const ip = request ? clientIp(request.headers) : 'unknown';
+	if (ip !== 'unknown') {
+		const verdict = checkRateLimit(`packages-list:${ip}`, LIST_RATE_LIMIT, LIST_RATE_WINDOW_MS);
+		if (!verdict.ok) {
+			return json(
+				{ code: 'rate-limited', message: `package list rate limit exceeded (${LIST_RATE_LIMIT}/minute per client)` },
+				{
+					status: 429,
+					headers: { ...specHeaders(), 'Retry-After': String(verdict.retryAfterSec) }
+				}
+			);
+		}
+	}
 	const num = (v: string | null): number | undefined => {
 		if (v === null || v.trim() === '') return undefined;
 		const n = Number(v);

@@ -9,6 +9,12 @@ import {
 	MAX_RESOLVE_REQUIREMENTS,
 	MAX_RESOLVE_HAVE
 } from '$lib/server/registry';
+import { clientIp } from '$lib/server/auth';
+import {
+	checkRateLimit,
+	RESOLVE_RATE_LIMIT,
+	RESOLVE_RATE_WINDOW_MS
+} from '$lib/server/rateLimit';
 import { newRequestId } from '$lib/server/requestId';
 
 function err(code: string, message: string, status: number, requestId: string) {
@@ -57,6 +63,28 @@ async function readBody(
 // requirement sets resolve deterministically; ranged sets re-resolve live.
 export async function POST({ request, url, platform }) {
 	const requestId = newRequestId();
+	// The resolve endpoint is anonymous and one request can spend up to 50
+	// store round trips, so a single client looping on it burns the shared
+	// request budget. The check runs before the body is read: a refused
+	// request costs a header read and nothing else. Requests with no
+	// attributable address (local dev, tests) are not bucketed.
+	const ip = clientIp(request.headers);
+	if (ip !== 'unknown') {
+		const verdict = checkRateLimit(`resolve:${ip}`, RESOLVE_RATE_LIMIT, RESOLVE_RATE_WINDOW_MS);
+		if (!verdict.ok) {
+			return json(
+				{
+					code: 'rate-limited',
+					message: `resolve rate limit exceeded (${RESOLVE_RATE_LIMIT}/minute per client)`,
+					requestId
+				},
+				{
+					status: 429,
+					headers: { ...specHeaders(), 'Retry-After': String(verdict.retryAfterSec) }
+				}
+			);
+		}
+	}
 	const raw = await readBody(request, MAX_RESOLVE_BODY_BYTES);
 	if (!raw.ok) {
 		return err('payload-too-large', `request body over ${MAX_RESOLVE_BODY_BYTES} bytes`, 413, requestId);
