@@ -348,7 +348,35 @@ fn collect_workspace_graph(
     Ok(nodes.into_values().collect())
 }
 
+fn effective_bills(
+    nodes: &[PkgNode],
+) -> Result<BTreeMap<String, BTreeSet<crate::capabilities::Capability>>, Diagnostic> {
+    let mut own: BTreeMap<String, BTreeSet<crate::capabilities::Capability>> = BTreeMap::new();
+    let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut sorted: Vec<&PkgNode> = nodes.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    for n in sorted {
+        if n.source.starts_with("native:") {
+            own.insert(n.name.clone(), BTreeSet::new());
+            edges.insert(n.name.clone(), Vec::new());
+            continue;
+        }
+        let scan = crate::security::analyze_dep_own(&n.dir)?;
+        let mut set: BTreeSet<crate::capabilities::Capability> = BTreeSet::new();
+        for s in &scan.capabilities {
+            set.insert(crate::security::parse_cap(s)?);
+        }
+        own.insert(n.name.clone(), set);
+        let mut deps: Vec<String> = n.deps.iter().map(|(d, _)| d.clone()).collect();
+        deps.sort();
+        deps.dedup();
+        edges.insert(n.name.clone(), deps);
+    }
+    crate::security::rollup_effective_capabilities(&own, &edges)
+}
+
 fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
+    let effective = effective_bills(&nodes)?;
     let mut packages: Vec<LockedPackage> = Vec::new();
     for n in nodes {
         if n.source.starts_with("native:") {
@@ -366,7 +394,11 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
             });
             continue;
         }
-        let a = crate::security::analyze_dep_dir(&n.dir)?;
+        let bills = effective.get(&n.name).cloned().unwrap_or_default();
+        let tier = crate::security::tier_of_caps(&bills);
+        let mut capabilities: Vec<String> =
+            bills.iter().map(|c| c.to_string()).collect();
+        capabilities.sort();
         packages.push(LockedPackage {
             name: n.name,
             version: n.version,
@@ -382,8 +414,8 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
                     format!("{n} {v}")
                 }
             }).collect(),
-            tier: a.tier.to_string(),
-            capabilities: a.capabilities.clone(),
+            tier: tier.to_string(),
+            capabilities,
         });
     }
     packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -405,6 +437,7 @@ fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnos
     }
     let by_name: BTreeMap<&str, &LockedPackage> =
         lock.packages.iter().map(|p| (p.name.as_str(), p)).collect();
+    let effective = effective_bills(&nodes)?;
     for node in nodes {
         let locked = by_name.get(node.name.as_str()).ok_or_else(|| {
             Diagnostic::new(
@@ -494,16 +527,7 @@ fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnos
                 ),
             ));
         }
-        let scan = crate::security::analyze_dep_dir(&node.dir)?;
-        let mut deduced = BTreeSet::new();
-        for s in &scan.capabilities {
-            match crate::security::parse_cap(s) {
-                Ok(c) => {
-                    deduced.insert(c);
-                }
-                Err(d) => return Err(d),
-            }
-        }
+        let deduced = effective.get(&node.name).cloned().unwrap_or_default();
         let loc = |_: &crate::capabilities::Capability| node.dir.display().to_string();
         if let Some(d) = crate::security::entry_scan_diags(&node.name, &deduced, locked, &loc)
             .into_iter()
@@ -2279,5 +2303,174 @@ mod tests {
             ProjectDepLock::update_lock(&root, &cfg, crate::native::NativePrefer::None, &[], false)
                 .unwrap_err();
         assert!(err.message.contains("run 'rnx lock'"), "{}", err.message);
+    }
+
+    const PURE_LIB: &str = "export fn f(): Int {\n    return 1;\n}\n";
+    const SINK_LIB: &str =
+        "export fn f(): Int {\n    File.open(\"/tmp/chain.txt\", FileMode.Read);\n    return 0;\n}\n";
+
+    fn chain_tree(tag: &str, pkgs: &[(&str, &str, &str)]) -> (crate::scratch::Scratch, std::path::PathBuf) {
+        let dir = crate::scratch::dir(&format!("lock-rollup-{tag}"));
+        for (name, deps, lib) in pkgs {
+            let pkg = dir.join(name);
+            std::fs::create_dir_all(pkg.join("src")).unwrap();
+            let mut manifest = format!(
+                "export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.1.0\"\n    }},\n    entries: {{ main: \"src/lib.rnx\" }}"
+            );
+            if !deps.is_empty() {
+                manifest.push_str(&format!(",\n    dependencies: {{\n{deps}    }}"));
+            }
+            manifest.push_str("\n}\n");
+            std::fs::write(pkg.join("Project.config"), manifest).unwrap();
+            std::fs::write(pkg.join("src").join("lib.rnx"), lib).unwrap();
+        }
+        let root = dir.join("app");
+        (dir, root)
+    }
+
+    fn locked_caps(lock: &ProjectDepLock, name: &str) -> Vec<String> {
+        lock.packages
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("no package `{name}`"))
+            .capabilities
+            .clone()
+    }
+
+    #[test]
+    fn lock_rolls_up_transitive_chain() {
+        let (_dir, root) = chain_tree(
+            "chain",
+            &[
+                ("app", "        mid: { path: \"../mid\" }\n", PURE_LIB),
+                ("mid", "        leaf: { path: \"../leaf\" }\n", PURE_LIB),
+                ("leaf", "", SINK_LIB),
+            ],
+        );
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = ProjectDepLock::resolve(&root, &cfg).unwrap();
+        assert_eq!(locked_caps(&lock, "leaf"), vec!["fs:read:/tmp/**".to_string()]);
+        assert_eq!(locked_caps(&lock, "mid"), vec!["fs:read:/tmp/**".to_string()]);
+        assert_eq!(locked_caps(&lock, "app"), vec!["fs:read:/tmp/**".to_string()]);
+        for name in ["app", "mid", "leaf"] {
+            let tier = &lock.packages.iter().find(|p| p.name == name).unwrap().tier;
+            assert_eq!(tier, "ambient", "{name}");
+        }
+        verify_lock(&root, &cfg, &lock).unwrap();
+    }
+
+    #[test]
+    fn lock_rolls_up_diamond_without_duplication() {
+        let (_dir, root) = chain_tree(
+            "diamond",
+            &[
+                (
+                    "app",
+                    "        left: { path: \"../left\" },\n        right: { path: \"../right\" }\n",
+                    PURE_LIB,
+                ),
+                ("left", "        shared: { path: \"../shared\" }\n", PURE_LIB),
+                ("right", "        shared: { path: \"../shared\" }\n", PURE_LIB),
+                ("shared", "", SINK_LIB),
+            ],
+        );
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = ProjectDepLock::resolve(&root, &cfg).unwrap();
+        let want = vec!["fs:read:/tmp/**".to_string()];
+        for name in ["app", "left", "right", "shared"] {
+            assert_eq!(locked_caps(&lock, name), want, "{name}");
+        }
+        let again = ProjectDepLock::resolve(&root, &cfg).unwrap().to_rnx();
+        assert_eq!(lock.to_rnx(), again);
+        verify_lock(&root, &cfg, &lock).unwrap();
+    }
+
+    #[test]
+    fn lock_bytes_match_across_manifest_orders() {
+        let mk = |tag: &str, deps: &str| {
+            chain_tree(
+                tag,
+                &[
+                    ("app", deps, PURE_LIB),
+                    ("aaa", "", PURE_LIB),
+                    ("zzz", "", SINK_LIB),
+                ],
+            )
+        };
+        let (_d1, r1) = mk("order-fwd", "        aaa: { path: \"../aaa\" },\n        zzz: { path: \"../zzz\" }\n");
+        let (_d2, r2) = mk("order-rev", "        zzz: { path: \"../zzz\" },\n        aaa: { path: \"../aaa\" }\n");
+        let c1 = ProjectConfig::load_from_dir(&r1).unwrap().unwrap();
+        let c2 = ProjectConfig::load_from_dir(&r2).unwrap().unwrap();
+        let t1 = ProjectDepLock::resolve(&r1, &c1).unwrap().to_rnx();
+        let t2 = ProjectDepLock::resolve(&r2, &c2).unwrap().to_rnx();
+        assert_ne!(t1, t2);
+        let mut l1 = ProjectDepLock::parse(&t1).unwrap();
+        let mut l2 = ProjectDepLock::parse(&t2).unwrap();
+        for lock in [&mut l1, &mut l2] {
+            for p in &mut lock.packages {
+                if p.name == "app" {
+                    p.checksum.clear();
+                }
+            }
+        }
+        assert_eq!(l1, l2);
+    }
+
+    #[test]
+    fn lock_cycle_fails_closed() {
+        let (_dir, root) = chain_tree(
+            "cycle",
+            &[
+                ("app", "        aaa: { path: \"../aaa\" }\n", PURE_LIB),
+                ("aaa", "        app: { path: \"../app\" }\n", PURE_LIB),
+            ],
+        );
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let err = ProjectDepLock::resolve(&root, &cfg).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("dependency cycle detected"), "{}", err.message);
+    }
+
+    #[test]
+    fn lock_deep_chain_closes_in_one_pass() {
+        let depth = 500usize;
+        let dir = crate::scratch::dir("lock-rollup-deep");
+        for i in 0..depth {
+            let name = if i == 0 { "app".to_string() } else { format!("p{i:04}") };
+            let pkg = dir.join(&name);
+            std::fs::create_dir_all(pkg.join("src")).unwrap();
+            let deps = if i + 1 < depth {
+                let next = format!("p{:04}", i + 1);
+                format!(",\n    dependencies: {{\n        {next}: {{ path: \"../{next}\" }}\n    }}")
+            } else {
+                String::new()
+            };
+            let lib = format!(
+                "export fn f(): Int {{\n    Env.get(\"VAR_{i:04}\");\n    return {i};\n}}\n"
+            );
+            std::fs::write(
+                pkg.join("Project.config"),
+                format!(
+                    "export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"0.1.0\"\n    }},\n    entries: {{ main: \"src/lib.rnx\" }}{deps}\n}}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(pkg.join("src").join("lib.rnx"), lib).unwrap();
+        }
+        let root = dir.join("app");
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = ProjectDepLock::resolve(&root, &cfg).unwrap();
+        assert_eq!(lock.packages.len(), depth);
+        let head = lock.packages.iter().find(|p| p.name == "app").unwrap();
+        assert_eq!(head.capabilities.len(), depth);
+        assert!(head.capabilities.contains(&"env:read:VAR_0000".to_string()), "{head:?}");
+        assert!(head.capabilities.contains(&"env:read:VAR_0499".to_string()), "{head:?}");
+        let tail = lock.packages.iter().find(|p| p.name == "p0499").unwrap();
+        assert_eq!(tail.capabilities, vec!["env:read:VAR_0499".to_string()]);
+        let mid = lock.packages.iter().find(|p| p.name == "p0250").unwrap();
+        assert_eq!(mid.capabilities.len(), depth - 250);
+        let again = ProjectDepLock::resolve(&root, &cfg).unwrap().to_rnx();
+        assert_eq!(lock.to_rnx(), again);
+        verify_lock(&root, &cfg, &lock).unwrap();
     }
 }
