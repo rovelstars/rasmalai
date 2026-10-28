@@ -59,6 +59,7 @@ fn build_key(
         owned.push(path.display().to_string().into_bytes());
         owned.push(std::fs::read(path).unwrap_or_default());
     }
+    owned.push(sysroot::Sysroot::discover(None).identity().into_bytes());
     let host = linker::host_triple().0;
     owned.extend(frontend::cache::toolchain_parts(
         release,
@@ -214,8 +215,11 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 }
             }
             let host = linker::host_triple().0;
-            let cross = target_triple.as_deref().is_some_and(|t| t != host);
-            if cross && !emit_obj {
+            let effective = target_triple.as_deref().unwrap_or(&host);
+            let cross = effective != host;
+            let host_linkable_musl =
+                effective == "x86_64-unknown-linux-musl" && host == "x86_64-unknown-linux-gnu";
+            if cross && !host_linkable_musl && !emit_obj {
                 println!(
                     "{}",
                     diagnostics::Diagnostic::new(
@@ -426,7 +430,8 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     }
                     (path.display().to_string(), Some((stamp, key)))
             };
-            let target = linker::host_triple();
+            let target =
+                target_triple.clone().map(linker::TargetTriple).unwrap_or_else(linker::host_triple);
             let link_start = std::time::Instant::now();
             let foreign_libs: Vec<linker::LinkInput> = link_plan
                 .iter()
@@ -455,42 +460,64 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 Some(_) => Some(false),
                 None => None,
             };
+            let native_x86 = target.0.starts_with("x86_64-") && sysroot::family_of(&target.0).is_some();
             let native = match native_requested {
                 Some(forced) => {
-                    if forced && target.0 != "x86_64-unknown-linux-gnu" {
-                        eprintln!("error: RNX_NATIVE_LINK=1 needs target x86_64-unknown-linux-gnu");
+                    if forced && !native_x86 {
+                        eprintln!("error: RNX_NATIVE_LINK=1 needs target x86_64-unknown-linux-gnu or x86_64-unknown-linux-musl");
                         std::process::exit(1);
                     }
                     forced
                 }
-                None => target.0 == "x86_64-unknown-linux-gnu",
+                None => native_x86,
             };
-            if native && target.0 != "x86_64-unknown-linux-gnu" {
-                eprintln!("error: native link needs target x86_64-unknown-linux-gnu");
+            if native && !native_x86 {
+                eprintln!("error: native link needs target x86_64-unknown-linux-gnu or x86_64-unknown-linux-musl");
                 std::process::exit(1);
             }
-            let link_result = if native {
-                // Incremental-link cache: project-local memo of the archive
-                // pull order. Cold builds (no plan file yet) take the exact
-                // uncached path; the plan only ever accelerates rebuilds.
-                // Construction here is in-memory only (one stat for the
-                // rewrite gate, no hashing, no reads).
-                let link_cache = || linker::plan::CacheCtx {
-                    dir: frontend::cache::project_cache_dir(&root)
-                        .join("link")
-                        .join(profile_name(release)),
-                    toolchain: format!(
-                        "rnx={} llvm={} rt={} release={} opt={} target={} debug={}",
-                        env!("CARGO_PKG_VERSION"),
-                        llvm::LLVM_VERSION,
-                        cli::runtime_archive_hash(),
-                        release,
-                        opt_level,
-                        target_triple.as_deref().unwrap_or(target.0.as_str()),
-                        debug,
-                    ),
-                    allow_write: std::path::Path::new(&out_path).is_file(),
-                };
+            let musl = matches!(sysroot::family_of(&target.0), Some(sysroot::Family::Musl));
+            // Incremental-link cache: project-local memo of the archive
+            // pull order. Cold builds (no plan file yet) take the exact
+            // uncached path; the plan only ever accelerates rebuilds.
+            // Construction here is in-memory only (one stat for the
+            // rewrite gate, no hashing, no reads).
+            let link_cache = || linker::plan::CacheCtx {
+                dir: frontend::cache::project_cache_dir(&root)
+                    .join("link")
+                    .join(profile_name(release)),
+                toolchain: format!(
+                    "rnx={} llvm={} rt={} release={} opt={} target={} debug={} sysroot={}",
+                    env!("CARGO_PKG_VERSION"),
+                    llvm::LLVM_VERSION,
+                    cli::runtime_archive_hash(),
+                    release,
+                    opt_level,
+                    target_triple.as_deref().unwrap_or(target.0.as_str()),
+                    debug,
+                    sysroot::Sysroot::discover(None).identity(),
+                ),
+                allow_write: std::path::Path::new(&out_path).is_file(),
+            };
+            let link_result = if musl {
+                let mut inputs = user_objects;
+                inputs.push(linker::LinkInput::ArchiveRefKnown {
+                    bytes: runtime::archive::BYTES,
+                    sha256: runtime::archive::SHA256,
+                });
+                inputs.extend(foreign_libs);
+                linker::native::native_link_fully_static_in(
+                    &inputs,
+                    std::path::Path::new(&out_path),
+                    &linker::native::StaticOpts {
+                        entry: "_start".to_string(),
+                        icf: release,
+                        target: target.0.clone(),
+                        strip: release,
+                    },
+                    &sysroot::Sysroot::discover(None),
+                )
+                .map(|_| ())
+            } else if native {
                 if release {
                     let mut inputs = user_objects;
                     inputs.push(linker::LinkInput::ArchiveRefKnown {
@@ -667,6 +694,14 @@ mod tests {
         assert!(!project_name_invalid("sample_project"));
         assert!(!project_name_invalid("my-app"));
         assert!(!project_name_invalid("@acme/widget"));
+    }
+
+    #[test]
+    fn musl_and_gnu_targets_validate() {
+        assert!(cli::validate_target("x86_64-unknown-linux-gnu").is_ok());
+        assert!(cli::validate_target("aarch64-unknown-linux-gnu").is_ok());
+        assert!(cli::validate_target("x86_64-unknown-linux-musl").is_ok());
+        assert!(cli::validate_target("x86_64-pc-windows-msvc").is_err());
     }
 
     fn write_manifest(dir: &std::path::Path, name: &str, deps: &str) {

@@ -653,10 +653,10 @@ fn collect_exports(
 
 pub fn validate_target(triple: &str) -> Result<(), diagnostics::Diagnostic> {
     match triple {
-        "x86_64-unknown-linux-gnu" | "aarch64-unknown-linux-gnu" => Ok(()),
+        "x86_64-unknown-linux-gnu" | "aarch64-unknown-linux-gnu" | "x86_64-unknown-linux-musl" => Ok(()),
         _ => Err(diagnostics::Diagnostic::new(
             diagnostics::Code::E108,
-            format!("unsupported target `{triple}`; expected x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu"),
+            format!("unsupported target `{triple}`; expected x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, or x86_64-unknown-linux-musl"),
         )),
     }
 }

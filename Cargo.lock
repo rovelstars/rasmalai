@@ -367,6 +367,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stdlib",
+ "sysroot",
  "tempfile",
  "tokio",
  "ureq",
@@ -880,6 +881,7 @@ dependencies = [
  "ring",
  "sha2",
  "stdlib",
+ "sysroot",
  "tempfile",
 ]
 
@@ -1444,6 +1446,7 @@ dependencies = [
  "memmap2",
  "rayon",
  "runtime",
+ "sysroot",
  "tempfile",
 ]
 
@@ -2393,6 +2396,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "sysroot"
+version = "0.2.1"
+dependencies = [
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

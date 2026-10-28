@@ -6,8 +6,10 @@ edition.workspace = true
 [dependencies]
 memmap2 = "0.9"
 rayon = "1.12"
+sysroot = { path = "../sysroot" }
 
 [dev-dependencies]
 cli = { path = "../cli" }
 runtime = { path = "../runtime" }
+sysroot = { path = "../sysroot" }
 tempfile = "3"

@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 diagnostics = { path = "../diagnostics" }
 docgen = { path = "../docgen" }
+sysroot = { path = "../sysroot" }
 frontend = { path = "../frontend" }
 lir = { path = "../lir" }
 runtime = { path = "../runtime" }

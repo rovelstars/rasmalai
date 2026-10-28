@@ -51,12 +51,25 @@ pub fn host_triple() -> TargetTriple {
     TargetTriple(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
 }
 
+fn musl_cc_rejection(target: &TargetTriple) -> Option<LinkError> {
+    if matches!(sysroot::family_of(&target.0), Some(sysroot::Family::Musl)) {
+        return Some(LinkError::UnsupportedTarget(format!(
+            "target `{}` needs the native static link (musl links fully static, no C driver); unset RNX_NATIVE_LINK=0",
+            target.0
+        )));
+    }
+    None
+}
+
 pub fn link_executable(
     inputs: &[LinkInput],
     output_path: &Path,
     target: &TargetTriple,
     release: bool,
 ) -> Result<(), LinkError> {
+    if let Some(err) = musl_cc_rejection(target) {
+        return Err(err);
+    }
     if !target.0.contains("linux") {
         return Err(LinkError::UnsupportedTarget(target.0.clone()));
     }
@@ -129,6 +142,9 @@ pub fn link_executable_dynamic(
     target: &TargetTriple,
     dyn_link: &DynLink,
 ) -> Result<(), LinkError> {
+    if let Some(err) = musl_cc_rejection(target) {
+        return Err(err);
+    }
     if !target.0.contains("linux") {
         return Err(LinkError::UnsupportedTarget(target.0.clone()));
     }
