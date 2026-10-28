@@ -7,8 +7,9 @@ pub(super) fn build_module<'ctx>(
     name: &str,
     release: bool,
     debug: Option<&DebugInfo>,
+    version: Option<&str>,
 ) -> Result<(LlModule<'ctx>, BTreeMap<String, FunctionValue<'ctx>>), Diagnostic> {
-    build_module_subset(context, lir, name, release, debug, None)
+    build_module_subset(context, lir, name, release, debug, None, version)
 }
 
 pub(super) fn build_module_subset<'ctx>(
@@ -18,10 +19,13 @@ pub(super) fn build_module_subset<'ctx>(
     release: bool,
     debug: Option<&DebugInfo>,
     define: Option<&BTreeSet<usize>>,
+    version: Option<&str>,
 ) -> Result<(LlModule<'ctx>, BTreeMap<String, FunctionValue<'ctx>>), Diagnostic> {
     let module = context.create_module(name);
     let builder = context.create_builder();
     let mut funcs: BTreeMap<String, FunctionValue<'ctx>> = BTreeMap::new();
+    let mut versioned: BTreeMap<String, FunctionValue<'ctx>> = BTreeMap::new();
+    let tiered = version.is_some_and(version::triple_versions);
     for f in &lir.functions {
         let i64t = context.i64_type();
         let v4f32 = context.f32_type().vec_type(4);
@@ -68,6 +72,32 @@ pub(super) fn build_module_subset<'ctx>(
             fv.set_section(Some(&format!(".text.{}", f.name)));
         }
         funcs.insert(f.name.clone(), fv);
+        if tiered && version::candidate(f) {
+            let noinline_stub = context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+                0,
+            );
+            fv.add_attribute(inkwell::attributes::AttributeLoc::Function, noinline_stub);
+            for (suffix, cpu, _) in version::VERSIONS {
+                let vname = version::version_name(&f.name, suffix);
+                let vfv = module.add_function(&vname, fty, None);
+                let keep = context.create_string_attribute("fp-contract", "off");
+                vfv.add_attribute(inkwell::attributes::AttributeLoc::Function, keep);
+                if let Some(cpu_name) = cpu {
+                    let tier = context.create_string_attribute("target-cpu", cpu_name);
+                    vfv.add_attribute(inkwell::attributes::AttributeLoc::Function, tier);
+                }
+                let noinline = context.create_enum_attribute(
+                    inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+                    0,
+                );
+                vfv.add_attribute(inkwell::attributes::AttributeLoc::Function, noinline);
+                if release {
+                    vfv.set_section(Some(&format!(".text.{}", f.name)));
+                }
+                versioned.insert(vname, vfv);
+            }
+        }
     }
     for f in &lir.foreign {
         if funcs.contains_key(&f.symbol) {
@@ -758,6 +788,7 @@ pub(super) fn build_module_subset<'ctx>(
     if let Some(info) = debug {
         active = Some(start_debug(context, &module, lir, info, &funcs, define)?);
     }
+    let mut tier_decl: Option<FunctionValue<'ctx>> = None;
     for (i, f) in lir.functions.iter().enumerate() {
         if !define.is_none_or(|d| d.contains(&i)) {
             continue;
@@ -781,6 +812,36 @@ pub(super) fn build_module_subset<'ctx>(
         } else {
             None
         };
+        if tiered && version::candidate(f) {
+            let tier_fn = match tier_decl {
+                Some(decl) => decl,
+                None => {
+                    let decl = module.add_function(
+                        "rnx_cpu_tier",
+                        context.i64_type().fn_type(&[], false),
+                        None,
+                    );
+                    tier_decl = Some(decl);
+                    decl
+                }
+            };
+            let stub = funcs[&f.name];
+            let mut vfuncs = funcs.clone();
+            let mut targets = Vec::with_capacity(version::VERSIONS.len());
+            for (suffix, _, _) in version::VERSIONS {
+                let vname = version::version_name(&f.name, suffix);
+                let vfv = versioned.get(&vname).copied().ok_or_else(|| {
+                    Diagnostic::new(Code::E108, format!("tier codegen missing `{vname}`"))
+                })?;
+                vfuncs.insert(vname.clone(), vfv);
+                let mut shadow = f.clone();
+                shadow.name = vname;
+                lower_fn(context, &builder, &module, lir, &vfuncs, &shadow, release, loc)?;
+                targets.push(vfv);
+            }
+            version::synthesize_stub(context, stub, &targets, tier_fn)?;
+            continue;
+        }
         lower_fn(context, &builder, &module, lir, &funcs, f, release, loc)?;
     }
     if let Some(dbg) = active {

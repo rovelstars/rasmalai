@@ -11,6 +11,7 @@ pub(super) use std::collections::{BTreeMap, BTreeSet};
 
 mod lower_fn;
 mod instr;
+mod version;
 pub mod stdlib_prebuilt;
 
 use self::instr::{FnCx, lower_instr};
@@ -175,7 +176,7 @@ impl<'ctx> Jit<'ctx> {
         for f in &lir.functions {
             check_supported(lir, f)?;
         }
-        let (module, funcs) = build_module(context, lir, name, false, None)?;
+        let (module, funcs) = build_module(context, lir, name, false, None, None)?;
         let engine = module
             .create_execution_engine()
             .map_err(|e| Diagnostic::new(Code::E108, format!("llvm jit: {e}")))?;
@@ -695,7 +696,8 @@ pub fn emit_object_with_debug(
     check_build(lir, entry)?;
     let context = Context::create();
     let release = opt == OptLevel::Release;
-    let (module, funcs) = build_module(&context, lir, name, release, debug)?;
+    let version = version_target_for(target, release);
+    let (module, funcs) = build_module(&context, lir, name, release, debug, version.as_deref())?;
     rename_entry_for_glue(&funcs, entry);
     synthesize_glue(&context, &module, &funcs, lir, entry, release)?;
     module.verify().map_err(|e| {
@@ -922,7 +924,8 @@ fn emit_unit(
     let context = acquire_context();
     let result = (|| {
         let release = opt == OptLevel::Release;
-        let (module, funcs) = build_module_subset(&context, lir, name, release, debug, Some(define))?;
+        let version = version_target_for(target, release);
+        let (module, funcs) = build_module_subset(&context, lir, name, release, debug, Some(define), version.as_deref())?;
         // Every unit renames a user `main`: the definition lives in exactly one
         // unit while unit 0 calls it, so all must agree on `__rnx_user_main`.
         rename_entry_for_glue(&funcs, entry);
@@ -1006,7 +1009,7 @@ pub fn unit_hash(
     module_name: &str,
 ) -> String {
     let mut parts: Vec<Vec<u8>> = Vec::new();
-    parts.push(b"rnx-unit-v1".to_vec());
+    parts.push(b"rnx-unit-v2".to_vec());
     parts.push(module_name.as_bytes().to_vec());
     parts.push(vec![match opt {
         OptLevel::Dev => 0,
@@ -1160,12 +1163,24 @@ pub fn emit_objects_cached(
     Ok(out)
 }
 
-fn cross_cpu(triple: &str) -> String {
+pub fn baseline_cpu_for(triple: &str) -> (String, String) {
     if triple.starts_with("x86_64") {
-        "x86-64".to_string()
+        ("x86-64".to_string(), String::new())
     } else {
-        "generic".to_string()
+        ("generic".to_string(), String::new())
     }
+}
+
+pub fn host_triple_str() -> &'static str {
+    host_info()
+}
+
+pub fn version_target_for(target: Option<&str>, release: bool) -> Option<String> {
+    if !release {
+        return None;
+    }
+    let t = target.unwrap_or_else(|| host_triple_str());
+    t.starts_with("x86_64").then(|| t.to_string())
 }
 
 static LLVM_TARGETS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
@@ -1178,18 +1193,16 @@ fn ensure_targets() {
     });
 }
 
-// Process-global host description, queried once: every unit machine for
-// a host build uses the same triple, CPU, and features.
-static HOST_INFO: std::sync::OnceLock<(String, String, String)> = std::sync::OnceLock::new();
+// Process-global host triple, queried once: every unit machine for
+// a host build uses the same triple. The CPU and feature set are the
+// fixed portable baseline from `baseline_cpu_for`, never the host CPU,
+// so identical inputs emit identical bytes on any build machine.
+static HOST_INFO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-fn host_info() -> &'static (String, String, String) {
+fn host_info() -> &'static String {
     HOST_INFO.get_or_init(|| {
         ensure_targets();
-        (
-            TargetMachine::get_default_triple().as_str().to_string_lossy().into_owned(),
-            TargetMachine::get_host_cpu_name().to_string(),
-            TargetMachine::get_host_cpu_features().to_string(),
-        )
+        TargetMachine::get_default_triple().as_str().to_string_lossy().into_owned()
     })
 }
 
@@ -1202,7 +1215,7 @@ fn make_machine(
     ensure_targets();
     let triple_ref = match triple {
         Some(t) => TargetTriple::create(t),
-        None => TargetTriple::create(&host_info().0),
+        None => TargetTriple::create(host_info()),
     };
     let target = Target::from_triple(&triple_ref)
         .map_err(|e| Diagnostic::new(Code::E108, format!("llvm target: {e}")))?;
@@ -1211,8 +1224,8 @@ fn make_machine(
         OptLevel::Release => OptimizationLevel::Aggressive,
     };
     let (cpu, features) = match triple {
-        Some(t) => (cross_cpu(t), String::new()),
-        None => (host_info().1.clone(), host_info().2.clone()),
+        Some(t) => baseline_cpu_for(t),
+        None => baseline_cpu_for(host_info()),
     };
     let machine = target
         .create_target_machine(
@@ -1229,7 +1242,7 @@ fn make_machine(
 
 pub fn optimized_ir(lir: &Module, name: &str) -> Result<String, Diagnostic> {
     let context = Context::create();
-    let (module, _) = build_module(&context, lir, name, true, None)?;
+    let (module, _) = build_module(&context, lir, name, true, None, None)?;
     let (triple_ref, machine) = make_machine(None, OptLevel::Release)?;
     module.set_triple(&triple_ref);
     module.set_data_layout(&machine.get_target_data().get_data_layout());
@@ -1242,6 +1255,15 @@ pub fn optimized_ir(lir: &Module, name: &str) -> Result<String, Diagnostic> {
             Diagnostic::new(Code::E108, format!("llvm verify after O3 for `{name}`: {e}"))
         })?;
     }
+    Ok(module.print_to_string().to_string())
+}
+
+pub fn release_ir(lir: &Module, name: &str, version: Option<&str>) -> Result<String, Diagnostic> {
+    let context = Context::create();
+    let (module, _) = build_module(&context, lir, name, true, None, version)?;
+    let (triple_ref, machine) = make_machine(None, OptLevel::Release)?;
+    module.set_triple(&triple_ref);
+    module.set_data_layout(&machine.get_target_data().get_data_layout());
     Ok(module.print_to_string().to_string())
 }
 
@@ -1288,7 +1310,8 @@ pub fn emit_library_with_debug(lir: &Module, name: &str, opt: OptLevel, target: 
     }
     let release = opt == OptLevel::Release;
     let context = Context::create();
-    let (module, funcs) = build_module(&context, lir, name, release, debug)?;
+    let version = version_target_for(target, release);
+    let (module, funcs) = build_module(&context, lir, name, release, debug, version.as_deref())?;
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     for (fi, f) in lir.functions.iter().enumerate() {
         if !f.is_pub {

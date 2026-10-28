@@ -94,7 +94,7 @@ fn build_stdlib_object() -> Result<Vec<u8>, Diagnostic> {
         check_supported(&lowered, func)?;
     }
     let context = Context::create();
-    let (module, _) = build_module(&context, &lowered, "rnx_stdlib", true, None)?;
+    let (module, _) = build_module(&context, &lowered, "rnx_stdlib", true, None, None)?;
     finish_object(&module, "rnx_stdlib", OptLevel::Release, None)
 }
 

@@ -2,6 +2,33 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
+#[cfg(unix)]
+fn exit_desc(status: &std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(c), _) => format!("exit {c}"),
+        (None, Some(s)) => format!("killed by signal {s}"),
+        (None, None) => "no exit code".to_string(),
+    }
+}
+
+#[cfg(not(unix))]
+fn exit_desc(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(c) => format!("exit {c}"),
+        None => "no exit code".to_string(),
+    }
+}
+
+fn assert_exit(status: &std::process::ExitStatus, want: i32, tag: &str) {
+    assert_eq!(
+        status.code(),
+        Some(want),
+        "{tag}: process ended with {} (want exit {want})",
+        exit_desc(status)
+    );
+}
+
 fn resolve_src(src: &str, tag: &str) -> (lir::instr::Module, crate::scratch::Scratch) {
     let dir = crate::scratch::dir(&format!("simd-{tag}"));
     let main = dir.join("main.rnx");
@@ -55,13 +82,47 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let run = std::process::Command::new(&bin).output().unwrap();
-    assert_eq!(run.status.code().unwrap(), want as i32, "aot {tag} exit");
+    assert_exit(&run.status, want as i32, &format!("aot {tag} exit"));
     let suffix = if want_out.is_empty() { "" } else { "\n" };
     assert_eq!(
         String::from_utf8(run.stdout).unwrap(),
         want_out.join("\n") + suffix,
         "aot {tag} stdout"
     );
+}
+
+fn host_cpu_tier() -> u64 {
+    let rnx = env!("CARGO_BIN_EXE_rnx");
+    let out = std::process::Command::new(rnx).arg("cpu-tier").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().expect("cpu-tier prints 0-3")
+}
+
+fn check_release_agrees(src: &str, want: i64, want_out: &[String], tag: &str) {
+    let dir = crate::scratch::dir(&format!("simdrel-{tag}"));
+    let main = dir.join("main.rnx");
+    std::fs::write(&main, src).unwrap();
+    let rnx = env!("CARGO_BIN_EXE_rnx");
+    let build = std::process::Command::new(rnx)
+        .arg("build")
+        .arg(&main)
+        .arg("--release")
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+    let max_tier = host_cpu_tier();
+    assert!(max_tier <= 3, "tier out of range: {max_tier}");
+    let suffix = if want_out.is_empty() { "" } else { "\n" };
+    for pin in 0..=max_tier {
+        let run = std::process::Command::new(&bin).env("RNX_CPU_TIER", pin.to_string()).output().unwrap();
+        assert_exit(&run.status, want as i32, &format!("release {tag} tier pin {pin}"));
+        assert_eq!(
+            String::from_utf8(run.stdout).unwrap(),
+            want_out.join("\n") + suffix,
+            "release {tag} tier pin {pin} stdout"
+        );
+    }
 }
 
 const ARITH_SRC: &str = "import { Vec4f, Vec4i } from \"@std/simd\";\n\nfn Main(): Int {\n    let v = new Vec4f(1.0, 2.0, 3.0, 4.0) + new Vec4f(10.0, 20.0, 30.0, 40.0);\n    let a = Int(v.x());\n    let b = Int(v.y());\n    let c = Int(v.get(2));\n    let d = Int(v.w());\n    let w = new Vec4i(1, 2, 3, 4) * new Vec4i(2, 2, 2, 2);\n    let e = w.get(0) + w.get(3);\n    print(\"lanes:\", a, b, c, d, e);\n    if a == 11 && b == 22 && c == 33 && d == 44 && e == 10 {\n        return 42;\n    }\n    return 1;\n}\n";
@@ -163,7 +224,7 @@ fn check_oob_traps(src: &str, tag: &str) {
             .arg(&src_path)
             .output()
             .unwrap();
-        assert!(!run.status.success(), "{backend} {tag} read past the end without trapping");
+        assert!(!run.status.success(), "{backend} {tag} ended with {} instead of trapping", exit_desc(&run.status));
         let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
         assert!(stderr.contains("vector lane out of range"), "{backend} {tag}: {stderr}");
     }
@@ -175,7 +236,7 @@ fn check_oob_traps(src: &str, tag: &str) {
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
     let run = std::process::Command::new(&bin).output().unwrap();
-    assert!(!run.status.success(), "aot {tag} read past the end without trapping");
+    assert!(!run.status.success(), "aot {tag} ended with {} instead of trapping", exit_desc(&run.status));
     let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
     assert!(stderr.contains("vector lane out of range"), "aot {tag}: {stderr}");
 }
@@ -188,4 +249,50 @@ fn test_vec4f_oob_lane_high_traps_on_all_backends() {
 #[test]
 fn test_vec4f_oob_lane_negative_traps_on_all_backends() {
     check_oob_traps(OOB_NEG_SRC, "vecoob-neg");
+}
+
+const TIER_SRC: &str = "import { Vec4f } from \"@std/simd\";\n\nfn Main(): Int {\n    let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];\n    let acc = Vec4f.splat(0.0);\n    let i = 0;\n    while i < 8 {\n        let x = a[i];\n        let v = new Vec4f(x, x, x, x);\n        acc = acc + v * Vec4f.splat(2.0);\n        i = i + 1;\n    }\n    let t = Int(acc.x() + acc.y() + acc.z() + acc.w());\n    print(\"acc:\", t);\n    if t == 288 {\n        return 42;\n    }\n    return 1;\n}\n";
+
+#[test]
+fn test_release_tiers_agree_numerically() {
+    check_all_backends(TIER_SRC, 42, &["acc: 288".to_string()], "vectier");
+    check_release_agrees(TIER_SRC, 42, &["acc: 288".to_string()], "vectier");
+}
+
+#[test]
+fn test_release_object_is_deterministic_across_builds() {
+    let dir = crate::scratch::dir("simddet-rel");
+    let main = dir.join("main.rnx");
+    std::fs::write(&main, TIER_SRC).unwrap();
+    let rnx = env!("CARGO_BIN_EXE_rnx");
+    let mut digests = Vec::new();
+    for _ in 0..2 {
+        let build = std::process::Command::new(rnx)
+            .arg("build")
+            .arg(&main)
+            .arg("--release")
+            .arg("--emit-obj")
+            .output()
+            .unwrap();
+        assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+        let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
+        let bytes = std::fs::read(&bin).unwrap();
+        assert!(bytes.starts_with(b"\x7fELF"), "expected an ELF object");
+        digests.push(sha256_hex(&bytes));
+        std::fs::remove_file(&bin).unwrap();
+    }
+    assert_eq!(digests[0], digests[1], "release objects differ across identical builds");
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use std::io::Write;
+    let mut child = std::process::Command::new("sha256sum")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(bytes).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "sha256sum failed");
+    String::from_utf8(out.stdout).unwrap().split_whitespace().next().unwrap().to_string()
 }

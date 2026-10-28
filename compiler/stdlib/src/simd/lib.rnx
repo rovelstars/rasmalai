@@ -100,10 +100,9 @@ class Vec4f {
     /**
     * Lane picked at run time, for indices a loop or an array supplies.
     * @param lane lane index, 0 (x) through 3 (w).
-    * @returns the selected lane, widened from 32-bit float to `Float`. Keep
-    * the index inside 0..3: a wider index stops the interpreter with
-    * `vector lane N out of range`, and compiled backends hand back an
-    * unspecified lane instead.
+    * @returns the selected lane, widened from 32-bit float to `Float`. An
+    * index outside 0..3 traps on every backend with `vector lane N out of
+    * range`.
     * @example
     * import { Vec4f } from "@std/simd";
     *
@@ -139,8 +138,9 @@ class Vec4f {
     * Smaller lane of each pair.
     * @param other right-hand vector.
     * @returns a new vector of per-lane minima. Equal lanes keep that value.
-    * A NaN lane splits the backends: the interpreter and LLVM return the other
-    * lane, Cranelift returns NaN.
+    * A lane that is NaN on exactly one side yields the other lane on every
+    * backend; NaN on both sides yields NaN, and the NaN payload bits are
+    * backend-defined per 04_NUMERICS.
     * @example
     * import { Vec4f } from "@std/simd";
     *
@@ -155,8 +155,9 @@ class Vec4f {
     * Larger lane of each pair.
     * @param other right-hand vector.
     * @returns a new vector of per-lane maxima. Equal lanes keep that value.
-    * A NaN lane splits the backends: the interpreter and LLVM return the other
-    * lane, Cranelift returns NaN.
+    * A lane that is NaN on exactly one side yields the other lane on every
+    * backend; NaN on both sides yields NaN, and the NaN payload bits are
+    * backend-defined per 04_NUMERICS.
     * @example
     * import { Vec4f } from "@std/simd";
     *
@@ -197,11 +198,11 @@ class Vec4f {
 * `Vec4i` is E108. Extract lanes with `x()`/`y()`/`z()`/`w()`/`get()` and
 * compare those when an integer lane-wise choice is needed.
 *
-* Reading a lane widens its 32 bits to `Int`, and negative lanes do not agree
-* across backends: the interpreter sign-extends, so a lane of -1 reads back as
-* -1, while the Cranelift and LLVM backends zero-extend and read it back as
-* 4294967295. Keep lanes non-negative, or normalize what you read, when one
-* result has to hold everywhere.
+* Reading a lane widens its 32 bits to `Int` with sign extension on every
+* backend, so a lane of -1 reads back as -1 everywhere. `min()`, `max()`,
+* `dot()`, and `sqrt()` belong to `Vec4f`; calling one on a `Vec4i` is E108.
+* Extract lanes with `x()`/`y()`/`z()`/`w()`/`get()` and compare those when an
+* integer lane-wise choice is needed.
 */
 class Vec4i {
     /**
@@ -220,8 +221,7 @@ class Vec4i {
 
     /**
     * Lane 0.
-    * @returns the x lane as an `Int`; a negative lane widens per backend, see
-    * get().
+    * @returns the x lane as an `Int`, sign-extended from 32 bits.
     * @example
     * import { Vec4i } from "@std/simd";
     *
@@ -233,8 +233,7 @@ class Vec4i {
 
     /**
     * Lane 1.
-    * @returns the y lane as an `Int`; a negative lane widens per backend, see
-    * get().
+    * @returns the y lane as an `Int`, sign-extended from 32 bits.
     * @example
     * import { Vec4i } from "@std/simd";
     *
@@ -246,8 +245,7 @@ class Vec4i {
 
     /**
     * Lane 2.
-    * @returns the z lane as an `Int`; a negative lane widens per backend, see
-    * get().
+    * @returns the z lane as an `Int`, sign-extended from 32 bits.
     * @example
     * import { Vec4i } from "@std/simd";
     *
@@ -259,8 +257,7 @@ class Vec4i {
 
     /**
     * Lane 3.
-    * @returns the w lane as an `Int`; a negative lane widens per backend, see
-    * get().
+    * @returns the w lane as an `Int`, sign-extended from 32 bits.
     * @example
     * import { Vec4i } from "@std/simd";
     *
@@ -273,12 +270,8 @@ class Vec4i {
     /**
     * Lane picked at run time, for indices a loop or an array supplies.
     * @param lane lane index, 0 (x) through 3 (w).
-    * @returns the selected lane widened from 32 bits to `Int`. Two edges are
-    * backend dependent: an index outside 0..3 stops the interpreter with
-    * `vector lane N out of range` and returns an unspecified lane once
-    * compiled, and a negative lane sign-extends under the interpreter but
-    * zero-extends under Cranelift and LLVM, so -1 reads back as -1 or
-    * 4294967295.
+    * @returns the selected lane sign-extended from 32 bits to `Int`. An index
+    * outside 0..3 traps on every backend with `vector lane N out of range`.
     * @example
     * import { Vec4i } from "@std/simd";
     *

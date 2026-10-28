@@ -11,7 +11,7 @@ fn object_isa() -> Result<cranelift_codegen::isa::OwnedTargetIsa, Diagnostic> {
     fb.set("is_pic", "true")
         .map_err(|e| Diagnostic::new(Code::E108, format!("object flags: {e}")))?;
     let flags = settings::Flags::new(fb);
-    let isa_builder = cranelift_native::builder()
+    let isa_builder = cranelift_codegen::isa::lookup_by_name(std::env::consts::ARCH)
         .map_err(|e| Diagnostic::new(Code::E108, format!("object isa: {e}")))?;
     isa_builder
         .finish(flags)
@@ -297,4 +297,25 @@ pub fn emit_object(lir: &LirModule, name: &str, entry: &str) -> Result<Vec<u8>, 
         .finish()
         .emit()
         .map_err(|e| Diagnostic::new(Code::E108, format!("object emit: {e}")))
+}
+
+#[cfg(test)]
+mod object_tests {
+    use super::object_isa;
+    use cranelift_codegen::isa::TargetIsa as _;
+
+    #[test]
+    fn object_isa_is_portable_baseline() {
+        let isa = object_isa().unwrap_or_else(|e| panic!("object isa: {e}"));
+        if std::env::consts::ARCH != "x86_64" {
+            return;
+        }
+        let mut enabled = Vec::new();
+        for f in isa.isa_flags() {
+            if f.name.starts_with("has_") && f.value_string() != "false" {
+                enabled.push(format!("{}={}", f.name, f.value_string()));
+            }
+        }
+        assert!(enabled.is_empty(), "portable object ISA enables host features: {enabled:?}");
+    }
 }
