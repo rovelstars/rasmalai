@@ -746,6 +746,160 @@ pub fn registry_base_for(
     expand_registry_base("")
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RegistryAuth {
+    pub base: String,
+    pub token_env: Option<String>,
+    pub ca_cert: Option<String>,
+}
+
+impl RegistryAuth {
+    pub fn none(base: &str) -> RegistryAuth {
+        RegistryAuth { base: base.to_string(), token_env: None, ca_cert: None }
+    }
+
+    pub fn bearer_header(&self) -> Option<String> {
+        let name = self.token_env.as_deref()?;
+        let token = std::env::var(name).ok().filter(|s| !s.trim().is_empty())?;
+        let token = token.trim();
+        if token.bytes().any(|b| b < 0x20 || b == 0x7f) {
+            return None;
+        }
+        Some(format!("Bearer {token}"))
+    }
+}
+
+pub fn registry_auth_for(
+    full: &str,
+    default: Option<&RegistryConfig>,
+    overrides: &BTreeMap<String, RegistryConfig>,
+) -> RegistryAuth {
+    if let Some(scope) = registry_scope(full) {
+        if let Some(cfg) = overrides.get(scope) {
+            if !cfg.url.trim().is_empty() {
+                return RegistryAuth {
+                    base: expand_registry_base(&cfg.url),
+                    token_env: cfg.token_env.clone(),
+                    ca_cert: cfg.ca_cert.clone(),
+                };
+            }
+        }
+    }
+    if let Some(cfg) = default {
+        if !cfg.url.trim().is_empty() {
+            return RegistryAuth {
+                base: expand_registry_base(&cfg.url),
+                token_env: cfg.token_env.clone(),
+                ca_cert: cfg.ca_cert.clone(),
+            };
+        }
+    }
+    RegistryAuth::none(&expand_registry_base(""))
+}
+
+fn registry_auth_for_base(
+    base: &str,
+    default: Option<&RegistryConfig>,
+    overrides: &BTreeMap<String, RegistryConfig>,
+) -> RegistryAuth {
+    for cfg in overrides.values() {
+        if !cfg.url.trim().is_empty() && expand_registry_base(&cfg.url) == base {
+            return RegistryAuth {
+                base: base.to_string(),
+                token_env: cfg.token_env.clone(),
+                ca_cert: cfg.ca_cert.clone(),
+            };
+        }
+    }
+    if let Some(cfg) = default {
+        if !cfg.url.trim().is_empty() && expand_registry_base(&cfg.url) == base {
+            return RegistryAuth {
+                base: base.to_string(),
+                token_env: cfg.token_env.clone(),
+                ca_cert: cfg.ca_cert.clone(),
+            };
+        }
+    }
+    RegistryAuth::none(base)
+}
+
+fn token_env_is_set(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|s| !s.trim().is_empty())
+}
+
+fn auth_failure(what: &str, auth: &RegistryAuth) -> Diagnostic {
+    match &auth.token_env {
+        Some(name) if token_env_is_set(name) => Diagnostic::new(
+            Code::E108,
+            format!(
+                "{what} failed: registry `{}` rejected the token in `{name}` (HTTP 401)",
+                auth.base
+            ),
+        )
+        .with_hint(format!("check the value of `{name}`; the token itself is never logged")),
+        Some(name) => Diagnostic::new(
+            Code::E108,
+            format!(
+                "{what} failed: registry `{}` needs authentication (HTTP 401) but `{name}` is not set",
+                auth.base
+            ),
+        )
+        .with_hint(format!("set `{name}` to the registry token and retry")),
+        None => Diagnostic::new(
+            Code::E108,
+            format!(
+                "{what} failed: registry `{}` needs authentication (HTTP 401)",
+                auth.base
+            ),
+        )
+        .with_hint("set `token_env` for this registry to the env var holding the token"),
+    }
+}
+
+pub fn ca_cert_fs_path(raw: &str) -> PathBuf {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(path)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_ca_cert(raw: &str) -> Result<reqwest::Certificate, Diagnostic> {
+    let path = ca_cert_fs_path(raw);
+    let bytes = std::fs::read(&path).map_err(|e| {
+        Diagnostic::new(
+            Code::E108,
+            format!("cannot read CA file `{}`: {e}", path.display()),
+        )
+        .with_hint("check `ca_cert` for this registry points at a readable PEM file")
+    })?;
+    let invalid = || {
+        Diagnostic::new(
+            Code::E108,
+            format!("CA file `{}` is not a valid PEM certificate", path.display()),
+        )
+        .with_hint("check `ca_cert` for this registry points at a PEM-encoded root certificate")
+    };
+    if bytes.iter().all(|b| b.is_ascii_whitespace()) {
+        return Err(invalid());
+    }
+    if !bytes.windows(b"-----BEGIN CERTIFICATE-----".len()).any(|w| w == b"-----BEGIN CERTIFICATE-----") {
+        return Err(invalid());
+    }
+    let cert = reqwest::Certificate::from_pem(&bytes).map_err(|_| invalid())?;
+    // The rustls backend stores the bytes without parsing, so force the
+    // parse now with a throwaway client: this runs the same root-store
+    // load the real client will do, and a bad file fails here with the
+    // file named instead of as an obscure TLS error later.
+    reqwest::blocking::Client::builder()
+        .add_root_certificate(cert.clone())
+        .build()
+        .map_err(|_| invalid())?;
+    Ok(cert)
+}
+
 pub fn is_valid_range(range: &str) -> bool {
     let r = range.trim();
     if r.is_empty() || r == "*" || r == "latest" {
@@ -963,10 +1117,10 @@ pub struct ManifestReply {
 }
 
 pub trait RegistryTransport: Send + Sync {
-    fn get(&self, url: &str) -> Result<RegistryReply, Diagnostic>;
-    fn post_json(&self, url: &str, body: &str) -> Result<RegistryReply, Diagnostic>;
-    fn manifest_get(&self, url: &str) -> Result<ManifestReply, Diagnostic> {
-        Ok(ManifestReply { reply: self.get(url)?, content_encoding: None })
+    fn get(&self, url: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic>;
+    fn post_json(&self, url: &str, body: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic>;
+    fn manifest_get(&self, url: &str, auth: &RegistryAuth) -> Result<ManifestReply, Diagnostic> {
+        Ok(ManifestReply { reply: self.get(url, auth)?, content_encoding: None })
     }
 }
 
@@ -1247,16 +1401,16 @@ fn read_chunked(stream: &mut std::net::TcpStream) -> Result<Vec<u8>, Diagnostic>
 }
 
 impl RegistryTransport for StdTransport {
-    fn get(&self, url: &str) -> Result<RegistryReply, Diagnostic> {
-        std_request("GET", url, None)
+    fn get(&self, url: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
+        std_request("GET", url, None, auth.bearer_header().as_deref())
     }
 
-    fn post_json(&self, url: &str, body: &str) -> Result<RegistryReply, Diagnostic> {
-        std_request("POST", url, Some(body.as_bytes()))
+    fn post_json(&self, url: &str, body: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
+        std_request("POST", url, Some(body.as_bytes()), auth.bearer_header().as_deref())
     }
 
-    fn manifest_get(&self, url: &str) -> Result<ManifestReply, Diagnostic> {
-        std_request_full("GET", url, None, true)
+    fn manifest_get(&self, url: &str, auth: &RegistryAuth) -> Result<ManifestReply, Diagnostic> {
+        std_request_full("GET", url, None, true, auth.bearer_header().as_deref())
             .map(|(reply, content_encoding)| ManifestReply { reply, content_encoding })
     }
 }
@@ -1264,21 +1418,46 @@ impl RegistryTransport for StdTransport {
 // One session per host, many streams on it: the chunk reads of a cold
 // seed share one handshake instead of paying one per request.
 #[cfg(not(target_arch = "wasm32"))]
+static CA_CLIENTS: std::sync::Mutex<BTreeMap<String, reqwest::blocking::Client>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_registry_client(ca_cert: Option<&str>) -> Result<reqwest::blocking::Client, Diagnostic> {
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .user_agent("rnx");
+    if let Some(raw) = ca_cert {
+        builder = builder.add_root_certificate(load_ca_cert(raw)?);
+    }
+    builder.build().map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot start the registry client: {e}"))
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 struct H2Transport {
-    client: reqwest::blocking::Client,
+    default: reqwest::blocking::Client,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl H2Transport {
     fn new() -> Result<H2Transport, Diagnostic> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
-            .user_agent("rnx")
-            .build()
-            .map_err(|e| {
-                Diagnostic::new(Code::E108, format!("cannot start the registry client: {e}"))
-            })?;
-        Ok(H2Transport { client })
+        Ok(H2Transport { default: build_registry_client(None)? })
+    }
+
+    fn client_for(&self, auth: &RegistryAuth) -> Result<reqwest::blocking::Client, Diagnostic> {
+        let Some(raw) = auth.ca_cert.as_deref() else {
+            return Ok(self.default.clone());
+        };
+        if let Some(hit) = CA_CLIENTS.lock().unwrap_or_else(|e| e.into_inner()).get(raw) {
+            return Ok(hit.clone());
+        }
+        let client = build_registry_client(Some(raw))?;
+        CA_CLIENTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(raw.to_string(), client.clone());
+        Ok(client)
     }
 
     fn reply(
@@ -1321,29 +1500,40 @@ impl H2Transport {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl RegistryTransport for H2Transport {
-    fn get(&self, url: &str) -> Result<RegistryReply, Diagnostic> {
-        let result = self.client.get(url).header("Accept", "application/json").send();
+    fn get(&self, url: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
+        let client = self.client_for(auth)?;
+        let mut req = client.get(url).header("Accept", "application/json");
+        if let Some(header) = auth.bearer_header() {
+            req = req.header("Authorization", header);
+        }
+        let result = req.send();
         Self::reply("registry request", result).map(|(reply, _)| reply)
     }
 
-    fn post_json(&self, url: &str, body: &str) -> Result<RegistryReply, Diagnostic> {
-        let result = self
-            .client
+    fn post_json(&self, url: &str, body: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
+        let client = self.client_for(auth)?;
+        let mut req = client
             .post(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .body(body.to_string())
-            .send();
+            .body(body.to_string());
+        if let Some(header) = auth.bearer_header() {
+            req = req.header("Authorization", header);
+        }
+        let result = req.send();
         Self::reply("registry request", result).map(|(reply, _)| reply)
     }
 
-    fn manifest_get(&self, url: &str) -> Result<ManifestReply, Diagnostic> {
-        let result = self
-            .client
+    fn manifest_get(&self, url: &str, auth: &RegistryAuth) -> Result<ManifestReply, Diagnostic> {
+        let client = self.client_for(auth)?;
+        let mut req = client
             .get(url)
             .header("Accept", "application/json")
-            .header("Accept-Encoding", "gzip")
-            .send();
+            .header("Accept-Encoding", "gzip");
+        if let Some(header) = auth.bearer_header() {
+            req = req.header("Authorization", header);
+        }
+        let result = req.send();
         let (reply, content_encoding) = Self::reply("registry request", result)?;
         Ok(ManifestReply { reply, content_encoding })
     }
@@ -1353,8 +1543,9 @@ fn std_request(
     method: &str,
     url: &str,
     body: Option<&[u8]>,
+    authorization: Option<&str>,
 ) -> Result<RegistryReply, Diagnostic> {
-    std_request_full(method, url, body, false).map(|(reply, _)| reply)
+    std_request_full(method, url, body, false, authorization).map(|(reply, _)| reply)
 }
 
 fn std_request_full(
@@ -1362,13 +1553,14 @@ fn std_request_full(
     url: &str,
     body: Option<&[u8]>,
     accept_gzip: bool,
+    authorization: Option<&str>,
 ) -> Result<(RegistryReply, Option<String>), Diagnostic> {
     let (host, port, path) = split_http_url(url)?;
     let mut stream = match pool_take(&host, port) {
         Some(reused) => reused,
         None => connect_new(&host, port)?,
     };
-    match exchange_once(method, &host, &path, body, accept_gzip, &mut stream) {
+    match exchange_once(method, &host, &path, body, accept_gzip, authorization, &mut stream) {
         Ok((reply, reusable, content_encoding)) => {
             if reusable {
                 pool_put(&host, port, stream);
@@ -1379,7 +1571,7 @@ fn std_request_full(
             drop(stream);
             let mut fresh = connect_new(&host, port).map_err(|_| dead)?;
             let (reply, reusable, content_encoding) =
-                exchange_once(method, &host, &path, body, accept_gzip, &mut fresh)?;
+                exchange_once(method, &host, &path, body, accept_gzip, authorization, &mut fresh)?;
             if reusable {
                 pool_put(&host, port, fresh);
             }
@@ -1430,6 +1622,7 @@ fn exchange_once(
     path: &str,
     body: Option<&[u8]>,
     accept_gzip: bool,
+    authorization: Option<&str>,
     stream: &mut std::net::TcpStream,
 ) -> Result<(RegistryReply, bool, Option<String>), Diagnostic> {
     use std::io::Write;
@@ -1440,6 +1633,9 @@ fn exchange_once(
         .set_write_timeout(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
         .map_err(|e| Diagnostic::new(Code::E108, format!("registry request failed: {e}")))?;
     let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: keep-alive\r\n");
+    if let Some(header) = authorization {
+        head.push_str(&format!("Authorization: {header}\r\n"));
+    }
     if method == "POST" {
         head.push_str("Content-Type: application/json\r\nAccept: application/json\r\n");
     } else {
@@ -1523,21 +1719,22 @@ fn with_offline_package_context(err: Diagnostic, pkg: &str, base: &str) -> Diagn
 }
 
 pub fn registry_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
-    http_get(url, what)
+    http_get(url, what, &RegistryAuth::none(url))
 }
 
-fn http_get(url: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
-    http_get_via(&*transport(), url, what)
+fn http_get(url: &str, what: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
+    http_get_via(&*transport(), url, what, auth)
 }
 
 fn http_get_via(
     transport: &dyn RegistryTransport,
     url: &str,
     what: &str,
+    auth: &RegistryAuth,
 ) -> Result<RegistryReply, Diagnostic> {
     let mut attempt = 0u32;
     loop {
-        match transport.get(url) {
+        match transport.get(url, auth) {
             Ok(reply) => {
                 if retryable_status(reply.status) && attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
@@ -1561,18 +1758,19 @@ fn http_get_via(
     }
 }
 
-fn http_manifest_get(url: &str, what: &str) -> Result<ManifestReply, Diagnostic> {
-    http_manifest_get_via(&*transport(), url, what)
+fn http_manifest_get(url: &str, what: &str, auth: &RegistryAuth) -> Result<ManifestReply, Diagnostic> {
+    http_manifest_get_via(&*transport(), url, what, auth)
 }
 
 fn http_manifest_get_via(
     transport: &dyn RegistryTransport,
     url: &str,
     what: &str,
+    auth: &RegistryAuth,
 ) -> Result<ManifestReply, Diagnostic> {
     let mut attempt = 0u32;
     loop {
-        match transport.manifest_get(url) {
+        match transport.manifest_get(url, auth) {
             Ok(reply) => {
                 if retryable_status(reply.reply.status) && attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
@@ -1596,8 +1794,8 @@ fn http_manifest_get_via(
     }
 }
 
-fn http_post_json(url: &str, body: &str, what: &str) -> Result<RegistryReply, Diagnostic> {
-    http_post_json_via(&*transport(), url, body, what)
+fn http_post_json(url: &str, body: &str, what: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
+    http_post_json_via(&*transport(), url, body, what, auth)
 }
 
 fn http_post_json_via(
@@ -1605,10 +1803,11 @@ fn http_post_json_via(
     url: &str,
     body: &str,
     what: &str,
+    auth: &RegistryAuth,
 ) -> Result<RegistryReply, Diagnostic> {
     let mut attempt = 0u32;
     loop {
-        match transport.post_json(url, body) {
+        match transport.post_json(url, body, auth) {
             Ok(reply) => {
                 if retryable_status(reply.status) && attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(resolve_retry_delay_ms(attempt)));
@@ -1913,9 +2112,12 @@ fn spec_mismatch(got: u64) -> Diagnostic {
     )
 }
 
-pub fn discover(base: &str) -> Result<Discovery, Diagnostic> {
+pub fn discover(base: &str, auth: &RegistryAuth) -> Result<Discovery, Diagnostic> {
     let url = format!("{}/api/version", base.trim_end_matches('/'));
-    let reply = http_get(&url, "registry discovery")?;
+    let reply = http_get(&url, "registry discovery", auth)?;
+    if reply.status == 401 {
+        return Err(auth_failure("registry discovery", auth));
+    }
     if reply.status != 200 {
         return Err(Diagnostic::new(
             Code::E108,
@@ -2054,6 +2256,7 @@ pub fn resolve_requirements(
     requirements: &BTreeMap<String, String>,
     have: &[HaveEntry],
     inline_chunks: bool,
+    auth: &RegistryAuth,
 ) -> Result<ResolveResponse, Diagnostic> {
     for (name, range) in requirements {
         if !is_valid_range(range) {
@@ -2067,7 +2270,10 @@ pub fn resolve_requirements(
     }
     let body = resolve_request_body(requirements, have, inline_chunks);
     let url = format!("{}/api/v0/resolve", base.trim_end_matches('/'));
-    let reply = http_post_json(&url, &body, "registry resolve")?;
+    let reply = http_post_json(&url, &body, "registry resolve", auth)?;
+    if reply.status == 401 {
+        return Err(auth_failure("registry resolve", auth));
+    }
     if reply.status == 200 {
         return parse_resolve(&reply.body);
     }
@@ -2917,10 +3123,13 @@ fn parse_entries(items: &[JsonValue], full: &str, version: &str, bad: &str) -> R
     Ok(out)
 }
 
-fn fetch_chunks_manifest(url: &str, full: &str, version: &str, direct: bool) -> Result<Vec<ChunkEntry>, Diagnostic> {
+fn fetch_chunks_manifest(url: &str, full: &str, version: &str, direct: bool, auth: &RegistryAuth) -> Result<Vec<ChunkEntry>, Diagnostic> {
     let bad = format!("chunk manifest of `{full}@{version}` is malformed");
     let fetched =
-        http_manifest_get(&direct_url(url, direct), &format!("chunk manifest of `{full}@{version}`"))?;
+        http_manifest_get(&direct_url(url, direct), &format!("chunk manifest of `{full}@{version}`"), auth)?;
+    if fetched.reply.status == 401 {
+        return Err(auth_failure(&format!("chunk manifest of `{full}@{version}`"), auth));
+    }
     if fetched.reply.status != 200 {
         return Err(chunk_fetch_error(fetched.reply.status, &fetched.reply.body, full, version));
     }
@@ -2938,11 +3147,14 @@ fn fetch_chunks_manifest(url: &str, full: &str, version: &str, direct: bool) -> 
     parse_entries(items, full, version, &bad)
 }
 
-fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str, direct: bool) -> Result<Vec<u8>, Diagnostic> {
+fn fetch_chunk(url: &str, hash: &str, full: &str, version: &str, direct: bool, auth: &RegistryAuth) -> Result<Vec<u8>, Diagnostic> {
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Diagnostic::new(Code::E108, format!("bad chunk hash `{hash}`")));
     }
-    let reply = http_get(&direct_url(url, direct), &format!("chunk {hash} of `{full}@{version}`"))?;
+    let reply = http_get(&direct_url(url, direct), &format!("chunk {hash} of `{full}@{version}`"), auth)?;
+    if reply.status == 401 {
+        return Err(auth_failure(&format!("chunk {hash} of `{full}@{version}`"), auth));
+    }
     if reply.status != 200 {
         return Err(Diagnostic::new(
             Code::E108,
@@ -2999,13 +3211,15 @@ impl Drop for BudgetTicket<'_> {
 struct FetchShare {
     chunks: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
     budget: ChunkBudget,
+    auth: RegistryAuth,
 }
 
 impl FetchShare {
-    fn new() -> FetchShare {
+    fn new(auth: RegistryAuth) -> FetchShare {
         FetchShare {
             chunks: std::sync::Mutex::new(BTreeMap::new()),
             budget: ChunkBudget::new(GLOBAL_CHUNK_INFLIGHT),
+            auth,
         }
     }
 
@@ -3038,7 +3252,7 @@ impl FetchShare {
             }
         }
         let url = format!("{chunk_base}/chunk/{hash}");
-        let bytes = fetch_chunk(&url, hash, full, version, direct)?;
+        let bytes = fetch_chunk(&url, hash, full, version, direct, &self.auth)?;
         let _ = cas_put(hash, &bytes);
         self.chunks
             .lock()
@@ -3573,6 +3787,7 @@ fn ensure_node(
     api_base: &str,
     node: &ResolveNode,
     share: &FetchShare,
+    auth: &RegistryAuth,
 ) -> Result<PathBuf, Diagnostic> {
     let global = cache_root == store_root();
     if global {
@@ -3630,7 +3845,7 @@ fn ensure_node(
         let inlined = if retry_direct { None } else { node.entries.as_ref() };
         let entries: Vec<ChunkEntry> = match inlined {
             Some(entries) => entries.clone(),
-            None => fetch_chunks_manifest(&manifest_url, &node.full, &node.version, manifest_direct)?,
+            None => fetch_chunks_manifest(&manifest_url, &node.full, &node.version, manifest_direct, auth)?,
         };
         // A version with no file index is not a broken download: the
         // registry never shipped one. Saying that keeps it apart from the
@@ -3738,9 +3953,10 @@ pub fn ensure_registry_requirements_in(
     }
     let mut out: BTreeMap<String, FetchedPackage> = BTreeMap::new();
     for (base, reqs) in &by_base {
-        let discovery = discover(base)?;
+        let auth = registry_auth_for_base(base, default_registry, overrides);
+        let discovery = discover(base, &auth)?;
         let inline_chunks = discovery.capabilities.iter().any(|c| c == RESOLVE_INLINE_CHUNKS);
-        let mut response = resolve_requirements(base, reqs, have, inline_chunks)?;
+        let mut response = resolve_requirements(base, reqs, have, inline_chunks, &auth)?;
         if !inline_chunks {
             for level in &mut response.levels {
                 for node in level {
@@ -3760,7 +3976,7 @@ pub fn ensure_registry_requirements_in(
             (0..ordered.len()).map(|_| std::sync::Mutex::new(None)).collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
         let width = PACKAGE_FETCH_CONCURRENCY.min(ordered.len().max(1));
-        let share = FetchShare::new();
+        let share = FetchShare::new(auth.clone());
         std::thread::scope(|s| {
             for _ in 0..width {
                 s.spawn(|| loop {
@@ -3768,7 +3984,7 @@ pub fn ensure_registry_requirements_in(
                     let Some(node) = ordered.get(i) else {
                         break;
                     };
-                let got = ensure_node(cache_root, base, &api_base, node, &share);
+                let got = ensure_node(cache_root, base, &api_base, node, &share, &auth);
                     let mut slot = slots[i].lock().unwrap_or_else(|e| e.into_inner());
                     *slot = Some(got);
                 });
@@ -5728,12 +5944,12 @@ mod tests {
     }
 
     impl RegistryTransport for FailTransport {
-        fn get(&self, _url: &str) -> Result<RegistryReply, Diagnostic> {
+        fn get(&self, _url: &str, _auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
             *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
             Err(Diagnostic::new(Code::E108, self.message.clone()))
         }
 
-        fn post_json(&self, _url: &str, _body: &str) -> Result<RegistryReply, Diagnostic> {
+        fn post_json(&self, _url: &str, _body: &str, _auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
             *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
             Err(Diagnostic::new(Code::E108, self.message.clone()))
         }
@@ -5763,14 +5979,14 @@ mod tests {
     #[test]
     fn offline_connection_refused_fails_fast_with_one_attempt() {
         let fake = FailTransport::refusing();
-        let err = http_get_via(&fake, "http://127.0.0.1:9/api/version", "registry discovery")
+        let err = http_get_via(&fake, "http://127.0.0.1:9/api/version", "registry discovery", &RegistryAuth::none("http://127.0.0.1:9"))
             .unwrap_err();
         assert_eq!(err.code, Code::E113);
         assert!(err.hint.as_deref().unwrap_or_default().contains("rnx download"), "{err:?}");
-        let err = http_post_json_via(&fake, "http://127.0.0.1:9/api/v0/resolve", "{}", "registry resolve")
+        let err = http_post_json_via(&fake, "http://127.0.0.1:9/api/v0/resolve", "{}", "registry resolve", &RegistryAuth::none("http://127.0.0.1:9"))
             .unwrap_err();
         assert_eq!(err.code, Code::E113);
-        let err = http_manifest_get_via(&fake, "http://127.0.0.1:9/x/chunks", "chunk manifest of `a@1.0.0`")
+        let err = http_manifest_get_via(&fake, "http://127.0.0.1:9/x/chunks", "chunk manifest of `a@1.0.0`", &RegistryAuth::none("http://127.0.0.1:9"))
             .unwrap_err();
         assert_eq!(err.code, Code::E113);
         assert_eq!(fake.attempts(), 3, "one attempt per call, no doomed retries");
@@ -5782,12 +5998,12 @@ mod tests {
     }
 
     impl RegistryTransport for StatusTransport {
-        fn get(&self, _url: &str) -> Result<RegistryReply, Diagnostic> {
+        fn get(&self, _url: &str, _auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
             *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
             Ok(RegistryReply { status: self.status, spec_header: None, body: Vec::new() })
         }
 
-        fn post_json(&self, _url: &str, _body: &str) -> Result<RegistryReply, Diagnostic> {
+        fn post_json(&self, _url: &str, _body: &str, _auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
             *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
             Ok(RegistryReply { status: self.status, spec_header: None, body: Vec::new() })
         }
@@ -5796,7 +6012,7 @@ mod tests {
     #[test]
     fn retryable_status_keeps_retrying() {
         let fake = StatusTransport { calls: std::sync::Mutex::new(0), status: 503 };
-        let reply = http_post_json_via(&fake, "http://127.0.0.1:9/api/v0/resolve", "{}", "registry resolve").unwrap();
+        let reply = http_post_json_via(&fake, "http://127.0.0.1:9/api/v0/resolve", "{}", "registry resolve", &RegistryAuth::none("http://127.0.0.1:9")).unwrap();
         assert_eq!(reply.status, 503);
         assert_eq!(*fake.calls.lock().unwrap_or_else(|e| e.into_inner()), 4);
     }
@@ -5809,20 +6025,20 @@ mod tests {
             calls: std::sync::Mutex<u32>,
         }
         impl RegistryTransport for Counting<'_> {
-            fn get(&self, url: &str) -> Result<RegistryReply, Diagnostic> {
+            fn get(&self, url: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
                 *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-                self.inner.get(url)
+                self.inner.get(url, auth)
             }
-            fn post_json(&self, url: &str, body: &str) -> Result<RegistryReply, Diagnostic> {
+            fn post_json(&self, url: &str, body: &str, auth: &RegistryAuth) -> Result<RegistryReply, Diagnostic> {
                 *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-                self.inner.post_json(url, body)
+                self.inner.post_json(url, body, auth)
             }
         }
         let (_guard, _dir) = isolate_cache("h2offline");
         let h2 = H2Transport::new().unwrap();
         let fake = Counting { inner: &h2, calls: std::sync::Mutex::new(0) };
         let err =
-            http_get_via(&fake, "http://127.0.0.1:9/api/version", "registry discovery")
+            http_get_via(&fake, "http://127.0.0.1:9/api/version", "registry discovery", &RegistryAuth::none("http://127.0.0.1:9"))
                 .unwrap_err();
         assert_eq!(err.code, Code::E113);
         assert!(
@@ -6243,6 +6459,7 @@ mod tests {
             &requirements_for("@acme/widget", "*"),
             &[],
             false,
+            &RegistryAuth::none(&server.base),
         )
         .unwrap_err();
         assert!(err.message.contains("599"), "{}", err.message);
@@ -6285,6 +6502,7 @@ mod tests {
             &requirements_for("@acme/widget", "*"),
             &[],
             false,
+            &RegistryAuth::none(&server.base),
         )
         .unwrap_err();
         assert!(err.message.contains("460"), "{}", err.message);
@@ -6316,6 +6534,7 @@ mod tests {
             &requirements_for("@acme/widget", "*"),
             &[],
             false,
+            &RegistryAuth::none(&server.base),
         )
         .unwrap_err();
         assert!(
@@ -6351,6 +6570,7 @@ mod tests {
             &requirements_for("@acme/widget", "*"),
             &[],
             false,
+            &RegistryAuth::none(&server.base),
         )
         .unwrap_err();
         assert!(
@@ -7646,6 +7866,7 @@ mod tests {
             &requirements_for("@acme/widget", "^1.0.0"),
             &[],
             false,
+            &RegistryAuth::none(&server.base),
         )
         .unwrap_err();
         assert!(
@@ -7764,9 +7985,9 @@ mod tests {
                 });
             }
         });
-        let reply = http_get(&format!("{base}/api/version"), "probe").unwrap();
+        let reply = http_get(&format!("{base}/api/version"), "probe", &RegistryAuth::none(&base)).unwrap();
         assert_eq!(reply.status, 200);
-        let reply = http_get(&format!("{base}/api/version"), "probe").unwrap();
+        let reply = http_get(&format!("{base}/api/version"), "probe", &RegistryAuth::none(&base)).unwrap();
         assert_eq!(reply.status, 200);
         let (conns, reqs) = *stats.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(reqs, 2);
@@ -8241,16 +8462,16 @@ mod tests {
         );
         let transport = H2Transport::new().unwrap();
 
-        let version = transport.get(&format!("{}/api/version", server.base)).unwrap();
+        let version = transport.get(&format!("{}/api/version", server.base), &RegistryAuth::none(&server.base)).unwrap();
         assert_eq!(version.status, 200);
         assert_eq!(version.spec_header.as_deref(), Some("0"));
         assert!(String::from_utf8_lossy(&version.body).contains("\"spec\": 0"));
 
-        let resolved = transport.post_json(&format!("{}/api/v0/resolve", server.base), "{}").unwrap();
+        let resolved = transport.post_json(&format!("{}/api/v0/resolve", server.base), "{}", &RegistryAuth::none(&server.base)).unwrap();
         assert_eq!(resolved.status, 200);
 
         let manifest = transport
-            .manifest_get(&format!("{}/api/v0/packages/test/interop@1.0.0/chunks", server.base))
+            .manifest_get(&format!("{}/api/v0/packages/test/interop@1.0.0/chunks", server.base), &RegistryAuth::none(&server.base))
             .unwrap();
         assert_eq!(manifest.reply.status, 200);
         assert_eq!(manifest.content_encoding.as_deref(), Some("gzip"));
@@ -8410,5 +8631,392 @@ mod tests {
         let mut lines = marker.lines();
         assert_eq!(lines.next().unwrap_or_default(), index_digest.as_str());
         assert_eq!(lines.next(), None);
+    }
+
+    const AUTH_MAIN_VAR: &str = "RNX_TEST_AUTH_MAIN";
+    const AUTH_ACME_VAR: &str = "RNX_TEST_AUTH_ACME";
+
+    fn set_auth_var(name: &str, value: Option<&str>) {
+        unsafe {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+
+    fn authed_cfg(url: &str, token_env: Option<&str>, ca_cert: Option<&str>) -> RegistryConfig {
+        RegistryConfig {
+            url: url.to_string(),
+            token_env: token_env.map(|s| s.to_string()),
+            ca_cert: ca_cert.map(|s| s.to_string()),
+        }
+    }
+
+    fn auth_headers_seen(server: &MockRegistry) -> Vec<(String, String, Option<String>)> {
+        server
+            .requests_with_headers()
+            .into_iter()
+            .map(|(method, path, headers, _)| {
+                let header = headers
+                    .into_iter()
+                    .find_map(|(k, v)| k.eq_ignore_ascii_case("authorization").then_some(v));
+                (method, path, header)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn auth_selection_prefers_scope_then_default() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "@acme".to_string(),
+            authed_cfg("https://acme.internal", Some(AUTH_ACME_VAR), Some("acme-ca.pem")),
+        );
+        let default = authed_cfg("https://default.internal", Some(AUTH_MAIN_VAR), None);
+        let scoped = registry_auth_for("@acme/widget", Some(&default), &overrides);
+        assert_eq!(scoped.base, "https://acme.internal");
+        assert_eq!(scoped.token_env.as_deref(), Some(AUTH_ACME_VAR));
+        assert_eq!(scoped.ca_cert.as_deref(), Some("acme-ca.pem"));
+        let plain = registry_auth_for("widget", Some(&default), &overrides);
+        assert_eq!(plain.base, "https://default.internal");
+        assert_eq!(plain.token_env.as_deref(), Some(AUTH_MAIN_VAR));
+        assert_eq!(plain.ca_cert, None);
+        let other = registry_auth_for("@other/pkg", Some(&default), &overrides);
+        assert_eq!(other.base, "https://default.internal");
+        assert_eq!(other.token_env.as_deref(), Some(AUTH_MAIN_VAR));
+        let rebased = registry_auth_for_base("https://acme.internal", Some(&default), &overrides);
+        assert_eq!(rebased.token_env.as_deref(), Some(AUTH_ACME_VAR));
+        assert_eq!(rebased.ca_cert.as_deref(), Some("acme-ca.pem"));
+        let unknown = registry_auth_for_base("https://unknown.internal", Some(&default), &overrides);
+        assert_eq!(unknown.token_env, None);
+        assert_eq!(unknown.ca_cert, None);
+    }
+
+    #[test]
+    fn auth_bearer_header_reads_the_env_at_request_time() {
+        let (_guard, _dir) = isolate_cache("authhdr");
+        let auth = RegistryAuth {
+            base: "https://example.invalid".to_string(),
+            token_env: Some(AUTH_MAIN_VAR.to_string()),
+            ca_cert: None,
+        };
+        set_auth_var(AUTH_MAIN_VAR, None);
+        assert_eq!(auth.bearer_header(), None);
+        set_auth_var(AUTH_MAIN_VAR, Some(""));
+        assert_eq!(auth.bearer_header(), None);
+        set_auth_var(AUTH_MAIN_VAR, Some("  secret-token  "));
+        assert_eq!(auth.bearer_header().as_deref(), Some("Bearer secret-token"));
+        set_auth_var(AUTH_MAIN_VAR, Some("bad\r\ninjected: x"));
+        assert_eq!(auth.bearer_header(), None);
+        set_auth_var(AUTH_MAIN_VAR, None);
+        assert_eq!(RegistryAuth::none("https://example.invalid").bearer_header(), None);
+    }
+
+    #[test]
+    fn auth_header_sent_for_scoped_and_unscoped_packages() {
+        let (_guard, _dir) = isolate_cache("authwire");
+        let (plain_manifest, plain_pairs, plain_digest, _, _) = fixture_tree("plain", "1.0.0");
+        let plain_server =
+            start_tree(&[node_json("plain", "1.0.0", &plain_digest, false)], &plain_manifest, plain_pairs);
+        let (acme_manifest, acme_pairs, acme_digest, _, _) = fixture_tree("@acme/widget", "1.2.0");
+        let acme_server = start_tree(
+            &[node_json("@acme/widget", "1.2.0", &acme_digest, false)],
+            &acme_manifest,
+            acme_pairs,
+        );
+        let default = authed_cfg(&plain_server.base, Some(AUTH_MAIN_VAR), None);
+        let mut overrides = BTreeMap::new();
+        overrides.insert("@acme".to_string(), authed_cfg(&acme_server.base, Some(AUTH_ACME_VAR), None));
+        set_auth_var(AUTH_MAIN_VAR, Some("main-secret-token"));
+        set_auth_var(AUTH_ACME_VAR, Some("acme-secret-token"));
+        let mut reqs = BTreeMap::new();
+        reqs.insert("plain".to_string(), "1.0.0".to_string());
+        reqs.insert("@acme/widget".to_string(), "1.2.0".to_string());
+        let fetched = ensure_registry_requirements(&reqs, Some(&default), &overrides, &[]).unwrap();
+        assert_eq!(fetched.len(), 2);
+        let main_seen = auth_headers_seen(&plain_server);
+        assert!(!main_seen.is_empty(), "no requests reached the default registry");
+        for (_, _, header) in &main_seen {
+            assert_eq!(header.as_deref(), Some("Bearer main-secret-token"), "{main_seen:?}");
+        }
+        let acme_seen = auth_headers_seen(&acme_server);
+        assert!(!acme_seen.is_empty(), "no requests reached the scoped registry");
+        for (_, _, header) in &acme_seen {
+            assert_eq!(header.as_deref(), Some("Bearer acme-secret-token"), "{acme_seen:?}");
+        }
+        set_auth_var(AUTH_MAIN_VAR, None);
+        set_auth_var(AUTH_ACME_VAR, None);
+    }
+
+    #[test]
+    fn auth_unset_token_sends_no_header() {
+        let (_guard, _dir) = isolate_cache("authunset");
+        let (server, _) = tree_server("plain", "1.0.0");
+        let cfg = authed_cfg(&server.base, Some(AUTH_MAIN_VAR), None);
+        set_auth_var(AUTH_MAIN_VAR, None);
+        let fetched = ensure_registry_requirements(
+            &requirements_for("plain", "1.0.0"),
+            Some(&cfg),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fetched.len(), 1);
+        let seen = auth_headers_seen(&server);
+        assert!(!seen.is_empty(), "no requests reached the registry");
+        for (_, _, header) in &seen {
+            assert_eq!(header, &None, "{seen:?}");
+        }
+    }
+
+    fn start_refusing_server() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let logged = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(0) => break,
+                        Ok(_) => head.push(byte[0]),
+                        Err(_) => break,
+                    }
+                    if head.len() > 65536 {
+                        break;
+                    }
+                }
+                let mut auth = String::new();
+                for line in String::from_utf8_lossy(&head).lines().skip(1) {
+                    if let Some(i) = line.find(':') {
+                        if line[..i].trim().eq_ignore_ascii_case("authorization") {
+                            auth = line[i + 1..].trim().to_string();
+                        }
+                    }
+                }
+                logged.lock().unwrap_or_else(|e| e.into_inner()).push(auth);
+                let body = b"{\"code\": \"unauthorized\", \"message\": \"invalid token\"}";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = stream.write_all(body);
+                let _ = stream.flush();
+            }
+        });
+        (base, seen)
+    }
+
+    fn refusing_auth(base: &str, token_env: Option<&str>) -> RegistryAuth {
+        RegistryAuth {
+            base: base.to_string(),
+            token_env: token_env.map(|s| s.to_string()),
+            ca_cert: None,
+        }
+    }
+
+    fn assert_auth_failure(err: &Diagnostic, var: Option<&str>, secret: Option<&str>) {
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("401"), "{}", err.message);
+        match var {
+            Some(name) => assert!(err.message.contains(name), "{}", err.message),
+            None => {
+                assert!(err.message.contains("needs authentication"), "{}", err.message);
+                assert!(
+                    err.hint.as_deref().unwrap_or_default().contains("token_env"),
+                    "{err:?}"
+                );
+            }
+        }
+        if let Some(secret) = secret {
+            assert!(!err.message.contains(secret), "{}", err.message);
+            assert!(!err.hint.as_deref().unwrap_or_default().contains(secret));
+            assert!(!format!("{err:?}").contains(secret));
+        }
+    }
+
+    #[test]
+    fn auth_rejected_token_is_actionable_and_leak_free() {
+        let (_guard, _dir) = isolate_cache("auth401set");
+        let secret = "wrong-token-9417";
+        set_auth_var(AUTH_MAIN_VAR, Some(secret));
+        let (base, seen) = start_refusing_server();
+        let auth = refusing_auth(&base, Some(AUTH_MAIN_VAR));
+        let err =
+            resolve_requirements(&base, &requirements_for("plain", "1.0.0"), &[], false, &auth)
+                .unwrap_err();
+        assert_auth_failure(&err, Some(AUTH_MAIN_VAR), Some(secret));
+        assert!(err.message.contains("rejected"), "{}", err.message);
+        let got = seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(got.as_slice(), [format!("Bearer {secret}")]);
+        set_auth_var(AUTH_MAIN_VAR, None);
+    }
+
+    #[test]
+    fn auth_discovery_401_is_actionable_and_leak_free() {
+        let (_guard, _dir) = isolate_cache("auth401disco");
+        let secret = "disco-token-5521";
+        set_auth_var(AUTH_MAIN_VAR, Some(secret));
+        let (base, seen) = start_refusing_server();
+        let auth = refusing_auth(&base, Some(AUTH_MAIN_VAR));
+        let err = discover(&base, &auth).unwrap_err();
+        assert_auth_failure(&err, Some(AUTH_MAIN_VAR), Some(secret));
+        assert!(err.message.contains("discovery"), "{}", err.message);
+        let got = seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(got.as_slice(), [format!("Bearer {secret}")]);
+        set_auth_var(AUTH_MAIN_VAR, None);
+    }
+
+    #[test]
+    fn auth_missing_token_401_names_the_var() {
+        let (_guard, _dir) = isolate_cache("auth401unset");
+        set_auth_var(AUTH_MAIN_VAR, None);
+        let (base, seen) = start_refusing_server();
+        let auth = refusing_auth(&base, Some(AUTH_MAIN_VAR));
+        let err =
+            resolve_requirements(&base, &requirements_for("plain", "1.0.0"), &[], false, &auth)
+                .unwrap_err();
+        assert_auth_failure(&err, Some(AUTH_MAIN_VAR), None);
+        assert!(err.message.contains("not set"), "{}", err.message);
+        let got = seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(got.as_slice(), [String::new()]);
+    }
+
+    #[test]
+    fn auth_401_without_token_env_suggests_token_env() {
+        let (_guard, _dir) = isolate_cache("auth401bare");
+        let (base, seen) = start_refusing_server();
+        let auth = refusing_auth(&base, None);
+        let err =
+            resolve_requirements(&base, &requirements_for("plain", "1.0.0"), &[], false, &auth)
+                .unwrap_err();
+        assert_auth_failure(&err, None, None);
+        let got = seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(got.as_slice(), [String::new()]);
+    }
+
+    #[test]
+    fn auth_manifest_and_chunk_401_are_actionable() {
+        let (_guard, _dir) = isolate_cache("auth401manifest");
+        let secret = "chunk-token-8834";
+        set_auth_var(AUTH_MAIN_VAR, Some(secret));
+        let (base, seen) = start_refusing_server();
+        let auth = refusing_auth(&base, Some(AUTH_MAIN_VAR));
+        let err = fetch_chunks_manifest(
+            &format!("{base}/plain@1.0.0/chunks"),
+            "plain",
+            "1.0.0",
+            false,
+            &auth,
+        )
+        .unwrap_err();
+        assert_auth_failure(&err, Some(AUTH_MAIN_VAR), Some(secret));
+        assert!(err.message.contains("chunk manifest"), "{}", err.message);
+        let hash = "ab".repeat(32);
+        let err = fetch_chunk(&format!("{base}/plain/chunk/{hash}"), &hash, "plain", "1.0.0", false, &auth)
+            .unwrap_err();
+        assert_auth_failure(&err, Some(AUTH_MAIN_VAR), Some(secret));
+        let got = seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(got.len(), 2);
+        for header in got.iter() {
+            assert_eq!(header, &format!("Bearer {secret}"));
+        }
+        set_auth_var(AUTH_MAIN_VAR, None);
+    }
+
+    const TEST_CA_PEM: &str = concat!(
+        "-----BEGIN CERTIFICATE-----\n",
+        "MIIDDTCCAfWgAwIBAgIUdWih3/71Dj74u64DIoGHx0uQ2M8wDQYJKoZIhvcNAQEL\n",
+        "BQAwFjEUMBIGA1UEAwwLcm54LXRlc3QtY2EwHhcNMjYxMDI4MTEzMDI0WhcNMzYx\n",
+        "MDI1MTEzMDI0WjAWMRQwEgYDVQQDDAtybngtdGVzdC1jYTCCASIwDQYJKoZIhvcN\n",
+        "AQEBBQADggEPADCCAQoCggEBAOODVObYvvXch4wJYTAv9Scvoe3rW20NnJUKDa/O\n",
+        "wA5FSEP0Y7rOE6/gZpWqnBWCc1kVINYz8a2kNM6UGNAcF1zHoUjtQPPOvm88XfzQ\n",
+        "fgTvr8/3AFNsznJwHVVZZSdIKsZLTjpGzJkyTU9yYW55LkGTenl+UaKMyWFZ5hm1\n",
+        "5dkrQK5f5wH325PZsKRW5YxWGUHclFjBrWNYB7X1TEWZk8t4yZgEktXR+zrUhJg2\n",
+        "LzPfrRoTAufPGKTPrkbekdxBeIk2D/SrwL8Rebyey8e0YES1bB9YRFmUZLOjZYga\n",
+        "ky46yM1EiXfXSne6MuWFJ7OSWT8q61NmZTA0Lj2ZemCR/qMCAwEAAaNTMFEwHQYD\n",
+        "VR0OBBYEFOuzsfVRBI8xqZRP2TUnbA8IbwkOMB8GA1UdIwQYMBaAFOuzsfVRBI8x\n",
+        "qZRP2TUnbA8IbwkOMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEB\n",
+        "AIPfCBbADPg1bbk5HJ2TS+/V8GA4Rbh3Prjln6TgYwRwkFMY2n+JnGBvqHbId75S\n",
+        "i8uLyJ9EvtvEFJiSTb1hkMFmfsoPRBISmsfpeWyIvrSC44nKbzmx1cv9NTxnHwNU\n",
+        "tyQPbxbvlh4NuPKnHHp5XczO5q8YPti3G/8+NoQHCnERO2YlaSK1EbELhuADVm+p\n",
+        "rUtCl2FbVh2UcdxwRUVEKiLfjTYDDv7BK+1sbWbg72tDPdGbrpqfbq6ZF/hj2GrT\n",
+        "ncPQ8DdSL100p8ZzG0NBMx7zlmCWz16CqbDA4XVYsfdv9fENoiHHCOprjKS9qiNE\n",
+        "Jwx5VbwyD57Lkj+U51L3lJc=\n",
+        "-----END CERTIFICATE-----\n",
+    );
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn auth_ca_cert_loads_and_builds_a_client() {
+        let (_guard, dir) = isolate_cache("authca");
+        let pem_path = dir.join("test-ca.pem");
+        std::fs::write(&pem_path, TEST_CA_PEM).unwrap();
+        let raw = pem_path.to_str().unwrap();
+        let auth = RegistryAuth {
+            base: "https://example.invalid".to_string(),
+            token_env: None,
+            ca_cert: Some(raw.to_string()),
+        };
+        assert!(auth.ca_cert.is_some());
+        load_ca_cert(raw).unwrap();
+        build_registry_client(Some(raw)).unwrap();
+        build_registry_client(None).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn auth_ca_cert_missing_file_is_actionable() {
+        let (_guard, _dir) = isolate_cache("authcamissing");
+        let missing = "/nonexistent-dir-rnx-test/missing-ca.pem";
+        let err = load_ca_cert(missing).unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains(missing), "{}", err.message);
+        assert!(err.hint.as_deref().unwrap_or_default().contains("ca_cert"), "{err:?}");
+        let err = build_registry_client(Some(missing)).unwrap_err();
+        assert!(err.message.contains(missing), "{}", err.message);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn auth_ca_cert_garbage_is_rejected_without_echo() {
+        let (_guard, dir) = isolate_cache("authcagarbage");
+        for (tag, contents) in [
+            ("plain", "not-a-certificate-rnx-probe-7721"),
+            ("armored", "-----BEGIN CERTIFICATE-----\n!!!not-base64!!!\n-----END CERTIFICATE-----\n"),
+        ] {
+            let path = dir.join(format!("{tag}.pem"));
+            std::fs::write(&path, contents).unwrap();
+            let raw = path.to_str().unwrap();
+            let err = load_ca_cert(raw).unwrap_err();
+            assert_eq!(err.code, Code::E108);
+            assert!(err.message.contains(raw), "{tag}: {}", err.message);
+            assert!(!err.message.contains(contents), "{tag}: {}", err.message);
+            assert!(!format!("{err:?}").contains(contents), "{tag}");
+            let err = build_registry_client(Some(raw)).unwrap_err();
+            assert!(err.message.contains(raw), "{tag}: {}", err.message);
+            assert!(!err.message.contains(contents), "{tag}: {}", err.message);
+        }
+    }
+
+    #[test]
+    fn auth_ca_cert_relative_path_resolves_from_the_working_directory() {
+        let rel = ca_cert_fs_path("corp-ca.pem");
+        assert!(rel.is_absolute());
+        assert!(rel.ends_with("corp-ca.pem"));
+        let abs = ca_cert_fs_path("/etc/rnx/ca.pem");
+        assert_eq!(abs, PathBuf::from("/etc/rnx/ca.pem"));
     }
 }

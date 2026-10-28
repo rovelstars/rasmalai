@@ -2897,6 +2897,43 @@ mod tests {
     }
 
     #[test]
+    fn registry_tables_parse_token_env_and_ca_cert() {
+        let c = parse(
+            "export default {\n\
+             project: { name: \"demo\", version: \"0.1.0\" },\n\
+             registry: { url: \"https://default.internal\", token_env: \"RNX_TOKEN\", ca_cert: \"corp.pem\" },\n\
+             registries: { \"@acme\": { url: \"https://acme.internal\", token_env: \"ACME_TOKEN\" } }\n\
+         }\n",
+        );
+        let reg = c.registry.expect("default registry parses");
+        assert_eq!(reg.url, "https://default.internal");
+        assert_eq!(reg.token_env.as_deref(), Some("RNX_TOKEN"));
+        assert_eq!(reg.ca_cert.as_deref(), Some("corp.pem"));
+        let scoped = c.registries.get("@acme").expect("scoped override parses");
+        assert_eq!(scoped.url, "https://acme.internal");
+        assert_eq!(scoped.token_env.as_deref(), Some("ACME_TOKEN"));
+        assert_eq!(scoped.ca_cert, None);
+    }
+
+    #[test]
+    fn publish_manifest_keeps_registry_keys_for_the_server_gate() {
+        let m = parse_manifest(
+            "export default {\n\
+             project: { name: \"demo\", version: \"0.1.0\" },\n\
+             registry: { url: \"https://default.internal\", token_env: \"RNX_TOKEN\" },\n\
+             registries: { \"@acme\": { url: \"https://acme.internal\" } }\n\
+         }\n",
+        )
+        .unwrap();
+        let out = manifest_to_rnx_for_publish(&Manifest { project: m.0, workspace: m.1 });
+        assert!(out.contains("token_env"), "{out}");
+        assert!(out.contains("registries"), "{out}");
+        let again = parse_manifest(&out).unwrap().0.expect("publish output reparses");
+        assert_eq!(again.registry.expect("registry survives").token_env.as_deref(), Some("RNX_TOKEN"));
+        assert!(again.registries.contains_key("@acme"));
+    }
+
+    #[test]
     fn permissions_accept_strings_tables_and_mixed() {
         let c = parse(
             "export default {\n\
