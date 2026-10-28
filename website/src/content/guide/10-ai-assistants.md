@@ -6,7 +6,7 @@ icon: "Terminal"
 
 # AI Assistants & MCP
 
-If you write code with an AI agent looking over your shoulder, you can give it the toolchain directly. `rnx mcp` serves the compiler over the Model Context Protocol on stdio, so an agent can check, run, format, and explain rnx code without shelling out. Ten tools: `check`, `run` (interpreter, 30s cap), `fmt`, `explain`, `version`, `rasmalai_lookup_symbol` (`@std/*` signature search), `inspect_package_capabilities` (package security audit), `eval_code` (persistent JIT session), `get_diagnostics` (structured JSON diagnostics), and `hot_reload` (needs an attached `rnx dev --mcp` watcher). Stdout carries protocol frames only; everything works on self-contained snippets.
+If you write code with an AI agent looking over your shoulder, you can give it the toolchain directly. `rnx mcp` serves the compiler over the Model Context Protocol on stdio, so an agent can check, run, format, test, and explain rnx code without shelling out. Seventeen tools: `check` (structured JSON, `pretty` opt-in), `run` (interpreter, 30s cap, structured output), `fmt` (plus `--check`/`--diff` modes), `explain`, `version`, `rasmalai_lookup_symbol` (`@std/*` signature search), `inspect_package_capabilities` (package audit with licenses, drift, and advisory verdicts), `eval_code` (persistent JIT session with `:type` and `reset`), `get_diagnostics` (structured JSON diagnostics), `hot_reload` (needs an attached `rnx dev --mcp` watcher), `build` (LLVM object, in memory), `test` (project test runner), `lint` (read-only), `doc` (`--json` API docs), `doctor` (read-only cache health), `cache_status` (read-only pool sizes), and `package_resolve` (offline cache verdicts). `path` inputs resolve project-aware, so relative imports work; `source` snippets stay self-contained. Stdout carries protocol frames only.
 
 Pick your harness below. Every entry follows the same trio — `rnx` on `PATH`, a server entry with `command`/`args`, and one command to verify — then a manual section covers anything else.
 
@@ -25,7 +25,7 @@ Claude Code registers from the terminal:
 claude mcp add rnx -- rnx mcp
 ```
 
-Verify with `/mcp` inside a session; the `rnx` server lists ten tools.
+Verify with `/mcp` inside a session; the `rnx` server lists seventeen tools.
 
 Claude Desktop takes the same server in its JSON config — macOS `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows `%APPDATA%\Claude\`, Linux `~/.config/Claude`):
 
@@ -143,9 +143,9 @@ extensions:
 Any harness that spawns a stdio MCP server needs exactly three things: the `rnx` binary on `PATH`, `command` set to `rnx` with `args` set to `["mcp"]`, and a clean stdout (the server reserves it for protocol frames; logs go to stderr). Verify by hand before blaming the harness:
 
 ```sh
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | rnx mcp
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | rnx mcp
 ```
 
-Expect `serverInfo.name` of `rnx-mcp` and ten tools. If a harness rejects the server, check that it passes through `env`/`cwd` untouched and that no wrapper writes banners to stdout.
+Expect `serverInfo.name` of `rnx-mcp` and seventeen tools. If a harness rejects the server, check that it passes through `env`/`cwd` untouched and that no wrapper writes banners to stdout.
 
-Treat `rnx mcp` as local-trust software: `run` executes the code it is given with your user privileges, capped at 30 seconds per call. The full tool table and protocol notes live in the [CLI reference](/manual/16-project-and-toolchain).
+Treat `rnx mcp` as local-trust software: `run` executes the code it is given with your user privileges, capped at 30 seconds per call; a timed-out worker blocks further `run`/`build` calls until it exits. Publishing, dependency mutation, and dev-watcher spawning are intentionally unavailable over MCP; use the `rnx` CLI for those. The full tool table and protocol notes live in the [CLI reference](/manual/16-project-and-toolchain).
