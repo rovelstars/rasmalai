@@ -21,6 +21,59 @@ pub(crate) fn tier_of_caps(caps: &BTreeSet<Capability>) -> CapabilityTier {
     caps.iter().map(|c| c.tier()).max().unwrap_or(CapabilityTier::Pure)
 }
 
+pub(crate) fn rollup_effective_capabilities(
+    own: &BTreeMap<String, BTreeSet<Capability>>,
+    deps: &BTreeMap<String, Vec<String>>,
+) -> Result<BTreeMap<String, BTreeSet<Capability>>, Diagnostic> {
+    fn visit(
+        name: &str,
+        own: &BTreeMap<String, BTreeSet<Capability>>,
+        deps: &BTreeMap<String, Vec<String>>,
+        done: &mut BTreeMap<String, BTreeSet<Capability>>,
+        stack: &mut Vec<String>,
+    ) -> Result<BTreeSet<Capability>, Diagnostic> {
+        if let Some(hit) = done.get(name) {
+            return Ok(hit.clone());
+        }
+        if let Some(pos) = stack.iter().position(|n| n == name) {
+            let mut chain: Vec<String> = stack[pos..].to_vec();
+            chain.push(name.to_string());
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("dependency cycle detected: {}", chain.join(" -> ")),
+            ));
+        }
+        stack.push(name.to_string());
+        let mut effective = own.get(name).cloned().unwrap_or_default();
+        let mut edges: Vec<String> = deps.get(name).cloned().unwrap_or_default();
+        edges.sort();
+        edges.dedup();
+        for dep in &edges {
+            if !own.contains_key(dep) && !deps.contains_key(dep) {
+                stack.pop();
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("package `{name}` depends on unknown package `{dep}`"),
+                ));
+            }
+            let sub = visit(dep, own, deps, done, stack)?;
+            effective.extend(sub);
+        }
+        stack.pop();
+        done.insert(name.to_string(), effective.clone());
+        Ok(effective)
+    }
+    let mut all: BTreeSet<String> = BTreeSet::new();
+    all.extend(own.keys().cloned());
+    all.extend(deps.keys().cloned());
+    let mut done: BTreeMap<String, BTreeSet<Capability>> = BTreeMap::new();
+    let mut stack: Vec<String> = Vec::new();
+    for name in &all {
+        visit(name, own, deps, &mut done, &mut stack)?;
+    }
+    Ok(done)
+}
+
 pub(crate) fn trace_loc(chain: &CallChain) -> String {
     match chain.nodes.last() {
         Some(n) => format!("{}:{}:{}: {}", n.file, n.line, n.col, n.expression_snippet),
@@ -857,6 +910,7 @@ pub(crate) fn entry_scan_diags(
     diags
 }
 
+#[derive(Debug, Clone)]
 pub struct DepAnalysis {
     pub name: String,
     pub version: String,
@@ -866,6 +920,99 @@ pub struct DepAnalysis {
 }
 
 pub fn analyze_dep_dir(dir: &Path) -> Result<DepAnalysis, Diagnostic> {
+    let mut memo: BTreeMap<PathBuf, DepAnalysis> = BTreeMap::new();
+    let mut stack: Vec<PathBuf> = Vec::new();
+    analyze_dep_effective(dir, &mut memo, &mut stack)
+}
+
+fn analyze_dep_effective(
+    dir: &Path,
+    memo: &mut BTreeMap<PathBuf, DepAnalysis>,
+    stack: &mut Vec<PathBuf>,
+) -> Result<DepAnalysis, Diagnostic> {
+    let canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if let Some(hit) = memo.get(&canon) {
+        return Ok(hit.clone());
+    }
+    if stack.contains(&canon) {
+        let mut chain: Vec<String> = stack
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        chain.push(canon.to_string_lossy().replace('\\', "/"));
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("dependency cycle detected: {}", chain.join(" -> ")),
+        ));
+    }
+    stack.push(canon.clone());
+    let own = analyze_dep_own(dir)?;
+    let config = project::load_manifest(dir)
+        .map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot read dependency manifest in `{}`: {e}", dir.display()),
+            )
+        })?
+        .and_then(|m| m.project)
+        .ok_or_else(|| {
+            Diagnostic::new(
+                Code::E108,
+                format!("dependency `{}` has no [project] section", dir.display()),
+            )
+        })?;
+    let mut caps: BTreeSet<Capability> = BTreeSet::new();
+    for s in &own.capabilities {
+        caps.insert(parse_cap(s)?);
+    }
+    let mut traces = own.traces.clone();
+    let mut sub: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for (name, spec) in &config.dependencies {
+        match spec {
+            project::DependencySpec::Path { path, .. } => {
+                let resolved = std::fs::canonicalize(dir.join(path)).map_err(|_| {
+                    Diagnostic::new(Code::E108, format!("cannot resolve package `{name}`"))
+                })?;
+                sub.insert(name.clone(), resolved);
+            }
+            project::DependencySpec::Git { .. } => {
+                let vendor = dir.join(crate::fetch::VENDOR_DIR).join(name);
+                if vendor.join(project::MANIFEST_FILE).is_file() {
+                    if let Ok(resolved) = std::fs::canonicalize(&vendor) {
+                        sub.insert(name.clone(), resolved);
+                    }
+                } else if let Some(cached) = git_cache_dir(dir, name) {
+                    sub.insert(name.clone(), cached);
+                }
+            }
+            project::DependencySpec::Semver { .. }
+            | project::DependencySpec::Url { .. }
+            | project::DependencySpec::Native { .. } => {}
+        }
+    }
+    for subdir in sub.values() {
+        let dep = analyze_dep_effective(subdir, memo, stack)?;
+        for s in &dep.capabilities {
+            caps.insert(parse_cap(s)?);
+        }
+        traces.extend(dep.traces.clone());
+    }
+    stack.pop();
+    let tier = tier_of_caps(&caps);
+    let mut capabilities: Vec<String> = caps.iter().map(|c| c.to_string()).collect();
+    capabilities.sort();
+    let analysis = DepAnalysis {
+        name: own.name,
+        version: own.version,
+        tier,
+        capabilities,
+        traces,
+    };
+    memo.insert(canon, analysis.clone());
+    Ok(analysis)
+}
+
+pub(crate) fn analyze_dep_own(dir: &Path) -> Result<DepAnalysis, Diagnostic> {
     let manifest = project::load_manifest(dir).map_err(|e| {
         Diagnostic::new(
             Code::E108,
@@ -1195,5 +1342,208 @@ mod tests {
             hits.iter().any(|d| d.code == Code::E108 && d.message.contains("runtime")),
             "{hits:?}"
         );
+    }
+
+    fn cap_set(names: &[&str]) -> BTreeSet<Capability> {
+        names
+            .iter()
+            .map(|s| Capability::from_str(s).unwrap())
+            .collect()
+    }
+
+    fn rollup_fixture(
+        own: &[(&str, &[&str])],
+        deps: &[(&str, &[&str])],
+    ) -> (
+        BTreeMap<String, BTreeSet<Capability>>,
+        BTreeMap<String, Vec<String>>,
+    ) {
+        let mut o: BTreeMap<String, BTreeSet<Capability>> = BTreeMap::new();
+        for (name, caps) in own {
+            o.insert((*name).to_string(), cap_set(caps));
+        }
+        let mut d: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (name, edges) in deps {
+            d.insert(
+                (*name).to_string(),
+                edges.iter().map(|s| (*s).to_string()).collect(),
+            );
+        }
+        (o, d)
+    }
+
+    #[test]
+    fn rollup_chain_closes_transitively() {
+        let (own, deps) = rollup_fixture(
+            &[("app", &[]), ("mid", &[]), ("leaf", &["fs:read:/tmp/**"])],
+            &[("app", &["mid"]), ("mid", &["leaf"]), ("leaf", &[])],
+        );
+        let out = rollup_effective_capabilities(&own, &deps).unwrap();
+        assert_eq!(out[&"leaf".to_string()], cap_set(&["fs:read:/tmp/**"]));
+        assert_eq!(out[&"mid".to_string()], cap_set(&["fs:read:/tmp/**"]));
+        assert_eq!(out[&"app".to_string()], cap_set(&["fs:read:/tmp/**"]));
+    }
+
+    #[test]
+    fn rollup_diamond_counts_shared_dep_once() {
+        let (own, deps) = rollup_fixture(
+            &[
+                ("app", &[]),
+                ("left", &["term:write"]),
+                ("right", &[]),
+                ("shared", &["fs:read:/tmp/**"]),
+            ],
+            &[
+                ("app", &["left", "right"]),
+                ("left", &["shared"]),
+                ("right", &["shared"]),
+                ("shared", &[]),
+            ],
+        );
+        let out = rollup_effective_capabilities(&own, &deps).unwrap();
+        assert_eq!(out[&"shared".to_string()], cap_set(&["fs:read:/tmp/**"]));
+        assert_eq!(
+            out[&"left".to_string()],
+            cap_set(&["fs:read:/tmp/**", "term:write"])
+        );
+        assert_eq!(out[&"right".to_string()], cap_set(&["fs:read:/tmp/**"]));
+        assert_eq!(
+            out[&"app".to_string()],
+            cap_set(&["fs:read:/tmp/**", "term:write"])
+        );
+    }
+
+    #[test]
+    fn rollup_deep_chain_stays_memoized() {
+        let depth = 500usize;
+        let mut own: BTreeMap<String, BTreeSet<Capability>> = BTreeMap::new();
+        let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for i in 0..depth {
+            let name = format!("n{i:04}");
+            own.insert(
+                name.clone(),
+                cap_set(&[&format!("env:read:VAR_{i:04}")]),
+            );
+            let next = if i + 1 < depth {
+                vec![format!("n{:04}", i + 1)]
+            } else {
+                Vec::new()
+            };
+            deps.insert(name, next);
+        }
+        let out = rollup_effective_capabilities(&own, &deps).unwrap();
+        assert_eq!(out.len(), depth);
+        assert_eq!(out["n0000"].len(), depth);
+        assert_eq!(out["n0499"].len(), 1);
+        for i in 0..depth {
+            assert_eq!(out[&format!("n{i:04}")].len(), depth - i, "node {i}");
+            assert!(
+                out[&format!("n{i:04}")]
+                    .contains(&Capability::from_str(&format!("env:read:VAR_{i:04}")).unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn rollup_cycle_fails_closed() {
+        let (own, deps) = rollup_fixture(
+            &[("a", &[]), ("b", &["fs:read:/tmp/**"])],
+            &[("a", &["b"]), ("b", &["a"])],
+        );
+        let err = rollup_effective_capabilities(&own, &deps).unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("dependency cycle detected"), "{}", err.message);
+        assert!(err.message.contains('a') && err.message.contains('b'), "{}", err.message);
+    }
+
+    #[test]
+    fn rollup_self_cycle_fails_closed() {
+        let (own, deps) = rollup_fixture(&[("a", &["term:write"])], &[("a", &["a"])]);
+        let err = rollup_effective_capabilities(&own, &deps).unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("dependency cycle detected"), "{}", err.message);
+    }
+
+    #[test]
+    fn rollup_edge_order_does_not_change_output() {
+        let (own, _) = rollup_fixture(
+            &[("app", &[]), ("left", &["term:write"]), ("shared", &["fs:read:/tmp/**"])],
+            &[],
+        );
+        let fwd: BTreeMap<String, Vec<String>> = [
+            ("app".to_string(), vec!["left".to_string(), "shared".to_string()]),
+            ("left".to_string(), vec!["shared".to_string()]),
+            ("shared".to_string(), Vec::new()),
+        ]
+        .into_iter()
+        .collect();
+        let mut bwd = fwd.clone();
+        for edges in bwd.values_mut() {
+            edges.reverse();
+        }
+        let a = rollup_effective_capabilities(&own, &fwd).unwrap();
+        let b = rollup_effective_capabilities(&own, &bwd).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a[&"app".to_string()], cap_set(&["fs:read:/tmp/**", "term:write"]));
+    }
+
+    fn pkg_tree(tag: &str, pkgs: &[(&str, &str, &str, &str)]) -> crate::scratch::Scratch {
+        let dir = crate::scratch::dir(&format!("rollup-{tag}"));
+        for (name, version, deps, lib) in pkgs {
+            let pkg = dir.join(name);
+            std::fs::create_dir_all(pkg.join("src")).unwrap();
+            let mut manifest = format!(
+                "export default {{\n    project: {{\n        name: \"{name}\",\n        version: \"{version}\"\n    }},\n    entries: {{ main: \"src/lib.rnx\" }}",
+            );
+            if !deps.is_empty() {
+                manifest.push_str(&format!(",\n    dependencies: {{\n{deps}    }}"));
+            }
+            manifest.push_str("\n}\n");
+            std::fs::write(pkg.join("Project.config"), manifest).unwrap();
+            std::fs::write(pkg.join("src").join("lib.rnx"), lib).unwrap();
+        }
+        dir
+    }
+
+    const PURE_LIB: &str = "export fn f(): Int {\n    return 1;\n}\n";
+    const SINK_LIB: &str =
+        "export fn f(): Int {\n    File.open(\"/tmp/chain.txt\", FileMode.Read);\n    return 0;\n}\n";
+
+    #[test]
+    fn analyze_dep_dir_rolls_up_path_chain() {
+        let dir = pkg_tree(
+            "chain",
+            &[
+                ("app", "0.1.0", "        mid: { path: \"../mid\" }\n", PURE_LIB),
+                ("mid", "0.1.0", "        leaf: { path: \"../leaf\" }\n", PURE_LIB),
+                ("leaf", "0.1.0", "", SINK_LIB),
+            ],
+        );
+        let analysis = analyze_dep_dir(&dir.join("app")).unwrap();
+        assert_eq!(analysis.name, "app");
+        assert!(
+            analysis.capabilities.contains(&"fs:read:/tmp/**".to_string()),
+            "{:?}",
+            analysis.capabilities
+        );
+        assert_eq!(analysis.tier, CapabilityTier::Ambient);
+        let mid = analyze_dep_dir(&dir.join("mid")).unwrap();
+        assert!(mid.capabilities.contains(&"fs:read:/tmp/**".to_string()), "{mid:?}");
+        let own = analyze_dep_own(&dir.join("app")).unwrap();
+        assert!(own.capabilities.is_empty(), "{own:?}");
+    }
+
+    #[test]
+    fn analyze_dep_dir_cycle_fails_closed() {
+        let dir = pkg_tree(
+            "cycle",
+            &[
+                ("a", "0.1.0", "        b: { path: \"../b\" }\n", PURE_LIB),
+                ("b", "0.1.0", "        a: { path: \"../a\" }\n", SINK_LIB),
+            ],
+        );
+        let err = analyze_dep_dir(&dir.join("a")).unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(err.message.contains("dependency cycle detected"), "{}", err.message);
     }
 }
