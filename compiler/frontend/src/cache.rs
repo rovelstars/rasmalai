@@ -103,6 +103,98 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 pub fn stdlib_sources_digest() -> Vec<u8> {
+    let key = stdlib_digest_key();
+    if let Some(hit) = stdlib_digest_memo()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|(k, d)| (k == &key).then(|| d.clone()))
+    {
+        return hit;
+    }
+    let digest = stdlib_sources_digest_uncached();
+    *stdlib_digest_memo()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some((key, digest.clone()));
+    digest
+}
+
+fn stdlib_digest_memo() -> &'static std::sync::Mutex<Option<(StdlibDigestKey, Vec<u8>)>> {
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Option<(StdlibDigestKey, Vec<u8>)>>> =
+        std::sync::OnceLock::new();
+    MEMO.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct StdlibDigestKey {
+    pin_path: PathBuf,
+    pin_bytes: Option<Vec<u8>>,
+    files: Vec<(String, String, u64, u64, u64)>,
+}
+
+fn stdlib_digest_key() -> StdlibDigestKey {
+    let pin_path = crate::stdlib_seed::std_pin_path();
+    let pin_bytes = std::fs::read(&pin_path).ok();
+    let mut files = Vec::new();
+    if let Some(pin) = pin_bytes
+        .as_ref()
+        .and_then(|_| crate::stdlib_seed::read_std_pin())
+    {
+        for (full, version) in &pin.packages {
+            let Some(dir) = crate::fetch::find_cached_package_dir(&pin.registry, full, version)
+            else {
+                continue;
+            };
+            collect_cached_meta(&dir, &dir, full, &mut files);
+        }
+        files.sort();
+    }
+    StdlibDigestKey {
+        pin_path,
+        pin_bytes,
+        files,
+    }
+}
+
+fn collect_cached_meta(
+    root: &Path,
+    dir: &Path,
+    pkg: &str,
+    out: &mut Vec<(String, String, u64, u64, u64)>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.file_type().is_dir() {
+            collect_cached_meta(root, &path, pkg, out);
+        } else if meta.file_type().is_file() {
+            let rel = match path.strip_prefix(root) {
+                Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                Err(_) => continue,
+            };
+            let (secs, nanos) = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| (d.as_secs(), u64::from(d.subsec_nanos())))
+                .unwrap_or((0, 0));
+            out.push((pkg.to_string(), rel, meta.len(), secs, nanos));
+        }
+    }
+}
+
+fn stdlib_sources_digest_uncached() -> Vec<u8> {
     let mut hasher = Sha256::new();
     match crate::stdlib_seed::read_std_pin() {
         Some(pin) => {
