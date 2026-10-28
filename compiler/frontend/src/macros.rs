@@ -193,7 +193,7 @@ const KNOWN_ATTRS: &[&str] = &[
 ];
 
 pub fn is_phase_a_macro(name: &str) -> bool {
-    matches!(name, "vec" | "t" | "EmbedBytes")
+    matches!(name, "vec" | "EmbedBytes")
 }
 
 fn macro_key_args(args: &[A::Spanned<A::Expr>]) -> String {
@@ -572,21 +572,6 @@ fn expand_builtin_a(
                 return Ok(Some(hit.expr));
             }
             let expanded = array_of(args.to_vec());
-            opts.cache_insert(
-                key,
-                CachedExpansion { expr: expanded.clone(), span: use_span },
-            );
-            Ok(Some(expanded))
-        }
-        "t" => {
-            if args.is_empty() {
-                return Err(Diagnostic::new(Code::E108, "`t!` needs a string").with_span(use_span));
-            }
-            let key = opts.cache_key(name, &macro_key_args(args), &[]);
-            if let Some(hit) = opts.cache_get(&key).cloned() {
-                return Ok(Some(hit.expr));
-            }
-            let expanded = args[0].node.clone();
             opts.cache_insert(
                 key,
                 CachedExpansion { expr: expanded.clone(), span: use_span },

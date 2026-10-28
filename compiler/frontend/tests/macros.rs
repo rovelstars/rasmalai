@@ -83,17 +83,13 @@ fn phase_a_vec_bracket_expands() {
 }
 
 #[test]
-fn phase_a_vec_paren_and_t_passthrough() {
+fn phase_a_vec_paren_expands() {
     let dir = tmp();
-    let (m, diags) = expand_a(
-        "fn Main(): Int { let v = vec!(1); let s = t!(\"x\"); return v[0]; }",
-        &dir,
-    );
+    let (m, diags) = expand_a("fn Main(): Int { let v = vec!(1); return v[0]; }", &dir);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     assert!(!has_macro(&m, "vec"));
-    assert!(!has_macro(&m, "t"));
     let text = format!("{m:?}");
-    assert!(text.contains("Text(\"x\")"), "{text}");
+    assert!(text.contains("Array"), "{text}");
 }
 
 #[test]
@@ -102,13 +98,6 @@ fn phase_a_unknown_macro_untouched() {
     let (m, diags) = expand_a("fn Main(): Int { return Foo!(1); }", &dir);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     assert!(has_macro(&m, "Foo"));
-}
-
-#[test]
-fn phase_a_t_needs_arg() {
-    let dir = tmp();
-    let (_, diags) = expand_a("fn Main(): Int { return t!(); }", &dir);
-    assert!(diags.iter().any(|d| d.code == Code::E108), "{diags:?}");
 }
 
 #[test]
@@ -214,10 +203,9 @@ fn phase_a_span_attribution_is_use_site() {
 #[test]
 fn phase_a_nested_macros_converge() {
     let dir = tmp();
-    let (m, diags) = expand_a("fn Main(): Int { let v = vec![vec![1][0], t!(2)]; return v[0]; }", &dir);
+    let (m, diags) = expand_a("fn Main(): Int { let v = vec![vec![1][0], vec![2][0]]; return v[0]; }", &dir);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     assert_eq!(count_macros(&m, "vec"), 0);
-    assert_eq!(count_macros(&m, "t"), 0);
 }
 
 #[test]
@@ -437,7 +425,7 @@ fn hygiene_renames_generated_locals() {
 fn expansions_are_deterministic() {
     let dir = tmp();
     std::fs::write(dir.join("d.bin"), [3u8, 1, 2]).unwrap();
-    let src = "#[Derive(Clone, Debug)] struct S { let a: Int } fn Main(): Int { let b = EmbedBytes!(\"d.bin\"); let v = vec![t!(1)]; StaticAssert!(2 > 1, \"x\"); return b[0] + v[0]; }";
+    let src = "#[Derive(Clone, Debug)] struct S { let a: Int } fn Main(): Int { let b = EmbedBytes!(\"d.bin\"); let v = vec![1]; StaticAssert!(2 > 1, \"x\"); return b[0] + v[0]; }";
     let run = || {
         let mut m = parse(src);
         let mut opts = opts_in(&dir);
@@ -485,12 +473,12 @@ fn print_stays_prelude_function_not_macro() {
 }
 
 #[test]
-fn lowercase_exceptions_are_only_vec_and_t() {
+fn lowercase_exception_is_only_vec() {
     let dir = tmp();
-    let (m, diags) = expand_a("fn Main(): Int { return Vec!(1) + T!(2); }", &dir);
+    let (m, diags) = expand_a("fn Main(): Int { return Vec!(1) + Foo!(2); }", &dir);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     assert!(has_macro(&m, "Vec"));
-    assert!(has_macro(&m, "T"));
+    assert!(has_macro(&m, "Foo"));
 }
 
 #[test]

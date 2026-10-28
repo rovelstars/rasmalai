@@ -188,7 +188,7 @@ fn sandbox_denies_io_in_comptime() {
 
 #[test]
 fn macro_expansion_is_byte_identical_across_runs() {
-    let src = "#[Derive(Clone, Debug)] struct S { let a: Int }\nfn Main(): Int { let v = vec![t!(1)]; StaticAssert!(1 < 2, \"x\"); return v[0]; }\n";
+    let src = "#[Derive(Clone, Debug)] struct S { let a: Int }\nfn Main(): Int { let v = vec![1]; StaticAssert!(1 < 2, \"x\"); return v[0]; }\n";
     let once = || {
         let dir = tree("det", &[("main.rnx", src)]);
         let m = expanded(&dir, "main.rnx");

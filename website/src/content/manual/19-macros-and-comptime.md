@@ -11,17 +11,16 @@ Rasmalai macros run in two phases. Phase A rewrites syntax before typechecking. 
 
 ## Phase A: syntax only
 
-Three forms expand before typechecking. They cannot see types.
+Two forms expand before typechecking. They cannot see types.
 
 ```rnx
 let v = vec![1, 2, 3];
-let name = t!("Hello");
 let bytes = EmbedBytes!("assets/icon.bin");
 ```
 
-`vec![...]` (or `vec!(...)`) becomes an array literal. `t!(...)` passes its string through for translation lookup. `EmbedBytes!("path")` reads a file at build time and splices its bytes as an array of integers. The path must be crate-relative: absolute paths and `..` escapes are rejected, and a missing file fails the build. The file's content hash joins the expansion cache key, so editing the file rebuilds dependents and identical inputs reuse the cached expansion.
+`vec![...]` (or `vec!(...)`) becomes an array literal. `EmbedBytes!("path")` reads a file at build time and splices its bytes as an array of integers. The path must be crate-relative: absolute paths and `..` escapes are rejected, and a missing file fails the build. The file's content hash joins the expansion cache key, so editing the file rebuilds dependents and identical inputs reuse the cached expansion.
 
-Lowercase `t!` and `vec!` are the only lowercase bang forms; every other macro is `PascalCase!`. `print()` is an ordinary prelude function, not a macro.
+Lowercase `vec!` is the only lowercase bang form; every other macro is `PascalCase!`. `print()` is an ordinary prelude function, not a macro.
 
 ## Phase B: derives, assertions, build-time values
 
