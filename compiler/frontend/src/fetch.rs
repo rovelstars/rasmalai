@@ -3586,7 +3586,14 @@ fn ensure_node(
             download(true)
         }
         other => other,
-    }?;
+    };
+    let downloaded = match downloaded {
+        Err(e) if e.message.contains("was withdrawn") => {
+            note_store_withdrawn(&node.full, &node.version);
+            return Err(e);
+        }
+        other => other?,
+    };
     if global {
         return install_store_tree(node, &downloaded, base);
     }
@@ -3737,6 +3744,144 @@ fn pinned_cache_hit(dir: &Path, _pkg: &str, pin: &str) -> Option<(PathBuf, Proje
     None
 }
 
+fn withdrawn_marker_path(dir: &Path) -> PathBuf {
+    dir.join(".rnx-withdrawn")
+}
+
+fn cached_is_withdrawn(dir: &Path) -> bool {
+    withdrawn_marker_path(dir).is_file()
+}
+
+pub(crate) fn note_store_withdrawn(full: &str, version: &str) {
+    for h in store_have() {
+        if h.full != full || h.version != version {
+            continue;
+        }
+        let Some(dir) = store_pkg_dir(&h.integrity) else {
+            continue;
+        };
+        if store_integrity_matches(&dir, full, version, &h.integrity) {
+            let _ = std::fs::write(withdrawn_marker_path(&dir), "withdrawn\n");
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedTree {
+    version: String,
+    dir: PathBuf,
+    cfg: ProjectConfig,
+    yanked: bool,
+    withdrawn: bool,
+}
+
+fn cached_selection_inventory(pkg: &str) -> Vec<CachedTree> {
+    let mut out: Vec<CachedTree> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for h in store_have() {
+        if h.full != pkg || !seen.insert(h.version.clone()) {
+            continue;
+        }
+        let Some(raw) = store_pkg_dir(&h.integrity) else {
+            continue;
+        };
+        let withdrawn = cached_is_withdrawn(&raw);
+        let Some((dir, cfg, _)) = pinned_cache_hit(&raw, pkg, &h.version) else {
+            continue;
+        };
+        if cfg.name != pkg {
+            continue;
+        }
+        out.push(CachedTree { version: h.version.clone(), dir, cfg, yanked: cached_is_yanked(&raw), withdrawn });
+    }
+    out
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CachedVerdict {
+    pub pick: Option<(PathBuf, ProjectConfig, String)>,
+    pub seen: Vec<String>,
+    pub engine_blocked: Vec<(String, String)>,
+    pub yanked_skipped: Vec<String>,
+    pub withdrawn_skipped: Vec<String>,
+}
+
+fn toolchain_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+pub(crate) fn judge_cached(pkg: &str, range: &str) -> CachedVerdict {
+    let mut verdict = CachedVerdict::default();
+    let trees = cached_selection_inventory(pkg);
+    let mut best: Option<((u64, u64, u64, String), usize)> = None;
+    for (i, tree) in trees.iter().enumerate() {
+        verdict.seen.push(tree.version.clone());
+        let Some(v) = parse_semver(tree.version.trim()) else {
+            continue;
+        };
+        if !engine_satisfied(range, &tree.version) {
+            continue;
+        }
+        let engine_range = tree.cfg.engine.trim().to_string();
+        if !engine_range.is_empty() && !engine_satisfied(&engine_range, toolchain_version()) {
+            verdict.engine_blocked.push((tree.version.clone(), engine_range));
+            continue;
+        }
+        if tree.withdrawn {
+            verdict.withdrawn_skipped.push(tree.version.clone());
+            continue;
+        }
+        if tree.yanked {
+            verdict.yanked_skipped.push(tree.version.clone());
+            continue;
+        }
+        let key = (v.0, v.1, v.2, v.3.clone());
+        let take = match &best {
+            None => true,
+            Some((bk, _)) => {
+                cmp_semver((key.0, key.1, key.2, key.3.as_str()), (bk.0, bk.1, bk.2, bk.3.as_str()))
+                    == std::cmp::Ordering::Greater
+            }
+        };
+        if take {
+            best = Some((key, i));
+        }
+    }
+    if let Some((_, i)) = best {
+        let tree = &trees[i];
+        verdict.pick = Some((tree.dir.clone(), tree.cfg.clone(), tree.version.clone()));
+    }
+    verdict
+}
+
+fn offline_cache_miss(pkg: &str, range: &str, base: &str, verdict: &CachedVerdict) -> Diagnostic {
+    if verdict.seen.is_empty() {
+        return offline_package_error(pkg, base, &format!("no cached version of `{pkg}`"));
+    }
+    let current = toolchain_version();
+    let cached = verdict.seen.join(", ");
+    if !verdict.engine_blocked.is_empty() {
+        return Diagnostic::new(
+            Code::E113,
+            format!("cannot resolve `{pkg}` offline from registry `{base}`: no cached version satisfies `{range}` for engine {current} (cached: {cached})"),
+        )
+        .with_hint("upgrade the toolchain to a version the range admits, or run `rnx download` once online to seed a compatible version");
+    }
+    let mut notes: Vec<String> = Vec::new();
+    if !verdict.withdrawn_skipped.is_empty() {
+        notes.push(format!("skipped withdrawn: {}", verdict.withdrawn_skipped.join(", ")));
+    }
+    if !verdict.yanked_skipped.is_empty() {
+        notes.push(format!("skipped yanked: {}", verdict.yanked_skipped.join(", ")));
+    }
+    let mut message = format!("cannot resolve `{pkg}` offline from registry `{base}`: no cached version satisfies `{range}` (cached: {cached})");
+    if !notes.is_empty() {
+        message.push_str(&format!(" ({})", notes.join("; ")));
+    }
+    Diagnostic::new(Code::E113, message)
+        .with_hint("run `rnx download` to seed the cache (or check the network)")
+}
+
 pub fn resolve_registry_package(
     pkg: &str,
     range: &str,
@@ -3779,18 +3924,28 @@ pub fn resolve_registry_package(
         }
     }
     let base = registry_base_for(pkg, default_registry, overrides);
-    let requirement = pinned.unwrap_or_else(|| range.to_string());
+    let requirement = pinned.clone().unwrap_or_else(|| range.to_string());
     let mut reqs = BTreeMap::new();
     reqs.insert(pkg.to_string(), requirement);
-    let fetched = ensure_registry_requirements(&reqs, default_registry, overrides, have)
-        .map_err(|e| with_offline_package_context(e, pkg, &base))?;
-    let found = fetched.iter().find(|f| f.name == pkg).ok_or_else(|| {
-        Diagnostic::new(Code::E108, format!("registry resolved no version for package `{pkg}`"))
-    })?;
-    let cfg = ProjectConfig::load_from_dir(&found.dir)?.ok_or_else(|| {
-        Diagnostic::new(Code::E108, format!("package `{pkg}` has no Project.config"))
-    })?;
-    Ok((found.dir.clone(), cfg, found.version.clone()))
+    match ensure_registry_requirements(&reqs, default_registry, overrides, have) {
+        Ok(fetched) => {
+            let found = fetched.iter().find(|f| f.name == pkg).ok_or_else(|| {
+                Diagnostic::new(Code::E108, format!("registry resolved no version for package `{pkg}`"))
+            })?;
+            let cfg = ProjectConfig::load_from_dir(&found.dir)?.ok_or_else(|| {
+                Diagnostic::new(Code::E108, format!("package `{pkg}` has no Project.config"))
+            })?;
+            Ok((found.dir.clone(), cfg, found.version.clone()))
+        }
+        Err(e) if pinned.is_none() && (e.code == Code::E113 || is_fast_fail_offline(&e.message)) => {
+            let verdict = judge_cached(pkg, range);
+            match verdict.pick {
+                Some((dir, cfg, version)) => Ok((dir, cfg, version)),
+                None => Err(offline_cache_miss(pkg, range, &base, &verdict)),
+            }
+        }
+        Err(e) => Err(with_offline_package_context(e, pkg, &base)),
+    }
 }
 
 pub fn fetch_all_registry_deps(
@@ -5635,6 +5790,202 @@ mod tests {
             err.hint.as_deref().unwrap_or_default().contains("rnx download"),
             "{err:?}"
         );
+    }
+
+    fn plant_many(full: &str, versions: &[(&str, &str, &str)]) {
+        for (version, tag, engine) in versions {
+            plant_store_package(full, version, &tag.repeat(32), engine, "export fn hello(): Int { return 1; }\n");
+        }
+    }
+
+    fn resolve_offline_float(full: &str, range: &str) -> Result<(PathBuf, ProjectConfig, String), Diagnostic> {
+        resolve_registry_package(
+            full,
+            range,
+            Some(&registry_cfg("http://127.0.0.1:9")),
+            &BTreeMap::new(),
+            None,
+            &[],
+            None,
+        )
+    }
+
+    #[test]
+    fn offline_float_selects_cached_max_compatible() {
+        let (_guard, _dir) = isolate_cache("offfloat");
+        let full = "@acme/widget";
+        plant_many(
+            full,
+            &[
+                ("1.2.0", "aa", ""),
+                ("1.2.5", "bb", ""),
+                ("1.3.0", "cc", ""),
+                ("2.0.0", "dd", ">=99.0.0"),
+                ("1.2.3-beta.1", "ee", ""),
+            ],
+        );
+        for (range, want) in [
+            ("*", "1.3.0"),
+            ("^1.0.0", "1.3.0"),
+            ("~1.2.0", "1.2.5"),
+            (">=1.2.0", "1.3.0"),
+            ("^1.2.3-beta.1", "1.3.0"),
+        ] {
+            let (dir, _, version) = resolve_offline_float(full, range).unwrap();
+            assert_eq!(version, want, "range {range}");
+            assert!(dir.join("src").join("main.rnx").is_file(), "range {range}");
+        }
+        let verdict = judge_cached(full, "^1.0.0");
+        assert_eq!(verdict.yanked_skipped, Vec::<String>::new());
+        assert_eq!(verdict.withdrawn_skipped, Vec::<String>::new());
+        let wide = judge_cached(full, ">=1.0.0");
+        assert!(wide.engine_blocked.iter().any(|(v, _)| v == "2.0.0"));
+    }
+
+    #[test]
+    fn offline_float_unsatisfiable_for_engine_names_all() {
+        let (_guard, _dir) = isolate_cache("offeng");
+        let full = "@acme/widget";
+        plant_many(full, &[("2.0.0", "dd", ">=99.0.0")]);
+        let current = env!("CARGO_PKG_VERSION");
+        let err = resolve_offline_float(full, "^2.0.0").unwrap_err();
+        assert_eq!(err.code, Code::E113);
+        assert!(err.message.contains(full), "{}", err.message);
+        assert!(err.message.contains("^2.0.0"), "{}", err.message);
+        assert!(err.message.contains(current), "{}", err.message);
+        assert!(err.message.contains("for engine"), "{}", err.message);
+        assert!(err.message.contains("2.0.0"), "{}", err.message);
+        assert!(err.message.contains("127.0.0.1:9"), "{}", err.message);
+        let hint = err.hint.as_deref().unwrap_or_default();
+        assert!(hint.contains("upgrade the toolchain"), "{err:?}");
+        assert!(hint.contains("rnx download"), "{err:?}");
+    }
+
+    #[test]
+    fn offline_float_skips_yanked_but_pin_still_serves() {
+        let (_guard, _dir) = isolate_cache("offyank");
+        let full = "@acme/widget";
+        plant_many(full, &[("1.2.0", "aa", ""), ("1.3.0", "cc", "")]);
+        let yanked_dir = store_pkg_dir(&"cc".repeat(32)).unwrap();
+        std::fs::write(yanked_marker_path(&yanked_dir), "yanked\n").unwrap();
+        assert!(cached_is_yanked(&yanked_dir));
+        let verdict = judge_cached(full, "^1.0.0");
+        assert_eq!(verdict.yanked_skipped, vec!["1.3.0".to_string()]);
+        assert!(verdict.pick.is_some());
+        let (dir, _, version) = resolve_offline_float(full, "^1.0.0").unwrap();
+        assert_eq!(version, "1.2.0");
+        assert_eq!(dir, std::fs::canonicalize(store_pkg_dir(&"aa".repeat(32)).unwrap()).unwrap());
+        let dead = registry_cfg("http://127.0.0.1:9");
+        let (pin_dir, _, pin_ver) = resolve_registry_package(
+            full,
+            "^1.0.0",
+            Some(&dead),
+            &BTreeMap::new(),
+            Some("1.3.0".to_string()),
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(pin_ver, "1.3.0");
+        assert_eq!(pin_dir, std::fs::canonicalize(&yanked_dir).unwrap());
+    }
+
+    #[test]
+    fn offline_float_skips_withdrawn() {
+        let (_guard, _dir) = isolate_cache("offwith");
+        let full = "@acme/widget";
+        plant_many(full, &[("1.2.0", "aa", ""), ("1.3.0", "cc", "")]);
+        note_store_withdrawn(full, "1.3.0");
+        assert!(cached_is_withdrawn(&store_pkg_dir(&"cc".repeat(32)).unwrap()));
+        let verdict = judge_cached(full, "^1.0.0");
+        assert_eq!(verdict.withdrawn_skipped, vec!["1.3.0".to_string()]);
+        let (_, _, version) = resolve_offline_float(full, "^1.0.0").unwrap();
+        assert_eq!(version, "1.2.0");
+        note_store_withdrawn(full, "1.2.0");
+        let err = resolve_offline_float(full, "^1.0.0").unwrap_err();
+        assert_eq!(err.code, Code::E113);
+        assert!(err.message.contains("skipped withdrawn: 1.2.0, 1.3.0"), "{}", err.message);
+        assert!(
+            err.hint.as_deref().unwrap_or_default().contains("rnx download"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn offline_float_vendor_override_still_wins() {
+        let (_guard, _dir) = isolate_cache("offvendwin");
+        plant_store_package(
+            "@acme/vendor-d",
+            "1.3.0",
+            &"cd".repeat(32),
+            "",
+            "export fn hello(): Int { return 1; }\n",
+        );
+        let anchor = crate::scratch::dir("offvendwin-anchor");
+        write_vendor_package(&anchor.join(crate::fetch::VENDOR_DIR), "@acme/vendor-d", "1.2.0", "vendored\n");
+        let (dir, _, ver) = resolve_registry_package(
+            "@acme/vendor-d",
+            "^1.0.0",
+            Some(&registry_cfg("http://127.0.0.1:9")),
+            &BTreeMap::new(),
+            None,
+            &[],
+            Some(&anchor),
+        )
+        .unwrap();
+        assert_eq!(ver, "1.2.0");
+        assert!(local_override_used("@acme/vendor-d"));
+        assert_ne!(dir, std::fs::canonicalize(store_pkg_dir(&"cd".repeat(32)).unwrap()).unwrap());
+    }
+
+    fn dir_snapshot(root: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            paths.sort();
+            for path in paths {
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn offline_float_leaves_no_deplock_behind() {
+        let (_guard, _dir) = isolate_cache("offnowrite");
+        plant_store_package(
+            "@acme/widget",
+            "1.2.0",
+            &"ab".repeat(32),
+            "",
+            "export fn hello(): Int { return 1; }\n",
+        );
+        let anchor = crate::scratch::dir("offnowrite-anchor");
+        std::fs::create_dir_all(&anchor).unwrap();
+        let before = dir_snapshot(&anchor);
+        let (_, _, version) = resolve_registry_package(
+            "@acme/widget",
+            "^1.0.0",
+            Some(&registry_cfg("http://127.0.0.1:9")),
+            &BTreeMap::new(),
+            None,
+            &[],
+            Some(&anchor),
+        )
+        .unwrap();
+        assert_eq!(version, "1.2.0");
+        assert_eq!(dir_snapshot(&anchor), before, "offline resolve must not write outside the cache");
+        assert!(!anchor.join("Project.deplock").exists());
     }
 
     fn plant_pinned_cache(full: &str, version: &str, engine: &str) -> PathBuf {
