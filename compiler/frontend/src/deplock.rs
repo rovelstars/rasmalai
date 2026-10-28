@@ -1590,6 +1590,28 @@ mod tests {
     }
 
     #[test]
+    fn offline_lock_resolves_floating_from_cache_and_writes_nothing() {
+        let (_guard, _cache) = crate::fetch::testkit::isolate_cache("lock-float");
+        let (_dir, root) = offline_registry_app("float");
+        let integrity = "cd".repeat(32);
+        crate::fetch::testkit::plant_store_package(
+            "@acme/widget",
+            "1.2.0",
+            &integrity,
+            "",
+            "export fn hello(): Int { return 1; }\n",
+        );
+        assert!(root.join(LOCK_FILE).exists() == false);
+        let cfg = ProjectConfig::load_from_dir(&root).unwrap().unwrap();
+        let lock = ProjectDepLock::resolve(&root, &cfg).unwrap();
+        let widget = lock.packages.iter().find(|p| p.name == "@acme/widget").unwrap();
+        assert_eq!(widget.version, "1.2.0");
+        assert_eq!(widget.source, "registry:@acme/widget@1.2.0");
+        assert!(!root.join(LOCK_FILE).exists(), "resolve itself must not write the deplock");
+        verify_lock(&root, &cfg, &lock).unwrap();
+    }
+
+    #[test]
     fn update_named_pins_other_direct_deps() {
         let (_guard, _cache) = crate::fetch::testkit::isolate_cache("update-named");
         let (pkg_wa, digest_wa) = crate::fetch::testkit::routed_fixture("@acme/widget", "1.2.0", 0);
