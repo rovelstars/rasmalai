@@ -59,12 +59,12 @@ export async function load({ platform, params, url, setHeaders }) {
 	if (want && meta.version !== want) error(404, 'version not found');
 	const doc = await getVersionDoc(env, pkg.name, meta.version);
 	if (!doc) error(404, 'version not found');
-	if (meta.version === pkg.versions[0].version) {
-		setHeaders({ 'Cache-Control': 'public, max-age=300, s-maxage=300' });
-	} else {
-		// Pinned content is immutable, but version status (yank) can
+	if (want) {
+		// Pinned URLs are immutable, but version status (yank) can
 		// change — cache a day, not a year.
 		setHeaders({ 'Cache-Control': 'public, max-age=86400, s-maxage=86400' });
+	} else {
+		setHeaders({ 'Cache-Control': 'public, max-age=300, s-maxage=300' });
 	}
 	return { pkg, active: doc };
 }
