@@ -29,7 +29,7 @@
 </script>
 
 <div class="mx-auto max-w-7xl px-4 pb-16">
-	{#if /^\/docs\/[^/]+\/[^/]+\//.test(page.url.pathname)}
+	{#if /^\/docs\/[^/]+\/[^/]+/.test(page.url.pathname)}
 		{@render children()}
 	{:else}
 	<div class="flex items-center justify-between gap-3 pt-6">
