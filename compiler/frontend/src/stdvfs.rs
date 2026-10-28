@@ -6,8 +6,11 @@ static VFS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
 pub const MAX_STD_MODULE_BYTES: usize = 1024 * 1024;
 
-pub fn pin_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+pub fn pin_version() -> String {
+    if let Some(version) = crate::sysroot::manifest_std_version() {
+        return version;
+    }
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 pub fn normalize_rest(name: &str) -> String {
@@ -43,7 +46,7 @@ pub fn clear() {
 }
 
 pub fn is_known_module(rest: &str) -> bool {
-    stdlib::MODULES.contains(&normalize_rest(rest).as_str())
+    stdlib::MODULES.contains(&normalize_rest(rest).as_str()) || crate::sysroot::has_std_source(rest)
 }
 
 pub fn std_source(rest: &str) -> Option<String> {
@@ -55,6 +58,17 @@ pub fn std_source(rest: &str) -> Option<String> {
         return None;
     }
     cached_std_source(&key)
+}
+
+pub fn std_source_no_overlay(rest: &str) -> Option<String> {
+    let key = normalize_rest(rest);
+    if let Some(src) = vfs().get(&key).cloned() {
+        return Some(src);
+    }
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    cached_std_source_no_overlay(&key)
 }
 
 fn vendor_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
@@ -84,6 +98,13 @@ fn project_std_source(pkg: &str, sub: Option<&str>) -> Option<String> {
 }
 
 fn cached_std_source(key: &str) -> Option<String> {
+    if let Some(src) = crate::sysroot::std_source(key) {
+        return Some(src);
+    }
+    cached_std_source_no_overlay(key)
+}
+
+fn cached_std_source_no_overlay(key: &str) -> Option<String> {
     if !stdlib::MODULES.contains(&key) {
         return None;
     }

@@ -196,6 +196,11 @@ fn collect_cached_meta(
 
 fn stdlib_sources_digest_uncached() -> Vec<u8> {
     let mut hasher = Sha256::new();
+    if let Some(overlay) = crate::sysroot::overlay_digest() {
+        hasher.update(b"rnx-sysroot-std-overlay");
+        hasher.update(&(overlay.len() as u64).to_le_bytes());
+        hasher.update(&overlay);
+    }
     match crate::stdlib_seed::read_std_pin() {
         Some(pin) => {
             hasher.update(&(pin.registry.len() as u64).to_le_bytes());

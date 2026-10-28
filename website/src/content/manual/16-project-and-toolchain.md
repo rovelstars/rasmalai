@@ -415,6 +415,46 @@ args = ["lsp"]
 
 `editors/tree-sitter-rasmalai/` holds the Tree-sitter grammar (`grammar.js`, scope `source.rnx`, `*.rnx`) with `queries/highlights.scm`, `queries/locals.scm`, `queries/folds.scm`, `queries/outline.scm`, and `queries/indents.scm`. The generated `src/parser.c`, `src/grammar.json`, and `src/node-types.json` are not committed: CI rebuilds them from `grammar.js` with `tree-sitter generate`, checks them with `tree-sitter test`, and publishes them as build artifacts (see `.github/workflows/tree-sitter.yml`). Check query captures locally with `tree-sitter query`.
 
+## Sysroots and Linux targets
+
+A sysroot is one directory that carries everything the toolchain needs beyond the current crate: C link inputs per target and, optionally, an alternate standard library. The layout mirrors `rustc --print sysroot` — per-target directories under one root, no absolute paths baked in, identity by content hash:
+
+```sh
+$SYSROOT/
+  sysroot.json                  # {"version": 1, "std_version": "0.2.1", "targets": [...]}
+  lib/rustlib/<triple>/lib/     # crt1.o, crti.o, crtn.o, crtbegin/end, libc.a, libm.a, ...
+  share/rnx/std/<module>.rnx    # alternate std sources (target-independent)
+  share/rnx/std/<module>/lib.rnx # directory form, e.g. share/rnx/std/time/lib.rnx
+```
+
+`rnx --print sysroot` prints the effective root. Discovery order is `--sysroot <dir>`, then `RNX_SYSROOT`, then the host: without a custom sysroot the linker probes the host exactly as before (`cc -print-search-dirs`, sorted GCC version directories, then the fixed `/usr/lib*` list), so default builds are byte-identical with or without the sysroot layer. A packed `lib/rustlib/<triple>/lib` directory shadows the host for that target only; the host tail stays unchanged. A configured sysroot must carry `sysroot.json` (version 1); anything else fails the first command that consults it with `E108`. Identity is `sha256:` over the sorted file bytes (never mtimes); switching sysroots changes the build fingerprint, so cached artifacts never leak across roots.
+
+Linux targets select the C library by triple, never by host probing:
+
+| Triple | C library | Link mode |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | glibc | dynamic dev, static release (as before) |
+| `x86_64-unknown-linux-musl` | musl | always fully static |
+| `aarch64-unknown-linux-gnu` | glibc | `--emit-obj` only (linking runs on the host) |
+
+The musl target needs musl libraries packed at `lib/rustlib/x86_64-unknown-linux-musl/lib` (or reachable via `RNX_LIB_DIRS`); without them the link fails closed naming the expected directory instead of silently falling back to glibc. The baked loader path follows the triple: `/lib64/ld-linux-x86-64.so.2` for glibc, `/lib/ld-musl-x86_64.so.1` for musl. The `cc`-driver fallback path refuses musl targets outright — musl links fully static through the native backend. `rnx build --target x86_64-unknown-linux-musl --emit-obj` works with no sysroot; linking is what needs the packed libraries. `validate_target` accepts exactly the three triples above.
+
+A custom sysroot can also carry an alternate standard library, which is how barebones platforms ship their own prelude. Resolution order for `@std/*` is: test VFS hooks, then the sysroot overlay (`share/rnx/std`), then `.vendor/` and `RNX_VENDOR_DIR`, then the project and global caches, then the registry. The overlay covers whole modules: under it, `is_known_module` accepts modules the stock library never heard of, and a sysroot-only module such as `@std/bareonly` builds and runs like any other. Official platforms keep `@std` untouched — the overlay only applies when a custom sysroot is configured. `pin_version` under a custom sysroot reports the manifest's `std_version` instead of the toolchain version, so vendored platform packages pin against the platform declaration; explicit deplock and project pins still win, and vendor/cache precedence among themselves is unchanged. A minimal platform prelude must still define the ambient names the compiler expects (`Int`, `String`, `Array`, and the rest of the foundation catalog — copy the stock prelude and extend it):
+
+```rnx
+import { sysrootMarker } from "@std/prelude";
+
+fn Main(): Int {
+    return sysrootMarker();
+}
+```
+
+```sh
+RNX_SYSROOT=/opt/barebones rnx build src/main.rnx
+```
+
+All sysroot lookups sort directory entries and hash bytes, never mtimes; the overlay content feeds the stdlib source digest, so dependency products invalidate when the platform sources change. Builds with a custom sysroot stay offline as long as the overlay covers every `@std/*` import: resolution short-circuits before any registry contact.
+
 All preset files are validated by `crates/cli/tests/editor_configs_test.rs`, `grammar_test.rs` (TextMate JSON syntax, root keys, keyword coverage over real `.rnx` sources), and `tree_sitter_test.rs` (file presence, S-expression balance, keyword consistency against the compiler lexer).
 
 ## MCP server
