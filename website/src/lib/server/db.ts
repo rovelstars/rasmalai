@@ -671,7 +671,15 @@ export async function getPackage(
 		})
 		.from(s.packageVersions)
 		.where(eq(s.packageVersions.packageId, row.id))
-		.orderBy(desc(s.packageVersions.createdAt));
+		.orderBy(
+			desc(s.packageVersions.createdAt),
+			desc(s.packageVersions.semverMajor),
+			desc(s.packageVersions.semverMinor),
+			desc(s.packageVersions.semverPatch),
+			sql`CASE WHEN ${s.packageVersions.prerelease} = '' THEN 1 ELSE 0 END DESC`,
+			desc(s.packageVersions.prerelease),
+			desc(s.packageVersions.version)
+		);
 	const versions: VersionMeta[] = vrows.map((v) => ({
 		version: v.version,
 		checksum: v.checksum,
