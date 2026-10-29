@@ -33,6 +33,7 @@ node_modules/
 **/node_modules/
 .svelte-kit/
 build/
+**/*.wasm
 
 # Cloudflare CLI local state (auth profiles, account cache)
 .cloudflare/
