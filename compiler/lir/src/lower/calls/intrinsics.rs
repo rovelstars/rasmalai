@@ -311,6 +311,18 @@ impl<'a> Builder<'a> {
                     }
                 }
             }
+            let slots = self.module.functions[id].params.clone();
+            let argv = if argv.len() == self.module.functions[id].sig_params.len() {
+                argv.into_iter()
+                    .enumerate()
+                    .map(|(i, a)| match slots.get(i).cloned() {
+                        Some(slot) => self.coerce_to_slot(a, &slot, span),
+                        None => a,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                argv
+            };
             self.emit_checked_call(id, &[], &argv, span)?;
         }
         Ok((obj, Simple::Other))
@@ -1013,6 +1025,47 @@ impl<'a> Builder<'a> {
             _ => self.fail(self.err(Code::E108, format!("unknown method `{field}` on `Array`"), span)),
         }
     }
+    fn param_payload_type(&self, obj: Local) -> Option<LirType> {
+        // Parameters fill consecutive locals: an implicit `this` slot for methods, then one slot
+        // per flattened parameter. Rebuild that layout to recover `Result<T, E>` from the signature.
+        let params = self.param_tys.get(&self.func.name)?;
+        let mut idx: Local = if self.self_local.is_some() { 1 } else { 0 };
+        for (_, ty) in params {
+            let lty = self.resolve_here(ty);
+            let width = crate::instr::flat_sig(&lty).len() as Local;
+            if obj == idx {
+                if width != 1 {
+                    return None;
+                }
+                let arg = result_payload_arg(ty)?;
+                let pt = self.resolve_here(arg);
+                if matches!(pt, LirType::Any | LirType::Null) || !type_resolved(self.module, &pt) {
+                    return None;
+                }
+                return Some(pt);
+            }
+            idx += width.max(1);
+        }
+        None
+    }
+    fn payload_type(&self, obj: Local, fallback: Option<Local>, slot: &LirType) -> LirType {
+        if let Some(t) = self.precise.get(&obj) {
+            if !matches!(t, LirType::Any | LirType::Null) {
+                return t.clone();
+            }
+        }
+        if let Some(t) = self.param_payload_type(obj) {
+            return t;
+        }
+        if let Some(fb) = fallback {
+            if let Some(t) = self.func.locals.get(fb as usize) {
+                if !matches!(t, LirType::Any | LirType::Null) {
+                    return t.clone();
+                }
+            }
+        }
+        slot.clone()
+    }
     pub(super) fn lower_prelude_enum_method(
         &mut self,
         obj: Local,
@@ -1082,7 +1135,7 @@ impl<'a> Builder<'a> {
                 });
                 self.set_term(Terminator::Throw { span,  src: msg, catch });
                 self.set_current(cont);
-                let inner_ty = self.precise.get(&obj).cloned().unwrap_or_else(|| payload_ty.clone());
+                let inner_ty = self.payload_type(obj, None, &payload_ty);
                 let dst = self.local(inner_ty.clone());
                 let boxable = matches!(inner_ty, LirType::I64 | LirType::Bool | LirType::F64(_) | LirType::Str);
                 if boxable && inner_ty != payload_ty {
@@ -1112,7 +1165,7 @@ impl<'a> Builder<'a> {
                 let merge = self.new_block();
                 self.set_term(Terminator::BrIf { span,  cond: is_some, then_bb: some_bb, else_bb: none_bb });
                 self.set_current(some_bb);
-                let inner_ty = self.precise.get(&obj).cloned().unwrap_or_else(|| payload_ty.clone());
+                let inner_ty = self.payload_type(obj, argv.first().copied(), &payload_ty);
                 let got = self.local(inner_ty.clone());
                 let boxable = matches!(inner_ty, LirType::I64 | LirType::Bool | LirType::F64(_) | LirType::Str);
                 if boxable && inner_ty != payload_ty {
@@ -1122,6 +1175,7 @@ impl<'a> Builder<'a> {
                 } else {
                     self.emit(Instr::EnumPayload { span,  dst: got, scrut: obj, index: 0 });
                 }
+                self.emit_retain(got, span);
                 self.set_term(Terminator::Br(merge));
                 self.set_current(none_bb);
                 let fb = self.coerce_to_slot(argv[0], &inner_ty, span);
@@ -1158,6 +1212,10 @@ impl<'a> Builder<'a> {
                 let inner = self.local(LirType::Any);
                 self.emit(Instr::EnumPayload { span,  dst: inner, scrut: obj, index: 0 });
                 let mapped = self.emit_value_call(cb, vec![inner], span);
+                let mapped_ty = self.closure_call_ret(cb).or_else(|| {
+                    let t = self.func.locals.get(mapped as usize).cloned().unwrap_or(LirType::Any);
+                    (!matches!(t, LirType::Any | LirType::Null)).then_some(t)
+                }).unwrap_or(LirType::Any);
                 let dst = self.local(LirType::Enum(ei));
                 self.emit(Instr::EnumNew { span,  dst, enu: ei, variant: some_vi, payload: vec![mapped] });
                 self.set_term(Terminator::Br(merge));
@@ -1167,6 +1225,9 @@ impl<'a> Builder<'a> {
                 self.emit(Instr::EnumNew { span,  dst, enu: ei, variant: none_vi, payload: vec![kept] });
                 self.set_term(Terminator::Br(merge));
                 self.set_current(merge);
+                if !matches!(mapped_ty, LirType::Any | LirType::Null) {
+                    self.precise.insert(dst, mapped_ty);
+                }
                 Ok((dst, Simple::Other))
             }
             _ => self.fail(self.err(Code::E108, format!("unknown method `{field}` on `{type_name}`"), span)),

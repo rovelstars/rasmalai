@@ -57,7 +57,7 @@ impl<M: Module> FnLower<'_, M> {
                         self.set(b, *dst, r);
                         self.own(*dst);
                     }
-                    Some(LirType::I64) => {
+                    Some(LirType::I64) | Some(LirType::I8) => {
                         let callee = self.module.declare_func_in_func(self.int_to_str, &mut b.func);
                         let v = self.val(b, *src);
                         let inst = b.ins().call(callee, &[v]);
@@ -122,7 +122,12 @@ impl<M: Module> FnLower<'_, M> {
                                 let str_tag = b.ins().iconst(types::I32, runtime::native::TAG_STR as i64);
                                 b.ins().select(is_obj, ptr_tag, str_tag)
                             } else {
-                                let tag = Self::print_tag(&self.ftypes.get(*a as usize).cloned().unwrap_or(LirType::Any));
+                                let ty = self.ftypes.get(*a as usize).cloned().unwrap_or(LirType::Any);
+                                let tag = if matches!(ty, LirType::I8) {
+                                    runtime::native::TAG_INT as i64
+                                } else {
+                                    Self::print_tag(&ty)
+                                };
                                 b.ins().iconst(types::I32, tag)
                             };
                             let callee = self.module.declare_func_in_func(self.print_val, &mut b.func);

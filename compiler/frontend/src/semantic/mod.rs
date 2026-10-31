@@ -71,32 +71,84 @@ fn is_removed_poll_base(e: &Expr) -> bool {
     matches!(e, Expr::Ident(n) if n == "Poll")
 }
 
-fn builtin_method_sig(base: &str, method: &str) -> Option<(usize, Vec<&'static str>, Option<&'static str>)> {
-    match (base, method) {
-        ("String", "length") => Some((0, Vec::new(), Some("Int"))),
-        ("String", "len") => Some((0, Vec::new(), Some("Int"))),
-        ("String", "slice") => Some((2, vec!["Int", "Int"], Some("String"))),
-        ("String", "indexOf") => Some((1, vec!["String"], Some("Int"))),
-        ("String", "trim") => Some((0, Vec::new(), Some("String"))),
-        ("String", "concat") => Some((1, vec!["String"], Some("String"))),
-        ("String", "charCodeAt") => Some((1, vec!["Int"], Some("Int"))),
-        ("Int", "toString") => Some((0, Vec::new(), Some("String"))),
-        ("Float", "toString") => Some((0, Vec::new(), Some("String"))),
-        ("Float", "toBits") => Some((0, Vec::new(), Some("Int"))),
-        ("Float", "asFast") => Some((0, Vec::new(), Some("FastFloat"))),
-        ("Float", "asStrict") => Some((0, Vec::new(), Some("Float"))),
-        ("Bool", "toString") => Some((0, Vec::new(), Some("String"))),
-        ("Array", "length") => Some((0, Vec::new(), Some("Int"))),
-        ("Array", "len") => Some((0, Vec::new(), Some("Int"))),
-        ("Array", "isEmpty") => Some((0, Vec::new(), Some("Bool"))),
-        ("Array", "push") => Some((1, Vec::new(), None)),
-        ("Array", "pop") => Some((0, Vec::new(), None)),
-        ("Result", "isOk") => Some((0, Vec::new(), Some("Bool"))),
-        ("Result", "isErr") => Some((0, Vec::new(), Some("Bool"))),
-        ("Result", "unwrap") => Some((0, Vec::new(), None)),
-        ("Result", "unwrapOr") => Some((1, Vec::new(), None)),
-        _ => None,
+fn generic_args(ty: &str) -> Option<Vec<String>> {
+    let start = ty.find('<')?;
+    let end = ty.rfind('>')?;
+    if end <= start + 1 {
+        return None;
     }
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut current = String::new();
+    for c in ty[start + 1..end].chars() {
+        match c {
+            '<' => {
+                depth += 1;
+                current.push(c);
+            }
+            '>' => {
+                depth = depth.saturating_sub(1);
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                out.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    out.push(current.trim().to_string());
+    if out.iter().any(String::is_empty) {
+        return None;
+    }
+    Some(out)
+}
+
+pub(crate) fn array_element(ty: &str) -> Option<String> {
+    if crate::prelude::short_name(ty) != "Array" {
+        return None;
+    }
+    generic_args(ty)?.into_iter().next()
+}
+
+fn result_payload(ty: &str) -> Option<String> {
+    if crate::prelude::short_name(ty) != "Result" {
+        return None;
+    }
+    generic_args(ty)?.into_iter().next()
+}
+
+fn builtin_method_sig(base_ty: &str, method: &str) -> Option<(usize, Vec<String>, Option<String>)> {
+    let base = crate::prelude::short_name(base_ty);
+    let sig = match (base, method) {
+        ("String", "length") => (0, Vec::new(), Some("Int".into())),
+        ("String", "len") => (0, Vec::new(), Some("Int".into())),
+        ("String", "slice") => (2, vec!["Int".into(), "Int".into()], Some("String".into())),
+        ("String", "indexOf") => (1, vec!["String".into()], Some("Int".into())),
+        ("String", "trim") => (0, Vec::new(), Some("String".into())),
+        ("String", "concat") => (1, vec!["String".into()], Some("String".into())),
+        ("String", "charCodeAt") => (1, vec!["Int".into()], Some("Int".into())),
+        ("Int", "toString") => (0, Vec::new(), Some("String".into())),
+        ("Float", "toString") => (0, Vec::new(), Some("String".into())),
+        ("Float", "toBits") => (0, Vec::new(), Some("Int".into())),
+        ("Float", "asFast") => (0, Vec::new(), Some("FastFloat".into())),
+        ("Float", "asStrict") => (0, Vec::new(), Some("Float".into())),
+        ("Bool", "toString") => (0, Vec::new(), Some("String".into())),
+        ("Array", "length") => (0, Vec::new(), Some("Int".into())),
+        ("Array", "len") => (0, Vec::new(), Some("Int".into())),
+        ("Array", "isEmpty") => (0, Vec::new(), Some("Bool".into())),
+        ("Array", "push") => (1, Vec::new(), None),
+        ("Array", "pop") => (0, Vec::new(), None),
+        ("Result", "isOk") => (0, Vec::new(), Some("Bool".into())),
+        ("Result", "isErr") => (0, Vec::new(), Some("Bool".into())),
+        ("Result", "unwrap") => (0, Vec::new(), result_payload(base_ty)),
+        ("Result", "unwrapOr") => match result_payload(base_ty) {
+            Some(payload) => (1, vec![payload.clone()], Some(payload)),
+            None => (1, Vec::new(), None),
+        },
+        _ => return None,
+    };
+    Some(sig)
 }
 
 fn is_higher_order(base: &str, method: &str) -> bool {

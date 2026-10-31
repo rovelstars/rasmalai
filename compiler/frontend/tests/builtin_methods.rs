@@ -164,6 +164,113 @@ fn arg_type_mismatch_is_e108() {
 }
 
 #[test]
+fn result_unwrap_payload_is_typed() {
+    let src = "fn text(): Result<String, String> {\n\
+        return Result.Ok(\"live\");\n\
+    }\n\
+    fn num(): Result<Int, String> {\n\
+        return Result.Ok(41);\n\
+    }\n\
+    fn Main(): Int {\n\
+        let a: String = text().unwrap();\n\
+        let b: String = text().unwrapOr(\"\");\n\
+        let c = text().unwrapOr(\"\");\n\
+        let d: Int = c.len();\n\
+        let e: Int = num().unwrap();\n\
+        let f: Int = num().unwrapOr(0);\n\
+        let g = num().unwrapOr(0);\n\
+        return a.len() + b.len() + d + e + f + g;\n\
+    }\n";
+    let errs = errors(src);
+    assert!(errs.is_empty(), "{errs:?}");
+}
+
+#[test]
+fn result_unwrap_payload_mismatch_is_e205() {
+    let src = "fn num(): Result<Int, String> {\n\
+        return Result.Ok(41);\n\
+    }\n\
+    fn Main(): Int {\n\
+        let s: String = num().unwrap();\n\
+        return 0;\n\
+    }\n";
+    let errs = errors(src);
+    assert!(
+        errs.iter().any(|d| d.code == diagnostics::Code::E205 && d.message.contains("Int")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn result_unwrap_or_fallback_must_match_payload() {
+    let src = "fn text(): Result<String, String> {\n\
+        return Result.Ok(\"live\");\n\
+    }\n\
+    fn Main(): Int {\n\
+        let s = text().unwrapOr(7);\n\
+        return 0;\n\
+    }\n";
+    let errs = errors(src);
+    assert!(
+        errs.iter()
+            .any(|d| d.code == diagnostics::Code::E108 && d.message.contains("String")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn array_element_type_flows_through_nested_indices() {
+    let src = "fn rows(): Array<Array<String>> {\n\
+        let out: Array<Array<String>> = [];\n\
+        return out;\n\
+    }\n\
+    fn Main(): Int {\n\
+        let direct: Array<String> = [];\n\
+        let a: String = direct[0].trim();\n\
+        let b: String = rows()[0][0].trim();\n\
+        return a.len() + b.len();\n\
+    }\n";
+    let errs = errors(src);
+    assert!(errs.is_empty(), "{errs:?}");
+}
+
+#[test]
+fn array_element_type_mismatch_is_e205() {
+    let src = "fn Main(): Int {\n\
+        let direct: Array<String> = [];\n\
+        let n: Int = direct[0].trim();\n\
+        return n;\n\
+    }\n";
+    let errs = errors(src);
+    assert!(
+        errs.iter().any(|d| d.code == diagnostics::Code::E205 && d.message.contains("String")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn async_fn_declared_with_promise_return_awaits_once() {
+    let src = "async fn value(): Promise<String> {\n\
+        return \"live\";\n\
+    }\n\
+    async fn load(): String {\n\
+        let s: String = await value();\n\
+        return s.trim();\n\
+    }\n\
+    fn Main(): Int {\n\
+        return 0;\n\
+    }\n";
+    let mut m = Parser::parse_module(src).expect("parses");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    let errs: Vec<_> = semantic::check(&m)
+        .into_iter()
+        .filter(|d| !d.code.is_warning())
+        .collect();
+    assert!(errs.is_empty(), "{errs:?}");
+}
+
+#[test]
 fn await_on_promise_result_resolves_unwrap_or() {
     let src = "async fn fetch(): Result<String, String> {\nreturn Result.Ok(\"live\");\n}\nasync fn load(): String {\nreturn (await fetch()).unwrapOr(\"d\");\n}\nfn Main(): Int {\nreturn 0;\n}\n";
     let errs = errors(src);

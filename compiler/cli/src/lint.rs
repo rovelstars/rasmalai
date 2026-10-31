@@ -106,6 +106,27 @@ fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+fn count_word(text: &str, name: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut count = 0;
+    let mut i = 0;
+    while i + name.len() <= bytes.len() {
+        if &text[i..i + name.len()] == name {
+            let before = i.checked_sub(1).map(|j| bytes[j] as char);
+            let after = bytes.get(i + name.len()).map(|b| *b as char);
+            let left_ok = before.is_none_or(|c| !is_ident_char(c));
+            let right_ok = after.is_none_or(|c| !is_ident_char(c));
+            if left_ok && right_ok {
+                count += 1;
+                i += name.len();
+                continue;
+            }
+        }
+        i += 1;
+    }
+    count
+}
+
 fn replace_word_once(text: &str, from: usize, name: &str) -> Option<(String, usize)> {
     let bytes = text.as_bytes();
     let mut i = from.min(bytes.len());
@@ -146,6 +167,11 @@ fn apply_renames(diags: &[frontend::lint::LintDiagnostic]) -> usize {
         edits.sort_by_key(|(offset, _)| std::cmp::Reverse(*offset));
         let mut file_fixed = 0usize;
         for (offset, name) in edits {
+            // Renaming by byte offset is not scope-aware, so a name that also
+            // appears in a nested or shadowing binding may be a live read.
+            if count_word(&text, &name) != 1 {
+                continue;
+            }
             if let Some((next, _)) = replace_word_once(&text, offset as usize, &name) {
                 text = next;
                 file_fixed += 1;

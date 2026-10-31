@@ -1523,9 +1523,18 @@ impl IsoCheck<'_> {
             }
             A::Expr::ImplicitMember(_) => {}
             A::Expr::Macro { name, args, .. } => {
-                if !matches!(name.as_str(), "Assert" | "PanicIf" | "Some" | "None" | "Option")
-                    && !self.visible_value(name)
-                {
+                let owned_by_later_pass = crate::macros::is_phase_a_macro(name)
+                    || matches!(
+                        name.as_str(),
+                        "Assert"
+                            | "PanicIf"
+                            | "Some"
+                            | "None"
+                            | "Option"
+                            | "StaticAssert"
+                            | "CompTime"
+                    );
+                if !owned_by_later_pass && !self.visible_value(name) {
                     self.err(name, e.span);
                 }
                 for a in args {

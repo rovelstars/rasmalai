@@ -2926,15 +2926,23 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
     }
 
     fn unary(&mut self) -> PR<Expr> {
+        self.unary_at(0)
+    }
+
+    fn unary_at(&mut self, depth: u32) -> PR<Expr> {
+        if depth >= MAX_PARSE_DEPTH {
+            return Err(Diagnostic::new(Code::E108, "expression nesting is too deep")
+                .with_span(self.peek_span()));
+        }
         if self.eat(&TokenKind::Await) {
             let s = self.peek_span().start;
-            let r = self.unary()?;
+            let r = self.unary_at(depth + 1)?;
             let e = self.peek_span().start;
             return Ok(Expr::Await(Box::new(sp(r, Span { start: s, end: e }))));
         }
         if self.eat(&TokenKind::PlusPlus) {
             let s = self.peek_span().start;
-            let r = self.unary()?;
+            let r = self.unary_at(depth + 1)?;
             let e = self.peek_span().start;
             return Ok(Expr::Unary {
                 op: UnOp::PreInc,
@@ -2943,7 +2951,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
         }
         if self.eat(&TokenKind::MinusMinus) {
             let s = self.peek_span().start;
-            let r = self.unary()?;
+            let r = self.unary_at(depth + 1)?;
             let e = self.peek_span().start;
             return Ok(Expr::Unary {
                 op: UnOp::PreDec,
@@ -2952,7 +2960,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
         }
         if self.eat(&TokenKind::Minus) {
             let s = self.peek_span().start;
-            let r = self.unary()?;
+            let r = self.unary_at(depth + 1)?;
             let e = self.peek_span().start;
             return Ok(Expr::Unary {
                 op: UnOp::Neg,
@@ -2961,7 +2969,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
         }
         if self.eat(&TokenKind::Bang) {
             let s = self.peek_span().start;
-            let r = self.unary()?;
+            let r = self.unary_at(depth + 1)?;
             let e = self.peek_span().start;
             return Ok(Expr::Unary {
                 op: UnOp::Not,
@@ -2970,7 +2978,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
         }
         if self.eat(&TokenKind::Tilde) {
             let s = self.peek_span().start;
-            let r = self.unary()?;
+            let r = self.unary_at(depth + 1)?;
             let e = self.peek_span().start;
             return Ok(Expr::Unary {
                 op: UnOp::BitNot,
@@ -2979,7 +2987,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
         }
         if self.eat(&TokenKind::Amp) {
             let s = self.peek_span().start;
-            let r = self.unary()?;
+            let r = self.unary_at(depth + 1)?;
             let e = self.peek_span().start;
             return Ok(Expr::Unary {
                 op: UnOp::AddrOf,
@@ -2988,7 +2996,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
         }
         if self.eat(&TokenKind::Star) {
             let s = self.peek_span().start;
-            let r = self.unary()?;
+            let r = self.unary_at(depth + 1)?;
             let e = self.peek_span().start;
             return Ok(Expr::Unary {
                 op: UnOp::Deref,

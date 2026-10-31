@@ -33,6 +33,7 @@ impl<'a> Builder<'a> {
         param_info: &'a BTreeMap<String, Vec<(String, Option<A::Spanned<A::Expr>>)>>,
         param_tys: &'a BTreeMap<String, Vec<(String, A::Type)>>,
         field_opt: &'a BTreeMap<String, LirType>,
+        field_targs: &'a BTreeMap<String, Vec<LirType>>,
         ret_tys: &'a BTreeMap<String, A::Type>,
         nub_fields: &'a BTreeSet<String>,
         generic_fns: &'a BTreeMap<String, GenericSig>,
@@ -58,10 +59,12 @@ impl<'a> Builder<'a> {
             param_info,
             param_tys,
             field_opt,
+            field_targs,
             ret_tys,
             nub_fields,
             nub: BTreeSet::new(),
             precise: BTreeMap::new(),
+            local_targs: BTreeMap::new(),
             var_targs: BTreeMap::new(),
             targ_log: Vec::new(),
             scope_marks: Vec::new(),
@@ -90,6 +93,7 @@ impl<'a> Builder<'a> {
             fn_tparams: Vec::new(),
             moved: BTreeSet::new(),
             fresh_arrays: BTreeSet::new(),
+            empty_arrays: BTreeSet::new(),
             tuples: BTreeMap::new(),
             records: BTreeMap::new(),
             ranges: BTreeMap::new(),
@@ -282,6 +286,14 @@ impl<'a> Builder<'a> {
                 self.closure_ret.remove(&dst);
             }
         }
+        match self.local_targs.get(&src).cloned() {
+            Some(t) => {
+                self.local_targs.insert(dst, t);
+            }
+            None => {
+                self.local_targs.remove(&dst);
+            }
+        }
         if let Some(elems) = self.tuples.get(&src).cloned() {
             self.tuples.insert(dst, elems);
             return;
@@ -293,6 +305,32 @@ impl<'a> Builder<'a> {
         if let Some(parts) = self.ranges.get(&src).cloned() {
             self.ranges.insert(dst, parts);
             return;
+        }
+        if dst != src {
+            let have = self.func.locals.get(src as usize).cloned();
+            let want = self.func.locals.get(dst as usize).cloned();
+            if let (Some(LirType::Array(have)), Some(LirType::Array(want))) = (have, want) {
+                if matches!(*have, LirType::Any) && !matches!(*want, LirType::Any) {
+                    if self.empty_arrays.contains(&src) {
+                        self.func.locals[src as usize] = LirType::Array(want);
+                    } else if Self::array_boxed_elem(&want) {
+                        let out = self.erase_any_array(src, &want, span);
+                        self.emit(Instr::Copy { span, dst, src: out });
+                        return;
+                    }
+                } else if !matches!(*have, LirType::Any)
+                    && matches!(*want, LirType::Any)
+                    && Self::array_boxed_elem(&have)
+                {
+                    if self.empty_arrays.contains(&src) {
+                        self.func.locals[src as usize] = LirType::Array(want);
+                    } else {
+                        let out = self.box_any_array(src, &have, span);
+                        self.emit(Instr::Copy { span, dst, src: out });
+                        return;
+                    }
+                }
+            }
         }
         if dst != src {
             if let Some(pt) = self.precise.get(&src).cloned() {

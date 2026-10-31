@@ -284,6 +284,27 @@ impl<'a> Builder<'a> {
 
     pub(super) fn coerce_to_slot(&mut self, v: Local, slot: &LirType, span: Span) -> Local {
         let vt = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
+        if let (LirType::Array(have), LirType::Array(want)) = (&vt, slot) {
+            if matches!(**have, LirType::Any) && !matches!(**want, LirType::Any) {
+                if self.empty_arrays.contains(&v) {
+                    self.func.locals[v as usize] = slot.clone();
+                    return v;
+                }
+                if Self::array_boxed_elem(want) {
+                    return self.erase_any_array(v, want, span);
+                }
+            }
+            if !matches!(**have, LirType::Any)
+                && matches!(**want, LirType::Any)
+                && Self::array_boxed_elem(have)
+            {
+                if self.empty_arrays.contains(&v) {
+                    self.func.locals[v as usize] = slot.clone();
+                    return v;
+                }
+                return self.box_any_array(v, have, span);
+            }
+        }
         if slot == &LirType::Any {
             if Self::any_box_tag(&vt).is_some() {
                 let dst = self.local(LirType::Any);
@@ -367,6 +388,107 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
+    pub(super) fn erase_any_array(&mut self, src: Local, elem: &LirType, span: Span) -> Local {
+        let out = self.local(LirType::Array(Box::new(elem.clone())));
+        let es = elem_size(elem);
+        self.emit(Instr::ArrayNew { span, dst: out, cap: 0, elem_size: es });
+        let len = self.local(LirType::I64);
+        self.emit(Instr::ArrayLen { span, dst: len, arr: src });
+        let i = self.local(LirType::I64);
+        self.emit(Instr::Const { span, dst: i, lit: Lit::Int(0) });
+        let head = self.new_block();
+        let body = self.new_block();
+        let exit = self.new_block();
+        self.set_term(Terminator::Br(head));
+        self.set_current(head);
+        let cond = self.local(LirType::Bool);
+        self.emit(Instr::Cmp { span, op: CmpOp::Lt, kind: NumKind::Int, dst: cond, lhs: i, rhs: len });
+        self.set_term(Terminator::BrIf { span, cond, then_bb: body, else_bb: exit });
+        self.set_current(body);
+        let slot = self.local(LirType::I64);
+        self.emit(Instr::ArrayGet { span, dst: slot, arr: src, index: i, elem_size: 8, unchecked: true });
+        let raw = self.local(elem.clone());
+        self.emit_any_unbox(raw, slot, span);
+        self.emit(Instr::ArrayPush { span, arr: out, value: raw, elem_size: es });
+        let one = self.const_int(1, span);
+        let next = self.local(LirType::I64);
+        self.emit(Instr::Arith { span, op: ArithOp::Add, kind: NumKind::Int, dst: next, lhs: i, rhs: one });
+        self.emit_copy(i, next, span);
+        self.set_term(Terminator::Br(head));
+        self.set_current(exit);
+        out
+    }
+
+    pub(super) fn box_any_array(&mut self, src: Local, elem: &LirType, span: Span) -> Local {
+        let out = self.local(LirType::Array(Box::new(LirType::Any)));
+        self.emit(Instr::ArrayNew { span, dst: out, cap: 0, elem_size: 8 });
+        let len = self.local(LirType::I64);
+        self.emit(Instr::ArrayLen { span, dst: len, arr: src });
+        let i = self.local(LirType::I64);
+        self.emit(Instr::Const { span, dst: i, lit: Lit::Int(0) });
+        let head = self.new_block();
+        let body = self.new_block();
+        let exit = self.new_block();
+        self.set_term(Terminator::Br(head));
+        self.set_current(head);
+        let cond = self.local(LirType::Bool);
+        self.emit(Instr::Cmp { span, op: CmpOp::Lt, kind: NumKind::Int, dst: cond, lhs: i, rhs: len });
+        self.set_term(Terminator::BrIf { span, cond, then_bb: body, else_bb: exit });
+        self.set_current(body);
+        let raw = self.local(elem.clone());
+        self.emit(Instr::ArrayGet { span, dst: raw, arr: src, index: i, elem_size: elem_size(elem), unchecked: true });
+        let boxed = self.local(LirType::Any);
+        let tag = Self::any_box_tag(elem).unwrap_or(0);
+        self.emit_any_box(boxed, tag, raw, span);
+        self.emit(Instr::ArrayPush { span, arr: out, value: boxed, elem_size: 8 });
+        // ArrayPush retains the box; drop the temporary reference so the new array owns the only one.
+        self.nub_release(boxed, span);
+        let one = self.const_int(1, span);
+        let next = self.local(LirType::I64);
+        self.emit(Instr::Arith { span, op: ArithOp::Add, kind: NumKind::Int, dst: next, lhs: i, rhs: one });
+        self.emit_copy(i, next, span);
+        self.set_term(Terminator::Br(head));
+        self.set_current(exit);
+        out
+    }
+
+    pub(super) fn array_boxed_elem(elem: &LirType) -> bool {
+        matches!(
+            elem,
+            LirType::I64 | LirType::I8 | LirType::Bool | LirType::F64(_) | LirType::Str
+        )
+    }
+
+    pub(super) fn array_ret_targs(&self, targs: &[LirType], fname: &str, class: &str) -> Option<LirType> {
+        let ci = *self.module.class_index.get(class)?;
+        let tps = self.module.classes[ci].type_params.clone();
+        if tps.is_empty() || tps.len() != targs.len() {
+            return None;
+        }
+        let ret = self.ret_tys.get(fname)?.clone();
+        match self.resolve_targ(&ret, &tps, targs) {
+            LirType::Array(inner) if !matches!(*inner, LirType::Any) => {
+                Some(LirType::Array(inner))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn type_targs(&self, t: &A::Type) -> Option<Vec<LirType>> {
+        if t.fn_sig.is_some() || !t.tuple.is_empty() || t.args.is_empty() || t.path.is_empty() {
+            return None;
+        }
+        let targs: Vec<LirType> = t.args.iter().map(|a| self.resolve_here(a)).collect();
+        if targs.iter().any(|t| {
+            matches!(t, LirType::Obj(n)
+                if !self.module.class_index.contains_key(n)
+                    && !self.module.interface_index.contains_key(n))
+        }) {
+            return None;
+        }
+        Some(targs)
+    }
+
     pub(super) fn deny_nested_tuple(ty: &LirType, span: Span) -> Result<(), Diagnostic> {
         match ty {
             LirType::Tuple(items) => {
@@ -405,6 +527,55 @@ impl<'a> Builder<'a> {
                 .map(|e| e.name.rsplit('.').next().unwrap_or(&e.name).to_string()),
             _ => None,
         }
+    }
+
+    pub(super) fn callee_tparams(&self, fname: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .generic_fns
+            .get(fname)
+            .map(|g| g.tparams.clone())
+            .unwrap_or_default();
+        if let Some(target) = self.ext_self.get(fname) {
+            for a in &target.args {
+                if a.fn_sig.is_none()
+                    && a.args.is_empty()
+                    && a.tuple.is_empty()
+                    && a.path.len() == 1
+                    && !out.iter().any(|p| p == &a.path[0])
+                {
+                    out.push(a.path[0].clone());
+                }
+            }
+        }
+        if let Some((class, _)) = fname.rsplit_once('.') {
+            if let Some(ci) = self.module.class_index.get(class) {
+                for tp in &self.module.classes[*ci].type_params {
+                    if !out.iter().any(|p| p == tp) {
+                        out.push(tp.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub(super) fn generic_array_param(&self, fname: &str, t: &A::Type) -> bool {
+        if t.path.last().map(|p| short_name(p)) != Some("Array") {
+            return false;
+        }
+        let Some(arg) = t.args.first() else {
+            return false;
+        };
+        if arg.fn_sig.is_some() || !arg.tuple.is_empty() || !arg.args.is_empty() || arg.path.len() != 1 {
+            return false;
+        }
+        let tps = self.callee_tparams(fname);
+        if tps.is_empty() {
+            return false;
+        }
+        let name = &arg.path[0];
+        let short = short_name(name);
+        tps.iter().any(|p| p == name || p == short)
     }
 
     pub(super) fn emit_tag_check(&mut self, dst: Local, v: Local, tag: i64, span: Span) {

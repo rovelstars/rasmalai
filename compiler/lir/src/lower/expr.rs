@@ -85,7 +85,20 @@ impl<'a> Builder<'a> {
                 args,
                 trailing,
             }  => self.lower_expr_call(callee, type_args, args, trailing, span),
-            A::Expr::New { target, args, .. }  => self.lower_new(target, args, span),
+            A::Expr::New { target, type_args, args }  => {
+                let (obj, s) = self.lower_new(target, args, span)?;
+                if !type_args.is_empty() {
+                    let targs: Vec<LirType> = type_args.iter().map(|t| self.resolve_here(t)).collect();
+                    if !targs.iter().any(|t| {
+                        matches!(t, LirType::Obj(n)
+                            if !self.module.class_index.contains_key(n)
+                                && !self.module.interface_index.contains_key(n))
+                    }) {
+                        self.local_targs.insert(obj, targs);
+                    }
+                }
+                Ok((obj, s))
+            }
             A::Expr::Index { base, index }  => self.lower_expr_index(base, index, span),
             A::Expr::Member { base, field }  => self.lower_expr_member(base, field, span),
             A::Expr::ImplicitMember(path) => {
@@ -276,6 +289,9 @@ impl<'a> Builder<'a> {
         }
         let dst = self.local(LirType::Array(Box::new(elem_ty.clone())));
         self.fresh_arrays.insert(dst);
+        if items.is_empty() {
+            self.empty_arrays.insert(dst);
+        }
         let es = elem_size(&elem_ty);
         let cap = lowered.iter().filter(|(s, _, _)| s.is_some()).count();
         self.emit(Instr::ArrayNew { span, dst, cap, elem_size: es });
@@ -670,7 +686,7 @@ impl<'a> Builder<'a> {
     pub(super) fn lower_expr_member(&mut self, base: &Box<A::Spanned<A::Expr>>, field: &String, span: Span) -> Result<(Local, Simple), Diagnostic> {
 
         if let A::Expr::Ident(root) = &base.node {
-            if let Some(enu) = self.module.enum_index.get(root).copied() {
+            if let Some(enu) = self.enum_by_name(root) {
                 let vi = *self.module.enums[enu].variant_index.get(field).ok_or_else(|| {
                     self.err(Code::E108, format!("unknown variant `{root}.{field}`"), span)
                 })?;
@@ -732,6 +748,9 @@ impl<'a> Builder<'a> {
                         field: fi,
                     });
                     let key = format!("{name}.{field}");
+                    if let Some(targs) = self.field_targs.get(&key).cloned() {
+                        self.local_targs.insert(dst, targs);
+                    }
                     if let Some(pt) = self.field_opt.get(&key).cloned() {
                         self.precise.insert(dst, pt);
                     }
@@ -777,6 +796,30 @@ impl<'a> Builder<'a> {
                 "`as` cannot cast an object to a plain value type",
                 span,
             ));
+        }
+        let scalar_name = |t: &LirType| match t {
+            LirType::I64 => Some("Int"),
+            LirType::I8 => Some("Byte"),
+            LirType::F64(_) => Some("Float"),
+            LirType::Bool => Some("Bool"),
+            _ => None,
+        };
+        let same_scalar = matches!(
+            (&st, &target),
+            (LirType::I64 | LirType::I8, LirType::I64 | LirType::I8)
+                | (LirType::F64(_), LirType::F64(_))
+                | (LirType::Bool, LirType::Bool)
+        );
+        if let (Some(from), Some(to)) = (scalar_name(&st), scalar_name(&target)) {
+            if !same_scalar {
+                return self.fail(self.err(
+                    Code::E108,
+                    format!(
+                        "`as` does not convert `{from}` to `{to}`; it only moves a value. Use `Int(x)` or `Float(x)` for numeric conversion"
+                    ),
+                    span,
+                ));
+            }
         }
         let fresh = matches!(expr.node, A::Expr::Array(_));
         self.check_array_view(&st, &target, fresh, expr.span, "cast value")?;
