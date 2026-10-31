@@ -29,14 +29,23 @@
 		error: 'error'
 	};
 
+	const statusTone: Record<TermStatus, string> = {
+		idle: 'text-aura-muted',
+		checking: 'text-aura-muted',
+		running: 'text-aura-muted',
+		done: 'text-aura-signal',
+		timeout: 'text-aura-orange',
+		error: 'text-aura-red'
+	};
+
 	function fmtDuration(ms: number): string {
 		return ms.toFixed(2).padStart(8) + ' ms';
 	}
 </script>
 
-<div class="panel flex min-h-[320px] flex-col overflow-hidden">
-	<div class="panel-title flex items-center justify-between">
-		<span class="inline-flex items-center gap-1.5 {status === 'timeout' || status === 'error' ? 'text-aura-red' : ''} {(status === 'running' || status === 'checking') ? 'animate-pulse' : ''}">
+<section class="pg-outpane pg-termpane" aria-label="Output">
+	<div class="pg-pane-head">
+		<span class="pg-status {statusTone[status]}">
 			{#if status === 'done'}<Check size={13} />
 			{:else if status === 'timeout'}<Timer size={13} />
 			{:else if status === 'error'}<X size={13} />
@@ -46,14 +55,14 @@
 		</span>
 		<span class="flex items-center gap-2">
 			{#if stale && (stdout.length > 0 || retval)}
-				<span class="rounded border border-aura-orange/40 px-1.5 py-px font-mono text-[10px] text-aura-orange">stale</span>
+				<span class="pg-stale">stale</span>
 			{/if}
 			{#if duration !== null}
 				<span class="tabular text-aura-orange">{fmtDuration(duration)}</span>
 			{/if}
 		</span>
 	</div>
-	<div class="flex-1 overflow-auto p-4 font-mono text-[13px] leading-relaxed">
+	<div class="pg-term">
 		{#if notice}
 			<p class="text-aura-muted">{notice}</p>
 		{/if}
@@ -65,12 +74,12 @@
 					<p class="whitespace-pre-wrap text-aura-text">{line}</p>
 				{/each}
 				{#if retval}
-					<p class="text-aura-green">{retval}</p>
+					<p class="text-aura-signal">{retval}</p>
 				{/if}
 			</div>
 		{/if}
 		{#if status === 'checking' || status === 'running'}
-			<p class="animate-pulse text-aura-muted">|</p>
+			<p class="animate-pulse text-aura-faint">|</p>
 		{/if}
 	</div>
-</div>
+</section>

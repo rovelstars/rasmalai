@@ -29,7 +29,7 @@
 		transition: opacity 0.35s ease;
 		background: radial-gradient(
 			260px circle at var(--mx, 50%) var(--my, 50%),
-			rgba(162, 119, 255, 0.14),
+			rgb(var(--aura-purple) / 0.14),
 			transparent 65%
 		);
 	}

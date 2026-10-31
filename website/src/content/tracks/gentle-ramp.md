@@ -55,7 +55,7 @@ print(total);
 ```
 
 `bonus` dies at the end of each loop iteration. `total` dies when `main`
-returns. No background thread, no pause.
+returns. There is no background thread and no pause.
 
 ## Cleanup with defer
 

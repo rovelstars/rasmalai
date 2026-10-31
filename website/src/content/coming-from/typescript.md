@@ -17,7 +17,7 @@ equivalent, flagging where the type system is stricter.
 ## Modules you already recognize
 
 Imports name what they take and where it lives. The standard library resolves
-from the compiler itself — nothing to install:
+from the compiler itself, with nothing to install:
 
 ```ts
 class Vec2 {
@@ -63,7 +63,7 @@ print(Int(3.9), fast * 2.0.asFast());
 
 ## Config from the environment
 
-No `process.env` dynamics, no `dotenv` chain. `Env` reads and writes process
+There are no `process.env` dynamics and no `dotenv` chain. `Env` reads and writes process
 state through one namespace:
 
 ```ts
@@ -80,8 +80,7 @@ print(Env.get("MODE"));
 
 ## Ship one file
 
-No bundler split-chunks, no runtime flags, no container layer for the
-interpreter. `rnx build --release` emits the binary; `rnx dist` thinking is
+There are no bundler split-chunks, no runtime flags, and no container layer for the interpreter. `rnx build --release` emits the binary; `rnx dist` thinking is
 `scp` thinking:
 
 ```sh

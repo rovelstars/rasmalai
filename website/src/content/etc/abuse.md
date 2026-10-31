@@ -14,15 +14,15 @@ Most enforcement is automatic. The permission scanner rejects publishes whose co
 
 Three patterns flag a package or publisher for review:
 
-- **Typosquatting.** A new name close enough to an established package to catch typos — transposed letters, a missing hyphen, a swapped scope — holds for review instead of going live on trust.
+- **Typosquatting.** A new name close enough to an established package to catch typos, transposed letters, a missing hyphen, a swapped scope, holds for review instead of going live on trust.
 - **Velocity.** A sudden burst of publishes, versions, or scopes from one publisher, far above the weekly per-package rhythm honest work produces, pauses the account's uploads pending a look.
-- **Permissions.** A new version that widens its capability grants over the previous one — especially toward network, process, or `unsafe` — gets a second look even when the manifest declares everything correctly.
+- **Permissions.** A new version that widens its capability grants over the previous one, especially toward network, process, or `unsafe`, gets a second look even when the manifest declares everything correctly.
 
-A flag is not a verdict. Flagged uploads wait for a human; clean ones proceed, and the review aims at hours, not weeks.
+Flagged uploads wait for a human; clean ones proceed, and the review aims at hours, not weeks.
 
 ## What gets tombstoned
 
-Yank handles the ordinary end of life (see [Deprecation](/etc/deprecation)). Tombstones are for packages that must stop resolving: malware and harvesters, license violations where the grant was never valid, and confirmed typosquats published to deceive. A tombstoned version answers 410 `{ code: "withdrawn", reason }` forever, the number stays burned, and the audit entry survives so the removal itself is on record. Nothing — not the original owner, not a scope transfer — can re-mint it.
+Yank handles the ordinary end of life (see [Deprecation](/etc/deprecation)). Tombstones are for packages that must stop resolving: malware and harvesters, license violations where the grant was never valid, and confirmed typosquats published to deceive. A tombstoned version answers 410 `{ code: "withdrawn", reason }` forever, the number stays burned, and the audit entry survives so the removal itself is on record. Nothing can re-mint it, neither the original owner nor a scope transfer.
 
 ## How to report
 

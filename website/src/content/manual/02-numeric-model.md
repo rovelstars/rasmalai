@@ -58,7 +58,7 @@ assert((1 << 67) == 8, "mask");
 assert(((-8) >> 2) == -2, "arith shift");
 ```
 
-Division or remainder by zero aborts with a fatal diagnostic on every backend — it never yields a value. Overflow wraps modulo 2^64 with no trap.
+Division or remainder by zero aborts with a fatal diagnostic on every backend. It never yields a value. Overflow wraps modulo 2^64 with no trap.
 
 ## Math intrinsic reference
 
@@ -93,7 +93,7 @@ print((-1) >>> 1);
 
 ## Floats: strict by default, fast by consent
 
-`Float` is IEEE-754 double precision with strict evaluation order: `0.1 + 0.2` behaves exactly as the standard says, identically on every backend. `FastFloat` is the same 64 bits with the optimizer permitted to reassociate — which can change the last bit of a result.
+`Float` is IEEE-754 double precision with strict evaluation order: `0.1 + 0.2` behaves exactly as the standard says, identically on every backend. `FastFloat` is the same 64 bits with the optimizer permitted to reassociate, which can change the last bit of a result.
 
 The type system enforces the distinction: mixing `Float` and `FastFloat` in one expression without an explicit conversion is a compile error.
 
@@ -104,7 +104,7 @@ The type system enforces the distinction: mixing `Float` and `FastFloat` in one 
 - NaN is native IEEE-754 hardware NaN: sign and payload bits are implementation-defined and may differ between backends, matching C and Rust. `Float.isNaN(x)` tests for it; `x != x` is also true for NaN. (`Float.nan()` constructs the canonical `0x7FF8000000000000`.)
 - The compiler never fuses `a * b + c` on its own for `Float`. For
   `FastFloat`, a multiply whose only use feeds an addition fuses into a
-  single-rounding hardware FMA on every backend — but reassociation means
+  single-rounding hardware FMA on every backend. But reassociation means
   the backends may fuse *different* multiplies (LLVM can strength-reduce
   `x + x` to `2 * x` first, Cranelift does not), so `FastFloat` results
   can differ in the last bits between dev and release. Only `Float` is
@@ -124,7 +124,7 @@ print(Float(7) / 2.0);
 
 ## Interop lanes
 
-`ByteBuffer` (`@std/bytes`) exposes the bit-level view: integer lanes read as 64-bit `Int` (signed lanes sign-extend, unsigned lanes zero-extend) and float lanes read as 64-bit `Float`. Out-of-bounds lane access aborts. This is the sanctioned path for float bitcasting and wire formats — see [Hardware and FFI](/manual/13-hardware-and-ffi).
+`ByteBuffer` (`@std/bytes`) exposes the bit-level view: integer lanes read as 64-bit `Int` (signed lanes sign-extend, unsigned lanes zero-extend) and float lanes read as 64-bit `Float`. Out-of-bounds lane access aborts. This is the sanctioned path for float bitcasting and wire formats (see [Hardware and FFI](/manual/13-hardware-and-ffi)).
 
 ```rnx
 import { ByteBuffer } from "@std/bytes";

@@ -23,12 +23,12 @@ Every message follows one shape: a short code, a plain sentence, a pointer at th
 
 Inside-out, the box states:
 
-1. **The code** — `E303`. Codes starting with `E` are errors (exit 1); `W` codes are warnings (exit 0 unless `--deny-warnings`). Codes are stable across releases: they are searchable on this page, expandable with `rnx explain E303`, and matchable in CI with `rnx check --json`.
-2. **The message** — one sentence naming the problem in program terms, never compiler internals.
-3. **The location** — file, line, and column, with a source excerpt and a `▲` pointer under the exact column.
-4. **The note** — the fix: what to type next.
+1. The code: `E303`. Codes starting with `E` are errors (exit 1); `W` codes are warnings (exit 0 unless `--deny-warnings`). Codes are stable across releases: they are searchable on this page, expandable with `rnx explain E303`, and matchable in CI with `rnx check --json`.
+2. The message: one sentence naming the problem in program terms, never compiler internals.
+3. The location: file, line, and column, with a source excerpt and a `▲` pointer under the exact column.
+4. The note: the fix, what to type next.
 
-Warnings print in yellow without failing the build. Fatals (`fatal: ...`) report runtime stops — traps and failed assertions — in the same box shape with the function and span where execution stopped. Uncaught throws print as `Uncaught exception: <value>` on stderr with a `Stack trace:` section naming the stop site instead of a box. Errors stop the pipeline; when several appear, the first is fixed first, since later errors are frequently downstream echoes.
+Warnings print in yellow without failing the build. Fatals (`fatal: ...`) report runtime stops, traps and failed assertions, in the same box shape with the function and span where execution stopped. Uncaught throws print as `Uncaught exception: <value>` on stderr with a `Stack trace:` section naming the stop site instead of a box. Errors stop the pipeline; when several appear, the first is fixed first, since later errors are frequently downstream echoes.
 
 `rnx explain` expands any code into full text plus fix:
 
@@ -87,7 +87,7 @@ let data = await Promise.resolve(42);
 print(data);
 ```
 
-Top-level `await` is legal only in the entry file. The same `await` inside an imported module is `E112`, and `await` inside a synchronous function body is `E109` — move it into an `async fn`.
+Top-level `await` is legal only in the entry file. The same `await` inside an imported module is `E112`, and `await` inside a synchronous function body is `E109`. Move it into an `async fn`.
 
 ```rnx
 async fn compute(): Int {
@@ -109,14 +109,14 @@ fn tag(n: Int): String {
 }
 ```
 
-Each `case` auto-breaks; crossing into the next case needs the explicit `fallthrough;`. An empty case with neither a body nor `fallthrough;` is `E108`. A C-style `for (init; cond; step)` header is `E110` — use `for x in range` or `while`. A direct `.poll()` call is `E111` — use `await` or `promise.wait()` instead.
+Each `case` auto-breaks; crossing into the next case needs the explicit `fallthrough;`. An empty case with neither a body nor `fallthrough;` is `E108`. A C-style `for (init; cond; step)` header is `E110`. Use `for x in range` or `while`. A direct `.poll()` call is `E111`. Use `await` or `promise.wait()` instead.
 
 ```rnx
 let total = nosuchvar + 1;
 print(total);
 ```
 
-Reference to a name with no visible declaration fails as `E303` pointing at the exact column (lowercase-led value names; `PascalCase` names are type references that single-file checks leave alone). A `return` value of the wrong type fails as `E304` with `expected`/`got` labels. An intra-procedural ARC cycle without escape fails as `E302` — restructure so the value escapes, or route the back-edge through `GenRef`.
+Reference to a name with no visible declaration fails as `E303` pointing at the exact column (lowercase-led value names; `PascalCase` names are type references that single-file checks leave alone). A `return` value of the wrong type fails as `E304` with `expected`/`got` labels. An intra-procedural ARC cycle without escape fails as `E302`. Restructure so the value escapes, or route the back-edge through `GenRef`.
 
 ## Cycle, manifest, and lint triggers
 
@@ -225,7 +225,7 @@ print(fast * 2.0.asFast());
 
 ## Security codes (S101-S501)
 
-Capability and permission failures. The full model — capability grammar, `[permissions]` ceilings, tiers, and the `rnx audit` / `rnx lock` workflow — is specified in [Project and Toolchain](/manual/16-project-and-toolchain). Summaries are transitive: each module is charged its own sinks plus the summaries of the modules it imports (bare, renamed, and chained calls attribute identically), so ceilings must cover the transitive closure. Runtime internals (`__rnx_*`) are never referenced bare: the only legal declaration is `import { fn name(params): Ret } from runtime "mod"` inside registry-verified `@std/*`, and any other frame is rejected with `E108` naming the owning `@std/*` wrapper.
+Capability and permission failures. The full model (capability grammar, `[permissions]` ceilings, tiers, and the `rnx audit` / `rnx lock` workflow) is specified in [Project and Toolchain](/manual/16-project-and-toolchain). Summaries are transitive: each module is charged its own sinks plus the summaries of the modules it imports (bare, renamed, and chained calls attribute identically), so ceilings must cover the transitive closure. Runtime internals (`__rnx_*`) are never referenced bare: the only legal declaration is `import { fn name(params): Ret } from runtime "mod"` inside registry-verified `@std/*`, and any other frame is rejected with `E108` naming the owning `@std/*` wrapper.
 
 | Code | Severity | Cause | Resolution |
 |---|---|---|---|
@@ -277,7 +277,7 @@ Native sources, author tasks, and the publish pipeline reuse `E108`; the message
 |---|---|---|---|
 | `W202` | warning | `unsafe` block that reaches no foreign call and no raw-memory operation | remove the `unsafe` block or move a foreign call into it |
 
-`W202` is the companion to the containment rule: an `unsafe` block must justify itself by containing (or calling into) foreign or raw-memory authority. `rnx check` also prints the containment boundary — one `boundary:` line per tainted function naming its direct seed count and whether every seed is contained — so audits can review the perimeter without reading every call site.
+`W202` is the companion to the containment rule: an `unsafe` block must justify itself by containing (or calling into) foreign or raw-memory authority. `rnx check` also prints the containment boundary (one `boundary:` line per tainted function naming its direct seed count and whether every seed is contained), so audits can review the perimeter without reading every call site.
 
 ## Performance notes and warnings (P101-P203)
 
@@ -295,7 +295,7 @@ The optimizer reports what it did to loop nests, and where it held back. These d
 
 ### Automatic fixes (`--fix`)
 
-`rnx build --fix` applies the compiler's own proven rewrite for the one qualifying case: a `P201` ZeroInit failure becomes a zero-fill plus the accumulation form the optimizer then handles (verified by the `P101` receipt appearing after the edit). Every other shape — aliasing, cost-gate and role failures, `P202` scans, `P203` accumulators — is refused with `no autofix available`; those need human judgment. The engine previews a diff, edits span-precisely (formatting outside the edit is byte-preserved), writes in place with a `.bak` backup per file (refused when a backup already exists unless `--fix-force`; `--fix-keep-backup` retains it), then re-parses, rebuilds, and compares program output against the pre-fix binary. Any step failing restores the file byte-for-byte and exits non-zero; files are applied all-or-nothing, fail-fast across files. Combining `--fix` with `--deny-perf-lints` on the same lint is an error: fix first, deny second.
+`rnx build --fix` applies the compiler's own proven rewrite for the one qualifying case: a `P201` ZeroInit failure becomes a zero-fill plus the accumulation form the optimizer then handles (verified by the `P101` receipt appearing after the edit). Every other shape (aliasing, cost-gate and role failures, `P202` scans, `P203` accumulators) is refused with `no autofix available`; those need human judgment. The engine previews a diff, edits span-precisely (formatting outside the edit is byte-preserved), writes in place with a `.bak` backup per file (refused when a backup already exists unless `--fix-force`; `--fix-keep-backup` retains it), then re-parses, rebuilds, and compares program output against the pre-fix binary. Any step failing restores the file byte-for-byte and exits non-zero; files are applied all-or-nothing, fail-fast across files. Combining `--fix` with `--deny-perf-lints` on the same lint is an error: fix first, deny second.
 
 ## Lint rules (L001-L005)
 

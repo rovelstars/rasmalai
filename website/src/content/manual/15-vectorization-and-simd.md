@@ -7,7 +7,7 @@ icon: "Timer"
 
 # Vectorization and SIMD
 
-Scalar code touches one number at a time; hot loops touch four. `Vec4f` and `Vec4i` are 128-bit SIMD value types: four lanes in one register, no heap, no ARC traffic, plain operators.
+Scalar code touches one number at a time; hot loops touch four. `Vec4f` and `Vec4i` are 128-bit SIMD value types: four lanes in one register, with no heap allocation, no ARC traffic, and plain operators.
 
 ## Constructing vectors
 
@@ -88,7 +88,7 @@ is unspecified in LLVM AOT, so guard divisors first.
 Lane values are strict `Float`s. Mixing a `FastFloat` lane source without
 `.asFast()` is the same `E305` error as scalar code, and `Int` lane
 readouts convert with `Int(...)`. The process entry point still returns
-`Int` — vectors travel through helpers, and lanes cross the final
+`Int`. Vectors travel through helpers, and lanes cross the final
 boundary.
 
 ## Vector reference

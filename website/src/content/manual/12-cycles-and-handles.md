@@ -7,21 +7,21 @@ icon: "Recycle"
 
 # Cycles and Handles
 
-Scopes handle almost everything, but sooner or later two objects need to point at each other. When A holds B and B holds A, neither count ever reaches zero and neither object dies. This chapter gives you the three tools for exactly that shape, plus the destruction rules underneath.
+Scopes handle almost everything, but two objects sometimes need to point at each other. When A holds B and B holds A, neither count ever reaches zero and neither object dies. This chapter describes the three tools for that shape, plus the destruction rules underneath.
 
 ## Back-edges use GenRef
 
-The rule is directional: own **down** the tree with strong references, point **back up** with `GenRef<T>`, a 16-byte generational handle:
+The rule is directional: own down the tree with strong references, point back up with `GenRef<T>`, a 16-byte generational handle:
 
 - Copying a `GenRef` never touches atomics.
-- `.get()` returns the object — or `null` after the owner is freed, so dangling handles read as absence instead of corruption.
+- `.get()` returns the object, or `null` after the owner is freed, so dangling handles read as absence instead of corruption.
 - On native backends, handles resolve through a process-wide slot table, and dropping an object invalidates its slots via the synthesized destructor.
 
 The compiler watches the directions: a mutual strong pair warns as `W108` and suggests turning one side into a `GenRef`.
 
 ## The byId registry pattern
 
-Cross-thread and cross-scope sharing uses the same idea through the standard library: primitives constructed `byId` open a shared cell that separate threads — or separate phases of one program — resolve independently. The handle, not the object, crosses the boundary:
+Cross-thread and cross-scope sharing uses the same idea through the standard library: primitives constructed `byId` open a shared cell that separate threads, or separate phases of one program, resolve independently. The handle, not the object, crosses the boundary:
 
 ```rnx
 import { AtomicInt } from "@std/sync";
@@ -35,7 +35,7 @@ print(AtomicInt.byId(1).get());
 
 ## Closures that capture this
 
-A closure stored on its own object would cycle the same way: the object owns the closure, the closure captures the object. The fix is `fn decay(this)`, which captures `GenRef(this)` instead and checks it once on entry — void bodies return early, value bodies produce `null`. Forgetting `decay` on a self-capturing closure warns as `W104`; rewrite the closure with `fn decay(this)` to fix it.
+A closure stored on its own object would cycle the same way: the object owns the closure, the closure captures the object. The fix is `fn decay(this)`, which captures `GenRef(this)` instead and checks it once on entry. Void bodies return early and value bodies produce `null`. Forgetting `decay` on a self-capturing closure warns as `W104`; rewrite the closure with `fn decay(this)` to fix it.
 
 ```rnx
 class Ticker {
@@ -57,7 +57,7 @@ assert(t.cb() == 1, "decayed call");
 |---|---|---|
 | `GenRef<T>` | 16-byte generational handle | the back-edge type; own down with strong references, point back up with this |
 | `GenRef(obj)` | wraps a live object | copying the handle never touches atomics |
-| `.get()` | `.get(): T?` | the object, or `null` after the owner is freed — dangling handles read as absence |
+| `.get()` | `.get(): T?` | the object, or `null` after the owner is freed. Dangling handles read as absence |
 | mutual strong pair | — | warns as `W108`, suggesting one side become a `GenRef` |
 
 ```rnx
@@ -109,9 +109,9 @@ assert(a.back == null, "starts clear");
 
 ## Intentional cycles opt out per field
 
-Sometimes a cycle is the design — a doubly-linked list, a parent pointer you promise to clear. Opt out per field with `#[Allow(CyclicReference)]` and clear it manually in `deinit` or a `clear*`/`close*`/`reset*` method. A marked field that is never cleared warns as `W109`.
+Sometimes a cycle is the design, a doubly-linked list or a parent pointer cleared manually. Opt out per field with `#[Allow(CyclicReference)]` and clear it manually in `deinit` or a `clear*`/`close*`/`reset*` method. A marked field that is never cleared warns as `W109`.
 
-Note what cycles are *not*: `unsafe`. At worst an unbroken cycle wastes memory; it can never corrupt it, so cycle management stays in safe code. `unsafe {}` remains reserved for raw `Pointer`/`Address` work, C-ABI calls, and data races.
+Cycles are not `unsafe`. At worst an unbroken cycle wastes memory; it can never corrupt it, so cycle management stays in safe code. `unsafe {}` remains reserved for raw `Pointer`/`Address` work, C-ABI calls, and data races.
 
 ## What runs at destruction
 
@@ -139,11 +139,11 @@ let m = new Meter(20);
 print(m.bump(22));
 ```
 
-`new Meter(20)` calls `init` — you never write `.init()`. When `m` goes out of scope, `deinit` runs, then fields release recursively.
+`new Meter(20)` calls `init`. You never write `.init()`. When `m` goes out of scope, `deinit` runs, then fields release recursively.
 
 ## Summary
 
 - Own down, `GenRef` up; `W108` flags mutual strong pairs.
 - Shared cells rendezvous `byId`; handles cross boundaries, objects do not.
 - Self-capturing closures use `fn decay(this)` (`W104` otherwise).
-- Intentional cycles opt out per field with manual clearing (`W109` otherwise) — and cycles are never `unsafe`.
+- Intentional cycles opt out per field with manual clearing (`W109` otherwise). Cycles are never `unsafe`.

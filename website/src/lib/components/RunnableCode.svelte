@@ -152,7 +152,7 @@
 
 <div class="doc-codehead">
 	{#if allTabs.length > 1}
-		<span role="tablist" aria-label="Language comparison" class="flex items-center gap-1">
+		<span role="tablist" aria-label="Language comparison" class="doc-tabs">
 			{#each allTabs as t, i}
 				<button
 					role="tab"
@@ -185,7 +185,7 @@
 				<RotateCcw size={13} />reset
 			</button>
 		{/if}
-		<button onclick={copy} class="doc-btn min-w-[78px] justify-center" aria-label="Copy snippet">
+		<button onclick={copy} class="doc-btn" aria-label="Copy snippet">
 			{#if copied}<Check size={13} />copied{:else}<Copy size={13} />copy{/if}
 		</button>
 		{#if current.lang === 'rnx'}
@@ -198,7 +198,7 @@
 			>
 				<ExternalLink size={13} />open
 			</a>
-			<button onclick={run} disabled={running} class="doc-btn doc-run min-w-[76px] justify-center" aria-label="Run snippet">
+			<button onclick={run} disabled={running} class="doc-btn doc-run" aria-label="Run snippet">
 				{#if running}<LoaderCircle size={13} class="animate-spin" />{:else}<Play size={13} />{/if}run
 			</button>
 		{/if}

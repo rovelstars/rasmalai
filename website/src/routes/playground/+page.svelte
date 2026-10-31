@@ -17,11 +17,12 @@
 		projectFilesJson,
 		serializeProject,
 		setActiveContent,
+		switchFile,
+		allRnxFiles,
 		type IdeProject
 	} from '$lib/playground/project-model';
 	import { loadIdeState, mergeForLoad, saveIdeState } from '$lib/playground/ide-store';
 
-	let presetIndex = $state(0);
 	let projects = $state<IdeProject[]>([]);
 	let activeId = $state<string | null>(null);
 	let code = $state('');
@@ -44,6 +45,25 @@
 	}
 
 	let ap = $derived(activeProject());
+
+	let rnxFiles = $derived(ap ? allRnxFiles(ap) : []);
+
+	// The preset label follows the content: it names the preset only when the
+	// project is exactly that preset (single file, untouched). Anything else
+	// (shared links, restored sessions, edits) reads Custom instead of lying.
+	let presetMatch = $derived(
+		ap && rnxFiles.length === 1 ? PRESETS.findIndex((p) => p.source === code) : -1
+	);
+
+	function openFile(path: string): void {
+		const p = activeProject();
+		if (!p) return;
+		if (switchFile(p, path)) onProjectChanged();
+	}
+
+	function fileBase(path: string): string {
+		return path.split('/').pop() ?? path;
+	}
 
 	function persistSoon(): void {
 		if (saveTimer) clearTimeout(saveTimer);
@@ -113,7 +133,6 @@
 	});
 
 	function selectPreset(i: number) {
-		presetIndex = i;
 		const p = activeProject();
 		if (!p) return;
 		setActiveContent(p, PRESETS[i].source);
@@ -293,114 +312,136 @@
 	<title>Playground | Rasmalai</title>
 	<style>
 		select option {
-			background-color: #1c1b22;
+			background-color: rgb(var(--aura-surface));
+			color: rgb(var(--aura-text));
 		}
 	</style>
 </svelte:head>
 
-<main class="mx-auto max-w-7xl px-4 pb-16">
-	<div class="flex flex-wrap items-center gap-2 pt-8">
-		<label class="font-mono text-xs text-aura-muted" for="preset">preset</label>
-		<select
-			id="preset"
-			class="rounded-md border border-aura-border bg-aura-surface px-2.5 py-1.5 text-sm"
-			value={presetIndex}
-			onchange={(e) => selectPreset(Number((e.target as HTMLSelectElement).value))}
-		>
-			{#each PRESETS as p, i}
-				<option value={i}>{p.name}</option>
-			{/each}
-		</select>
-		<label class="ml-2 font-mono text-xs text-aura-muted" for="project">project</label>
-		<select
-			id="project"
-			class="max-w-44 rounded-md border border-aura-border bg-aura-surface px-2.5 py-1.5 text-sm"
-			value={activeId}
-			onchange={(e) => switchProject((e.target as HTMLSelectElement).value)}
-		>
-			{#each projects as p}
-				<option value={p.id}>{p.name}</option>
-			{/each}
-		</select>
-		<button
-			onclick={addProject}
-			class="press min-h-8 rounded border border-aura-border px-2 py-1.5 font-mono text-xs text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
-			aria-label="New project"
-		>
-			+
-		</button>
-		{#if projects.length > 1 && activeId}
-			<button
-				onclick={() => activeId && deleteProject(activeId)}
-				class="press min-h-8 rounded border border-aura-border px-2 py-1.5 font-mono text-xs text-aura-muted hover:border-aura-borderHover hover:text-aura-red"
-				aria-label="Delete project"
-			>
-				del
-			</button>
-		{/if}
-		<div class="ml-auto flex items-center gap-2">
-			<button
-				onclick={share}
-				class="press min-h-8 rounded-md border border-aura-border px-3 py-1.5 text-sm text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
-			>
-				{shared ? 'link copied' : 'share'}
-			</button>
-			<button
-				onclick={() => selectPreset(presetIndex)}
-				class="press min-h-8 rounded-md border border-aura-border px-3 py-1.5 text-sm text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
-			>
-				reset
-			</button>
-			<button
-				onclick={formatActive}
-				class="press min-h-8 rounded-md border border-aura-border px-3 py-1.5 text-sm text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
-			>
-				format
-			</button>
-			<button
-				onclick={run}
-				class="press min-h-8 rounded bg-aura-green px-4 py-1.5 font-mono text-sm font-medium text-[#15141b]"
-			>
-				Run <span class="opacity-60">(⌘+Enter)</span>
-			</button>
+<main class="shell pb-16 app-shell-pg">
+	<header class="pg-head">
+		<div class="min-w-0">
+			<h1 class="pg-title">Try Rasmalai in your browser</h1>
 		</div>
-	</div>
+		<p class="pg-lede">
+			Write Rasmalai, check it, run it. The compiler is WebAssembly in a worker, so nothing
+			leaves this machine.
+		</p>
+	</header>
 
-	<div class="mt-4 grid gap-4 lg:grid-cols-2">
-		<div class="flex min-w-0 flex-col gap-4">
-			<div class="panel min-w-0 overflow-hidden">
+	<div class="pg-ide">
+		<div class="pg-toolbar">
+			<label class="pg-field" for="preset">
+				<span>preset</span>
+				<select
+					id="preset"
+					class="pg-select"
+					value={presetMatch}
+					onchange={(e) => {
+						const i = Number((e.target as HTMLSelectElement).value);
+						if (i >= 0) selectPreset(i);
+					}}
+				>
+					{#if presetMatch === -1}
+						<option value={-1}>Custom</option>
+					{/if}
+					{#each PRESETS as p, i}
+						<option value={i}>{p.name}</option>
+					{/each}
+				</select>
+			</label>
+			<label class="pg-field" for="project">
+				<span>project</span>
+				<select
+					id="project"
+					class="pg-select max-w-44"
+					value={activeId}
+					onchange={(e) => switchProject((e.target as HTMLSelectElement).value)}
+				>
+					{#each projects as p}
+						<option value={p.id}>{p.name}</option>
+					{/each}
+				</select>
+			</label>
+			<button onclick={addProject} class="pg-ico" aria-label="New project">new</button>
+			{#if projects.length > 1 && activeId}
+				<button
+					onclick={() => activeId && deleteProject(activeId)}
+					class="pg-ico is-danger"
+					aria-label="Delete project">del</button
+				>
+			{/if}
+			<div class="pg-actions">
+				<button onclick={share} class="pg-act">{shared ? 'link copied' : 'share'}</button>
+				<button onclick={() => selectPreset(Math.max(presetMatch, 0))} class="pg-act">reset</button>
+				<button onclick={formatActive} class="pg-act">format</button>
+				<button onclick={run} class="pg-run">
+					Run <kbd>Cmd+Enter</kbd>
+				</button>
+			</div>
+		</div>
+
+		<div class="pg-body">
+			<aside class="pg-side" aria-label="Explorer">
 				{#if ap}
-					<div class="border-b border-aura-border px-3 py-1.5 font-mono text-xs text-aura-muted">
-						{ap.activePath} <span class="opacity-60">- entry {ap.entry}</span>
+					<PlaygroundFiles project={ap} onChanged={onProjectChanged} />
+				{/if}
+			</aside>
+			<section class="pg-editor" aria-label="Editor">
+				{#if ap}
+					<div class="pg-tabs" role="tablist" aria-label="Open files">
+						{#each rnxFiles as f (f)}
+							<button
+								role="tab"
+								aria-selected={ap.activePath === f}
+								class="pg-tab"
+								class:is-active={ap.activePath === f}
+								onclick={() => openFile(f)}
+								title={f}
+							>
+								{#if ap.entry === f}<span class="pg-dot" aria-hidden="true"></span>{/if}
+								<span class="truncate">{fileBase(f)}</span>
+							</button>
+						{/each}
 					</div>
-					<PlaygroundEditor
-						bind:this={editorRef}
-						bind:value={code}
-						onRun={run}
-						filePath={ap.activePath.replace(/^\//, '')}
-						getProject={() => {
-							const cur = activeProject();
-							return cur ? projectFilesJson(cur) : null;
-						}}
-					/>
+					<div class="pg-editwrap">
+						<PlaygroundEditor
+							bind:this={editorRef}
+							bind:value={code}
+							onRun={run}
+							filePath={ap.activePath.replace(/^\//, '')}
+							getProject={() => {
+								const cur = activeProject();
+								return cur ? projectFilesJson(cur) : null;
+							}}
+						/>
+					</div>
+				{/if}
+			</section>
+			<div class="pg-output">
+				<PlaygroundTerminal {status} {diagnostics} {stdout} {retval} {duration} {notice} {stale} />
+				{#if ap}
+					<PlaygroundShell project={ap} onExecuted={onProjectChanged} />
 				{/if}
 			</div>
-			{#if ap}
-				<div class="panel max-h-72 min-w-0 overflow-hidden">
-					<PlaygroundFiles project={ap} onChanged={onProjectChanged} />
-				</div>
-			{/if}
 		</div>
-		<div class="flex min-w-0 flex-col gap-4">
-			<PlaygroundTerminal {status} {diagnostics} {stdout} {retval} {duration} {notice} {stale} />
+
+		<footer class="pg-statusbar">
 			{#if ap}
-				<PlaygroundShell project={ap} onExecuted={onProjectChanged} />
+				<span class="truncate">entry {ap.entry}</span>
+				<span class="shrink-0">{rnxFiles.length} rnx</span>
 			{/if}
-		</div>
+			<span class="pg-st-right shrink-0">
+				{status}{#if duration !== null} · {duration.toFixed(1)} ms{/if}{#if stale} · stale{/if}
+			</span>
+		</footer>
 	</div>
-	<p class="mt-3 font-mono text-xs text-aura-muted">
+
+	<p class="pg-note">
 		Runs locally in your browser (WebAssembly + Web Worker). Infinite loops are terminated
 		after 3000 ms. Share links encode the active file in the URL hash; no code leaves your machine.
-		Projects persist in IndexedDB. The shell runs rnx check/run/fmt/test on the WebAssembly engine only.
+		Projects persist in IndexedDB. The shell runs rnx check/run/fmt/test on the WebAssembly engine
+		only. Listening sockets and spawned processes are unavailable in the browser build and fail
+		at run time; the native CLI runs the same project unchanged.
 	</p>
 </main>

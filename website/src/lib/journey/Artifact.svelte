@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import { MoveRight } from 'lucide-svelte';
 	import AuraCode from '$lib/components/AuraCode.svelte';
 	import type { ArtifactDef, TreeNode } from './stages';
@@ -27,7 +26,23 @@
 			}
 			return [...head, { text: core, cls: 'text-aura-orange' }];
 		}
-		const op = core.match(/^[a-z_]+/);
+		const assign = core.match(/^(\S+)\s*=\s*(\S+)(.*)$/);
+		if (assign) {
+			const [, dst, op, tail] = assign;
+			const parts: { text: string; cls: string }[] = [
+				{ text: dst, cls: 'text-aura-cyan' },
+				{ text: ' = ', cls: 'text-aura-muted' },
+				{ text: op, cls: 'text-aura-purple' }
+			];
+			for (const tok of tail.split(/(\bv\d+\b|\b\d[\d.]*\b)/g)) {
+				if (tok.length === 0) continue;
+				if (/^v\d+$/.test(tok)) parts.push({ text: tok, cls: 'text-aura-cyan' });
+				else if (/^\d/.test(tok)) parts.push({ text: tok, cls: 'text-aura-orange' });
+				else parts.push({ text: tok, cls: 'text-aura-muted' });
+			}
+			return [...head, ...parts];
+		}
+		const op = core.match(/^[A-Za-z_][A-Za-z0-9_]*/);
 		const rest = op ? core.slice(op[0].length) : core;
 		const parts: { text: string; cls: string }[] =
 			op && op[0].length > 0 ? [{ text: op[0], cls: 'text-aura-purple' }] : [];
@@ -39,32 +54,6 @@
 		}
 		return [...head, ...parts];
 	}
-
-	let counted = $state(0);
-	let raf = 0;
-	$effect(() => {
-		if (def.kind !== 'lir' || !def.counter) return;
-		const to = def.counter.to;
-		if (!motionOK) {
-			counted = to;
-			return;
-		}
-		if (!active) {
-			counted = def.counter.from;
-			return;
-		}
-		const from = def.counter.from;
-		const t0 = performance.now();
-		const step = (now: number) => {
-			const t = Math.min(1, (now - t0) / 900);
-			counted = Math.round(from + (to - from) * (1 - Math.pow(1 - t, 3)));
-			if (t < 1) raf = requestAnimationFrame(step);
-		};
-		raf = requestAnimationFrame(step);
-	});
-	onDestroy(() => {
-		if (typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(raf);
-	});
 </script>
 
 {#snippet treeNode(n: TreeNode, depth: number, key: string)}
@@ -96,9 +85,7 @@
 	</div>
 {/snippet}
 
-<div
-	class="overflow-hidden rounded-[10px] border border-aura-border bg-aura-surface/70 transition-opacity duration-500"
->
+<div class="artifact">
 	{#if def.kind === 'source'}
 		<AuraCode source={def.code} />
 	{:else if def.kind === 'morph'}
@@ -116,20 +103,25 @@
 				<AuraCode source={def.after} />
 			</div>
 		</div>
-		<p class="border-t border-aura-border px-4 py-2 font-mono text-[11px] text-aura-green">{def.badge}</p>
+		<p class="artifact-foot text-aura-signal">{def.badge}</p>
 	{:else if def.kind === 'check'}
 		<AuraCode source={def.code} />
 		<div class="space-y-2 border-t border-aura-border p-4">
 			{#each def.errors as e, i}
 				<div
-					class="rounded border border-aura-red/40 bg-aura-red/5 px-3 py-2 font-mono text-[12px] transition-all duration-500 {shown
+					class="rounded-sm border border-aura-red/40 bg-aura-red/5 px-3 py-2 font-mono text-[12px] transition duration-500 {shown
 						? 'translate-y-0 opacity-100'
 						: 'translate-y-2 opacity-0'}"
 					style="transition-delay:{i * 120}ms"
 				>
-					<span class="font-bold text-aura-red">error[{e.code}]</span>
-					<span class="text-aura-muted">:{e.line}</span>
+					<span class="font-semibold text-aura-red">error[{e.code}]</span><span class="text-aura-muted">:{e.line}{e.col ? `:${e.col}` : ''}</span>
 					<span class="ml-2 text-aura-text">{e.text}</span>
+					{#if e.note}
+						<p class="mt-1 pl-3 text-aura-muted">note: {e.note}</p>
+					{/if}
+					{#if e.fix}
+						<p class="mt-1 pl-3 text-aura-signal">fix: {e.fix}</p>
+					{/if}
 				</div>
 			{/each}
 		</div>
@@ -137,7 +129,7 @@
 		<AuraCode source={def.code} />
 		<div class="border-t border-aura-border p-4">
 			<div
-				class="rounded border border-aura-purple/40 bg-aura-surfaceElevated px-3 py-2 font-mono text-[12px] transition-all duration-500 {shown
+				class="rounded-sm border border-aura-purple/40 bg-aura-surfaceElevated px-3 py-2 font-mono text-[12px] transition duration-500 {shown
 					? 'translate-y-0 opacity-100'
 					: 'translate-y-2 opacity-0'}"
 			>
@@ -153,7 +145,7 @@
 		<div class="flex flex-wrap gap-1.5 p-4">
 			{#each def.chips as c, i}
 				<span
-					class="rounded border border-aura-border bg-aura-surfaceElevated px-2 py-1 font-mono text-[12px] {c.cls} transition-all duration-300 {shown
+					class="rounded-sm border border-aura-border bg-aura-surfaceElevated px-2 py-1 font-mono text-[12px] {c.cls} transition duration-300 {shown
 						? 'translate-y-0 opacity-100'
 						: 'translate-y-1 opacity-0'}"
 					style="transition-delay:{Math.min(i, 10) * 60}ms"
@@ -169,34 +161,22 @@
 			{/each}
 		</div>
 	{:else if def.kind === 'lir'}
-		{#if def.counter}
-			<div class="flex items-baseline gap-3 border-b border-aura-border px-4 py-3">
-				<p class="tabular font-mono text-2xl font-bold text-aura-green">{counted.toLocaleString()}</p>
-				<p class="font-mono text-[11px] text-aura-muted">instructions - illustrative example</p>
-			</div>
-		{/if}
+		<!-- Keep the each/span content on one line: whitespace inside pre is rendered,
+		which adds a blank line per instruction and a stray strikethrough rule. -->
 		<pre
-			class="overflow-x-auto p-4 font-mono text-[12.5px] leading-relaxed"><code>{#each def.lines as l}<span
-						class="block transition-all duration-500 {l.shed && shown
-							? 'opacity-50 line-through'
-							: ''}">{#each lirSpans(l.text) as s}<span class={s.cls}>{s.text}</span>{/each}
-				</span>{/each}</code></pre>
-		{#if def.counter}
-			<p class="border-t border-aura-border px-4 py-2 font-mono text-[11px] text-aura-muted">
-				simplified LIR - inline, DCE, TCO, ARC motion
-			</p>
-		{/if}
+			class="overflow-x-auto p-4 font-mono text-[12.5px] leading-relaxed"><code>{#each def.lines as l}<span class="block w-fit transition duration-500 {l.shed && shown ? 'opacity-50 line-through' : ''}">{#each lirSpans(l.text) as s}<span class={s.cls}>{s.text}</span>{/each}</span>{/each}</code></pre>
+		<p class="artifact-foot">schematic LIR, simplified for display</p>
 	{:else if def.kind === 'fork'}
 		<div class="p-5 md:p-6">
 			<div class="flex flex-wrap items-center justify-center gap-2 font-mono text-[13px]">
 				<button
 					onclick={() => (mode = 'dev')}
-					class="press flex items-center gap-2.5 rounded-full border px-5 py-2 {mode === 'dev'
+					class="artifact-mode {mode === 'dev'
 						? 'border-aura-green/50 bg-aura-green/10 text-aura-green'
 						: 'border-aura-border text-aura-muted hover:text-aura-text'}"
 				>
 					<span
-						class="grid h-7 w-7 place-items-center rounded-md border text-[13px] font-bold {mode === 'dev'
+						class="grid h-6 w-6 place-items-center rounded-sm border text-[12px] font-semibold {mode === 'dev'
 							? 'border-aura-green/40 bg-aura-green/10'
 							: 'border-aura-border text-aura-muted'}"
 						aria-hidden="true">Cr</span
@@ -205,12 +185,12 @@
 				</button>
 				<button
 					onclick={() => (mode = 'release')}
-					class="press flex items-center gap-2.5 rounded-full border px-5 py-2 {mode === 'release'
+					class="artifact-mode {mode === 'release'
 						? 'border-aura-purple/50 bg-aura-purple/10 text-aura-purple'
 						: 'border-aura-border text-aura-muted hover:text-aura-text'}"
 				>
 					<svg
-						class="h-7 w-7 text-current"
+						class="h-6 w-6 text-current"
 						viewBox="0 0 24 24"
 						fill="currentColor"
 						aria-hidden="true"
@@ -222,57 +202,72 @@
 					release - LLVM
 				</button>
 			</div>
-			<div class="mt-4 grid gap-3 md:grid-cols-2">
+			<div class="mt-4 grid">
 				<div
-					class="rounded border p-4 transition-all duration-500 {mode === 'dev'
-						? 'border-aura-green/30 bg-aura-green/5 opacity-100'
-						: 'border-aura-border opacity-55'}"
+					class="col-start-1 row-start-1 transition-opacity duration-500 {mode === 'dev'
+						? 'opacity-100'
+						: 'pointer-events-none opacity-0'}"
+					aria-hidden={mode !== 'dev'}
 				>
-					<p class="font-mono text-[13px] font-bold {mode === 'dev' ? 'text-aura-green' : 'text-aura-muted'}">
-						LIR <MoveRight size={12} class="inline" /> Cranelift <MoveRight size={12} class="inline" /> running
-					</p>
-					<p class="mt-1 font-mono text-[12px] text-aura-muted">
-						JIT compiles each function on first call. Edit, save, new code live in milliseconds.
-					</p>
-					<ul class="mt-3 space-y-1.5 font-mono text-[12px] text-aura-muted">
-						<li><span class="text-aura-green">~ms</span> - incremental function compile</li>
-						<li><span class="text-aura-green">0</span> - link step, runs in place</li>
-					</ul>
-					<div class="mt-3 rounded border border-dashed border-aura-purple/50 p-3">
-						<p class="font-mono text-[11px] tracking-[0.15em] text-aura-purple">PLANNED - HOT RELOAD</p>
-						<p class="mt-2 flex flex-wrap items-center gap-2 font-mono text-[12px] text-aura-text">
-							<span class="rounded bg-aura-surfaceElevated px-2 py-1">edit</span>
-							<MoveRight size={12} class="shrink-0 text-aura-muted" />
-							<span class="rounded bg-aura-surfaceElevated px-2 py-1">recompile</span>
-							<MoveRight size={12} class="shrink-0 text-aura-muted" />
-							<span class="rounded bg-aura-surfaceElevated px-2 py-1">state kept</span>
+					<div
+						class="flex h-full flex-col rounded-sm border p-4 transition duration-500 {mode === 'dev'
+							? 'border-aura-green/30 bg-aura-green/5'
+							: 'border-aura-border'}"
+					>
+						<p class="font-mono text-[13px] font-semibold {mode === 'dev' ? 'text-aura-signal' : 'text-aura-muted'}">
+							LIR <MoveRight size={12} class="inline" /> Cranelift <MoveRight size={12} class="inline" /> running
+						</p>
+						<p class="mt-1 font-mono text-[12px] text-aura-muted">
+							JIT compiles each function on first call. Edit, save, new code live in milliseconds.
+						</p>
+						<ul class="mt-3 space-y-1.5 font-mono text-[12px] text-aura-muted">
+							<li><span class="text-aura-signal">~ms</span> - incremental function compile</li>
+							<li><span class="text-aura-signal">0</span> - link step, runs in place</li>
+						</ul>
+						<p class="mt-3 flex flex-wrap items-center gap-2 border-t border-aura-border pt-3 font-mono text-[11px]">
+							<span class="text-aura-purple">planned - hot reload</span>
+							<span class="text-aura-text">edit</span>
+							<MoveRight size={10} class="shrink-0 text-aura-faint" />
+							<span class="text-aura-text">recompile</span>
+							<MoveRight size={10} class="shrink-0 text-aura-faint" />
+							<span class="text-aura-text">state kept</span>
 						</p>
 					</div>
 				</div>
 				<div
-					class="rounded border p-4 transition-all duration-500 {mode === 'release'
-						? 'border-aura-purple/30 bg-aura-purple/5 opacity-100'
-						: 'border-aura-border opacity-55'}"
+					class="col-start-1 row-start-1 transition-opacity duration-500 {mode === 'release'
+						? 'opacity-100'
+						: 'pointer-events-none opacity-0'}"
+					aria-hidden={mode !== 'release'}
 				>
-					<p class="font-mono text-[13px] font-bold {mode === 'release' ? 'text-aura-purple' : 'text-aura-muted'}">
-						LIR <MoveRight size={12} class="inline" /> LLVM O3 <MoveRight size={12} class="inline" /> strip <MoveRight size={12} class="inline" /> ship
-					</p>
-					<p class="mt-1 font-mono text-[12px] text-aura-muted">
-						Full optimization, per-symbol sections, symbols stripped for the binary you ship.
-					</p>
-					<ul class="mt-3 space-y-1.5 font-mono text-[12px] text-aura-muted">
-						<li><span class="text-aura-purple">O3</span> - cross-function optimization</li>
-						<li><span class="text-aura-purple">~360KB</span> - stripped release binary, measured</li>
-						<li><span class="text-aura-purple">C ABI</span> - static lib + header for hosts</li>
-					</ul>
+					<div
+						class="flex h-full flex-col rounded-sm border p-4 transition duration-500 {mode === 'release'
+							? 'border-aura-purple/30 bg-aura-purple/5'
+							: 'border-aura-border'}"
+					>
+						<p class="font-mono text-[13px] font-semibold {mode === 'release' ? 'text-aura-purple' : 'text-aura-muted'}">
+							LIR <MoveRight size={12} class="inline" /> LLVM O3 <MoveRight size={12} class="inline" /> strip <MoveRight size={12} class="inline" /> ship
+						</p>
+						<p class="mt-1 font-mono text-[12px] text-aura-muted">
+							Full optimization, per-symbol sections, symbols stripped for the binary you ship.
+						</p>
+						<ul class="mt-3 space-y-1.5 font-mono text-[12px] text-aura-muted">
+							<li><span class="text-aura-purple">O3</span> - cross-function optimization</li>
+							<li><span class="text-aura-purple">C ABI</span> - static lib + header for hosts</li>
+						</ul>
+						<p class="mt-3 flex flex-wrap items-baseline gap-x-2 border-t border-aura-border pt-3 font-mono text-[11px]">
+							<span class="text-aura-purple">~360KB</span>
+							<span class="text-aura-muted">stripped release binary, measured</span>
+						</p>
+					</div>
 				</div>
 			</div>
 		</div>
 	{:else if def.kind === 'run'}
-		<div class="bg-black/30 p-4 font-mono text-[12.5px] leading-relaxed">
+		<div class="artifact-run p-4 font-mono text-[12.5px] leading-relaxed">
 			{#each def.lines as l, i}
 				<p
-					class="{l.startsWith('$') ? 'text-aura-purple' : 'text-aura-text'} transition-all duration-400 {shown
+					class="{l.startsWith('$') ? 'text-aura-purple' : 'text-aura-text'} transition duration-400 {shown
 						? 'translate-y-0 opacity-100'
 						: 'translate-y-1 opacity-0'}"
 					style="transition-delay:{i * 90}ms"

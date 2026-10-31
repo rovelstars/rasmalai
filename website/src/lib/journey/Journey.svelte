@@ -1,141 +1,217 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { STAGES } from './stages';
 	import Artifact from './Artifact.svelte';
 
 	let active = $state(0);
-	let motionOK = $state(true);
-	let root = $state<HTMLElement | null>(null);
-	let stageEls: HTMLElement[] = [];
 
-		function pickClosest() {
-			const maxScroll = document.body.scrollHeight - window.innerHeight;
-			if (maxScroll > 100 && window.scrollY >= maxScroll - 2) {
-				active = stageEls.length - 1;
-				return;
-			}
-		const mid = window.innerHeight / 2;
-		let best = -1;
-		let bestD = Infinity;
-		for (const s of stageEls) {
-			const r = s.getBoundingClientRect();
-			if (r.top > mid || r.bottom < mid) continue;
-			const d = Math.abs(r.top + r.height / 2 - mid);
-			if (d < bestD) {
-				bestD = d;
-				best = Number(s.dataset.stage);
-			}
-		}
-		if (best >= 0) active = best;
+	const acts = $derived(
+		STAGES.reduce<{ act: string; from: number; to: number }[]>((out, s, i) => {
+			const last = out[out.length - 1];
+			if (last && last.act === s.act) last.to = i;
+			else out.push({ act: s.act, from: i, to: i });
+			return out;
+		}, [])
+	);
+
+	let current = $derived(STAGES[active]);
+
+	const PANEL_ID = 'compiler-stage-panel';
+
+	function tabId(index: number): string {
+		return `compiler-stage-tab-${STAGES[index].id}`;
 	}
 
-	onMount(() => {
-		motionOK = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-		stageEls = root ? Array.from(root.querySelectorAll<HTMLElement>('[data-stage]')) : [];
-		let atEnd = false;
-		const io = new IntersectionObserver(() => {
-			if (!atEnd) pickClosest();
-		}, {
-			threshold: [0, 0.25, 0.5, 0.75, 1]
-		});
-		stageEls.forEach((s) => io.observe(s));
-		const end = root?.querySelector<HTMLElement>('[data-journey-end]');
-		const endIo = new IntersectionObserver(
-			(entries) => {
-				atEnd = entries.some((e) => e.isIntersecting);
-				if (atEnd) {
-					active = stageEls.length - 1;
-				} else {
-					pickClosest();
-				}
-			},
-			{ rootMargin: '0px' }
-		);
-		if (end) endIo.observe(end);
-		pickClosest();
-		return () => {
-			io.disconnect();
-			endIo.disconnect();
-		};
-	});
-
-	const showAct = $derived(
-		STAGES.map((s, i) => (i === 0 ? s.act : s.act !== STAGES[i - 1].act ? s.act : null))
-	);
-	const focused = $derived(STAGES.map((_, i) => !motionOK || active === i));
+	function onTabKeydown(event: KeyboardEvent, index: number) {
+		const last = STAGES.length - 1;
+		let next: number;
+		switch (event.key) {
+			case 'ArrowRight':
+			case 'ArrowDown':
+				next = index === last ? 0 : index + 1;
+				break;
+			case 'ArrowLeft':
+			case 'ArrowUp':
+				next = index === 0 ? last : index - 1;
+				break;
+			case 'Home':
+				next = 0;
+				break;
+			case 'End':
+				next = last;
+				break;
+			default:
+				return;
+		}
+		event.preventDefault();
+		active = next;
+		const tabs = (event.currentTarget as HTMLElement)
+			.closest('.pipeline-rail')
+			?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+		tabs?.[next]?.focus();
+	}
 </script>
 
-<div bind:this={root} class="relative">
-	<div
-		class="absolute top-0 bottom-0 left-[7px] hidden w-px bg-aura-surfaceElevated md:block"
-		aria-hidden="true"
-	>
-		<div
-			class="w-px bg-aura-purple transition-all duration-500"
-			style="height:{((active + 1) / STAGES.length) * 100}%"
-		></div>
-	</div>
-
-	<div class="space-y-14 md:space-y-20">
-		{#each STAGES as s, i}
-			{#if showAct[i]}
-				<p class="font-mono text-[11px] tracking-[0.2em] text-aura-purple md:pl-8">{showAct[i]}</p>
-			{/if}
-			<section
-				data-stage={i}
-				aria-label={s.title}
-				class="grid items-start gap-5 md:grid-cols-2 md:gap-8 md:pl-8 {i % 2 === 1
-					? 'md:[&>*:first-child]:order-2'
-					: ''}"
-			>
-				<div
-					class="min-w-0 transition-all duration-500 {active === i || !motionOK
-						? 'translate-y-0 opacity-100 blur-0'
-						: 'translate-y-3 opacity-60 blur-[1.5px]'}"
+<div class="pipeline">
+	<div class="pipeline-rail" role="tablist" aria-label="Compiler stages">
+		{#each acts as group}
+			<p class="pipeline-act" role="presentation">{group.act}</p>
+			{#each STAGES.slice(group.from, group.to + 1) as s, i}
+				{@const index = group.from + i}
+				<button
+					id={tabId(index)}
+					role="tab"
+					aria-selected={active === index}
+					aria-controls={PANEL_ID}
+					tabindex={active === index ? 0 : -1}
+					class="pipeline-tab"
+					onclick={() => (active = index)}
+					onkeydown={(event) => onTabKeydown(event, index)}
 				>
-					<Artifact def={s.artifact} active={active === i} {motionOK} />
-				</div>
-				<div class="min-w-0 {i % 2 === 1 ? 'md:order-1' : ''}">
-					<div
-						class="transition-all duration-500 {focused[i]
-							? 'translate-y-0 opacity-100 blur-0'
-							: 'translate-y-1 opacity-60 blur-[1.5px]'}"
-					>
-						<p
-							class="font-mono text-[11px] transition-colors duration-500 {focused[i]
-								? 'text-aura-purple'
-								: 'text-aura-muted/50'}"
-						>
-							{s.kicker}
-						</p>
-						<h3
-							class="mt-1 text-xl font-bold transition-colors duration-500 md:text-2xl {focused[i]
-								? 'text-aura-text'
-								: 'text-aura-muted/60'}"
-						>
-							{s.title}
-						</h3>
-						<p
-							class="mt-2 max-w-[52ch] text-[15px] leading-relaxed transition-colors duration-500 {focused[i]
-								? 'text-aura-muted'
-								: 'text-aura-muted/50'}"
-						>
-							{s.body}
-						</p>
-					</div>
-				</div>
-			</section>
+					<span class="pipeline-num">{s.kicker.slice(0, 2)}</span>
+					<span class="pipeline-name">{s.kicker.slice(5)}</span>
+				</button>
+			{/each}
 		{/each}
 	</div>
 
-	<div data-journey-end class="h-px" aria-hidden="true"></div>
-
+	<div class="pipeline-panel" role="tabpanel" id={PANEL_ID} aria-labelledby={tabId(active)}>
+		<div class="pipeline-copy">
+			<h3 class="pipeline-title">{current.title}</h3>
+			<p class="pipeline-body">{current.body}</p>
+		</div>
+		<div class="pipeline-art">
+			<Artifact def={current.artifact} active={true} motionOK={false} />
+		</div>
+	</div>
 </div>
 
 <style>
-	@media (prefers-reduced-motion: reduce) {
-		div {
-			transition: none !important;
+	.pipeline {
+		display: grid;
+		grid-template-columns: 196px minmax(0, 1fr);
+		gap: var(--gap-column);
+		/* The caption rule is shared with every figure; without top air the
+		act label and title sit clamped against it. */
+		padding-top: var(--space-lg);
+	}
+
+	.pipeline-rail {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.pipeline-act {
+		margin-top: var(--space-lg);
+		padding-left: var(--space-sm);
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--color-faint);
+	}
+
+	.pipeline-act:first-child {
+		margin-top: 0;
+	}
+
+	.pipeline-tab {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-xs);
+		border-left: 1px solid var(--color-rule);
+		padding: var(--space-2xs) 0 var(--space-2xs) var(--space-sm);
+		text-align: left;
+		font-size: var(--text-sm);
+		color: var(--color-muted);
+		transition:
+			color var(--dur-micro) ease,
+			border-color var(--dur-micro) ease;
+	}
+
+	.pipeline-tab:hover {
+		border-left-color: var(--color-rule-strong);
+		color: var(--color-ink);
+	}
+
+	.pipeline-tab[aria-selected='true'] {
+		border-left-color: var(--color-accent);
+		color: var(--color-ink);
+	}
+
+	.pipeline-num {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--color-faint);
+	}
+
+	.pipeline-tab[aria-selected='true'] .pipeline-num {
+		color: var(--color-accent);
+	}
+
+	.pipeline-panel {
+		display: grid;
+		grid-template-columns: minmax(0, 0.72fr) minmax(0, 1fr);
+		gap: var(--gap-column);
+		align-items: start;
+		min-width: 0;
+	}
+
+	.pipeline-copy {
+		min-width: 0;
+	}
+
+	.pipeline-title {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: clamp(1.5rem, 2vw, 1.9rem);
+		line-height: 1.1;
+		letter-spacing: -0.025em;
+		color: var(--color-ink);
+	}
+
+	.pipeline-body {
+		margin-top: var(--space-sm);
+		max-width: 40ch;
+		font-size: var(--text-sm);
+		line-height: 1.65;
+		color: var(--color-muted);
+	}
+
+	.pipeline-art {
+		min-width: 0;
+	}
+
+	@media (max-width: 1023px) {
+		.pipeline {
+			grid-template-columns: minmax(0, 1fr);
+			gap: var(--space-lg);
+		}
+
+		.pipeline-rail {
+			flex-direction: row;
+			flex-wrap: wrap;
+			gap: 0 var(--space-md);
+			border-top: 1px solid var(--color-rule);
+			padding-top: var(--space-xs);
+		}
+
+		.pipeline-act {
+			width: 100%;
+			margin-top: var(--space-sm);
+			padding-left: 0;
+		}
+
+		.pipeline-tab {
+			padding: 2px 0;
+			border-left: 0;
+		}
+
+		.pipeline-tab[aria-selected='true'] {
+			box-shadow: inset 0 -1px 0 var(--color-accent);
+		}
+
+		.pipeline-panel {
+			grid-template-columns: minmax(0, 1fr);
+			gap: var(--space-lg);
 		}
 	}
 </style>

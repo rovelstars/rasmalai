@@ -30,7 +30,7 @@ print(quote(2.0));
 
 ### Documenting libraries with JSDoc
 
-Library developers document with `/** */` blocks and `//!` module lines — the same shapes above, plus `@tags` the tooling understands. A doc block attaches to the item that follows it (functions, interfaces, and their members); each leading `*` is stripped. `/**/` attaches to nothing, and `///` is a plain comment despite the familiar look.
+Library developers document with `/** */` blocks and `//!` module lines, the same shapes above, plus `@tags` the tooling understands. A doc block attaches to the item that follows it (functions, interfaces, and their members); each leading `*` is stripped. `/**/` attaches to nothing, and `///` is a plain comment despite the familiar look.
 
 ```rnx
 //! Pricing helpers for the order book.
@@ -66,7 +66,7 @@ Blocks use curly braces. Indentation carries no meaning.
 
 ## Top-level scripts
 
-The entry file (the `Project.config` entry, or the file passed to `rnx run`) may hold loose statements at file scope with no `fn Main()` wrapper. They run in lexical order inside a synthesized `async fn Main(): Promise<Int>`, so top-level `await` works and a top-level `return <Int>` sets the process exit code (falling through returns `0`). An explicit `fn main()`/`fn Main()` keeps the old behavior; combining it with loose statements is an `E108` error. Files reached via `import` stay declarative-only: a loose statement there is `E112`. That includes library entry points — when another package imports yours, your entry file is an imported module, so keep execution logic inside functions.
+The entry file (the `Project.config` entry, or the file passed to `rnx run`) may hold loose statements at file scope with no `fn Main()` wrapper. They run in lexical order inside a synthesized `async fn Main(): Promise<Int>`, so top-level `await` works and a top-level `return <Int>` sets the process exit code (falling through returns `0`). An explicit `fn main()`/`fn Main()` keeps the old behavior; combining it with loose statements is an `E108` error. Files reached via `import` stay declarative-only: a loose statement there is `E112`. That includes library entry points: when another package imports yours, your entry file is an imported module, so keep execution logic inside functions.
 
 ```rnx
 let data = await Promise.resolve(42);

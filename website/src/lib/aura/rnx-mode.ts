@@ -94,14 +94,14 @@ export const rnxStream = {
 export const rnxLanguage = StreamLanguage.define(rnxStream);
 
 export const auraHighlight = HighlightStyle.define([
-	{ tag: tags.keyword, color: '#a277ff' },
-	{ tag: tags.typeName, color: '#f494ff' },
-	{ tag: tags.string, color: '#ffca85' },
-	{ tag: tags.number, color: '#ffca85' },
-	{ tag: tags.bool, color: '#ffca85' },
-	{ tag: tags.comment, color: '#6e6c7e', fontStyle: 'italic' },
-	{ tag: tags.meta, color: '#61ffca' },
-	{ tag: tags.variableName, color: '#edecee' }
+	{ tag: tags.keyword, color: 'rgb(var(--aura-purple))' },
+	{ tag: tags.typeName, color: 'rgb(var(--aura-pink))' },
+	{ tag: tags.string, color: 'rgb(var(--aura-orange))' },
+	{ tag: tags.number, color: 'rgb(var(--aura-orange))' },
+	{ tag: tags.bool, color: 'rgb(var(--aura-orange))' },
+	{ tag: tags.comment, color: 'rgb(var(--aura-faint))', fontStyle: 'italic' },
+	{ tag: tags.meta, color: 'rgb(var(--aura-green))' },
+	{ tag: tags.variableName, color: 'rgb(var(--aura-text))' }
 ]);
 
 export function rnxHighlight(): ReturnType<typeof syntaxHighlighting> {

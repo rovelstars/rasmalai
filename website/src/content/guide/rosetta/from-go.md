@@ -4,7 +4,7 @@ description: "Goroutines and the GC become threadpools and zero-pause ARC."
 sourceLang: "go"
 ---
 
-# From Go: Short Programs, No GC Pause
+# From Go: short programs, no GC pause
 
 You like short programs that build fast. Rasmalai keeps the build speed and the readability, then removes the stop-the-world pauses and the ceiling on hardware control.
 
@@ -42,7 +42,7 @@ print(served);
 
 ## Structs and methods
 
-Structs bundle fields with a free memberwise initializer; methods attach directly. No embedded-interface promotion puzzles:
+Structs bundle fields with a free memberwise initializer; methods attach directly, with no embedded-interface promotion puzzles:
 
 ```go
 package main
@@ -72,7 +72,7 @@ print(m.name, m.reading);
 
 ## Real SIMD instead of assembly shims
 
-Go reaches the vector unit through assembly stubs or compiler intrinsics. `Vec4f` is a first-class 128-bit value: no heap, no ARC traffic, plain operators:
+Go reaches the vector unit through assembly stubs or compiler intrinsics. `Vec4f` is a first-class 128-bit value with no heap allocation, no ARC traffic, and plain operators:
 
 ```go
 package main

@@ -97,7 +97,7 @@ assert(s is Summarizable, "membership");
 assert(typeOf(s) == "User", "concrete class");
 ```
 
-Methods the class defines override trait defaults; trait `let` fields with defaults carry into each adopting class the same way. A class may adopt several traits and interfaces beside a single `extends` parent. Calls through an interface resolve the runtime class id to a direct static call per implementation — no vtables, identical on every backend.
+Methods the class defines override trait defaults; trait `let` fields with defaults carry into each adopting class the same way. A class may adopt several traits and interfaces beside a single `extends` parent. Calls through an interface resolve the runtime class id to a direct static call per implementation. There are no vtables, and behavior is identical on every backend.
 
 ## Summary
 

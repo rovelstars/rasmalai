@@ -4,13 +4,13 @@ description: "Lifetimes and the borrow checker become lexical scopes and ARC."
 sourceLang: "rust"
 ---
 
-# From Rust: Systems Power Without Lifetime Puzzles
+# From Rust: systems power without lifetime puzzles
 
-You trust the borrow checker but you are tired of negotiating with it over self-referential structs, and tired of pinning CPU cores for minutes per build. Rasmalai keeps deterministic memory and drops both taxes. Your ownership mental model transfers almost untouched — the annotations stay behind.
+You trust the borrow checker but you are tired of negotiating with it over self-referential structs, and tired of pinning CPU cores for minutes per build. Rasmalai keeps deterministic memory and drops both taxes. Your ownership mental model transfers almost untouched. The annotations stay behind.
 
 ## Lifetimes vs lexical scopes
 
-Rust names every borrow. Rasmalai ties each value to the block that owns it — the scope end is the free point, visible in the source:
+Rust names every borrow. Rasmalai ties each value to the block that owns it. The scope end is the free point, visible in the source:
 
 ```rust
 struct Edge<'a> {
@@ -46,10 +46,10 @@ for e in edges {
 print(total);
 ```
 
-Shared structure that would cycle in Rust uses `GenRef<T>` handles here: copying one never touches atomics, and `.get()` yields `null` once the owner frees. No annotations, no borrowck fight.
+Shared structure that would cycle in Rust uses `GenRef<T>` handles here: copying one never touches atomics, and `.get()` yields `null` once the owner frees, with no annotations and no borrow checker fight.
 
 > [!TIP]
-> The direction rule fits on an index card: own **down** the tree with strong references, point **back up** with `GenRef`. The compiler warns (`W108`) when two objects hold each other strongly.
+> The direction rule fits on an index card: own down the tree with strong references, point back up with `GenRef`. The compiler warns (`W108`) when two objects hold each other strongly.
 
 ## Drop vs defer
 
@@ -130,4 +130,4 @@ try {
 | `Result<T, E>` plumbing | `throws` + `try`/`catch` |
 | `cargo check` warmup | `rnx check` in milliseconds |
 
-Your ownership mental model transfers almost untouched — the annotations stay behind. Next: the [Guide](/guide/01-introduction) from the top, or the [Manual](/manual/11-memory-and-arc) for exact ARC semantics.
+Next: the [Guide](/guide/01-introduction) from the top, or the [Manual](/manual/11-memory-and-arc) for exact ARC semantics.

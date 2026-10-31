@@ -7,6 +7,7 @@
 	import { linter, type Diagnostic as LintDiagnostic } from '@codemirror/lint';
 	import { bracketMatching, indentOnInput } from '@codemirror/language';
 	import { rnxLanguage, rnxHighlight, computeIndent, dedentForClosing } from '$lib/aura/rnx-mode';
+	import { RNX_KEYWORDS, RNX_TYPES } from '$lib/aura/keywords.gen';
 	import { engine } from '$lib/playground/engine.svelte';
 
 	let {
@@ -42,32 +43,37 @@
 	}
 
 	const auraEditorTheme = EditorView.theme({
-		'&': { backgroundColor: 'transparent', height: '100%' },
+		'&': { backgroundColor: 'transparent', height: '100%', color: 'rgb(var(--aura-text))' },
 		'.cm-content': {
-			fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+			fontFamily: 'var(--font-mono)',
 			fontSize: '13px',
-			lineHeight: '1.625',
-			caretColor: '#a277ff'
+			lineHeight: '1.7',
+			paddingTop: '10px',
+			paddingBottom: '24px',
+			caretColor: 'rgb(var(--aura-purple))'
 		},
 		'.cm-scroller': { overflow: 'auto', minHeight: '320px' },
 		'.cm-gutters': {
 			backgroundColor: 'transparent',
-			borderRight: '1px solid var(--aura-border, #2b2a35)',
-			color: 'var(--aura-muted, #6e6c7e)'
+			borderRight: '1px solid rgb(var(--aura-line))',
+			color: 'rgb(var(--aura-faint))'
 		},
-		'.cm-activeLine': { backgroundColor: 'rgba(162, 119, 255, 0.06)' },
+		'.cm-activeLine': { backgroundColor: 'rgb(var(--aura-purple) / 0.07)' },
 		'.cm-activeLineGutter': { backgroundColor: 'transparent' },
 		'&.cm-focused': { outline: 'none' },
-		'.cm-selectionBackground, ::selection': { backgroundColor: 'rgba(162, 119, 255, 0.3)' },
+		'.cm-selectionBackground, ::selection': { backgroundColor: 'rgb(var(--aura-purple) / 0.3)' },
+		'.cm-cursor': { borderLeftColor: 'rgb(var(--aura-purple))' },
 		'.cm-tooltip': {
-			backgroundColor: '#1c1b22',
-			border: '1px solid #2b2a35',
-			fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+			backgroundColor: 'rgb(var(--aura-surfaceElevated))',
+			border: '1px solid rgb(var(--aura-lineStrong))',
+			borderRadius: '4px',
+			color: 'rgb(var(--aura-text))',
+			fontFamily: 'var(--font-mono)',
 			fontSize: '12px'
 		},
-		'.cm-tooltip-autocomplete ul li[aria-selected]': { backgroundColor: 'rgba(162, 119, 255, 0.25)' },
-		'.cm-diagnostic-error': { borderBottom: '2px wavy #ff5c5c' },
-		'.cm-diagnostic-warning': { borderBottom: '2px wavy #ffb224' }
+		'.cm-tooltip-autocomplete ul li[aria-selected]': { backgroundColor: 'rgb(var(--aura-purple) / 0.22)' },
+		'.cm-diagnostic-error': { borderBottom: '2px wavy rgb(var(--aura-red))' },
+		'.cm-diagnostic-warning': { borderBottom: '2px wavy rgb(var(--aura-orange))' }
 	});
 
 	function electricEnter(target: EditorView): boolean {
@@ -86,25 +92,59 @@
 		return true;
 	}
 
+	function wordPrefix(context: { pos: number; state: EditorState }): { prefix: string; from: number } {
+		const line = context.state.doc.lineAt(context.pos);
+		const before = line.text.slice(0, context.pos - line.from);
+		const m = /[A-Za-z_][A-Za-z0-9_]*$/.exec(before);
+		return {
+			prefix: (m ? m[0] : '').toLowerCase(),
+			from: m && m.index !== undefined ? line.from + m.index : context.pos
+		};
+	}
+
+	// Word-based fallback for when the compiler cannot complete: the document
+	// has a parse error (the normal state mid-keystroke) or the engine is not
+	// downloaded yet. Keywords and types mirror the compiler oracles; the rest
+	// comes from words already in the file. Never guesswork from another
+	// language: this editor has no JS machinery installed.
+	function localOptions(doc: string, prefix: string): Completion[] {
+		const seen = new Set<string>();
+		const out: Completion[] = [];
+		const push = (label: string, type: Completion['type']): void => {
+			const key = label.toLowerCase();
+			if (seen.has(key) || (prefix && !key.startsWith(prefix))) return;
+			seen.add(key);
+			out.push({ label, type });
+		};
+		for (const k of RNX_KEYWORDS) push(k, 'keyword');
+		for (const t of RNX_TYPES) push(t, 'class');
+		for (const w of doc.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+			if (out.length >= 64) break;
+			if (!RNX_KEYWORDS.has(w[0]) && !RNX_TYPES.has(w[0])) push(w[0], 'variable');
+		}
+		return out.slice(0, 64);
+	}
+
 	async function completeAt(context: {
 		pos: number;
 		state: EditorState;
 		explicit: boolean;
 	}): Promise<{ from: number; options: Completion[] } | null> {
-		if (!engine.loaded) return null;
+		const { prefix, from } = wordPrefix(context);
+		if (!engine.loaded) {
+			const options = localOptions(context.state.doc.toString(), prefix);
+			return options.length > 0 ? { from, options } : null;
+		}
 		const doc = context.state.doc.toString();
 		const { line, character } = offsetToLineCol(doc, context.pos);
-		const lineText = context.state.doc.lineAt(context.pos).text;
-		const m = /[A-Za-z_][A-Za-z0-9_]*$/.exec(lineText.slice(0, context.pos - context.state.doc.lineAt(context.pos).from));
-		const from = m && m.index !== undefined ? context.state.doc.lineAt(context.pos).from + m.index : context.pos;
 		let items;
 		try {
 			items = await engine.complete(doc, line, character);
 		} catch {
-			return null;
+			const options = localOptions(doc, prefix);
+			return options.length > 0 ? { from, options } : null;
 		}
 		if (items.length === 0) return null;
-		const prefix = m ? m[0].toLowerCase() : '';
 		const options: Completion[] = items
 			.filter((it) => (prefix ? it.label.toLowerCase().startsWith(prefix) : true))
 			.slice(0, 64)
@@ -160,12 +200,12 @@
 							dom.className = 'px-2 py-1';
 							const sig = document.createElement('div');
 							sig.textContent = info.signature;
-							sig.style.color = '#a277ff';
+							sig.style.color = 'rgb(var(--aura-purple))';
 							dom.appendChild(sig);
 							if (info.docs) {
 								const docs = document.createElement('div');
 								docs.textContent = info.docs;
-								docs.style.color = '#b8b6c4';
+								docs.style.color = 'rgb(var(--aura-muted))';
 								dom.appendChild(docs);
 							}
 							return { dom };

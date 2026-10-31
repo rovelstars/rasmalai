@@ -7,7 +7,7 @@ icon: "HardDrive"
 
 # Memory and ARC
 
-The whole language rests on one invariant: **every value is owned by exactly one scope — the block that created it — and when execution leaves that scope, the value is released.** No collector, no annotations, no manual pairing of allocation with release.
+The whole language rests on one invariant: every value is owned by exactly one scope, the block that created it, and when execution leaves that scope, the value is released. No collector, no annotations, no manual pairing of allocation with release.
 
 ## Scopes own values
 
@@ -28,13 +28,13 @@ print(total);
 
 ## Stack first, heap when needed
 
-Locals live on the **stack**: returning from a function frees all of its locals in one step, at zero per-value cost. Larger or longer-lived values live on the **heap** under reference counting.
+Locals live on the stack: returning from a function frees all of its locals in one step, at zero per-value cost. Larger or longer-lived values live on the heap under reference counting.
 
 The working rule: small fixed-size values (`Int`, `Float`, `Bool`, `Vec4f`) live inline with no heap involved, while classes, strings, arrays, and enums go on the heap. Every heap object carries a 16-byte header (reference count, type id, generation); strings extend it with byte length and a cached character count. Retains and releases are atomic across threads, so sharing an object with another thread is always safe.
 
 ## Sharing with ARC
 
-`let b = a` shares the object, bumping its count. The compiler inserts every retain and release — field stores retain the new value and release the old one, copies move the single share, field loads retain:
+`let b = a` shares the object, bumping its count. The compiler inserts every retain and release. Field stores retain the new value and release the old one, copies move the single share, and field loads retain:
 
 ```rnx
 let arr = [1, 2, 3];
@@ -42,13 +42,13 @@ let same = arr;
 print(same.length());
 ```
 
-`same` and `arr` point at one array. When the last owner goes away, the array drops immediately — deterministically, on the thread that released it, with no pause and no finalizer queue.
+`same` and `arr` point at one array. When the last owner goes away, the array drops immediately, deterministically, on the thread that released it, with no pause and no finalizer queue.
 
-Passing arguments usually costs nothing extra: non-escaping arguments pass as **borrows**, so most calls emit no retain/release traffic at all.
+Passing arguments usually costs nothing extra: non-escaping arguments pass as borrows, so most calls emit no retain/release traffic at all.
 
 ## Release requires write-dominance
 
-A release of a local's old value is emitted only when the compiler can prove the local was definitely written on every path reaching the release point (**write-dominance**). A slot that might still hold its initial state is never released — this is what makes loop-carried values and multi-branch assignment sound:
+A release of a local's old value is emitted only when the compiler can prove the local was definitely written on every path reaching the release point (write-dominance). A slot that might still hold its initial state is never released; this is what makes loop-carried values and multi-branch assignment sound:
 
 ```rnx
 let acc = "";
@@ -62,13 +62,13 @@ print(acc);
 
 Each iteration's copy of `acc` releases exactly the value the previous iteration (or the initializer) provably wrote. Moved-from slots are never re-read for release; suppression of a release only delays a free, it never introduces one.
 
-User code never manages any of this — the invariant exists so you can trust that aliasing never produces use-after-free: every handle keeps its object alive exactly as long as the handle itself lives.
+User code never manages any of this. The invariant exists so you can trust that aliasing never produces use-after-free: every handle keeps its object alive exactly as long as the handle itself lives.
 
 ## Heap layouts
 
-- **Strings**: 32-byte header (16-byte object header plus byte length and a cached character count), then UTF-8 bytes and a NUL. Literals are immortal and never freed; concatenated strings drop like objects.
-- **Arrays**: 40-byte header (object header plus length, capacity, data pointer). Elements drop recursively through per-type destructors.
-- **Enums**: 16-byte header plus tag and payload slots sized to the largest variant. Owned payloads drop through a synthesized per-enum destructor.
+- Strings: 32-byte header (16-byte object header plus byte length and a cached character count), then UTF-8 bytes and a NUL. Literals are immortal and never freed; concatenated strings drop like objects.
+- Arrays: 40-byte header (object header plus length, capacity, data pointer). Elements drop recursively through per-type destructors.
+- Enums: 16-byte header plus tag and payload slots sized to the largest variant. Owned payloads drop through a synthesized per-enum destructor.
 
 | Value | Storage | Header | Freed |
 |---|---|---|---|
@@ -118,4 +118,4 @@ There is no background tracing thread and no pause: the last release frees on th
 - One owner per scope; scope end is the free point.
 - Stack for locals; 16-byte-header heap objects shared by atomic ARC.
 - Borrows make most calls free; releases require proven writes (write-dominance).
-- Cycles are the one shape scopes cannot express — see [Cycles and Handles](/manual/12-cycles-and-handles).
+- Cycles are the one shape scopes cannot express. See [Cycles and Handles](/manual/12-cycles-and-handles).

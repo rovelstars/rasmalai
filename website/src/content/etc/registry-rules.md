@@ -8,7 +8,7 @@ icon: "Package"
 
 # Registry Upload Rules
 
-An upload is the source tree plus readme, docs, and license — nothing else. The client sends exactly that set as a JSON frame, and the server re-checks it on accept. Anything outside the set fails the publish.
+An upload holds only the source tree plus readme, docs, and license. The client sends exactly that set as a JSON frame, and the server re-checks it on accept. Anything outside the set fails the publish.
 
 ## The allowlist
 
@@ -35,7 +35,7 @@ With that manifest the upload holds `Project.config`, the two entry files, the r
 
 ## Custom guides ride the docs folder
 
-Every `*.md` directly under `entries.docs`, plus one nesting level down, becomes one guide in the publish frame, sorted by slug. The frame carries raw markdown source only — slug, title, source, description, section, order. The client never sends rendered html; the server renders the markdown and sanitizes it on accept, and the package page injects that stored html. The `/{version}/guides` routes serve the index, one guide as html, or sanitized source with `?format=source`.
+Every `*.md` directly under `entries.docs`, plus one nesting level down, becomes one guide in the publish frame, sorted by slug. The frame carries raw markdown source only: slug, title, source, description, section, order. The client never sends rendered html; the server renders the markdown and sanitizes it on accept, and the package page injects that stored html. The `/{version}/guides` routes serve the index, one guide as html, or sanitized source with `?format=source`.
 
 - Slug: the filename without `.md`, lowercased, with each run of other characters folded to one dash and leading and trailing dashes dropped. It must match `^[a-z0-9][a-z0-9-]{0,63}$`. A file that maps to nothing usable, two files that map to the same slug, or a file nested deeper than one level fails the publish with `E108` naming the file.
 - Title: the first `# ` heading, else the frontmatter `title:`, else the filename with dashes and underscores turned into spaced, capitalized words.
@@ -43,11 +43,11 @@ Every `*.md` directly under `entries.docs`, plus one nesting level down, becomes
 
 ## What never ships
 
-`target/`, `.git/`, `.rnx/`, `.rnx-cache/`, and `tests/` are excluded even when they hold matching files. Directories declared as bindgen `outputs` are excluded the same way — generated bindings travel as OCI artifacts, and a package entry that points inside one is rejected at pack time. `Project.deplock` never ships either — the lockfile pins your build and stays on your machine; publishing it would pin everyone else's. There are no wasm blobs, no compiled binaries, and no generated output in uploads: if a file is not source, manifest, readme, guide, or license text, it does not belong in the upload.
+`target/`, `.git/`, `.rnx/`, `.rnx-cache/`, and `tests/` are excluded even when they hold matching files. Directories declared as bindgen `outputs` are excluded the same way (generated bindings travel as OCI artifacts, and a package entry that points inside one is rejected at pack time). `Project.deplock` never ships either (the lockfile pins your build and stays on your machine; publishing it would pin everyone else's). There are no wasm blobs, no compiled binaries, and no generated output in uploads: if a file is not source, manifest, readme, guide, or license text, it does not belong in the upload.
 
 ## Native binaries and wasm live outside source packages
 
-Compiled artifacts are never uploaded with source — neither per-platform native libraries nor `.wasm` modules. They ship as OCI artifacts: the registry stores no artifact bytes, only a pin. One image per package version; composition is the image author's job (an image bundles everything its version needs). A package that needs artifacts declares one bare repo ref, no tags, no digests:
+Compiled artifacts are never uploaded with source, neither per-platform native libraries nor `.wasm` modules. They ship as OCI artifacts: the registry stores no artifact bytes, only a pin. One image per package version; composition is the image author's job (an image bundles everything its version needs). A package that needs artifacts declares one bare repo ref, no tags, no digests:
 
 ```rnx
 export default {
@@ -57,13 +57,13 @@ export default {
 }
 ```
 
-The index is the file list — config never duplicates it, so a digest-bearing or keyed `artifacts` table is rejected. At publish time the author asserts the index digest out-of-band (`rnx publish --artifact sha256:<hex>`, one digest for the one image). The server resolves the declared ref fresh, fetches the index (capped at 1 MiB), hashes it, and rejects the publish fail-closed on mismatch; declaration and assertion must agree in both directions. Every fetch below the index addresses content by digest: consumers verify the index digest first, then per-blob hashes from the verified index, pick role (`runtime`, `bindgen`, `wasm`, `media`) and platform from the descriptors, and resolve each native entry's `from` title per role into the content-addressed caches (project `.rnx-cache/artifacts/`, durable global `~/.cache/rnx/artifacts/<hash>`, hardlink with copy fallback); a dev checkout shadows the cached entry with a notice. A future operator mirror would serve identical hashes under a reserved prefix outside the chunk store; until then there is no registry blob storage to meter or delete.
+The index is the file list. Config never duplicates it, so a digest-bearing or keyed `artifacts` table is rejected. At publish time the author asserts the index digest out-of-band (`rnx publish --artifact sha256:<hex>`, one digest for the one image). The server resolves the declared ref fresh, fetches the index (capped at 1 MiB), hashes it, and rejects the publish fail-closed on mismatch; declaration and assertion must agree in both directions. Every fetch below the index addresses content by digest: consumers verify the index digest first, then per-blob hashes from the verified index, pick role (`runtime`, `bindgen`, `wasm`, `media`) and platform from the descriptors, and resolve each native entry's `from` title per role into the content-addressed caches (project `.rnx-cache/artifacts/`, durable global `~/.cache/rnx/artifacts/<hash>`, hardlink with copy fallback); a dev checkout shadows the cached entry with a notice. A future operator mirror would serve identical hashes under a reserved prefix outside the chunk store; until then there is no registry blob storage to meter or delete.
 
-Tags discover, digests pin: refs are bare repos (an explicit tag is a discovery hint only), and the digest is resolved once and stored as version metadata. WebAssembly follows this same path with one manifest per flavor (no arch suffix; simd/threads/memory64 ship as separate manifests in the same index when needed). First fetch of a native artifact prints what is being installed from where. Native code is unaudited foreign bytes: declaring `artifacts` records the dependency and its pin, but no analysis passes over the blobs — see the capability rules in the language manual. WebAssembly declarations and verification work today; execution needs a wasm runtime, which is a separate, not-yet-built phase.
+Tags discover, digests pin: refs are bare repos (an explicit tag is a discovery hint only), and the digest is resolved once and stored as version metadata. WebAssembly follows this same path with one manifest per flavor (no arch suffix; simd/threads/memory64 ship as separate manifests in the same index when needed). First fetch of a native artifact prints what is being installed from where. Native code is unaudited foreign bytes: declaring `artifacts` records the dependency and its pin, but no analysis passes over the blobs. See the capability rules in the language manual. WebAssembly declarations and verification work today; execution needs a wasm runtime, which is a separate, not-yet-built phase.
 
 ## Farm-built images cover two Linux targets
 
-The `Farm` workflow builds one multi-target image per change to the native, bindgen, or OCI paths: `x86_64-unknown-linux-gnu` (emitted, statically linked, and executed — the binary must exit 42) plus `aarch64-unknown-linux-gnu` (object emission and ELF machine check only, since the linker backend targets x86_64 Linux). Each leg stages its blob with its target, role, title, generator, upstream source hash, and platform; the assemble job validates every descriptor against the annotation grammar, writes one sorted index, and verifies it pointer-style (index digest, then manifest hashes, then blob hashes). The index and blobs upload as workflow artifacts. A canary copy also pushes to `ttl.sh` under a `24h` tag and reads back anonymously by digest — `ttl.sh` origin data rots on expiry, so the artifact row is the durable evidence, and a durable operator origin is still an open follow-up. macOS and Windows legs wait on linker backend support; adding runners without a backend that can link for them would prove nothing.
+The `Farm` workflow builds one multi-target image per change to the native, bindgen, or OCI paths: `x86_64-unknown-linux-gnu` (emitted, statically linked, and executed; the binary must exit 42) plus `aarch64-unknown-linux-gnu` (object emission and ELF machine check only, since the linker backend targets x86_64 Linux). Each leg stages its blob with its target, role, title, generator, upstream source hash, and platform; the assemble job validates every descriptor against the annotation grammar, writes one sorted index, and verifies it pointer-style (index digest, then manifest hashes, then blob hashes). The index and blobs upload as workflow artifacts. A canary copy also pushes to `ttl.sh` under a `24h` tag and reads back anonymously by digest (`ttl.sh` origin data rots on expiry, so the artifact row is the durable evidence, and a durable operator origin is still an open follow-up). macOS and Windows legs wait on linker backend support; adding runners without a backend that can link for them would prove nothing.
 
 ## LICENSE is required
 
@@ -77,19 +77,19 @@ A `Project.config` that carries top-level `registry` or `registries` keys fails 
 
 The publish gate and the admin scan share one predicate over the whole-tree analysis verdict, so the scan count reads zero by construction: anything the scan would count, the gate rejects first.
 
-Stored violators — packages published before the gate — get `critical` advisories naming the cause and the remedy; `rnx audit` fails on them. An advisory informs, it never yanks: removal still runs the normal yank ladder.
+Stored violators (packages published before the gate) get `critical` advisories naming the cause and the remedy; `rnx audit` fails on them. An advisory informs, it never yanks: removal still runs the normal yank ladder.
 
 ## Runtime imports are rejected, not counted
 
-A non-`@std` package that names a runtime internal is refused outright, before anything is sent. Naming one bare (`__rnx_foo()` with no declaration) is a scope error (`E303`) pointing at the declared form; declaring one with `import { fn name(params): Ret } from runtime "mod"` outside registry-verified `@std/*` is an `E108` naming the owning `@std/*` wrapper. The `rnx publish` pre-check applies the same rule to every file in the upload, so a hand-built frame around the CLI cannot smuggle runtime access in. Only `@std/*`-named frames are exempt, and only for bytes that arrived through registry-verified `@std` provision; a `@std/`-prefixed file smuggled into any other frame is still rejected. Declared `from native` aliases are unaffected, and `__ffi_*` names never counted. Fix: call the owning `@std/*` wrapper instead of the `__rnx_*` internal, and republish — versions are immutable, so the fix ships as the next number.
+A non-`@std` package that names a runtime internal is refused outright, before anything is sent. Naming one bare (`__rnx_foo()` with no declaration) is a scope error (`E303`) pointing at the declared form; declaring one with `import { fn name(params): Ret } from runtime "mod"` outside registry-verified `@std/*` is an `E108` naming the owning `@std/*` wrapper. The `rnx publish` pre-check applies the same rule to every file in the upload, so a hand-built frame around the CLI cannot smuggle runtime access in. Only `@std/*`-named frames are exempt, and only for bytes that arrived through registry-verified `@std` provision; a `@std/`-prefixed file smuggled into any other frame is still rejected. Declared `from native` aliases are unaffected, and `__ffi_*` names never counted. Fix: call the owning `@std/*` wrapper instead of the `__rnx_*` internal, and republish. Versions are immutable, so the fix ships as the next number.
 
-The pre-check runs each file on its own, so it reports only what one file can prove: parse errors, bare `__rnx_*` uses, and bad `from runtime` declarations. Anything that needs the merged picture — protocol conformance, methods extended onto builtins from another file, unresolved imports — is the server's whole-tree analysis to judge, with the dependency closure the client never holds. The two predicates match by construction: the client never rejects what the server would accept, and whatever the client lets through still faces the server, which fails closed.
+The pre-check runs each file on its own, so it reports only what one file can prove: parse errors, bare `__rnx_*` uses, and bad `from runtime` declarations. Anything that needs the merged picture (protocol conformance, methods extended onto builtins from another file, unresolved imports) is the server's whole-tree analysis to judge, with the dependency closure the client never holds. The two predicates match by construction: the client never rejects what the server would accept, and whatever the client lets through still faces the server, which fails closed.
 
 ## Entries must match both ways
 
 The entries manifest fails closed in both directions:
 
-- Every path named in `entries.*` must exist in the upload. The client checks this before sending anything — a missing `entries.main` stops the publish with `E108`.
+- Every path named in `entries.*` must exist in the upload. The client checks this before sending anything: a missing `entries.main` stops the publish with `E108`.
 - The frame's file list must match the packaged tree exactly. A file that is listed but missing, or shipped but unlisted, fails the publish. The server repeats this check on accept, so a hand-built upload cannot smuggle past the client.
 
 ## Entry names are paths
@@ -100,7 +100,7 @@ A publish that carries such a name is rejected with 400 and a message naming the
 
 ## The caps
 
-Source bytes are capped per plan: 16 KiB on Free, 4 MiB on Paid. The stored snapshot (readme, docs, guides) caps at 512 KiB on every tier. Oversize uploads are rejected — split the package or drop the weight before retrying. Retries are safe: repeat a publish with the same `requestId` and the server answers success with `duplicate: true` instead of writing a second row.
+Source bytes are capped per plan: 16 KiB on Free, 4 MiB on Paid. The stored snapshot (readme, docs, guides) caps at 512 KiB on every tier. Oversize uploads are rejected. Split the package or drop the weight before retrying. Retries are safe: repeat a publish with the same `requestId` and the server answers success with `duplicate: true` instead of writing a second row.
 
 ## What the server refuses before it reads
 
@@ -112,5 +112,5 @@ The request body is capped at source bytes plus manifest headroom plus 2 MiB. Th
 
 A package is stored as chunks: one chunk per file, and more for a file over 128 KiB, which is split further. The server counts the chunks before it hashes anything and refuses a package that would need more than the plan's new-chunk limit (32 Free, 512 Paid), with 413 and a message naming the count. No version holds more than 4096 chunks.
 
-The number is not arbitrary. Every chunk is one stored object and one call to the object store, and the platform allows 50 such calls per request on the free plan. A package that needs more chunks than that cannot be stored on the free plan at all, so the server says so instead of failing halfway through the upload. A package that stays under the limit is stored in one batch, whatever its size.
+Every chunk is one stored object and one call to the object store, and the platform allows 50 such calls per request on the free plan. A package that needs more chunks than that cannot be stored on the free plan at all, so the server says so instead of failing halfway through the upload. A package that stays under the limit is stored in one batch, whatever its size.
 

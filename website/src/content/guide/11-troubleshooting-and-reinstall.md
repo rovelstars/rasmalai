@@ -4,7 +4,7 @@ description: "Read a diagnostic, fix the common breakages, and reinstall cleanly
 icon: "Wrench"
 ---
 
-# Troubleshooting & Reinstall
+# Troubleshooting & reinstall
 
 Most Rasmalai problems fall into three buckets, and you should work them in this order: a diagnostic you can read, a stale project, or a stale toolchain. Nine times out of ten you never reach step three.
 
@@ -22,7 +22,7 @@ Then ask the toolchain what the code means:
 rnx explain E108
 ```
 
-The explanation names the cause and the fix. The full directory of codes lives in the [Language Manual](/manual/17-diagnostics-directory). If a message looks wrong — a span pointing nowhere, a code with no entry — that is a compiler bug: skip to [filing an issue](#filing-an-issue) and paste the output verbatim.
+The explanation names the cause and the fix. The full directory of codes lives in the [Language Manual](/manual/17-diagnostics-directory). If a message looks wrong (a span pointing nowhere, a code with no entry), that is a compiler bug: skip to [filing an issue](#filing-an-issue) and paste the output verbatim.
 
 When output looks suspiciously terse, rerun with the pipeline log turned on:
 
@@ -32,7 +32,7 @@ rnx -v check
 
 Verbose mode prints each pass as it runs, which tells you whether the failure is in parsing, typechecking, or code generation.
 
-A healthy program to compare against — if this checks clean but your project does not, the problem is in your project, not the toolchain:
+A healthy program to compare against. If this checks clean but your project does not, the problem is in your project, not the toolchain:
 
 ```rnx
 let total = [10, 20, 30].reduce(0, (acc, n) => acc + n);
@@ -68,7 +68,7 @@ rnx doctor --repair-std
 
 `rnx download` re-seeds the same cache from scratch: that is also the recovery when you installed while offline.
 
-**The editor disagrees with the terminal.** Stale squiggles, completions from another era — the language server is almost always holding onto a closed project. Restart it through the setup command rather than reinstalling anything:
+**The editor disagrees with the terminal.** Stale squiggles, completions from another era. The language server is almost always holding onto a closed project. Restart it through the setup command rather than reinstalling anything:
 
 ```sh
 rnx setup
@@ -78,7 +78,7 @@ The [editor setup chapter](/guide/09-editor-setup) covers per-editor details.
 
 ## Reinstall the toolchain cleanly
 
-Reach for this when `rnx --version` itself fails, when the binary predates the error you are seeing, or when support asks you to rule out a corrupted install. The procedure is the same on every OS: remove the old install, then install fresh. Uninstallation is just step one of a reinstall — there is no separate ritual.
+Reach for this when `rnx --version` itself fails, when the binary predates the error you are seeing, or when support asks you to rule out a corrupted install. The procedure is the same on every OS: remove the old install, then install fresh. Uninstallation is step one of a reinstall.
 
 First, confirm what you have. On Linux and macOS:
 
@@ -116,7 +116,7 @@ curl -fsSL https://rasmalai.rovelstars.com/install.sh | sh -s -- --prefix /usr/l
 
 ### macOS
 
-Same layout as Linux — `~/.local` is the conventional home for CLI tools outside the App Store, and `$XDG_BIN_HOME` is honored the same way. Rasmalai ships Apple Silicon builds only; on Intel Macs, run the toolchain under Rosetta 2.
+Same layout as Linux. `~/.local` is the conventional home for CLI tools outside the App Store, and `$XDG_BIN_HOME` is honored the same way. Rasmalai ships Apple Silicon builds only; on Intel Macs, run the toolchain under Rosetta 2.
 
 ```sh
 rm -rf ~/.local/bin/rnx ~/.local/bin/rnx.bin ~/.local/lib
@@ -152,9 +152,9 @@ rnx --version
 
 ## Filing an issue
 
-If the steps above did not fix it, file it — a clean repro against the latest toolchain is exactly what maintainers need. Include all four:
+If the steps above did not fix it, file it. A clean repro against the latest toolchain is exactly what maintainers need. Include all four:
 
-1. The full `rnx --version` output, every line — it carries the commit hash, install kind, and target triple.
+1. The full `rnx --version` output, every line. It carries the commit hash, install kind, and target triple.
 2. Your OS and CPU (`uname -sm`, or `$PSVersionTable` on Windows).
 3. The smallest source file that still fails.
 4. The full command and its complete output (with `rnx -v` if it is a compiler crash).

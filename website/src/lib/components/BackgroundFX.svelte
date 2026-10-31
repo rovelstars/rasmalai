@@ -34,7 +34,7 @@
 		height: 560px;
 		left: 8%;
 		top: -180px;
-		background: rgba(162, 119, 255, 0.1);
+		background: rgb(var(--aura-purple) / 0.1);
 		animation: drift-a 16s ease-in-out infinite alternate;
 	}
 	.fx-orb-b {
@@ -42,7 +42,7 @@
 		height: 480px;
 		right: 4%;
 		top: -120px;
-		background: rgba(130, 226, 255, 0.07);
+		background: rgb(var(--aura-cyan) / 0.07);
 		animation: drift-b 16s ease-in-out infinite alternate-reverse;
 	}
 	@keyframes drift-a {
@@ -77,9 +77,9 @@
 		}
 	}
 	:global(html.light) .fx-orb-a {
-		background: rgba(109, 63, 212, 0.08);
+		background: rgb(var(--aura-purple) / 0.08);
 	}
 	:global(html.light) .fx-orb-b {
-		background: rgba(0, 109, 158, 0.06);
+		background: rgb(var(--aura-cyan) / 0.06);
 	}
 </style>

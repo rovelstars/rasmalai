@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { Play, RotateCcw, Zap } from 'lucide-svelte';
+	import { Play, RotateCcw } from 'lucide-svelte';
 	import AnsiDemo from '$lib/components/AnsiDemo.svelte';
 	import AuraCode from '$lib/components/AuraCode.svelte';
 	import { fetchDataFile } from '$lib/docs/data-url';
+	import { engine } from '$lib/playground/engine.svelte';
 	import { onMount } from 'svelte';
 
 	// Legacy unversioned fallback; resolution prefers the deploy-versioned
@@ -10,13 +11,21 @@
 	export const demosUrl = '/data/cli-demos.json';
 
 	let checkOutput = $state<string | null>(null);
+	let lintBefore = $state<string | null>(null);
+	let lintAfter = $state<string | null>(null);
 
 	onMount(async () => {
 		try {
 			const res = await fetchDataFile(fetch, 'cli-demos.json');
-			if (res) checkOutput = (await res.json()).check ?? null;
+			if (!res) return;
+			const data = await res.json();
+			checkOutput = data.check ?? null;
+			lintBefore = data.lint ?? null;
+			lintAfter = data.lintFix ?? null;
 		} catch {
 			checkOutput = null;
+			lintBefore = null;
+			lintAfter = null;
 		}
 	});
 
@@ -24,51 +33,50 @@
 	let tab = $state<Tab>('check');
 
 	const TABS: { id: Tab; n: string; label: string }[] = [
-		{ id: 'check', n: '1', label: 'Diagnostics (check)' },
-		{ id: 'test', n: '2', label: 'Isolated Tests (test)' },
-		{ id: 'lint', n: '3', label: 'Self-Healing (lint)' },
-		{ id: 'ffi', n: '4', label: 'Native C-ABI (ffi)' }
+		{ id: 'check', n: '01', label: 'Diagnostics' },
+		{ id: 'test', n: '02', label: 'Isolated tests' },
+		{ id: 'lint', n: '03', label: 'Self-healing' },
+		{ id: 'ffi', n: '04', label: 'Native C-ABI' }
 	];
 
 	let testLines = $state<string[]>([]);
 	let testRunning = $state(false);
 	let testDone = $state(false);
+	let testError = $state(false);
 
-	let fixed = $state(false);
-	let fixFlash = $state(false);
+	const TEST_PROJECT = JSON.stringify({
+		'tests/demo.rnx': `test fn adds_up() {
+    assert(1 + 1 == 2, "math");
+}
 
-	const reduced =
-		typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+test fn shadows() {
+    let x = 1;
+    let x = x + 1;
+    assert(x == 2, "shadow");
+}
+`
+	});
 
-	function runTests() {
+	async function runTests() {
 		if (testRunning) return;
 		testRunning = true;
 		testDone = false;
+		testError = false;
 		testLines = [];
-		const steps = ['✓ adds_up 0.01 ms', '✓ shadows 0.00 ms', 'tests: 2 passed, 0 failed in 0.08 ms'];
-		if (reduced) {
-			testLines = steps;
+		try {
+			const res = await engine.testProject(TEST_PROJECT, 'tests/demo.rnx');
+			if (res.timedOut) {
+				testError = true;
+				testLines = ['test run exceeded 3000 ms and was stopped'];
+				return;
+			}
+			testLines = res.output.split('\n').filter((line) => line.length > 0);
+		} catch (e) {
+			testError = true;
+			testLines = [e instanceof Error ? e.message : 'test run failed'];
+		} finally {
 			testRunning = false;
 			testDone = true;
-			return;
-		}
-		steps.forEach((s, i) => {
-			setTimeout(() => {
-				testLines = [...testLines, s];
-				if (i === steps.length - 1) {
-					testRunning = false;
-					testDone = true;
-				}
-			}, 350 * (i + 1));
-		});
-	}
-
-	function autoFix() {
-		if (fixed) return;
-		fixed = true;
-		if (!reduced) {
-			fixFlash = true;
-			setTimeout(() => (fixFlash = false), 900);
 		}
 	}
 
@@ -77,8 +85,8 @@
 		if (t !== 'test') {
 			testLines = [];
 			testDone = false;
+			testError = false;
 		}
-		if (t !== 'lint') fixed = false;
 	}
 
 	const abiFrame = `// no wrappers, no boilerplate
@@ -87,100 +95,148 @@ import {
 } from native "z"`;
 </script>
 
-<div class="bay" data-testid="toolchain-station">
-	<div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-aura-border px-4 py-2 font-mono text-[11px]">
-		<span class="text-aura-muted">toolchain station - one binary: rnx</span>
-		<span class="ml-auto hidden text-aura-muted sm:inline">[ BUS: rnx check - test - lint - ffi ]</span>
-	</div>
-
-	<div
-		class="flex gap-1 overflow-x-auto border-b border-aura-border p-2"
-		role="tablist"
-		aria-label="Toolchain modes"
-	>
+<div class="station" data-testid="toolchain-station">
+	<div class="station-tabs" role="tablist" aria-label="Toolchain modes">
 		{#each TABS as t}
 			<button
 				role="tab"
 				aria-selected={tab === t.id}
 				onclick={() => switchTab(t.id)}
-				class="press shrink-0 rounded-full border px-3.5 py-1.5 font-mono text-[12px] whitespace-nowrap {tab === t.id
-					? 'border-aura-purple/50 bg-aura-purple/10 text-aura-purple'
-					: 'border-aura-border text-aura-muted hover:border-aura-borderHover hover:text-aura-text'}"
+				class="station-tab"
+				class:station-tab-active={tab === t.id}
 			>
-				<span class="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-aura-purple {tab === t.id ? '' : 'opacity-50'}"></span>{t.n}. {t.label}
+				<span class="station-n">{t.n}</span>
+				{t.label}
 			</button>
 		{/each}
 	</div>
 
-	<div class="min-h-[300px]">
+	<div class="station-body">
 		{#if tab === 'check'}
 			{#if checkOutput !== null}
 				<AnsiDemo output={checkOutput} command="rnx check src/bad.rnx" />
 			{:else}
-				<p class="p-4 font-mono text-[12px] text-aura-muted">
-					$ rnx check src/bad.rnx <span class="text-aura-muted">— demo output loads with site data.</span>
-				</p>
+				<p class="line muted">demo output for $ rnx check src/bad.rnx loads with site data.</p>
 			{/if}
-			<p class="px-4 pb-4 font-mono text-[12px] text-aura-muted">
-				tree-hook diagnostics point at the exact column and suggest the fix. Try it above in
-				the workbench — edit the source until it breaks.
+			<p class="note">
+				Captured from the shipped CLI. Tree-hook diagnostics point at the exact column and
+				suggest the fix; the workbench above runs the same checker in the browser.
 			</p>
 		{:else if tab === 'test'}
-			<div class="p-4 font-mono text-[12px] leading-7">
-				<p class="text-aura-muted">$ rnx test <span class="text-aura-muted">— tests/demo.rnx</span></p>
+			<div class="terminal">
+				<p class="line muted">$ rnx test <span class="muted">(browser engine)</span></p>
 				{#each testLines as line}
-					<p class={line.startsWith('tests:') ? 'text-aura-text/80' : 'text-aura-green'}>
-						{line}
-					</p>
+					<p class="line {testError ? 'text-aura-red' : line.startsWith('tests:') ? 'text-aura-text/80' : 'text-aura-green'}">{line}</p>
 				{/each}
-				{#if !testDone && !testRunning}
-					<p class="text-aura-muted">suite armed — press run.</p>
+				{#if testRunning}
+					<p class="line muted">loading the engine and running the suite…</p>
+				{:else if !testDone}
+					<p class="line muted">two demo tests, press run.</p>
 				{/if}
-				<div class="mt-3">
-					<button
-						onclick={runTests}
-						disabled={testRunning}
-						class="press flex items-center gap-2 rounded bg-aura-purple px-4 py-1.5 font-mono text-[12px] font-bold text-aura-bg disabled:opacity-50"
-					>
-						{#if testRunning}... running{:else if testDone}<RotateCcw size={13} /> Run Again{:else}<Play size={13} /> Run Test Suite{/if}
+				<div class="mt-4">
+					<button onclick={runTests} disabled={testRunning} class="btn btn-primary h-9 min-h-0 px-4 text-[13px]">
+						{#if testRunning}running…{:else if testDone}<RotateCcw size={13} /> Run again{:else}<Play size={13} /> Run test suite{/if}
 					</button>
 				</div>
-				<p class="mt-3 text-aura-muted">sample replay — each file runs isolated, so one crash can't hide another.</p>
+				<p class="note">
+					Runs the two demo tests in the browser WebAssembly engine; the first run downloads
+					it. Each test runs isolated, so one failure does not hide another.
+				</p>
 			</div>
 		{:else if tab === 'lint'}
-			<div class="p-4 font-mono text-[12px] leading-7">
-				<p class="text-aura-muted">$ rnx lint tests/demo.rnx</p>
-				<p class="text-aura-text/70">
-					<span class="text-aura-muted">tests/demo.rnx:6:5:</span>
-					{#if fixed}
-						<span class={fixFlash ? 'bg-aura-green/20 text-aura-green' : 'text-aura-green'}>
-							fixed — no warnings
-						</span>
-					{:else}
-						<span class="text-aura-orange">warning[L001]: unused variable `x`</span>
+			<div class="space-y-3">
+				{#if lintBefore !== null}
+					<AnsiDemo output={lintBefore} command="rnx lint tests/demo.rnx" />
+					{#if lintAfter !== null}
+						<AnsiDemo output={lintAfter} command="rnx lint --fix tests/demo.rnx" />
 					{/if}
-				</p>
-				<p class="overflow-x-auto whitespace-pre text-aura-text/80"> 6 |     let {fixed ? '_x' : 'x'} = x + 1;</p>
-				{#if !fixed}
-					<p class="text-aura-muted">hint: prefix `x` with `_` to silence</p>
-					<div class="mt-3">
-						<button
-							onclick={autoFix}
-							class="press flex items-center gap-2 rounded bg-aura-purple px-4 py-1.5 font-mono text-[12px] font-bold text-aura-bg"
-						>
-							<Zap size={13} /> Click to Auto-Fix
-						</button>
-					</div>
 				{:else}
-					<p class="mt-3 text-aura-green">diff applied — you just review.</p>
+					<p class="line muted">captured lint output loads with site data.</p>
 				{/if}
-				<p class="mt-3 text-aura-muted">mirrors L001 on the demo file — the real fixer runs in rnx lint.</p>
+				<p class="note">
+					Captured from the shipped CLI. The fixer rewrites this L001 site in place and the
+					second run is clean; nothing is simulated in the browser.
+				</p>
 			</div>
 		{:else}
-			<AuraCode source={abiFrame} />
-			<p class="px-4 pb-4 font-mono text-[12px] text-aura-muted">
-				declare the symbols you need and rnx links them — no headers, no binding generators.
-			</p>
+			<div class="terminal">
+				<div class="overflow-hidden rounded-sm border border-aura-border">
+					<AuraCode source={abiFrame} />
+				</div>
+				<p class="note">declare the symbols you need and rnx links them: no headers, no binding generators.</p>
+			</div>
 		{/if}
 	</div>
 </div>
+
+<style>
+	.station {
+		border-top: 1px solid var(--color-rule);
+	}
+
+	.station-tabs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-lg);
+		border-bottom: 1px solid var(--color-rule);
+		padding-bottom: var(--space-sm);
+	}
+
+	.station-tab {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--space-xs);
+		font-size: var(--text-sm);
+		color: var(--color-faint);
+		transition: color var(--dur-micro) ease;
+	}
+
+	.station-tab:hover {
+		color: var(--color-ink);
+	}
+
+	.station-tab-active {
+		color: var(--color-ink);
+		text-decoration: underline;
+		text-decoration-color: var(--color-accent);
+		text-decoration-thickness: 1px;
+		text-underline-offset: 7px;
+	}
+
+	.station-n {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--color-faint);
+	}
+
+	.station-body {
+		min-height: 280px;
+		padding-top: var(--space-md);
+	}
+
+	.terminal {
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-sm);
+		background: var(--color-paper-2);
+		padding: var(--space-md) var(--space-lg);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		line-height: 1.9;
+	}
+
+	.line {
+		margin: 0;
+	}
+
+	.muted {
+		color: var(--color-muted);
+	}
+
+	.note {
+		margin-top: var(--space-sm);
+		font-family: var(--font-body);
+		font-size: var(--text-xs);
+		line-height: 1.6;
+		color: var(--color-faint);
+	}
+</style>

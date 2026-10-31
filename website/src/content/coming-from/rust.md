@@ -6,16 +6,13 @@ sourceLang: "rust"
 
 # Coming from Rust: Systems Power Without Lifetime Puzzles
 
-Rasmalai's memory model is reference counting with scope-end frees -
-deterministic like Rust, but with no borrow checker, no lifetimes, and no
-`Pin`/`unsafe` for self-referential data. Builds measure in milliseconds,
+Rasmalai's memory model is reference counting with scope-end frees, deterministic like Rust, but with no borrow checker, no lifetimes, and no `Pin`/`unsafe` for self-referential data. Builds measure in milliseconds,
 not minutes. This page covers what that trade costs: cycles need explicit
 handling, and the compiler won't prove aliasing safety for you.
 
 ## Lifetimes vs lexical scopes
 
-Rust names every borrow. Rasmalai ties each value to the block that owns it —
-the scope end is the free point, visible in the source:
+Rust names every borrow. Rasmalai ties each value to the block that owns it. The scope end is the free point, visible in the source:
 
 ```rust
 struct Edge<'a> {
@@ -54,8 +51,7 @@ print(total);
 ```
 
 Shared structure that would cycle in Rust uses `GenRef<T>` handles here:
-copying one never touches atomics, and `.get()` yields `null` once the owner
-frees. No annotations, no borrowck fight.
+copying one never touches atomics, and `.get()` yields `null` once the owner frees. There are no annotations and no borrowck fight.
 
 ## Drop vs defer
 

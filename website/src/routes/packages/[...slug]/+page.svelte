@@ -14,6 +14,7 @@ import { PlaygroundRunner } from '$lib/playground/runner';
 import { isFormattablePackagePath, selectPackageText } from '$lib/packages-format';
 	import { untar, gunzip, isGzip } from '$lib/docs/untar';
 import { importSnippet } from '$lib/docs/stdlib';
+	import '$lib/styles/registry.css';
 
 	let { data } = $props();
 	let pkg = $derived(data.pkg);
@@ -66,6 +67,19 @@ import { importSnippet } from '$lib/docs/stdlib';
 
 	type TabId = 'readme' | 'code' | 'guides' | 'api' | 'dependencies' | 'dependents' | 'versions';
 	const TABS: TabId[] = ['readme', 'code', 'guides', 'api', 'dependencies', 'dependents', 'versions'];
+	const TAB_LABELS: Record<TabId, string> = {
+		readme: 'Readme',
+		code: 'Files',
+		guides: 'Guides',
+		api: 'API',
+		dependencies: 'Dependencies',
+		dependents: 'Dependents',
+		versions: 'Versions'
+	};
+
+	const visibleTabs = $derived(
+		TABS.filter((t) => (t !== 'guides' || guides.length > 0) && (t !== 'api' || apiMods.length > 0))
+	);
 
 	let tab = $derived.by((): TabId => {
 		let t: TabId = 'readme';
@@ -97,7 +111,11 @@ import { importSnippet } from '$lib/docs/stdlib';
 
 	let permissions = $derived(activeVersion.permissions ?? []);
 
-	let readme = $derived(renderMarkdown(activeVersion.readme));
+	let readme = $derived.by(() => {
+		const rendered = renderMarkdown(activeVersion.readme);
+		// The page header already names the package, so drop a leading readme H1.
+		return { ...rendered, html: rendered.html.replace(/^\s*<h1[^>]*>[\s\S]*?<\/h1>/, '') };
+	});
 
 	function isoDate(ts: number): string {
 		if (!ts) return '';
@@ -110,17 +128,54 @@ import { importSnippet } from '$lib/docs/stdlib';
 		return `${n} B`;
 	}
 
-	function avatarHue(name: string): number {
-		let h = 0;
-		for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-		return h % 360;
-	}
-
 	function nav(next: { tab?: string; v?: string }) {
 		const t = next.tab ?? tab;
 		const v = next.v ?? activeVersion.version;
 		const base = v === pkg.latest ? `/packages/${pkg.name}` : `/packages/${pkg.name}@${v}`;
 		goto(`${base}?tab=${t}`, { keepFocus: true });
+	}
+
+	function nextTabIndex(event: KeyboardEvent, length: number, index: number): number | null {
+		const last = length - 1;
+		switch (event.key) {
+			case 'ArrowRight':
+			case 'ArrowDown':
+				return index === last ? 0 : index + 1;
+			case 'ArrowLeft':
+			case 'ArrowUp':
+				return index === 0 ? last : index - 1;
+			case 'Home':
+				return 0;
+			case 'End':
+				return last;
+			default:
+				return null;
+		}
+	}
+
+	function focusTab(event: KeyboardEvent, index: number) {
+		const tabs = (event.currentTarget as HTMLElement)
+			.closest('[role="tablist"]')
+			?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+		tabs?.[index]?.focus();
+	}
+
+	function onSpineKeydown(event: KeyboardEvent, id: TabId) {
+		const index = visibleTabs.indexOf(id);
+		const next = nextTabIndex(event, visibleTabs.length, index);
+		if (next === null) return;
+		event.preventDefault();
+		focusTab(event, next);
+		nav({ tab: visibleTabs[next] });
+	}
+
+	function onGuideKeydown(event: KeyboardEvent, slug: string) {
+		const index = guides.findIndex((g) => g.slug === slug);
+		const next = nextTabIndex(event, guides.length, index);
+		if (next === null) return;
+		event.preventDefault();
+		focusTab(event, next);
+		openGuide = guides[next].slug;
 	}
 
 	async function copyInstall() {
@@ -372,117 +427,183 @@ import { importSnippet } from '$lib/docs/stdlib';
 
 <svelte:head>
 	<title>{pkg.name} v{activeVersion.version} | Packages</title>
-	<meta name="description" content={pkg.description} />
+	<meta name="description" content={pkg.description || `${pkg.name} package for Rasmalai.`} />
 	<link rel="canonical" href={canonicalUrl(`/packages/${pkg.name}`)} />
 </svelte:head>
 
-<main class="mx-auto max-w-7xl px-4 pb-16">
-	<nav class="mt-8 font-mono text-xs text-aura-muted" aria-label="Breadcrumb">
-		<a href="/packages" class="hover:text-aura-text">Packages</a>
-		<span class="mx-1.5" aria-hidden="true">/</span>
-		<span class="text-aura-text">{pkg.name}</span>
-	</nav>
+<main class="shell pb-16">
+	<div class="docs-bar">
+		<nav class="docs-crumb" aria-label="Breadcrumb">
+			<a href="/packages">Packages</a>
+		</nav>
+	</div>
 
-	<div class="panel mt-4 p-5">
-		<div class="flex flex-wrap items-baseline gap-x-3 gap-y-2">
-			<span class="font-mono text-lg font-bold text-aura-text">{pkg.name}</span>
+	<header class="dossier-mast">
+		<div class="dossier-head">
+			<h1 class="dossier-title">{pkg.name}</h1>
+			{#if pkg.description}
+				<p class="dossier-sub">{pkg.description}</p>
+			{/if}
+			{#if pkg.name.startsWith('@std/')}
+				<p class="dossier-import">{importSnippet(pkg.name.slice('@std/'.length))}</p>
+			{/if}
+			<dl class="dossier-facts">
+				<div>
+					<dt>Author</dt>
+					<dd>{pkg.author}</dd>
+				</div>
+				<div>
+					<dt>License</dt>
+					<dd>{pkg.license}</dd>
+				</div>
+				<div>
+					<dt>Published</dt>
+					<dd>{humanDate(pkg.versions[0]?.createdAt ?? 0)}</dd>
+				</div>
+				<div>
+					<dt>Versions</dt>
+					<dd>{pkg.versions.length}</dd>
+				</div>
+			</dl>
+		</div>
+
+		<div class="dossier-install">
+			<p class="dossier-install-label">Install</p>
+			<div class="dossier-install-line">
+				<code>rnx add {pkg.name}</code>
+				<button onclick={copyInstall} class="dossier-copy" style="white-space: nowrap" aria-label="Copy install command">
+					{copied ? 'copied' : 'copy'}
+				</button>
+			</div>
 			{#if pkg.versions.length > 1}
-				<select
-					value={activeVersion.version}
-					onchange={(e) => nav({ v: (e.target as HTMLSelectElement).value })}
-					class="rounded border border-aura-border bg-aura-surfaceElevated px-2 py-0.5 font-mono text-xs"
-					aria-label="Select version"
-				>
-					{#each pkg.versions as v}
-						<option value={v.version}>v{v.version}</option>
-					{/each}
-				</select>
-			{:else}
-				<span class="rounded bg-aura-surfaceElevated px-1.5 py-0.5 font-mono text-[11px] text-aura-muted"
-					>v{activeVersion.version}</span
-				>
+				<label class="dossier-version">
+					<span>Version</span>
+					<select
+						value={activeVersion.version}
+						onchange={(e) => nav({ v: (e.target as HTMLSelectElement).value })}
+						aria-label="Select version"
+					>
+						{#each pkg.versions as v}
+							<option value={v.version}>v{v.version}</option>
+						{/each}
+					</select>
+				</label>
 			{/if}
-			<span class="rounded border border-aura-border px-1.5 py-0.5 font-mono text-[11px] text-aura-muted"
-				>{pkg.license}</span
-			>
 		</div>
-		<p class="mt-2 text-sm text-aura-muted">{pkg.description}</p>
-		<p class="mt-2 flex items-center gap-1.5 font-mono text-xs text-aura-muted">
-			<span
-				class="flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold text-white"
-				style="background-color: hsl({avatarHue(pkg.author)} 45% 38%)"
-				aria-hidden="true">{(pkg.author.replace(/^@/, '')[0] ?? '?').toUpperCase()}</span
-			>
-			<span>by <span class="text-aura-text">@{pkg.author.replace(/^@/, '')}</span></span>
-		</p>
-		{#if pkg.name.startsWith('@std/')}
-			<p class="mt-2 text-sm text-aura-muted"><code class="font-mono text-[13px]">{importSnippet(pkg.name.slice('@std/'.length))}</code></p>
-		{/if}
-		{#if pkg.name === '@std/prelude'}
-			<p class="mt-2 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm">
-				<span class="font-mono text-[11px] uppercase tracking-wider text-emerald-400">implicit scope</span><br />
-				Symbols in <code class="font-mono text-[13px]">@std/prelude</code> are available in every Rasmalai
-				source file out-of-the-box without an explicit import. Explicit imports are supported for
-				disambiguation.
+	</header>
+
+	{#if pkg.name === '@std/prelude'}
+		<div class="callout callout-tip dossier-callout">
+			<p class="callout-label">Implicit scope</p>
+			<p>
+				Symbols in <code>@std/prelude</code> are available in every Rasmalai source file without an
+				explicit import. Explicit imports are supported for disambiguation.
 			</p>
-		{/if}
-		<div class="mt-3 flex items-center gap-2">
-			<code class="tabular flex-1 overflow-x-auto rounded bg-aura-bg px-3 py-2 font-mono text-[13px] text-aura-cyan"
-				>rnx add {pkg.name}</code
-			>
-			<button
-				onclick={copyInstall}
-				class="press shrink-0 rounded border border-aura-border px-3 py-2 font-mono text-xs text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
-			>
-				{copied ? 'copied' : 'copy'}
-			</button>
 		</div>
-	</div>
+	{/if}
 
-	<div class="mt-4 flex gap-1 overflow-x-auto border-b border-aura-border" role="tablist" aria-label="Package views">
-		{#each TABS as t}
-			{#if (t !== 'guides' || guides.length > 0) && (t !== 'api' || apiMods.length > 0)}
-			<button
-				role="tab"
-				aria-selected={tab === t}
-				onclick={() => nav({ tab: t })}
-				class="press -mb-px shrink-0 border-b-2 px-4 py-2 font-mono text-sm capitalize transition-colors duration-150 {tab === t
-					? 'border-aura-purple text-aura-text'
-					: 'border-transparent text-aura-muted hover:text-aura-text'}"
-			>
-				{t}
-			</button>
+	<div class="dossier-body">
+		<aside class="dossier-spine">
+			<div class="dossier-tabs" role="tablist" aria-label="Package views">
+				{#each visibleTabs as t}
+					<button
+						id={`pkg-view-tab-${t}`}
+						role="tab"
+						aria-selected={tab === t}
+						aria-controls="pkg-view-panel"
+						tabindex={tab === t ? 0 : -1}
+						onclick={() => nav({ tab: t })}
+						onkeydown={(event) => onSpineKeydown(event, t)}
+						class="dossier-tab"
+					>
+						{TAB_LABELS[t]}
+					</button>
+				{/each}
+			</div>
+
+			<div class="dossier-block">
+				<p class="dossier-label">Links</p>
+				<div class="dossier-link-list">
+					{#if pkg.name.startsWith('@std/')}
+						<a href="/docs/@std/{pkg.name.slice('@std/'.length)}/overview" class="dossier-link"
+							>guides</a
+						>
+						<a href="/docs/@std/{pkg.name.slice('@std/'.length)}/api" class="dossier-link"
+							>api reference</a
+						>
+					{:else}
+						{#if guides.length > 0}
+							<button onclick={() => nav({ tab: 'guides' })} class="dossier-link">guides</button>
+						{/if}
+						{#if apiMods.length > 0}
+							<button onclick={() => nav({ tab: 'api' })} class="dossier-link">api reference</button>
+						{/if}
+					{/if}
+					{#if pkg.repository}
+						<a href={pkg.repository} rel="external" class="dossier-link">repository</a>
+					{/if}
+					{#if homepage}
+						<a href={homepage} rel="external" class="dossier-link">homepage</a>
+					{/if}
+					{#if !pkg.repository && !homepage && !pkg.name.startsWith('@std/') && guides.length === 0 && apiMods.length === 0}
+						<p class="dossier-link dossier-link-empty">No links listed.</p>
+					{/if}
+				</div>
+			</div>
+
+			{#if permissions.length > 0}
+				<div class="dossier-block">
+					<p class="dossier-label">Permissions</p>
+					<ul class="dossier-perms">
+						{#each permissions as p}
+							<li>
+								<p class="dossier-perm" title={p.arg ? `${p.domain}:${p.arg}` : p.domain}>
+									{p.domain}{#if p.arg}<span>:{p.arg}</span>{/if}
+								</p>
+								{#if p.reason}
+									<p class="dossier-perm-reason">{p.reason}</p>
+								{:else}
+									<p class="dossier-perm-reason dossier-perm-empty">no reason given</p>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				</div>
 			{/if}
-		{/each}
-	</div>
+		</aside>
 
-	<div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_240px]">
-		<div class="min-w-0 pt-4">
+		<div
+			class="dossier-content"
+			id="pkg-view-panel"
+			role="tabpanel"
+			aria-labelledby={`pkg-view-tab-${tab}`}
+		>
 			{#if tab === 'readme'}
 				<article class="doc-prose">
+					<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 					{@html readme.html}
 				</article>
 			{:else if tab === 'code'}
 				{#if treeError}
-					<p class="panel p-6 text-center text-sm text-aura-muted">{treeError}</p>
+					<p class="py-6 text-sm text-aura-muted">{treeError}</p>
 				{:else if tree === null}
-					<p class="panel p-6 text-center font-mono text-xs text-aura-muted" aria-live="polite">Loading file list…</p>
+					<p class="py-6 text-xs text-aura-muted" aria-live="polite">Loading file list…</p>
 				{:else if tree.length === 0}
-					<p class="panel p-6 text-center text-sm text-aura-muted">This version ships no browsable files.</p>
+					<p class="py-6 text-sm text-aura-muted">This version ships no browsable files.</p>
 				{:else}
 					<div class="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
-						<div class="panel max-h-[560px] overflow-auto p-2" aria-label="File tree">
+						<div class="file-tree" aria-label="File tree">
 							{#snippet nodes(n: TreeNode, depth: number)}
-								{#each [...n.kids.values()] as kid}
+								{#each Array.from(n.kids.values()) as kid}
 									{#if kid.kids.size > 0}
 										<div>
 											<button
 												onclick={() => toggleDir(kid.full)}
-												class="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left font-mono text-[13px] text-aura-muted hover:bg-aura-surfaceElevated hover:text-aura-text"
-												style="padding-left: {8 + depth * 12}px"
+												class="file-node whitespace-nowrap"
+												style="padding-left: {8 + depth * 12}px; white-space: nowrap"
 												aria-expanded={openDirs.includes(kid.full)}
 											>
-												<span class="inline-block w-3 text-aura-purple" aria-hidden="true"
+												<span class="file-caret" aria-hidden="true"
 													>{openDirs.includes(kid.full) ? '▾' : '▸'}</span
 												>
 												<span class="truncate">{kid.name}/</span>
@@ -494,34 +615,33 @@ import { importSnippet } from '$lib/docs/stdlib';
 									{:else}
 										<button
 											onclick={() => loadFile(kid.full)}
-											class="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left font-mono text-[13px] {openFile === kid.full
-												? 'bg-aura-surfaceElevated text-aura-text'
-												: 'text-aura-muted hover:bg-aura-surfaceElevated hover:text-aura-text'}"
-											style="padding-left: {8 + depth * 12 + 12}px"
+											class="file-node whitespace-nowrap"
+											class:file-node-active={openFile === kid.full}
+											style="padding-left: {8 + depth * 12 + 12}px; white-space: nowrap"
 										>
 											<span class="min-w-0 flex-1 truncate">{kid.name}</span>
-											<span class="tabular shrink-0 text-[11px] opacity-70">{fmtSize(kid.size)}</span>
+											<span class="tabular shrink-0 text-[10px] opacity-70">{fmtSize(kid.size)}</span>
 										</button>
 									{/if}
 								{/each}
 							{/snippet}
 							{@render nodes(fileTree, 0)}
 						</div>
-						<div class="panel min-w-0 overflow-hidden" aria-live="polite">
+						<div class="file-view" aria-live="polite">
 							{#if fileLoading}
-								<p class="p-6 text-center font-mono text-xs text-aura-muted">Loading {openFile}…</p>
+								<p class="p-6 text-center text-xs text-aura-muted">Loading {openFile}…</p>
 							{:else if fileError}
 								<p class="p-6 text-center text-sm text-aura-muted">{fileError}</p>
 							{:else if openFile === null}
 								<p class="p-6 text-center text-sm text-aura-muted">Pick a file to read it here.</p>
 							{:else if fileText === null || isBinary(openFile)}
 								<div class="p-6 text-center text-sm text-aura-muted">
-									<p class="font-mono text-xs">{openFile} — {fmtSize(fileSize)} of binary data.</p>
+									<p class="text-xs"><span class="font-mono">{openFile}</span> - {fmtSize(fileSize)} of binary data.</p>
 								</div>
 							{:else}
-								<p class="border-b border-aura-border px-4 py-2 font-mono text-xs text-aura-muted">{openFile}</p>
+								<p class="file-view-head">{openFile}</p>
 								{#if fileNotice}
-									<p class="border-b border-aura-border px-4 py-2 font-mono text-[11px] text-aura-muted">{fileNotice}</p>
+									<p class="file-view-note">{fileNotice}</p>
 								{/if}
 								<AuraCode source={fileText} showCopy />
 							{/if}
@@ -530,87 +650,110 @@ import { importSnippet } from '$lib/docs/stdlib';
 				{/if}
 			{:else if tab === 'guides'}
 				{#if guides.length === 0}
-					<p class="panel p-6 text-center text-sm text-aura-muted">This version ships no guides.</p>
+					<p class="py-6 text-sm text-aura-muted">This version ships no guides.</p>
 				{:else}
-					<div class="flex flex-wrap gap-2" role="tablist" aria-label="Guides">
+					<div class="pkg-subtabs" role="tablist" aria-label="Guides">
 						{#each guides as g}
 							<button
+								id={`pkg-guide-tab-${g.slug}`}
 								role="tab"
 								aria-selected={selectedGuide?.slug === g.slug}
+								aria-controls="pkg-guide-panel"
+								tabindex={selectedGuide?.slug === g.slug ? 0 : -1}
 								onclick={() => (openGuide = g.slug)}
-								class="press rounded border px-3 py-1.5 font-mono text-[13px] {selectedGuide?.slug === g.slug
-									? 'border-aura-purple text-aura-text'
-									: 'border-aura-border text-aura-muted hover:border-aura-borderHover hover:text-aura-text'}"
+								onkeydown={(event) => onGuideKeydown(event, g.slug)}
+								class="pkg-subtab"
 							>
 								{g.title}
 							</button>
 						{/each}
 					</div>
 					{#if selectedGuide}
-						<article class="doc-prose mt-4">
-							{@html selectedGuide.html}
-						</article>
+						<div
+							id="pkg-guide-panel"
+							role="tabpanel"
+							aria-labelledby={`pkg-guide-tab-${selectedGuide.slug}`}
+						>
+							<article class="doc-prose mt-6">
+								<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+								{@html selectedGuide.html}
+							</article>
+						</div>
 					{/if}
 				{/if}
 			{:else if tab === 'api'}
 				{#if apiMods.length === 0}
-					<p class="panel p-6 text-center text-sm text-aura-muted">No API reference published for this version yet.</p>
+					<p class="py-6 text-sm text-aura-muted">No API reference published for this version yet.</p>
 				{:else}
 					{#each apiMods as m (m.name)}
-						<h2 class="mt-6 font-mono text-sm font-bold text-aura-text first:mt-0">{displayModuleName(m.name)}{#if isGeneratedModule(m.name)}<span class="ml-2 rounded border border-aura-border px-1.5 py-0.5 align-middle text-[11px] font-normal text-aura-muted">generated</span>{/if}</h2>
+						<h2 class="pkg-api-mod">
+							{displayModuleName(m.name)}
+							{#if isGeneratedModule(m.name)}
+								<span class="text-[11px] font-normal text-aura-faint">generated</span>
+							{/if}
+						</h2>
 						<ModuleDocs mod={m} allMods={apiMods} idPrefix="{m.name}-" />
 					{/each}
 				{/if}
 			{:else if tab === 'dependencies'}
 				{#if manifestDeps === null}
-					<p class="panel p-6 text-center font-mono text-xs text-aura-muted" aria-live="polite">Loading dependencies…</p>
+					<p class="py-6 text-xs text-aura-muted" aria-live="polite">Loading dependencies…</p>
 				{:else if manifestDeps.length === 0}
-					<p class="panel p-6 text-center text-sm text-aura-muted">No dependencies.</p>
+					<p class="py-6 text-sm text-aura-muted">No dependencies.</p>
 				{:else}
-					<ul class="panel divide-y divide-aura-border">
+					<ul class="index-list">
 						{#each manifestDeps as d}
-							<li class="flex items-baseline gap-3 px-4 py-2.5">
-								<a href="/packages/{d.name}" class="font-mono text-sm font-bold text-aura-cyan hover:underline">{d.name}</a>
-								{#if d.range}<span class="tabular font-mono text-xs text-aura-muted">{d.range}</span>{/if}
+							<li>
+								<a href="/packages/{d.name}" class="index-row">
+									<span class="index-row-num">-</span>
+									<span class="index-row-title font-mono">{d.name}</span>
+									<span class="index-row-desc font-mono">{d.range}</span>
+								</a>
 							</li>
 						{/each}
 					</ul>
 				{/if}
 			{:else if tab === 'dependents'}
 				{#if dependentsError}
-					<p class="panel p-6 text-center text-sm text-aura-muted">{dependentsError}</p>
+					<p class="py-6 text-sm text-aura-muted">{dependentsError}</p>
 				{:else if dependents === null}
-					<p class="panel p-6 text-center font-mono text-xs text-aura-muted" aria-live="polite">Loading dependents…</p>
+					<p class="py-6 text-xs text-aura-muted" aria-live="polite">Loading dependents…</p>
 				{:else if dependents.length === 0}
-					<p class="panel p-6 text-center text-sm text-aura-muted">No known dependents.</p>
+					<p class="py-6 text-sm text-aura-muted">No known dependents.</p>
 				{:else}
-					<ul class="panel divide-y divide-aura-border">
+					<ul class="index-list">
 						{#each dependents as name}
-							<li class="px-4 py-2.5">
-								<a href="/packages/{name}" class="font-mono text-sm font-bold text-aura-cyan hover:underline">{name}</a>
+							<li>
+								<a href="/packages/{name}" class="index-row">
+									<span class="index-row-num">-</span>
+									<span class="index-row-title font-mono">{name}</span>
+									<span class="index-row-desc"></span>
+								</a>
 							</li>
 						{/each}
 					</ul>
 				{/if}
 			{:else}
-				<div class="panel overflow-x-auto">
-					<table class="w-full min-w-[560px] border-collapse font-mono text-[13px]">
+				<div class="doc-table-wrap mt-0">
+					<table class="doc-table">
 						<thead>
-							<tr class="border-b border-aura-border text-left text-aura-muted">
-								<th class="px-4 py-2.5 font-medium">version</th>
-								<th class="px-4 py-2.5 font-medium">released</th>
-								<th class="px-4 py-2.5 font-medium">sha-256</th>
-								<th class="px-4 py-2.5 text-right font-medium">view</th>
+							<tr>
+								<th>version</th>
+								<th>released</th>
+								<th>sha-256</th>
+								<th class="text-right">view</th>
 							</tr>
 						</thead>
 						<tbody>
 							{#each pkg.versions as v}
-								<tr class="border-b border-aura-border last:border-0">
-									<td class="px-4 py-2.5 text-aura-purple">v{v.version}</td>
-									<td class="tabular px-4 py-2.5 text-aura-muted" title={isoDate(v.createdAt)}>{humanDate(v.createdAt)}</td>
-									<td class="tabular px-4 py-2.5 text-aura-muted">{v.checksum.slice(0, 12)}...</td>
-									<td class="px-4 py-2.5 text-right">
-										<button onclick={() => nav({ v: v.version })} class="text-aura-cyan hover:underline">view</button>
+								<tr>
+									<td class="font-mono text-aura-accent">v{v.version}</td>
+									<td class="tabular font-mono text-aura-muted" title={isoDate(v.createdAt)}
+										>{humanDate(v.createdAt)}</td
+									>
+									<td class="tabular font-mono text-aura-muted">{v.checksum.slice(0, 12)}…</td>
+									<td class="text-right">
+										<button onclick={() => nav({ v: v.version })} class="doc-btn ml-auto">view</button>
 									</td>
 								</tr>
 							{/each}
@@ -620,84 +763,11 @@ import { importSnippet } from '$lib/docs/stdlib';
 			{/if}
 		</div>
 
-		<aside class="space-y-4 pt-4 text-sm">
-			<div class="panel p-4">
-				<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">install</p>
-				<div class="mt-2 flex items-center gap-2">
-					<code class="tabular min-w-0 flex-1 overflow-x-auto font-mono text-[13px] text-aura-cyan">rnx add {pkg.name}</code>
-					<button
-						onclick={copyInstall}
-						class="shrink-0 rounded border border-aura-border px-2 py-0.5 font-mono text-[11px] text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
-					>
-						{copied ? 'copied' : 'copy'}
-					</button>
-				</div>
-			</div>
-			<div class="panel p-4">
-				<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">links</p>
-				<ul class="mt-1 space-y-1 font-mono text-[13px]">
-					{#if pkg.name.startsWith('@std/')}
-						<li><a href="/docs/@std/{pkg.name.slice('@std/'.length)}/overview" class="break-all text-aura-cyan hover:underline">guides</a></li>
-						<li><a href="/docs/@std/{pkg.name.slice('@std/'.length)}/api" class="break-all text-aura-cyan hover:underline">api reference</a></li>
-					{:else}
-						{#if guides.length > 0}
-							<li><button onclick={() => nav({ tab: 'guides' })} class="break-all text-aura-cyan hover:underline">guides</button></li>
-						{/if}
-						{#if apiMods.length > 0}
-							<li><button onclick={() => nav({ tab: 'api' })} class="break-all text-aura-cyan hover:underline">api reference</button></li>
-						{/if}
-					{/if}
-				{#if pkg.repository}
-						<li><a href={pkg.repository} rel="external" class="break-all text-aura-cyan hover:underline">repository</a></li>
-					{/if}
-					{#if homepage}
-						<li><a href={homepage} rel="external" class="break-all text-aura-cyan hover:underline">homepage</a></li>
-					{/if}
-					{#if !pkg.repository && !homepage}
-						<li class="text-aura-muted">No links listed.</li>
-					{/if}
-				</ul>
-			</div>
-			<div class="panel space-y-2 p-4">
-				<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">details</p>
-				<dl class="space-y-1.5 text-[13px]">
-					<div class="flex justify-between gap-2">
-						<dt class="text-aura-muted">version</dt>
-						<dd class="tabular font-mono">v{activeVersion.version}</dd>
-					</div>
-					<div class="flex justify-between gap-2">
-						<dt class="text-aura-muted">license</dt>
-						<dd class="font-mono">{pkg.license}</dd>
-					</div>
-					<div class="flex justify-between gap-2">
-						<dt class="text-aura-muted">published</dt>
-						<dd class="tabular font-mono" title={isoDate(pkg.versions[0]?.createdAt ?? 0)}>
-							{humanDate(pkg.versions[0]?.createdAt ?? 0)}
-						</dd>
-					</div>
-					<div class="flex justify-between gap-2">
-						<dt class="text-aura-muted">versions</dt>
-						<dd class="tabular font-mono">{pkg.versions.length}</dd>
-					</div>
-				</dl>
-			</div>
-			{#if permissions.length > 0}
-				<div class="panel space-y-2 p-4">
-					<p class="font-mono text-[11px] uppercase tracking-wider text-aura-muted">permissions</p>
-					<ul class="space-y-2">
-						{#each permissions as p}
-							<li class="min-w-0">
-								<p class="truncate font-mono text-[13px] text-aura-text" title={p.arg ? `${p.domain}:${p.arg}` : p.domain}>{p.domain}{#if p.arg}<span class="text-aura-muted">:{p.arg}</span>{/if}</p>
-								{#if p.reason}
-									<p class="mt-0.5 text-[13px] text-aura-muted">{p.reason}</p>
-								{:else}
-									<p class="mt-0.5 text-[13px] text-aura-muted italic">no reason given</p>
-								{/if}
-							</li>
-						{/each}
-					</ul>
-				</div>
-			{/if}
-		</aside>
 	</div>
 </main>
+
+<style>
+	.pkg-api-mod {
+		overflow-wrap: anywhere;
+	}
+</style>

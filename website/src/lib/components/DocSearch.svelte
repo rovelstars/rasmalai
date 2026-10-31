@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { Search } from 'lucide-svelte';
 	import { goto } from '$app/navigation';
 	import { searchEntries, type SearchEntry, type ScoredEntry } from '$lib/docs/search';
 	import { fetchDataFile } from '$lib/docs/data-url';
@@ -17,10 +18,10 @@
 	}
 
 	const BADGES: Record<SearchEntry['category'], Badge> = {
-		manual: { label: 'Manual', class: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' },
-		guide: { label: 'Guide', class: 'border-sky-500/40 bg-sky-500/10 text-sky-400' },
-		package: { label: 'Package', class: 'border-purple-500/40 bg-purple-500/10 text-purple-400' },
-		symbol: { label: 'API', class: 'border-amber-500/40 bg-amber-500/10 text-amber-400' }
+		manual: { label: 'Manual', class: 'text-aura-green' },
+		guide: { label: 'Guide', class: 'text-aura-cyan' },
+		package: { label: 'Package', class: 'text-aura-purple' },
+		symbol: { label: 'API', class: 'text-aura-orange' }
 	};
 
 	let index: SearchEntry[] = $state([]);
@@ -110,12 +111,21 @@
 		function global(e: KeyboardEvent) {
 			const mod = e.metaKey || e.ctrlKey;
 			if ((mod && e.key.toLowerCase() === 'k') || (e.key === '/' && !open)) {
-				const tag = (e.target as HTMLElement)?.tagName;
-				if (e.key === '/' && (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')) return;
+				if (e.key === '/' && isTypingTarget(e.target)) return;
 				e.preventDefault();
 				open = true;
 				queueMicrotask(() => input?.focus());
 			}
+		}
+		// Keystrokes meant for text must never open search: form fields, the
+		// shell input, and rich editors (CodeMirror is a contenteditable div,
+		// not a textarea).
+		function isTypingTarget(t: unknown): boolean {
+			if (!(t instanceof HTMLElement)) return false;
+			const tag = t.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+			if (t.isContentEditable) return true;
+			return t.closest('[contenteditable="true"], .cm-content, .cm-editor') !== null;
 		}
 		function external() {
 			open = true;
@@ -137,18 +147,19 @@
 		open = true;
 		queueMicrotask(() => input?.focus());
 	}}
-	class="press hidden items-center gap-2 rounded-md border border-aura-border px-2.5 py-1 font-mono text-xs text-aura-muted hover:border-aura-borderHover hover:text-aura-text lg:flex"
+	class="search-trigger"
 	aria-label="Search docs"
 >
-	<span>search docs</span>
-	<span class="rounded border border-aura-border px-1">⌘K</span>
+	<Search size={14} />
+	<span>Search</span>
+	<kbd class="search-key">⌘K</kbd>
 </button>
 
 {#if open}
 	<!-- svelte-ignore a11y_click_events_have_key_events: backdrop has an Escape key handler below -->
 	<div
 		use:portal
-		class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 px-4 pb-4 pt-[8vh] sm:items-center sm:p-8"
+		class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/65 px-4 pb-4 pt-[8vh] backdrop-blur-sm sm:items-center sm:p-8"
 		onclick={() => (open = false)}
 		onkeydown={(e) => {
 			if (e.key === 'Escape') open = false;
@@ -156,21 +167,25 @@
 		role="presentation"
 	>
 		<div
-			class="panel modal-pop max-h-[80vh] w-full max-w-2xl overflow-hidden"
+			class="panel modal-pop max-h-[80vh] w-full max-w-2xl overflow-hidden bg-aura-bg"
 			role="dialog"
 			tabindex="-1"
 			aria-modal="true"
 			aria-label="Search docs"
 			onclick={(e) => e.stopPropagation()}
 		>
-			<input
-				bind:this={input}
-				bind:value={query}
-				placeholder="concepts, chapters, @std symbols..."
-				class="w-full border-b border-aura-border bg-transparent px-4 py-3 text-sm outline-none placeholder:text-aura-muted"
-				aria-label="Search query"
-			/>
-			<ul bind:this={list} class="max-h-72 overflow-auto p-1.5">
+			<div class="flex items-center gap-3 border-b border-aura-border px-5 py-1">
+				<Search size={16} class="shrink-0 text-aura-faint" />
+				<input
+					bind:this={input}
+					bind:value={query}
+					placeholder="Search the manual, guide, packages and API"
+					class="w-full bg-transparent py-4 text-[15px] text-aura-text outline-none placeholder:text-aura-faint"
+					aria-label="Search query"
+				/>
+				<kbd class="search-key shrink-0">esc</kbd>
+			</div>
+			<ul bind:this={list} class="max-h-[60vh] overflow-auto p-2">
 				{#each results as r, i}
 					{@const badge = BADGES[r.category]}
 					{@const hl = highlight(r.title, query)}
@@ -178,30 +193,69 @@
 						<button
 							onclick={() => go(r.url)}
 							onmouseenter={() => (selected = i)}
-							class="flex min-h-8 w-full items-center justify-between gap-3 rounded px-2.5 py-1.5 text-left text-sm {i ===
+							class="flex min-h-11 w-full items-center justify-between gap-4 rounded-sm px-3 py-2 text-left text-sm {i ===
 							selected
 								? 'bg-aura-surfaceElevated text-aura-text'
 								: 'text-aura-muted'}"
 						>
 							<span class="min-w-0">
 								{#if r.section}
-									<span class="block truncate font-mono text-[10px] uppercase tracking-wider opacity-60">{r.section}</span>
+									<span class="block truncate text-[11px] text-aura-faint">{r.section}</span>
 								{/if}
-								<span class="block truncate font-mono text-[13px]">{hl.pre}{#if hl.hit}<mark
+								<span class="block truncate">{hl.pre}{#if hl.hit}<mark
 											class="bg-transparent font-semibold text-aura-green">{hl.hit}</mark
 										>{/if}{hl.post}</span
 								>
 							</span>
-							<span class="shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] {badge.class}">{badge.label}</span>
+							<span class="shrink-0 text-[11px] {badge.class}">{badge.label}</span>
 						</button>
 					</li>
 				{/each}
 				{#if results.length === 0}
-					<li class="px-2.5 py-3 text-sm text-aura-muted">
+					<li class="px-3 py-4 text-sm text-aura-muted">
 						{indexMissing ? 'Search index not available yet.' : 'No matches.'}
 					</li>
 				{/if}
 			</ul>
+			<div class="flex items-center gap-4 border-t border-aura-border px-5 py-2.5 text-[11px] text-aura-faint">
+				<span><kbd class="search-key">↑</kbd> <kbd class="search-key">↓</kbd> to move</span>
+				<span><kbd class="search-key">↵</kbd> to open</span>
+			</div>
 		</div>
 	</div>
 {/if}
+
+<style>
+	.search-trigger {
+		display: none;
+		align-items: center;
+		gap: var(--space-xs);
+		min-height: 36px;
+		padding: 0 var(--space-xs) 0 var(--space-sm);
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-sm);
+		font-size: var(--text-xs);
+		color: var(--color-muted);
+	}
+
+	.search-trigger:hover {
+		border-color: var(--color-rule-strong);
+		color: var(--color-ink);
+	}
+
+	@media (min-width: 1024px) {
+		.search-trigger {
+			display: inline-flex;
+		}
+	}
+
+	.search-key {
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-xs);
+		padding: 1px 5px;
+		font-family: var(--font-mono);
+		font-size: 10px;
+		line-height: 1.5;
+		color: var(--color-faint);
+	}
+</style>

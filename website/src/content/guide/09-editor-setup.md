@@ -4,21 +4,21 @@ description: "Syntax highlighting and rnx lsp in VS Code, Zed, Helix, and Neovim
 icon: "Monitor"
 ---
 
-# Editor Setup
+# Editor setup
 
-Reading code in a plain text box gets old fast. Every editor integration talks to the same server — `rnx lsp` over stdio — which typechecks your open files on every change and pushes back errors and lint warnings with their `E`/`L` codes. The fastest way to get it running is the setup command:
+Reading code in a plain text box gets old fast. Every editor integration talks to the same server (`rnx lsp` over stdio), which typechecks your open files on every change and pushes back errors and lint warnings with their `E`/`L` codes. The fastest way to get it running is the setup command:
 
 ```sh
 rnx setup vscode   # or: zed, helix, neovim
 ```
 
-`rnx` itself must be on `PATH` first — that is the one thing every editor needs. If it is not installed yet, go back to [Introduction](/guide/01-introduction) and install it, then confirm:
+`rnx` itself must be on `PATH` first. That is the one thing every editor needs. If it is not installed yet, go back to [Introduction](/guide/01-introduction) and install it, then confirm:
 
 ```sh
 rnx --version
 ```
 
-Each `rnx setup <editor>` prints exactly what it changed and what to do next. Unknown names fail with the supported list, so `rnx setup emacs` tells you the four it knows. The rest of this page shows what the command does per editor, so you can also do it by hand — or understand what the command did to your config.
+Each `rnx setup <editor>` prints exactly what it changed and what to do next. Unknown names fail with the supported list, so `rnx setup emacs` tells you the four it knows. The rest of this page shows what the command does per editor, so you can also do it by hand, or understand what the command did to your config.
 
 Before blaming the editor, check that the server answers on its own. Typecheck a file straight from the terminal:
 
@@ -34,7 +34,7 @@ fn Main(): Int {
 rnx check main.rnx
 ```
 
-Exit code `0` with no output means the file is clean — the same result the editor should show as zero squiggles. If the terminal disagrees with the editor, the problem is the wiring, not your code.
+Exit code `0` with no output means the file is clean. That is the same result the editor should show as zero squiggles. If the terminal disagrees with the editor, the problem is the wiring, not your code.
 
 ## <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/visualstudiocode.svg" alt="VS Code" width="20" height="20" class="harness-logo harness-inv" /> VS Code
 
@@ -42,7 +42,7 @@ Exit code `0` with no output means the file is clean — the same result the edi
 rnx setup vscode
 ```
 
-The command installs the packaged extension when it finds a local `.vsix` next to the checkout and the `code` CLI on `PATH`. Otherwise it prints manual steps, because the extension is not on the Marketplace — install it from source:
+The command installs the packaged extension when it finds a local `.vsix` next to the checkout and the `code` CLI on `PATH`. Otherwise it prints manual steps, because the extension is not on the Marketplace. Install it from source:
 
 ```sh
 cd editors/vscode
@@ -92,7 +92,7 @@ Rasmalai fall back as follows:
   File → Preferences → File Icon Theme when your main theme shows a
   generic icon. It is a fallback, not a full theme: it styles `.rnx`
   files and leaves everything else to VS Code defaults.
-- **Zed**: extensions cannot ship custom file icons — Zed renders its
+- **Zed**: extensions cannot ship custom file icons. Zed renders its
   built-in generic icon and there is nothing to configure. Upstream
   icon support is the only fix; the canonical SVG above is what to
   point it at.
@@ -104,7 +104,7 @@ Rasmalai fall back as follows:
 rnx setup helix
 ```
 
-The command appends `editors/helix/languages.toml` to `~/.config/helix/languages.toml` (or `$XDG_CONFIG_HOME/helix/languages.toml`), backing up your existing file to `languages.toml.bak` first. Running it twice is safe — it detects the stanza and stops. By hand, merge this into yours:
+The command appends `editors/helix/languages.toml` to `~/.config/helix/languages.toml` (or `$XDG_CONFIG_HOME/helix/languages.toml`), backing up your existing file to `languages.toml.bak` first. Running it twice is safe. It detects the stanza and stops. By hand, merge this into yours:
 
 ```toml
 [[language]]
@@ -171,6 +171,6 @@ Three causes cover nearly everything, so check them in order before reinstalling
 
 - `rnx: command not found` in the editor log means `PATH` differs between your shell and the editor. Launch the editor from the shell once, or set an absolute binary path (VS Code's `rasmalai.serverPath`, Zed's `binary.path`).
 - Stale squiggles after an upgrade mean the editor kept an old server alive. Restart the editor so it respawns `rnx lsp` from the new binary.
-- To see the raw protocol, most clients have a trace setting — VS Code exposes it as `rasmalai.trace.server`. Server-side log lines go to stderr, never to the protocol stream.
+- To see the raw protocol, most clients have a trace setting. VS Code exposes it as `rasmalai.trace.server`. Server-side log lines go to stderr, never to the protocol stream.
 
-If none of that helps, the problem is probably not the editor at all — work through [Troubleshooting](/guide/11-troubleshooting-and-reinstall). From here, the [AI Assistants](/guide/10-ai-assistants) page wires the same toolchain into agents through `rnx mcp`.
+If none of that helps, the problem is probably not the editor at all. Work through [Troubleshooting](/guide/11-troubleshooting-and-reinstall). From here, the [AI Assistants](/guide/10-ai-assistants) page wires the same toolchain into agents through `rnx mcp`.

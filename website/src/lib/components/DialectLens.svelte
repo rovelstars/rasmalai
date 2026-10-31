@@ -24,19 +24,19 @@
 </script>
 
 <div
-	class="flex items-center gap-0.5 rounded-full border border-aura-border p-0.5"
+	class="flex items-center gap-px overflow-hidden rounded-sm border border-aura-border"
 	role="group"
 	aria-label="Dialect lens"
 >
 	{#if !compact}
-		<span class="px-2 font-mono text-[11px] text-aura-muted">lens</span>
+		<span class="px-2 font-mono text-[11px] text-aura-faint">lens</span>
 	{/if}
 	{#each OPTIONS as o}
 		<button
 			onclick={() => pick(o.value)}
-			class="press flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[11px] font-medium {getDialect() === o.value
-				? 'border border-aura-purple/40 bg-aura-surfaceElevated text-aura-purple'
-				: 'border border-transparent text-aura-muted hover:text-aura-text'}"
+			class="press flex items-center gap-1 px-2 py-1 font-mono text-[11px] {getDialect() === o.value
+				? 'bg-aura-purple/10 text-aura-purple'
+				: 'text-aura-muted hover:text-aura-text'}"
 			aria-pressed={getDialect() === o.value}
 		>
 			{#if o.value !== 'none'}<LangIcon lang={o.value} size={12} />{/if}

@@ -2,7 +2,6 @@
 	import { onMount, untrack } from 'svelte';
 	import { LoaderCircle } from 'lucide-svelte';
 	import CountUp from '$lib/motion/CountUp.svelte';
-	import { reveal } from '$lib/motion/reveal';
 
 	interface Result {
 		lang: string;
@@ -53,13 +52,13 @@
 	);
 	const LANG_ORDER = ['rnx', 'c', 'rust', 'go', 'node', 'java', 'dart'];
 	const LANG_COLOR: Record<string, string> = {
-		rnx: '#61ffca',
-		c: '#8b9bb4',
-		rust: '#ff9e64',
-		go: '#82e2ff',
-		node: '#7ee787',
-		java: '#ff6767',
-		dart: '#79c0ff'
+		rnx: 'rgb(var(--aura-green))',
+		c: 'rgb(var(--aura-faint))',
+		rust: 'rgb(var(--aura-orange))',
+		go: 'rgb(var(--aura-cyan))',
+		node: 'rgb(var(--aura-green))',
+		java: 'rgb(var(--aura-red))',
+		dart: 'rgb(var(--aura-pink))'
 	};
 
 	const measuredOn = $derived(snapshot?.system?.cpu ?? 'unknown machine');
@@ -70,6 +69,7 @@
 	let yMode = $state<'ram' | 'build'>('ram');
 	let mode = $state<'all' | 'dev' | 'rel'>('all');
 	let hovered = $state<string | null>(null);
+	let pinned = $state<string | null>(null);
 
 	const sel = $derived(BENCHES.find((b) => b.id === selId)?.bench ?? BENCHES[0]?.bench);
 
@@ -107,24 +107,6 @@
 		if (ratio >= 1) return `${ratio.toFixed(2)}x faster`;
 		return `${(1 / ratio).toFixed(1)}x slower`;
 	}
-
-	// Pareto skyline (min runtime, min y): sorted by x, strictly decreasing y.
-	// Carried as indices into `ordered` so the path, the zone, and the dot
-	// markers can never disagree about which point they mean.
-	const frontierIdx = $derived.by(() => {
-		const sorted = ordered.map((r, i) => ({ r, i })).sort((a, b) => a.r.runtime_ms - b.r.runtime_ms);
-		const out: number[] = [];
-		let best = Infinity;
-		for (const { r, i } of sorted) {
-			const y = yMode === 'ram' ? r.peak_rss_mb : r.build_ms;
-			if (y < best) {
-				best = y;
-				out.push(i);
-			}
-		}
-		return out;
-	});
-	const frontier = $derived(frontierIdx.map((i) => ordered[i]));
 
 	const fastest = $derived([...ordered].sort((a, b) => a.runtime_ms - b.runtime_ms)[0]);
 	const leanest = $derived([...ordered].sort((a, b) => a.peak_rss_mb - b.peak_rss_mb)[0]);
@@ -268,74 +250,45 @@
 	const xminors = $derived(shown ? minorTicks(shown.dx0, shown.dx1) : []);
 	const yminors = $derived(shown ? minorTicks(shown.dy0, shown.dy1) : []);
 
-	// Collision-aware label placement: greedy over candidate slots
-	// (right / above-right / below-right / left, then wider offsets),
-	// rejecting any slot whose box hits another label or a dot.
-	interface Placement {
-		dx: number;
-		dy: number;
-		anchor: 'start' | 'end';
-		leader: boolean;
-	}
-	const placements = $derived.by(() => {
-		const fallback: Placement = { dx: 11, dy: 4, anchor: 'start', leader: false };
-		if (!shown) return ordered.map(() => fallback);
+	// Label placement: every dot is named, anchored right, staggered so no
+	// two labels share a row and no label covers a dot. Near the right
+	// edge the label flips left.
+	const labelLayout = $derived.by((): { dx: number; dy: number; anchor: 'start' | 'end' }[] => {
+		const idle = { dx: 11, dy: 4, anchor: 'start' as const };
+		if (!shown) return ordered.map(() => ({ ...idle }));
 		const tgt = computeTargets().pts;
-		const pts = ordered.map((r, i) => {
+		const items = ordered.map((r, i) => {
 			const p = shown!.pts[i] ?? tgt[i];
-			return {
-				i,
-				x: sx(p.x),
-				y: sy(p.y),
-				lang: r.label,
-				rnx: r.lang === 'rnx' && r.mode === 'rel'
-			};
+			return { i, x: p ? sx(p.x) : 0, y: p ? sy(p.y) : 0, w: 10 + displayLabel(r.label).length * 6.8 };
 		});
-		const dots = pts.map((p) => ({ x: p.x, y: p.y, r: (p.rnx ? 7 : 5.5) + 2 }));
-		const seq = [...pts].sort(
-			(a, b) => (b.rnx ? 1 : 0) - (a.rnx ? 1 : 0) || a.x - b.x || a.y - b.y
-		);
-		const boxes: { x0: number; y0: number; x1: number; y1: number }[] = [];
-		const out: Placement[] = pts.map(() => fallback);
-		const hits = (b: { x0: number; y0: number; x1: number; y1: number }) => {
-			for (const o of boxes) {
-				if (b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0) return true;
-			}
-			for (const d of dots) {
-				const cx = Math.max(b.x0, Math.min(d.x, b.x1));
-				const cy = Math.max(b.y0, Math.min(d.y, b.y1));
-				if ((cx - d.x) * (cx - d.x) + (cy - d.y) * (cy - d.y) < d.r * d.r) return true;
-			}
-			return false;
-		};
-		for (const n of seq) {
-			const w = 10 + n.lang.length * 6.8;
-			const h = 13;
-			const cands: Placement[] = [
-				{ dx: 11, dy: 4, anchor: 'start', leader: false },
-				{ dx: 11, dy: -10, anchor: 'start', leader: true },
-				{ dx: 11, dy: 18, anchor: 'start', leader: true },
-				{ dx: -9, dy: 4, anchor: 'end', leader: true },
-				{ dx: 11, dy: -24, anchor: 'start', leader: true },
-				{ dx: 11, dy: 32, anchor: 'start', leader: true }
-			];
-			let placed: Placement = cands[0];
-			let ok = false;
-			for (const c of cands) {
-				const x0 = c.anchor === 'start' ? n.x + c.dx : n.x + c.dx - w;
-				const box = { x0, y0: n.y + c.dy - 10, x1: x0 + w, y1: n.y + c.dy + 3 };
-				if (!hits(box)) {
-					boxes.push(box);
-					placed = c;
-					ok = true;
+		// Dots are blockers too: a label may not cover any dot but its own.
+		const dots = items.map((d) => ({ x0: d.x - 10, x1: d.x + 10, y0: d.y - 10, y1: d.y + 10 }));
+		const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+		const out: { dx: number; dy: number; anchor: 'start' | 'end' }[] = items.map(() => ({
+			dx: 11,
+			dy: 4,
+			anchor: 'start' as const
+		}));
+		for (const { i, x, y, w } of [...items].sort((a, b) => a.y - b.y)) {
+			const flips = x > W - 130;
+			const anchor = flips ? 'end' : 'start';
+			const x0 = flips ? x - 9 - w : x + 11;
+			const x1 = flips ? x - 9 : x + 11 + w;
+			let dy = 4;
+			for (let round = 0; round < 12; round++) {
+				const y0 = y + dy - 11;
+				const y1 = y + dy + 4;
+				const hit = [...dots.filter((_, di) => di !== i), ...placed].find(
+					(b) => x0 < b.x1 && x1 > b.x0 && y0 < b.y1 && y1 > b.y0
+				);
+				if (!hit) {
+					placed.push({ x0, x1, y0, y1 });
 					break;
 				}
+				dy = hit.y1 - y + 12;
+				if (round === 11) placed.push({ x0, x1, y0: y + dy - 11, y1: y + dy + 4 });
 			}
-			if (!ok) {
-				const x0 = n.x + placed.dx;
-				boxes.push({ x0, y0: n.y + placed.dy - 10, x1: x0 + w, y1: n.y + placed.dy + 3 });
-			}
-			out[n.i] = placed;
+			out[i] = { dx: flips ? -9 : 11, dy, anchor };
 		}
 		return out;
 	});
@@ -361,573 +314,749 @@
 		return `${+v.toFixed(3)}`;
 	}
 
-	const frontierPath = $derived.by(() => {
-		if (!shown) return '';
-		const tgt = computeTargets().pts;
-		return frontierIdx
-			.map((i) => shown!.pts[i] ?? tgt[i])
-			.filter((p): p is { x: number; y: number } => !!p)
-			.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`)
-			.join(' L ');
-	});
-
-	const idealRect = $derived.by(() => {
-		if (!shown || frontierIdx.length === 0) return null;
-		const tgt = computeTargets().pts;
-		const fps = frontierIdx.map((i) => shown!.pts[i] ?? tgt[i]);
-		const fx = Math.max(...fps.map((p) => sx(p.x)));
-		// Clamp the zone to the lower 30% of the active Y scale so it
-		// never stretches to the top of the domain.
-		const bandTop = T + plotH * 0.7;
-		const bottom = T + plotH;
-		return { x: L, y: bandTop, w: Math.max(0, fx - L), h: Math.max(0, bottom - bandTop) };
-	});
-
 	const hoveredResult = $derived(ordered.find((r) => r.label === hovered) ?? null);
-	const hoveredPt = $derived.by(() => {
-		if (!hoveredResult || !shown) return null;
-		const i = ordered.findIndex((r) => r.label === hoveredResult.label);
+	const pinnedResult = $derived(ordered.find((r) => r.label === pinned) ?? null);
+	const tipResult = $derived(hoveredResult ?? pinnedResult);
+	const tipPt = $derived.by(() => {
+		if (!tipResult || !shown) return null;
+		const i = ordered.findIndex((r) => r.label === tipResult.label);
 		const p = shown.pts[i] ?? computeTargets().pts[i];
 		return p ? { x: sx(p.x), y: sy(p.y) } : null;
 	});
+
+	function togglePin(label: string) {
+		pinned = pinned === label ? null : label;
+	}
+
+	function onDotKeydown(event: KeyboardEvent, label: string) {
+		if (event.key === 'Enter' || event.key === ' ') {
+			event.preventDefault();
+			togglePin(label);
+		} else if (event.key === 'Escape') {
+			pinned = null;
+		}
+	}
 </script>
 
-<div class="bay" data-testid="pareto-scatter">
+<div class="speed" data-testid="pareto-scatter">
 	{#if noData}
-		<div class="px-4 py-8 md:px-8">
-			<h3 class="text-lg font-bold text-aura-text md:text-xl">No benchmark data yet</h3>
-			<p class="mt-2 max-w-prose font-mono text-[12px] leading-relaxed text-aura-muted">
-				Rasmalai has not published a benchmark run yet, so this chart appears after the first
-				monthly run.
-			</p>
-		</div>
+		<p class="speed-empty">No benchmark data yet. Rasmalai has not published a benchmark run, so this figure appears after the first monthly run.</p>
 	{:else if !sel}
-		<div class="flex items-center gap-2 px-4 py-8 font-mono text-[12px] text-aura-muted">
-			<LoaderCircle size={13} class="animate-spin" />Loading benchmark data...
-		</div>
+		<p class="speed-empty speed-loading">
+			<LoaderCircle size={13} class="motion-reduce:animate-none animate-spin" />Loading benchmark data...
+		</p>
 	{/if}
 
 	{#if sel}
-		<div
-			class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-aura-border px-4 py-2 font-mono text-[11px]"
-		>
-			<span class="text-aura-muted">proving ground - measured runtime - {measuredOn}</span>
-			<span class="ml-auto hidden text-aura-muted sm:inline">[ RUN: {measuredAt} ]</span>
-		</div>
+		<p class="speed-prov">Measured runtime on {measuredOn} · run {measuredAt}</p>
 
-		<!-- benchmark tabs -->
-		<div
-			class="flex gap-1 overflow-x-auto border-b border-aura-border p-2"
-			role="group"
-			aria-label="Workload selector"
-		>
-			{#each BENCHES as b}
+		<div class="speed-tabs" role="group" aria-label="Workload selector">
+			{#each BENCHES as b, i}
 				<button
 					onclick={() => (selId = b.id)}
 					aria-pressed={selId === b.id}
-					class="press shrink-0 rounded-full border px-3.5 py-1.5 font-mono text-[12px] whitespace-nowrap {selId ===
-					b.id
-						? 'border-aura-purple/50 bg-aura-purple/10 text-aura-purple'
-						: 'border-aura-border text-aura-muted hover:border-aura-borderHover hover:text-aura-text'}"
+					class="speed-tab"
+					class:speed-tab-active={selId === b.id}
 				>
+					<span class="speed-index">{String(i + 1).padStart(2, '0')}</span>
 					{b.bench.name}
 				</button>
 			{/each}
 		</div>
 
 		{#key selId}
-			<div use:reveal class="px-4 py-6 md:px-8">
-				<div class="flex flex-wrap items-end gap-x-8 gap-y-1">
-					<div>
-						<h3 class="text-lg font-bold text-aura-text md:text-xl">{sel.name}</h3>
-						<p class="font-mono text-[11px] text-aura-muted">
-							{sel.description} - bottom-left is better
-						</p>
-					</div>
-					<div class="tabular ml-auto flex items-baseline gap-5">
-						<p class="font-mono text-3xl font-bold text-aura-green md:text-4xl">
-							<CountUp value={rnx.runtime_ms} decimals={1} suffix=" ms" />
-						</p>
-						<p class="font-mono text-sm text-aura-muted">
-							<CountUp value={rnx.peak_rss_mb} decimals={1} suffix=" MB peak" />
-						</p>
-					</div>
+			<div class="speed-head">
+				<div class="speed-head-main">
+					<h3 class="speed-title">{sel.name}</h3>
+					<p class="speed-desc">{sel.description}, bottom-left is better</p>
 				</div>
-
-				<!-- axis toolbar: what the chart maps, separate from workload tabs -->
-				<div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-					<span class="font-mono text-[10px] tracking-[0.2em] text-aura-muted uppercase"
-						>x-axis - runtime (log scale)</span
-					>
-					<span class="flex items-center gap-2">
-						<span class="font-mono text-[10px] tracking-[0.2em] text-aura-muted uppercase">y-axis</span>
-						<span
-							class="flex divide-x divide-aura-border overflow-hidden rounded-full border border-aura-border"
-							role="group"
-							aria-label="Y axis metric"
-						>
-							{#each [['ram', 'Peak RAM'], ['build', 'Build Time']] as [m, label]}
-								<button
-									onclick={() => (yMode = m as 'ram' | 'build')}
-									aria-pressed={yMode === m}
-									class="press px-3.5 py-1.5 font-mono text-[11px] whitespace-nowrap {yMode === m
-										? 'bg-aura-green/10 text-aura-green'
-										: 'text-aura-muted hover:text-aura-text'}"
-								>
-									{label}
-								</button>
-							{/each}
-						</span>
-					</span>
-					<span class="flex items-center gap-2">
-						<span class="font-mono text-[10px] tracking-[0.2em] text-aura-muted uppercase">modes</span>
-						<span
-							class="flex divide-x divide-aura-border overflow-hidden rounded-full border border-aura-border"
-							role="group"
-							aria-label="Build mode filter"
-						>
-							{#each [['all', 'All'], ['rel', 'Release'], ['dev', 'Dev']] as [m, label]}
-								<button
-									onclick={() => (mode = m as 'all' | 'dev' | 'rel')}
-									aria-pressed={mode === m}
-									class="press px-3.5 py-1.5 font-mono text-[11px] whitespace-nowrap {mode === m
-										? 'bg-aura-green/10 text-aura-green'
-										: 'text-aura-muted hover:text-aura-text'}"
-								>
-									{label}
-								</button>
-							{/each}
-						</span>
-					</span>
-				</div>
-
-				<p class="mt-2 font-mono text-[11px] text-aura-muted">
-					{#if mode === 'all'}
-						Filled dots are release builds, hollow dots are dev builds. Languages with a
-						real dev/release switch appear twice; go, node, and java compile once, so they
-						appear once.
-					{:else if mode === 'rel'}
-						Release builds only, the configuration a shipped binary runs.
-					{:else}
-						Dev builds only: unoptimized codegen and JIT, the configuration you edit
-						against.
-					{/if}
-				</p>
-
-				<div class="mt-3 flex flex-wrap gap-x-6 gap-y-1 font-mono text-[11px] text-aura-muted">
-					<span class="inline-flex items-center gap-2">
-						<svg width="18" height="12" viewBox="0 0 18 12" aria-hidden="true">
-							<rect
-								x="1"
-								y="1"
-								width="16"
-								height="10"
-								fill="#61ffca"
-								opacity="0.12"
-								stroke="#61ffca"
-								stroke-opacity="0.65"
-								stroke-dasharray="3 2"
-							/>
-						</svg>
-						<span><strong class="font-semibold text-aura-text">Ideal zone:</strong> lower-left corner where runtime and {yMetric} are both low.</span>
-					</span>
-					<span class="inline-flex items-center gap-2">
-						<svg width="18" height="12" viewBox="0 0 18 12" aria-hidden="true">
-							<line x1="1" y1="11" x2="17" y2="11" stroke="#6d6d6d" stroke-width="1" />
-							<line x1="6" y1="2" x2="6" y2="11" stroke="#6d6d6d" stroke-width="1" />
-							<line x1="12" y1="2" x2="12" y2="11" stroke="#6d6d6d" stroke-width="1" />
-						</svg>
-						<span><strong class="font-semibold text-aura-text">Log scale:</strong> major gridlines multiply by 10, so equal spacing is not an equal difference.</span>
-					</span>
-				</div>
-
-				<!-- scatter chart (desktop) -->
-				<div class="relative mt-3 hidden md:block">
-					<svg
-						viewBox="0 0 {W} {H}"
-						class="w-full"
-						role="img"
-						aria-label="{sel.name}: runtime versus {yMetric} by language and build mode"
-					>
-						<defs>
-							<marker
-								id="pareto-axis-arrow"
-								viewBox="0 0 10 10"
-								refX="8"
-								refY="5"
-								markerWidth="7"
-								markerHeight="7"
-								orient="auto-start-reverse"
-							>
-								<path d="M0,1 L9,5 L0,9 z" fill="#6d6d6d" />
-							</marker>
-						</defs>
-						{#if shown && idealRect}
-							<rect
-								x={idealRect.x}
-								y={idealRect.y}
-								width={idealRect.w}
-								height={idealRect.h}
-								fill="#61ffca"
-								opacity="0.045"
-							/>
-							<rect
-								x={idealRect.x}
-								y={idealRect.y}
-								width={idealRect.w}
-								height={idealRect.h}
-								fill="none"
-								stroke="#61ffca"
-								stroke-opacity="0.25"
-								stroke-dasharray="4 4"
-							/>
-							<text
-								x={idealRect.x + 6}
-								y={idealRect.y + 14}
-								fill="#61ffca"
-								opacity="0.55"
-								font-size="10"
-								font-family="JetBrains Mono, Menlo, monospace">ideal zone</text
-							>
-						{/if}
-
-						{#each xminors as v}
-							<line
-								x1={L + ((v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
-								y1={T}
-								x2={L + ((v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
-								y2={T + plotH}
-								stroke="rgba(255,255,255,0.03)"
-							/>
-						{/each}
-						{#each yminors as v}
-							<line
-								x1={L}
-								y1={T + plotH - ((v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH}
-								x2={L + plotW}
-								y2={T + plotH - ((v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH}
-								stroke="rgba(255,255,255,0.03)"
-							/>
-						{/each}
-						{#each xticks as t}
-							<line
-								x1={L + ((t.v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
-								y1={T}
-								x2={L + ((t.v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
-								y2={T + plotH}
-								stroke="rgba(255,255,255,0.07)"
-							/>
-							<text
-								x={L + ((t.v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
-								y={T + plotH + 18}
-								fill="#6d6d6d"
-								font-size="10"
-								text-anchor="middle"
-								font-family="JetBrains Mono, Menlo, monospace">{t.label}</text
-							>
-						{/each}
-						{#each yticks as t}
-							<line
-								x1={L}
-								y1={T + plotH - ((t.v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH}
-								x2={L + plotW}
-								y2={T + plotH - ((t.v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH}
-								stroke="rgba(255,255,255,0.07)"
-							/>
-							<text
-								x={L - 8}
-								y={T + plotH - ((t.v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH + 3}
-								fill="#6d6d6d"
-								font-size="10"
-								text-anchor="end"
-								font-family="JetBrains Mono, Menlo, monospace">{t.label}</text
-							>
-						{/each}
-						<rect
-							x={L}
-							y={T}
-							width={plotW}
-							height={plotH}
-							fill="none"
-							stroke="rgba(255,255,255,0.12)"
-							stroke-width="1"
-						/>
-						<line
-							x1={L}
-							y1={T + plotH}
-							x2={L + plotW - 1}
-							y2={T + plotH}
-							stroke="#6d6d6d"
-							stroke-width="1"
-							marker-end="url(#pareto-axis-arrow)"
-						/>
-						<line
-							x1={L}
-							y1={T + plotH}
-							x2={L}
-							y2={T + 1}
-							stroke="#6d6d6d"
-							stroke-width="1"
-							marker-end="url(#pareto-axis-arrow)"
-						/>
-
-						<text
-							x={L + plotW / 2}
-							y={H - 6}
-							fill="#6d6d6d"
-							font-size="10"
-							text-anchor="middle"
-							font-family="JetBrains Mono, Menlo, monospace">runtime (ms, log scale)</text
-						>
-						<text
-							x={14}
-							y={T + plotH / 2}
-							fill="#6d6d6d"
-							font-size="10"
-							text-anchor="middle"
-							transform="rotate(-90 14 {T + plotH / 2})"
-							font-family="JetBrains Mono, Menlo, monospace">{yLabel}</text
-						>
-
-						{#if frontierPath}
-							<path
-								d="M {frontierPath}"
-								fill="none"
-								stroke="#61ffca"
-								stroke-opacity="0.4"
-								stroke-dasharray="5 5"
-								stroke-width="1.5"
-							/>
-							{#each frontierIdx as fi}
-								{@const fp = shown!.pts[fi] ?? computeTargets().pts[fi]}
-								{#if fp}
-									<circle
-										cx={sx(fp.x)}
-										cy={sy(fp.y)}
-										r="2.5"
-										fill="#61ffca"
-										opacity="0.85"
-										stroke="#15141b"
-										stroke-width="1"
-									/>
-								{/if}
-							{/each}
-						{/if}
-
-						{#if shown}
-							{#each ordered as r, i}
-								{@const pt = shown.pts[i] ?? computeTargets().pts[i]}
-								{#if pt}
-									{@const cx = sx(pt.x)}
-									{@const cy = sy(pt.y)}
-									{@const isRnx = r.lang === 'rnx' && r.mode === 'rel'}
-									{@const isHover = hovered === r.label}
-									{@const place = placements[i] ?? { dx: 11, dy: 4, anchor: 'start', leader: false }}
-									<g
-										role="button"
-										tabindex="0"
-										aria-label="{displayLabel(r.label)}: {r.runtime_ms} ms, {speedup(r)}"
-										onmouseenter={() => (hovered = r.label)}
-										onmouseleave={() => (hovered = null)}
-										onfocus={() => (hovered = r.label)}
-										onblur={() => (hovered = null)}
-										style="cursor: crosshair"
-									>
-										{#if isRnx}
-											<circle cx={cx} cy={cy} r="9" fill="none" stroke="#61ffca" class="pulse-ring" />
-										{/if}
-										<circle
-											cx={cx}
-											cy={cy}
-											r={isRnx ? 7 : isHover ? 7 : 5.5}
-											fill={r.mode === 'dev' ? '#15141b' : LANG_COLOR[r.lang] ?? '#8b9bb4'}
-											opacity={isRnx || isHover ? 1 : 0.8}
-											stroke={LANG_COLOR[r.lang] ?? '#8b9bb4'}
-											stroke-width={r.mode === 'dev' ? 2 : 1.5}
-											stroke-opacity={r.mode === 'dev' ? 0.9 : 1}
-											style={isRnx
-												? 'filter: drop-shadow(0 0 6px rgba(97,255,202,0.8))'
-												: undefined}
-										/>
-										<title>{displayLabel(r.label)}</title>
-										{#if place.leader}
-											<line
-												x1={cx + (place.anchor === 'start' ? 5 : -5)}
-												y1={cy}
-												x2={cx + place.dx + (place.anchor === 'start' ? -1 : 1)}
-												y2={cy + place.dy - 3}
-												stroke={LANG_COLOR[r.lang] ?? '#8b9bb4'}
-												stroke-opacity="0.4"
-												stroke-width="1"
-											/>
-										{/if}
-										<text
-											x={cx + place.dx}
-											y={cy + place.dy}
-											text-anchor={place.anchor === 'start' ? 'start' : 'end'}
-											fill={isRnx ? '#61ffca' : '#edecee'}
-											opacity={isRnx || isHover ? 1 : 0.75}
-											font-size="11"
-											font-weight={isRnx ? 'bold' : 'normal'}
-											font-family="JetBrains Mono, Menlo, monospace"
-											style="paint-order: stroke; stroke: #15141b; stroke-width: 3px;">{displayLabel(r.label)}</text
-										>
-									</g>
-								{/if}
-							{/each}
-						{/if}
-					</svg>
-
-					{#if hoveredResult && hoveredPt}
-						{@const flip = hoveredPt.x > W * 0.62}
-						<div
-							class="pointer-events-none absolute z-10 w-60 rounded border border-aura-border bg-aura-surfaceElevated p-3 font-mono text-[11px] shadow-xl"
-							style="left: {(flip ? hoveredPt.x - 250 : hoveredPt.x + 16) / W * 100}%; top: {Math.max(
-								0,
-								(hoveredPt.y - 40) / H * 100
-							)}%"
-						>
-							<p class="text-xs font-bold" style="color: {LANG_COLOR[hoveredResult.lang]}">
-								{hoveredResult.label}
-							</p>
-							<p class="mt-0.5 truncate text-aura-muted">{versions[hoveredResult.lang] ?? ''}</p>
-							<p class="mt-1.5 text-aura-text">
-								{hoveredResult.runtime_ms.toFixed(1)} ms - {speedup(hoveredResult)}
-							</p>
-							<p class="text-aura-muted">{hoveredResult.peak_rss_mb.toFixed(1)} MB peak RAM</p>
-							<p class="text-aura-muted">
-								{hoveredResult.build_ms.toFixed(1)} ms {hoveredResult.artifact
-									? 'build'
-									: 'check (no build step)'}
-							</p>
-							<p class="mt-1.5 leading-relaxed text-aura-muted">build - {hoveredResult.build}</p>
-							<p class="text-aura-muted/70">run - {hoveredResult.run}</p>
-						</div>
-					{/if}
-				</div>
-
-				<!-- condensed cards (mobile) -->
-				<div class="mt-5 space-y-2 md:hidden">
-					{#each [...ordered].sort((a, b) => a.runtime_ms - b.runtime_ms) as r}
-						<div
-							class="flex items-center gap-3 rounded border px-3 py-2 font-mono text-[11px] {r.lang ===
-							'rnx' && r.mode === 'rel'
-								? 'border-aura-green/40 bg-aura-green/5'
-								: 'border-aura-border'}"
-						>
-							<span
-								class="inline-block h-2.5 w-2.5 shrink-0 rounded-full {r.mode === 'dev'
-									? 'border-2 bg-transparent'
-									: ''}"
-								style="border-color: {LANG_COLOR[r.lang]}; background: {r.mode === 'dev'
-									? 'transparent'
-									: LANG_COLOR[r.lang]}"
-							></span>
-							<span
-								class="w-16 {r.lang === 'rnx' && r.mode === 'rel'
-									? 'font-bold text-aura-green'
-									: 'text-aura-text'}">{displayLabel(r.label)}</span
-							>
-							<span class="ml-auto text-right text-aura-muted">
-								<span class="text-aura-text">{r.runtime_ms.toFixed(1)} ms</span>
-								{' - '}{r.peak_rss_mb.toFixed(1)} MB - {r.build_ms.toFixed(1)} ms build
-							</span>
-						</div>
-					{/each}
-				</div>
-
-				<!-- summary strip -->
-				<div class="mt-5 grid grid-cols-1 gap-2 font-mono text-[11px] sm:grid-cols-3">
-					<div class="rounded border border-aura-border px-3 py-2">
-						<p class="text-aura-muted">fastest runtime</p>
-						<p class="mt-0.5 text-sm text-aura-text">
-							{fastest.label} - {fastest.runtime_ms.toFixed(1)} ms
-						</p>
-					</div>
-					<div class="rounded border border-aura-border px-3 py-2">
-						<p class="text-aura-muted">
-							{yMode === 'ram'
-								? 'lowest memory'
-								: fastestBuild.artifact
-									? 'fastest build'
-									: 'fastest check (no build step)'}
-						</p>
-						<p class="mt-0.5 text-sm text-aura-text">
-							{#if yMode === 'ram'}
-								{leanest.label} - {leanest.peak_rss_mb.toFixed(1)} MB
-							{:else}
-								{fastestBuild.label} - {fastestBuild.build_ms.toFixed(1)} ms
-							{/if}
-						</p>
-					</div>
-					<div class="rounded border border-aura-green/40 bg-aura-green/5 px-3 py-2">
-						<p class="text-aura-muted">rasmalai</p>
-						<p class="mt-0.5 text-sm text-aura-green">
-							#{rnxRank} of {rankPool.length} in {mode === 'dev' ? 'dev' : 'release'} - {rnx.runtime_ms.toFixed(
-								1
-							)} ms - {rnx.peak_rss_mb.toFixed(1)} MB
-						</p>
-					</div>
-				</div>
-
-				<details class="mt-4 font-mono text-[11px] text-aura-muted">
-					<summary class="cursor-pointer hover:text-aura-text">how this was measured</summary>
-					<p class="mt-2 leading-relaxed">
-						Median of 5 timed runs after 1 warm-up, plus a median of 3 builds after 1
-						warm-up for each configuration. Peak RSS is the benchmark process's own (a
-						~16 KB native helper fork/execvps the target and reports the child's
-						getrusage, so no harness footprint leaks in). Every row is one (language,
-						mode) pair: release is the shipping build, dev is the unoptimized or JIT
-						build you edit against. go, node, and java have a single configuration
-						each, so they contribute one row - go always compiles optimized, node is
-						interpreted with no build step (its timed step is a parse check, flagged as
-						such), and javac has no optimization flag. C float benches build with
-						-ffp-contract=off for strict-IEEE parity. Checksums verified bit-for-bit
-						(1e-6 relative tolerance on floats) so every configuration produced the
-						same answer; implementations differ per language (see benches/README.md),
-						so rows rank whole-stack cost, not language speed alone. Reproduce locally:
-						<code>python3 benches/harness/runner.py</code>.
+				<div class="speed-head-figures">
+					<p class="speed-figure">
+						<CountUp value={rnx.runtime_ms} decimals={1} suffix=" ms" />
 					</p>
-					<ul class="mt-2 space-y-0.5">
-						{#each sel.results as r}
-							<li>
-								<span class="text-aura-text/70">{displayLabel(r.label)}</span> - {versions[r.lang] ?? ''} ·
-								<span class="text-aura-text/50">{r.build}</span>
-								<span class="text-aura-text/50"> · run: {r.run}</span>
-							</li>
-						{/each}
-					</ul>
-				</details>
+					<p class="speed-sub"><CountUp value={rnx.peak_rss_mb} decimals={1} suffix=" MB peak" /></p>
+				</div>
 			</div>
+
+			<div class="speed-controls">
+				<span class="speed-group" role="group" aria-label="Y axis metric">
+					<span class="speed-group-cap">against</span>
+					{#each [['ram', 'peak RAM'], ['build', 'build time']] as [m, label]}
+						<button
+							onclick={() => (yMode = m as 'ram' | 'build')}
+							aria-pressed={yMode === m}
+							class="speed-toggle"
+							class:speed-toggle-active={yMode === m}
+						>
+							{label}
+						</button>
+					{/each}
+				</span>
+				<span class="speed-group" role="group" aria-label="Build mode filter">
+					<span class="speed-group-cap">builds</span>
+					{#each [['all', 'all'], ['rel', 'release'], ['dev', 'dev']] as [m, label]}
+						<button
+							onclick={() => (mode = m as 'all' | 'dev' | 'rel')}
+							aria-pressed={mode === m}
+							class="speed-toggle"
+							class:speed-toggle-active={mode === m}
+						>
+							{label}
+						</button>
+					{/each}
+				</span>
+				<span class="speed-key">filled is release, hollow is dev, both axes log</span>
+			</div>
+
+			<div class="speed-plot hidden md:block">
+				<svg
+					viewBox="0 0 {W} {H}"
+					class="w-full"
+					role="group"
+					aria-label="{sel.name}: runtime versus {yMetric} by language and build mode"
+				>
+					{#each xminors as v}
+						<line
+							x1={L + ((v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
+							y1={T}
+							x2={L + ((v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
+							y2={T + plotH}
+							stroke="rgb(var(--aura-text) / 0.05)"
+						/>
+					{/each}
+					{#each yminors as v}
+						<line
+							x1={L}
+							y1={T + plotH - ((v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH}
+							x2={L + plotW}
+							y2={T + plotH - ((v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH}
+							stroke="rgb(var(--aura-text) / 0.05)"
+						/>
+					{/each}
+					{#each xticks as t}
+						<line
+							x1={L + ((t.v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
+							y1={T}
+							x2={L + ((t.v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
+							y2={T + plotH}
+							stroke="rgb(var(--aura-text) / 0.1)"
+						/>
+						<text
+							x={L + ((t.v - shown!.dx0) / (shown!.dx1 - shown!.dx0)) * plotW}
+							y={T + plotH + 18}
+							fill="rgb(var(--aura-faint))"
+							font-size="10"
+							text-anchor="middle"
+							font-family="JetBrains Mono, Menlo, monospace">{t.label}</text
+						>
+					{/each}
+					{#each yticks as t}
+						<line
+							x1={L}
+							y1={T + plotH - ((t.v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH}
+							x2={L + plotW}
+							y2={T + plotH - ((t.v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH}
+							stroke="rgb(var(--aura-text) / 0.1)"
+						/>
+						<text
+							x={L - 8}
+							y={T + plotH - ((t.v - shown!.dy0) / (shown!.dy1 - shown!.dy0)) * plotH + 3}
+							fill="rgb(var(--aura-faint))"
+							font-size="10"
+							text-anchor="end"
+							font-family="JetBrains Mono, Menlo, monospace">{t.label}</text
+						>
+					{/each}
+					<line
+						x1={L}
+						y1={T + plotH}
+						x2={L + plotW}
+						y2={T + plotH}
+						stroke="rgb(var(--aura-faint))"
+						stroke-width="1"
+					/>
+					<line
+						x1={L}
+						y1={T + plotH}
+						x2={L}
+						y2={T}
+						stroke="rgb(var(--aura-faint))"
+						stroke-width="1"
+					/>
+
+					<text
+						x={L + plotW / 2}
+						y={H - 6}
+						fill="rgb(var(--aura-faint))"
+						font-size="10"
+						text-anchor="middle"
+						font-family="JetBrains Mono, Menlo, monospace">runtime (ms, log scale)</text
+					>
+					<text
+						x={14}
+						y={T + plotH / 2}
+						fill="rgb(var(--aura-faint))"
+						font-size="10"
+						text-anchor="middle"
+						transform="rotate(-90 14 {T + plotH / 2})"
+						font-family="JetBrains Mono, Menlo, monospace">{yLabel}</text
+					>
+
+					{#if shown}
+						{#each ordered as r, i}
+							{@const pt = shown.pts[i] ?? computeTargets().pts[i]}
+							{#if pt}
+								{@const cx = sx(pt.x)}
+								{@const cy = sy(pt.y)}
+								{@const isRnx = r.lang === 'rnx' && r.mode === 'rel'}
+								{@const isActive = hovered === r.label || pinned === r.label}
+								{@const lay = labelLayout[i] ?? { dx: 11, dy: 4, anchor: 'start' as const }}
+								<g
+									class="dot"
+									role="button"
+									tabindex="0"
+									aria-pressed={pinned === r.label}
+									aria-label="{displayLabel(r.label)}: {r.runtime_ms} ms, {speedup(r)}"
+									onmouseenter={() => (hovered = r.label)}
+									onmouseleave={() => (hovered = null)}
+									onfocus={() => (hovered = r.label)}
+									onblur={() => (hovered = null)}
+									onclick={() => togglePin(r.label)}
+									onkeydown={(event) => onDotKeydown(event, r.label)}
+									style="cursor: crosshair"
+								>
+									{#if isRnx || isActive}
+										<circle cx={cx} cy={cy} r="10" fill="none" stroke="rgb(var(--aura-green))" stroke-opacity="0.45" />
+									{/if}
+									<circle
+										cx={cx}
+										cy={cy}
+										r={isRnx ? 7 : isActive ? 7 : 5.5}
+										fill={r.mode === 'dev' ? 'rgb(var(--aura-bg))' : LANG_COLOR[r.lang] ?? 'rgb(var(--aura-faint))'}
+										opacity={isRnx || isActive ? 1 : 0.85}
+										stroke={LANG_COLOR[r.lang] ?? 'rgb(var(--aura-faint))'}
+										stroke-width={r.mode === 'dev' ? 2 : 1.5}
+										stroke-opacity={r.mode === 'dev' ? 0.9 : 1}
+										style={isRnx
+											? 'filter: drop-shadow(0 0 6px rgb(var(--aura-green) / 0.8))'
+											: undefined}
+									/>
+									<title>{displayLabel(r.label)}</title>
+									{#if lay.dy > 16}
+										<line
+											x1={cx + (lay.anchor === 'start' ? 6 : -6)}
+											y1={cy}
+											x2={cx + lay.dx}
+											y2={cy + lay.dy - 3}
+											stroke={LANG_COLOR[r.lang] ?? 'rgb(var(--aura-faint))'}
+											stroke-opacity="0.35"
+											stroke-width="1"
+										/>
+									{/if}
+									<text
+										x={cx + lay.dx}
+										y={cy + lay.dy}
+										text-anchor={lay.anchor === 'start' ? 'start' : 'end'}
+										fill={isRnx ? 'rgb(var(--aura-green))' : 'rgb(var(--aura-text))'}
+										opacity={isRnx || isActive ? 1 : 0.75}
+										font-size="11"
+										font-weight={isRnx ? 'bold' : 'normal'}
+										font-family="JetBrains Mono, Menlo, monospace"
+										style="paint-order: stroke; stroke: rgb(var(--aura-bg)); stroke-width: 3px;">{displayLabel(r.label)}</text
+									>
+								</g>
+							{/if}
+						{/each}
+					{/if}
+				</svg>
+
+				{#if tipResult && tipPt}
+					{@const flip = tipPt.x > W * 0.62}
+					<div
+						class="speed-tip"
+						style="left: {(flip ? tipPt.x - 250 : tipPt.x + 16) / W * 100}%; top: {Math.max(
+							0,
+							(tipPt.y - 40) / H * 100
+						)}%"
+					>
+						<p class="speed-tip-name" style="color: {LANG_COLOR[tipResult.lang]}">
+							{tipResult.label}
+						</p>
+						<p class="speed-tip-ver">{versions[tipResult.lang] ?? ''}</p>
+						<p class="speed-tip-fig">
+							{tipResult.runtime_ms.toFixed(1)} ms - {speedup(tipResult)}
+						</p>
+						<p>{tipResult.peak_rss_mb.toFixed(1)} MB peak RAM</p>
+						<p>
+							{tipResult.build_ms.toFixed(1)} ms {tipResult.artifact
+								? 'build'
+								: 'check (no build step)'}
+						</p>
+						<p class="speed-tip-cmd">build - {tipResult.build}</p>
+						<p class="speed-tip-run">run - {tipResult.run}</p>
+					</div>
+				{/if}
+			</div>
+
+			<ol class="speed-rows md:hidden">
+				{#each [...ordered].sort((a, b) => a.runtime_ms - b.runtime_ms) as r}
+					<li
+						class="speed-row"
+						class:speed-row-rnx={r.lang === 'rnx' && r.mode === 'rel'}
+					>
+						<span
+							class="speed-row-dot"
+							class:speed-row-hollow={r.mode === 'dev'}
+							style="border-color: {LANG_COLOR[r.lang]}; background: {r.mode === 'dev'
+								? 'transparent'
+								: LANG_COLOR[r.lang]}"
+						></span>
+						<span class="speed-row-name">{displayLabel(r.label)}</span>
+						<span class="speed-row-nums">
+							<span class="speed-row-fig">{r.runtime_ms.toFixed(1)} ms</span>
+							{' - '}{r.peak_rss_mb.toFixed(1)} MB - {r.build_ms.toFixed(1)} ms build
+						</span>
+					</li>
+				{/each}
+			</ol>
+
+			<dl class="speed-facts">
+				<div class="speed-fact">
+					<dt>fastest runtime</dt>
+					<dd>{fastest.label} - {fastest.runtime_ms.toFixed(1)} ms</dd>
+				</div>
+				<div class="speed-fact">
+					<dt>
+						{yMode === 'ram'
+							? 'lowest memory'
+							: fastestBuild.artifact
+								? 'fastest build'
+								: 'fastest check (no build step)'}
+					</dt>
+					<dd>
+						{#if yMode === 'ram'}
+							{leanest.label} - {leanest.peak_rss_mb.toFixed(1)} MB
+						{:else}
+							{fastestBuild.label} - {fastestBuild.build_ms.toFixed(1)} ms
+						{/if}
+					</dd>
+				</div>
+				<div class="speed-fact">
+					<dt>rasmalai</dt>
+					<dd>
+						#{rnxRank} of {rankPool.length} in {mode === 'dev' ? 'dev' : 'release'} - {rnx.runtime_ms.toFixed(
+							1
+						)} ms - {rnx.peak_rss_mb.toFixed(1)} MB
+					</dd>
+				</div>
+			</dl>
+
+			<details class="speed-how">
+				<summary>how this was measured</summary>
+				<p>
+					Median of 5 timed runs after 1 warm-up, plus a median of 3 builds after 1
+					warm-up for each configuration. Peak RSS is the benchmark process's own (a
+					~16 KB native helper fork/execvps the target and reports the child's
+					getrusage, so no harness footprint leaks in). Every row is one (language,
+					mode) pair: release is the shipping build, dev is the unoptimized or JIT
+					build you edit against. go, node, and java have a single configuration
+					each, so they contribute one row - go always compiles optimized, node is
+					interpreted with no build step (its timed step is a parse check, flagged as
+					such), and javac has no optimization flag. C float benches build with
+					-ffp-contract=off for strict-IEEE parity. Checksums verified bit-for-bit
+					(1e-6 relative tolerance on floats) so every configuration produced the
+					same answer; implementations differ per language (see benches/README.md),
+					so rows rank whole-stack cost, not language speed alone. Reproduce locally:
+					<code>python3 benches/harness/runner.py</code>.
+				</p>
+				<ul class="speed-cmps">
+					{#each sel.results as r}
+						<li>
+							<span>{displayLabel(r.label)}</span>
+							<span>{versions[r.lang] ?? ''}</span>
+							<span>{r.build}</span>
+							<span>run {r.run}</span>
+						</li>
+					{/each}
+				</ul>
+			</details>
 		{/key}
 	{/if}
 </div>
 
 <style>
-	.pulse-ring {
-		opacity: 0.7;
-		transform-box: fill-box;
-		transform-origin: center;
-		animation: pulse 2s ease-out infinite;
+	.speed {
+		min-width: 0;
 	}
-	@keyframes pulse {
-		0% {
-			transform: scale(0.7);
-			opacity: 0.8;
+
+	.speed-empty {
+		padding: var(--space-lg) 0;
+		font-size: var(--text-sm);
+		line-height: 1.65;
+		color: var(--color-muted);
+	}
+
+	.speed-loading {
+		display: flex;
+		align-items: center;
+		gap: var(--space-xs);
+	}
+
+	.speed-prov {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--color-faint);
+	}
+
+	.speed-tabs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-xs) var(--space-lg);
+		border-bottom: 1px solid var(--color-rule);
+		padding-bottom: var(--space-sm);
+		margin-top: var(--space-md);
+	}
+
+	.speed-tab {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--space-xs);
+		font-size: var(--text-sm);
+		color: var(--color-faint);
+		white-space: nowrap;
+		transition: color var(--dur-micro) ease;
+	}
+
+	.speed-tab:hover {
+		color: var(--color-ink);
+	}
+
+	.speed-tab-active {
+		color: var(--color-ink);
+		text-decoration: underline;
+		text-decoration-color: var(--color-accent);
+		text-decoration-thickness: 1px;
+		text-underline-offset: 7px;
+	}
+
+	.speed-index {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--color-faint);
+	}
+
+	.speed-head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: end;
+		justify-content: space-between;
+		gap: var(--space-md) var(--space-xl);
+		padding-top: var(--space-xl);
+	}
+
+	.speed-head-main {
+		min-width: 0;
+	}
+
+	.speed-title {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: clamp(1.35rem, 1.7vw, 1.7rem);
+		line-height: 1.08;
+		letter-spacing: -0.02em;
+		color: var(--color-ink);
+	}
+
+	.speed-desc {
+		margin-top: var(--space-2xs);
+		font-size: var(--text-xs);
+		color: var(--color-faint);
+	}
+
+	.speed-head-figures {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-md);
+	}
+
+	.speed-figure {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: clamp(2rem, 3vw, 2.6rem);
+		line-height: 1;
+		font-variant-numeric: tabular-nums;
+		color: var(--color-signal);
+	}
+
+	.speed-sub {
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+		color: var(--color-muted);
+	}
+
+	.speed-controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--space-xs) var(--space-xl);
+		margin-top: var(--space-md);
+	}
+
+	.speed-group {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--space-sm);
+	}
+
+	.speed-group-cap {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--color-faint);
+	}
+
+	.speed-toggle {
+		font-size: var(--text-sm);
+		color: var(--color-faint);
+		transition: color var(--dur-micro) ease;
+	}
+
+	.speed-toggle:hover {
+		color: var(--color-ink);
+	}
+
+	.speed-toggle-active {
+		color: var(--color-ink);
+		text-decoration: underline;
+		text-decoration-color: var(--color-accent);
+		text-decoration-thickness: 1px;
+		text-underline-offset: 5px;
+	}
+
+	.speed-key {
+		margin-top: var(--space-sm);
+		font-size: var(--text-xs);
+		color: var(--color-faint);
+	}
+
+	.speed-plot {
+		position: relative;
+		margin-top: var(--space-md);
+	}
+
+	/* Keyboard focus lands on the same halo a hovered dot gets: the dot
+	grows and the tooltip opens, so focus is never a silent state. */
+	.speed g.dot:focus {
+		outline: none;
+	}
+
+	.speed g.dot:focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 4px;
+	}
+
+	.speed-tip {
+		position: absolute;
+		z-index: 10;
+		width: 15rem;
+		pointer-events: none;
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-xs);
+		background: var(--color-paper);
+		padding: var(--space-sm);
+		font-family: var(--font-mono);
+		font-size: 11px;
+		line-height: 1.6;
+		color: var(--color-muted);
+	}
+
+	.speed-tip-name {
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--color-ink);
+	}
+
+	.speed-tip-ver {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.speed-tip-fig {
+		margin-top: var(--space-2xs);
+		color: var(--color-ink);
+	}
+
+	.speed-tip-cmd {
+		margin-top: var(--space-2xs);
+	}
+
+	.speed-tip-run {
+		color: rgb(var(--aura-text) / 0.6);
+	}
+
+	.speed-rows {
+		list-style: none;
+		margin: var(--space-lg) 0 0;
+		padding: 0;
+	}
+
+	.speed-row {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-sm);
+		border-top: 1px solid var(--color-rule);
+		padding: var(--space-xs) 0;
+		font-size: var(--text-sm);
+	}
+
+	.speed-row-dot {
+		align-self: center;
+		flex-shrink: 0;
+		width: 10px;
+		height: 10px;
+		border-radius: 999px;
+		border-width: 2px;
+		border-style: solid;
+	}
+
+	.speed-row-hollow {
+		background: transparent !important;
+	}
+
+	.speed-row-rnx .speed-row-name {
+		font-weight: 600;
+		color: var(--color-signal);
+	}
+
+	.speed-row-name {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--color-ink);
+		white-space: nowrap;
+	}
+
+	.speed-row-nums {
+		margin-left: auto;
+		text-align: right;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--color-muted);
+	}
+
+	.speed-row-fig {
+		color: var(--color-ink);
+	}
+
+	.speed-facts {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 0 var(--space-lg);
+		margin: var(--space-xl) 0 0;
+		padding: 0;
+	}
+
+	.speed-fact {
+		border-left: 1px solid var(--color-rule);
+		padding-left: var(--space-md);
+	}
+
+	.speed-fact:first-child {
+		border-left: 0;
+		padding-left: 0;
+	}
+
+	.speed-fact dt {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--color-faint);
+	}
+
+	.speed-fact dd {
+		margin: var(--space-2xs) 0 0;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		line-height: 1.6;
+		color: var(--color-ink);
+	}
+
+	.speed-how {
+		margin-top: var(--space-lg);
+		font-size: var(--text-xs);
+		line-height: 1.7;
+		color: var(--color-muted);
+	}
+
+	.speed-how summary {
+		cursor: pointer;
+	}
+
+	.speed-how summary:hover {
+		color: var(--color-ink);
+	}
+
+	.speed-how p {
+		margin-top: var(--space-xs);
+		max-width: var(--measure);
+	}
+
+	.speed-how code {
+		white-space: nowrap;
+	}
+
+	.speed-cmps {
+		margin-top: var(--space-xs);
+		list-style: none;
+		padding: 0;
+		font-family: var(--font-mono);
+	}
+
+	.speed-cmps li {
+		display: grid;
+		grid-template-columns: minmax(0, 9rem) 4.5rem minmax(0, 1fr) minmax(0, 1fr);
+		gap: var(--space-sm);
+		padding: 2px 0;
+		color: rgb(var(--aura-text) / 0.55);
+	}
+
+	.speed-cmps li span:first-child {
+		color: rgb(var(--aura-text) / 0.75);
+	}
+
+	.speed button:active {
+		transform: translateY(1px);
+	}
+
+	@media (max-width: 760px) {
+		.speed-facts {
+			grid-template-columns: minmax(0, 1fr);
+			gap: var(--space-sm) 0;
 		}
-		70% {
-			transform: scale(1.6);
-			opacity: 0;
+
+		.speed-fact {
+			border-left: 0;
+			border-top: 1px solid var(--color-rule);
+			padding-left: 0;
+			padding-top: var(--space-xs);
 		}
-		100% {
-			transform: scale(1.6);
-			opacity: 0;
+
+		.speed-fact:first-child {
+			border-top: 0;
+			padding-top: 0;
+		}
+
+		.speed-cmps li {
+			grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+			gap: var(--space-3xs) var(--space-sm);
+		}
+
+		.speed-cmps li span:first-child {
+			grid-column: 1 / -1;
 		}
 	}
+
 	@media (prefers-reduced-motion: reduce) {
-		.pulse-ring {
-			animation: none;
+		.speed button:active {
+			transform: none;
 		}
 	}
 </style>
-

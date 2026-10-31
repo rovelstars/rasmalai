@@ -56,7 +56,7 @@ fn Main(): Int {
 
 ## User-defined derives
 
-A derive name other than `Clone` or `Debug` resolves to a crate-local `#[CompTime]` function. It receives the type info as an array of strings — the type name first, then one `field:Type` entry per field, sorted — and returns an array of method source strings, which are parsed, hygiene-renamed, and attached to the type:
+A derive name other than `Clone` or `Debug` resolves to a crate-local `#[CompTime]` function. It receives the type info as an array of strings (the type name first, then one `field:Type` entry per field, sorted) and returns an array of method source strings, which are parsed, hygiene-renamed, and attached to the type:
 
 ```rnx
 #[CompTime]
@@ -69,13 +69,13 @@ fn Describe(info: Array<String>): Array<String> {
 struct Point { let x: Int; let y: Int }
 ```
 
-Derives never cross package boundaries in v1, and `Serde` is out of scope: derive `Clone` or `Debug`, or write a `#[CompTime]` function.
+Derives never cross package boundaries in v1, and `Serde` is out of scope. Supported derives are `Clone` and `Debug`; other behavior uses a `#[CompTime]` function.
 
 ## Limits and sandbox
 
 Build-time code runs with 1,000,000 steps of fuel, a call depth cap of 64, a 10,000-node output cap, and at most 8 fixed-point expansion rounds. Each cap has its own diagnostic (E117 through E120). Generated locals are gensym-scoped; a generated method that would collide with an existing member is a hard error (E121) pointing at both spans.
 
-The sandbox is narrow: arguments, type info, and the pure prelude subset. No clock, no randomness, no environment, no network, no ambient file reads, no foreign calls, and calls only into other `#[CompTime]` functions. File bytes enter exclusively through Phase A `EmbedBytes!`. Violations fail closed (E122). `#[CompTime]` functions must be self-contained: they see their arguments, not module constants or derived methods.
+The sandbox is narrow: arguments, type info, and the pure prelude subset. It provides no clock, randomness, environment, network, ambient file reads, or foreign calls, and calls only into other `#[CompTime]` functions. File bytes enter exclusively through Phase A `EmbedBytes!`. Violations fail closed (E122). `#[CompTime]` functions must be self-contained: they see their arguments, not module constants or derived methods.
 
 Unknown `#[...]` attributes fail closed; the namespace is fixed and user extensions go through `#[Derive(Name)]`.
 

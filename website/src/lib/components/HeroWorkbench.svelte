@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { LoaderCircle } from 'lucide-svelte';
+	import { LoaderCircle, RotateCw } from 'lucide-svelte';
 	import { engine } from '$lib/playground/engine.svelte';
 
 	let source = $state(
@@ -26,7 +26,7 @@ fn shade(sun: Vec4f): Float {
 		return esc(line).replace(
 			/(\/\/.*$)|("[^"]*")|\b(import|from|fn|let|return|defer)\b|\b(Vec4f|Float|Int|Str)\b|\b(\d+\.\d+|\d+)\b/g,
 			(m, com, str, kw, typ, num) => {
-				if (com) return `<span class="text-aura-muted italic">${m}</span>`;
+				if (com) return `<span class="text-aura-faint italic">${m}</span>`;
 				if (str) return `<span class="text-aura-orange">${m}</span>`;
 				if (kw) return `<span class="text-aura-purple">${m}</span>`;
 				if (typ) return `<span class="text-aura-pink">${m}</span>`;
@@ -103,39 +103,32 @@ fn shade(sun: Vec4f): Float {
 	}
 </script>
 
-<div class="bay" data-testid="hero-workbench">
-	<div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-aura-border px-4 py-2 font-mono text-[11px]">
-		<span class="text-aura-muted">src/shade.rnx</span>
-		<span class="hidden text-aura-muted/60 sm:inline">[ on-demand check ]</span>
-		<div class="ml-auto flex items-center gap-2">
-			<button
-				onclick={checkNow}
-				disabled={checking}
-				class="press flex h-7 min-w-[76px] items-center justify-center gap-1.5 rounded bg-aura-purple px-3 py-1 font-semibold text-aura-bg disabled:opacity-50"
-			>
-				{#if checking}<LoaderCircle size={12} class="animate-spin" />{:else}Re-JIT{/if}
+<div class="workbench" data-testid="hero-workbench">
+	<div class="workbench-head">
+		<span class="file">src/shade.rnx</span>
+		<span class="hint">on-demand check</span>
+		<div class="ml-auto flex items-center gap-3">
+			<button onclick={checkNow} disabled={checking} class="run">
+				{#if checking}<LoaderCircle size={12} class="animate-spin" />{:else}<RotateCw size={12} />{/if}
+				{checking ? 'checking' : 'Re-JIT'}
 			</button>
-			<span class="tabular min-w-20 text-right text-aura-green" aria-live="polite">
+			<span class="tabular timing" aria-live="polite">
 				{jitMs === null ? '—.———— ms' : `${jitMs.toFixed(2)} ms`}
 			</span>
 		</div>
 	</div>
 
-	<div class="grid lg:grid-cols-2">
-		<div class="border-b border-aura-border lg:border-r lg:border-b-0">
-			<p class="border-b border-aura-border px-4 py-1.5 font-mono text-[11px] text-aura-muted">
-				+ source — click to edit
-			</p>
+	<div class="workbench-grid">
+		<div class="pane source-pane">
+			<p class="pane-label">source (click to edit)</p>
 			<div class="flex">
-				<div class="select-none border-r border-aura-border py-3 pr-2 pl-3 font-mono text-[12px] leading-6" aria-hidden="true">
+				<div class="gutter" aria-hidden="true">
 					{#each lines as _, i}
-						<div class="px-1 text-right text-aura-text/20">{i + 1}</div>
+						<div>{i + 1}</div>
 					{/each}
 				</div>
 				<div class="relative min-w-0 flex-1">
-					<pre
-						class="pointer-events-none m-0 overflow-x-auto px-3 py-3 font-mono text-[12px] leading-6 whitespace-pre text-aura-text"
-						aria-hidden="true">{#each lines as line}<div>{@html highlight(line) || ' '}</div>{/each}</pre>
+					<pre class="highlight" aria-hidden="true">{#each lines as line}<div>{@html highlight(line) || ' '}</div>{/each}</pre>
 					<textarea
 						bind:value={source}
 						oninput={onEdit}
@@ -149,23 +142,160 @@ fn shade(sun: Vec4f): Float {
 						}}
 						spellcheck={false}
 						aria-label="Editable Rasmalai source"
-						class="absolute inset-0 m-0 resize-none overflow-auto bg-transparent px-3 py-3 font-mono text-[12px] leading-6 whitespace-pre text-transparent caret-aura-purple outline-none"
+						class="editor"
 					></textarea>
 				</div>
 			</div>
 		</div>
 
-		<div class="flex h-[240px] min-w-0 flex-col">
-			<p class="border-b border-aura-border px-4 py-1.5 font-mono text-[11px] text-aura-muted">
-				+ compiler output — real check, off-thread
-			</p>
-			<pre class="tabular m-0 min-h-0 flex-1 overflow-auto p-4 font-mono text-[12px] leading-relaxed whitespace-pre-wrap {diag.startsWith('check ok') || diag.startsWith('Hit Re-JIT to download') ? 'text-aura-muted' : 'text-aura-text'}">{diag}</pre>
+		<div class="pane output-pane">
+			<p class="pane-label">compiler output (real check, off-thread)</p>
+			<pre class="output" class:text-aura-muted={diag.startsWith('check ok') || diag.startsWith('Hit Re-JIT')}>{diag}</pre>
 		</div>
 	</div>
 </div>
 
 <style>
-	textarea {
+	.workbench {
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-sm);
+		background: var(--color-paper-2);
+		overflow: hidden;
+	}
+
+	.workbench-head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-xs) var(--space-md);
+		border-bottom: 1px solid var(--color-rule);
+		padding: var(--space-xs) var(--space-md);
+	}
+
+	.file {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--color-ink);
+	}
+
+	.hint {
+		font-size: var(--text-2xs);
+		color: var(--color-faint);
+	}
+
+	.run {
+		display: inline-flex;
+		height: 30px;
+		align-items: center;
+		gap: 6px;
+		border-radius: var(--radius-xs);
+		background: var(--color-accent);
+		padding: 0 var(--space-sm);
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--color-paper);
+	}
+
+	.run:disabled {
+		cursor: not-allowed;
+		background: rgb(var(--aura-purple) / 0.35);
+		color: rgb(var(--aura-bg) / 0.65);
+	}
+
+	.timing {
+		min-width: 88px;
+		text-align: right;
+		font-size: var(--text-xs);
+		color: var(--color-signal);
+	}
+
+	.workbench-grid {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	}
+
+	.pane {
+		min-width: 0;
+	}
+
+	.source-pane {
+		border-right: 1px solid var(--color-rule);
+	}
+
+	.pane-label {
+		border-bottom: 1px solid var(--color-rule);
+		padding: var(--space-xs) var(--space-md);
+		font-family: var(--font-body);
+		font-size: var(--text-2xs);
+		color: var(--color-faint);
+	}
+
+	.gutter {
+		user-select: none;
+		border-right: 1px solid var(--color-rule);
+		padding: var(--space-sm) var(--space-xs) var(--space-sm) var(--space-sm);
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		line-height: 1.85;
+		text-align: right;
+		color: rgb(var(--aura-text) / 0.22);
+	}
+
+	.highlight {
+		margin: 0;
+		overflow-x: auto;
+		padding: var(--space-sm) var(--space-md);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		line-height: 1.85;
+		white-space: pre;
+		color: var(--color-ink);
+	}
+
+	.editor {
+		position: absolute;
+		inset: 0;
+		margin: 0;
+		resize: none;
+		overflow: auto;
+		background: transparent;
+		padding: var(--space-sm) var(--space-md);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		line-height: 1.85;
+		white-space: pre;
+		color: transparent;
+		caret-color: var(--color-accent);
+		outline: none;
 		scrollbar-width: none;
+	}
+
+	.output-pane {
+		display: flex;
+		min-height: 240px;
+		flex-direction: column;
+	}
+
+	.output {
+		margin: 0;
+		min-height: 0;
+		flex: 1;
+		overflow: auto;
+		padding: var(--space-md);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		line-height: 1.8;
+		white-space: pre-wrap;
+		color: var(--color-ink);
+	}
+
+	@media (max-width: 860px) {
+		.workbench-grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.source-pane {
+			border-right: 0;
+			border-bottom: 1px solid var(--color-rule);
+		}
 	}
 </style>

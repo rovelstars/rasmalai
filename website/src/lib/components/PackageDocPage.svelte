@@ -75,29 +75,29 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events: delegated code-block handler -->
 <article class="doc-prose" bind:this={articleEl} onclick={(e) => { onDocCodeClick(e); onSectionCopyClick(e); }}>
-	<div class="flex items-start justify-between gap-3">
-		<h1 class="flex items-center gap-3">
-			{titles[data.page] ?? data.page}
-		</h1>
+	<div class="doc-toolbar">
 		{#if data.html}
-			<button type="button" class="doc-btn mt-1 shrink-0" data-copy-page title="Copy full page markdown">copy page</button>
+			<button type="button" class="doc-btn" data-copy-page title="Copy the full page as markdown">
+				copy page
+			</button>
 		{/if}
 	</div>
+	<h1 class="doc-h1">{titles[data.page] ?? data.page}</h1>
 	{#if isStd && data.module === 'prelude'}
-		<p class="mt-3 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm">
-			<span class="font-mono text-[11px] uppercase tracking-wider text-emerald-400">implicit scope</span><br />
-			Symbols in <code class="font-mono text-[13px]">@std/prelude</code> are available in every Rasmalai
-			source file out-of-the-box without an explicit import. Explicit imports are supported for
-			disambiguation.
-		</p>
+		<div class="callout callout-tip">
+			<p class="callout-label">Implicit scope</p>
+			<p>
+				Symbols in <code>@std/prelude</code> are available in every Rasmalai source file without an
+				explicit import. Explicit imports are supported for disambiguation.
+			</p>
+		</div>
 	{/if}
 	{#if data.noApi}
-		<div class="panel mt-6 p-6">
-			<h2 class="text-lg font-bold">No API data yet</h2>
-			<p class="mt-2 text-sm text-aura-muted">
-				The documented snapshot for <code class="font-mono text-[13px]">{data.full}</code>
-				publishes with the next release. The module itself ships with the compiler —
-				only this reference page is waiting on data.
+		<div class="callout callout-note">
+			<p class="callout-label">No API data yet</p>
+			<p>
+				The documented snapshot for <code>{data.full}</code> publishes with the next release. The
+				module ships with the compiler; only this reference page is waiting on data.
 			</p>
 		</div>
 	{:else if data.html}

@@ -27,7 +27,7 @@ print(old, n);
 print(++n, n--, n);
 ```
 
-The operand must be a valid assignment target — a variable, a field (`obj.count++`), an index (`buf[i] += step`), or a dereferenced pointer (`(*p)++` inside `unsafe`). Mutating a `const` binding or incrementing a non-target such as `(a + b)` is an `E108` error. Compound index and member targets evaluate their base and index exactly once, so `items[next()]++` calls `next()` a single time.
+The operand must be a valid assignment target: a variable, a field (`obj.count++`), an index (`buf[i] += step`), or a dereferenced pointer (`(*p)++` inside `unsafe`). Mutating a `const` binding or incrementing a non-target such as `(a + b)` is an `E108` error. Compound index and member targets evaluate their base and index exactly once, so `items[next()]++` calls `next()` a single time.
 
 ## Assignment operator reference
 
@@ -75,7 +75,7 @@ assert(doubled == base * 2, "const compose");
 
 Names resolve lexically, top to bottom: a name must be declared before use. Reference to a name with no visible declaration is an `E303` error pointing at the exact column. There are no implicit globals; a misspelled assignment target fails instead of creating state.
 
-Top-level statements run inside the implicit entrypoint, so a top-level `let` is local to it: a named `fn` cannot read it, and the compiler says so with an `E303` that names sharing as the fix. A value shared across functions is a `const` — immutable, visible in every function body, and restricted to constant initializers (`Int`, `Float`, `Bool`, and plain-text `String` literals, optionally composed from earlier consts):
+Top-level statements run inside the implicit entrypoint, so a top-level `let` is local to it: a named `fn` cannot read it, and the compiler says so with an `E303` that names sharing as the fix. A value shared across functions is a `const`, immutable, visible in every function body, and restricted to constant initializers (`Int`, `Float`, `Bool`, and plain-text `String` literals, optionally composed from earlier consts):
 
 ```rnx
 const dbPath = "notes.txt";
@@ -152,7 +152,7 @@ print(first, rest.length);
 
 `[10, 20, 30]` builds a reference-counted array; `Array<Int>` annotates the element type when inference needs help. Elements are addressed with `arr[i]`, assigned with `arr[i] = v`, counted with `arr.length`, extended with `arr.push(v)`, and removed with `arr.pop()`.
 
-Array element types are invariant when widening: a bare `Array` stores boxed elements while `Array<Int>` stores raw values, so passing a typed array to a bare-`Array` parameter (or binding one to a bare-`Array` variable) is an `E108` error — annotate both sides with the same element type. Narrowing from a bare `Array` to `Array<Int>` compiles but is unchecked, like an `as` cast: only do it when the array actually holds values of that type.
+Array element types are invariant when widening: a bare `Array` stores boxed elements while `Array<Int>` stores raw values, so passing a typed array to a bare-`Array` parameter (or binding one to a bare-`Array` variable) is an `E108` error. Annotate both sides with the same element type. Narrowing from a bare `Array` to `Array<Int>` compiles but is unchecked, like an `as` cast: only do it when the array actually holds values of that type.
 
 ```rnx
 let arr = [10, 20, 30];

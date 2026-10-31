@@ -1,7 +1,6 @@
 <script lang="ts">
-	import { ArrowRight, Diamond } from 'lucide-svelte';
-	import { MANUAL_SECTIONS } from '$lib/docs/nav';
-	import { reveal } from '$lib/motion/reveal';
+	import { ArrowRight } from 'lucide-svelte';
+	import { MANUAL_SECTIONS, MANUAL_PARTS } from '$lib/docs/nav';
 </script>
 
 <svelte:head>
@@ -12,31 +11,43 @@
 	/>
 </svelte:head>
 
-<p class="flex items-center gap-1.5 font-mono text-sm tracking-wide text-aura-purple"><Diamond size={12} />language manual</p>
-<h1 class="mt-3 text-3xl font-bold tracking-tight">Exact Semantics, Stated Plainly</h1>
-<p class="mt-2 max-w-[65ch] text-aura-muted">
-	The Manual is the normative reference: execution semantics, compiler lowering,
-	memory guarantees, and performance characteristics. For the friendly learning
-	path, start with <a href="/guide" class="text-aura-green hover:underline">the Guide</a>
-	instead.
-</p>
+<div class="index-page">
+	<header class="index-head">
+		<h1 class="index-title">The language manual</h1>
+		<p class="index-lede">
+			The normative reference: execution semantics, compiler lowering, memory guarantees, and
+			performance characteristics. For the friendly path, start with
+			<a href="/guide" class="text-aura-signal underline underline-offset-4">the guide</a>.
+		</p>
+	</header>
 
-<div class="mt-6 grid gap-3 md:grid-cols-2">
-	{#each MANUAL_SECTIONS as m, i}
-		<a href={m.path} use:reveal={{ delay: Math.min(i, 6) * 45 }} class="panel lift block p-4 hover:border-aura-borderHover">
-			<p class="flex items-center gap-2 font-semibold">
-				<span class="font-mono text-xs text-aura-muted">{String(i + 1).padStart(2, '0')}</span>
-				<m.icon size={15} strokeWidth={1.75} class="shrink-0 text-aura-purple" />
-				{m.title}
-			</p>
-			<p class="mt-1 pl-6 text-sm text-aura-muted">{m.description}</p>
-		</a>
+	{#each MANUAL_PARTS as part, pi}
+		<section class="index-section" aria-labelledby="part-{pi}">
+			<div class="index-section-head">
+				<h2 id="part-{pi}" class="index-section-title">{part}</h2>
+			</div>
+			<ul class="index-list">
+				{#each MANUAL_SECTIONS.filter((m) => m.part === part) as m}
+					<li>
+						<a href={m.path} class="index-row">
+							<span class="index-row-title">
+								<span class="grid h-4 w-4 shrink-0 place-items-center text-aura-faint">
+									<m.icon size={14} strokeWidth={1.7} />
+								</span>
+								{m.title}
+							</span>
+							<span class="index-row-desc">{m.description}</span>
+						</a>
+					</li>
+				{/each}
+			</ul>
+		</section>
 	{/each}
-</div>
 
-<p class="mt-10 border-t border-aura-border pt-5 text-aura-muted">
-	Looking for per-module APIs?
-	<a href="/docs/@std/simd/overview" class="text-aura-purple hover:underline"
-		><span class="inline-flex items-center gap-1">Explore the Standard Library Reference <ArrowRight size={13} /></span></a
-	>
-</p>
+	<p class="index-foot">
+		Looking for per-module APIs?
+		<a href="/docs/@std/prelude/overview" class="inline-flex items-center gap-1 text-aura-link underline underline-offset-4">
+			Browse the standard library <ArrowRight size={12} />
+		</a>
+	</p>
+</div>

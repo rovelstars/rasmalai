@@ -1,32 +1,51 @@
 <script lang="ts">
-	import { ArrowRight, Diamond } from 'lucide-svelte';
+	import { ArrowRight } from 'lucide-svelte';
 	import { ETC_SECTIONS } from '$lib/docs/nav';
-	import { reveal } from '$lib/motion/reveal';
 </script>
 
 <svelte:head>
-	<title>Registry & Policy | Rasmalai</title>
+	<title>Registry &amp; Policy | Rasmalai</title>
 	<meta
 		name="description"
 		content="Non-language rules of the Rasmalai registry: publishing, versioning, abuse handling, and tiers."
 	/>
 </svelte:head>
 
-<p class="flex items-center gap-1.5 font-mono text-sm tracking-wide text-aura-purple"><Diamond size={12} />registry & policy</p>
-<h1 class="mt-3 text-3xl font-bold tracking-tight">Rules of the Registry</h1>
-<p class="mt-2 max-w-[65ch] text-aura-muted">
-	Everything non-language: what may be published, how versions and yank work,
-	what counts as abuse, and what the tiers cover. Normative where stated.
-</p>
-<div class="mt-6 grid gap-3">
-	{#each ETC_SECTIONS as s}
-		<a use:reveal href={s.path} class="press panel group block p-4 hover:border-aura-borderHover">
-			<p class="inline-flex items-center gap-2 font-semibold">
-				{#if s.icon}<s.icon size={16} strokeWidth={1.75} class="text-aura-purple" />{/if}
-				{s.title}
-				<ArrowRight size={14} class="transition-transform group-hover:translate-x-0.5" />
-			</p>
-			<p class="mt-1 text-sm text-aura-muted">{s.description}</p>
+<div class="index-page">
+	<header class="index-head">
+		<h1 class="index-title">Registry rules and operations</h1>
+		<p class="index-lede">
+			Everything that is not the language: what may be published, how versions and yank work, what
+			counts as abuse, and what each capability tier promises. Normative where stated.
+		</p>
+	</header>
+
+	<section class="index-section" aria-labelledby="policies">
+		<div class="index-section-head">
+			<h2 id="policies" class="index-section-title">Policies</h2>
+			<p class="index-section-note">Read in order on a first pass; jump to a clause when something breaks.</p>
+		</div>
+		<ol class="index-list">
+			{#each ETC_SECTIONS as s}
+				<li>
+					<a href={s.path} class="index-row">
+						<span class="index-row-title">
+							<span class="grid h-4 w-4 shrink-0 place-items-center text-aura-faint">
+								<s.icon size={14} strokeWidth={1.7} />
+							</span>
+							{s.title}
+						</span>
+						<span class="index-row-desc">{s.description}</span>
+					</a>
+				</li>
+			{/each}
+		</ol>
+	</section>
+
+	<p class="index-foot">
+		Publishing a package?
+		<a href="/packages" class="inline-flex items-center gap-1 text-aura-signal underline underline-offset-4">
+			Browse the registry <ArrowRight size={12} />
 		</a>
-	{/each}
+	</p>
 </div>

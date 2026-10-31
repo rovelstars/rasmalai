@@ -4,13 +4,13 @@ description: "Dynamic types become structural classes with native 64-bit numbers
 sourceLang: "typescript"
 ---
 
-# From TypeScript: Familiar Shape, Bare-Metal Runtime
+# From TypeScript: familiar shape, bare-metal runtime
 
 You like modules, curly braces, and fast iteration. Rasmalai keeps the shape of the code and swaps the runtime: a stripped native binary instead of V8, milliseconds instead of `node_modules`.
 
 ## Modules you already recognize
 
-Imports name what they take and where they live. The standard library resolves from the compiler itself — nothing to install:
+Imports name what they take and where they live. The standard library resolves from the compiler itself. There is nothing to install:
 
 ```typescript
 class Vec2 {
@@ -70,10 +70,10 @@ print("listening on {port}");
 
 ## Ship one file
 
-No bundler split-chunks, no runtime flags, no container layer for the interpreter:
+No bundler split-chunks, runtime flags, or container layers for the interpreter:
 
 ```sh
 rnx build --release
 ```
 
-One stripped native binary, zero dependencies. Next: the [Guide](/guide/01-introduction) from the top, or [Modules and Packages](/guide/08-modules-and-packages) for the manifest and registry.
+You get one stripped native binary with zero dependencies. Next: the [Guide](/guide/01-introduction) from the top, or [Modules and Packages](/guide/08-modules-and-packages) for the manifest and registry.

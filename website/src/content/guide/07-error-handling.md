@@ -4,19 +4,19 @@ description: "Absence with null and T?, Result, throws and try/catch, and the nu
 icon: "TriangleAlert"
 ---
 
-# Error Handling
+# Error handling
 
-Failures come in three shapes in rnx: missing files, missed lookups, bad input. The language answers with three channels, smallest first — absence, `Result`, and `throws` — and this chapter covers when to use which, how to diagnose each, and how to handle it.
+Failures come in three shapes in rnx: missing files, missed lookups, bad input. The language answers with three channels, smallest first (absence, `Result`, and `throws`). This chapter covers when to use each one and how to handle it.
 
 ## Kinds of failure
 
 Not every failure deserves the same machinery. rnx has three channels, smallest first:
 
-- **Absence (`null` / `T?`)** — a lookup missed, an optional config is unset. No stack, no handler; the type itself says "might be missing". Use this when missing is ordinary.
-- **`Result<T, E>`** — a computation failed but the program continues: parsing, validation, division. The error travels as a value you inspect. Use this when the caller decides what to do.
-- **`throws` + `try`/`catch`** — something exceptional crossed several layers: I/O blew up, a resource vanished. Control jumps to the nearest handler. Use this when intermediate layers have nothing useful to add.
+- **Absence (`null` / `T?`)**: a lookup missed, an optional config is unset. No stack, no handler; the type itself says "might be missing". Use this when missing is ordinary.
+- **`Result<T, E>`**: a computation failed but the program continues: parsing, validation, division. The error travels as a value you inspect. Use this when the caller decides what to do.
+- **`throws` + `try`/`catch`**: something exceptional crossed several layers: I/O blew up, a resource vanished. Control jumps to the nearest handler. Use this when intermediate layers have nothing useful to add.
 
-On top of all three sit hard fatals — division by zero, out-of-bounds indexing, a failed `assert`. Fatals abort the program by design: they mean a bug, not a condition to handle. Don't try to catch them; fix them.
+On top of all three sit hard fatals: division by zero, out-of-bounds indexing, a failed `assert`. Fatals abort the program by design: they mean a bug, not a condition to handle. Don't try to catch them; fix them.
 
 ## Absence is null
 
@@ -32,7 +32,7 @@ let empty: Array<Int> = [];
 print(empty.pop() ?? -1);
 ```
 
-That prints `10`, `8080`, and `-1`. `lhs ?? rhs` yields `lhs` when it is not `null` and evaluates `rhs` otherwise — `rhs` never runs when `lhs` is present, so fallbacks chain: `a ?? b ?? 8080`.
+That prints `10`, `8080`, and `-1`. `lhs ?? rhs` yields `lhs` when it is not `null` and evaluates `rhs` otherwise. `rhs` never runs when `lhs` is present, so fallbacks chain: `a ?? b ?? 8080`.
 
 `?.` reaches through a chain, short-circuiting the whole thing on `null`:
 
@@ -49,7 +49,7 @@ print(ghost?.profile?.name ?? "anonymous");
 That prints `Al` and `anonymous`. The chain yields `null` (not a wrapper) when any link is missing, so the final `?? default` is the idiomatic landing.
 
 > [!NOTE for TypeScript Devs]
-> `?.` looks like optional chaining and mostly behaves like it — except there is no `Option` type and no `Some`/`None`. Write the nullable type directly (`String?`, `Int?`, `Profile?`).
+> `?.` looks like optional chaining and mostly behaves like it, except there is no `Option` type and no `Some`/`None`. Write the nullable type directly (`String?`, `Int?`, `Profile?`).
 
 Test for presence with `!= null`, which narrows the binding to the payload type inside the block:
 
@@ -60,7 +60,7 @@ if s != null {
 }
 ```
 
-That prints `2` — inside the branch, `s` is a plain `String`. The early-return form is `guard let`, which binds the payload or diverges through `else`:
+That prints `2`. Inside the branch, `s` is a plain `String`. The early-return form is `guard let`, which binds the payload or diverges through `else`:
 
 ```rnx
 import { Map } from "@std/collections";
@@ -82,7 +82,7 @@ fn Main(): Int {
 }
 ```
 
-That prints `8`, then `missing` and `-1`. After the `guard`, `v` is a plain `Int` for the rest of the function — no nesting, no pyramid.
+That prints `8`, then `missing` and `-1`. After the `guard`, `v` is a plain `Int` for the rest of the function, without extra nesting.
 
 ## Failure is Result
 
@@ -105,7 +105,7 @@ print(bad.isErr());
 print(bad.unwrapOr(-1));
 ```
 
-That prints `5`, `true`, and `-1`. `unwrap` yields the payload and aborts on `Err` — only call it when you have checked first. `unwrapOr` yields the payload or the fallback. Postfix `?` unwraps inside a function that itself returns a `Result`, returning the `Err` early to the caller:
+That prints `5`, `true`, and `-1`. `unwrap` yields the payload and aborts on `Err`. Only call it when you have checked first. `unwrapOr` yields the payload or the fallback. Postfix `?` unwraps inside a function that itself returns a `Result`, returning the `Err` early to the caller:
 
 ```rnx
 fn div(a: Int, b: Int): Result<Int, String> {
@@ -123,11 +123,11 @@ fn calc(): Result<Int, String> {
 print(calc().unwrapOr(-1));
 ```
 
-That prints `6` — the `?` unwrapped `5`, added one, re-wrapped. `?` binds tighter than binary operators. Using it on a non-`Result` value, or inside a function returning something else, is a compile error.
+That prints `6`. The `?` unwrapped `5`, added one, and re-wrapped. `?` binds tighter than binary operators. Using it on a non-`Result` value, or inside a function returning something else, is a compile error.
 
 ## Failure is throws
 
-A function that can fail marks `throws` — bare, with no error set. Callers must be inside `try` or declare `throws` themselves, and the checker enforces it:
+A function that can fail marks `throws`, bare, with no error set. Callers must be inside `try` or declare `throws` themselves, and the checker enforces it:
 
 ```rnx
 fn load(ok: Bool): Int throws {
@@ -178,16 +178,16 @@ fn Main(): Int {
 }
 ```
 
-That prints `parse problem`. Not every function should handle what it can fail at — declaring `throws` and letting the value propagate keeps intermediate layers free of plumbing they have nothing to add to.
+That prints `parse problem`. Not every function should handle what it can fail at. Declaring `throws` and letting the value propagate keeps intermediate layers free of plumbing they have nothing to add to.
 
 ## Common errors and how to fix them
 
-**A nullable where a plain value was expected.** You passed a `T?` to something wanting `T`. The fix is almost always `?? default`, `guard let`, or an `if x != null` check at the boundary — not sprinkling `unwrap()` everywhere. Reserve `unwrap` for places you have proven non-null.
+**A nullable where a plain value was expected.** You passed a `T?` to something wanting `T`. The fix is almost always `?? default`, `guard let`, or an `if x != null` check at the boundary. Do not sprinkle `unwrap()` everywhere. Reserve `unwrap` for places you have proven non-null.
 
-**`?` outside a `Result` function.** Postfix `?` only works inside a function returning `Result` with a matching error type. Anywhere else — including `fn Main(): Int` — it is a compile error. Handle the `Result` with `unwrapOr` or `if r.isOk()` instead.
+**`?` outside a `Result` function.** Postfix `?` only works inside a function returning `Result` with a matching error type. Anywhere else, including `fn Main(): Int`, it is a compile error. Handle the `Result` with `unwrapOr` or `if r.isOk()` instead.
 
-**Catching fatals.** Division by zero, out-of-bounds indexing, failed asserts — these abort, full stop. If your program dies on one, the fix is in your logic (check the divisor, check the length), not in a handler.
+**Catching fatals.** Division by zero, out-of-bounds indexing, failed asserts. These abort, full stop. If your program dies on one, the fix is in your logic (check the divisor, check the length), not in a handler.
 
 **Swallowing errors silently.** An empty `catch (err) { }` hides the very information you need next week. At minimum, `print` the error; better, handle it or propagate it. Future you will thank present you.
 
-Next: [Modules and Packages](/guide/08-modules-and-packages) — imports, the standard library tour, and the project manifest.
+Next: [Modules and Packages](/guide/08-modules-and-packages) covers imports, the standard library tour, and the project manifest.

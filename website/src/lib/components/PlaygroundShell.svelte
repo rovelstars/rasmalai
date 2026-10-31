@@ -111,18 +111,21 @@
 	}
 </script>
 
-<div class="panel flex min-h-[220px] flex-col overflow-hidden">
-	<div class="panel-title">terminal</div>
-	<div bind:this={box} class="max-h-64 min-h-32 flex-1 overflow-auto p-3 font-mono text-[12px] leading-relaxed" aria-live="polite">
+<div class="pg-outpane pg-shellpane" aria-label="Shell">
+	<div class="pg-pane-head">
+		<span>Shell</span>
+		<span class="dim">rnx check / run / fmt / test</span>
+	</div>
+	<div bind:this={box} class="pg-shell-log" aria-live="polite">
 		{#each lines as l}
 			<p class="whitespace-pre-wrap break-words {l.cls}">{l.text}</p>
 		{/each}
 		{#if busy}
-			<p class="animate-pulse text-aura-muted">|</p>
+			<p class="animate-pulse text-aura-faint">|</p>
 		{/if}
 	</div>
-	<div class="flex items-center gap-2 border-t border-aura-border px-3 py-2">
-		<span class="shrink-0 font-mono text-[12px] text-aura-green">$</span>
+	<div class="pg-shell-in">
+		<span class="prompt">$</span>
 		<input
 			bind:this={field}
 			bind:value={input}
@@ -131,7 +134,6 @@
 			autocomplete="off"
 			autocapitalize="off"
 			placeholder="help, ls, rnx run"
-			class="min-w-0 flex-1 bg-transparent font-mono text-[12px] outline-none placeholder:text-aura-muted/60"
 			aria-label="Shell input"
 		/>
 	</div>

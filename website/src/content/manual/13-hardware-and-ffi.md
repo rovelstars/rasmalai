@@ -9,7 +9,7 @@ icon: "Cpu"
 
 ## What unsafe means
 
-Safe Rasmalai covers applications, servers, simulations, and tooling. The remainder — raw pointers, hardware registers, C libraries — is spelled `unsafe` and `native`. `unsafe` does not suspend checking; it assigns responsibility through containment: every foreign call and every raw-memory operation must sit inside an `unsafe` block (or an `unsafe fn`), and the compiler verifies the whole call graph to a fixpoint. A function that reaches foreign code only through a justified block stays safe itself, so wrappers contain rather than spread `unsafe`. Bounds, types, and ownership keep working inside `unsafe` exactly as outside it.
+Safe Rasmalai covers applications, servers, simulations, and tooling. The remainder, raw pointers, hardware registers, and C libraries, is spelled `unsafe` and `native`. `unsafe` does not suspend checking; it assigns responsibility through containment: every foreign call and every raw-memory operation must sit inside an `unsafe` block (or an `unsafe fn`), and the compiler verifies the whole call graph to a fixpoint. A function that reaches foreign code only through a justified block stays safe itself, so wrappers contain rather than spread `unsafe`. Bounds, types, and ownership keep working inside `unsafe` exactly as outside it.
 
 ```rnx
 unsafe fn Raw(x: Int): Int { return x * 2 }
@@ -19,7 +19,7 @@ unsafe { print(Raw(21)); }
 
 Calling an `unsafe fn` or a foreign function outside an `unsafe` block is an `E201` error; address-of or `Pointer` arithmetic outside one is `E202`. An `unsafe` block that reaches no foreign or raw-memory authority at all is a `W202` warning. As an expression, `unsafe { ... }` runs the block and yields `null`, so it slots into statement position without affecting surrounding code.
 
-Deliberately excluded from `unsafe`: intentional reference cycles (they waste memory at worst — see [Cycles and Handles](/manual/12-cycles-and-handles)) and data-race-free threading through `@std/sync`. `unsafe` is reserved for raw memory, C-ABI calls, and genuine data races.
+Deliberately excluded from `unsafe`: intentional reference cycles (they waste memory at worst; see [Cycles and Handles](/manual/12-cycles-and-handles)) and data-race-free threading through `@std/sync`. `unsafe` is reserved for raw memory, C-ABI calls, and genuine data races.
 
 > [!CAUTION]
 > Keep `unsafe` blocks small: address-taking, pointer math, and foreign calls only. Business logic inside the block belongs outside it.
@@ -46,7 +46,7 @@ export {
 
 Only C-ABI types cross the boundary; managed values (`String`, `Array`, objects, closures) are rejected with `E108` until converted to primitives or raw addresses explicitly.
 
-Calling a foreign function requires containment: the call must sit in an `unsafe` block (or an `unsafe fn`), verified across the call graph — a direct call outside one is `E201`. The safe wrapper pattern keeps the perimeter small:
+Calling a foreign function requires containment: the call must sit in an `unsafe` block (or an `unsafe fn`), verified across the call graph. A direct call outside one is `E201`. The safe wrapper pattern keeps the perimeter small:
 
 ```rnx
 import {
@@ -66,7 +66,7 @@ fn bound(n: Int): Int {
 
 ## Generating bindings with rnx bindgen
 
-`rnx bindgen` reads C headers and writes `bindgen.rnx` plus `bindgen.oci.json` (the registry annotation set: kind, role, target, generator, upstream digest, title). The header parser is built in — no clang needed — with fixed per-target preprocessor defines, so the same inputs produce byte-identical output on any machine. Only value-shaped surface emits: scalars, fixed-size POD pointers, strings, and opaque handles as `Pointer<Byte>`; each emitted function becomes an `unsafe fn` wrapper over a private native import (unsafe-by-construction, so hand wrappers own containment). Callback, `void*`, and variadic surface warns instead of emitting.
+`rnx bindgen` reads C headers and writes `bindgen.rnx` plus `bindgen.oci.json` (the registry annotation set: kind, role, target, generator, upstream digest, title). The header parser is built in, with no clang needed, with fixed per-target preprocessor defines, so the same inputs produce byte-identical output on any machine. Only value-shaped surface emits: scalars, fixed-size POD pointers, strings, and opaque handles as `Pointer<Byte>`; each emitted function becomes an `unsafe fn` wrapper over a private native import (unsafe-by-construction, so hand wrappers own containment). Callback, `void*`, and variadic surface warns instead of emitting.
 
 ```sh
 rnx bindgen --header /usr/include/sqlite3.h --native-lib sqlite3 \
@@ -81,7 +81,7 @@ rnx bindgen --header ./gen-check.h --native-lib sqlite3 \
 
 Comments in the header travel with the declaration they precede: a `//` line or `/* ... */` block directly above a function or `#define` becomes a `/** ... */` doc comment on the emitted wrapper or constant, so the API reference shows the upstream prose. Banner stars are stripped, prose ends at the first `*/`, and empty comments never emit. Trailing comments on the same line as code are left behind, and a blank line ends the attachment. The file opens with a `//!` line naming the generator, the source headers, and the upstream digest. Declared bindgen outputs count as package surface: `rnx doc` and the publish-time API snapshot include them even when no entry-reachable file imports them.
 
-C documentation idioms convert to plain JSDoc-friendly prose on the way through — the API page never shows raw header markup. The rule is structure, never truncate: the first line becomes the summary and the full body follows, with shared intros staying whole on their first symbol. CAPI3REF markers convert as follows: a leading `CAPI3REF:` (or `CONSTRUCTOR:` / `DESTRUCTOR:` / `METHOD:`) keyword becomes the summary title, bare taxonomy lines such as `CONSTRUCTOR: sqlite3` drop out, `^` line prefixes and `^(...)` span markers disappear, `[link]` and `[display | target]` brackets keep their display text, `[[symbol]]` section anchors route that section to the named function (so one comment block covering `sqlite3_backup_init`, `sqlite3_backup_step`, and `sqlite3_backup_finish` documents each of them instead of piling everything onto the first), `<ul>` / `<ol>` wrappers drop out, `<li>` items become `- ` bullets, and every other tag keeps its inner text (`` `code` `` keeps backticks). Doxygen `@param` / `@return` / `@brief` (and `\param`, `\return`, `\brief`, `\c word`) map to `@param` / `@returns` / summary text, and KernelDoc `- @name:` dash lists become `@param` entries. Anything unrecognized degrades to plain text, and an inner `*/` still sanitizes to `* /` so the emitted block always parses.
+C documentation idioms convert to plain JSDoc-friendly prose on the way through, so the API page never shows raw header markup. The rule is structure, never truncate: the first line becomes the summary and the full body follows, with shared intros staying whole on their first symbol. CAPI3REF markers convert as follows: a leading `CAPI3REF:` (or `CONSTRUCTOR:` / `DESTRUCTOR:` / `METHOD:`) keyword becomes the summary title, bare taxonomy lines such as `CONSTRUCTOR: sqlite3` drop out, `^` line prefixes and `^(...)` span markers disappear, `[link]` and `[display | target]` brackets keep their display text, `[[symbol]]` section anchors route that section to the named function (so one comment block covering `sqlite3_backup_init`, `sqlite3_backup_step`, and `sqlite3_backup_finish` documents each of them instead of piling everything onto the first), `<ul>` / `<ol>` wrappers drop out, `<li>` items become `- ` bullets, and every other tag keeps its inner text (`` `code` `` keeps backticks). Doxygen `@param` / `@return` / `@brief` (and `\param`, `\return`, `\brief`, `\c word`) map to `@param` / `@returns` / summary text, and KernelDoc `- @name:` dash lists become `@param` entries. Anything unrecognized degrades to plain text, and an inner `*/` still sanitizes to `* /` so the emitted block always parses.
 
 ```sh
 rnx bindgen --header /usr/include/sqlite3.h --native-lib sqlite3 \
@@ -90,7 +90,7 @@ rnx bindgen --header /usr/include/sqlite3.h --native-lib sqlite3 \
 
 ## Raw pointers
 
-A `Pointer<T>` is a raw 64-bit address (`Int`/`Float`/`Byte`/`Bool` pointees; `Byte` accesses are exactly one byte wide). Mint one from real memory with `Pointer.fromAddress<T>(addr)` — for example `buf.address()` on a `ByteBuffer`, which must outlive the pointer. Inside `unsafe`, `ptr.read()` loads `T`, `ptr.write(v)` stores it, `readVolatile`/`writeVolatile` mark the access volatile (LLVM honors it; Cranelift and the interpreter emit a plain access), and `*ptr` / `*ptr = v` sugar works the same. Pointer arithmetic is raw byte addition.
+A `Pointer<T>` is a raw 64-bit address (`Int`/`Float`/`Byte`/`Bool` pointees; `Byte` accesses are exactly one byte wide). Mint one from real memory with `Pointer.fromAddress<T>(addr)`, for example `buf.address()` on a `ByteBuffer`, which must outlive the pointer. Inside `unsafe`, `ptr.read()` loads `T`, `ptr.write(v)` stores it, `readVolatile`/`writeVolatile` mark the access volatile (LLVM honors it; Cranelift and the interpreter emit a plain access), and `*ptr` / `*ptr = v` sugar works the same. Pointer arithmetic is raw byte addition.
 
 Taking `&local` yields an opaque token, not a readable address: dereferencing it fails cleanly at runtime, and native backends reject `&local` at compile time. For real memory, use `fromAddress`.
 
@@ -123,15 +123,15 @@ unsafe {
 
 ## Shipping C-compatible libraries
 
-The reverse direction — calling Rasmalai from C — is `rnx build --lib`. It compiles `entries.lib` (a passed path is a fallback only when the manifest names no lib entry) to a static archive plus a `<basename>.h` header, instead of an executable. Normal builds never provide C symbols.
+The reverse direction, calling Rasmalai from C, is `rnx build --lib`. It compiles `entries.lib` (a passed path is a fallback only when the manifest names no lib entry) to a static archive plus a `<basename>.h` header, instead of an executable. Normal builds never provide C symbols.
 
 `export` is the only opt-in: every top-level `export fn` must already be C-representable, enforced at check time with `E108` in all builds. Async functions, throwing functions, unannotated or `Void` parameters, and anything outside `Int`/`Float`/`Byte`/`Bool`/`String`/`Pointer<Byte>` (params) and `Int`/`Float`/`Byte`/`Bool`/`Void` (returns) fail with a diagnostic naming the function and parameter. Each `Pointer<Byte>` parameter needs a sibling `<name>_len: Int` length. (`pub`/`public` still parse as deprecated aliases with `W204`.)
 
 Each export becomes a C wrapper with a true C signature (`Int` to `int64_t`, `Float` to `double`, `Bool` to `bool`, `Void` to `void`, `String` params to `const char*` copied in for the call, `Pointer<Byte>` to `const uint8_t*` borrowed for the call only). The header carries `RNX_<PACKAGE>_H` guards, `RNX_ABI_VERSION`, `rnx_init`/`rnx_last_error` declarations, and any `/** */` doc comments from the exports. `--lib-prefix <p>` renames every export to `p_<name>`; bare names stay the default.
 
-Ownership: the host owns every buffer it passes in. Borrowed pointers are valid for the call only — copy what you keep. Nothing heap-owned crosses back: `String` and `Pointer` returns are rejected, and throwing exports are rejected at compile time.
+Ownership: the host owns every buffer it passes in. Borrowed pointers are valid for the call only, so copy what you keep. Nothing heap-owned crosses back: `String` and `Pointer` returns are rejected, and throwing exports are rejected at compile time.
 
-Embedding: `rnx_init(argc, argv)` is available for argv control, but a host that never calls it still works — the first wrapper call runs a thread-safe once-guard that installs guard pages and readies the runtime. Wrappers never unwind or abort into the host: a panic or uncaught throw inside an export returns the sentinel for its type (`INT64_MIN`, `false`, quiet NaN, nothing for `Void`) and stores the message for `rnx_last_error()`, which is per-thread, cleared on entry, and carries only the message. Check it after any sentinel return.
+Embedding: `rnx_init(argc, argv)` is available for argv control, but a host that never calls it still works. The first wrapper call runs a thread-safe once-guard that installs guard pages and readies the runtime. Wrappers never unwind or abort into the host: a panic or uncaught throw inside an export returns the sentinel for its type (`INT64_MIN`, `false`, quiet NaN, nothing for `Void`) and stores the message for `rnx_last_error()`, which is per-thread, cleared on entry, and carries only the message. Check it after any sentinel return.
 
 ## Auditing the surface
 
@@ -155,7 +155,7 @@ g.close();
 print(n, buf.readString(0, n));
 ```
 
-Reads on a closed handle answer `Err`, and a refused open reads as `isOpen == false`. One-shot work lives on the `fs` namespace, and every fallible call answers `Result` — only `File.open`/`File.create` keep the `isOpen` sentinel for a refused open:
+Reads on a closed handle answer `Err`, and a refused open reads as `isOpen == false`. One-shot work lives on the `fs` namespace, and every fallible call answers `Result`. Only `File.open`/`File.create` keep the `isOpen` sentinel for a refused open:
 
 | Call | Purpose |
 |---|---|
@@ -172,7 +172,7 @@ Reads on a closed handle answer `Err`, and a refused open reads as `isOpen == fa
 
 `Path.exists`, `Path.isFile`, `Path.isDir`, `Path.join`, `Path.dir`, `Path.base`, `Path.ext`, and `Path.isAbs` cover path queries without opening handles.
 
-The bare name is sync and blocks the caller; appending `Async` queues the same work on the process-wide fs pool and returns a `Promise`. Await it — writing out the `Result` type, since `await` erases to `Any`:
+The bare name is sync and blocks the caller; appending `Async` queues the same work on the process-wide fs pool and returns a `Promise`. Await it, writing out the `Result` type, since `await` erases to `Any`:
 
 ```rnx
 import fs from "@std/fs";
@@ -200,7 +200,7 @@ unsafe {
 print(fs.readText("/tmp/rnx-map.bin").unwrapOr("?"));
 ```
 
-That prints `Hxxxxxxx`. The lifetime rule is load-bearing: `close()` unmaps the region, so every address taken from it must be forgotten first — using one afterwards reads freed memory. And when another process truncates the file below a mapped page, the next touch faults in a way nothing can catch: the OS delivers SIGBUS on POSIX (an access violation on Windows), which no `Result` and no `catch` can cover. Size the file before mapping it and never truncate a mapped file.
+That prints `Hxxxxxxx`. The lifetime rule is load-bearing: `close()` unmaps the region, so every address taken from it must be forgotten first. Using one afterwards reads freed memory. And when another process truncates the file below a mapped page, the next touch faults in a way nothing can catch: the OS delivers SIGBUS on POSIX (an access violation on Windows), which no `Result` and no `catch` can cover. Size the file before mapping it and never truncate a mapped file.
 
 ## Terminal I/O
 
@@ -240,7 +240,7 @@ io.write(Result.Err<Int, String>("boom"));
 print([1, 2], "x");
 ```
 
-That prints `{ore: 7}`, `Ok(42)`, `Err(boom)`, and `[1, 2] x` — a `Point(1, 2)` struct would render as `Point{x: 1, y: 2}`.
+That prints `{ore: 7}`, `Ok(42)`, `Err(boom)`, and `[1, 2] x`. A `Point(1, 2)` struct would render as `Point{x: 1, y: 2}`.
 
 Input answers `Result`: `read` reads stdin to EOF, while `readLine` writes its prompt with no newline first, reads one line, and strips the trailing newline. Pipe input or type a line when running these; `readLine` reports `Err` on EOF with no bytes read:
 
@@ -269,7 +269,7 @@ print(io.height() > 0);
 print(io.colorProfile() == ColorLevel.Ascii || true);
 ```
 
-`setRawMode` toggles character-at-a-time, no-echo input and answers `Result` rather than throwing — `Ok(true)` on success, `Err(message)` when stdin is not a TTY. Callers restore with `setRawMode(false)`; the runtime also restores the saved mode automatically at process exit. `clear` homes the cursor with TTY-guarding: a no-op returning normally when stdout is not a TTY, never an error:
+`setRawMode` toggles character-at-a-time, no-echo input and answers `Result` rather than throwing. `Ok(true)` reports success and `Err(message)` reports stdin that is not a TTY. Callers restore with `setRawMode(false)`; the runtime also restores the saved mode automatically at process exit. `clear` homes the cursor with TTY-guarding: a no-op returning normally when stdout is not a TTY, never an error:
 
 ```rnx
 import io from "@std/io";
@@ -279,7 +279,7 @@ print(r.isOk() || r.isErr());
 io.clear();
 ```
 
-`print` stays in the prelude as a shim over `io.write`, so existing programs keep working with no import — color, newline, and pretty-printing decisions belong to `@std/io`.
+`print` stays in the prelude as a shim over `io.write`, so existing programs keep working with no import. Color, newline, and pretty-printing decisions belong to `@std/io`.
 
 ## Process control
 
@@ -316,7 +316,7 @@ Fallible handle operations answer `Result`; only `File.open`/`File.create` keep 
 | `Path.join(a, b)` / `Path.dir(p)` / `Path.base(p)` | `String` |
 | `Path.ext(p)` / `Path.isAbs(p)` | `String` / `Bool` |
 
-The bare name is sync and blocks the caller; appending `Async` queues the same work on the process-wide fs pool and returns a `Promise` — await it, writing out the `Result` type, since `await` erases to `Any`. Every `Async` twin settles with the same `Result` its sync original returns.
+The bare name is sync and blocks the caller; appending `Async` queues the same work on the process-wide fs pool and returns a `Promise`. Await it, writing out the `Result` type, since `await` erases to `Any`. Every `Async` twin settles with the same `Result` its sync original returns.
 
 | Child call | Returns |
 |---|---|

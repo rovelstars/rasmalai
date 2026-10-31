@@ -88,7 +88,7 @@ Guards narrow a case further (`case .Circle(r) if r > 0`) and observe payload bi
 
 ## Matching beyond enums
 
-The same statement matches literal ranges and dispatches on error values. Type tests use `if value is Type`, which branches on the runtime type — including the payload bound in a `catch` block, where a passing test narrows the binding so fields are accessible:
+The same statement matches literal ranges and dispatches on error values. Type tests use `if value is Type`, which branches on the runtime type, including the payload bound in a `catch` block, where a passing test narrows the binding so fields are accessible:
 
 ```rnx
 fn kind(code: Int): String {
@@ -135,7 +135,7 @@ fn Main(): Int {
 
 ## Enum reference
 
-Leading-dot inference applies in exactly these positions — everywhere else, qualify with the enum name:
+Leading-dot inference applies in exactly these positions. Everywhere else, qualify with the enum name:
 
 | Position | Example | Rule |
 |---|---|---|

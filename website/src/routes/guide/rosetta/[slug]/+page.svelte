@@ -28,15 +28,8 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events: delegated code-block handler -->
 <article class="doc-prose" onclick={onDocCodeClick}>
-	<nav class="mb-4 font-mono text-xs text-aura-muted" aria-label="Breadcrumb">
-		<a href="/guide" class="hover:text-aura-text">Guide</a>
-		<span class="mx-1.5" aria-hidden="true">/</span>
-		<a href="/guide#rosetta" class="hover:text-aura-text">Rosetta</a>
-		<span class="mx-1.5" aria-hidden="true">/</span>
-		<span class="text-aura-text">{data.title}</span>
-	</nav>
-	<h1 class="flex items-center gap-3">
-		{#if meta}<LangIcon lang={meta.dialect} size={26} />{/if}
+	<h1 class="doc-h1">
+		{#if meta}<LangIcon lang={meta.dialect} size={22} />{/if}
 		{data.title}
 	</h1>
 	{#each sections as s}
