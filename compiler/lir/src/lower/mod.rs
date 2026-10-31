@@ -25,6 +25,7 @@ pub fn lower(m: &A::Module) -> Result<Module, Diagnostic> {
         param_info: BTreeMap::new(),
         param_tys: BTreeMap::new(),
         field_opt: BTreeMap::new(),
+        field_targs: BTreeMap::new(),
         ret_tys: BTreeMap::new(),
         nub_fields: BTreeSet::new(),
         generic_fns: BTreeMap::new(),
@@ -57,6 +58,7 @@ struct Lower {
     param_info: BTreeMap<String, Vec<(String, Option<A::Spanned<A::Expr>>)>>,
     param_tys: BTreeMap<String, Vec<(String, A::Type)>>,
     field_opt: BTreeMap<String, LirType>,
+    field_targs: BTreeMap<String, Vec<LirType>>,
     ret_tys: BTreeMap<String, A::Type>,
     nub_fields: BTreeSet<String>,
     generic_fns: BTreeMap<String, GenericSig>,
@@ -92,6 +94,24 @@ fn type_resolved(module: &Module, ty: &LirType) -> bool {
     }
 }
 
+fn named_ty(module: &Module, t: &A::Type) -> LirType {
+    // `Thread` is compiler-recognized, so it can be named without importing
+    // `@std/sync`. Without that import the handle class is not in the module, and
+    // `Thread.spawn` lowers to a raw i64 handle, so the annotation has to name
+    // that raw type rather than an object class that does not exist.
+    if t.fn_sig.is_none()
+        && t.tuple.is_empty()
+        && t.args.is_empty()
+        && t.path.len() == 1
+        && short_name(&t.path[0]) == "Thread"
+        && !module.class_index.contains_key(&t.path[0])
+        && !module.enum_index.contains_key(&t.path[0])
+    {
+        return LirType::I64;
+    }
+    map_ty(t)
+}
+
 fn array_elem_ty(module: &Module, t: &A::Type) -> LirType {
     match t.args.first() {
         Some(a) if a.fn_sig.is_none() && !a.path.is_empty() => {
@@ -103,7 +123,7 @@ fn array_elem_ty(module: &Module, t: &A::Type) -> LirType {
                     return LirType::Enum(*id);
                 }
             }
-            map_ty(a)
+            named_ty(module, a)
         }
         _ => LirType::Any,
     }
@@ -345,7 +365,7 @@ fn resolve_ty(module: &Module, t: &A::Type) -> LirType {
             return LirType::Array(Box::new(array_elem_ty(module, t)));
         }
     }
-    map_ty(t)
+    named_ty(module, t)
 }
 
 fn genref_ty(t: &A::Type) -> LirType {
@@ -493,10 +513,12 @@ struct Builder<'a> {
     param_info: &'a BTreeMap<String, Vec<(String, Option<A::Spanned<A::Expr>>)>>,
     param_tys: &'a BTreeMap<String, Vec<(String, A::Type)>>,
     field_opt: &'a BTreeMap<String, LirType>,
+    field_targs: &'a BTreeMap<String, Vec<LirType>>,
     ret_tys: &'a BTreeMap<String, A::Type>,
     nub_fields: &'a BTreeSet<String>,
     nub: BTreeSet<Local>,
     precise: BTreeMap<Local, LirType>,
+    local_targs: BTreeMap<Local, Vec<LirType>>,
     var_targs: BTreeMap<String, Vec<LirType>>,
     targ_log: Vec<(String, Option<Vec<LirType>>)>,
     scope_marks: Vec<usize>,
@@ -525,6 +547,7 @@ struct Builder<'a> {
     fn_tparams: Vec<String>,
     moved: BTreeSet<Local>,
     fresh_arrays: BTreeSet<Local>,
+    empty_arrays: BTreeSet<Local>,
     tuples: BTreeMap<Local, Vec<Local>>,
     records: BTreeMap<Local, Vec<(String, Local)>>,
     ranges: BTreeMap<Local, (Local, Local, Local, Local)>,
@@ -1013,6 +1036,15 @@ impl Lower {
                 .collect();
             let locals = vec![LirType::Obj(class.name.clone())];
             let mut instrs = Vec::new();
+            if let Some(deinit) = class.deinit {
+                instrs.push(Instr::Call {
+                    span: crate::instr::UNKNOWN_SPAN,
+                    dsts: vec![],
+                    err: None,
+                    target: CallTarget::Fn(deinit),
+                    args: vec![0],
+                });
+            }
             for i in &owned {
                 instrs.push(Instr::ReleaseField { span: crate::instr::UNKNOWN_SPAN, obj: 0, field: *i });
             }
@@ -1248,7 +1280,7 @@ impl Lower {
             head += 1;
             let module = std::mem::replace(&mut self.out, Module::default());
             let prefix = module.functions.get(id).map(|f| format!("{}::", f.name)).unwrap_or_default();
-            let mut b = Builder::new(&module, &self.defaults, &self.param_info, &self.param_tys, &self.field_opt, &self.ret_tys, &self.nub_fields, &self.generic_fns, &self.extensions, &self.ext_self, &self.mod_consts, &self.runtime_alias, id, prefix);
+            let mut b = Builder::new(&module, &self.defaults, &self.param_info, &self.param_tys, &self.field_opt, &self.field_targs, &self.ret_tys, &self.nub_fields, &self.generic_fns, &self.extensions, &self.ext_self, &self.mod_consts, &self.runtime_alias, id, prefix);
             b.implicit_super = implicit_super.get(&id).copied();
             let is_closure_body = matches!(src, BodySrc::Closure(_));
             if let BodySrc::Fn(f) = &src {
@@ -1336,8 +1368,24 @@ impl<'a> Builder<'a> {
         None
     }
 
-    fn variant_of_path(&self, path: &[String]) -> Option<(usize, usize)> {
-        let vname = path.last()?;
+    fn enum_by_name(&self, name: &str) -> Option<usize> {
+        if let Some(id) = self.module.enum_index.get(name) {
+            return Some(*id);
+        }
+        let short = short_name(name);
+        let mut found = None;
+        for (id, e) in self.module.enums.iter().enumerate() {
+            if short_name(&e.name) == short {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(id);
+            }
+        }
+        found
+    }
+
+    fn variant_of_path(&self, path: &[String]) -> Option<(usize, usize)> {        let vname = path.last()?;
         for (id, e) in self.module.enums.iter().enumerate() {
             if let Some(vi) = e.variant_index.get(vname) {
                 if path.len() > 1 && short_name(&e.name) != path[path.len() - 2] {

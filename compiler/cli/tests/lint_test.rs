@@ -156,6 +156,44 @@ fn test_lint_same_block_redeclare_read_after_is_used() {
     assert_eq!(before, after, "--fix must not rename a read shadowed variable");
 }
 
+const SHADOW_LOOP_RUNTIME_SRC: &str = "fn Main(): Int {\n    let k = 0;\n    while k < 2 {\n        let t0 = 10;\n        let m1 = t0 + 1;\n        let t0 = 100;\n        let m2 = t0 + 1;\n        print(\"m1=\" + (\"\" + m1) + \" m2=\" + (\"\" + m2));\n        k = k + 1;\n    }\n    return 0;\n}\n";
+
+fn run_program(name: &str) -> std::process::Output {
+    Command::new(rnx())
+        .arg("run")
+        .arg(name)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn test_lint_fix_preserves_shadowed_loop_runtime() {
+    let (_g, name) = write_src("redeclare-runtime", "main.rnx", SHADOW_LOOP_RUNTIME_SRC);
+    let before_run = run_program(&name);
+    assert!(before_run.status.success(), "{}", String::from_utf8_lossy(&before_run.stderr));
+
+    let lint = run_lint(&[&name]);
+    assert_eq!(lint.status.code(), Some(0), "{}", String::from_utf8_lossy(&lint.stderr));
+    let stderr = String::from_utf8_lossy(&lint.stderr).into_owned();
+    assert!(!stderr.contains("L001"), "false unused warning: {stderr}");
+
+    let before_src = std::fs::read_to_string(&name).unwrap();
+    let fixed = run_lint(&["--fix", &name]);
+    assert_eq!(fixed.status.code(), Some(0), "{}", String::from_utf8_lossy(&fixed.stderr));
+    let after_src = std::fs::read_to_string(&name).unwrap();
+    assert_eq!(before_src, after_src, "--fix must not rename a read shadowed loop binding");
+
+    let after_run = run_program(&name);
+    assert!(after_run.status.success(), "{}", String::from_utf8_lossy(&after_run.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&before_run.stdout),
+        String::from_utf8_lossy(&after_run.stdout),
+        "--fix changed program output"
+    );
+    assert_eq!(before_run.status.code(), after_run.status.code());
+}
+
 const RESHADOW_UNUSED_SRC: &str = "fn Main(): Int {\n    let t0 = 1;\n    print(t0);\n    let t0 = 2;\n    return 0;\n}\n";
 
 #[test]

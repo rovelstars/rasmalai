@@ -499,6 +499,18 @@ fn ty_promise(inner: Type) -> Type {
     Type { path: vec!["std.prelude.Promise".to_string()], args: vec![inner], nullable: false, fn_sig: None, tuple: Vec::new() }
 }
 
+// An async fn may spell its return type either bare (`T`) or already wrapped
+// (`Promise<T>`), including the synthesized `async fn Main(): Promise<Int>`.
+// Both describe the same single promise; wrapping the wrapped form again would
+// declare `Promise<Promise<T>>` and make `await` yield an extra `Promise`.
+fn resolved_async_ret(t: Type) -> Type {
+    let is_promise = t.fn_sig.is_none()
+        && t.tuple.is_empty()
+        && t.args.len() == 1
+        && t.path.last().is_some_and(|s| s.rsplit('.').next() == Some("Promise"));
+    if is_promise { t.args[0].clone() } else { t }
+}
+
 fn is_void_ret(ret: &Option<Type>) -> bool {
     match ret {
         Some(t) => {
@@ -1020,7 +1032,8 @@ fn expand_promise_fn(
         return;
     }
     let implicit_int = ret_opt.is_none();
-    let t = ret_opt.unwrap_or_else(ty_int);
+    let declared = ret_opt.unwrap_or_else(ty_int);
+    let t = resolved_async_ret(declared.clone());
     hoist_await_returns(&mut body);
     if !check_await_positions_block(&body, diags) {
         return;
@@ -1039,7 +1052,7 @@ fn expand_promise_fn(
         return;
     }
     let wr = "__wr";
-    let box_tag = box_tag_for_promise(&t);
+    let box_tag = box_tag_for_promise(&declared);
     if !convert_returns_vec(&mut body.stmts, wr, !spawn, box_tag, diags) {
         return;
     }

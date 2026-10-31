@@ -257,10 +257,10 @@ pub fn run_check(
         let graph = frontend::modules::ModuleGraph::build(entry).ok();
         let (lenient_files, mut lenient_failed) = match &graph {
             Some(_) => (Vec::new(), Vec::new()),
-            None => {
-                let root = crate::report::project_root_for(entry);
-                crate::report::discover_files(&root)
-            }
+            None => match frontend::project::find_project_root(entry) {
+                Some(root) => crate::report::discover_files(&root),
+                None => crate::report::discover_files(entry),
+            },
         };
         let sources = match &graph {
             Some(g) => crate::report::load_sources(g),
@@ -278,10 +278,23 @@ pub fn run_check(
                         boundary = frontend::unsafe_taint::boundary_map(&module);
                         frontend::harness::strip_tests(&mut module);
                         frontend::harness::strip_benches(&mut module);
-                        let mut staged = frontend::desugar::desugar(&mut module);
-                        match lir::lower::lower(&module) {
-                            Ok(lowered) => staged.extend(lir::verify::verify(&lowered)),
-                            Err(e) => staged.push(e),
+                        let base = entry_parent(entry);
+                        let mut opts = frontend::macros::MacroOptions::new(base);
+                        let mut staged =
+                            frontend::macros::expand_phase_a(&mut module, &mut opts);
+                        if staged.iter().all(|d| d.code.is_warning()) {
+                            staged.extend(frontend::macros::expand_phase_b(
+                                &mut module,
+                                &mut opts,
+                                None,
+                            ));
+                        }
+                        if staged.iter().all(|d| d.code.is_warning()) {
+                            staged.extend(frontend::desugar::desugar(&mut module));
+                            match lir::lower::lower(&module) {
+                                Ok(lowered) => staged.extend(lir::verify::verify(&lowered)),
+                                Err(e) => staged.push(e),
+                            }
                         }
                         lower_diags = staged;
                     }

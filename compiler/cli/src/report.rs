@@ -310,8 +310,15 @@ fn best_module(
 fn failed_owner(
     failed: &mut Vec<(PathBuf, String, Vec<(Code, Option<Span>)>)>,
     diag: &Diagnostic,
+    prefer: Option<&Path>,
 ) -> Option<(PathBuf, String)> {
-    for (path, src, remaining) in failed.iter_mut() {
+    let preferred = prefer.and_then(|entry| failed.iter().position(|(path, _, _)| path == entry));
+    let order: Vec<usize> = preferred
+        .into_iter()
+        .chain((0..failed.len()).filter(|i| Some(*i) != preferred))
+        .collect();
+    for idx in order {
+        let (path, src, remaining) = failed.get_mut(idx)?;
         if let Some(i) = remaining
             .iter()
             .position(|(c, s)| *c == diag.code && *s == diag.span)
@@ -331,13 +338,17 @@ pub fn discover_files(root: &Path) -> (Vec<(PathBuf, String, frontend::ast::Modu
             continue;
         }
         if let Ok(src) = std::fs::read_to_string(&path) {
-            match frontend::parser::Parser::parse_module_all(&src) {
-                Ok(module) => files.push((path, src, module)),
-                Err(errs) => failed.push((
+            let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                frontend::parser::Parser::parse_module_all(&src)
+            }));
+            match parsed {
+                Ok(Ok(module)) => files.push((path, src, module)),
+                Ok(Err(errs)) => failed.push((
                     path,
                     src,
                     errs.iter().map(|e| (e.code, e.span)).collect(),
                 )),
+                Err(_) => {}
             }
         }
     }
@@ -372,7 +383,7 @@ pub fn attribute_lenient(
             return (attr, src);
         }
     }
-    if let Some((path, src)) = failed_owner(failed, diag) {
+    if let Some((path, src)) = failed_owner(failed, diag, Some(entry)) {
         let (line, col) = line_col(&src, diag.span.map(|s| s.start).unwrap_or(0));
         let attr = Attributed {
             path: path.clone(),

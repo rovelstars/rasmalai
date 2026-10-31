@@ -1,7 +1,40 @@
 use crate::ast::*;
 use diagnostics::{Code, Diagnostic, Span};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use super::{ScopeCheck, VarInfo, SCOPE_BUILTINS, array_elem, builtin_method_sig, canon_ty, is_higher_order, is_removed_poll_base, promise_inner, removed_replacement, starts_uppercase, ty_name};
+
+// The parser bounds nested expressions, but member, index, call, and cast
+// chains are built iteratively and can be arbitrarily long. The walker
+// recurses through them, so it needs its own budget to avoid a stack
+// overflow on untrusted input. Match the parser budget so both passes
+// reject the same shapes.
+const MAX_WALK_DEPTH: u32 = 64;
+
+thread_local! {
+    static WALK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+struct WalkDepth;
+
+impl Drop for WalkDepth {
+    fn drop(&mut self) {
+        WALK_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+fn enter_walk() -> Option<WalkDepth> {
+    WALK_DEPTH.with(|d| {
+        let depth = d.get();
+        if depth >= MAX_WALK_DEPTH {
+            None
+        } else {
+            d.set(depth + 1);
+            Some(WalkDepth)
+        }
+    })
+}
+
 impl<'a> ScopeCheck<'a> {
     fn lookup(&self, name: &str) -> Option<Option<String>> {
         for s in self.scopes.iter().rev() {
@@ -193,7 +226,8 @@ impl<'a> ScopeCheck<'a> {
         );
     }
 
-    fn check_builtin_method(&mut self, base: &str, method: &str, args: &[CallArg], span: Span) {
+    fn check_builtin_method(&mut self, base_ty: &str, method: &str, args: &[CallArg], span: Span) {
+        let base = crate::prelude::short_name(base_ty);
         if is_higher_order(base, method) {
             if args.len() != 1 {
                 self.diags.push(
@@ -205,7 +239,7 @@ impl<'a> ScopeCheck<'a> {
             self.check_closure_arg(base, method, args, span, base == "Array" && method == "filter");
             return;
         }
-        let Some((arity, params, _)) = builtin_method_sig(base, method) else {
+        let Some((arity, params, _)) = builtin_method_sig(base_ty, method) else {
             if let Some((mandatory, total)) = self.extensions.get(&(base.to_string(), method.to_string())) {
                 if args.len() < *mandatory || args.len() > *total {
                     self.diags.push(
@@ -524,6 +558,10 @@ impl<'a> ScopeCheck<'a> {
     }
 
     fn infer(&self, e: &Expr) -> Option<String> {
+        // `infer` recurses through index and member chains on its own, so it
+        // shares the walker budget; an unbounded chain must not overflow the
+        // stack just because the type of its tail cannot be known.
+        let _depth = enter_walk()?;
         match e {
             Expr::Int(_) => Some("Int".to_string()),
             Expr::Float(_) => Some("Float".to_string()),
@@ -534,10 +572,14 @@ impl<'a> ScopeCheck<'a> {
             Expr::MapLiteral(_) => Some("Map".to_string()),
             Expr::Tuple(_) | Expr::TupleGet { .. } => None,
             Expr::Ident(n) => self.lookup(n).flatten(),
-            Expr::Index { base, .. } => match &base.node {
-                Expr::Ident(n) => self.lookup_elem(n),
-                _ => None,
-            },
+            Expr::Index { base, .. } => self
+                .infer(&base.node)
+                .as_deref()
+                .and_then(super::array_element)
+                .or_else(|| match &base.node {
+                    Expr::Ident(n) => self.lookup_elem(n),
+                    _ => None,
+                }),
             Expr::Binary { op, lhs, rhs } => match op {
                 BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
                 | BinOp::And | BinOp::Or => Some("Bool".to_string()),
@@ -593,11 +635,8 @@ impl<'a> ScopeCheck<'a> {
                     }
                     Expr::Member { base, field } => {
                         if let Some(base_ty) = self.infer(&base.node) {
-                            if let Some((_, _, ret)) = builtin_method_sig(
-                                crate::prelude::short_name(&base_ty),
-                                field,
-                            ) {
-                                return ret.map(|r| r.to_string());
+                            if let Some((_, _, ret)) = builtin_method_sig(&base_ty, field) {
+                                return ret;
                             }
                             if field == "wait" {
                                 if let Some(inner) = promise_inner(&base_ty) {
@@ -753,6 +792,13 @@ impl<'a> ScopeCheck<'a> {
     }
 
     pub(super) fn walk_expr(&mut self, e: &Spanned<Expr>) {
+        let Some(_depth) = enter_walk() else {
+            self.diags.push(
+                Diagnostic::new(Code::E108, "expression nesting is too deep")
+                    .with_span(self.span(e.span)),
+            );
+            return;
+        };
         match &e.node {
             Expr::Ident(n) => {
                 if n == "Some" || n == "None" {
@@ -911,7 +957,7 @@ impl<'a> ScopeCheck<'a> {
                                 || short == "Float"
                             {
                                 self.used_prelude.insert(short.to_string());
-                                self.check_builtin_method(short, field, args, callee.span);
+                                self.check_builtin_method(&base_ty, field, args, callee.span);
                             } else {
                                 self.check_class_method(&base_ty, field, args, callee.span);
                                 params = self
@@ -1049,7 +1095,7 @@ impl<'a> ScopeCheck<'a> {
                 if let Some(base_ty) = self.infer(&base.node) {
                     let short = crate::prelude::short_name(&base_ty);
                     if short == "String" || short == "Array" {
-                        self.check_builtin_method(short, field, args, e.span);
+                        self.check_builtin_method(&base_ty, field, args, e.span);
                     } else {
                         self.check_class_method(&base_ty, field, args, e.span);
                         oparams = self

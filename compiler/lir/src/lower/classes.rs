@@ -271,6 +271,23 @@ impl Lower {
                     private: f.access == A::Access::Private,
                     owner: name.to_string(),
                 });
+                if let Some(t) = f.ty.as_ref() {
+                    if !t.args.is_empty() && t.fn_sig.is_none() && t.tuple.is_empty() {
+                        let args = t
+                            .args
+                            .iter()
+                            .map(|a| {
+                                if is_type_param(type_params, a) {
+                                    LirType::Any
+                                } else {
+                                    erase_tparams(resolve_ty(&self.out, a), type_params, &[])
+                                }
+                            })
+                            .collect();
+                        self.field_targs
+                            .insert(format!("{name}.{}", f.name), args);
+                    }
+                }
                 if let Some(v) = &f.value {
                     self.defaults
                         .entry(name.to_string())

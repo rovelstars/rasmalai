@@ -5,6 +5,16 @@ pub(super) use super::*;
 
 mod intrinsics;
 
+fn result_payload_arg(t: &A::Type) -> Option<&A::Type> {
+    let is_result = t.path.len() == 1 && short_name(&t.path[0]) == "Result"
+        || t.path.join(".") == "std.prelude.Result";
+    if is_result {
+        t.args.first()
+    } else {
+        None
+    }
+}
+
 impl<'a> Builder<'a> {
     pub(super) fn lower_ext_call(
         &mut self,
@@ -563,7 +573,7 @@ impl<'a> Builder<'a> {
                             return self.call_fn(id, targs, argv, &BTreeMap::new(), span);
                         }
                     }
-                    if let Some(enu) = self.module.enum_index.get(root).copied() {
+                    if let Some(enu) = self.enum_by_name(root) {
                         let vi = *self.module.enums[enu].variant_index.get(field).ok_or_else(|| {
                             self.err(Code::E108, format!("unknown variant `{root}.{field}`"), span)
                         })?;
@@ -758,9 +768,27 @@ impl<'a> Builder<'a> {
                             let cls = self.module.classes[ci].name.clone();
                             let slf0 = full.first().copied();
                             let (got, s) = self.call_fn_ex(mid, targs, full, &seed, span, slf0)?;
+                            let recv_targs = self.local_targs.get(&obj).cloned().or_else(|| {
+                                recv.as_ref().and_then(|n| self.var_targs.get(n).cloned())
+                            });
                             if let Some(n) = recv {
                                 if let Some(pt) = self.recv_opt_payload(&n, &mname, &cls) {
                                     self.precise.insert(got, pt);
+                                }
+                            }
+                            if let Some(targs) = recv_targs {
+                                if let Some(want) = self.array_ret_targs(&targs, &mname, &cls) {
+                                    let have = self.func.locals.get(got as usize).cloned().unwrap_or(LirType::Any);
+                                    if let (LirType::Array(have), LirType::Array(want)) = (&have, &want) {
+                                        if matches!(**have, LirType::Any) && !matches!(**want, LirType::Any) {
+                                            if Self::array_boxed_elem(want) {
+                                                let out = self.erase_any_array(got, want, span);
+                                                return Ok((out, s));
+                                            }
+                                            self.func.locals[got as usize] = LirType::Array(want.clone());
+                                            return Ok((got, s));
+                                        }
+                                    }
                                 }
                             }
                             return Ok((got, s));
@@ -1274,6 +1302,8 @@ impl<'a> Builder<'a> {
             || matches!(ret, LirType::Range)
             || sig_params.iter().any(|p| matches!(p, LirType::Tuple(_) | LirType::Range));
         let mut grouped: Vec<Local> = Vec::with_capacity(argv.len());
+        let fname = self.module.functions[id].name.clone();
+        let ptys = self.param_tys.get(&fname).cloned().unwrap_or_default();
         if argv.len() != sig_params.len() && saw_tuple {
             return self.fail(self.err(
                 Code::E108,
@@ -1287,7 +1317,7 @@ impl<'a> Builder<'a> {
             ));
         }
         if argv.len() == sig_params.len() {
-            for (a, pty) in argv.iter().zip(sig_params.iter()) {
+            for (i, (a, pty)) in argv.iter().zip(sig_params.iter()).enumerate() {
                 if matches!(pty, LirType::Tuple(_) | LirType::Range) {
                     saw_tuple = true;
                     let want_range = matches!(pty, LirType::Range);
@@ -1325,11 +1355,15 @@ impl<'a> Builder<'a> {
                     }
                 } else {
                     self.deny_tuple(*a, "as a call argument", span)?;
-                    if Some(*a) != self_arg && !self.fresh_arrays.contains(a) {
+                    let poff = usize::from(self.module.functions[id].method_self);
+                    let generic_array = i
+                        .checked_sub(poff)
+                        .and_then(|k| ptys.get(k))
+                        .is_some_and(|(_, d)| self.generic_array_param(&fname, d));
+                    if Some(*a) != self_arg && !self.fresh_arrays.contains(a) && !generic_array {
                         let aty = self.func.locals.get(*a as usize).cloned().unwrap_or(LirType::Any);
                         if let (LirType::Array(_), LirType::Array(_)) = (&aty, pty) {
-                            let name = self.module.functions[id].name.clone();
-                            self.check_array_view(&aty, pty, false, span, &format!("argument {} of `{name}`", grouped.len() + 1))?;
+                            self.check_array_view(&aty, pty, false, span, &format!("argument {} of `{fname}`", grouped.len() + 1))?;
                         }
                     }
                     grouped.push(*a);
@@ -1353,8 +1387,6 @@ impl<'a> Builder<'a> {
                 span,
             ));
         }
-        let fname = self.module.functions[id].name.clone();
-        let ptys = self.param_tys.get(&fname).cloned().unwrap_or_default();
         let argv = grouped
             .into_iter()
             .enumerate()
@@ -1399,6 +1431,11 @@ impl<'a> Builder<'a> {
         } else {
             vec![self.local(ret.clone())]
         };
+        if !is_tuple_ret && !is_range_ret {
+            if let Some(targs) = self.ret_tys.get(&fname).and_then(|t| self.type_targs(t)) {
+                self.local_targs.insert(dsts[0], targs);
+            }
+        }
         if !is_tuple_ret
             && !is_range_ret
             && self.ret_tys.get(&fname).is_some_and(|t| nub_ty(t))
@@ -1420,7 +1457,7 @@ impl<'a> Builder<'a> {
                 self.ret_tys.get(&short).cloned()
             });
             if let Some(rt) = rt_opt {
-                if let Some(arg) = option_arg(&rt) {
+                if let Some(arg) = result_payload_arg(&rt) {
                     let bare_param = arg.fn_sig.is_none()
                         && arg.args.is_empty()
                         && arg.tuple.is_empty()
@@ -1431,7 +1468,7 @@ impl<'a> Builder<'a> {
                         }).unwrap_or(false);
                     if !bare_param {
                         let pt = self.resolve_here(arg);
-                        if !matches!(pt, LirType::Any) && type_resolved(self.module, &pt) {
+                        if !matches!(pt, LirType::Any | LirType::Null) && type_resolved(self.module, &pt) {
                             for d in &dsts {
                                 self.precise.insert(*d, pt.clone());
                             }
@@ -1678,9 +1715,14 @@ impl<'a> Builder<'a> {
             payload,
         });
         let ename = self.module.enums[enu].name.clone();
-        if ename == "std.prelude.Result" && raw_tys.len() == 1 {
+        if ename == "std.prelude.Result"
+            && self.module.enums[enu].variants[variant].name == "Ok"
+            && raw_tys.len() == 1
+        {
             if let Some(rt) = raw_tys.first().cloned() {
-                self.precise.insert(dst, rt);
+                if !matches!(rt, LirType::Any | LirType::Null) {
+                    self.precise.insert(dst, rt);
+                }
             }
         }
         Ok((dst, Simple::Other))

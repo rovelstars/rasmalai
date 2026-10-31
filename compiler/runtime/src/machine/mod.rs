@@ -372,13 +372,12 @@ impl<'a> Machine<'a> {
             self.arena.release(slot);
             return Ok(());
         }
-        if let Some(deinit) = self.module.classes.get(class).and_then(|c| c.deinit) {
-            let o = Value::Obj { slot, epoch };
-            let _ = self.run_fn(deinit, vec![o]);
-        }
         if let Some(dtor) = self.module.classes.get(class).and_then(|c| c.dtor) {
             let o = Value::Obj { slot, epoch };
             let _ = self.run_fn(dtor, vec![o]);
+        } else if let Some(deinit) = self.module.classes.get(class).and_then(|c| c.deinit) {
+            let o = Value::Obj { slot, epoch };
+            let _ = self.run_fn(deinit, vec![o]);
         }
         self.arena.release(slot);
         Ok(())

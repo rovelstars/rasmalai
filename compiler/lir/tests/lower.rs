@@ -438,6 +438,97 @@ fn thread_spawn_join_lower() {
     assert!(saw_spawn && saw_enum);
 }
 
+fn lower_graph(src: &str, tag: &str) -> lir::instr::Module {
+    let dir = crate::scratch::dir(tag);
+    std::fs::write(dir.join("main.rnx"), src).unwrap();
+    let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx"))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    lower::lower(&m).unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn main_dyns(m: &lir::instr::Module) -> Vec<String> {
+    let f = m.functions.iter().find(|f| f.name == "Main").unwrap();
+    f.blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| match i {
+            lir::instr::Instr::Call {
+                target: lir::instr::CallTarget::Dyn { method, .. },
+                ..
+            } => Some(method.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn main_array_locals(m: &lir::instr::Module) -> Vec<lir::instr::LirType> {
+    let f = m.functions.iter().find(|f| f.name == "Main").unwrap();
+    f.locals
+        .iter()
+        .filter(|t| matches!(t, lir::instr::LirType::Array(_)))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn pushed_thread_array_element_join_is_static() {
+    use lir::instr::LirType;
+    let m = lower_graph(
+        "fn worker(): Int { return 1; }\nfn Main(): Int {\n    let hs: Array<Thread> = [];\n    hs.push(Thread.spawn((): Int => worker()));\n    let r = hs[0].join();\n    return 0;\n}\n",
+        "lir-thread-array",
+    );
+    assert!(main_dyns(&m).is_empty(), "array element join must not stay dynamic");
+    assert!(
+        main_array_locals(&m).contains(&LirType::Array(Box::new(LirType::I64))),
+        "bare `Thread` names the raw handle: {:?}",
+        main_array_locals(&m)
+    );
+}
+
+#[test]
+fn imported_thread_array_element_join_is_static() {
+    use lir::instr::LirType;
+    let m = lower_graph(
+        "import { Thread } from \"@std/sync\";\nfn worker(): Int { return 1; }\nfn Main(): Int {\n    let hs: Array<Thread> = [];\n    hs.push(Thread.spawn(worker));\n    let r = hs[0].join();\n    return 0;\n}\n",
+        "lir-imported-thread-array",
+    );
+    assert!(main_dyns(&m).is_empty(), "imported Thread array element join must not stay dynamic");
+    assert!(
+        main_array_locals(&m).contains(&LirType::Array(Box::new(LirType::Obj(
+            "std.sync.Thread".to_string()
+        )))),
+        "imported `Thread` names the class: {:?}",
+        main_array_locals(&m)
+    );
+}
+
+#[test]
+fn class_array_element_method_is_static() {
+    use lir::instr::LirType;
+    let m = lower_graph(
+        "class Box { let n: Int = 0; fn get(): Int { return this.n; } }\nfn Main(): Int {\n    let xs: Array<Box> = [];\n    xs.push(new Box());\n    let i = 0;\n    return xs[i].get();\n}\n",
+        "lir-class-array",
+    );
+    assert!(main_dyns(&m).is_empty(), "class array element method must not stay dynamic");
+    assert!(
+        main_array_locals(&m).contains(&LirType::Array(Box::new(LirType::Obj("Box".to_string())))),
+        "{:?}",
+        main_array_locals(&m)
+    );
+}
+
+#[test]
+fn untyped_empty_array_element_call_stays_dynamic() {
+    let m = lower_graph(
+        "class Box { let n: Int = 0; fn get(): Int { return this.n; } }\nfn Main(): Int {\n    let xs = [];\n    xs.push(new Box());\n    return xs[0].get();\n}\n",
+        "lir-untyped-array",
+    );
+    assert_eq!(main_dyns(&m), vec!["get".to_string()], "bare `[]` stays `Array<Any>`");
+}
+
 #[test]
 fn enum_eq_compares_tags() {
     use lir::instr::{CmpOp, Instr, NumKind};

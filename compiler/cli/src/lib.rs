@@ -1240,18 +1240,6 @@ pub fn run_files_cfg(
     prog.profiler.start("codegen");
     let (outcome, output) = match backend {
         TestBackend::Interpreter => {
-            if std::env::var_os("RNX_DEBUG_LIR").is_some() {
-                for f in &prog.lir.functions {
-                    if f.name.contains("gradeMult") {
-                        eprintln!("dbg lir fn {}", f.name);
-                        for (bi, b) in f.blocks.iter().enumerate() {
-                            for ins in &b.instrs {
-                                eprintln!("dbg lir b{bi} {ins:?}");
-                            }
-                        }
-                    }
-                }
-            }
             let leaked: &'static lir::instr::Module = Box::leak(Box::new(prog.lir));
             let mut machine = Machine::new(leaked);
             prog.profiler.stop();

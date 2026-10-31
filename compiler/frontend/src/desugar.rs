@@ -322,17 +322,34 @@ fn desugar_block(block: &mut Block, diags: &mut Vec<Diagnostic>) {
     for mut st in std::mem::take(&mut block.stmts) {
         desugar_stmt(&mut st.node, diags);
         match &mut st.node {
-            Stmt::Try { finally, .. } => {
-                if let Some(fin) = finally.take() {
+            Stmt::Try { body, catch, finally } => {
+                if let Some(mut fin) = finally.take() {
+                    desugar_block(&mut fin, diags);
+                    let may_complete = !block_terminates(body)
+                        || catch.as_ref().is_some_and(|(_, b)| !block_terminates(b));
                     let span = st.span;
-                    out.push(sp(
-                        Stmt::Defer(fin),
-                        Span {
-                            start: span.start,
-                            end: span.end,
-                        },
-                    ));
+                    rewrite_propagates(body, &fin);
+                    if let Some((_, cbody)) = catch {
+                        rewrite_propagates(cbody, &fin);
+                    }
+                    rewrite_exits(body, &fin, catch.is_none(), 0);
+                    if let Some((_, cbody)) = catch {
+                        rewrite_exits(cbody, &fin, true, 0);
+                    }
                     out.push(st);
+                    if may_complete && !fin.stmts.is_empty() {
+                        // A plain statement list has no scope of its own, so the
+                        // one-shot `if true` keeps `finally` locals out of the
+                        // enclosing block without adding a block statement.
+                        out.push(sp(
+                            Stmt::If {
+                                cond: IfCond::Expr(sp(Expr::Bool(true), span)),
+                                then: fin,
+                                otherwise: None,
+                            },
+                            span,
+                        ));
+                    }
                     continue;
                 }
             }
@@ -344,6 +361,370 @@ fn desugar_block(block: &mut Block, diags: &mut Vec<Diagnostic>) {
         out.push(st);
     }
     block.stmts = out;
+}
+
+fn block_terminates(block: &Block) -> bool {
+    matches!(
+        block.stmts.last().map(|s| &s.node),
+        Some(Stmt::Return(_) | Stmt::Throw(_) | Stmt::Break | Stmt::Continue | Stmt::Fallthrough)
+    )
+}
+
+/// Runs `finally` on every path that leaves a `try` statement. The trailing
+/// copy is appended by the caller for the fallthrough path; these copies run
+/// before `return`, before an escaping `throw`, and before a `break` or
+/// `continue` that targets a loop outside the `try`.
+fn rewrite_exits(block: &mut Block, fin: &Block, throw_escapes: bool, loop_depth: usize) {
+    let mut out = Vec::with_capacity(block.stmts.len());
+    for mut st in std::mem::take(&mut block.stmts) {
+        out.extend(exit_cleanup(&mut st, fin, throw_escapes, loop_depth));
+        descend_exits(&mut st, fin, throw_escapes, loop_depth);
+        out.push(st);
+    }
+    block.stmts = out;
+}
+
+fn exit_cleanup(
+    st: &mut Spanned<Stmt>,
+    fin: &Block,
+    throw_escapes: bool,
+    loop_depth: usize,
+) -> Vec<Spanned<Stmt>> {
+    let mut pre = Vec::new();
+    match &mut st.node {
+        Stmt::Return(value) => {
+            if let Some(e) = value {
+                let span = e.span;
+                let name = format!("__rnx_finally_ret{}", span.start);
+                let init = std::mem::replace(e, sp(Expr::Ident(name.clone()), span));
+                pre.push(sp(
+                    Stmt::Var { name, ty: None, value: init, is_static: false, mutable: false },
+                    span,
+                ));
+            }
+            pre.extend(fin.stmts.iter().cloned());
+        }
+        Stmt::Throw(value) if throw_escapes => {
+            if let Some(e) = value {
+                let span = e.span;
+                let name = format!("__rnx_finally_err{}", span.start);
+                let init = std::mem::replace(e, sp(Expr::Ident(name.clone()), span));
+                pre.push(sp(
+                    Stmt::Var { name, ty: None, value: init, is_static: false, mutable: false },
+                    span,
+                ));
+            }
+            pre.extend(fin.stmts.iter().cloned());
+        }
+        Stmt::Break | Stmt::Continue if loop_depth == 0 => {
+            pre.extend(fin.stmts.iter().cloned());
+        }
+        _ => {}
+    }
+    pre
+}
+
+fn descend_exits(st: &mut Spanned<Stmt>, fin: &Block, throw_escapes: bool, loop_depth: usize) {
+    match &mut st.node {
+        Stmt::If { then, otherwise, .. } => {
+            rewrite_exits(then, fin, throw_escapes, loop_depth);
+            match otherwise {
+                Some(Else::Block(b)) => rewrite_exits(b, fin, throw_escapes, loop_depth),
+                Some(Else::If(inner)) => descend_exits(inner, fin, throw_escapes, loop_depth),
+                None => {}
+            }
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+            rewrite_exits(body, fin, throw_escapes, loop_depth + 1);
+        }
+        Stmt::Switch { cases, default, .. } => {
+            for c in cases {
+                let mut b = Block { stmts: std::mem::take(&mut c.body) };
+                rewrite_exits(&mut b, fin, throw_escapes, loop_depth);
+                c.body = b.stmts;
+            }
+            if let Some(d) = default {
+                let mut b = Block { stmts: std::mem::take(d) };
+                rewrite_exits(&mut b, fin, throw_escapes, loop_depth);
+                *d = b.stmts;
+            }
+        }
+        Stmt::Try { body, catch, finally } => {
+            let body_throws_escape = catch.is_none() && throw_escapes;
+            rewrite_exits(body, fin, body_throws_escape, loop_depth);
+            if let Some((_, cbody)) = catch {
+                rewrite_exits(cbody, fin, throw_escapes, loop_depth);
+            }
+            if let Some(fbody) = finally {
+                rewrite_exits(fbody, fin, throw_escapes, loop_depth);
+            }
+        }
+        Stmt::UnsafeBlock(b) => rewrite_exits(b, fin, throw_escapes, loop_depth),
+        Stmt::Guard { otherwise, .. } => {
+            rewrite_exits(otherwise, fin, throw_escapes, loop_depth);
+        }
+        _ => {}
+    }
+}
+
+/// A postfix `?` returns the error directly, bypassing the statement-level
+/// cleanup copies `rewrite_exits` installs. Rebuild it as a switch so the
+/// error arm runs the same `finally` body before the `?` propagates.
+fn rewrite_propagates(block: &mut Block, fin: &Block) {
+    for st in &mut block.stmts {
+        rewrite_propagates_stmt(&mut st.node, fin);
+    }
+}
+
+fn rewrite_propagates_stmt(st: &mut Stmt, fin: &Block) {
+    match st {
+        Stmt::Var { value, .. }
+        | Stmt::DestructureTuple { value, .. }
+        | Stmt::DestructureRecord { value, .. }
+        | Stmt::DestructureArray { value, .. } => {
+            rewrite_propagates_expr(&mut value.node, fin, value.span)
+        }
+        Stmt::Assign { target, value, .. } => {
+            rewrite_propagates_expr(&mut target.node, fin, target.span);
+            rewrite_propagates_expr(&mut value.node, fin, value.span);
+        }
+        Stmt::Expr(e) | Stmt::Assert(e) | Stmt::Return(Some(e)) | Stmt::Throw(Some(e)) => {
+            rewrite_propagates_expr(&mut e.node, fin, e.span)
+        }
+        Stmt::If { cond, then, otherwise } => {
+            match cond {
+                IfCond::Expr(e) | IfCond::Let { value: e, .. } => {
+                    rewrite_propagates_expr(&mut e.node, fin, e.span)
+                }
+            }
+            rewrite_propagates(then, fin);
+            match otherwise {
+                Some(Else::Block(b)) => rewrite_propagates(b, fin),
+                Some(Else::If(inner)) => {
+                    rewrite_propagates_stmt(&mut inner.node, fin)
+                }
+                None => {}
+            }
+        }
+        Stmt::For { iter, body, .. } => {
+            rewrite_propagates_expr(&mut iter.node, fin, iter.span);
+            rewrite_propagates(body, fin);
+        }
+        Stmt::While { cond, body } => {
+            rewrite_propagates_expr(&mut cond.node, fin, cond.span);
+            rewrite_propagates(body, fin);
+        }
+        Stmt::DoWhile { body, cond } => {
+            rewrite_propagates(body, fin);
+            rewrite_propagates_expr(&mut cond.node, fin, cond.span);
+        }
+        Stmt::Switch { scrutinee, cases, default } => {
+            rewrite_propagates_expr(&mut scrutinee.node, fin, scrutinee.span);
+            for c in cases {
+                if let Some(g) = &mut c.guard {
+                    rewrite_propagates_expr(&mut g.node, fin, g.span);
+                }
+                let mut b = Block { stmts: std::mem::take(&mut c.body) };
+                rewrite_propagates(&mut b, fin);
+                c.body = b.stmts;
+            }
+            if let Some(d) = default {
+                let mut b = Block { stmts: std::mem::take(d) };
+                rewrite_propagates(&mut b, fin);
+                *d = b.stmts;
+            }
+        }
+        Stmt::Guard { value, otherwise, .. } => {
+            rewrite_propagates_expr(&mut value.node, fin, value.span);
+            rewrite_propagates(otherwise, fin);
+        }
+        Stmt::Try { body, catch, finally } => {
+            rewrite_propagates(body, fin);
+            if let Some((_, cbody)) = catch {
+                rewrite_propagates(cbody, fin);
+            }
+            if let Some(fbody) = finally {
+                rewrite_propagates(fbody, fin);
+            }
+        }
+        Stmt::UnsafeBlock(b) => rewrite_propagates(b, fin),
+        Stmt::Defer(_) | Stmt::Return(None) | Stmt::Throw(None) | Stmt::Break
+        | Stmt::Continue | Stmt::Fallthrough | Stmt::Pass | Stmt::Empty => {}
+    }
+}
+
+fn rewrite_propagates_expr(e: &mut Expr, fin: &Block, span: Span) {
+    match e {
+        Expr::Propagate(inner) => {
+            rewrite_propagates_expr(&mut inner.node, fin, inner.span);
+            let original = std::mem::replace(&mut inner.node, Expr::Null);
+            *e = guard_propagate(original, span, fin);
+        }
+        Expr::Binary { lhs, rhs, .. } | Expr::Coalesce { lhs, rhs } => {
+            rewrite_propagates_expr(&mut lhs.node, fin, lhs.span);
+            rewrite_propagates_expr(&mut rhs.node, fin, rhs.span);
+        }
+        Expr::Unary { rhs, .. } | Expr::Await(rhs) => {
+            rewrite_propagates_expr(&mut rhs.node, fin, rhs.span)
+        }
+        Expr::Postfix { expr, .. }
+        | Expr::Member { base: expr, .. }
+        | Expr::TupleGet { base: expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Is { base: expr, .. } => rewrite_propagates_expr(&mut expr.node, fin, expr.span),
+        Expr::OptChain { base, .. } => rewrite_propagates_expr(&mut base.node, fin, base.span),
+        Expr::OptCall { base, args, .. } => {
+            rewrite_propagates_expr(&mut base.node, fin, base.span);
+            for a in args {
+                rewrite_propagates_expr(&mut a.value.node, fin, a.value.span);
+            }
+        }
+        Expr::Ternary { cond, then, otherwise } => {
+            rewrite_propagates_expr(&mut cond.node, fin, cond.span);
+            rewrite_propagates_expr(&mut then.node, fin, then.span);
+            rewrite_propagates_expr(&mut otherwise.node, fin, otherwise.span);
+        }
+        Expr::Range { lo, hi, .. } => {
+            rewrite_propagates_expr(&mut lo.node, fin, lo.span);
+            rewrite_propagates_expr(&mut hi.node, fin, hi.span);
+        }
+        Expr::Call { callee, args, .. } => {
+            rewrite_propagates_expr(&mut callee.node, fin, callee.span);
+            for a in args {
+                rewrite_propagates_expr(&mut a.value.node, fin, a.value.span);
+            }
+        }
+        Expr::New { args, .. } => {
+            for a in args {
+                rewrite_propagates_expr(&mut a.value.node, fin, a.value.span);
+            }
+        }
+        Expr::Index { base, index } => {
+            rewrite_propagates_expr(&mut base.node, fin, base.span);
+            rewrite_propagates_expr(&mut index.node, fin, index.span);
+        }
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let InterpPart::Expr(x) = p {
+                    rewrite_propagates_expr(&mut x.node, fin, x.span);
+                }
+            }
+        }
+        Expr::Array(items) => {
+            for i in items {
+                rewrite_propagates_expr(&mut i.expr.node, fin, i.expr.span);
+            }
+        }
+        Expr::Record(fields) => {
+            for f in fields {
+                let v = f.value_mut();
+                rewrite_propagates_expr(&mut v.node, fin, v.span);
+            }
+        }
+        Expr::MapLiteral(entries) => {
+            for f in entries {
+                let v = f.value_mut();
+                rewrite_propagates_expr(&mut v.node, fin, v.span);
+            }
+        }
+        Expr::Macro { args, .. } => {
+            for a in args {
+                rewrite_propagates_expr(&mut a.node, fin, a.span);
+            }
+        }
+        Expr::UnsafeBlock(b) => rewrite_propagates(b, fin),
+        Expr::Tuple(items) => {
+            for i in items {
+                rewrite_propagates_expr(&mut i.node, fin, i.span);
+            }
+        }
+        Expr::Switch { scrutinee, cases, default } => {
+            rewrite_propagates_expr(&mut scrutinee.node, fin, scrutinee.span);
+            for c in cases {
+                if let Some(g) = &mut c.guard {
+                    rewrite_propagates_expr(&mut g.node, fin, g.span);
+                }
+                match &mut c.body {
+                    SwitchExprBody::Expr(e) => {
+                        rewrite_propagates_expr(&mut e.node, fin, e.span)
+                    }
+                    SwitchExprBody::Block(b) => rewrite_propagates(b, fin),
+                }
+            }
+            if let Some(d) = default {
+                match d {
+                    SwitchExprBody::Expr(e) => {
+                        rewrite_propagates_expr(&mut e.node, fin, e.span)
+                    }
+                    SwitchExprBody::Block(b) => rewrite_propagates(b, fin),
+                }
+            }
+        }
+        Expr::Closure { .. }
+        | Expr::Ident(_)
+        | Expr::This
+        | Expr::Super
+        | Expr::Bool(_)
+        | Expr::Null
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::ImplicitMember(_) => {}
+    }
+}
+
+fn guard_propagate(inner: Expr, span: Span, fin: &Block) -> Expr {
+    let ok = format!("__rnx_q_ok{}", span.start);
+    let err = format!("__rnx_q_err{}", span.start);
+    let ok_pattern = Pattern::Enum {
+        path: vec!["Result".to_string(), "Ok".to_string()],
+        args: vec![Pattern::Literal(sp(Expr::Ident(ok.clone()), span))],
+    };
+    let err_pattern = Pattern::Enum {
+        path: vec!["Result".to_string(), "Err".to_string()],
+        args: vec![Pattern::Literal(sp(Expr::Ident(err.clone()), span))],
+    };
+    let variant = |field: &str| {
+        Box::new(sp(
+            Expr::Member {
+                base: Box::new(sp(Expr::Ident("Result".to_string()), span)),
+                field: field.to_string(),
+            },
+            span,
+        ))
+    };
+    let ok_call = Expr::Call {
+        callee: variant("Ok"),
+        type_args: Vec::new(),
+        args: vec![CallArg { name: None, value: sp(Expr::Ident(ok), span) }],
+        trailing: None,
+    };
+    let err_call = Expr::Call {
+        callee: variant("Err"),
+        type_args: Vec::new(),
+        args: vec![CallArg { name: None, value: sp(Expr::Ident(err), span) }],
+        trailing: None,
+    };
+    let mut stmts = fin.stmts.clone();
+    stmts.push(sp(Stmt::Expr(sp(err_call, span)), span));
+    Expr::Propagate(Box::new(sp(
+        Expr::Switch {
+            scrutinee: Box::new(sp(inner, span)),
+            cases: vec![
+                SwitchExprCase {
+                    pattern: ok_pattern,
+                    guard: None,
+                    body: SwitchExprBody::Expr(Box::new(sp(ok_call, span))),
+                },
+                SwitchExprCase {
+                    pattern: err_pattern,
+                    guard: None,
+                    body: SwitchExprBody::Block(Block { stmts }),
+                },
+            ],
+            default: None,
+        },
+        span,
+    )))
 }
 
 fn check_fallthrough(cases: &[SwitchCase], has_default: bool, diags: &mut Vec<Diagnostic>) {

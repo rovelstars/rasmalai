@@ -7,7 +7,7 @@ fn parse(src: &str) -> frontend::ast::Module {
 }
 
 #[test]
-fn finally_becomes_defer() {
+fn finally_runs_after_try_not_at_function_exit() {
     let mut m = parse("fn F() { try { IO.print(\"a\") } finally { IO.print(\"b\") } }");
     let diags = desugar(&mut m);
     assert!(diags.is_empty());
@@ -22,13 +22,17 @@ fn finally_becomes_defer() {
     assert_eq!(body.stmts.len(), 2);
     assert!(matches!(
         body.stmts[0].node,
-        frontend::ast::Stmt::Defer(_)
+        frontend::ast::Stmt::Try { .. }
     ));
     assert!(matches!(
         body.stmts[1].node,
-        frontend::ast::Stmt::Try { .. }
+        frontend::ast::Stmt::If { .. }
     ));
-    if let frontend::ast::Stmt::Try { finally, .. } = &body.stmts[1].node {
+    assert!(
+        !body.stmts.iter().any(|s| matches!(s.node, frontend::ast::Stmt::Defer(_))),
+        "a function-scope defer would run the cleanup at function exit"
+    );
+    if let frontend::ast::Stmt::Try { finally, .. } = &body.stmts[0].node {
         assert!(finally.is_none());
     }
 }

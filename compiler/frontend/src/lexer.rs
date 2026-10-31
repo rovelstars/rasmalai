@@ -542,15 +542,20 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
             }
             _ => {
                 let in_interp = frames.iter().any(|f| matches!(f, Frame::Str));
+                let ch = if c.is_ascii() {
+                    c
+                } else {
+                    src[i..].chars().next().unwrap_or(c)
+                };
                 let mut d = Diagnostic::new(
                     Code::E108,
                     if in_interp {
-                        format!("unexpected character `{c}` in `{{...}}` interpolation")
+                        format!("unexpected character `{ch}` in `{{...}}` interpolation")
                     } else {
-                        format!("unexpected character `{c}`")
+                        format!("unexpected character `{ch}`")
                     },
                 )
-                .with_span(span(i, i + 1));
+                .with_span(span(i, i + ch.len_utf8()));
                 if in_interp {
                     d = d.with_hint("use `\\{` for a literal brace, or `${...}` for interpolation");
                 }

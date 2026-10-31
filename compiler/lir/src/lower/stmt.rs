@@ -70,6 +70,9 @@ impl<'a> Builder<'a> {
             let flat = crate::instr::flat_sig(&ty);
             if flat.len() == 1 {
                 self.def(p.name.clone(), idx, simple_of(&flat[0]), flat[0].clone());
+                if let Some(targs) = p.ty.as_ref().and_then(|t| self.type_targs(t)) {
+                    self.local_targs.insert(idx, targs);
+                }
                 if let Some(sig) = p.ty.as_ref().and_then(|t| t.fn_sig.as_ref()) {
                     if let Some(r) = sig.ret.as_ref().map(|r| self.resolve_here(r)) {
                         if Self::any_box_tag(&r).is_some() {
@@ -219,6 +222,9 @@ impl<'a> Builder<'a> {
             }
         }
         let dst = self.local(t.clone());
+        if let Some(targs) = ty.as_ref().and_then(|t| self.type_targs(t)) {
+            self.local_targs.insert(dst, targs);
+        }
         if ty.as_ref().is_some() {
             let vt = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
             let fresh = matches!(value.node, A::Expr::Array(_));
@@ -1783,6 +1789,7 @@ impl<'a> Builder<'a> {
         merge: BlockId,
         dst: &mut Option<Local>,
         dst_ty: &mut Option<LirType>,
+        precise: Option<&LirType>,
         span: Span,
     ) -> Result<(), Diagnostic> {
         self.set_current(case_bb);
@@ -1794,16 +1801,33 @@ impl<'a> Builder<'a> {
             }
         }
         if let Some(A::Pattern::Enum { path, args }) = pattern {
-            let payload_tys = self
-                .variant_of_path(path)
-                .map(|(enu, vi)| self.module.enums[enu].variants[vi].payload.clone())
-                .unwrap_or_default();
+            let (payload_tys, precise_ok) = match self.variant_of_path(path) {
+                Some((enu, vi)) => {
+                    let desc = &self.module.enums[enu];
+                    let ok_payload = desc.name == "std.prelude.Result"
+                        && desc.variants[vi].name == "Ok"
+                        && precise.is_some();
+                    (desc.variants[vi].payload.clone(), ok_payload)
+                }
+                None => (Vec::new(), false),
+            };
             for (i, a) in args.iter().enumerate() {
                 if let A::Pattern::Literal(e) = a {
                     if let A::Expr::Ident(name) = &e.node {
-                        let ty = payload_tys.get(i).cloned().unwrap_or(LirType::Any);
+                        let slot = payload_tys.get(i).cloned().unwrap_or(LirType::Any);
+                        let ty = if i == 0 && precise_ok {
+                            precise.cloned().unwrap_or(slot.clone())
+                        } else {
+                            slot.clone()
+                        };
                         let bound = self.local(ty.clone());
-                        self.emit(Instr::EnumPayload { span: scrut_span, dst: bound, scrut: sv, index: i });
+                        if ty != slot && matches!(ty, LirType::I64 | LirType::Bool | LirType::F64(_) | LirType::Str) {
+                            let raw = self.local(slot);
+                            self.emit(Instr::EnumPayload { span: scrut_span, dst: raw, scrut: sv, index: i });
+                            self.emit_any_unbox(bound, raw, scrut_span);
+                        } else {
+                            self.emit(Instr::EnumPayload { span: scrut_span, dst: bound, scrut: sv, index: i });
+                        }
                         self.def(name.clone(), bound, simple_of(&ty), ty);
                     }
                 }
@@ -1857,6 +1881,9 @@ impl<'a> Builder<'a> {
                 *dst = Some(d);
                 *dst_ty = Some(tv_ty.clone());
                 self.emit_copy(d, tv, span);
+                if let Some(p) = self.precise.get(&tv).cloned() {
+                    self.precise.insert(d, p);
+                }
             }
             (Some(t), Some(d)) if t == tv_ty => {
                 self.emit_copy(d, tv, span);
@@ -1888,6 +1915,7 @@ impl<'a> Builder<'a> {
         self.deny_tuple(sv, "as a switch scrutinee", scrut_span)?;
         let scrut_ty = self.func.locals[sv as usize].clone();
         let orig_sv = sv;
+        let precise = self.precise.get(&orig_sv).cloned();
         let sv = if scrut_ty == LirType::Any {
             self.unbox_operand(sv, scrut_span)
         } else {
@@ -1961,6 +1989,7 @@ impl<'a> Builder<'a> {
                 merge,
                 &mut dst,
                 &mut dst_ty,
+                precise.as_ref(),
                 span,
             )?;
             if self.failed {
@@ -1973,7 +2002,7 @@ impl<'a> Builder<'a> {
         if let Some(d) = default {
             self.lower_switch_arm_value(
                 scrut, None, None, d, sv, scrut_span, default_bb, default_bb, merge,
-                &mut dst, &mut dst_ty, span,
+                &mut dst, &mut dst_ty, precise.as_ref(), span,
             )?;
             if self.failed {
                 match self.diags.last().cloned() {
