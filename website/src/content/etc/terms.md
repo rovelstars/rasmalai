@@ -8,7 +8,7 @@ icon: "BookOpen"
 
 # Registry Terms
 
-This is the skeleton of the registry's terms of service — the rules both sides agree to when you publish or install. It is deliberately short; the enforcement details live in the abuse, versioning, and tier pages it points at.
+This is the skeleton of the registry's terms of service: the rules both sides agree to when you publish or install. It is deliberately short; the enforcement details live in the abuse, versioning, and tier pages it points at.
 
 ## Acceptable use
 
@@ -16,7 +16,7 @@ Publish code you have the right to distribute, and nothing that harms the people
 
 ## Publishers own their content
 
-You are responsible for what you publish: its correctness, its license grant, and its behavior on other people's machines. The registry stores and serves your bytes unchanged — it does not review code for quality, and hosting a package is not an endorsement of it. Keep the `LICENSE` file accurate and keep your contact reachable, because abuse reports about your packages come to you first.
+You are responsible for what you publish: its correctness, its license grant, and its behavior on other people's machines. The registry stores and serves your bytes unchanged. It does not review code for quality, and hosting a package is not an endorsement of it. Keep the `LICENSE` file accurate and keep your contact reachable, because abuse reports about your packages come to you first.
 
 ## The registry may remove
 
@@ -24,6 +24,6 @@ The operator may yank or take down any version that breaks these terms, followin
 
 ## No warranty
 
-The registry is offered as-is. Version metadata, uptime, and download counts carry no guarantees — pin your builds with `Project.deplock` rather than trusting any of them.
+The registry is offered as-is. Version metadata, uptime, and download counts carry no guarantees. Pin your builds with `Project.deplock`.
 
 These terms are not yet in force. Until they are, treat the published rules on this page as the whole agreement, and send any question to the Discord server linked in the site footer.

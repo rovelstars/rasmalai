@@ -49,8 +49,8 @@ import { stdApiModules } from '$lib/docs/stdlib';
 </script>
 
 {#each mod.classes as c}
-	<section id="{idPrefix}class-{c.name}" class="panel mt-6 scroll-mt-24 overflow-hidden">
-		<div class="border-b border-aura-border px-4 py-2">
+	<section id="{idPrefix}class-{c.name}" class="api-sym mt-6 scroll-mt-24">
+		<div class="api-sym-head">
 			<span class="font-mono text-xs text-aura-pink">class{' '}</span><span
 				class="font-mono text-sm font-semibold">{c.name}</span
 			>
@@ -61,7 +61,7 @@ import { stdApiModules } from '$lib/docs/stdlib';
 				<p class="mt-2 font-mono text-[13px] text-aura-muted">{c.init}</p>
 			{/if}
 			{#if c.fields.length > 0}
-				<h3 class="mt-4 font-mono text-xs uppercase tracking-wider text-aura-muted">fields</h3>
+				<h3 class="mt-4 font-mono text-[11px] text-aura-faint">fields</h3>
 				<ul class="mt-1 space-y-1 font-mono text-[13px]">
 					{#each c.fields as f}
 						<li><span class="text-aura-text">{f.name}</span><span class="text-aura-pink">: <!-- eslint-disable-next-line svelte/no-at-html-tags -->{@html linkifyTypeText(f.ty, symbolIndex)}</span></li>
@@ -70,20 +70,20 @@ import { stdApiModules } from '$lib/docs/stdlib';
 			{/if}
 			{#each c.methods as m}
 				<div class="mt-4 border-t border-aura-border pt-3">
-					<AuraCode source={m.sig} links={resolvedTypeLinks} />
+					<div class="api-sig"><AuraCode source={m.sig} links={resolvedTypeLinks} /></div>
 					{#if m.docs.description}<div class="mt-2 text-sm [&>p]:m-0">{@html md(m.docs.description, m.name)}</div>{/if}
 					{#each paramsOf(m.docs) as p}
 						<p class="mt-1 font-mono text-[13px]">
 							<span class="text-aura-cyan">{p.name}</span>
-							<span class="text-aura-muted"> — {p.text}</span>
+							<span class="text-aura-muted">: {p.text}</span>
 						</p>
 					{/each}
 					{#each returnsOf(m.docs) as r}
-						<p class="mt-1 text-sm"><span class="font-mono text-[13px] text-aura-green">returns</span> — {r.text}</p>
+						<p class="mt-1 text-sm"><span class="font-mono text-[13px] text-aura-green">returns</span>: {r.text}</p>
 					{/each}
 					{#each throwsOf(m.docs) as t}
-						<p class="mt-1 rounded border border-aura-red/40 px-2 py-1 text-sm">
-							<span class="font-mono text-[13px] text-aura-red">throws</span> — {t.text}
+						<p class="mt-1 rounded-sm border border-aura-red/40 px-2 py-1 text-sm">
+							<span class="font-mono text-[13px] text-aura-red">throws</span>: {t.text}
 						</p>
 					{/each}
 					{#each examplesOf(m.docs) as e}
@@ -92,7 +92,7 @@ import { stdApiModules } from '$lib/docs/stdlib';
 							<a
 								href={playgroundUrl(e.text)}
 								rel="external"
-								class="press mt-2 inline-flex items-center gap-1.5 rounded border border-aura-border px-2.5 py-1 font-mono text-xs text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
+								class="doc-btn mt-2 inline-flex items-center gap-1.5"
 							>
 								<ExternalLink size={12} />Run in Playground
 							</a>
@@ -105,8 +105,8 @@ import { stdApiModules } from '$lib/docs/stdlib';
 {/each}
 
 {#each mod.enums as e}
-	<section id="{idPrefix}enum-{e.name}" class="panel mt-6 scroll-mt-24 overflow-hidden">
-		<div class="border-b border-aura-border px-4 py-2">
+	<section id="{idPrefix}enum-{e.name}" class="api-sym mt-6 scroll-mt-24">
+		<div class="api-sym-head">
 			<span class="font-mono text-xs text-aura-pink">enum{' '}</span><span
 				class="font-mono text-sm font-semibold">{e.name}</span
 			>
@@ -124,20 +124,20 @@ import { stdApiModules } from '$lib/docs/stdlib';
 {/each}
 
 {#if mod.functions.length > 0}
-	<h2 class="mt-8 text-xl font-bold">Functions</h2>
+	<h2 class="api-sub">Functions</h2>
 	{#each mod.functions as f}
-		<section id="{idPrefix}fn-{f.name}" class="panel mt-4 scroll-mt-24 overflow-hidden">
-			<div class="p-4">
-				<AuraCode source={f.sig} links={resolvedTypeLinks} />
+		<section id="{idPrefix}fn-{f.name}" class="api-sym mt-4 scroll-mt-24">
+			<div class="api-sym-body">
+				<div class="api-sig"><AuraCode source={f.sig} links={resolvedTypeLinks} /></div>
 				{#if f.docs.description}<div class="mt-2 text-sm [&>p]:m-0">{@html md(f.docs.description, f.name)}</div>{/if}
 				{#each paramsOf(f.docs) as p}
 					<p class="mt-1 font-mono text-[13px]">
 						<span class="text-aura-cyan">{p.name}</span>
-						<span class="text-aura-muted"> — {p.text}</span>
+						<span class="text-aura-muted">: {p.text}</span>
 					</p>
 				{/each}
 				{#each returnsOf(f.docs) as r}
-					<p class="mt-1 text-sm"><span class="font-mono text-[13px] text-aura-green">returns</span> — {r.text}</p>
+					<p class="mt-1 text-sm"><span class="font-mono text-[13px] text-aura-green">returns</span>: {r.text}</p>
 				{/each}
 				{#each examplesOf(f.docs) as e}
 					<div class="mt-2">
@@ -145,7 +145,7 @@ import { stdApiModules } from '$lib/docs/stdlib';
 						<a
 							href={playgroundUrl(e.text)}
 							rel="external"
-							class="press mt-2 inline-flex items-center gap-1.5 rounded border border-aura-border px-2.5 py-1 font-mono text-xs text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
+							class="doc-btn mt-2 inline-flex items-center gap-1.5"
 						>
 							<ExternalLink size={12} />Run in Playground
 						</a>
@@ -157,7 +157,7 @@ import { stdApiModules } from '$lib/docs/stdlib';
 {/if}
 
 {#if mod.constants.length > 0}
-	<h2 class="mt-8 text-xl font-bold">Constants</h2>
+	<h2 class="api-sub">Constants</h2>
 	<ul class="mt-2 space-y-1 font-mono text-[13px]">
 		{#each mod.constants as c}
 			<li id="{idPrefix}const-{c.name}" class="scroll-mt-24">

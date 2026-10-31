@@ -23,6 +23,7 @@ import {
 } from '$lib/server/db';
 import { safeEqual, sessionUser, readSessionCookie, userScopes, checkBrowserOrigin } from '$lib/server/auth';
 import { specHeaders, splitNameVersion } from '$lib/server/registry';
+import { CANONICAL_ORIGIN } from '$lib/site';
 import { sanitizeGuideHtml } from '$lib/server/sanitize';
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -82,6 +83,61 @@ function readGuides(guidesJson: string): GuideEntry[] {
 	}
 }
 
+async function serveLocalStd(full: string, rest: string[]): Promise<Response | null> {
+	if (!full.startsWith('@std/')) return null;
+	const [version, sub, slug] = rest;
+	if (!version) return null;
+	try {
+		const local = await import('$lib/server/std-local');
+		if (sub === 'chunks' && rest.length === 2) {
+			const entries = local.localStdEntries(full);
+			if (!entries || entries.length === 0) return null;
+			return json({ entries }, { headers: headers({ Vary: 'accept-encoding' }) });
+		}
+		if (sub === 'chunk' && rest.length === 3 && slug && /^[0-9a-fA-F]{64}$/.test(slug)) {
+			const bytes = local.localStdChunk(full, slug.toLowerCase());
+			if (!bytes) return null;
+			return new Response(bytes as BodyInit, {
+				headers: {
+					'Content-Type': 'application/octet-stream',
+					'Content-Length': String(bytes.length),
+					'Cache-Control': 'no-store',
+					...specHeaders()
+				}
+			});
+		}
+	} catch {
+		return null;
+	}
+	return null;
+}
+
+async function proxyProdChunk(pathname: string, hash: string): Promise<Uint8Array | null> {
+	try {
+		const res = await fetch(`${CANONICAL_ORIGIN}${pathname}`);
+		if (!res.ok) return null;
+		const buf = new Uint8Array(await res.arrayBuffer());
+		if (buf.length === 0 || buf.length > 4 * 1024 * 1024) return null;
+		const { sha256Hex } = await import('$lib/server/chunks');
+		if ((await sha256Hex(buf)) !== hash) return null;
+		return buf;
+	} catch {
+		return null;
+	}
+}
+
+// True only under `vite dev`. Dynamic import keeps unit tests (tsx,
+// no $app aliases) and production workerd loading this module working:
+// both resolve the import failure to false instead of crashing the load.
+async function isDev(): Promise<boolean> {
+	try {
+		const mod = await import('$app/environment');
+		return mod.dev === true;
+	} catch {
+		return false;
+	}
+}
+
 export async function GET({ params, platform, setHeaders, url }) {
 	const env = (platform?.env ?? {}) as Record<string, string | undefined>;
 	const parsed = parsePath(params.path ?? '');
@@ -120,6 +176,12 @@ export async function GET({ params, platform, setHeaders, url }) {
 			? await getVersionRow(env, full, version)
 			: await getVersionIndexRow(env, full, version);
 	if (!found) {
+		// Local dev without a chunk store serves @std sources straight
+		// from the checkout, so file browsing works with no Turso row.
+		if (await isDev()) {
+			const local = await serveLocalStd(full, rest);
+			if (local) return local;
+		}
 		// A staff hard removal deletes the row but leaves the audit entry,
 		// so the read answers the 410 variant instead of a plain 404. Only
 		// a removed number qualifies: a never-published number still 404s.
@@ -243,6 +305,19 @@ export async function GET({ params, platform, setHeaders, url }) {
 					: { code: 'chunk-read-failed', message: `chunk ${hash} is temporarily unreadable` },
 				{ status: 500, headers: headers({ 'Cache-Control': 'no-store' }) }
 			);
+		}
+		if (!bytes) {
+			// Local dev has the file index (Turso) but no chunk store
+			// (R2): the bytes live on this machine or on the production
+			// registry. All three fallbacks are content-addressed, so a
+			// hash check keeps them fail-closed.
+			if (await isDev()) {
+				const local = await import('$lib/server/std-local');
+				bytes =
+					local.localStdChunk(full, hash) ??
+					local.diskStoreChunk(hash) ??
+					(await proxyProdChunk(url.pathname, hash));
+			}
 		}
 		if (!bytes) return notFound(`chunk ${slug} not found`);
 		return new Response(bytes as BodyInit, {

@@ -22,7 +22,7 @@
 	{#if showCopy}
 		<button
 			onclick={copy}
-			class="press absolute right-2 top-2 rounded border border-aura-border px-2 py-1 font-mono text-[11px] text-aura-muted hover:border-aura-borderHover hover:text-aura-text"
+			class="doc-copy absolute right-2 top-2"
 			aria-label="Copy code"
 		>
 			{copied ? 'copied' : 'copy'}

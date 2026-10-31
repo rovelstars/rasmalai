@@ -47,7 +47,7 @@ print("alive");
 
 There is no bare `panic(...)` function; calling one is an `E303` error. Failure inside fallible functions uses `throw`; see [Functions and Closures](/manual/05-functions-and-closures).
 
-`print` is a prelude shim over `io.write`: every argument runs through the `@std/io` pretty-printer — see [Hardware and FFI](/manual/13-hardware-and-ffi) — so existing programs keep working with no import.
+`print` is a prelude shim over `io.write`: every argument runs through the `@std/io` pretty-printer (see [Hardware and FFI](/manual/13-hardware-and-ffi)), so existing programs keep working with no import.
 
 ## Foundation types
 
@@ -83,7 +83,7 @@ let ok: Result<Int, String> = Result.Ok(42);
 print(ok.unwrap());
 ```
 
-`Result` is a real generic enum merged into every program: `Ok` carries a payload and `Err` carries an error. Its query methods (`isOk`, `isErr`, `unwrap`, `unwrapOr`) lower to discriminant checks. The `?`, `??`, and `?.` channels over nullables and `Result` are specified in [Functions and Closures](/manual/05-functions-and-closures).
+`Result` is a generic enum merged into every program: `Ok` carries a payload and `Err` carries an error. Its query methods (`isOk`, `isErr`, `unwrap`, `unwrapOr`) lower to discriminant checks. The `?`, `??`, and `?.` channels over nullables and `Result` are specified in [Functions and Closures](/manual/05-functions-and-closures).
 
 ## Iteration traits
 

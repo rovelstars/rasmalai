@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '@fontsource/inter/400.css';
+	import '@fontsource/inter/500.css';
 	import '@fontsource/inter/600.css';
 	import '@fontsource/inter/700.css';
 	import '@fontsource/jetbrains-mono/400.css';
@@ -45,7 +46,7 @@
 </script>
 
 <svelte:head>
-	<title>Rasmalai | Memory safety without the negotiations</title>
+	<title>Rasmalai | Memory safety without a garbage collector</title>
 	<meta
 		name="description"
 		content="A systems language with deterministic memory reclamation, Cranelift dev builds, and zero-codegen semantic checks."
@@ -57,7 +58,7 @@
 	{/if}
 	<meta property="og:type" content="website" />
 	<meta property="og:site_name" content="Rasmalai" />
-	<meta property="og:title" content="Rasmalai | Memory safety without the negotiations" />
+	<meta property="og:title" content="Rasmalai | Memory safety without a garbage collector" />
 	<meta
 		property="og:description"
 		content="A systems language with deterministic memory reclamation, Cranelift dev builds, and zero-codegen semantic checks."
@@ -66,9 +67,9 @@
 	<meta property="og:image" content={ogImage} />
 	<meta property="og:image:width" content="1200" />
 	<meta property="og:image:height" content="630" />
-	<meta property="og:image:alt" content="Rasmalai — memory safety without the negotiations." />
+	<meta property="og:image:alt" content="Rasmalai — memory safety without a garbage collector." />
 	<meta name="twitter:card" content="summary_large_image" />
-	<meta name="twitter:title" content="Rasmalai | Memory safety without the negotiations" />
+	<meta name="twitter:title" content="Rasmalai | Memory safety without a garbage collector" />
 	<meta
 		name="twitter:description"
 		content="A systems language with deterministic memory reclamation, Cranelift dev builds, and zero-codegen semantic checks."

@@ -7,8 +7,7 @@ sourceLang: "go"
 # Coming from Go: Systems Control Without the GC Pause
 
 Rasmalai keeps Go's short programs and fast builds, but memory frees come
-from compiler-inserted reference counts at visible scope ends - there is no
-collector, so there is no stop-the-world pause to budget for. Goroutines and
+from compiler-inserted reference counts at visible scope ends. There is no collector, so there is no stop-the-world pause to budget for. Goroutines and
 channels map to `Thread`/`Channel`, with one rule change: sharing is explicit
 through `byId` constructors. This page translates each Go idiom directly.
 
@@ -46,8 +45,7 @@ print(served);
 
 ## Structs and methods
 
-Structs bundle fields with a free memberwise initializer; methods attach
-directly. No embedded-interface promotion puzzles:
+Structs bundle fields with a free memberwise initializer; methods attach directly, with no embedded-interface promotion puzzles:
 
 ```go
 package main

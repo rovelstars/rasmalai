@@ -4,13 +4,13 @@ description: "Manual pointers become deterministic ARC with zero UB."
 sourceLang: "cpp"
 ---
 
-# From C / C++: Native Speed Without Undefined Behavior
+# From C / C++: native speed without undefined behavior
 
 You tune for the metal and you pay for it in headers, macros, build scripts, and aliasing rules. Rasmalai keeps the optimizer and the ABI, and deletes the rest.
 
 ## No headers, no macros, no CMake
 
-One binary replaces the toolchain sprawl — build, test, format, lint, and docs ship together:
+One binary replaces the toolchain sprawl. Build, test, format, lint, and docs ship together:
 
 ```cpp
 // C++: CMakeLists.txt + vcpkg.json + headers + TUs, then wait
@@ -25,7 +25,7 @@ rnx fmt
 
 ## Vectors without intrinsics headers
 
-No `<immintrin.h>`, no `_mm_add_ps` spelling bee, no alignment attributes to get wrong. The type is the instruction:
+No `<immintrin.h>`, no `_mm_add_ps` spelling bee, and no alignment attributes to get wrong. The type is the instruction:
 
 ```cpp
 #include <cstdio>
@@ -76,7 +76,7 @@ print(sum, arr[2]);
 
 ## Allocation without malloc/free
 
-Heap arrays are refcounted values with destructors the compiler writes. Allocation and release always pair up automatically — there is no manual bookkeeping to forget:
+Heap arrays are refcounted values with destructors the compiler writes. Allocation and release always pair up automatically. There is no manual bookkeeping to forget:
 
 ```cpp
 #include <cstdio>

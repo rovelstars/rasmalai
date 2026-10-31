@@ -34,22 +34,22 @@ export const TIER_META: Record<CapabilityTier, TierMeta> = {
 	pure: {
 		label: 'PURE',
 		blurb: 'Zero capabilities required',
-		pill: 'bg-emerald-50 text-emerald-700 border-emerald-200'
+		pill: 'bg-aura-green/10 text-aura-green border-aura-green/40'
 	},
 	delegated: {
 		label: 'DELEGATED',
 		blurb: 'I/O strictly on arguments passed by caller',
-		pill: 'bg-amber-50 text-amber-700 border-amber-200'
+		pill: 'bg-aura-cyan/10 text-aura-cyan border-aura-cyan/40'
 	},
 	ambient: {
 		label: 'AMBIENT',
 		blurb: 'Static endpoints, ambient files, or environment variables',
-		pill: 'bg-orange-50 text-orange-700 border-orange-200'
+		pill: 'bg-aura-orange/10 text-aura-orange border-aura-orange/40'
 	},
 	hazard: {
 		label: 'HAZARD',
 		blurb: 'Spawns child processes or uses raw memory/FFI',
-		pill: 'bg-red-50 text-red-700 border-red-200'
+		pill: 'bg-aura-red/10 text-aura-red border-aura-red/40'
 	}
 };
 

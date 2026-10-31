@@ -4,11 +4,11 @@ description: "Connect Claude, Codex, Cursor, Pi, omp, opencode, Hermes, Cline, a
 icon: "Terminal"
 ---
 
-# AI Assistants & MCP
+# AI assistants & MCP
 
 If you write code with an AI agent looking over your shoulder, you can give it the toolchain directly. `rnx mcp` serves the compiler over the Model Context Protocol on stdio, so an agent can check, run, format, test, and explain rnx code without shelling out. Seventeen tools: `check` (structured JSON, `pretty` opt-in), `run` (interpreter, 30s cap, structured output), `fmt` (plus `--check`/`--diff` modes), `explain`, `version`, `rasmalai_lookup_symbol` (`@std/*` signature search), `inspect_package_capabilities` (package audit with licenses, drift, and advisory verdicts), `eval_code` (persistent JIT session with `:type` and `reset`), `get_diagnostics` (structured JSON diagnostics), `hot_reload` (needs an attached `rnx dev --mcp` watcher), `build` (LLVM object, in memory), `test` (project test runner), `lint` (read-only), `doc` (`--json` API docs), `doctor` (read-only cache health), `cache_status` (read-only pool sizes), and `package_resolve` (offline cache verdicts). `path` inputs resolve project-aware, so relative imports work; `source` snippets stay self-contained. Stdout carries protocol frames only.
 
-Pick your harness below. Every entry follows the same trio — `rnx` on `PATH`, a server entry with `command`/`args`, and one command to verify — then a manual section covers anything else.
+Pick your harness below. Every entry follows the same trio (`rnx` on `PATH`, a server entry with `command`/`args`, and one command to verify). Then a manual section covers anything else.
 
 Agents typically start by typechecking a snippet like this one through the `check` tool before touching your files:
 
@@ -27,7 +27,7 @@ claude mcp add rnx -- rnx mcp
 
 Verify with `/mcp` inside a session; the `rnx` server lists seventeen tools.
 
-Claude Desktop takes the same server in its JSON config — macOS `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows `%APPDATA%\Claude\`, Linux `~/.config/Claude`):
+Claude Desktop takes the same server in its JSON config. macOS `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows `%APPDATA%\Claude\`, Linux `~/.config/Claude`):
 
 ```json
 {
@@ -75,7 +75,7 @@ Global `~/.pi/agent/mcp.json`, or `.mcp.json` in a trusted project:
 
 Reload with `/mcp reload`.
 
-## <img src="https://raw.githubusercontent.com/can1357/oh-my-pi/HEAD/assets/icon.svg" alt="omp" width="26" height="20" class="harness-omp" /> omp
+## <img src="https://cdn.jsdelivr.net/gh/can1357/oh-my-pi@HEAD/assets/icon.svg" alt="omp" width="26" height="20" class="harness-omp" /> omp
 
 Project `.omp/mcp.json`, or user `~/.omp/mcp.json` (`/mcp add` walks you through it, `/mcp test rnx` checks the connection):
 
@@ -101,7 +101,7 @@ Project `.omp/mcp.json`, or user `~/.omp/mcp.json` (`/mcp add` walks you through
 
 ## <img src="https://hermes-agent.nousresearch.com/favicon.ico" alt="Hermes" width="20" height="20" class="harness-logo" />Hermes agent
 
-`~/.hermes/config.yaml` under the top-level `mcp_servers` key (that key name is load-bearing — `mcp: servers:` will not load):
+`~/.hermes/config.yaml` under the top-level `mcp_servers` key (that key name is load-bearing. `mcp: servers:` will not load):
 
 ```yaml
 mcp_servers:

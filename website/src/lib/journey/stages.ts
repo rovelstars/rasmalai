@@ -1,7 +1,10 @@
 export interface CheckError {
 	code: string;
 	line: number;
+	col?: number;
 	text: string;
+	note?: string;
+	fix?: string;
 }
 
 export interface TreeNode {
@@ -23,7 +26,7 @@ export type ArtifactDef =
 	| { kind: 'lsp'; code: string; word: string; sig: string; doc: string }
 	| { kind: 'tokens'; code: string; chips: { text: string; cls: string }[] }
 	| { kind: 'ast'; tree: TreeNode[] }
-	| { kind: 'lir'; lines: LirLine[]; counter?: { from: number; to: number } }
+	| { kind: 'lir'; lines: LirLine[] }
 	| { kind: 'fork' }
 	| { kind: 'run'; lines: string[] };
 
@@ -83,7 +86,7 @@ const O = 'text-aura-orange';
 export const STAGES: Stage[] = [
 	{
 		id: 'write',
-		act: 'act 1 - make it right',
+		act: 'The editor',
 		kicker: '01 - write',
 		title: 'Your editor already speaks rnx',
 		body: 'Keywords, types, and strings light up as you type. Brackets match, blocks fold, docs peek on hover.',
@@ -91,7 +94,7 @@ export const STAGES: Stage[] = [
 	},
 	{
 		id: 'fmt',
-		act: 'act 1 - make it right',
+		act: 'The editor',
 		kicker: '02 - fmt',
 		title: 'One true style, applied not argued',
 		body: 'rnx fmt normalizes spacing and indentation across the whole file. Idempotent: the second pass changes nothing.',
@@ -99,22 +102,36 @@ export const STAGES: Stage[] = [
 	},
 	{
 		id: 'check',
-		act: 'act 1 - make it right',
+		act: 'The editor',
 		kicker: '03 - check',
 		title: 'Every error, one pass, with a span',
-		body: 'The checker reports all syntax errors at once — each with a caret you can click, not one-at-a-time whack-a-mole.',
+		body: 'The checker reports all syntax errors at once. Each one carries a line and column plus a suggested fix, not one-at-a-time whack-a-mole.',
 		artifact: {
 			kind: 'check',
 			code: CHECK_SRC,
 			errors: [
-				{ code: 'E105', line: 1, text: 'invalid lambda syntax — named functions need a block' },
-				{ code: 'E105', line: 3, text: 'invalid lambda syntax — named functions need a block' }
+				{
+					code: 'E105',
+					line: 1,
+					col: 24,
+					text: 'invalid lambda syntax',
+					note: 'named functions require a block body. Use `fn mul(x) { ... }`; for lambdas use `(x) => x * 2`.',
+					fix: 'arrow expressions do not use fn. Use (x) => x * 2 or declare a named function fn mul(x) { ... }'
+				},
+				{
+					code: 'E105',
+					line: 3,
+					col: 24,
+					text: 'invalid lambda syntax',
+					note: 'named functions require a block body. Use `fn mul(x) { ... }`; for lambdas use `(x) => x * 2`.',
+					fix: 'arrow expressions do not use fn. Use (x) => x * 2 or declare a named function fn mul(x) { ... }'
+				}
 			]
 		}
 	},
 	{
 		id: 'lint',
-		act: 'act 1 - make it right',
+		act: 'The editor',
 		kicker: '04 - lint + fix',
 		title: 'Lints that fix themselves',
 		body: 'A closure stored on its own owner trips W104. Rewrite it with fn decay(this) to capture GenRef(this) instead.',
@@ -127,7 +144,7 @@ export const STAGES: Stage[] = [
 	},
 	{
 		id: 'lsp',
-		act: 'act 1 - make it right',
+		act: 'The editor',
 		kicker: '05 - lsp',
 		title: 'Hover, jump, complete',
 		body: 'The language server answers hover, go-to-definition, and completions for any editor speaking the protocol.',
@@ -141,7 +158,7 @@ export const STAGES: Stage[] = [
 	},
 	{
 		id: 'parse',
-		act: 'act 2 - make it run',
+		act: 'The compiler',
 		kicker: '06 - parse',
 		title: 'Characters become a tree',
 		body: 'The lexer cuts source into tokens; the parser grows them into a typed tree. Desugar lowers the surface syntax first.',
@@ -165,7 +182,7 @@ export const STAGES: Stage[] = [
 	},
 	{
 		id: 'ast',
-		act: 'act 2 - make it run',
+		act: 'The compiler',
 		kicker: '07 - tree',
 		title: 'The shape of the program',
 		body: 'Expand the nodes. This is exactly what the later passes walk — nothing hidden, nothing inferred.',
@@ -207,28 +224,27 @@ export const STAGES: Stage[] = [
 	},
 	{
 		id: 'lower',
-		act: 'act 2 - make it run',
+		act: 'The compiler',
 		kicker: '08 - lower',
 		title: 'One IR, every backend',
-		body: 'The checked tree lowers to LIR — simplified below. The interpreter, Cranelift, and LLVM all read this same text.',
+		body: 'The checked tree lowers to LIR. The listing below is a schematic of that shape, not a compiler dump; the interpreter, Cranelift, and LLVM consume the real instruction stream.',
 		artifact: {
 			kind: 'lir',
 			lines: [
 				{ text: 'fn shade:' },
-				{ text: '  v0 = splat 0.0' },
-				{ text: '  v1 = call Vec4f.splat' },
+				{ text: '  v0 = VecSplat 0.0' },
 				{ text: 'loop:' },
-				{ text: '  v2 = add v0, sun' },
-				{ text: '  v3 = lt i, 4' },
-				{ text: '  br v3, loop, done' },
+				{ text: '  v2 = Arith Add v0, sun' },
+				{ text: '  v3 = Cmp Lt i, 4' },
+				{ text: '  BrIf v3, loop, done' },
 				{ text: 'done:' },
-				{ text: '  ret v2' }
+				{ text: '  Ret v2' }
 			]
 		}
 	},
 	{
 		id: 'opt',
-		act: 'act 2 - make it run',
+		act: 'The compiler',
 		kicker: '09 - optimize',
 		title: 'Dead code fades out',
 		body: 'Inline, dead-code removal, tail calls, and ARC motion run to fixed point. Unused functions simply stop existing.',
@@ -236,38 +252,36 @@ export const STAGES: Stage[] = [
 			kind: 'lir',
 			lines: [
 				{ text: 'fn shade:' },
-				{ text: '  v0 = splat 0.0' },
-				{ text: '  v1 = call Vec4f.splat' },
-				{ text: '  v9 = call debug_format', shed: true },
-				{ text: '  v10 = alloc tmp_buf', shed: true },
+				{ text: '  v0 = VecSplat 0.0' },
+				{ text: '  v9 = Const 0', shed: true },
+				{ text: '  v10 = Copy v9', shed: true },
 				{ text: 'loop:' },
-				{ text: '  v2 = add v0, sun' },
-				{ text: '  v11 = retain v2', shed: true },
-				{ text: '  v3 = lt i, 4' },
-				{ text: '  br v3, loop, done' },
+				{ text: '  v2 = Arith Add v0, sun' },
+				{ text: '  v11 = Retain v2', shed: true },
+				{ text: '  v3 = Cmp Lt i, 4' },
+				{ text: '  BrIf v3, loop, done' },
 				{ text: 'done:' },
-				{ text: '  ret v2' }
-			],
-			counter: { from: 1240, to: 310 }
+				{ text: '  Ret v2' }
+			]
 		}
 	},
 	{
 		id: 'fork',
-		act: 'act 2 - make it run',
-		kicker: '10 - two backends',
-		title: 'Pick your hurry',
-		body: 'Flip the switch. Dev compiles in milliseconds; release takes seconds and flies. Same checksum either way.',
+		act: 'The compiler',
+		kicker: '10 - dev / release',
+		title: 'Dev or release',
+		body: 'Flip the switch. Dev compiles in milliseconds; release takes seconds and flies. Same program behaviour, two build paths.',
 		artifact: { kind: 'fork' }
 	},
 	{
 		id: 'run',
-		act: 'act 2 - make it run',
+		act: 'The compiler',
 		kicker: '11 - run',
-		title: 'Keystroke to binary',
-		body: 'Dev runs it now through the JIT; release ships a stripped binary. Either way the output agrees bit-for-bit.',
+		title: 'Keystroke to output',
+		body: 'Dev runs it now through the JIT; release ships a stripped binary. The captured run below uses the default Cranelift JIT.',
 		artifact: {
 			kind: 'run',
-			lines: ['$ rnx build --release', 'built target/shade (ok)', '$ ./shade', 'shade done', '42', 'checksum match']
+			lines: ['$ rnx run app.rnx', 'shade done', '4.0']
 		}
 	}
 ];

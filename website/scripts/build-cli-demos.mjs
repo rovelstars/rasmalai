@@ -49,6 +49,15 @@ function makeFixture(withError) {
 	return dir;
 }
 
+function makeLintFixture() {
+	const dir = makeFixture(false);
+	writeFileSync(
+		join(dir, 'tests', 'demo.rnx'),
+		'test fn lint_demo() {\n    let x = 1;\n    let y = 2;\n    assert(y == 2, "y");\n}\n'
+	);
+	return dir;
+}
+
 function capture(bin, dir, args) {
 	const cmd = [bin, ...args].map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
 	const env = {
@@ -77,11 +86,15 @@ try {
 	const bin = rnxBin();
 	const errDir = makeFixture(true);
 	const okDir = makeFixture(false);
+	const lintDir = makeLintFixture();
 	try {
+		const lintBefore = stripCarriage(capture(bin, lintDir, ['lint', 'tests/demo.rnx']));
+		const lintFix = stripCarriage(capture(bin, lintDir, ['lint', '--fix', 'tests/demo.rnx']));
 		const demos = {
 			check: stripCarriage(capture(bin, errDir, ['check', 'src/bad.rnx'])),
 			test: stripCarriage(capture(bin, okDir, ['test'])),
-			lint: stripCarriage(capture(bin, okDir, ['lint', 'tests/demo.rnx']))
+			lint: lintBefore,
+			lintFix
 		};
 		mkdirSync(dirname(dataFile), { recursive: true });
 		writeFileSync(dataFile, JSON.stringify(demos, null, 2) + '\n');
@@ -89,6 +102,7 @@ try {
 	} finally {
 		rmSync(errDir, { recursive: true, force: true });
 		rmSync(okDir, { recursive: true, force: true });
+		rmSync(lintDir, { recursive: true, force: true });
 	}
 } catch (e) {
 	console.log(`demos: skipped (${e instanceof Error ? e.message : e})`);

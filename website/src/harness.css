@@ -1,7 +1,13 @@
-	/* Harness brand marks in guide headings. */
-	.harness-logo {
+	/* Harness brand marks in guide headings. Scoped past `.doc-prose img`
+	(svg brand files carry no intrinsic size, so height/width auto would
+	fill the heading) and kept out of flex stretch inside .doc-h. */
+	.doc-prose .doc-h img.harness-logo,
+	.doc-prose .doc-h svg.harness-logo,
+	img.harness-logo {
 		display: inline;
+		flex-shrink: 0;
 		height: 1.1em;
+		max-width: none;
 		width: auto;
 		vertical-align: -0.2em;
 		margin-right: 0.35em;
@@ -12,15 +18,18 @@
 	html.light .harness-inv {
 		filter: none;
 	}
-	.harness-omp {
+	.doc-prose .doc-h img.harness-omp,
+	img.harness-omp {
 		display: inline;
-		height: 1.4em;
+		flex-shrink: 0;
+		height: 1em;
+		max-width: none;
 		width: auto;
 		vertical-align: -0.35em;
 		margin-right: 0.35em;
-		background: #14131a;
+		background: rgb(var(--aura-plate));
 		border-radius: 6px;
-		padding: 3px;
+		padding: 2px;
 	}
 	.harness-only-light {
 		display: none;

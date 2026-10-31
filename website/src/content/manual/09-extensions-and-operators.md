@@ -46,7 +46,7 @@ print(total);
 
 ## Operators desugar to methods
 
-Non-primitive types overload operators by defining hook methods — directly on the type or in an `extension` block. Primitives keep their hardware instructions; anything else desugars statically to a direct call with no dynamic dispatch. A missing hook is `E108` naming the operator and the type:
+Non-primitive types overload operators by defining hook methods: directly on the type or in an `extension` block. Primitives keep their hardware instructions; anything else desugars statically to a direct call with no dynamic dispatch. A missing hook is `E108` naming the operator and the type:
 
 | Operator | Hook | Signature shape |
 |---|---|---|
@@ -76,7 +76,7 @@ print(v.x, v.y);
 
 ## Extensions add methods from outside
 
-An `extension` block attaches methods to an existing type — a primitive, a collection, or your own class — without touching its declaration. Calls desugar to plain static functions taking the receiver first, so there is no runtime cost, and intrinsics keep priority on conflicts.
+An `extension` block attaches methods to an existing type (a primitive, a collection, or your own class) without touching its declaration. Calls desugar to plain static functions taking the receiver first, so there is no runtime cost, and intrinsics keep priority on conflicts.
 
 This is also how the standard library grows foundation types: `Array`'s `map`/`filter`/`find`/`reduce`/`join` and `String`'s `split`/`replace`/`contains` are all extension methods in `@std/prelude`.
 
@@ -96,7 +96,7 @@ let v = Vec2(1.0, 2.0).doubled();
 assert(v.x == 2.0 && v.y == 4.0, "extension call");
 ```
 
-When an extension method and an intrinsic share a name, the intrinsic wins — extensions never shadow compiler-provided core methods.
+When an extension method and an intrinsic share a name, the intrinsic wins. Extensions never shadow compiler-provided core methods.
 
 ## Operator hook reference
 
@@ -140,7 +140,7 @@ Using an operator on a type without its hook is an `E108` error naming the opera
 
 ## Traits describe capabilities
 
-A `trait` declares a method set that classes adopt with `with`, letting generic code depend on behavior rather than concrete types. Small interfaces, adopted explicitly, composed freely.
+A `trait` declares a method set that classes adopt with `with`, letting generic code depend on behavior rather than concrete types. Small interfaces are adopted explicitly and compose freely.
 
 ## Interfaces dispatch without vtables
 
@@ -163,7 +163,7 @@ print(s.summary());
 print(s is Summarizable);
 ```
 
-There are no fat pointers or vtables in the ABI — the compiler resolves the runtime class id to a direct static call per implementation. `is` tests interface membership, and `typeOf` on an interface-typed value reports the concrete class. Calls through an interface work identically on every backend.
+There are no fat pointers or vtables in the ABI: the compiler resolves the runtime class id to a direct static call per implementation. `is` tests interface membership, and `typeOf` on an interface-typed value reports the concrete class. Calls through an interface work identically on every backend.
 
 ## Summary
 

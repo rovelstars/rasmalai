@@ -18,8 +18,10 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events: delegated code-block handler -->
 <article class="doc-prose" onclick={onDocCodeClick}>
-	<h1 class="flex items-center gap-3">
-		{#if meta}<meta.icon size={26} strokeWidth={1.75} class="shrink-0 text-aura-green" />{/if}
+	<h1 class="doc-h1">
+		{#if meta}
+			<meta.icon size={22} strokeWidth={2} class="doc-h1-icon is-signal" />
+		{/if}
 		{data.title}
 	</h1>
 	{#each sections as s}

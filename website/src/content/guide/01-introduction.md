@@ -10,9 +10,9 @@ This guide takes you from an empty folder to working programs: variables and num
 
 ## Before you begin
 
-To follow this guide, you should be comfortable with basic programming ideas already: variables, `if` statements, loops, and functions. You do not need to know Rust, C++, or TypeScript — this guide explains everything from scratch. If this is your first language, you can still follow along, but expect a steeper climb: work every example by hand, and when something breaks, the [Troubleshooting](/guide/11-troubleshooting-and-reinstall) page covers the usual beginner traps.
+To follow this guide, you should be comfortable with basic programming ideas already: variables, `if` statements, loops, and functions. You do not need to know Rust, C++, or TypeScript. This guide explains everything from scratch. If this is your first language, you can still follow along, but expect a steeper climb: work every example by hand, and when something breaks, the [Troubleshooting](/guide/11-troubleshooting-and-reinstall) page covers the usual beginner traps.
 
-One more thing worth knowing up front: rnx has one central promise. **Every value is freed at a point you can see in the source.** No garbage collector pausing your program, no borrow checker arguing with you, no manual `free` to forget. A scope ends, its values drop — deterministically, on the same thread. Everything in this guide follows from that.
+One more thing worth knowing up front: rnx has one central promise. Every value is freed at a point you can see in the source. There is no garbage collector pausing your program, no borrow checker to argue with, and no manual `free` to forget. A scope ends and its values drop, deterministically, on the same thread. Everything in this guide follows from that.
 
 ## Installing rnx
 
@@ -28,12 +28,12 @@ The script detects your OS and CPU and places `rnx` in `~/.local/bin` (`%LOCALAP
 rnx --version
 ```
 
-You should see `rnx 0.2.1` on the first line, followed by the build record: commit hash, build timestamp, install kind, target triple, and backend versions. If the terminal says the command was not found, the installer directory is not on your `PATH` yet — open a fresh terminal (installers update `PATH` for new shells only) and try again. Still stuck? Jump to [Troubleshooting](/guide/11-troubleshooting-and-reinstall), which walks through reinstalling cleanly per OS.
+You should see `rnx 0.2.1` on the first line, followed by the build record: commit hash, build timestamp, install kind, target triple, and backend versions. If the terminal says the command was not found, the installer directory is not on your `PATH` yet. Open a fresh terminal (installers update `PATH` for new shells only) and try again. Still stuck? Jump to [Troubleshooting](/guide/11-troubleshooting-and-reinstall), which walks through reinstalling cleanly per OS.
 
-The installer also seeds the standard library into the global cache (`~/.cache/rnx`, or `$RNX_CACHE_HOME` when set) by running `rnx download` for you. The `rnx` binary itself carries no library sources: every `@std/*` import resolves from that cache, so the first build after a fresh install works with no extra step. If you installed while offline, the installer warns instead of failing — run `rnx download` once you are online, or `rnx doctor --repair-std` to check and repair the cache at any time.
+The installer also seeds the standard library into the global cache (`~/.cache/rnx`, or `$RNX_CACHE_HOME` when set) by running `rnx download` for you. The `rnx` binary itself carries no library sources: every `@std/*` import resolves from that cache, so the first build after a fresh install works with no extra step. If you installed while offline, the installer warns instead of failing. Run `rnx download` once you are online, or `rnx doctor --repair-std` to check and repair the cache at any time.
 
 > [!TIP]
-> Not ready to install? Every example in this guide runs in the browser Playground — no setup at all. Installing is still worth it: the real toolchain adds files, packages, and tests.
+> Not ready to install? Every example in this guide runs in the browser Playground with no setup at all. Installing is still worth it: the real toolchain adds files, packages, and tests.
 
 ## Your first program
 
@@ -60,7 +60,7 @@ and then, from `rnx run`:
 Hello from hello!
 ```
 
-Congratulations — that is a real rnx program, compiled and executed. Open `src/main.rnx` and look at what you got:
+Congratulations, that is a real rnx program, compiled and executed. Open `src/main.rnx` and look at what you got:
 
 ```rnx
 fn Main(): Int {
@@ -69,15 +69,15 @@ fn Main(): Int {
 }
 ```
 
-Here is what just happened. `rnx init hello` created a folder with a `Project.config` manifest and an entry file at `src/main.rnx`. `fn Main(): Int` is the entry function: the program starts there, `print` writes to the terminal, and the returned `Int` becomes the process exit code (`0` means success). Try changing the message, run `rnx run` again, and watch your edit take effect. That loop — edit, run, see — is the whole development cycle for the next few chapters.
+Here is what just happened. `rnx init hello` created a folder with a `Project.config` manifest and an entry file at `src/main.rnx`. `fn Main(): Int` is the entry function: the program starts there, `print` writes to the terminal, and the returned `Int` becomes the process exit code (`0` means success). Try changing the message, run `rnx run` again, and watch your edit take effect. That loop of edit, run, and see is the whole development cycle for the next few chapters.
 
 ## How this guide works
 
 Each chapter follows the same rhythm: a short explanation, a complete program you can run, and then a breakdown of what the program did. callouts mark the traps:
 
-- `> [!NOTE]` — something that surprises most newcomers.
-- `> [!TIP]` — the easier way, once you know it exists.
-- `> [!WARNING]` — something that will bite you if you ignore it.
+- `> [!NOTE]`: something that surprises most newcomers.
+- `> [!TIP]`: the easier way, once you know it exists.
+- `> [!WARNING]`: something that will bite you if you ignore it.
 
 Chapters link forward and back, so if a snippet uses something unfamiliar, follow the link instead of guessing. And if an error message confuses you at any point, [Error Handling](/guide/07-error-handling) teaches you to read diagnostics, and [Troubleshooting](/guide/11-troubleshooting-and-reinstall) covers everything else.
 

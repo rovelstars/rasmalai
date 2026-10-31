@@ -12,7 +12,7 @@
 	role="status"
 	aria-label={`Capability tier ${meta.label.toLowerCase()}: ${meta.blurb}`}
 	title={tooltip}
-	class={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold tracking-wide ${meta.pill}`}
+	class={`inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 font-mono text-[11px] ${meta.pill}`}
 >
 	{#if tier === 'hazard'}
 		<TriangleAlert size={12} aria-hidden="true" />

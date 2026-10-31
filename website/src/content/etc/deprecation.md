@@ -8,11 +8,11 @@ icon: "TriangleAlert"
 
 # Deprecation
 
-Versions die in three steps, each louder than the last: deprecate, yank, tombstone. Every step keeps the number burned — nothing on this ladder ever frees a version for reuse.
+Versions die in three steps: deprecate, yank, tombstone. Every step keeps the number burned; no step frees a version for reuse.
 
 ## 1. Deprecate: the advisory
 
-Deprecation marks a version or package as discouraged while it still resolves cleanly. Pins keep building with no new warnings, floating ranges keep selecting it, and the only change is the signal: prefer the successor. Deprecate when a better version exists but the old one still works — the rename, the re-scope, the API you wish you had designed first.
+Deprecation marks a version or package as discouraged while it still resolves cleanly. Pins keep building with no new warnings, floating ranges keep selecting it, and the only change is the signal: prefer the successor. Deprecate when a better version exists but the old one still works: the rename, the re-scope, or the API you wish you had designed first.
 
 Deprecation is a registry flag first (`rnx deprecate <name>@<version>`), so the site and the package manager agree regardless of what the README says; a README badge is optional and advisory.
 
@@ -22,8 +22,8 @@ Yank is for versions with something wrong with them that does not endanger anyon
 
 ## 3. Tombstone: the removal
 
-Tombstones are for versions that must stop resolving — malware, credential theft, license violations, confirmed deception (see [Abuse](/etc/abuse)). Staff write the tombstone; every later read answers 410 with the reason and an audit id, forever. Tombstone when serving the bytes one more time is itself the harm.
+Tombstones are for versions that must stop resolving: malware, credential theft, license violations, confirmed deception (see [Abuse](/etc/abuse)). Staff write the tombstone; every later read answers 410 with the reason and an audit id, forever. Tombstone when serving the bytes one more time is itself the harm.
 
 ## Walk the ladder in order
 
-The dignified sequence for a flawed release: publish the fixed successor first, deprecate or yank the flawed version with the replacement named, and reserve tombstones for danger. Never yank without a suggested replacement — a warning that points nowhere strands every pinned build it touches. And never reach for staff removal to fix an ordinary mistake inside your own 72-hour window ([Versioning and Yank](/etc/versioning-and-yank)); that path exists, use it, and leave tombstones for what they are for.
+The dignified sequence for a flawed release: publish the fixed successor first, deprecate or yank the flawed version with the replacement named, and reserve tombstones for danger. Never yank without a suggested replacement: a warning that points nowhere strands every pinned build it touches. And never reach for staff removal to fix an ordinary mistake inside your own 72-hour window ([Versioning and Yank](/etc/versioning-and-yank)); use that path, and leave tombstones for danger.

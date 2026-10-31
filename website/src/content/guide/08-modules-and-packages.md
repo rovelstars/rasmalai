@@ -4,7 +4,7 @@ description: "ESM imports, the seeded standard library, and the project manifest
 icon: "Library"
 ---
 
-# Modules and Packages
+# Modules and packages
 
 Real programs outgrow one file. rnx keeps growth boring on purpose: one namespace per file, imports that say exactly what they take, and a manifest that fits on an index card.
 
@@ -22,7 +22,7 @@ AtomicInt.byId(1).set(scores.len());
 print(scores.get("ore"));
 ```
 
-That prints `7`. Relative imports (`./math`, `./shapes`) wire up multi-file projects, and two files can each define a helper with the same name without colliding — names live in their file's namespace. Imports are per file: if `lib.rnx` names something it never imported, it fails, even when the entry file imports it. Dependencies travel with the file that declares them, never with the program around them.
+That prints `7`. Relative imports (`./math`, `./shapes`) wire up multi-file projects, and two files can each define a helper with the same name without colliding. Names live in their file's namespace. Imports are per file: if `lib.rnx` names something it never imported, it fails, even when the entry file imports it. Dependencies travel with the file that declares them, never with the program around them.
 
 An imported namespace is also a value. Passing it to `print` lists its exports, read-only:
 
@@ -32,13 +32,13 @@ import io from "@std/io";
 print(io);
 ```
 
-That prints the module listing (`[Module io] { clear: ..., write: ..., ... }` — the exact set grows with the stdlib). Assigning to a namespace field is an error — namespaces are snapshots, not objects.
+That prints the module listing (`[Module io] { clear: ..., write: ..., ... }`, the exact set grows with the stdlib). Assigning to a namespace field is an error. Namespaces are snapshots, not objects.
 
 Every file also sees `@std/prelude` without importing it: `Int`, `Float`, `String`, `Bool`, `Array`, `print`, `assert` resolve from there, and only the ones you use reach the binary.
 
 ## Entry files run; imported files declare
 
-Only the entry file — the `entries.main` file in `Project.config`, or the file handed to `rnx run` — executes loose top-level statements. That is where scripts live: no `main` wrapper needed for a quick task, top-level `await` for async work, and `return <Int>` for the exit code:
+Only the entry file (the `entries.main` file in `Project.config`, or the file handed to `rnx run`) executes loose top-level statements. That is where scripts live: no `main` wrapper needed for a quick task, top-level `await` for async work, and `return <Int>` for the exit code:
 
 ```rnx
 import { Map } from "@std/collections";
@@ -52,9 +52,9 @@ if total == 0 {
 }
 ```
 
-That prints `entries: 1`. Every file pulled in through `import` is declarative-only: classes, structs, enums, functions, and constants. A loose `print` or `let` there fails with `E112` — move it into a function and call it from the entry file. An explicit `fn main()`/`fn Main()` in the entry still works exactly as before.
+That prints `entries: 1`. Every file pulled in through `import` is declarative-only: classes, structs, enums, functions, and constants. A loose `print` or `let` there fails with `E112`. Move it into a function and call it from the entry file. An explicit `fn main()`/`fn Main()` in the entry still works exactly as before.
 
-**Common mistake:** putting script logic in an imported helper file and wondering why nothing runs — or worse, getting `E112` and deleting the code. Imported files declare; only the entry executes. Move the statements into a function, import it, call it.
+**Common mistake:** putting script logic in an imported helper file and wondering why nothing runs, or worse, getting `E112` and deleting the code. Imported files declare; only the entry executes. Move the statements into a function, import it, call it.
 
 ## Two foreign import forms
 
@@ -65,11 +65,11 @@ import { fn puts(text: String): Int } from native "c";
 import { fn __rnx_clock_mono(): Int } from runtime "time";
 ```
 
-`from native "lib"` declares a foreign C function for the linker or JIT (see [Hardware and FFI](/manual/13-hardware-and-ffi)). `from runtime "mod"` declares a compiler runtime internal — and it only works inside registry-verified `@std/*` sources, where the signature is checked against the runtime manifest (module, arity, and types). Anywhere else it fails closed with `E108` naming the owning `@std/*` wrapper, and a bare `__rnx_*` use with no declaration is an `E303` scope error pointing at the declared form. User code never needs the second line: call the `@std/*` wrapper and the capability audit follows the call through it.
+`from native "lib"` declares a foreign C function for the linker or JIT (see [Hardware and FFI](/manual/13-hardware-and-ffi)). `from runtime "mod"` declares a compiler runtime internal, and it only works inside registry-verified `@std/*` sources, where the signature is checked against the runtime manifest (module, arity, and types). Anywhere else it fails closed with `E108` naming the owning `@std/*` wrapper, and a bare `__rnx_*` use with no declaration is an `E303` scope error pointing at the declared form. User code never needs the second line: call the `@std/*` wrapper and the capability audit follows the call through it.
 
 ## The standard library is seeded, not embedded
 
-`@std/` imports resolve from a global cache the installer seeds — nothing to install by hand, versions pinned automatically. Seventeen modules ship with the compiler:
+`@std/` imports resolve from a global cache the installer seeds. Nothing to install by hand, versions pinned automatically. Seventeen modules ship with the compiler:
 
 | Module | What it holds |
 |---|---|
@@ -93,11 +93,11 @@ import { fn __rnx_clock_mono(): Int } from runtime "time";
 
 Each module has a generated reference page under [its module docs](/docs/@std/simd/overview), rendered from the same `/** */` doc comments you write with `rnx doc`. Every registry package gets the same treatment: `/docs/@scope/name/overview` serves the overview, getting-started, and API reference for any published scoped package, std included, and unscoped packages serve the same pages at `/docs/<name>/overview`. Standard library packages also ship `docs/` guides with each release, readable on the same pages and on the package's Guides tab.
 
-The cache is the offline story: with a seeded machine, builds never touch the network — missing entries download once from the registry, integrity-checked like any other package, and an explicit `dependencies` entry for an `@std/*` package overrides the pinned version. A cold cache with no network fails loudly (`E108` naming the registry, with an `rnx download` hint); `rnx download` seeds the cache and `rnx doctor --repair-std` repairs it. Offline labs are served by distribution — seeded installers and pre-warmed images carry the standard library.
+The cache is the offline story: with a seeded machine, builds never touch the network. Missing entries download once from the registry, integrity-checked like any other package, and an explicit `dependencies` entry for an `@std/*` package overrides the pinned version. A cold cache with no network fails loudly (`E108` naming the registry, with an `rnx download` hint); `rnx download` seeds the cache and `rnx doctor --repair-std` repairs it. Offline labs are served by distribution. Seeded installers and pre-warmed images carry the standard library.
 
 The web playground works the same way, minus the filesystem. Its compiler engine downloads first, then preloads `@std/prelude` and fetches each further `@std/*` import from the same site's registry at the engine-pinned version, caching every module in the browser beside the engine bytes. Module paths stay identical, so code that checks in the playground checks the same on the command line.
 
-A taste of the platform side — child processes and OS queries compose like everything else:
+A taste of the platform side: child processes and OS queries compose like everything else:
 
 ```rnx
 import { Process } from "@std/process";
@@ -108,7 +108,7 @@ let out = Process.run("echo", ["hello"]);
 print(out.exitCode, out.stdoutText().contains("hello"));
 ```
 
-On a Linux box that prints something like `linux 16` followed by `0 true` — exit code zero, and yes, the output contained "hello".
+On a Linux box that prints something like `linux 16` followed by `0 true`. That is exit code zero, and yes, the output contained "hello".
 
 ## The project manifest
 
@@ -134,7 +134,7 @@ export default {
 
 ## Testing from day one
 
-Tests live beside your code in `test fn` blocks — no parameters, no return, stripped from normal builds:
+Tests live beside your code in `test fn` blocks: no parameters, no return, stripped from normal builds:
 
 ```rnx
 fn add(a: Int, b: Int): Int {
@@ -158,11 +158,11 @@ rnx test
 tests: 1 passed, 0 failed in 0.14 ms
 ```
 
-`assert` takes a `Bool` and a message. A failing assertion marks that test failed, but the rest of the suite keeps running. Write the test next to the function while the behavior is fresh in your head — coming back to add tests later rarely happens.
+`assert` takes a `Bool` and a message. A failing assertion marks that test failed, but the rest of the suite keeps running. Write the test next to the function while the behavior is fresh in your head. Coming back to add tests later rarely happens.
 
 ## Where to go from here
 
 You now have the whole working language. Two directions remain:
 
-- **Build something real** — the [standard library docs](/docs/@std/simd/overview) cover every module, and the [Playground](/playground) runs everything in your browser.
-- **Understand the machinery** — the [Language Manual](/manual) covers the numeric model, deterministic ARC, protocols, concurrency, and the toolchain spec, normatively.
+- **Build something real**: the [standard library docs](/docs/@std/simd/overview) cover every module, and the [Playground](/playground) runs everything in your browser.
+- **Understand the machinery**: the [Language Manual](/manual) covers the numeric model, deterministic ARC, protocols, concurrency, and the toolchain spec, normatively.

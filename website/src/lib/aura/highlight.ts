@@ -1,18 +1,8 @@
-// Oracles: keyword() in compiler/frontend/src/token.rs, is_type_name in compiler/frontend/src/highlight.rs.
-export const AURA_KEYWORDS = new Set([
-	'true', 'false', 'null', 'this', 'super', 'class', 'struct', 'record',
-	'trait', 'interface', 'extension', 'enum', 'fn', 'init', 'new', 'deinit',
-	'onReload', 'extends', 'with', 'let', 'const', 'static', 'if', 'else',
-	'for', 'while', 'in', 'return', 'break', 'continue', 'try', 'catch',
-	'finally', 'throw', 'throws', 'defer', 'guard', 'switch', 'case', 'default',
-	'do', 'fallthrough', 'is', 'import', 'export', 'from', 'as', 'pub',
-	'public', 'private', 'unsafe', 'comptime', 'native', 'async', 'await', 'pass'
-]);
+// Keyword and type tables are generated from the tree-sitter grammar
+// (scripts/build-keywords.mjs); see keywords.gen.ts for provenance.
+import { RNX_KEYWORDS as AURA_KEYWORDS, RNX_TYPES as AURA_TYPES } from './keywords.gen';
 
-export const AURA_TYPES = new Set([
-	'Int', 'Float', 'FastFloat', 'Bool', 'Void', 'String', 'Any', 'Array',
-	'Map', 'Set', 'GenRef', 'Vec4f', 'Vec4i', 'Vec2', 'Option', 'Result'
-]);
+export { AURA_KEYWORDS, AURA_TYPES };
 
 export interface AuraSpan {
 	text: string;

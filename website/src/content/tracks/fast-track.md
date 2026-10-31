@@ -52,8 +52,7 @@ print(dbl(new Vec4f(1.0, 2.0, 3.0, 4.0)).get(2));
 ## C-ABI: headers in, symbols out
 
 `rnx build --lib` compiles top-level `export fn` items to C-ABI wrappers in a
-static archive plus a `<basename>.h` header. No binding generator, no
-wrapper crate, no build script:
+static archive plus a `<basename>.h` header, with no binding generator, wrapper crate, or build script:
 
 ```sh
 rnx build physics.rnx --lib
@@ -68,5 +67,3 @@ One binary: `check`, `run`, `build`, `test` (per-test timings, tree-hook
 failure boxes), `bench`, `lint --fix`, `fmt`, `doc --json`, `lsp`,
 `explain <code>`. Errors render as tree-hook codeframes with `▲` pointers
 and `got:`/`expected:` lines.
-
-Done. Fifteen minutes. Go build.

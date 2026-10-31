@@ -7,8 +7,7 @@ sourceLang: "cpp"
 # Coming from C/C++: Native Speed Without Undefined Behavior
 
 Rasmalai compiles through LLVM `-O3` to native code and calls C functions
-directly through `from native "c"` imports - no headers, no macros, no
-CMake, one `rnx` binary for build/test/fmt/lint. The trade: no templates, no
+directly through `from native "c"` imports: no headers, no macros, no CMake, and one `rnx` binary for build/test/fmt/lint. The trade: no templates, no
 undefined-behavior escape hatches, no control over object layout. This page
 shows what your C++ patterns look like without the toolchain around them.
 
@@ -30,8 +29,7 @@ rnx fmt
 
 ## Vectors without intrinsics headers
 
-No `<immintrin.h>`, no `_mm_add_ps` spelling bee, no alignment attributes to
-get wrong. The type is the instruction:
+There is no `<immintrin.h>`, no `_mm_add_ps` spelling bee, and no alignment attributes to get wrong. The type is the instruction:
 
 ```cpp
 #include <array>
