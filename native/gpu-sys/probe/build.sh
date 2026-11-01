@@ -18,4 +18,5 @@ Libs: -L\${libdir} -lgpu_sys
 Cflags:
 PC
 
+cd "$here"
 PKG_CONFIG_PATH="$here" LD_LIBRARY_PATH="$here" exec "$rnx" run "$@"

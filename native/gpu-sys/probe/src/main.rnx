@@ -4,6 +4,8 @@ import {
     fn gpu_adapter_name(p: Pointer<Byte>, index: Int, out: Pointer<Byte>, len: Int): Int,
     fn gpu_clear_rgba(w: Int, h: Int, r: Int, g: Int, b: Int, a: Int, out: Pointer<Byte>): Int,
     fn gpu_instance_create(): Pointer<Byte>,
+    fn gpu_triangle(w: Int, h: Int, out: Pointer<Byte>): Int,
+    fn gpu_abi_version(): Int,
     fn gpu_instance_destroy(p: Pointer<Byte>),
 } from native "gpu_sys"
 
@@ -17,6 +19,11 @@ fn Main(): Int {
         let px = ByteBuffer.allocate(8)
         let rc = gpu_clear_rgba(2, 1, 10, 20, 30, 255, Pointer.fromAddress<Byte>(px.address()))
         print("rc:", rc, "rgba:", px.readUInt8(0), px.readUInt8(1), px.readUInt8(2), px.readUInt8(3))
+        let img = ByteBuffer.allocate(16 * 16 * 4)
+        let tr = gpu_triangle(16, 16, Pointer.fromAddress<Byte>(img.address()))
+        let at = (8 * 16 + 8) * 4
+        print("triangle rc:", tr, "center:", img.readUInt8(at), img.readUInt8(at + 1), img.readUInt8(at + 2), img.readUInt8(at + 3))
+        print("abi:", gpu_abi_version())
         gpu_instance_destroy(inst)
     }
     return 0
