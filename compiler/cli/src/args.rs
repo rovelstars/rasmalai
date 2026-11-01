@@ -505,10 +505,25 @@ pub enum Command {
         #[arg(long)]
         check: bool,
     },
-    /// Run an author-local task from Project.config (`tasks` table; never ships, never runs on consumers)
+    /// Run a task from Project.config (local name, or `<package>#<task>` for an exported task in a direct dependency or workspace member)
     Task {
-        /// Task name (lists tasks when omitted; `bindgen` runs the `bindgen` driver table)
+        /// Task reference: `<name>` for a local task or `<package>#<task>`; lists local tasks when omitted
         name: Option<String>,
+        /// Package selection for workspace members
+        #[arg(short = 'p', long = "package")]
+        package: Option<String>,
+        /// List local and imported exported tasks with provenance
+        #[arg(long)]
+        all: bool,
+        /// Print the resolved graph and leaf bodies without running
+        #[arg(long)]
+        explain: bool,
+        /// Approve an imported task for this invocation (`<package>#<task>`; repeatable)
+        #[arg(long, value_name = "PKG#TASK")]
+        allow: Vec<String>,
+        /// Ignore the incremental input/output check
+        #[arg(long)]
+        force: bool,
     },
     /// Generate shell completion scripts
     Completions {

@@ -251,7 +251,7 @@ print(quote(2.0));
 | `rnx explain` | diagnostic text plus fix | `<code>` |
 | `rnx audit` | report capability and tier surface per package, plus advisory check against the lockfile | `--path <dir>`, `--json`, `--export-manifest`, `--licenses`, `--deny-license <spdx>`, `--registry <url>` |
 | `rnx bindgen` | generate `bindgen.rnx` plus OCI annotations from C headers | `--header <file>`, `--native-lib <lib>`, `--pkg-name <name>`, `--out <dir>`, `--target`, `--prefix`, `--skip`, `--include`, `--case keep\|camel\|pascal`, `--rename old=new`, `--check` |
-| `rnx task` | run an author-local task from `Project.config` (`bindgen` replays the driver table) | `[name]` (lists tasks when omitted) |
+| `rnx task` | run a local task or an exported task from a direct dependency (`bindgen` replays the driver table) | `[<ref>]` (lists local tasks when omitted), `--all`, `--explain <ref>`, `--allow <pkg#task>`, `--force`, `-p <package>` |
 | `rnx completions` | shell completion scripts | `bash`, `zsh`, `fish`, `powershell`, `elvish` |
 | `rnx pack` | deterministic ustar plus SHA-256 | `-p`, `--out-dir`, `--gzip/-z` |
 | `rnx unpack` | verify and extract archive | `--out-dir <dir>` |
@@ -332,19 +332,49 @@ export default {
 export default {
     project: { name: "demo", version: "0.1.0" },
     tasks: {
-        check: ["rnx check", "rnx lint"],
+        icons: {
+            file: "tools/icons.rnx",
+            export: true,
+            description: "Render the app icon set",
+            runs_in: "project",
+            inputs: ["assets/icons"],
+            outputs: ["build/icons/**"]
+        },
         build: {
-            steps: [{ run: target.os == "windows" ? "rnx build --target x86_64-pc-windows-msvc" : "rnx build" }],
+            steps: [{ shell: target.os == "windows" ? "rnx build --target x86_64-pc-windows-msvc" : "rnx build" }],
             matrix: ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
         },
-        all: { tasks: ["check", "build"], strategy: "parallel", "on-failure": "continue" }
+        release: {
+            tasks: ["icons", "build"],
+            strategy: "parallel",
+            on_failure: "continue"
+        },
+        dist: ["icons", "build"]
     }
 }
 ```
 
-`rnx task <name>` runs steps with the project root as the working directory, streaming their output; `rnx task` alone lists them. A step is a shell command string, a `{ run = ... }` table, or a `{ task = ... }` reference to another task. A metatask names other tasks with `strategy: serial | parallel` and `"on-failure": stop | continue`. Note the quotes, since a bare `on-failure` key is not valid record syntax. A `matrix` list of target triples evaluates every step once per triple (each leg sees its own `target`), so one table fans out across platforms; the manifest sandbox (`const`, spreads, ternaries, `switch` on `target`, member access, no interpolation) is the whole expression language, and a driver that needs more is rejected as non-declarative. Task cycles and unknown names fail closed with `E108`.
+Each task holds exactly one body. `{ file: "tools/icons.rnx" }` names a package-relative rnx file with `fn Main(): Int`, which the runner starts as a program. `{ steps: [{ shell: "..." }] }` runs external commands, and a step may call another task with `{ task: "<ref>" }` in place of `shell`. `{ tasks: ["icons", "build"] }` is a group, and a bare array is the short form of one. Declaring two bodies fails with `E108`. A string in a group or a `{ task: ... }` step is always a task reference, never a command, so shell is written out as an object every time.
 
-Tasks are containment-load-bearing: they run only through `rnx task` on the author's machine. They never ship. The publish frame drops `tasks` and `bindgen` and only generated files travel. They never run on consumers, and no other command reads them. There are no lifecycle hooks, and none will ever exist.
+Every body accepts `export`, `runs_in`, `description`, `inputs`, and `outputs`. `runs_in` is `"package"` (the default, the defining package's directory) or `"project"` (the invoking project's directory). `export: true` requires a `description`. `matrix` belongs to a `steps` task and runs every step once per target triple, each leg seeing its own `target`. `strategy: "serial" | "parallel"` and `on_failure: "stop" | "continue"` belong to a group. `on-failure` still parses as the older spelling; write `on_failure`. The manifest sandbox (`const`, spreads, ternaries, `switch` on `target`, member access, no interpolation) is the whole expression language, so work that needs more belongs in a file body.
+
+A reference with no `#` is local. `<package>#<task>` names an exported task in a direct dependency or a workspace member:
+
+```sh
+rnx task build                # local task
+rnx task @std/app#bundle      # exported task in a direct dependency
+rnx task core#build           # workspace member
+```
+
+`#icons` and `self#icons` are errors, since the bare name already means the current package. Task names are lowercase letters, digits, and hyphens, so a hyphenated key needs quotes. Task cycles and unknown names fail closed with `E108`.
+
+`rnx task` lists the local tasks, and `rnx task --all` adds the imported exported tasks with the package each one came from. `rnx task <ref>` runs one, `rnx task --explain <ref>` prints the resolved graph without running it, and `rnx task -p <package> <ref>` works in a workspace member's context.
+
+A task from a workspace member is part of the same project and runs without approval. A task from an external dependency is resolved down to its leaves, a file or a shell script, before anything runs. The graph is printed, and the approval is stored in `.rnx/tasks.consent` keyed by content hash, so a changed file or script prompts again. `rnx task --allow <pkg#task>` approves a graph in CI. Local tasks need no approval.
+
+A task that declares `inputs` or `outputs` is skipped when the recorded input hash still matches and every output exists. `rnx task --force` runs it anyway. A task with neither field always runs.
+
+No command other than `rnx task` runs a task, and there are no lifecycle hooks. Exported tasks are the ones that travel: publishing keeps them in the stored `Project.config` with their `description`, `runs_in`, `inputs`, and `outputs`, and drops private tasks along with `bindgen`. An exported task's text is public, so name an environment variable and never paste the token.
 
 Publishing a version that declares `artifacts` can push the image itself. Stage per-target blobs under `.rnx-cache/publish/<target>/<role>/<title>` (roles `runtime`, `wasm`, `bindgen`, `media`; the author's matrix tasks produce these), point at an endpoint, and publish:
 
