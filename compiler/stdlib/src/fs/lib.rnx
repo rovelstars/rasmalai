@@ -1645,7 +1645,8 @@ fn fsWriteModeOf(m: Int): WriteMode {
 * import fs from "@std/fs";
 *
 * fs.writeText("doc-demo-async.txt", "hi", .Overwrite);
-* print(fs.readTextAsync("doc-demo-async.txt").wait().unwrapOr(""));
+* let back: Result<String, String> = await fs.readTextAsync("doc-demo-async.txt");
+* print(back.unwrapOr(""));
 */
 fn readTextAsync(path: String): Promise<Result<String, String>> {
     let wr = Promise.withResolvers<Result<String, String>>();
