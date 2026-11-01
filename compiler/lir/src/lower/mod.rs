@@ -555,6 +555,7 @@ struct Builder<'a> {
     closure_prefix: String,
     closure_hints: Vec<Vec<LirType>>,
     closure_ret: BTreeMap<Local, LirType>,
+    child_sink: Option<Local>,
     synth_seq: usize,
     pending: Vec<PendingClosure>,
     patches: Vec<(BlockId, usize, String)>,

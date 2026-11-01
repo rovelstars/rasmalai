@@ -15,6 +15,26 @@ fn result_payload_arg(t: &A::Type) -> Option<&A::Type> {
     }
 }
 
+fn child_type_name(ty: &LirType) -> String {
+    match ty {
+        LirType::I64 => "Int".to_string(),
+        LirType::I8 => "Byte".to_string(),
+        LirType::F64(_) => "Float".to_string(),
+        LirType::Bool => "Bool".to_string(),
+        LirType::Str => "String".to_string(),
+        LirType::Null => "Null".to_string(),
+        LirType::Any => "Any".to_string(),
+        LirType::Obj(n) => n.clone(),
+        LirType::Array(inner) => format!("Array<{}>", child_type_name(inner)),
+        LirType::Tuple(items) => format!(
+            "({})",
+            items.iter().map(child_type_name).collect::<Vec<_>>().join(", ")
+        ),
+        LirType::Closure => "fn".to_string(),
+        _ => crate::instr::type_key(ty),
+    }
+}
+
 impl<'a> Builder<'a> {
     pub(super) fn lower_ext_call(
         &mut self,
@@ -40,15 +60,12 @@ impl<'a> Builder<'a> {
         let slf0 = full.first().copied();
         self.call_fn_ex(eid, targs, full, &seed, span, slf0)
     }
-    pub(super) fn lower_iface_call(
+    fn iface_target(
         &mut self,
-        obj: Local,
         ii: usize,
         method: &str,
-        args: &[A::CallArg],
-        targs: &[A::Type],
         span: Span,
-    ) -> Result<(Local, Simple), Diagnostic> {
+    ) -> Result<(crate::instr::IfaceMethod, Vec<usize>), Diagnostic> {
         let iface = self.module.interfaces[ii].clone();
         let mi = iface.method_index.get(method).copied().ok_or_else(|| {
             self.err(Code::E108, format!("unknown method `{method}`"), span)
@@ -62,6 +79,18 @@ impl<'a> Builder<'a> {
                 span,
             ));
         }
+        Ok((mdesc, cis))
+    }
+    pub(super) fn lower_iface_call(
+        &mut self,
+        obj: Local,
+        ii: usize,
+        method: &str,
+        args: &[A::CallArg],
+        targs: &[A::Type],
+        span: Span,
+    ) -> Result<(Local, Simple), Diagnostic> {
+        let (mdesc, cis) = self.iface_target(ii, method, span)?;
         let first_mid = self.module.classes[cis[0]].methods.get(method).cloned().map(|r| r.id);
         let (resolved, iseed) = match first_mid {
             Some(mid) => self.resolve_call_args(mid, args, span)?,
@@ -73,6 +102,32 @@ impl<'a> Builder<'a> {
                 (argv, BTreeMap::new())
             }
         };
+        self.lower_iface_dispatch(obj, method, mdesc, cis, resolved, &iseed, targs, span)
+    }
+    pub(super) fn lower_iface_call_values(
+        &mut self,
+        obj: Local,
+        ii: usize,
+        method: &str,
+        resolved: Vec<Local>,
+        targs: &[A::Type],
+        span: Span,
+    ) -> Result<(Local, Simple), Diagnostic> {
+        let (mdesc, cis) = self.iface_target(ii, method, span)?;
+        let iseed = BTreeMap::new();
+        self.lower_iface_dispatch(obj, method, mdesc, cis, resolved, &iseed, targs, span)
+    }
+    fn lower_iface_dispatch(
+        &mut self,
+        obj: Local,
+        method: &str,
+        mdesc: crate::instr::IfaceMethod,
+        cis: Vec<usize>,
+        resolved: Vec<Local>,
+        iseed: &BTreeMap<String, LirType>,
+        targs: &[A::Type],
+        span: Span,
+    ) -> Result<(Local, Simple), Diagnostic> {
         let is_tuple = matches!(mdesc.ret, LirType::Tuple(_));
         let is_range = matches!(mdesc.ret, LirType::Range);
         let shared: Local = if is_tuple || is_range {
@@ -111,7 +166,7 @@ impl<'a> Builder<'a> {
             let mut full = vec![obj];
             full.append(&mut resolved.clone());
             let slf0 = full.first().copied();
-            let (got, _) = self.call_fn_ex(mid, targs, full, &iseed, span, slf0)?;
+            let (got, _) = self.call_fn_ex(mid, targs, full, iseed, span, slf0)?;
             if is_tuple || is_range {
                 let dsts = self.expand_value(shared, span)?;
                 let srcs = self.expand_value(got, span)?;
@@ -135,6 +190,103 @@ impl<'a> Builder<'a> {
         self.set_term(crate::instr::Terminator::Throw { span, src: msg, catch: None });
         self.set_current(merge);
         Ok((shared, simple_of(&mdesc.ret)))
+    }
+    pub(super) fn check_child_receiver(&mut self, obj: Local, span: Span) -> Result<(), Diagnostic> {
+        let ty = self.func.locals.get(obj as usize).cloned().unwrap_or(LirType::Any);
+        let ok = match &ty {
+            LirType::Any => true,
+            LirType::Obj(name) => {
+                if let Some(ci) = self.module.class_index.get(name).copied() {
+                    self.module.classes[ci].methods.contains_key("addChild")
+                } else if let Some(ii) = self.module.interface_index.get(name).copied() {
+                    self.module.interfaces[ii].method_index.contains_key("addChild")
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if ok {
+            return Ok(());
+        }
+        let msg = format!("unknown method `addChild` on `{}`", child_type_name(&ty));
+        self.fail(self.err(Code::E108, msg, span))
+    }
+    fn coerce_child_value(&mut self, mid: usize, value: Local, span: Span) -> Local {
+        let fname = self.module.functions[mid].name.clone();
+        let decl = self
+            .param_tys
+            .get(&fname)
+            .and_then(|p| p.first())
+            .map(|(_, t)| t.clone());
+        match decl {
+            Some(d) => {
+                let slot = self.resolve_here(&d);
+                self.coerce_to_slot(value, &slot, span)
+            }
+            None => value,
+        }
+    }
+    pub(super) fn lower_add_child(&mut self, obj: Local, value: Local, span: Span) -> Result<(), Diagnostic> {
+        let ty = self.func.locals.get(obj as usize).cloned().unwrap_or(LirType::Any);
+        match &ty {
+            LirType::Any => {
+                let dst = self.local(LirType::Any);
+                self.emit(Instr::Call {
+                    span,
+                    dsts: vec![dst],
+                    err: None,
+                    target: CallTarget::Dyn { obj, method: "addChild".to_string() },
+                    args: vec![value],
+                });
+                Ok(())
+            }
+            LirType::Obj(name) => {
+                let name = name.clone();
+                if let Some(ci) = self.module.class_index.get(&name).copied() {
+                    let mid = self.check_method(ci, "addChild", span)?;
+                    let value = self.coerce_child_value(mid, value, span);
+                    self.call_fn_ex(mid, &[], vec![obj, value], &BTreeMap::new(), span, Some(obj))?;
+                    return Ok(());
+                }
+                if let Some(ii) = self.module.interface_index.get(&name).copied() {
+                    let iface = self.module.interfaces[ii].clone();
+                    let mi = *iface.method_index.get("addChild").ok_or_else(|| {
+                        self.err(
+                            Code::E108,
+                            format!("unknown method `addChild` on `{}`", child_type_name(&ty)),
+                            span,
+                        )
+                    })?;
+                    if iface.methods[mi].params.len() != 1 {
+                        return self.fail(self.err(
+                            Code::E108,
+                            format!(
+                                "`addChild` takes 1 argument but `{}` declares {}",
+                                iface.name,
+                                iface.methods[mi].params.len()
+                            ),
+                            span,
+                        ));
+                    }
+                    let value = match self.implementors(ii).first().copied() {
+                        Some(ci) => match self.module.classes[ci].methods.get("addChild").map(|r| r.id) {
+                            Some(mid) => self.coerce_child_value(mid, value, span),
+                            None => value,
+                        },
+                        None => value,
+                    };
+                    self.lower_iface_call_values(obj, ii, "addChild", vec![value], &[], span)?;
+                    return Ok(());
+                }
+                let msg = format!("unknown method `addChild` on `{}`", child_type_name(&ty));
+                self.fail(self.err(Code::E108, msg, span))
+            }
+            _ => {
+                let msg = format!("unknown method `addChild` on `{}`", child_type_name(&ty));
+                self.fail(self.err(Code::E108, msg, span))
+            }
+        }
     }
     pub(super) fn lower_call(
         &mut self,

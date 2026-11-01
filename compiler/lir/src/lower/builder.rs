@@ -101,6 +101,7 @@ impl<'a> Builder<'a> {
             closure_prefix: prefix,
             closure_hints: Vec::new(),
             closure_ret: BTreeMap::new(),
+            child_sink: None,
             synth_seq: 0,
             pending: Vec::new(),
             patches: Vec::new(),

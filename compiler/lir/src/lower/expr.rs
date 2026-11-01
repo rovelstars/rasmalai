@@ -591,10 +591,15 @@ impl<'a> Builder<'a> {
 
     pub(super) fn lower_expr_call(&mut self, callee: &Box<A::Spanned<A::Expr>>, type_args: &Vec<A::Type>, args: &Vec<A::CallArg>, trailing: &Option<A::Block>, span: Span) -> Result<(Local, Simple), Diagnostic> {
 
-        if trailing.is_some() {
-            return self.fail(self.err(Code::E108, "UI blocks pending", span));
+        let (res, simple) = self.lower_call(callee, type_args, args, span)?;
+        if let Some(block) = trailing {
+            self.check_child_receiver(res, span)?;
+            let saved = self.child_sink.replace(res);
+            let lowered = self.lower_block(block);
+            self.child_sink = saved;
+            lowered?;
         }
-        self.lower_call(callee, type_args, args, span)
+        Ok((res, simple))
 
     }
 
