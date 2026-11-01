@@ -1,10 +1,10 @@
 //! The UI core, first slice: roles, actions, the node arena, and the builder.
 //!
 //! Nodes live in parallel arrays addressed by an integer id, so a subtree walk
-//! is index arithmetic and a snapshot is a copy. Roles and actions are stored
-//! as wire ids because an enum-typed array in a class field currently trips the
-//! prelude interface check. The enums stay in the signatures, which is what an
-//! author sees.
+//! is index arithmetic and a snapshot is a copy. A handle carries its tree, so
+//! `addChild` needs no ambient state and the block syntax has one method to
+//! call. Roles and actions are stored as wire ids because an enum-typed array
+//! costs more than an integer lane; the enums stay in the signatures.
 
 pub enum Role {
     root,
@@ -80,16 +80,26 @@ pub enum Key {
     down,
 }
 
-/** A node handle. The id is the only state a caller holds. */
+/**
+ * A node handle. It carries the tree so `addChild` needs no ambient state, and
+ * it is two words, so passing it around is free.
+ */
 pub struct Node {
+    let tree: Tree
     let id: Int
+
+    /** Attach a child at the end of this node's children. */
+    pub fn addChild(c: Node) {
+        this.tree.attach(this.id, c.id)
+    }
+
+    /** Give this node a rectangle in screen space. */
+    pub fn bounds(x: Int, y: Int, w: Int, h: Int) {
+        this.tree.setBounds(this.id, x, y, w, h)
+    }
 }
 
-/**
- * The arena. `open` pushes a parent, `close` pops it, and every node created in
- * between becomes a child in creation order. The UI block syntax compiles to
- * exactly this pairing, so the sugar adds no new runtime concept.
- */
+/** The arena. Ids are creation order until keyed reconciliation lands. */
 pub class Tree {
     let role: Array<Int> = []
     let name: Array<String> = []
@@ -105,10 +115,9 @@ pub class Tree {
     let y: Array<Int> = []
     let w: Array<Int> = []
     let h: Array<Int> = []
-    let stack: Array<Int> = []
     let focus: Int = -1
 
-    fn add(r: Role, n: String): Int {
+    pub fn newNode(r: Role, n: String): Node {
         let id = this.role.length()
         this.role.push(roleId(r))
         this.name.push(n)
@@ -123,59 +132,35 @@ pub class Tree {
         this.y.push(0)
         this.w.push(0)
         this.h.push(0)
-        if this.stack.length() > 0 {
-            let p = this.stack[this.stack.length() - 1]
-            this.parent[id] = p
-            if this.first[p] == -1 {
-                this.first[p] = id
-            } else {
-                this.next[this.last[p]] = id
-            }
-            this.last[p] = id
-            this.count[p] += 1
+        return Node(tree: this, id: id)
+    }
+
+    fn interactive(r: Role, n: String, mask: Int): Node {
+        let node = this.newNode(r, n)
+        this.actions[node.id] = mask
+        return node
+    }
+
+    /** Link a child under a parent, keeping child order. */
+    pub fn attach(p: Int, c: Int) {
+        if p == c || p < 0 || c < 0 || c >= this.role.length() {
+            return
         }
-        return id
-    }
-
-    pub fn open(r: Role, n: String): Node {
-        let id = this.add(r, n)
-        this.stack.push(id)
-        return Node(id: id)
-    }
-
-    pub fn close() {
-        if this.stack.length() > 1 {
-            this.stack.pop()
+        this.parent[c] = p
+        if this.first[p] == -1 {
+            this.first[p] = c
+        } else {
+            this.next[this.last[p]] = c
         }
-    }
-
-    pub fn depth(): Int {
-        return this.stack.length()
-    }
-
-    pub fn enter(n: Node) {
-        this.stack.push(n.id)
-    }
-
-    pub fn text(s: String): Node {
-        return Node(id: this.add(Role.text, s))
-    }
-
-    pub fn heading(s: String): Node {
-        return Node(id: this.add(Role.heading, s))
-    }
-
-    fn interactive(r: Role, s: String, mask: Int): Node {
-        let id = this.add(r, s)
-        this.actions[id] = mask
-        return Node(id: id)
+        this.last[p] = c
+        this.count[p] += 1
     }
 
     pub fn button(s: String, onTap: fn(): Void): Node {
-        let n = this.interactive(Role.button, s, actionId(Action.tap))
-        this.handler[n.id] = this.handlers.length()
+        let node = this.interactive(Role.button, s, actionId(Action.tap))
+        this.handler[node.id] = this.handlers.length()
         this.handlers.push(onTap)
-        return n
+        return node
     }
 
     pub fn buttonInert(s: String): Node {
@@ -191,17 +176,17 @@ pub class Tree {
     }
 
     pub fn toggleWith(s: String, onToggle: fn(): Void): Node {
-        let n = this.interactive(Role.toggle, s, actionId(Action.toggle))
-        this.handler[n.id] = this.handlers.length()
+        let node = this.interactive(Role.toggle, s, actionId(Action.toggle))
+        this.handler[node.id] = this.handlers.length()
         this.handlers.push(onToggle)
-        return n
+        return node
     }
 
-    pub fn bounds(n: Node, x: Int, y: Int, w: Int, h: Int) {
-        this.x[n.id] = x
-        this.y[n.id] = y
-        this.w[n.id] = w
-        this.h[n.id] = h
+    fn setBounds(id: Int, x: Int, y: Int, w: Int, h: Int) {
+        this.x[id] = x
+        this.y[id] = y
+        this.w[id] = w
+        this.h[id] = h
     }
 
     pub fn len(): Int {
@@ -222,6 +207,26 @@ pub class Tree {
         return this.focus
     }
 
+    pub fn can(n: Node, a: Action): Bool {
+        return (this.actions[n.id] & actionId(a)) != 0
+    }
+
+    fn fire(n: Node): Bool {
+        let h = this.handler[n.id]
+        if h < 0 {
+            return false
+        }
+        this.handlers[h]()
+        return true
+    }
+
+    pub fn tap(n: Node): Bool {
+        if (this.actions[n.id] & actionId(Action.tap)) == 0 {
+            return false
+        }
+        return this.fire(n)
+    }
+
     /** Activation keys reach the same handler a tap does. */
     pub fn keyDown(n: Node, k: Key): Bool {
         if k == Key.enter || k == Key.space {
@@ -238,37 +243,8 @@ pub class Tree {
         return false
     }
 
-    pub fn can(n: Node, a: Action): Bool {
-        return (this.actions[n.id] & actionId(a)) != 0
-    }
-
-    /** Run the handler attached to a node's tap action. */
-    pub fn tap(n: Node): Bool {
-        if (this.actions[n.id] & actionId(Action.tap)) == 0 {
-            return false
-        }
-        let h = this.handler[n.id]
-        if h < 0 {
-            return false
-        }
-        this.handlers[h]()
-        return true
-    }
-
-    /** Run the handler attached to a node, whatever action asked for it. */
-    fn fire(n: Node): Bool {
-        let h = this.handler[n.id]
-        if h < 0 {
-            return false
-        }
-        this.handlers[h]()
-        return true
-    }
-
-    /** Move focus to the next interactive node in tree order, wrapping once. */
     pub fn focusNext(): Int {
-        let start = this.focus
-        let seen = this.nextInteractive(start + 1)
+        let seen = this.nextInteractive(this.focus + 1)
         if seen == -1 {
             seen = this.nextInteractive(0)
         }
@@ -278,10 +254,8 @@ pub class Tree {
         return seen
     }
 
-    /** Move focus to the previous interactive node, wrapping once. */
     pub fn focusPrev(): Int {
-        let start = this.focus
-        let seen = this.prevInteractive(start - 1)
+        let seen = this.prevInteractive(this.focus - 1)
         if seen == -1 {
             seen = this.prevInteractive(this.role.length() - 1)
         }
@@ -313,7 +287,6 @@ pub class Tree {
         return -1
     }
 
-    /** Deepest node containing the point. Later siblings win. */
     pub fn hitTest(px: Int, py: Int): Int {
         return this.hitFrom(0, px, py)
     }
@@ -337,7 +310,6 @@ pub class Tree {
         return -1
     }
 
-    /** First node with this role and name, depth first. */
     pub fn find(r: Role, n: String): Int {
         return this.findFrom(0, roleId(r), n)
     }
@@ -357,7 +329,6 @@ pub class Tree {
         return -1
     }
 
-    /** The first interactive node without a name, or -1. */
     pub fn unnamedInteractive(): Int {
         return this.unnamedFrom(0)
     }
@@ -380,7 +351,6 @@ pub class Tree {
     fn inset(r: Int): Int {
         if r == 1 { return 16 }
         if r == 3 { return 12 }
-        if r == 0 { return 0 }
         return 0
     }
 
@@ -420,43 +390,46 @@ pub class Tree {
             return avail - this.inset(r) * 2
         }
         if r == 2 {
-            let n = this.childCount(Node(id: id))
+            let n = this.count[id]
             if n == 0 { return 0 }
             return (avail - this.gapFor(r) * (n - 1)) / n
         }
-        let w = this.intrinsicWidth(id)
-        if w < avail { return w }
+        let iw = this.intrinsicWidth(id)
+        if iw < avail { return iw }
         return avail
     }
 
     fn measure(id: Int, avail: Int) {
         let r = this.role[id]
-        let w = this.contentWidth(id, avail)
+        let width = this.contentWidth(id, avail)
         if r == 0 || r == 1 || r == 3 || r == 2 {
             let total = 0
-            let count = 0
+            let children = 0
             let c = this.first[id]
             while c != -1 {
-                this.measure(c, this.contentWidth(c, w))
+                this.measure(c, this.contentWidth(c, width))
                 if r == 2 {
-                    let hh = this.h[c]
-                    if hh > total { total = hh }
+                    if this.h[c] > total {
+                        total = this.h[c]
+                    }
                 } else {
                     total += this.h[c]
-                    count += 1
+                    children += 1
                 }
                 c = this.next[c]
             }
-            this.w[id] = w
+            this.w[id] = width
             if r == 2 {
                 this.h[id] = total
             } else {
                 let gaps = 0
-                if count > 1 { gaps = this.gapFor(r) * (count - 1) }
+                if children > 1 {
+                    gaps = this.gapFor(r) * (children - 1)
+                }
                 this.h[id] = total + gaps + this.inset(r) * 2
             }
         } else {
-            this.w[id] = w
+            this.w[id] = width
             this.h[id] = this.leafHeight(r)
         }
     }
@@ -468,32 +441,29 @@ pub class Tree {
         if r == 0 || r == 1 || r == 3 || r == 2 {
             let inset = this.inset(r)
             let gap = this.gapFor(r)
-            let mut_x = x + inset
-            let mut_y = y + inset
-            let cw = this.contentWidth(id, this.w[id])
+            let cx = x + inset
+            let cy = y + inset
             let c = this.first[id]
             while c != -1 {
                 if r == 2 {
-                    this.place(c, mut_x, mut_y)
-                    mut_x += this.w[c] + gap
+                    this.place(c, cx, cy)
+                    cx += this.w[c] + gap
                 } else {
-                    this.place(c, mut_x, mut_y)
-                    mut_y += this.h[c] + gap
+                    this.place(c, cx, cy)
+                    cy += this.h[c] + gap
                 }
                 c = this.next[c]
             }
         }
     }
 
-    /** Lay out a subtree top-down. Widths flow from the parent, heights from
-     * the children, so one measure pass and one place pass settle the tree. */
+    /** One measure pass and one place pass. Widths flow down, heights up. */
     pub fn layout(root: Node, width: Int) {
         this.measure(root.id, width)
         this.place(root.id, 0, 0)
     }
 
-    /** One line per node, in tree order, ready for a snapshot test or the
-     * inspector. The core does no I/O, so the caller prints it. */
+    /** One line per node in tree order, for snapshots and the inspector. */
     pub fn snapshot(): String {
         let out: Array<String> = []
         let id = 0
@@ -532,44 +502,38 @@ pub class Tree {
     }
 }
 
-/** The builder a view writes into. */
+/** A view context. Factories create nodes; the view attaches them. */
 pub class Build {
     let tree: Tree
-    let root: Node
 
     init(tree: Tree) {
         this.tree = tree
-        this.root = tree.open(Role.root, "")
     }
 
-    pub fn root(): Node {
-        return this.root
+    pub fn handle(): Tree {
+        return this.tree
     }
 
     pub fn column(): Node {
-        return this.tree.open(Role.column, "")
+        return this.tree.newNode(Role.column, "")
     }
 
     pub fn row(): Node {
-        return this.tree.open(Role.row, "")
+        return this.tree.newNode(Role.row, "")
     }
 
     pub fn section(title: String): Node {
-        let n = this.tree.open(Role.section, "")
-        this.tree.heading(title)
-        return n
-    }
-
-    pub fn close() {
-        this.tree.close()
+        let node = this.tree.newNode(Role.section, "")
+        node.addChild(this.tree.newNode(Role.heading, title))
+        return node
     }
 
     pub fn text(s: String): Node {
-        return this.tree.text(s)
+        return this.tree.newNode(Role.text, s)
     }
 
     pub fn heading(s: String): Node {
-        return this.tree.heading(s)
+        return this.tree.newNode(Role.heading, s)
     }
 
     pub fn button(s: String, onTap: fn(): Void): Node {
@@ -587,18 +551,21 @@ pub class Build {
     pub fn toggle(s: String): Node {
         return this.tree.toggle(s)
     }
+
+    pub fn toggleWith(s: String, onToggle: fn(): Void): Node {
+        return this.tree.toggleWith(s, onToggle)
+    }
 }
 
-test fn buildsNestedTreeInCreationOrder() {
+test fn childrenKeepCreationOrder() {
     let t = new Tree()
     let b = new Build(t)
     let col = b.column()
-    b.text("one")
-    b.text("two")
-    b.close()
-    assert(t.len() == 4, "root plus column plus two texts")
+    col.addChild(b.text("one"))
+    col.addChild(b.text("two"))
+    assert(t.len() == 3, "three nodes")
     assert(t.childCount(col) == 2, "two children")
-    assert(t.find(Role.text, "two") == 3, "depth-first order")
+    assert(t.find(Role.text, "two") == 2, "depth-first order")
 }
 
 test fn hitTestPrefersTheDeepestNode() {
@@ -606,8 +573,9 @@ test fn hitTestPrefersTheDeepestNode() {
     let b = new Build(t)
     let col = b.column()
     let btn = b.buttonInert("Save")
-    t.bounds(col, 0, 0, 200, 100)
-    t.bounds(btn, 10, 10, 80, 24)
+    col.addChild(btn)
+    col.bounds(0, 0, 200, 100)
+    btn.bounds(10, 10, 80, 24)
     assert(t.hitTest(20, 20) == btn.id, "inside the button")
     assert(t.hitTest(150, 90) == col.id, "inside the column only")
     assert(t.hitTest(300, 300) == -1, "outside")
@@ -620,19 +588,6 @@ test fn tapRunsTheAttachedHandler() {
     let btn = b.button("Add", () => { hits.push(1) })
     assert(t.tap(btn), "tapped")
     assert(hits.length() == 1, "handler ran once")
-}
-
-test fn layoutStacksColumnChildren() {
-    let t = new Tree()
-    let b = new Build(t)
-    b.column()
-    let first = b.buttonInert("First")
-    let second = b.buttonInert("Second")
-    b.close()
-    t.layout(b.root(), 400)
-    assert(t.x[first.id] == 16, "children start at the column inset")
-    assert(t.y[second.id] > t.y[first.id] + t.h[first.id], "second sits below the first")
-    assert(t.hitTest(t.x[second.id] + 2, t.y[second.id] + 2) == second.id, "hit lands on the second button")
 }
 
 test fn enterAndTapReachTheSameHandler() {
@@ -649,27 +604,31 @@ test fn enterAndTapReachTheSameHandler() {
 test fn focusMovesThroughInteractiveNodesOnly() {
     let t = new Tree()
     let b = new Build(t)
-    b.text("label")
+    let root = b.column()
+    root.addChild(b.text("label"))
     let first = b.buttonInert("One")
-    b.text("more")
+    root.addChild(first)
+    root.addChild(b.text("more"))
     let second = b.toggle("Two")
-    b.close()
+    root.addChild(second)
     assert(t.focusNext() == first.id, "skips text")
     assert(t.focusNext() == second.id, "next interactive")
     assert(t.focusNext() == first.id, "wraps")
     assert(t.focusPrev() == second.id, "backwards wraps")
 }
 
-test fn closingPastTheRootKeepsOneTree() {
+test fn layoutStacksColumnChildren() {
     let t = new Tree()
     let b = new Build(t)
-    b.column()
-    b.close()
-    b.close()
-    b.close()
-    b.text("after")
-    assert(t.len() == 3, "root, column, text")
-    assert(t.childCount(b.root()) == 2, "the late text still belongs to the root")
+    let col = b.column()
+    let first = b.buttonInert("First")
+    let second = b.buttonInert("Second")
+    col.addChild(first)
+    col.addChild(second)
+    t.layout(col, 400)
+    assert(t.x[first.id] == 16, "children start at the column inset")
+    assert(t.y[second.id] > t.y[first.id] + t.h[first.id], "second sits below the first")
+    assert(t.hitTest(t.x[second.id] + 2, t.y[second.id] + 2) == second.id, "hit lands on the second button")
 }
 
 test fn everyInteractiveNodeHasAName() {
