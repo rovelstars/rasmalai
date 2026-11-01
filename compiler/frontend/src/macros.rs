@@ -185,7 +185,6 @@ const KNOWN_ATTRS: &[&str] = &[
     "Section",
     "Allow",
     "Snapshot",
-    "Persist",
     "HotReload",
     "FastMath",
     "AllowUnsafe",
