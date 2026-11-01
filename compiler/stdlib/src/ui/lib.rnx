@@ -21,6 +21,8 @@ pub enum Role {
     textbox,
     dialog,
     checkbox,
+    list,
+    listitem,
 }
 
 fn roleId(r: Role): Int {
@@ -37,7 +39,9 @@ fn roleId(r: Role): Int {
     if r == Role.radiogroup { return 10 }
     if r == Role.textbox { return 11 }
     if r == Role.dialog { return 12 }
-    return 13
+    if r == Role.checkbox { return 13 }
+    if r == Role.list { return 14 }
+    return 15
 }
 
 fn roleName(id: Int): String {
@@ -55,6 +59,8 @@ fn roleName(id: Int): String {
     if id == 11 { return "textbox" }
     if id == 12 { return "dialog" }
     if id == 13 { return "checkbox" }
+    if id == 14 { return "list" }
+    if id == 15 { return "listitem" }
     return "unknown"
 }
 
@@ -123,6 +129,7 @@ pub class Tree {
     let w: Array<Int> = []
     let h: Array<Int> = []
     let focus: Int = -1
+    let scope: Int = -1
 
     pub fn newNode(r: Role, n: String): Node {
         let id = this.role.length()
@@ -316,6 +323,16 @@ pub class Tree {
                 return this.fire(n)
             }
         }
+        if k == Key.right || k == Key.left {
+            let p = this.parent[n.id]
+            if p != -1 {
+                let sib = this.siblingInteractive(p, n.id, k == Key.right)
+                if sib != -1 {
+                    this.focus = sib
+                    return this.fire(Node(tree: this, id: sib))
+                }
+            }
+        }
         return false
     }
 
@@ -341,10 +358,33 @@ pub class Tree {
         return seen
     }
 
+    /** Restrict focus traversal to a subtree, as a dialog does while open. */
+    pub fn focusScope(n: Node) {
+        this.scope = n.id
+    }
+
+    pub fn clearFocusScope() {
+        this.scope = -1
+    }
+
+    fn inScope(id: Int): Bool {
+        if this.scope == -1 {
+            return true
+        }
+        let cur = id
+        while cur != -1 {
+            if cur == this.scope {
+                return true
+            }
+            cur = this.parent[cur]
+        }
+        return false
+    }
+
     fn nextInteractive(start: Int): Int {
         let i = start
         while i < this.role.length() {
-            if this.actions[i] != 0 {
+            if this.actions[i] != 0 && this.inScope(i) {
                 return i
             }
             i += 1
@@ -355,10 +395,34 @@ pub class Tree {
     fn prevInteractive(start: Int): Int {
         let i = start
         while i >= 0 {
-            if this.actions[i] != 0 {
+            if this.actions[i] != 0 && this.inScope(i) {
                 return i
             }
             i -= 1
+        }
+        return -1
+    }
+
+    fn siblingInteractive(p: Int, origin: Int, forward: Bool): Int {
+        let seen = false
+        let c = this.first[p]
+        let before = -1
+        while c != -1 {
+            if c == origin {
+                seen = true
+            }
+            if this.actions[c] != 0 {
+                if forward && seen && c != origin {
+                    return c
+                }
+                if !forward && !seen {
+                    before = c
+                }
+            }
+            c = this.next[c]
+        }
+        if !forward {
+            return before
         }
         return -1
     }
@@ -650,6 +714,18 @@ pub class Build {
     pub fn textField(v: String, placeholder: String, onChange: fn(String): Void): Node {
         return this.tree.textField(v, placeholder, onChange)
     }
+
+    pub fn dialog(title: String): Node {
+        return this.tree.newNode(Role.dialog, title)
+    }
+
+    pub fn list(): Node {
+        return this.tree.newNode(Role.list, "")
+    }
+
+    pub fn item(label: String, onTap: fn(): Void): Node {
+        return this.tree.radio(label, false, onTap)
+    }
 }
 
 test fn childrenKeepCreationOrder() {
@@ -724,6 +800,38 @@ test fn layoutStacksColumnChildren() {
     assert(t.x[first.id] == 16, "children start at the column inset")
     assert(t.y[second.id] > t.y[first.id] + t.h[first.id], "second sits below the first")
     assert(t.hitTest(t.x[second.id] + 2, t.y[second.id] + 2) == second.id, "hit lands on the second button")
+}
+
+test fn focusScopeKeepsTraversalInsideADialog() {
+    let t = new Tree()
+    let b = new Build(t)
+    let root = b.column()
+    let outside = b.buttonInert("Outside")
+    root.addChild(outside)
+    let dialog = b.dialog("Reset appearance?")
+    let inner = b.buttonInert("Confirm")
+    dialog.addChild(inner)
+    root.addChild(dialog)
+    t.focusScope(dialog)
+    assert(t.focusNext() == inner.id, "only the dialog is reachable")
+    assert(t.focusNext() == inner.id, "and it wraps to itself")
+    t.clearFocusScope()
+    assert(t.focusNext() == outside.id, "scope cleared")
+}
+
+test fn arrowsMoveBetweenSiblings() {
+    let t = new Tree()
+    let b = new Build(t)
+    let root = b.row()
+    let seen: Array<Int> = []
+    let a = b.radio("System", true, () => { seen.push(1) })
+    let c = b.radio("Dark", false, () => { seen.push(2) })
+    root.addChild(a)
+    root.addChild(c)
+    t.focusOn(a)
+    assert(t.keyDown(a, Key.right), "moved right")
+    assert(t.focused() == c.id, "focus on the second radio")
+    assert(seen.length() == 1 && seen[0] == 2, "selection followed focus")
 }
 
 test fn pointerDownReachesTheSameHandlerAsEnter() {

@@ -40,9 +40,36 @@ cd compiler/stdlib/src/ui && rnx test
 cd examples/ui-demo && rnx run --backend interpreter
 ```
 
+## Input
+
+`pointerDown(x, y)` hit-tests the last layout and runs the node's action.
+`keyDown(node, key)` maps Enter and Space to the primary action, Escape to a
+dialog's dismiss action, and Left and Right to the next interactive sibling, which
+is how a radio group moves and selects. `focusNext` and `focusPrev` walk only
+interactive nodes and wrap. `focusScope(dialog)` holds traversal inside a subtree
+while it is open, and `clearFocusScope` releases it.
+
+All of them end in the same handler. A test that clicks, one that presses Enter,
+and one that calls the action directly exercise one code path.
+
+## Semantics
+
+Each node carries a role, a name, an action mask, bounds, a value string, and a
+checked flag. `snapshot()` renders one line per node in tree order, which is what
+the golden tests compare and what the inspector shows. `unnamedInteractive()`
+returns the first interactive node without a name, so the audit fails in a test
+instead of in review.
+
+## Components
+
+`Build` creates `column`, `row`, `section`, `text`, `heading`, `button`,
+`slider`, `toggle`, `checkbox`, `radio`, `textField`, `dialog`, `list`, and
+`item`. Factories create nodes; the view attaches them with `addChild`, or with a
+trailing block, which compiles to the same calls.
+
 ## Not here yet
 
-- Keyed reconciliation. Nodes are append-only for now.
+- Keyed reconciliation and virtualization. A list lays out every child for now.
 - The frame packet. Layout, layout bounds, and the semantic tree are separate
   views in memory rather than one encoded buffer.
 - A renderer. The CPU rasterizer is the next milestone.
