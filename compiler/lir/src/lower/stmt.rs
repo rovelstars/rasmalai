@@ -921,7 +921,10 @@ impl<'a> Builder<'a> {
 
     pub(super) fn lower_stmt_expr(&mut self, e: &A::Spanned<A::Expr>) -> Result<(), Diagnostic> {
 
-        self.lower_expr(&e.node, e.span)?;
+        let (v, _) = self.lower_expr(&e.node, e.span)?;
+        if let Some(sink) = self.child_sink {
+            self.lower_add_child(sink, v, e.span)?;
+        }
         Ok(())
 
     }

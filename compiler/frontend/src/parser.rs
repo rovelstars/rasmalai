@@ -4015,7 +4015,13 @@ fn path_to_expr(path: Vec<(String, Span)>) -> Expr {
 }
 
 fn is_brace_callee(e: &Expr) -> bool {
-    matches!(e, Expr::Ident(_) | Expr::Member { .. } | Expr::ImplicitMember(_))
+    matches!(
+        e,
+        Expr::Ident(_)
+            | Expr::Member { .. }
+            | Expr::ImplicitMember(_)
+            | Expr::Call { trailing: None, .. }
+    )
 }
 
 pub fn describe(k: &TokenKind) -> String {

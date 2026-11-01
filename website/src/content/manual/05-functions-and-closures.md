@@ -81,6 +81,19 @@ assert(apply(5, (n) => n * 2) == 10, "inferred HOF");
 
 Closures capture `this` strongly by default, like any other value. A closure stored on its own object requires `fn decay(this)`, the weak opt-in; see [Cycles and Handles](/manual/12-cycles-and-handles).
 
+## Trailing blocks
+
+A block after a call is a child list, not a callback. The call runs first, then each expression statement in the block is passed to `addChild` on the result, and the result is the value of the whole expression:
+
+```rnx
+Column {
+    Text("Count: 3")
+    Button("Add", onTap: () => count += 1)
+}
+```
+
+`let` is scoped to the block. `if`, `for`, and `switch` flatten, so the statements in the taken branch or the loop body become children in source order. The callee's type must provide `addChild`, or the block is an `E108` naming that type. Handlers stay named parameters, which is what keeps the block unambiguous.
+
 ## Methods
 
 Functions defined inside a `class` or `struct` take an implicit receiver and call with dot syntax. Inside the body, `this` refers to the receiver. `init(params)` runs at construction (`new Meter(20)` calls it; `.init()` is never written). `static` methods call on the type itself with no receiver.
