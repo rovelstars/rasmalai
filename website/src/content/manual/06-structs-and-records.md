@@ -9,7 +9,7 @@ icon: "Boxes"
 
 ## Structs
 
-A `struct` declares fields and the methods operating on them. Construction is a direct call with positional arguments in field order (the free memberwise initializer); there is no `new` keyword. Assignment copies by value.
+A `struct` declares fields and the methods operating on them. Construction is a direct call to the free memberwise initializer: positional arguments fill fields in order, and named arguments bind by field name, so `P(b: 1, a: 2)` sets `a` to 2. There is no `new` keyword. Assignment copies by value.
 
 ```rnx
 struct Vec3 {
