@@ -85,5 +85,6 @@ fn Main(): Int {
     let cancel = t.find(Role.button, "Cancel")
     t.tap(Node(tree: t, id: cancel))
     print("confirm after cancel:", s.confirm)
+    print("resets:", s.resets, "scheme:", s.scheme, "confirm:", s.confirm)
     return 0
 }

@@ -42,5 +42,8 @@ fn ui_demo_runs_headless() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}{stdout}");
     assert!(stdout.contains("button Reset"), "{stderr}{stdout}");
-    assert!(stdout.contains("resets: 1 scheme: system"), "{stderr}{stdout}");
+    assert!(stdout.contains("checkbox Reduce motion"), "{stderr}{stdout}");
+    assert!(stdout.contains("query: theme"), "{stderr}{stdout}");
+    assert!(stdout.contains("scheme after pointer: light"), "{stderr}{stdout}");
+    assert!(stdout.contains("confirm: false"), "{stderr}{stdout}");
 }
