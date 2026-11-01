@@ -189,7 +189,8 @@ import { importSnippet } from '$lib/docs/stdlib';
 	}
 
 	let treeKey: string | null = null;
-	let treeInflight = false;
+	let treeInflightKey: string | null = null;
+	let treeEpoch = 0;
 	interface ChunkEntry {
 		name: string;
 		size: number;
@@ -224,34 +225,63 @@ import { importSnippet } from '$lib/docs/stdlib';
 
 	async function loadTree() {
 		const key = `${pkg.name}@${activeVersion.version}`;
-		if (key === treeKey || treeInflight) return;
-		treeInflight = true;
+		if (key === treeKey || key === treeInflightKey) return;
+		const epoch = treeEpoch;
+		const reopen = openFile;
+		treeInflightKey = key;
+		treeError = null;
 		manifestEntries = null;
 		untarred = null;
 		try {
 			const res = await fetch(`/api/v0/packages/${pkg.name}@${activeVersion.version}/chunks`);
+			if (epoch !== treeEpoch) return;
 			if (!res.ok) {
 				treeError = res.status === 404 ? 'No file listing for this version yet.' : 'Could not load the file listing.';
+				openFile = null;
+				fileText = null;
+				fileSize = 0;
+				fileLoading = false;
 				return;
 			}
 			const body = (await res.json()) as { entries?: unknown };
+			if (epoch !== treeEpoch) return;
 			manifestEntries = Array.isArray(body.entries)
 				? (body.entries as ChunkEntry[]).filter((e) => e && typeof e.name === 'string')
 				: [];
 			const fallback = manifestEntries.length === 1 && manifestEntries[0].name === '' && !manifestEntries[0].dir;
+			let nextTree: Array<{ path: string; size: number }>;
 			if (fallback) {
 				const blob = await assembleChunks(manifestEntries[0].chunks);
+				if (epoch !== treeEpoch) return;
 				const raw = isGzip(blob) ? await gunzip(blob) : blob;
+				if (epoch !== treeEpoch) return;
 				untarred = untar(raw).map((f) => ({ path: f.path, size: f.size, bytes: f.bytes }));
-				tree = untarred.map((f) => ({ path: f.path, size: f.size }));
+				nextTree = untarred.map((f) => ({ path: f.path, size: f.size }));
 			} else {
-				tree = manifestEntries.filter((e) => !e.dir).map((e) => ({ path: e.name, size: e.size }));
+				nextTree = manifestEntries.filter((e) => !e.dir).map((e) => ({ path: e.name, size: e.size }));
+			}
+			tree = nextTree;
+			if (reopen && nextTree.some((f) => f.path === reopen)) {
+				void loadFile(reopen);
+			} else {
+				openFile = null;
+				fileText = null;
+				fileSize = 0;
+				fileLoading = false;
 			}
 		} catch {
-			treeError = 'Could not load the file listing.';
+			if (epoch === treeEpoch) {
+				treeError = 'Could not load the file listing.';
+				openFile = null;
+				fileText = null;
+				fileSize = 0;
+				fileLoading = false;
+			}
 		} finally {
-			treeKey = key;
-			treeInflight = false;
+			if (epoch === treeEpoch && treeInflightKey === key) {
+				treeKey = key;
+				treeInflightKey = null;
+			}
 		}
 	}
 
@@ -330,24 +360,30 @@ import { importSnippet } from '$lib/docs/stdlib';
 	}
 
 	let manifestKey: string | null = null;
-	let manifestInflight = false;
+	let manifestInflightKey: string | null = null;
+	let manifestEpoch = 0;
 	async function loadManifest() {
 		const key = `${pkg.name}@${activeVersion.version}`;
-		if (key === manifestKey || manifestInflight) return;
-		manifestInflight = true;
+		if (key === manifestKey || key === manifestInflightKey) return;
+		const epoch = manifestEpoch;
+		manifestInflightKey = key;
+		manifestDeps = null;
+		homepage = null;
 		if (pkg.dependencies.length > 0) {
 			manifestDeps = pkg.dependencies.map((d) => ({ name: d, range: '' }));
 			manifestKey = key;
-			manifestInflight = false;
+			manifestInflightKey = null;
 			return;
 		}
 		try {
 			const res = await fetch(`/api/v0/packages/${pkg.name}@${activeVersion.version}/manifest`);
+			if (epoch !== manifestEpoch) return;
 			if (!res.ok) {
 				manifestDeps = [];
 				return;
 			}
 			const body = (await res.json()) as Record<string, unknown>;
+			if (epoch !== manifestEpoch) return;
 			const deps = (body['deps'] ?? body['dependencies']) as unknown;
 			if (deps && typeof deps === 'object' && !Array.isArray(deps)) {
 				manifestDeps = Object.entries(deps as Record<string, unknown>).map(([name, range]) => ({
@@ -360,10 +396,12 @@ import { importSnippet } from '$lib/docs/stdlib';
 			const home = body['homepage'];
 			if (typeof home === 'string' && home) homepage = home;
 		} catch {
-			manifestDeps = [];
+			if (epoch === manifestEpoch) manifestDeps = [];
 		} finally {
-			manifestKey = key;
-			manifestInflight = false;
+			if (epoch === manifestEpoch && manifestInflightKey === key) {
+				manifestKey = key;
+				manifestInflightKey = null;
+			}
 		}
 	}
 
@@ -371,6 +409,34 @@ import { importSnippet } from '$lib/docs/stdlib';
 		if (tab === 'code') loadTree();
 		if (tab === 'dependents') loadDependents();
 		if (tab === 'dependencies') loadManifest();
+	});
+
+	let scopeKey: string | null = null;
+	$effect(() => {
+		const key = `${pkg.name}@${activeVersion.version}`;
+		if (key === scopeKey) return;
+		const initial = scopeKey === null;
+		scopeKey = key;
+		if (initial) return;
+		// A version switch invalidates in-flight reads; the epochs keep stale
+		// tree, manifest and file responses from landing in the new version.
+		treeEpoch++;
+		tree = null;
+		treeError = null;
+		treeKey = null;
+		treeInflightKey = null;
+		openDirs = [];
+		fileText = null;
+		fileSize = 0;
+		fileError = null;
+		fileNotice = null;
+		fileLoading = openFile !== null;
+		fileRequest++;
+		manifestEpoch++;
+		manifestDeps = null;
+		manifestKey = null;
+		manifestInflightKey = null;
+		homepage = null;
 	});
 
 	$effect(() => {
@@ -769,5 +835,10 @@ import { importSnippet } from '$lib/docs/stdlib';
 <style>
 	.pkg-api-mod {
 		overflow-wrap: anywhere;
+	}
+
+	:where(button, a, select):focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 2px;
 	}
 </style>
