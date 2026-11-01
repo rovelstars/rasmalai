@@ -1,9 +1,10 @@
 [package]
-name = "gpu-sys"
+name = "gpu-cabi"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
+name = "gpu_cabi"
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]

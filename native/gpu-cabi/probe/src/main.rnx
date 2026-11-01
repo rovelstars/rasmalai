@@ -7,7 +7,7 @@ import {
     fn gpu_triangle(w: Int, h: Int, out: Pointer<Byte>): Int,
     fn gpu_abi_version(): Int,
     fn gpu_instance_destroy(p: Pointer<Byte>),
-} from native "gpu_sys"
+} from native "gpu_cabi"
 
 fn Main(): Int {
     unsafe {

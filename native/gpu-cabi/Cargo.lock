@@ -283,6 +283,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpu-cabi"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "gpu-descriptor"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -300,14 +308,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "gpu-sys"
-version = "0.1.0"
-dependencies = [
- "pollster",
- "wgpu",
 ]
 
 [[package]]
