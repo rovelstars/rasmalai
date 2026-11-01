@@ -355,6 +355,12 @@ impl<'a> Machine<'a> {
             }
             return Ok(());
         }
+        if let Value::Closure(c) = v {
+            for p in c.captures {
+                self.drop_value(p)?;
+            }
+            return Ok(());
+        }
         let (slot, epoch) = match v {
             Value::Obj { slot, epoch } => (slot, epoch),
             _ => return Ok(()),
