@@ -163,6 +163,7 @@ pub struct RegistryConfig {
 pub struct Entries {
     pub main: String,
     pub lib: Option<String>,
+    pub cabi: Option<String>,
     pub docs: Option<String>,
     pub bins: BTreeMap<String, String>,
 }
@@ -172,6 +173,7 @@ impl Default for Entries {
         Entries {
             main: DEFAULT_ENTRY.to_string(),
             lib: None,
+            cabi: None,
             docs: None,
             bins: BTreeMap::new(),
         }
@@ -232,6 +234,10 @@ impl ProjectConfig {
 
     pub fn lib_path(&self, root: &Path) -> Option<PathBuf> {
         self.entries.lib.as_ref().map(|l| root.join(l))
+    }
+
+    pub fn cabi_path(&self, root: &Path) -> Option<PathBuf> {
+        self.entries.cabi.as_ref().map(|c| root.join(c))
     }
 
     pub fn bin_path(&self, root: &Path, name: &str) -> Option<PathBuf> {
@@ -1130,6 +1136,7 @@ fn parse_entries(val: &ConfigValue) -> Result<Entries, String> {
         None => Ok(None),
     };
     let lib = opt_entry("lib")?;
+    let cabi = opt_entry("cabi")?;
     let docs = opt_entry("docs")?;
     let mut bins = BTreeMap::new();
     match obj_get(obj, "bins") {
@@ -1146,7 +1153,7 @@ fn parse_entries(val: &ConfigValue) -> Result<Entries, String> {
         Some(_) => return Err("field `entries.bins` must be an object".to_string()),
         None => {}
     }
-    Ok(Entries { main, lib, docs, bins })
+    Ok(Entries { main, lib, cabi, docs, bins })
 }
 
 pub fn parse_manifest_for_publish(
@@ -1372,7 +1379,7 @@ pub struct ManifestIssue {
 }
 
 const PROJECT_KEYS: &[&str] = &["name", "version", "description", "engine"];
-const ENTRIES_KEYS: &[&str] = &["main", "lib", "docs", "bins"];
+const ENTRIES_KEYS: &[&str] = &["main", "lib", "cabi", "docs", "bins"];
 const REGISTRY_KEYS: &[&str] = &["url", "token_env", "ca_cert"];
 const WORKSPACE_KEYS: &[&str] = &["members"];
 const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system", "from", "link"];
@@ -1429,6 +1436,9 @@ fn manifest_to_rnx_inner(manifest: &Manifest, strip_aux: bool) -> String {
         }
         if let Some(l) = &e.lib {
             efields.push(format!("lib: {}", crate::deplock::rnx_string(l)));
+        }
+        if let Some(c) = &e.cabi {
+            efields.push(format!("cabi: {}", crate::deplock::rnx_string(c)));
         }
         if let Some(d) = &e.docs {
             efields.push(format!("docs: {}", crate::deplock::rnx_string(d)));
@@ -1894,6 +1904,7 @@ pub fn manifest_field_doc(section: &str, key: &str) -> Option<&'static str> {
         ("project", "engine") => Some("Minimum toolchain requirement, e.g. `>=0.4.0`."),
         ("entries", "main") => Some("Main entry file, defaults to `src/main.rnx`."),
         ("entries", "lib") => Some("Library entry file for `import \"pkg\"` consumers."),
+        ("entries", "cabi") => Some("C surface file: only its `export fn` declarations become C symbols in `rnx build --lib`."),
         ("entries", "docs") => Some("Guides folder collected at pack time, at most one nesting level."),
         ("entries", "bins") => Some("Named tool entry files, one shim per entry."),
         ("registry", "url") => Some("Default registry URL for unscoped packages."),
@@ -2119,6 +2130,17 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
                         }
                     }
                 }
+                if let Some(ConfigValue::String(c)) =
+                    entries_val.and_then(|e| obj_get(e, "cabi"))
+                    && !root.join(c).is_file()
+                {
+                    out.push(ManifestIssue {
+                        line: 0,
+                        error: true,
+                        code: Code::E108,
+                        message: format!("entries.cabi path `{c}` does not exist"),
+                    });
+                }
                 if let Some(ConfigValue::String(d)) =
                     entries_val.and_then(|e| obj_get(e, "docs"))
                 {
@@ -2157,7 +2179,7 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
                         });
                     }
                 }
-                for key in ["main", "lib", "docs"] {
+                for key in ["main", "lib", "cabi", "docs"] {
                     if let Some(v) = obj_get(e, key)
                         && !matches!(v, ConfigValue::String(_))
                     {
@@ -2659,6 +2681,33 @@ mod tests {
             Some(Path::new("/root/src/bin/tool.rnx").to_path_buf())
         );
         assert_eq!(c.bin_path(root, "missing"), None);
+    }
+
+    #[test]
+    fn parses_entries_cabi_and_roundtrips() {
+        let c = parse(
+            "export default {\n\
+                 project: { name: \"demo\", version: \"0.1.0\" },\n\
+                 entries: {\n\
+                     main: \"src/main.rnx\",\n\
+                     cabi: \"src/cabi.rnx\"\n\
+                 }\n\
+             }\n",
+        );
+        assert_eq!(c.entries.cabi.as_deref(), Some("src/cabi.rnx"));
+        assert_eq!(c.entries.lib, None);
+        let root = Path::new("/root");
+        assert_eq!(
+            c.cabi_path(root),
+            Some(Path::new("/root/src/cabi.rnx").to_path_buf())
+        );
+        let text = manifest_to_rnx(&Manifest {
+            project: Some(c.clone()),
+            workspace: None,
+        });
+        assert!(text.contains("cabi: \"src/cabi.rnx\""), "{text}");
+        let back = parse_config(&text).unwrap();
+        assert_eq!(back.entries.cabi.as_deref(), Some("src/cabi.rnx"));
     }
 
     #[test]

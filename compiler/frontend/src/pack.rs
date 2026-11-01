@@ -202,6 +202,9 @@ pub fn validate_for_pack(
     if let Some(lib) = project.entries.lib.as_deref() {
         entries.push(("lib entry".to_string(), lib));
     }
+    if let Some(cabi) = project.entries.cabi.as_deref() {
+        entries.push(("cabi entry".to_string(), cabi));
+    }
     for (name, target) in &project.entries.bins {
         entries.push((format!("bin entry `{name}`"), target.as_str()));
     }
@@ -271,6 +274,12 @@ fn collect_pack_names(
     }
     if let Some(lib) = project.entries.lib.as_deref() {
         let path = package_dir.join(lib);
+        if path.is_file() {
+            push_abs(&path);
+        }
+    }
+    if let Some(cabi) = project.entries.cabi.as_deref() {
+        let path = package_dir.join(cabi);
         if path.is_file() {
             push_abs(&path);
         }
@@ -823,6 +832,7 @@ mod tests {
             entries: crate::project::Entries {
                 main: "src/lib.rnx".to_string(),
                 lib: None,
+                cabi: None,
                 docs: Some("docs".to_string()),
                 bins: Default::default(),
             },

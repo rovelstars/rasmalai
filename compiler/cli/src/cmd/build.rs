@@ -38,6 +38,10 @@ fn build_key(
             owned.push(lib.as_bytes().to_vec());
             owned.push(std::fs::read(root.join(lib)).unwrap_or_default());
         }
+        if let Some(cabi) = cfg.entries.cabi.as_deref() {
+            owned.push(cabi.as_bytes().to_vec());
+            owned.push(std::fs::read(root.join(cabi)).unwrap_or_default());
+        }
         for (name, spec) in &cfg.dependencies {
             if let frontend::project::DependencySpec::Path { path, .. } = spec {
                 owned.push(name.as_bytes().to_vec());
@@ -294,9 +298,13 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
                 if let Some(root) = frontend::project::find_project_root(&anchor)
                     && let Ok(Some(cfg)) = frontend::project::ProjectConfig::load_from_dir(&root)
-                    && let Some(lib_entry) = cfg.entries.lib.as_deref()
                 {
-                    input = root.join(lib_entry).to_string_lossy().into_owned();
+                    let surface = cfg
+                        .cabi_path(&root)
+                        .or_else(|| cfg.entries.lib.as_deref().map(|l| root.join(l)));
+                    if let Some(surface) = surface {
+                        input = surface.to_string_lossy().into_owned();
+                    }
                 }
                 if let Some(prefix) = lib_prefix.as_deref()
                     && !frontend::header::is_valid_prefix(prefix)

@@ -400,6 +400,7 @@ pub fn publish_facts(text: &str) -> Result<PublishFacts, Diagnostic> {
     }
     if re_cfg.entries.main != cfg.entries.main
         || re_cfg.entries.lib != cfg.entries.lib
+        || re_cfg.entries.cabi != cfg.entries.cabi
         || re_cfg.entries.docs != cfg.entries.docs
         || re_cfg.entries.bins != cfg.entries.bins
     {

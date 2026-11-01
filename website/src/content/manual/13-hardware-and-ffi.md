@@ -123,9 +123,27 @@ unsafe {
 
 ## Shipping C-compatible libraries
 
-The reverse direction, calling Rasmalai from C, is `rnx build --lib`. It compiles `entries.lib` (a passed path is a fallback only when the manifest names no lib entry) to a static archive plus a `<basename>.h` header, instead of an executable. Normal builds never provide C symbols.
+The reverse direction, calling Rasmalai from C, is `rnx build --lib`. It compiles the manifest's C surface to a static archive plus a `<basename>.h` header, instead of an executable. Normal builds never provide C symbols.
 
-`export` is the only opt-in: every top-level `export fn` must already be C-representable, enforced at check time with `E108` in all builds. Async functions, throwing functions, unannotated or `Void` parameters, and anything outside `Int`/`Float`/`Byte`/`Bool`/`String`/`Pointer<Byte>` (params) and `Int`/`Float`/`Byte`/`Bool`/`Void` (returns) fail with a diagnostic naming the function and parameter. Each `Pointer<Byte>` parameter needs a sibling `<name>_len: Int` length. (`pub`/`public` still parse as deprecated aliases with `W204`.)
+`export` means package visibility, not a C symbol. The C surface is exactly the `export fn` declarations written in the file named by `entries.cabi`. A package whose public API is classes and structs points `cabi` at a small wrapper file and exports only C-safe functions there:
+
+```rnx
+// Project.config
+export default {
+    project: { name: "com.example.grid", version: "0.3.0" },
+    entries: {
+        main: "src/main.rnx",
+        cabi: "src/cabi.rnx",
+    },
+}
+```
+
+`rnx check` parses that file as a second root even when nothing imports it, so a broken surface fails before a C artifact is built. A declared surface with a non-representable signature fails with `E108` naming the function and the type. `export struct`, `export class`, and `export enum` in the cabi file are package API; they never become symbols. Imports are not the surface: a helper declared in another file is not exported, even when it carries `export`.
+
+Each `export fn` in the surface must be C-representable: no async, no throws, no unannotated or `Void` parameters, and nothing outside `Int`/`Float`/`Byte`/`Bool`/`String`/`Pointer<Byte>` (params) and `Int`/`Float`/`Byte`/`Bool`/`Void` (returns). Each `Pointer<Byte>` parameter needs a sibling `<name>_len: Int` length. Duplicate short names and reserved names fail with `E108` before codegen. (`pub`/`public` still parse as deprecated aliases with `W204`.)
+
+Without `entries.cabi`, `rnx build --lib` falls back to `entries.lib`, then to `entries.main` or the path passed on the command line, and validates every `export fn` reachable from that entry. The graph-wide rule is unchanged for projects that never declare a surface. Declaring a cabi file is the fail-fast path: it scopes the check to one reviewable file instead of the whole import graph.
+
 
 Each export becomes a C wrapper with a true C signature (`Int` to `int64_t`, `Float` to `double`, `Bool` to `bool`, `Void` to `void`, `String` params to `const char*` copied in for the call, `Pointer<Byte>` to `const uint8_t*` borrowed for the call only). The header carries `RNX_<PACKAGE>_H` guards, `RNX_ABI_VERSION`, `rnx_init`/`rnx_last_error` declarations, and any `/** */` doc comments from the exports. `--lib-prefix <p>` renames every export to `p_<name>`; bare names stay the default.
 
