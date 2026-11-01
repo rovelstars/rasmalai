@@ -4,6 +4,7 @@ class Appearance {
     let scheme: String = "system"
     let reduceMotion: Bool = false
     let query: String = ""
+    let confirm: Bool = false
     let resets: Int = 0
 }
 
@@ -28,9 +29,26 @@ fn screen(b: Build, s: Appearance): Node {
         b.checkbox("Reduce motion", s.reduceMotion, () => {
             s.reduceMotion = !s.reduceMotion
         })
+
+        b.dialog("Reset appearance?") {
+            b.text("This restores the default theme and text size.")
+            b.row() {
+                b.button("Cancel", () => {
+                    s.confirm = false
+                    b.handle().clearFocusScope()
+                })
+                b.button("Confirm", () => {
+                    s.scheme = "system"
+                    s.resets += 1
+                    s.confirm = false
+                    b.handle().clearFocusScope()
+                })
+            }
+        }
         b.button("Reset", () => {
-            s.scheme = "system"
-            s.resets += 1
+            s.confirm = true
+            let d = b.handle().find(Role.dialog, "Reset appearance?")
+            b.handle().focusScope(Node(tree: b.handle(), id: d))
         })
     }
 }
@@ -63,6 +81,9 @@ fn Main(): Int {
 
     let reset = t.find(Role.button, "Reset")
     t.tap(Node(tree: t, id: reset))
-    print("resets:", s.resets, "scheme:", s.scheme)
+    print("confirm open:", s.confirm, "focus:", t.focusNext())
+    let cancel = t.find(Role.button, "Cancel")
+    t.tap(Node(tree: t, id: cancel))
+    print("confirm after cancel:", s.confirm)
     return 0
 }
