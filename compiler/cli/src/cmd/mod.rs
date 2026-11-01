@@ -290,8 +290,8 @@ pub(super) fn dispatch(
             } => {
                 run_test(filter, package, opt_level, backend, exact, nocapture, jobs, memory_cap, verbose, quiet, no_color);
             }
-            cli::args::Command::Task { name } => {
-                run_task(name, prefer);
+            cli::args::Command::Task { name, package, all, explain, allow, force } => {
+                run_task(name, package, all, explain, allow, force, prefer);
             }
             cli::args::Command::Setup { editor } => {
                 run_setup(editor);

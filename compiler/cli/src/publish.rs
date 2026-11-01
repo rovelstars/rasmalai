@@ -1258,7 +1258,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
             dir.join("Project.config"),
-            "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { zlib: { native: \"z\", system: true } },\n    native: { zlib: { system: false } },\n    tasks: { check: [\"rnx check\"] },\n    bindgen: { headers: [\"a.h\"], outputs: { out: { title: \"a.rnx\" } } }\n}\n",
+            "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    dependencies: { zlib: { native: \"z\", system: true } },\n    native: { zlib: { system: false } },\n    tasks: { check: { steps: [{ shell: \"rnx check\" }] } },\n    bindgen: { headers: [\"a.h\"], outputs: { out: { title: \"a.rnx\" } } }\n}\n",
         )
         .unwrap();
         std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int {\n    return 0;\n}\n").unwrap();
@@ -1272,6 +1272,28 @@ mod tests {
         assert!(!config.content.contains("bindgen:"), "{}", config.content);
         assert!(config.content.contains("native:"), "{}", config.content);
         assert!(config.content.contains("zlib"), "{}", config.content);
+    }
+
+    #[test]
+    fn publish_keeps_exported_tasks_and_drops_private_ones() {
+        let dir = crate::scratch::dir("frame-exported-tasks");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Project.config"),
+            "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: {\n        \"pub-icons\": { file: \"tools/icons.rnx\", export: true, description: \"Icons\", runs_in: \"project\", inputs: [\"assets/*\"], outputs: [\"build/*\"] },\n        check: { steps: [{ shell: \"rnx check\" }] }\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("main.rnx"), "fn Main(): Int {\n    return 0;\n}\n").unwrap();
+        let cfg = fixture_cfg(&dir);
+        let manifest = frontend::project::Manifest { project: Some(cfg), workspace: None };
+        let files = collect_publish_files(&dir, &manifest).unwrap();
+        let config = files.iter().find(|f| f.path == "Project.config").unwrap();
+        assert!(config.content.contains("pub-icons"), "{}", config.content);
+        assert!(config.content.contains("export: true"), "{}", config.content);
+        assert!(config.content.contains("description:"), "{}", config.content);
+        assert!(config.content.contains("runs_in:"), "{}", config.content);
+        assert!(config.content.contains("inputs:"), "{}", config.content);
+        assert!(!config.content.contains("check:"), "{}", config.content);
     }
 
     fn license_project(tag: &str, manifest_extra: &str, license_file: Option<&str>) -> crate::scratch::Scratch {

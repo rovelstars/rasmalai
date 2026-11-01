@@ -26,8 +26,60 @@ pub struct NativePin {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStep {
-    Run(String),
-    Invoke(String),
+    Shell(String),
+    Invoke(TaskRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskRef {
+    Local(String),
+    Imported { package: String, task: String },
+}
+
+impl TaskRef {
+    pub fn parse(s: &str) -> Result<TaskRef, String> {
+        match s.split_once('#') {
+            None => {
+                validate_task_name(s)?;
+                Ok(TaskRef::Local(s.to_string()))
+            }
+            Some((package, task)) => {
+                if package.is_empty() || task.is_empty() || task.contains('#') {
+                    return Err(format!(
+                        "`{s}` is not a task reference (expected `<package>#<task>` or a local name)"
+                    ));
+                }
+                if package == "self" {
+                    return Err(
+                        "use the bare name for a local task; `self#` is not a package".to_string()
+                    );
+                }
+                if !is_package_name(package) {
+                    return Err(format!("`{package}` is not a package name"));
+                }
+                validate_task_name(task)?;
+                Ok(TaskRef::Imported { package: package.to_string(), task: task.to_string() })
+            }
+        }
+    }
+
+    pub fn display(&self) -> String {
+        match self {
+            TaskRef::Local(name) => name.clone(),
+            TaskRef::Imported { package, task } => format!("{package}#{task}"),
+        }
+    }
+}
+
+pub fn validate_task_name(name: &str) -> Result<(), String> {
+    let valid = !name.is_empty()
+        && name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("`{name}` is not a task name (use lowercase letters, digits, and hyphens)"))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -44,10 +96,41 @@ pub enum TaskOnFailure {
     Continue,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunsIn {
+    #[default]
+    Package,
+    Project,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TaskMeta {
+    pub export: bool,
+    pub runs_in: RunsIn,
+    pub description: Option<String>,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskDef {
-    Steps { steps: Vec<TaskStep>, matrix: Vec<String> },
-    Group { tasks: Vec<String>, strategy: TaskStrategy, on_failure: TaskOnFailure },
+    File { meta: TaskMeta, path: String },
+    Steps { meta: TaskMeta, steps: Vec<TaskStep>, matrix: Vec<String> },
+    Group { meta: TaskMeta, tasks: Vec<TaskRef>, strategy: TaskStrategy, on_failure: TaskOnFailure },
+}
+
+impl TaskDef {
+    pub fn meta(&self) -> &TaskMeta {
+        match self {
+            TaskDef::File { meta, .. }
+            | TaskDef::Steps { meta, .. }
+            | TaskDef::Group { meta, .. } => meta,
+        }
+    }
+
+    pub fn is_exported(&self) -> bool {
+        self.meta().export
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -576,113 +659,243 @@ fn parse_native_pin(name: &str, val: &ConfigValue) -> Result<NativePin, String> 
     Ok(NativePin { system, version, from })
 }
 
-fn parse_task_step(task: &str, index: usize, val: &ConfigValue) -> Result<TaskStep, String> {
-    match val {
-        ConfigValue::String(s) if !s.is_empty() => Ok(TaskStep::Run(s.clone())),
-        ConfigValue::String(_) => Err(format!("task `{task}` step {index}: command must not be empty")),
-        ConfigValue::Object(_) => {
-            for (key, _) in object_fields(val) {
-                if !["run", "task"].contains(&key.as_str()) {
-                    return Err(format!("task `{task}` step {index}: unknown field `{key}` (expected `run` or `task`)"));
-                }
-            }
-            let has_run = obj_get(val, "run").is_some();
-            let has_task = obj_get(val, "task").is_some();
-            match (has_run, has_task) {
-                (true, false) => match obj_get(val, "run") {
-                    Some(ConfigValue::String(s)) if !s.is_empty() => Ok(TaskStep::Run(s.clone())),
-                    _ => Err(format!("task `{task}` step {index}: `run` must be a non-empty string")),
-                },
-                (false, true) => match obj_get(val, "task") {
-                    Some(ConfigValue::String(s)) if !s.is_empty() => Ok(TaskStep::Invoke(s.clone())),
-                    _ => Err(format!("task `{task}` step {index}: `task` must be a non-empty task name")),
-                },
-                _ => Err(format!("task `{task}` step {index}: specify exactly one of `run` or `task`")),
-            }
+fn parse_glob_list(name: &str, field: &str, val: Option<&ConfigValue>) -> Result<Vec<String>, String> {
+    let items = match val {
+        None => return Ok(Vec::new()),
+        Some(ConfigValue::Array(items)) => items,
+        Some(_) => return Err(format!("task `{name}`: `{field}` must be an array of relative globs")),
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let glob = match item {
+            ConfigValue::String(s) if !s.is_empty() => s,
+            _ => return Err(format!("task `{name}`: `{field}` entries must be non-empty strings")),
+        };
+        if glob.starts_with('/') || glob.contains("..") || glob.contains('\\') {
+            return Err(format!(
+                "task `{name}`: `{field}` entry `{glob}` must be relative and may not contain `..`"
+            ));
         }
-        _ => Err(format!("task `{task}` step {index}: expected a command string or a `{{ run = ... }}` / `{{ task = ... }}` table")),
+        out.push(glob.clone());
+    }
+    Ok(out)
+}
+
+fn parse_task_meta(name: &str, val: &ConfigValue) -> Result<TaskMeta, String> {
+    let export = match obj_get(val, "export") {
+        Some(ConfigValue::Bool(b)) => *b,
+        Some(_) => return Err(format!("task `{name}`: `export` must be a bool")),
+        None => false,
+    };
+    let description = match obj_get(val, "description") {
+        Some(ConfigValue::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(_) => return Err(format!("task `{name}`: `description` must be a non-empty string")),
+        None => None,
+    };
+    if export && description.is_none() {
+        return Err(format!("task `{name}`: an exported task needs a `description`"));
+    }
+    let runs_in = match obj_get(val, "runs_in") {
+        Some(ConfigValue::String(s)) if s == "package" => RunsIn::Package,
+        Some(ConfigValue::String(s)) if s == "project" => RunsIn::Project,
+        Some(_) => return Err(format!("task `{name}`: `runs_in` must be `package` or `project`")),
+        None => RunsIn::Package,
+    };
+    let inputs = parse_glob_list(name, "inputs", obj_get(val, "inputs"))?;
+    let outputs = parse_glob_list(name, "outputs", obj_get(val, "outputs"))?;
+    Ok(TaskMeta { export, runs_in, description, inputs, outputs })
+}
+
+fn parse_task_ref(name: &str, raw: &ConfigValue) -> Result<TaskRef, String> {
+    match raw {
+        ConfigValue::String(s) if !s.is_empty() => {
+            TaskRef::parse(s).map_err(|e| format!("task `{name}`: {e}"))
+        }
+        _ => Err(format!("task `{name}`: task references must be non-empty strings")),
+    }
+}
+
+fn parse_task_step(name: &str, index: usize, val: &ConfigValue) -> Result<TaskStep, String> {
+    let obj = match val {
+        ConfigValue::Object(_) => val,
+        ConfigValue::String(_) => {
+            return Err(format!(
+                "task `{name}` step {index}: a command must be `{{ shell: \"...\" }}`; a bare string is a task reference only in a `tasks` list"
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "task `{name}` step {index}: expected `{{ shell: ... }}` or `{{ task: ... }}`"
+            ))
+        }
+    };
+    for (key, _) in object_fields(obj) {
+        if !["shell", "task"].contains(&key.as_str()) {
+            return Err(format!(
+                "task `{name}` step {index}: unknown field `{key}` (expected `shell` or `task`)"
+            ));
+        }
+    }
+    match (obj_get(obj, "shell"), obj_get(obj, "task")) {
+        (Some(ConfigValue::String(s)), None) if !s.is_empty() => Ok(TaskStep::Shell(s.clone())),
+        (Some(_), None) => Err(format!("task `{name}` step {index}: `shell` must be a non-empty string")),
+        (None, Some(raw)) => Ok(TaskStep::Invoke(parse_task_ref(name, raw)?)),
+        (None, None) => Err(format!("task `{name}` step {index}: specify `shell` or `task`")),
+        (Some(_), Some(_)) => Err(format!("task `{name}` step {index}: specify only one of `shell` or `task`")),
     }
 }
 
 fn parse_task_def(name: &str, val: &ConfigValue) -> Result<TaskDef, String> {
     match val {
         ConfigValue::Array(items) => {
-            let mut steps = Vec::with_capacity(items.len());
-            for (i, item) in items.iter().enumerate() {
-                steps.push(parse_task_step(name, i, item)?);
+            if items.is_empty() {
+                return Err(format!("task `{name}`: a task list must not be empty"));
             }
-            Ok(TaskDef::Steps { steps, matrix: Vec::new() })
+            let mut refs = Vec::with_capacity(items.len());
+            for item in items {
+                refs.push(parse_task_ref(name, item)?);
+            }
+            Ok(TaskDef::Group {
+                meta: TaskMeta::default(),
+                tasks: refs,
+                strategy: TaskStrategy::Serial,
+                on_failure: TaskOnFailure::Stop,
+            })
         }
         ConfigValue::Object(_) => {
+            const KEYS: &[&str] = &[
+                "file", "steps", "tasks", "matrix", "export", "runs_in", "description",
+                "inputs", "outputs", "strategy", "on_failure", "on-failure",
+            ];
+            for (key, _) in object_fields(val) {
+                if !KEYS.contains(&key.as_str()) {
+                    return Err(format!(
+                        "task `{name}.{key}` is not a task field (expected file, steps, tasks, matrix, export, runs_in, description, inputs, outputs, strategy, or on_failure)"
+                    ));
+                }
+            }
+            let meta = parse_task_meta(name, val)?;
+            let has_file = obj_get(val, "file").is_some();
             let has_steps = obj_get(val, "steps").is_some();
             let has_tasks = obj_get(val, "tasks").is_some();
-            match (has_steps, has_tasks) {
-                (true, false) => {
-                    for (key, _) in object_fields(val) {
-                        if !["steps", "matrix"].contains(&key.as_str()) {
-                            return Err(format!("task `{name}.{key}` is not a step field (expected `steps` or `matrix`)"));
-                        }
+            let bodies = has_file as u8 + has_steps as u8 + has_tasks as u8;
+            if bodies != 1 {
+                return Err(format!(
+                    "task `{name}`: specify exactly one of `file`, `steps`, or `tasks`"
+                ));
+            }
+            if has_file {
+                if obj_get(val, "matrix").is_some()
+                    || obj_get(val, "strategy").is_some()
+                    || obj_get(val, "on_failure").is_some()
+                    || obj_get(val, "on-failure").is_some()
+                {
+                    return Err(format!(
+                        "task `{name}`: a file task takes no `matrix` or group fields"
+                    ));
+                }
+                let path = match obj_get(val, "file") {
+                    Some(ConfigValue::String(s)) if !s.is_empty() => s.clone(),
+                    _ => return Err(format!("task `{name}`: `file` must be a non-empty string")),
+                };
+                if path.starts_with('/') || path.contains("..") || path.contains('\\') {
+                    return Err(format!(
+                        "task `{name}`: `file` path `{path}` must be relative to the package and may not contain `..`"
+                    ));
+                }
+                return Ok(TaskDef::File { meta, path });
+            }
+            if has_steps {
+                if obj_get(val, "strategy").is_some()
+                    || obj_get(val, "on_failure").is_some()
+                    || obj_get(val, "on-failure").is_some()
+                {
+                    return Err(format!(
+                        "task `{name}`: `steps` takes no `strategy` or `on_failure`"
+                    ));
+                }
+                let items = match obj_get(val, "steps") {
+                    Some(ConfigValue::Array(items)) if !items.is_empty() => items,
+                    Some(ConfigValue::Array(_)) => {
+                        return Err(format!("task `{name}`: `steps` must not be empty"))
                     }
-                    let items = match obj_get(val, "steps") {
-                        Some(ConfigValue::Array(items)) => items,
-                        _ => return Err(format!("task `{name}`: `steps` must be an array")),
-                    };
-                    let mut steps = Vec::with_capacity(items.len());
-                    for (i, item) in items.iter().enumerate() {
-                        steps.push(parse_task_step(name, i, item)?);
-                    }
-                    let matrix = match obj_get(val, "matrix") {
-                        Some(ConfigValue::Array(targets)) => {
-                            let mut out = Vec::with_capacity(targets.len());
-                            for t in targets {
-                                match t {
-                                    ConfigValue::String(triple) if crate::oci::valid_target(triple) => out.push(triple.clone()),
-                                    _ => return Err(format!("task `{name}`: `matrix` entries must be arch-vendor-os-env triples")),
+                    _ => return Err(format!("task `{name}`: `steps` must be an array")),
+                };
+                let mut steps = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    steps.push(parse_task_step(name, i, item)?);
+                }
+                let matrix = match obj_get(val, "matrix") {
+                    Some(ConfigValue::Array(targets)) => {
+                        let mut out = Vec::with_capacity(targets.len());
+                        for t in targets {
+                            match t {
+                                ConfigValue::String(triple) if crate::oci::valid_target(triple) => {
+                                    out.push(triple.clone())
+                                }
+                                _ => {
+                                    return Err(format!(
+                                        "task `{name}`: `matrix` entries must be arch-vendor-os-env triples"
+                                    ))
                                 }
                             }
-                            out
                         }
-                        Some(_) => return Err(format!("task `{name}`: `matrix` must be an array of target triples")),
-                        None => Vec::new(),
-                    };
-                    Ok(TaskDef::Steps { steps, matrix })
-                }
-                (false, true) => {
-                    for (key, _) in object_fields(val) {
-                        if !["tasks", "strategy", "on-failure"].contains(&key.as_str()) {
-                            return Err(format!("task `{name}.{key}` is not a metatask field (expected `tasks`, `strategy`, or `on-failure`)"));
-                        }
+                        out
                     }
-                    let items = match obj_get(val, "tasks") {
-                        Some(ConfigValue::Array(items)) if !items.is_empty() => items,
-                        Some(ConfigValue::Array(_)) => return Err(format!("task `{name}`: `tasks` must not be empty")),
-                        _ => return Err(format!("task `{name}`: `tasks` must be an array of task names")),
-                    };
-                    let mut tasks = Vec::with_capacity(items.len());
-                    for item in items {
-                        match item {
-                            ConfigValue::String(s) if !s.is_empty() => tasks.push(s.clone()),
-                            _ => return Err(format!("task `{name}`: `tasks` entries must be non-empty task names")),
-                        }
+                    Some(_) => {
+                        return Err(format!(
+                            "task `{name}`: `matrix` must be an array of target triples"
+                        ))
                     }
-                    let strategy = match obj_get(val, "strategy") {
-                        Some(ConfigValue::String(s)) if s == "serial" => TaskStrategy::Serial,
-                        Some(ConfigValue::String(s)) if s == "parallel" => TaskStrategy::Parallel,
-                        Some(_) => return Err(format!("task `{name}`: `strategy` must be `serial` or `parallel`")),
-                        None => TaskStrategy::Serial,
-                    };
-                    let on_failure = match obj_get(val, "on-failure") {
-                        Some(ConfigValue::String(s)) if s == "stop" => TaskOnFailure::Stop,
-                        Some(ConfigValue::String(s)) if s == "continue" => TaskOnFailure::Continue,
-                        Some(_) => return Err(format!("task `{name}`: `on-failure` must be `stop` or `continue`")),
-                        None => TaskOnFailure::Stop,
-                    };
-                    Ok(TaskDef::Group { tasks, strategy, on_failure })
-                }
-                _ => Err(format!("task `{name}`: specify exactly one of `steps` (or a bare step array) or `tasks`")),
+                    None => Vec::new(),
+                };
+                return Ok(TaskDef::Steps { meta, steps, matrix });
             }
+            if obj_get(val, "matrix").is_some() {
+                return Err(format!("task `{name}`: `matrix` applies to a `steps` task only"));
+            }
+            let items = match obj_get(val, "tasks") {
+                Some(ConfigValue::Array(items)) if !items.is_empty() => items,
+                Some(ConfigValue::Array(_)) => {
+                    return Err(format!("task `{name}`: `tasks` must not be empty"))
+                }
+                _ => return Err(format!("task `{name}`: `tasks` must be an array of task references")),
+            };
+            let mut refs = Vec::with_capacity(items.len());
+            for item in items {
+                refs.push(parse_task_ref(name, item)?);
+            }
+            let strategy = match obj_get(val, "strategy") {
+                Some(ConfigValue::String(s)) if s == "serial" => TaskStrategy::Serial,
+                Some(ConfigValue::String(s)) if s == "parallel" => TaskStrategy::Parallel,
+                Some(_) => {
+                    return Err(format!("task `{name}`: `strategy` must be `serial` or `parallel`"))
+                }
+                None => TaskStrategy::Serial,
+            };
+            let on_failure = match (obj_get(val, "on_failure"), obj_get(val, "on-failure")) {
+                (Some(_), Some(_)) => {
+                    return Err(format!(
+                        "task `{name}`: use `on_failure`, not both `on_failure` and `on-failure`"
+                    ))
+                }
+                (Some(ConfigValue::String(s)), None) if s == "stop" => TaskOnFailure::Stop,
+                (Some(ConfigValue::String(s)), None) if s == "continue" => TaskOnFailure::Continue,
+                (Some(_), None) => {
+                    return Err(format!("task `{name}`: `on_failure` must be `stop` or `continue`"))
+                }
+                (None, Some(ConfigValue::String(s))) if s == "stop" => TaskOnFailure::Stop,
+                (None, Some(ConfigValue::String(s))) if s == "continue" => TaskOnFailure::Continue,
+                (None, Some(_)) => {
+                    return Err(format!("task `{name}`: `on-failure` must be `stop` or `continue`"))
+                }
+                (None, None) => TaskOnFailure::Stop,
+            };
+            Ok(TaskDef::Group { meta, tasks: refs, strategy, on_failure })
         }
-        _ => Err(format!("task `{name}`: expected a step array or a `{{ steps = ... }}` / `{{ tasks = ... }}` table")),
+        _ => Err(format!(
+            "task `{name}`: expected a task list or a table with `file`, `steps`, or `tasks`"
+        )),
     }
 }
 
@@ -1372,18 +1585,22 @@ fn manifest_to_rnx_inner(manifest: &Manifest, strip_aux: bool) -> String {
             }
             out.push_str("    },\n");
         }
-        if !p.tasks.is_empty() && !strip_aux {
+        let mut tasks: Vec<(&String, &TaskDef)> = p
+            .tasks
+            .iter()
+            .filter(|(_, def)| !strip_aux || def.is_exported())
+            .collect();
+        tasks.sort_by(|a, b| a.0.cmp(b.0));
+        if !tasks.is_empty() {
             out.push_str("    tasks: {\n");
-            let mut names: Vec<&String> = p.tasks.keys().collect();
-            names.sort();
-            for (i, name) in names.iter().enumerate() {
+            for (i, (name, def)) in tasks.iter().enumerate() {
                 let key = if is_ident_key(name) {
                     (*name).clone()
                 } else {
                     crate::deplock::rnx_string(name)
                 };
-                out.push_str(&format!("        {key}: {}", task_def_to_rnx(&p.tasks[*name])));
-                if i + 1 < names.len() {
+                out.push_str(&format!("        {key}: {}", task_def_to_rnx(def)));
+                if i + 1 < tasks.len() {
                     out.push(',');
                 }
                 out.push('\n');
@@ -1415,43 +1632,64 @@ fn manifest_to_rnx_inner(manifest: &Manifest, strip_aux: bool) -> String {
     out
 }
 
+fn task_meta_fields(meta: &TaskMeta) -> Vec<String> {
+    let mut fields = Vec::new();
+    if meta.export {
+        fields.push("export: true".to_string());
+    }
+    if meta.runs_in == RunsIn::Project {
+        fields.push("runs_in: \"project\"".to_string());
+    }
+    if let Some(d) = &meta.description {
+        fields.push(format!("description: {}", crate::deplock::rnx_string(d)));
+    }
+    if !meta.inputs.is_empty() {
+        let items: Vec<String> = meta.inputs.iter().map(|g| crate::deplock::rnx_string(g)).collect();
+        fields.push(format!("inputs: [{}]", items.join(", ")));
+    }
+    if !meta.outputs.is_empty() {
+        let items: Vec<String> = meta.outputs.iter().map(|g| crate::deplock::rnx_string(g)).collect();
+        fields.push(format!("outputs: [{}]", items.join(", ")));
+    }
+    fields
+}
+
 fn task_step_to_rnx(step: &TaskStep) -> String {
     match step {
-        TaskStep::Run(cmd) => crate::deplock::rnx_string(cmd),
-        TaskStep::Invoke(name) => format!("{{ task: {} }}", crate::deplock::rnx_string(name)),
+        TaskStep::Shell(cmd) => format!("{{ shell: {} }}", crate::deplock::rnx_string(cmd)),
+        TaskStep::Invoke(task) => format!("{{ task: {} }}", crate::deplock::rnx_string(&task.display())),
     }
 }
 
 fn task_def_to_rnx(def: &TaskDef) -> String {
+    let mut fields = task_meta_fields(def.meta());
     match def {
-        TaskDef::Steps { steps, matrix } => {
-            if matrix.is_empty() && steps.iter().all(|s| matches!(s, TaskStep::Run(_))) {
-                let inner: Vec<String> = steps.iter().map(task_step_to_rnx).collect();
-                return format!("[{}]", inner.join(", "));
-            }
-            let mut s = String::from("{ ");
+        TaskDef::File { path, .. } => {
+            fields.insert(0, format!("file: {}", crate::deplock::rnx_string(path)));
+        }
+        TaskDef::Steps { steps, matrix, .. } => {
             let inner: Vec<String> = steps.iter().map(task_step_to_rnx).collect();
-            s.push_str(&format!("steps: [{}]", inner.join(", ")));
+            fields.insert(0, format!("steps: [{}]", inner.join(", ")));
             if !matrix.is_empty() {
                 let triples: Vec<String> = matrix.iter().map(|t| crate::deplock::rnx_string(t)).collect();
-                s.push_str(&format!(", matrix: [{}]", triples.join(", ")));
+                fields.push(format!("matrix: [{}]", triples.join(", ")));
             }
-            s.push_str(" }");
-            s
         }
-        TaskDef::Group { tasks, strategy, on_failure } => {
-            let names: Vec<String> = tasks.iter().map(|t| crate::deplock::rnx_string(t)).collect();
-            let mut s = format!("{{ tasks: [{}]", names.join(", "));
+        TaskDef::Group { tasks, strategy, on_failure, .. } => {
+            let refs: Vec<String> = tasks
+                .iter()
+                .map(|t| crate::deplock::rnx_string(&t.display()))
+                .collect();
+            fields.insert(0, format!("tasks: [{}]", refs.join(", ")));
             if *strategy != TaskStrategy::Serial {
-                s.push_str(", strategy: \"parallel\"");
+                fields.push("strategy: \"parallel\"".to_string());
             }
             if *on_failure != TaskOnFailure::Stop {
-                s.push_str(", \"on-failure\": \"continue\"");
+                fields.push("on_failure: \"continue\"".to_string());
             }
-            s.push_str(" }");
-            s
         }
     }
+    format!("{{ {} }}", fields.join(", "))
 }
 
 fn native_pin_to_rnx(pin: &NativePin) -> String {
@@ -2649,23 +2887,25 @@ mod tests {
     }
 
     #[test]
-    fn tasks_parse_steps_groups_and_reject_bad_shapes() {
+    fn tasks_parse_refs_bodies_and_meta() {
         let c = parse(
             "export default {\n\
                  project: { name: \"demo\", version: \"0.1.0\" },\n\
                  tasks: {\n\
-                     check: [\"rnx check\", { run: \"rnx lint\" }],\n\
-                     matrix: { steps: [{ run: \"rnx build --target x\" }], matrix: [\"x86_64-unknown-linux-gnu\"] },\n\
-                     all: { tasks: [\"check\", \"matrix\"], strategy: \"parallel\", \"on-failure\": \"continue\" }\n\
+                     check: { steps: [{ shell: \"rnx check\" }, { shell: \"rnx lint\" }] },\n\
+                     matrix: { steps: [{ shell: \"rnx build --target x\" }], matrix: [\"x86_64-unknown-linux-gnu\"] },\n\
+                     icons: { file: \"tools/icons.rnx\", export: true, description: \"Render icons\", runs_in: \"project\", inputs: [\"assets/*\"], outputs: [\"build/icons/*\"] },\n\
+                     all: { tasks: [\"check\", \"matrix\", \"@std/app#bundle\"], strategy: \"parallel\", on_failure: \"continue\" }\n\
                  }\n\
              }\n",
         );
         assert_eq!(
             c.tasks["check"],
             TaskDef::Steps {
+                meta: TaskMeta::default(),
                 steps: vec![
-                    TaskStep::Run("rnx check".to_string()),
-                    TaskStep::Run("rnx lint".to_string()),
+                    TaskStep::Shell("rnx check".to_string()),
+                    TaskStep::Shell("rnx lint".to_string()),
                 ],
                 matrix: Vec::new(),
             }
@@ -2673,14 +2913,36 @@ mod tests {
         assert_eq!(
             c.tasks["matrix"],
             TaskDef::Steps {
-                steps: vec![TaskStep::Run("rnx build --target x".to_string())],
+                meta: TaskMeta::default(),
+                steps: vec![TaskStep::Shell("rnx build --target x".to_string())],
                 matrix: vec!["x86_64-unknown-linux-gnu".to_string()],
+            }
+        );
+        assert_eq!(
+            c.tasks["icons"],
+            TaskDef::File {
+                meta: TaskMeta {
+                    export: true,
+                    runs_in: RunsIn::Project,
+                    description: Some("Render icons".to_string()),
+                    inputs: vec!["assets/*".to_string()],
+                    outputs: vec!["build/icons/*".to_string()],
+                },
+                path: "tools/icons.rnx".to_string(),
             }
         );
         assert_eq!(
             c.tasks["all"],
             TaskDef::Group {
-                tasks: vec!["check".to_string(), "matrix".to_string()],
+                meta: TaskMeta::default(),
+                tasks: vec![
+                    TaskRef::Local("check".to_string()),
+                    TaskRef::Local("matrix".to_string()),
+                    TaskRef::Imported {
+                        package: "@std/app".to_string(),
+                        task: "bundle".to_string(),
+                    },
+                ],
                 strategy: TaskStrategy::Parallel,
                 on_failure: TaskOnFailure::Continue,
             }
@@ -2688,7 +2950,7 @@ mod tests {
         let m = parse_manifest(
             "export default {\n\
                  project: { name: \"demo\", version: \"0.1.0\" },\n\
-                 tasks: { check: [\"rnx check\"], all: { tasks: [\"check\"] } }\n\
+                 tasks: { check: { steps: [{ shell: \"rnx check\" }] }, all: [\"check\"] }\n\
              }\n",
         )
         .unwrap();
@@ -2702,7 +2964,7 @@ mod tests {
                 "reserved",
             ),
             (
-                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { steps: [\"ok\"], tasks: [\"ok\"] } }\n}\n",
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { steps: [{ shell: \"ok\" }], tasks: [\"ok\"] } }\n}\n",
                 "exactly one of",
             ),
             (
@@ -2714,12 +2976,32 @@ mod tests {
                 "must not be empty",
             ),
             (
-                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { steps: [\"ok\"], matrix: [\"nope\"] } }\n}\n",
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { steps: [{ shell: \"ok\" }], matrix: [\"nope\"] } }\n}\n",
                 "must be arch-vendor-os-env triples",
             ),
             (
                 "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: [\"x\"]\n}\n",
                 "must be an object",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { steps: [\"ok\"] } }\n}\n",
+                "a command must be",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { file: \"a.rnx\", export: true } }\n}\n",
+                "needs a `description`",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { file: \"../a.rnx\" } }\n}\n",
+                "must be relative",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { tasks: [\"#x\"] } }\n}\n",
+                "not a task reference",
+            ),
+            (
+                "export default {\n    project: { name: \"demo\", version: \"0.1.0\" },\n    tasks: { bad: { tasks: [\"self#x\"] } }\n}\n",
+                "is not a package",
             ),
         ] {
             let e = parse_config(text).unwrap_err();
