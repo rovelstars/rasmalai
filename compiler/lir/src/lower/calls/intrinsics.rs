@@ -263,24 +263,86 @@ impl<'a> Builder<'a> {
                 }
             }
             let nfields = self.module.classes[ci].fields.len();
-            if args.len() == nfields && nfields > 0 {
-                self.self_local = save_self;
-                for (i, a) in args.iter().enumerate() {
-                    let slot = self.module.classes[ci].fields.get(i).map(|f| f.ty.clone()).unwrap_or(LirType::Any);
-                    match self.lower_arg_with_slot(&slot, a) {
-                        Ok((v, _)) => {
-                            let v = self.coerce_to_slot(v, &slot, a.value.span);
-                            self.emit(Instr::SetField { span,  obj, field: i, value: v })
+            if !args.is_empty() {
+                let mut mapped: Vec<Option<usize>> = vec![None; nfields];
+                let mut next_pos = 0usize;
+                for (ai, a) in args.iter().enumerate() {
+                    let fi = match &a.name {
+                        Some(n) => match self.module.classes[ci].field_index.get(n) {
+                            Some(i) => *i,
+                            None => {
+                                r = Err(self.err(
+                                    Code::E108,
+                                    format!("`{cname}` has no field `{n}`"),
+                                    a.value.span,
+                                ));
+                                break;
+                            }
+                        },
+                        None => {
+                            while next_pos < nfields && mapped[next_pos].is_some() {
+                                next_pos += 1;
+                            }
+                            let i = next_pos;
+                            next_pos += 1;
+                            i
                         }
-                        Err(e) => {
-                            r = Err(e);
+                    };
+                    if r.is_err() {
+                        break;
+                    }
+                    if fi >= nfields {
+                        r = Err(self.err(
+                            Code::E108,
+                            format!("`{cname}` takes {nfields} arguments but {} were given", args.len()),
+                            a.value.span,
+                        ));
+                        break;
+                    }
+                    if mapped[fi].is_some() {
+                        r = Err(self.err(
+                            Code::E108,
+                            format!("`{cname}` field `{}` is set twice", self.module.classes[ci].fields[fi].name),
+                            a.value.span,
+                        ));
+                        break;
+                    }
+                    mapped[fi] = Some(ai);
+                }
+                if r.is_ok() {
+                    for (fi, slot) in mapped.iter().enumerate() {
+                        if slot.is_none() {
+                            r = Err(self.err(
+                                Code::E108,
+                                format!(
+                                    "`{cname}` construction is missing field `{}`",
+                                    self.module.classes[ci].fields[fi].name
+                                ),
+                                span,
+                            ));
                             break;
                         }
                     }
                 }
-                self.self_local = Some(obj);
-            } else if !args.is_empty() {
-                r = Err(self.err(Code::E108, format!("`{cname}` takes {nfields} arguments but {} were given", args.len()), span));
+                if r.is_ok() {
+                    self.self_local = save_self;
+                    for fi in 0..nfields {
+                        let ai = mapped[fi].unwrap_or(0);
+                        let a = &args[ai];
+                        let slot = self.module.classes[ci].fields[fi].ty.clone();
+                        match self.lower_arg_with_slot(&slot, a) {
+                            Ok((v, _)) => {
+                                let v = self.coerce_to_slot(v, &slot, a.value.span);
+                                self.emit(Instr::SetField { span,  obj, field: fi, value: v })
+                            }
+                            Err(e) => {
+                                r = Err(e);
+                                break;
+                            }
+                        }
+                    }
+                    self.self_local = Some(obj);
+                }
             } else {
                 r = self.lower_field_defaults(&cname, obj);
             }
