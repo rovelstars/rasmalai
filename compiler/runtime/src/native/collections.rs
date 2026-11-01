@@ -3364,6 +3364,7 @@ pub unsafe extern "C" fn rnx_closure_new(fid: u64, ncaps: usize) -> *mut u8 {
         if out.is_null() {
             return out;
         }
+        std::ptr::write_bytes(out, 0, size);
         let id = NEXT_CLOSURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id = if id == 0 {
             NEXT_CLOSURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
