@@ -958,10 +958,7 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
                         _ => return Err(bad("pointer store needs an Int, Float, or Bool value")),
                     }
                 }
-                Instr::ClosureNew { captures, decay, .. } => {
-                    if *decay {
-                        return Err(bad("decayed closure"));
-                    }
+                Instr::ClosureNew { captures, .. } => {
                     for c in captures {
                         match f.locals.get(*c as usize) {
                             Some(LirType::I64)

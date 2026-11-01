@@ -151,6 +151,11 @@ pub(crate) fn ref_count(ptr: *mut u8) -> &'static AtomicU32 {
     unsafe { &*(ptr as *const AtomicU32) }
 }
 
+#[cfg(test)]
+pub(crate) fn live_count(ptr: *mut u8) -> u32 {
+    ref_count(ptr).load(Ordering::SeqCst)
+}
+
 pub(crate) fn retain_count(ptr: *mut u8) {
     let cell = ref_count(ptr);
     if cell.load(Ordering::SeqCst) == IMMORTAL {
@@ -367,6 +372,7 @@ pub const TAG_CLOSURE: u32 = 5;
 pub const TAG_NULL: u32 = 6;
 pub const TAG_OBJ: u32 = 7;
 pub const TAG_ARRAY: u32 = 8;
+pub const TAG_GENREF: u32 = 9;
 
 static CPU_TIER: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
 

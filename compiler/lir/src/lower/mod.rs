@@ -696,7 +696,7 @@ fn expr_can_throw(e: &A::Expr) -> bool {
 
 fn collect_drop_arrays(ty: &LirType, out: &mut Vec<LirType>) {
     if let LirType::Array(inner) = ty {
-        if matches!(**inner, LirType::Obj(_) | LirType::Str | LirType::Array(_) | LirType::Enum(_)) {
+        if matches!(**inner, LirType::Obj(_) | LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Closure) {
             out.push((**inner).clone());
         }
     }
@@ -1030,7 +1030,7 @@ impl Lower {
                 .iter()
                 .enumerate()
                 .filter(|(_, f)| {
-                    matches!(f.ty, LirType::Obj(_) | LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Any)
+                    matches!(f.ty, LirType::Obj(_) | LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Any | LirType::Closure)
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -1089,7 +1089,7 @@ impl Lower {
                         .iter()
                         .enumerate()
                         .filter(|(_, t)| {
-                            matches!(t, LirType::Obj(_) | LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Any)
+                            matches!(t, LirType::Obj(_) | LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Any | LirType::Closure)
                         })
                         .map(|(i, t)| (i, t.clone()))
                         .collect::<Vec<_>>();
@@ -1188,7 +1188,7 @@ impl Lower {
                 LirType::Obj(_) if known_class => {
                     vec![Instr::Release { span: crate::instr::UNKNOWN_SPAN, obj: 0 }]
                 }
-                LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Any | LirType::Error => {
+                LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Any | LirType::Error | LirType::Closure => {
                     vec![Instr::Release { span: crate::instr::UNKNOWN_SPAN, obj: 0 }]
                 }
                 _ => Vec::new(),

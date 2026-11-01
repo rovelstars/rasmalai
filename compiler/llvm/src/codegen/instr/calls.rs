@@ -2442,6 +2442,58 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                 if cands.is_empty() {
                     cx.builder.build_unconditional_branch(join).map_err(err)?;
                 }
+                let ncaps = {
+                    let p = byte_ptr(cx, bv, 16)?;
+                    cx.builder.build_load(i64t, p, "ncaps").map_err(err)?.into_int_value()
+                };
+                let cap_bytes = cx.builder.build_int_mul(ncaps, i64t.const_int(16, false), "capb").map_err(err)?;
+                let tag_addr = cx.builder.build_int_add(cx.builder.build_int_add(bv, cap_bytes, "cappos").map_err(err)?, i64t.const_int(8, false), "tagpos").map_err(err)?;
+                let tag = {
+                    let p = cx.builder.build_int_to_ptr(tag_addr, cx.context.ptr_type(inkwell::AddressSpace::default()), "").map_err(err)?;
+                    cx.builder.build_load(i64t, p, "captag").map_err(err)?.into_int_value()
+                };
+                let is_genref = cx.builder.build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    tag,
+                    i64t.const_int(runtime::native::TAG_GENREF as u64, false),
+                    "isgenref",
+                ).map_err(err)?;
+                let has_caps = cx.builder.build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    ncaps,
+                    i64t.const_zero(),
+                    "hascaps",
+                ).map_err(err)?;
+                let is_decay = cx.builder.build_and(is_genref, has_caps, "isdecay").map_err(err)?;
+                let val_addr = cx.builder.build_int_add(cx.builder.build_int_add(bv, cap_bytes, "cappos2").map_err(err)?, i64t.const_int(16, false), "valpos").map_err(err)?;
+                let packed = {
+                    let p = cx.builder.build_int_to_ptr(val_addr, cx.context.ptr_type(inkwell::AddressSpace::default()), "").map_err(err)?;
+                    cx.builder.build_load(i64t, p, "capval").map_err(err)?.into_int_value()
+                };
+                let gsite = cx.builder.build_call(cx.genref_get, &[packed.into()], "genref").map_err(err)?;
+                let gval = match gsite.try_as_basic_value() {
+                    ValueKind::Basic(v) => v.into_int_value(),
+                    ValueKind::Instruction(_) => {
+                        return Err(Diagnostic::new(Code::E108, "llvm subset: genref_get returned void"));
+                    }
+                };
+                let resolved = cx.builder.build_select(is_decay, gval, packed, "capres").map_err(err)?.into_int_value();
+                let dead_ref = cx.builder.build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    resolved,
+                    i64t.const_zero(),
+                    "capdead",
+                ).map_err(err)?;
+                let dead = cx.builder.build_and(is_decay, dead_ref, "isdead").map_err(err)?;
+                let dead_bb = cx.context.append_basic_block(fv, "clo_dead");
+                let live_bb = cx.context.append_basic_block(fv, "clo_live");
+                cx.builder.build_conditional_branch(dead, dead_bb, live_bb).map_err(err)?;
+                cx.builder.position_at_end(dead_bb);
+                if let Some(s) = slot {
+                    cx.builder.build_store(s, i64t.const_zero()).map_err(err)?;
+                }
+                cx.builder.build_unconditional_branch(join).map_err(err)?;
+                cx.builder.position_at_end(live_bb);
                 let mut nexts = Vec::with_capacity(cands.len().saturating_sub(1));
                 for _ in 1..cands.len() {
                     nexts.push(cx.context.append_basic_block(fv, "clo_next"));
@@ -2461,10 +2513,15 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     let take = args.len().min(*arity);
                     let mut callargs: Vec<inkwell::values::BasicMetadataValueEnum> =
                         argvals[..take].to_vec();
-                    for j in 0..(*arity).saturating_sub(take) {
-                        let at = byte_ptr(cx, bv, 32 + j * 16)?;
-                        let cv: inkwell::values::IntValue = cx.builder.build_load(i64t, at, "cap").map_err(err)?.into_int_value();
-                        callargs.push(cv.into());
+                    let missing = (*arity).saturating_sub(take);
+                    for j in 0..missing {
+                        if j + 1 == missing {
+                            callargs.push(resolved.into());
+                        } else {
+                            let at = byte_ptr(cx, bv, 32 + j * 16)?;
+                            let cv: inkwell::values::IntValue = cx.builder.build_load(i64t, at, "cap").map_err(err)?.into_int_value();
+                            callargs.push(cv.into());
+                        }
                     }
                     let site = cx.builder.build_call(*callee, &callargs, "clo_call").map_err(err)?;
                     if let Some(s) = slot {
@@ -2484,7 +2541,7 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                     let ty = local_alloca_ty(cx.context, &cx.ftypes.get(*d as usize).cloned().unwrap_or(LirType::Any));
                     let r: inkwell::values::BasicValueEnum = cx.builder.build_load(ty, slot.unwrap(), "clo_res").map_err(err)?;
                     store(cx, *d, r)?;
-                    if matches!(cx.ftypes.get(*d as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any)) {
+                    if matches!(cx.ftypes.get(*d as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Closure)) {
                         own(cx, *d);
                     }
                 }
@@ -2640,7 +2697,7 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                 for (i, d) in dsts.iter().enumerate() {
                     let ev = cx.builder.build_extract_value(sv, i as u32, "tup").map_err(err)?;
                     store(cx, *d, ev)?;
-                    if matches!(cx.ftypes.get(*d as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error)) {
+                    if matches!(cx.ftypes.get(*d as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Closure)) {
                         own(cx, *d);
                     }
                 }
@@ -2648,7 +2705,7 @@ pub(super) fn lower_calls(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
                 match site.try_as_basic_value() {
                     ValueKind::Basic(v) => {
                         store(cx, *d, v)?;
-                        if matches!(cx.ftypes.get(*d as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error)) {
+                        if matches!(cx.ftypes.get(*d as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Closure)) {
                             own(cx, *d);
                         }
                     }

@@ -23,7 +23,7 @@ pub(super) fn lower_casts(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
             }
         }
         Instr::Cast { dst, src , ..} => {
-            let dst_hold = matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Error));
+            let dst_hold = matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure) | Some(LirType::Error));
             if dst_hold && *dst != *src {
                 let keep = Some(load(cx, *src)?);
                 if cx.owned.contains(dst) && (cx.stack.contains(dst) || write_dominates(cx, *dst)) {
@@ -44,8 +44,8 @@ pub(super) fn lower_casts(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
             }
         }
         Instr::Copy { dst, src , ..} => {
-            let src_hold = matches!(cx.ftypes.get(*src as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Error));
-            let dst_hold = matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Error));
+            let src_hold = matches!(cx.ftypes.get(*src as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure) | Some(LirType::Error));
+            let dst_hold = matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure) | Some(LirType::Error));
             let dst_any = matches!(cx.ftypes.get(*dst as usize), Some(LirType::Any));
             if dst_any && *dst != *src {
                 let v = load(cx, *src)?;

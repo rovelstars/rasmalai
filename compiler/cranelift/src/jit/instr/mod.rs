@@ -610,6 +610,10 @@ impl<M: Module> FnLower<'_, M> {
                 let fr = self.module.declare_func_in_func(self.release_str, &mut b.func);
                 Ok(b.ins().func_addr(types::I64, fr))
             }
+            LirType::Closure => {
+                let fr = self.module.declare_func_in_func(self.closure_release, &mut b.func);
+                Ok(b.ins().func_addr(types::I64, fr))
+            }
             LirType::Array(_) => {
                 let key = type_key(elem);
                 match self.lir.array_dtors.get(&key) {
@@ -665,6 +669,11 @@ impl<M: Module> FnLower<'_, M> {
                 },
                 LirType::Str => {
                     self.release_str_val(b, v);
+                    Ok(())
+                }
+                LirType::Closure => {
+                    let callee = self.module.declare_func_in_func(self.closure_release, &mut b.func);
+                    b.ins().call(callee, &[v]);
                     Ok(())
                 }
                 LirType::Array(nested) => self.release_array_val(b, v, &nested),

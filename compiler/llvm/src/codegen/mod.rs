@@ -2334,6 +2334,7 @@ fn array_elem_dtor<'a>(cx: &FnCx<'a>, lir: &Module, elem: &LirType) -> Result<in
             None => Ok(ptr_t.const_null()),
         },
         LirType::Str => Ok(cx.release_str.as_global_value().as_pointer_value()),
+        LirType::Closure => Ok(cx.closure_release.as_global_value().as_pointer_value()),
         LirType::Enum(ei) => enum_dtor_ptr(cx, lir, *ei),
         LirType::Any => Ok(cx.any_release.as_global_value().as_pointer_value()),
         LirType::Array(_) => {

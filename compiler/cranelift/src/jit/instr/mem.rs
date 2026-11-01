@@ -170,7 +170,7 @@ impl<M: Module> FnLower<'_, M> {
                 let ptr = self.val(b, *scrut);
                 let v = b.ins().load(types::I64, MemFlagsData::trusted(), ptr, (24 + index * SLOT_SIZE) as i32);
                 self.set(b, *dst, v);
-                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     if self.erased_obj(*dst) {
                         self.any_retain_val(b, v);
                     } else {
@@ -210,7 +210,7 @@ impl<M: Module> FnLower<'_, M> {
                 let (ptr, off) = self.indexed_field(b, *obj, *field)?;
                 let v = b.ins().load(types::I64, MemFlagsData::trusted(), ptr, off as i32);
                 self.set(b, *dst, v);
-                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     if self.erased_obj(*dst) {
                         self.any_retain_val(b, v);
                     } else {
@@ -234,7 +234,7 @@ impl<M: Module> FnLower<'_, M> {
                 self.trap_if_null(b, *span, "field-set on null", recv)?;
                 let (ptr, off) = self.indexed_field(b, *obj, *field)?;
                 let v = self.val(b, *value);
-                if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     if self.erased_obj(*value) {
                         self.any_retain_val(b, v);
                     } else {
@@ -258,6 +258,9 @@ impl<M: Module> FnLower<'_, M> {
                         LirType::Array(inner) => self.release_array_val(b, old, &inner)?,
                         _ => {}
                     }
+                } else if matches!(fty, LirType::Closure) {
+                    let callee = self.module.declare_func_in_func(self.closure_release, &mut b.func);
+                    b.ins().call(callee, &[old]);
                 } else if matches!(fty, LirType::Obj(_)) {
                     let size = self.field_obj_size(*obj, *field)?;
                     let dtor = self.field_dtor_addr(b, *obj, *field)?;
@@ -289,7 +292,7 @@ impl<M: Module> FnLower<'_, M> {
                 let (ptr, off) = self.field_addr(b, *obj, field)?;
                 let v = b.ins().load(types::I64, MemFlagsData::trusted(), ptr, off as i32);
                 self.set(b, *dst, v);
-                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     if self.erased_obj(*dst) {
                         self.any_retain_val(b, v);
                     } else {
@@ -313,7 +316,7 @@ impl<M: Module> FnLower<'_, M> {
                 self.trap_if_null(b, *span, "field-set on null", recv)?;
                 let (ptr, off) = self.field_addr(b, *obj, field)?;
                 let v = self.val(b, *value);
-                if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     if self.erased_obj(*value) {
                         self.any_retain_val(b, v);
                     } else {
@@ -354,6 +357,9 @@ impl<M: Module> FnLower<'_, M> {
                     };
                     let callee = self.module.declare_func_in_func(self.release, &mut b.func);
                     b.ins().call(callee, &[old, n, dtor]);
+                } else if matches!(fty, LirType::Closure) {
+                    let callee = self.module.declare_func_in_func(self.closure_release, &mut b.func);
+                    b.ins().call(callee, &[old]);
                 } else if matches!(fty, LirType::Obj(_)) {
                     let (n, dtor) = match &fty {
                         LirType::Obj(name) => {
@@ -400,7 +406,7 @@ impl<M: Module> FnLower<'_, M> {
                 let inst = b.ins().call(callee, &[packed]);
                 let v = b.inst_results(inst)[0];
                 self.set(b, *dst, v);
-                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     let rcallee = self.module.declare_func_in_func(self.retain, &mut b.func);
                     b.ins().call(rcallee, &[v]);
                     self.own(*dst);
@@ -429,35 +435,44 @@ impl<M: Module> FnLower<'_, M> {
     }
 
     pub(super) fn lower_closure_new(&mut self, b: &mut FunctionBuilder<'_>, ins: &Instr) -> Result<(), String> {
-        let Instr::ClosureNew { dst, func, captures, decay, .. } = ins else {
+        let Instr::ClosureNew { dst, func, captures, decay: _, decay_this, .. } = ins else {
             return Err("unreachable".to_string());
         };
-                if *decay {
-                    return Err("decayed closure".to_string());
-                }
                 let fid = b.ins().iconst(types::I64, runtime::native::rnx_closure_tag(*func as u64) as i64);
                 let nc = b.ins().iconst(types::I64, captures.len() as i64);
                 let new_callee = self.module.declare_func_in_func(self.closure_new, &mut b.func);
                 let inst = b.ins().call(new_callee, &[fid, nc]);
                 let bx = b.inst_results(inst)[0];
                 for (i, c) in captures.iter().enumerate() {
-                    let v = self.val(b, *c);
-                    let cty = self.ftypes.get(*c as usize).cloned();
-                    let tag = match cty.as_ref() {
-                        Some(LirType::Str) => runtime::native::TAG_STR as i64,
-                        Some(LirType::Closure) => runtime::native::TAG_CLOSURE as i64,
-                        Some(LirType::I64) | Some(LirType::Bool) | Some(LirType::Null) => {
-                            runtime::native::TAG_INT as i64
-                        }
-                        Some(LirType::Obj(_)) => runtime::native::TAG_OBJ as i64,
-                        Some(LirType::Array(inner)) if array_capturable(inner) => {
-                            runtime::native::TAG_ARRAY as i64
-                        }
-                        _ => return Err("closure captures unsupported value".to_string()),
+                    let raw = self.val(b, *c);
+                    let decayed_this = *decay_this && i + 1 == captures.len();
+                    let v = if decayed_this {
+                        let callee = self.module.declare_func_in_func(self.genref_create, &mut b.func);
+                        let inst = b.ins().call(callee, &[raw]);
+                        b.inst_results(inst)[0]
+                    } else {
+                        raw
                     };
-                    if tag != runtime::native::TAG_INT as i64 {
+                    let cty = self.ftypes.get(*c as usize).cloned();
+                    let tag = if decayed_this {
+                        runtime::native::TAG_GENREF as i64
+                    } else {
+                        match cty.as_ref() {
+                            Some(LirType::Str) => runtime::native::TAG_STR as i64,
+                            Some(LirType::Closure) => runtime::native::TAG_CLOSURE as i64,
+                            Some(LirType::I64) | Some(LirType::Bool) | Some(LirType::Null) => {
+                                runtime::native::TAG_INT as i64
+                            }
+                            Some(LirType::Obj(_)) => runtime::native::TAG_OBJ as i64,
+                            Some(LirType::Array(inner)) if array_capturable(inner) => {
+                                runtime::native::TAG_ARRAY as i64
+                            }
+                            _ => return Err("closure captures unsupported value".to_string()),
+                        }
+                    };
+                    if tag != runtime::native::TAG_INT as i64 && tag != runtime::native::TAG_GENREF as i64 {
                         let rcallee = self.module.declare_func_in_func(self.retain, &mut b.func);
-                        b.ins().call(rcallee, &[v]);
+                        b.ins().call(rcallee, &[raw]);
                     }
                     let zero = b.ins().iconst(types::I64, 0);
                     let (size_v, dtor_v, esize_v, edtor_v) =
@@ -532,7 +547,7 @@ impl<M: Module> FnLower<'_, M> {
         let Instr::ArrayPush { arr, value, elem_size , ..} = ins else {
             return Err("unreachable".to_string());
         };
-                if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     let v = self.val(b, *value);
                     if self.erased_obj(*value) {
                         self.any_retain_val(b, v);
@@ -598,7 +613,7 @@ impl<M: Module> FnLower<'_, M> {
                 let inst = b.ins().call(callee, &[a, i, e]);
                 let v = b.inst_results(inst)[0];
                 self.set(b, *dst, v);
-                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     if self.erased_obj(*dst) {
                         self.any_retain_val(b, v);
                     } else {
@@ -622,7 +637,7 @@ impl<M: Module> FnLower<'_, M> {
                     let v = self.val(b, *value);
                     self.any_retain_val(b, v);
                 }
-                if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(self.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     let v = self.val(b, *value);
                     if self.erased_obj(*value) {
                         self.any_retain_val(b, v);
@@ -745,6 +760,9 @@ impl<M: Module> FnLower<'_, M> {
                         }
                         _ => {}
                     }
+                } else if matches!(fty, LirType::Closure) {
+                    let callee = self.module.declare_func_in_func(self.closure_release, &mut b.func);
+                    b.ins().call(callee, &[v]);
                 } else {
                     let size = self.field_obj_size(*obj, *field)?;
                     let dtor = self.field_dtor_addr(b, *obj, *field)?;

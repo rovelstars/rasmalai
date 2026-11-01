@@ -79,7 +79,7 @@ assert(nums.map((n) => n * 2)[2] == 6, "inferred map");
 assert(apply(5, (n) => n * 2) == 10, "inferred HOF");
 ```
 
-A closure stored on its own object requires `fn decay(this)`; see [Cycles and Handles](/manual/12-cycles-and-handles).
+Closures capture `this` strongly by default, like any other value. A closure stored on its own object requires `fn decay(this)`, the weak opt-in; see [Cycles and Handles](/manual/12-cycles-and-handles).
 
 ## Methods
 

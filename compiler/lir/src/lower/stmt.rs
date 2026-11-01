@@ -823,7 +823,7 @@ impl<'a> Builder<'a> {
                     let needs_drop = matches!(
                         self.func.locals.get(arr as usize),
                         Some(LirType::Array(inner))
-                            if matches!(**inner, LirType::Obj(_) | LirType::Str | LirType::Array(_))
+                            if matches!(**inner, LirType::Obj(_) | LirType::Str | LirType::Array(_) | LirType::Closure)
                     );
                     let old = if needs_drop {
                         let inner = match self.func.locals.get(arr as usize) {
