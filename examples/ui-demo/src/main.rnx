@@ -8,29 +8,31 @@ class Appearance {
 }
 
 fn screen(b: Build, s: Appearance): Node {
-    let col = b.column()
-    col.addChild(b.textField(s.query, "Search settings", (v: String) => { s.query = v }))
-    col.addChild(b.heading("Appearance"))
-    col.addChild(b.text("Choose how runixOS looks and moves."))
+    return b.column() {
+        b.textField(s.query, "Search settings", (v: String) => { s.query = v })
+        b.heading("Appearance")
+        b.text("Choose how runixOS looks and moves.")
 
-    let theme = b.section("Theme")
-    let row = b.row()
-    row.addChild(b.button("System", () => { s.scheme = "system" }))
-    row.addChild(b.button("Light", () => { s.scheme = "light" }))
-    row.addChild(b.button("Dark", () => { s.scheme = "dark" }))
-    theme.addChild(row)
-    col.addChild(theme)
+        b.section("Theme") {
+            b.row() {
+                b.button("System", () => { s.scheme = "system" })
+                b.button("Light", () => { s.scheme = "light" })
+                b.button("Dark", () => { s.scheme = "dark" })
+            }
+        }
 
-    let size = b.section("Text size")
-    size.addChild(b.slider("Text size"))
-    col.addChild(size)
+        b.section("Text size") {
+            b.slider("Text size")
+        }
 
-    col.addChild(b.checkbox("Reduce motion", s.reduceMotion, () => { s.reduceMotion = !s.reduceMotion }))
-    col.addChild(b.button("Reset", () => {
-        s.scheme = "system"
-        s.resets += 1
-    }))
-    return col
+        b.checkbox("Reduce motion", s.reduceMotion, () => {
+            s.reduceMotion = !s.reduceMotion
+        })
+        b.button("Reset", () => {
+            s.scheme = "system"
+            s.resets += 1
+        })
+    }
 }
 
 fn Main(): Int {
@@ -52,19 +54,15 @@ fn Main(): Int {
     let search = t.find(Role.textbox, "Search settings")
     t.setText(Node(tree: t, id: search), "theme")
     print("query:", s.query)
-    let reset = t.find(Role.button, "Reset")
+
     let l = t.find(Role.button, "Light")
-    let d = t.find(Role.button, "Dark")
     let lx = t.x[l] + 2
     let ly = t.y[l] + 2
     print("pointer light:", t.pointerDown(lx, ly))
     print("scheme after pointer:", s.scheme)
-    t.tap(Node(tree: t, id: l))
-    print("scheme after Light:", s.scheme)
-    t.tap(Node(tree: t, id: d))
-    print("scheme after Dark:", s.scheme)
+
+    let reset = t.find(Role.button, "Reset")
     t.tap(Node(tree: t, id: reset))
     print("resets:", s.resets, "scheme:", s.scheme)
-    print("hit at 20,60:", t.hitTest(20, 60))
     return 0
 }

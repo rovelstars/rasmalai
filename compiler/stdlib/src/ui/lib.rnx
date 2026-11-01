@@ -20,6 +20,7 @@ pub enum Role {
     radiogroup,
     textbox,
     dialog,
+    checkbox,
 }
 
 fn roleId(r: Role): Int {
@@ -35,7 +36,8 @@ fn roleId(r: Role): Int {
     if r == Role.radio { return 9 }
     if r == Role.radiogroup { return 10 }
     if r == Role.textbox { return 11 }
-    return 12
+    if r == Role.dialog { return 12 }
+    return 13
 }
 
 fn roleName(id: Int): String {
@@ -52,6 +54,7 @@ fn roleName(id: Int): String {
     if id == 10 { return "radiogroup" }
     if id == 11 { return "textbox" }
     if id == 12 { return "dialog" }
+    if id == 13 { return "checkbox" }
     return "unknown"
 }
 
@@ -201,7 +204,7 @@ pub class Tree {
     }
 
     pub fn checkbox(s: String, on: Bool, onToggle: fn(): Void): Node {
-        let node = this.interactive(Role.radio, s, actionId(Action.toggle))
+        let node = this.interactive(Role.checkbox, s, actionId(Action.toggle))
         this.checked[node.id] = on
         this.handler[node.id] = this.handlers.length()
         this.handlers.push(onToggle)
