@@ -144,15 +144,30 @@ fn canonical_or(dir: PathBuf) -> PathBuf {
     std::fs::canonicalize(&dir).unwrap_or(dir)
 }
 
-fn cached_registry_dir(project: &TaskProject, name: &str) -> Option<PathBuf> {
-    let lock = frontend::deplock::ProjectDepLock::load(&project.scope_root).ok().flatten()?;
-    let pinned = lock.packages.iter().find(|p| p.name == name)?;
-    let base = frontend::fetch::registry_base_for(
+fn resolve_registry_dep(
+    project: &TaskProject,
+    name: &str,
+    range: &str,
+) -> Result<(PathBuf, ProjectConfig, String), Diagnostic> {
+    let lock = frontend::deplock::ProjectDepLock::load(&project.scope_root)
+        .ok()
+        .flatten();
+    let pinned = lock.as_ref().and_then(|l| {
+        l.packages
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.version.clone())
+    });
+    let have = frontend::fetch::scan_cache_have();
+    frontend::fetch::resolve_registry_package(
         name,
+        range,
         project.config.registry.as_ref(),
         &project.config.registries,
-    );
-    frontend::fetch::find_cached_package_dir(&base, name, &pinned.version)
+        pinned,
+        &have,
+        Some(&project.scope_root),
+    )
 }
 
 impl TaskRegistry {
@@ -248,18 +263,9 @@ impl TaskRegistry {
                         }
                     }
                 }
-                frontend::project::DependencySpec::Semver { .. } => {
-                    let Some(dir) = cached_registry_dir(project, dep_name) else {
-                        unresolved.insert(
-                            dep_name.clone(),
-                            format!(
-                                "registry dependency `{dep_name}` is not fetched; run `rnx lock` and `rnx download` first"
-                            ),
-                        );
-                        continue;
-                    };
-                    match ProjectConfig::load_from_dir(&dir) {
-                        Ok(Some(cfg)) => {
+                frontend::project::DependencySpec::Semver { version, .. } => {
+                    match resolve_registry_dep(project, dep_name, version) {
+                        Ok((dir, cfg, _resolved)) => {
                             if &cfg.name != dep_name {
                                 unresolved.insert(
                                     dep_name.clone(),
@@ -287,15 +293,6 @@ impl TaskRegistry {
                                 text,
                                 trusted: false,
                             });
-                        }
-                        Ok(None) => {
-                            unresolved.insert(
-                                dep_name.clone(),
-                                format!(
-                                    "registry dependency `{dep_name}` is missing its {}; run `rnx download`",
-                                    frontend::project::MANIFEST_FILE
-                                ),
-                            );
                         }
                         Err(e) => {
                             unresolved.insert(dep_name.clone(), e.message.clone());
@@ -357,6 +354,9 @@ impl TaskRegistry {
 }
 
 pub fn list_all_tasks(reg: &TaskRegistry) -> Vec<(String, String)> {
+    for (name, reason) in &reg.unresolved {
+        eprintln!("warning: package `{name}` is unavailable: {reason}");
+    }
     let mut out: Vec<(String, String)> = Vec::new();
     for (pkg, entry) in &reg.packages {
         for (task, def) in &entry.config.tasks {
@@ -918,6 +918,41 @@ fn gather_consent(
     write_consent(reg, &new_records)
 }
 
+pub fn tree_fingerprint(root: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut stack = vec![root.to_path_buf()];
+    let mut entries: Vec<(PathBuf, u64, Option<std::time::SystemTime>)> = Vec::new();
+    while let Some(dir) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name == ".rnx" || name == ".rnx-cache" || name == "target" || name == ".git" {
+                    continue;
+                }
+                stack.push(path);
+            } else if meta.is_file() {
+                entries.push((path, meta.len(), meta.modified().ok()));
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, len, modified) in entries {
+        path.hash(&mut hasher);
+        len.hash(&mut hasher);
+        modified.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn split_segments(text: &str) -> Vec<&str> {
     text.split('/').filter(|s| !s.is_empty() && *s != ".").collect()
 }
@@ -1194,7 +1229,12 @@ fn file_command(ctx: &ExecCtx<'_>, node: &GraphNode, path: &Path) -> Result<std:
         task_error(format!("task `{}`: cannot locate the rnx binary: {e}", node_label(ctx.reg, node)))
     })?;
     let mut command = std::process::Command::new(exe);
-    command.arg("run").arg(path);
+    command.arg("run");
+    command.arg("--context").arg(&ctx.reg.scope_root);
+    if ctx.reg.scope_root.join("Project.deplock").is_file() {
+        command.arg("--locked");
+    }
+    command.arg(path);
     command.current_dir(&node.cwd);
     apply_task_env(&mut command, ctx.reg, node, &frontend::native::host_triple(), ctx.prefer_env);
     Ok(command)
@@ -1684,7 +1724,13 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(args, vec!["run".to_string(), path.to_string_lossy().into_owned()]);
+        assert_eq!(args.first().map(String::as_str), Some("run"));
+        assert_eq!(args.get(1).map(String::as_str), Some("--context"));
+        assert_eq!(
+            args.get(2).map(String::as_str),
+            Some(registry.scope_root.to_string_lossy().as_ref())
+        );
+        assert_eq!(args.last().map(String::as_str), Some(path.to_string_lossy().as_ref()));
         let env: BTreeMap<String, String> = command
             .get_envs()
             .filter_map(|(k, v)| {
@@ -2075,6 +2121,19 @@ mod tests {
         assert!(text.contains("local: steps"), "{text}");
         assert!(text.contains("dep#shown: steps"), "{text}");
         assert!(!text.contains("dep#hidden"), "{text}");
+    }
+
+    #[test]
+    fn tree_fingerprint_changes_when_a_file_changes() {
+        let dir = crate::scratch::dir("task-fingerprint");
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        let first = tree_fingerprint(&dir);
+        std::fs::write(dir.join("a.txt"), "three").unwrap();
+        let second = tree_fingerprint(&dir);
+        assert_ne!(first, second);
+        std::fs::write(dir.join("b.txt"), "new").unwrap();
+        let third = tree_fingerprint(&dir);
+        assert_ne!(second, third);
     }
 
     #[test]

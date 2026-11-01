@@ -2,7 +2,7 @@ use super::*;
 use cli::RunOutcome;
 use runtime::value::Value;
 
-pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: Option<String>, locked: bool, opt_level: String, backend: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, expand_macros: bool, verbose: bool, rest: Vec<String>, prefer: frontend::native::NativePrefer) {
+pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: Option<String>, context: Option<std::path::PathBuf>, locked: bool, opt_level: String, backend: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, expand_macros: bool, verbose: bool, rest: Vec<String>, prefer: frontend::native::NativePrefer) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let backend = match backend.as_str() {
@@ -21,11 +21,20 @@ pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: 
                     Err(_) => Value::Str(a.clone()),
                 })
                 .collect();
-            let target = cli::resolve_scope_target(path.as_deref(), package.as_deref())
+            let mut target = cli::resolve_scope_target(path.as_deref(), package.as_deref())
                 .unwrap_or_else(|e| {
                     eprintln!("{e}");
                     std::process::exit(1);
                 });
+            if let Some(dir) = context.as_deref() {
+                match resolve_context_root(dir) {
+                    Some(root) => target.scope_root = Some(root),
+                    None => {
+                        eprintln!("error: --context {} has no Project.config", dir.display());
+                        std::process::exit(1);
+                    }
+                }
+            }
             if locked {
                 let locked_ok = match &target.scope_root {
                     Some(root) => cli::enforce_locked_at_with(root, prefer),
