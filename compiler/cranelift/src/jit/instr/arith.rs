@@ -20,7 +20,7 @@ impl<M: Module> FnLower<'_, M> {
         let Instr::Cast { dst, src , ..} = ins else {
             return Err("unreachable".to_string());
         };
-                let dst_hold = matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)));
+                let dst_hold = matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure));
                 if dst_hold && *dst != *src {
                     let keep = self.alias_keep(b, *src);
                     if self.owned.contains(dst) && (self.stack.contains(dst) || self.write_dominates(*dst)) {
@@ -46,8 +46,8 @@ impl<M: Module> FnLower<'_, M> {
         let Instr::Copy { dst, src , ..} = ins else {
             return Err("unreachable".to_string());
         };
-                let src_hold = matches!(self.ftypes.get(*src as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Error));
-                let dst_hold = matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Error));
+                let src_hold = matches!(self.ftypes.get(*src as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure) | Some(LirType::Error));
+                let dst_hold = matches!(self.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure) | Some(LirType::Error));
                 let dst_any = matches!(self.ftypes.get(*dst as usize), Some(LirType::Any));
                 if dst_any && *dst != *src {
                     let v = self.val(b, *src);

@@ -37,8 +37,8 @@ impl<'a> Builder<'a> {
             }
         }
         let mut decay_this = false;
-        if decay && body_uses_this(body) {
-            if let Some(slf) = self.self_local {
+        if body_uses_this(body) {
+            if let Some(slf) = self.self_local.or(self.this_alias) {
                 let ty = self.func.locals[slf as usize].clone();
                 caps.push(Capture {
                     name: None,
@@ -47,7 +47,7 @@ impl<'a> Builder<'a> {
                     is_this: true,
                     ret: None,
                 });
-                decay_this = true;
+                decay_this = decay;
             }
         }
         let mut argv = Vec::with_capacity(caps.len());

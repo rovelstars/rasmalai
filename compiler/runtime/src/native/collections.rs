@@ -1613,6 +1613,39 @@ mod tests {
     }
 
     #[test]
+    fn closure_capture_releases_a_captured_closure() {
+        unsafe {
+            let inner = rnx_closure_new(9, 0);
+            assert!(!inner.is_null());
+            rnx_retain(inner);
+            assert_eq!(super::super::common::live_count(inner), 2);
+            let outer = rnx_closure_new(10, 1);
+            rnx_closure_set(outer, 0, TAG_CLOSURE as u64, inner as u64, 0, 0, 0, 0);
+            rnx_closure_release(outer);
+            assert_eq!(super::super::common::live_count(inner), 1);
+            rnx_closure_release(inner);
+        }
+    }
+
+    #[test]
+    fn closure_genref_capture_is_not_released() {
+        unsafe {
+            let p = rnx_alloc(24, 8);
+            assert!(!p.is_null());
+            (p as *mut u32).write(1);
+            ((p as *mut u8).add(4) as *mut u32).write(0);
+            let packed = rnx_genref_create(p);
+            assert_ne!(packed, 0);
+            let b = rnx_closure_new(7, 1);
+            rnx_closure_set(b, 0, TAG_GENREF as u64, packed, 0, 0, 0, 0);
+            rnx_closure_release(b);
+            assert_eq!(rnx_genref_get(packed), p);
+            rnx_genref_invalidate(p);
+            rnx_release(p, 24, None);
+        }
+    }
+
+    #[test]
     fn closure_descs_parallel_churn_unique_ids() {
         const THREADS: usize = 16;
         const ITERS: usize = 1000;
@@ -3221,7 +3254,13 @@ pub(crate) fn closure_args(box_ptr: *const u8) -> Option<(u64, Vec<u64>)> {
         }
         let mut caps = Vec::with_capacity(ncaps);
         for i in 0..ncaps {
-            caps.push((box_ptr.add(32).add(i.wrapping_mul(16)) as *const u64).read_unaligned());
+            let base = box_ptr.add(CLOSURE_CAPTURE_BASE).add(i.wrapping_mul(16));
+            let tag = (base as *const u64).read_unaligned() as u32;
+            let mut val = (base.add(8) as *const u64).read_unaligned();
+            if tag == TAG_GENREF {
+                val = rnx_genref_get(val) as u64;
+            }
+            caps.push(val);
         }
         Some((fid, caps))
     }
@@ -3278,6 +3317,9 @@ pub(crate) fn closure_call(code: usize, caps: &[u64]) -> u64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rnx_closure_invoke0(box_ptr: *mut u8) -> u64 {
+    if closure_decay_dead(box_ptr) {
+        return 0;
+    }
     match closure_args(box_ptr) {
         Some((fid, caps)) => match closure_code(fid) {
             Some(code) => closure_call(code, &caps),
@@ -3293,6 +3335,9 @@ pub unsafe extern "C" fn rnx_closure_invoke0(box_ptr: *mut u8) -> u64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rnx_closure_invoke1(box_ptr: *mut u8, arg: u64) -> u64 {
+    if closure_decay_dead(box_ptr) {
+        return 0;
+    }
     match closure_args(box_ptr) {
         Some((fid, caps)) => match closure_code(fid) {
             Some(code) => {
@@ -3355,6 +3400,26 @@ pub(crate) fn closure_box_size(ncaps: usize) -> usize {
     32usize.wrapping_add(ncaps.wrapping_mul(16))
 }
 
+pub(crate) fn closure_decay_dead(b: *const u8) -> bool {
+    if b.is_null() {
+        return false;
+    }
+    unsafe {
+        let ncaps = (b.add(16) as *const u64).read_unaligned() as usize;
+        if ncaps == 0 {
+            return false;
+        }
+        let base = b
+            .add(CLOSURE_CAPTURE_BASE)
+            .add((ncaps - 1).wrapping_mul(16));
+        if (base as *const u64).read_unaligned() as u32 != TAG_GENREF {
+            return false;
+        }
+        let packed = (base.add(8) as *const u64).read_unaligned();
+        rnx_genref_get(packed).is_null()
+    }
+}
+
 pub(crate) const CLOSURE_CAPTURE_BASE: usize = 24;
 
 #[derive(Clone, Copy)]
@@ -3386,6 +3451,8 @@ fn release_capture(tag: u32, val: *mut u8, d: &CaptureDesc) {
             rnx_release(val, d.size, capture_desc_fn(d.dtor));
         } else if tag == TAG_ARRAY {
             rnx_release_array(val, d.elem_size, capture_desc_fn(d.elem_dtor));
+        } else if tag == TAG_CLOSURE {
+            rnx_closure_release(val);
         }
     }
 }
@@ -3407,6 +3474,9 @@ pub unsafe extern "C" fn rnx_closure_set(
     unsafe {
         let base = b.add(CLOSURE_CAPTURE_BASE).add(idx.wrapping_mul(16));
         let old_tag = (base as *const u64).read_unaligned() as u32;
+        if old_tag == TAG_CLOSURE {
+            rnx_closure_release((base.add(8) as *const u64).read_unaligned() as *mut u8);
+        }
         if old_tag == TAG_OBJ || old_tag == TAG_ARRAY {
             let old_val = (base.add(8) as *const u64).read_unaligned() as *mut u8;
             let key = (closure_box_id(b), idx);

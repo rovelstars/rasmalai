@@ -1369,6 +1369,48 @@ impl<M: Module> FnLower<'_, M> {
                             }
                             return Ok(());
                         }
+                        let ncaps = b.ins().load(types::I64, MemFlagsData::trusted(), bptr, 16);
+                        let cap_bytes = b.ins().imul_imm_u(ncaps, 16);
+                        let tag_off = b.ins().iadd_imm_u(cap_bytes, 8);
+                        let tag_addr = b.ins().iadd(bptr, tag_off);
+                        let tag = b.ins().load(types::I64, MemFlagsData::trusted(), tag_addr, 0);
+                        let genref_tag = b.ins().iconst(types::I64, runtime::native::TAG_GENREF as i64);
+                        let is_genref = b.ins().icmp(
+                            cranelift_codegen::ir::condcodes::IntCC::Equal,
+                            tag,
+                            genref_tag,
+                        );
+                        let has_caps = b.ins().icmp_imm_u(
+                            cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                            ncaps,
+                            0,
+                        );
+                        let is_decay = b.ins().band(is_genref, has_caps);
+                        let val_off = b.ins().iadd_imm_u(cap_bytes, 16);
+                        let val_addr = b.ins().iadd(bptr, val_off);
+                        let packed = b.ins().load(types::I64, MemFlagsData::trusted(), val_addr, 0);
+                        let gcallee = self.module.declare_func_in_func(self.genref_get, &mut b.func);
+                        let gin = b.ins().call(gcallee, &[packed]);
+                        let gval = b.inst_results(gin)[0];
+                        let resolved = b.ins().select(is_decay, gval, packed);
+                        let dead_ref = b.ins().icmp_imm_u(
+                            cranelift_codegen::ir::condcodes::IntCC::Equal,
+                            resolved,
+                            0,
+                        );
+                        let dead = b.ins().band(is_decay, dead_ref);
+                        let dead_bb = b.create_block();
+                        let live_bb = b.create_block();
+                        seal_all.push(dead_bb);
+                        seal_all.push(live_bb);
+                        b.ins().brif(dead, dead_bb, &[], live_bb, &[]);
+                        b.switch_to_block(dead_bb);
+                        if let Some(slot) = slot {
+                            let z = b.ins().iconst(types::I64, 0);
+                            b.ins().stack_store(types::I64, z, slot, 0);
+                        }
+                        b.ins().jump(join, &[]);
+                        b.switch_to_block(live_bb);
                         let mut nexts = Vec::with_capacity(cands.len().saturating_sub(1));
                         for _ in 1..cands.len() {
                             let nb = b.create_block();
@@ -1396,9 +1438,14 @@ impl<M: Module> FnLower<'_, M> {
                             let take = args.len().min(arity);
                             let mut callargs: Vec<cranelift_codegen::ir::Value> =
                                 argvals[..take].to_vec();
-                            for j in 0..arity.saturating_sub(take) {
-                                let off = (32 + j * 16) as i32;
-                                callargs.push(b.ins().load(types::I64, MemFlagsData::trusted(), bptr, off));
+                            let missing = arity.saturating_sub(take);
+                            for j in 0..missing {
+                                if j + 1 == missing {
+                                    callargs.push(resolved);
+                                } else {
+                                    let off = (32 + j * 16) as i32;
+                                    callargs.push(b.ins().load(types::I64, MemFlagsData::trusted(), bptr, off));
+                                }
                             }
                             let inst = b.ins().call(callee, &callargs);
                             if let Some(slot) = slot {
@@ -1508,7 +1555,7 @@ impl<M: Module> FnLower<'_, M> {
                 };
                 for (i, d) in dsts.iter().enumerate() {
                     let r = b.inst_results(inst)[i];
-                    if matches!(self.ftypes.get(*d as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error)) {
+                    if matches!(self.ftypes.get(*d as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Closure)) {
                         self.own(*d);
                     }
                     self.set(b, *d, r);

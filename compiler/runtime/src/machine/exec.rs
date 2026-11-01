@@ -1244,8 +1244,17 @@ impl<'a> Machine<'a> {
                         _ => {}
                     }
                 }
-                for cap in &c.captures {
-                    argv.push(cap.clone());
+                for (i, cap) in c.captures.iter().enumerate() {
+                    if c.decay_this && i + 1 == c.captures.len() {
+                        match cap {
+                            Value::GenRef { slot: Some(s), epoch } => {
+                                argv.push(Value::Obj { slot: *s, epoch: *epoch });
+                            }
+                            other => argv.push(other.clone()),
+                        }
+                    } else {
+                        argv.push(cap.clone());
+                    }
                 }
                 self.run_fn(c.func, argv)
                     .map(|vs| vs.into_iter().next().unwrap_or(Value::Null))

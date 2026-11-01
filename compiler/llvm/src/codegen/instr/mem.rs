@@ -187,7 +187,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             let at = byte_ptr(cx, base, 24 + index * SLOT_SIZE)?;
             let v = cx.builder.build_load(cx.context.i64_type(), at, "").map_err(err)?.into_int_value();
             store(cx, *dst, v.into())?;
-            if matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+            if matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                 retain_val(cx, lir, *dst, v)?;
                 own(cx, *dst);
             }
@@ -213,7 +213,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             let at = byte_ptr(cx, base, field_offset(*field))?;
             let v = cx.builder.build_load(cx.context.i64_type(), at, "").map_err(err)?.into_int_value();
             store(cx, *dst, v.into())?;
-            if matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+            if matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                 retain_val(cx, lir, *dst, v)?;
                 own(cx, *dst);
             }
@@ -238,7 +238,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             trap_if_null(cx, *span, "field-set on null", base)?;
             let at = byte_ptr(cx, base, field_offset(*field))?;
             let v = load(cx, *value)?;
-            if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+            if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                 retain_val(cx, lir, *value, v)?;
             }
             if matches!(cx.ftypes.get(*value as usize), Some(LirType::Any)) {
@@ -274,6 +274,9 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                     _ => return Err(Diagnostic::new(Code::E108, "llvm subset: unreachable")),
                 };
                 cx.builder.build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "").map_err(err)?;
+            } else if matches!(fty, LirType::Closure) {
+                let ptr = as_ptr(cx, old)?;
+                cx.builder.build_call(cx.closure_release, &[ptr.into()], "").map_err(err)?;
             } else if matches!(fty, LirType::Obj(_)) {
                 let ptr = as_ptr(cx, old)?;
                 let (n, dtor) = match &fty {
@@ -307,7 +310,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             let at = byte_ptr(cx, base, off)?;
             let v = cx.builder.build_load(cx.context.i64_type(), at, "").map_err(err)?.into_int_value();
             store(cx, *dst, v.into())?;
-            if matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+            if matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                 retain_val(cx, lir, *dst, v)?;
                 own(cx, *dst);
             }
@@ -328,7 +331,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             trap_if_null(cx, *span, "field-set on null", base)?;
             let at = byte_ptr(cx, base, off)?;
             let v = load(cx, *value)?;
-            if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+            if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                 retain_val(cx, lir, *value, v)?;
             }
             if matches!(cx.ftypes.get(*value as usize), Some(LirType::Any)) {
@@ -364,6 +367,9 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                     _ => return Err(Diagnostic::new(Code::E108, "llvm subset: unreachable")),
                 };
                 cx.builder.build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "").map_err(err)?;
+            } else if matches!(fty, LirType::Closure) {
+                let ptr = as_ptr(cx, old)?;
+                cx.builder.build_call(cx.closure_release, &[ptr.into()], "").map_err(err)?;
             } else if matches!(fty, LirType::Obj(_)) {
                 let ptr = as_ptr(cx, old)?;
                 let (n, dtor) = match &fty {
@@ -421,10 +427,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             let ptr = as_ptr(cx, raw)?;
             cx.builder.build_call(cx.retain, &[ptr.into()], "").map_err(err)?;
         }
-        Instr::ClosureNew { dst, func, captures, decay, .. } => {
-            if *decay {
-                return Err(Diagnostic::new(Code::E108, "llvm subset: decayed closure"));
-            }
+        Instr::ClosureNew { dst, func, captures, decay: _, decay_this, .. } => {
             let i64t = cx.context.i64_type();
             let fid = i64t.const_int(runtime::native::rnx_closure_tag(*func as u64), false);
             let nc = i64t.const_int(captures.len() as u64, false);
@@ -437,22 +440,38 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             };
             for (i, c) in captures.iter().enumerate() {
                 let raw = load(cx, *c)?;
+                let decayed_this = *decay_this && i + 1 == captures.len();
+                let v = if decayed_this {
+                    let site = cx.builder.build_call(cx.genref_create, &[raw.into()], "").map_err(err)?;
+                    match site.try_as_basic_value() {
+                        ValueKind::Basic(v) => v.into_int_value(),
+                        ValueKind::Instruction(_) => {
+                            return Err(Diagnostic::new(Code::E108, "llvm subset: genref_create returned void"));
+                        }
+                    }
+                } else {
+                    raw
+                };
                 let cty = cx.ftypes.get(*c as usize).cloned();
-                let tag = match cty.as_ref() {
-                    Some(LirType::Str) => runtime::native::TAG_STR as u64,
-                    Some(LirType::Closure) => runtime::native::TAG_CLOSURE as u64,
-                    Some(LirType::I64) | Some(LirType::I8) | Some(LirType::Bool) | Some(LirType::Null) => {
-                        runtime::native::TAG_INT as u64
-                    }
-                    Some(LirType::Obj(_)) => runtime::native::TAG_OBJ as u64,
-                    Some(LirType::Array(inner)) if llvm_array_capturable(inner) => {
-                        runtime::native::TAG_ARRAY as u64
-                    }
-                    _ => {
-                        return Err(Diagnostic::new(Code::E108, "llvm subset: closure captures unsupported value"));
+                let tag = if decayed_this {
+                    runtime::native::TAG_GENREF as u64
+                } else {
+                    match cty.as_ref() {
+                        Some(LirType::Str) => runtime::native::TAG_STR as u64,
+                        Some(LirType::Closure) => runtime::native::TAG_CLOSURE as u64,
+                        Some(LirType::I64) | Some(LirType::I8) | Some(LirType::Bool) | Some(LirType::Null) => {
+                            runtime::native::TAG_INT as u64
+                        }
+                        Some(LirType::Obj(_)) => runtime::native::TAG_OBJ as u64,
+                        Some(LirType::Array(inner)) if llvm_array_capturable(inner) => {
+                            runtime::native::TAG_ARRAY as u64
+                        }
+                        _ => {
+                            return Err(Diagnostic::new(Code::E108, "llvm subset: closure captures unsupported value"));
+                        }
                     }
                 };
-                if tag != runtime::native::TAG_INT as u64 {
+                if tag != runtime::native::TAG_INT as u64 && tag != runtime::native::TAG_GENREF as u64 {
                     retain_val(cx, lir, *c, raw)?;
                 }
                 let zero = i64t.const_int(0, false);
@@ -498,7 +517,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                         bx.into(),
                         ii.into(),
                         tt.into(),
-                        raw.into(),
+                        v.into(),
                         size_v.into(),
                         dtor_v.into(),
                         esize_v.into(),
@@ -538,7 +557,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             }
         }
         Instr::ArrayPush { arr, value, elem_size , ..} => {
-            if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+            if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                 let raw = load(cx, *value)?;
                 retain_val(cx, lir, *value, raw)?;
             }
@@ -569,7 +588,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                 match site.try_as_basic_value() {
                     ValueKind::Basic(v) => {
                         store(cx, *dst, v)?;
-                        if matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                        if matches!(cx.ftypes.get(*dst as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                             let got = v.into_int_value();
                             retain_val(cx, lir, *dst, got)?;
                             own(cx, *dst);
@@ -593,7 +612,7 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
             if prim_value && array_inline_elem(cx, *arr, *elem_size).is_some() {
                 inline_array_set(cx, *arr, *index, *value, !*unchecked)?;
             } else {
-                if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))) {
+                if matches!(cx.ftypes.get(*value as usize), Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)) {
                     let raw = load(cx, *value)?;
                     retain_val(cx, lir, *value, raw)?;
                 }
@@ -720,6 +739,11 @@ pub(super) fn lower_mem(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -
                 }
                 LirType::Str => {
                     release_str_val(cx, v)?;
+                    return Ok(());
+                }
+                LirType::Closure => {
+                    let ptr = as_ptr(cx, v)?;
+                    cx.builder.build_call(cx.closure_release, &[ptr.into()], "").map_err(err)?;
                     return Ok(());
                 }
                 LirType::Array(inner) => {
