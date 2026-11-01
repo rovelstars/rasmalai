@@ -1,0 +1,9 @@
+//! The app framework.
+//!
+//! Windows, GPU, and text live behind wrappers in `wrappers/`. Each wrapper is
+//! a Rust crate with a hand-written C header; `rnx task bindgen` regenerates the
+//! Rasmalai imports from those headers, and this package consumes them.
+
+pub fn abiVersion(): Int {
+    return 1
+}

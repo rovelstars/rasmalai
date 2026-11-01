@@ -7,16 +7,16 @@ rnx=${RNX_BIN:-rnx}
 
 mkdir -p "$out"
 cargo build --release --manifest-path "$root/Cargo.toml"
-cp "$root/target/release/libgpu_cabi.so" "$out/libgpu_cabi.so"
+cp "$root/target/release/libwgpu_cabi.so" "$out/libwgpu_cabi.so"
 
-cat > "$out/gpu_cabi.pc" <<PC
+cat > "$out/wgpu_cabi.pc" <<PC
 prefix=$out
 libdir=\${prefix}
 includedir=\${prefix}
-Name: gpu_cabi
+Name: wgpu_cabi
 Description: gpu pilot
 Version: 0.1.0
-Libs: -L\${libdir} -lgpu_cabi
+Libs: -L\${libdir} -lwgpu_cabi
 Cflags:
 PC
 

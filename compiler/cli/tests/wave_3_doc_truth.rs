@@ -171,7 +171,7 @@ fn mcp_prompts_teach_new_for_classes() {
 
 // Packages that live in the tree before their first publish. They are vendored
 // locally, so they are not in `MODULES` and not seeded from the registry.
-const IN_DEVELOPMENT: &[&str] = &["ui"];
+const IN_DEVELOPMENT: &[&str] = &["app", "ui"];
 
 const EXPECTED_MODULES: &[&str] = &[
     "prelude", "simd", "math", "collections", "fs", "bytes", "time", "random", "sync", "env",
