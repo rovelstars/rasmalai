@@ -53,14 +53,22 @@ pub fn is_known_module(rest: &str) -> bool {
 
 fn vendored_module(rest: &str) -> Option<std::path::PathBuf> {
     let key = normalize_rest(rest);
-    let (pkg, _) = match key.split_once('/') {
-        Some((top, sub)) => (format!("@std/{top}"), Some(sub)),
+    let (pkg, sub) = match key.split_once('/') {
+        Some((top, sub)) => (format!("@std/{top}"), Some(sub.to_string())),
         None => (format!("@std/{key}"), None),
     };
     let anchor = std::env::current_dir()
         .ok()
         .map(|cwd| crate::fetch::cache_anchor(&cwd))?;
-    crate::fetch::local_override_dir(&pkg, &anchor)
+    let dir = crate::fetch::local_override_dir(&pkg, &anchor)?;
+    if let Some(sub) = sub {
+        let named = dir.join(format!("{sub}.rnx"));
+        let nested = dir.join(&sub).join("lib.rnx");
+        if !named.is_file() && !nested.is_file() {
+            return None;
+        }
+    }
+    Some(dir)
 }
 
 pub fn std_source(rest: &str) -> Option<String> {
