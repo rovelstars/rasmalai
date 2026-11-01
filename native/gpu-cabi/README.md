@@ -1,4 +1,4 @@
-# gpu-sys
+# gpu-cabi
 
 A flat C ABI over `wgpu`. The Rust side owns the objects; the Rasmalai side sees
 `Pointer<Byte>` handles, integers, and caller-owned buffers.
