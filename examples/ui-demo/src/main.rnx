@@ -39,7 +39,7 @@ fn Main(): Int {
     screen(b, s)
     t.layout(b.root(), 640)
     print("size:", t.w[0], t.h[0])
-    t.dump()
+    print(t.snapshot())
 
     let first = t.focusNext()
     print("focus:", first)
