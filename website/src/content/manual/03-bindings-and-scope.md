@@ -34,6 +34,8 @@ The operand must be a valid assignment target: a variable, a field (`obj.count++
 | Operator | Effect on `x` | Yields | Valid targets |
 |---|---|---|---|
 | `x += v` | `x = x + v` | new value | variable, field, index, `*p` |
+
+When either operand is a `String`, `+=` concatenates, matching `x = x + v`. That holds for a binding, a field, and an array element.
 | `x -= v` | `x = x - v` | new value | variable, field, index, `*p` |
 | `x *= v` | `x = x * v` | new value | variable, field, index, `*p` |
 | `x /= v` | `x = x / v` | new value | variable, field, index, `*p` |

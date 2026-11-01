@@ -564,6 +564,14 @@ impl<'a> Builder<'a> {
                     let v = self.unbox_operand(v, span);
                     let dt = self.func.locals.get(dst as usize).cloned().unwrap_or(LirType::Any);
                     let vt = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
+                    if *op == A::AssignOp::PlusEq && (dt == LirType::Str || vt == LirType::Str) {
+                        let sum = self.str_concat(dst, v, span);
+                        if self.nub_has(dst) {
+                            self.nub_release(dst, span);
+                        }
+                        self.emit_copy(dst, sum, span);
+                        return Ok(());
+                    }
                     if dt == LirType::Any {
                         let ldu = self.unbox_operand(dst, span);
                         let tmp = self.local(LirType::I64);
@@ -733,6 +741,16 @@ impl<'a> Builder<'a> {
                         });
                         return Ok(());
                     }
+                    if *op == A::AssignOp::PlusEq && fty == Some(LirType::Str) {
+                        let vv = self.unbox_operand(v, span);
+                        let sum = self.str_concat(cur, vv, span);
+                        self.emit(Instr::SetFieldByName { span,
+                            obj,
+                            field: field.clone(),
+                            value: sum,
+                        });
+                        return Ok(());
+                    }
                     if let Some(ft) = fty.clone() {
                         if matches!(ft, LirType::I64 | LirType::I8 | LirType::F64(_)) {
                             let cur2 = self.local(ft.clone());
@@ -876,6 +894,18 @@ impl<'a> Builder<'a> {
                     let v = self.unbox_operand(v, span);
                     let lt = self.func.locals.get(curu as usize).cloned().unwrap_or(LirType::Any);
                     let rt = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
+                    if *op == A::AssignOp::PlusEq && (lt == LirType::Str || rt == LirType::Str) {
+                        let sum = self.str_concat(cur, v, span);
+                        self.emit(Instr::ArraySet { span,
+                            arr,
+                            index: ix,
+                            value: sum,
+                            elem_size: es,
+                            unchecked: false,
+                        });
+                        self.emit(Instr::Release { span, obj: cur });
+                        return Ok(());
+                    }
                     let kind = self.compound_kind(&lt, &rt, span)?;
                     let nv = self.local(lt);
                     self.emit(Instr::Arith { span, op: arith, kind, dst: nv, lhs: curu, rhs: v });
