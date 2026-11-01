@@ -22,7 +22,7 @@ fn fs() -> @location(0) vec4<f32> {
 "#;
 
 fn open() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     let (device, queue) =
@@ -64,6 +64,7 @@ fn pass(
 ) {
     let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: None,
+        multiview_mask: None,
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
@@ -135,7 +136,10 @@ fn readback(
     if rx.recv().is_err() {
         return -5;
     }
-    let data = slice.get_mapped_range();
+    let data = match slice.get_mapped_range() {
+        Ok(d) => d,
+        Err(_) => return -5,
+    };
     let dst = unsafe { std::slice::from_raw_parts_mut(out, (w * h * 4) as usize) };
     for row in 0..h as usize {
         let src = &data[row * padded as usize..row * padded as usize + unpadded as usize];
@@ -170,7 +174,7 @@ fn paint(
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
         Some(
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -195,7 +199,7 @@ fn paint(
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             }),
         )
@@ -209,13 +213,13 @@ fn paint(
 }
 
 #[no_mangle]
-pub extern "C" fn gpu_instance_create() -> *mut c_void {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+pub extern "C" fn wgpu_instance_create() -> *mut c_void {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     Box::into_raw(Box::new(Gpu { instance })) as *mut c_void
 }
 
 #[no_mangle]
-pub extern "C" fn gpu_instance_destroy(p: *mut c_void) {
+pub extern "C" fn wgpu_instance_destroy(p: *mut c_void) {
     if p.is_null() {
         return;
     }
@@ -225,21 +229,21 @@ pub extern "C" fn gpu_instance_destroy(p: *mut c_void) {
 }
 
 #[no_mangle]
-pub extern "C" fn gpu_adapter_count(p: *mut c_void) -> i32 {
+pub extern "C" fn wgpu_adapter_count(p: *mut c_void) -> i32 {
     if p.is_null() {
         return -1;
     }
     let gpu = unsafe { &*(p as *const Gpu) };
-    gpu.instance.enumerate_adapters(wgpu::Backends::all()).len() as i32
+    pollster::block_on(gpu.instance.enumerate_adapters(wgpu::Backends::all())).len() as i32
 }
 
 #[no_mangle]
-pub extern "C" fn gpu_adapter_name(p: *mut c_void, index: i32, out: *mut u8, len: i32) -> i32 {
+pub extern "C" fn wgpu_adapter_name(p: *mut c_void, index: i32, out: *mut u8, len: i32) -> i32 {
     if p.is_null() || out.is_null() || len <= 0 || index < 0 {
         return -1;
     }
     let gpu = unsafe { &*(p as *const Gpu) };
-    let adapters = gpu.instance.enumerate_adapters(wgpu::Backends::all());
+    let adapters = pollster::block_on(gpu.instance.enumerate_adapters(wgpu::Backends::all()));
     let Some(adapter) = adapters.get(index as usize) else {
         return -2;
     };
@@ -255,7 +259,7 @@ pub extern "C" fn gpu_adapter_name(p: *mut c_void, index: i32, out: *mut u8, len
 }
 
 #[no_mangle]
-pub extern "C" fn gpu_clear_rgba(
+pub extern "C" fn wgpu_clear_rgba(
     w: i32,
     h: i32,
     r: u8,
@@ -271,7 +275,7 @@ pub extern "C" fn gpu_clear_rgba(
 }
 
 #[no_mangle]
-pub extern "C" fn gpu_triangle(w: i32, h: i32, out: *mut u8) -> i32 {
+pub extern "C" fn wgpu_triangle(w: i32, h: i32, out: *mut u8) -> i32 {
     if w <= 0 || h <= 0 {
         return -1;
     }
@@ -279,6 +283,6 @@ pub extern "C" fn gpu_triangle(w: i32, h: i32, out: *mut u8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn gpu_abi_version() -> i32 {
+pub extern "C" fn wgpu_abi_version() -> i32 {
     1
 }
