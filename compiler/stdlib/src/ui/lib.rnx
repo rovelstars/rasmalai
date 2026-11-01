@@ -109,8 +109,12 @@ pub class Tree {
     let last: Array<Int> = []
     let count: Array<Int> = []
     let actions: Array<Int> = []
+    let value: Array<String> = []
+    let checked: Array<Bool> = []
     let handler: Array<Int> = []
     let handlers: Array<fn(): Void> = []
+    let textHandler: Array<Int> = []
+    let textHandlers: Array<fn(String): Void> = []
     let x: Array<Int> = []
     let y: Array<Int> = []
     let w: Array<Int> = []
@@ -127,7 +131,10 @@ pub class Tree {
         this.last.push(-1)
         this.count.push(0)
         this.actions.push(0)
+        this.value.push("")
+        this.checked.push(false)
         this.handler.push(-1)
+        this.textHandler.push(-1)
         this.x.push(0)
         this.y.push(0)
         this.w.push(0)
@@ -167,12 +174,78 @@ pub class Tree {
         return this.interactive(Role.button, s, actionId(Action.tap))
     }
 
+    /** The current value of a text field or slider, for the semantic tree. */
+    pub fn setValue(n: Node, v: String) {
+        this.value[n.id] = v
+    }
+
+    pub fn valueOf(n: Node): String {
+        return this.value[n.id]
+    }
+
+    /** The checked state of a toggle, radio, or checkbox. */
+    pub fn setChecked(n: Node, v: Bool) {
+        this.checked[n.id] = v
+    }
+
+    pub fn isChecked(n: Node): Bool {
+        return this.checked[n.id]
+    }
+
     pub fn slider(s: String): Node {
         return this.interactive(Role.slider, s, actionId(Action.setValue))
     }
 
     pub fn toggle(s: String): Node {
         return this.interactive(Role.toggle, s, actionId(Action.toggle))
+    }
+
+    pub fn checkbox(s: String, on: Bool, onToggle: fn(): Void): Node {
+        let node = this.interactive(Role.radio, s, actionId(Action.toggle))
+        this.checked[node.id] = on
+        this.handler[node.id] = this.handlers.length()
+        this.handlers.push(onToggle)
+        return node
+    }
+
+    pub fn radio(s: String, selected: Bool, onTap: fn(): Void): Node {
+        let node = this.interactive(Role.radio, s, actionId(Action.tap))
+        this.checked[node.id] = selected
+        this.handler[node.id] = this.handlers.length()
+        this.handlers.push(onTap)
+        return node
+    }
+
+    pub fn textField(v: String, placeholder: String, onChange: fn(String): Void): Node {
+        let node = this.newNode(Role.textbox, placeholder)
+        this.actions[node.id] = actionId(Action.setValue)
+        this.value[node.id] = v
+        this.textHandler[node.id] = this.textHandlers.length()
+        this.textHandlers.push(onChange)
+        return node
+    }
+
+    /** Apply typed text and notify the field's handler. */
+    pub fn setText(n: Node, v: String): Bool {
+        if this.role[n.id] != roleId(Role.textbox) {
+            return false
+        }
+        this.value[n.id] = v
+        let h = this.textHandler[n.id]
+        if h < 0 {
+            return false
+        }
+        this.textHandlers[h](v)
+        return true
+    }
+
+    /** Route a pointer press through the hit test to the same handler a key reaches. */
+    pub fn pointerDown(x: Int, y: Int): Bool {
+        let id = this.hitTest(x, y)
+        if id == -1 || this.actions[id] == 0 {
+            return false
+        }
+        return this.fire(Node(tree: this, id: id))
     }
 
     pub fn toggleWith(s: String, onToggle: fn(): Void): Node {
@@ -479,7 +552,14 @@ pub class Tree {
             if id == this.focus {
                 mark = " *"
             }
-            out.push(pad + roleName(this.role[id]) + " " + this.name[id] + mark)
+            let extra = ""
+            if this.checked[id] {
+                extra = " checked"
+            }
+            if this.value[id] != "" {
+                extra = extra + " value=" + this.value[id]
+            }
+            out.push(pad + roleName(this.role[id]) + " " + this.name[id] + extra + mark)
             if this.first[id] != -1 {
                 id = this.first[id]
                 depth += 1
@@ -555,6 +635,18 @@ pub class Build {
     pub fn toggleWith(s: String, onToggle: fn(): Void): Node {
         return this.tree.toggleWith(s, onToggle)
     }
+
+    pub fn checkbox(s: String, on: Bool, onToggle: fn(): Void): Node {
+        return this.tree.checkbox(s, on, onToggle)
+    }
+
+    pub fn radio(s: String, selected: Bool, onTap: fn(): Void): Node {
+        return this.tree.radio(s, selected, onTap)
+    }
+
+    pub fn textField(v: String, placeholder: String, onChange: fn(String): Void): Node {
+        return this.tree.textField(v, placeholder, onChange)
+    }
 }
 
 test fn childrenKeepCreationOrder() {
@@ -629,6 +721,48 @@ test fn layoutStacksColumnChildren() {
     assert(t.x[first.id] == 16, "children start at the column inset")
     assert(t.y[second.id] > t.y[first.id] + t.h[first.id], "second sits below the first")
     assert(t.hitTest(t.x[second.id] + 2, t.y[second.id] + 2) == second.id, "hit lands on the second button")
+}
+
+test fn pointerDownReachesTheSameHandlerAsEnter() {
+    let t = new Tree()
+    let b = new Build(t)
+    let root = b.column()
+    let hits: Array<Int> = []
+    let btn = b.button("Save", () => { hits.push(1) })
+    root.addChild(btn)
+    t.layout(root, 200)
+    btn.bounds(10, 10, 80, 24)
+    assert(t.pointerDown(20, 20), "hit the button")
+    assert(t.keyDown(btn, Key.enter), "key path")
+    assert(hits.length() == 2, "one handler, two sources")
+    assert(!t.pointerDown(2, 2), "outside every interactive node")
+}
+
+test fn typingReachesTheFieldHandler() {
+    let t = new Tree()
+    let b = new Build(t)
+    let seen: Array<String> = []
+    let field = b.textField("", "Search settings", (v: String) => { seen.push(v) })
+    assert(t.setText(field, "theme"), "handled")
+    assert(t.valueOf(field) == "theme", "value stored")
+    assert(seen.length() == 1, "handler ran once")
+}
+
+test fn valuesAndCheckedStatesReachTheSnapshot() {
+    let t = new Tree()
+    let b = new Build(t)
+    let root = b.column()
+    let size = b.slider("Text size")
+    let motion = b.toggle("Reduce motion")
+    root.addChild(size)
+    root.addChild(motion)
+    t.setValue(size, "1.2")
+    t.setChecked(motion, true)
+    assert(t.valueOf(size) == "1.2", "value stored")
+    assert(t.isChecked(motion), "checked stored")
+    let snap = t.snapshot()
+    assert(snap.contains("slider Text size value=1.2"), snap)
+    assert(snap.contains("toggle Reduce motion checked"), snap)
 }
 
 test fn everyInteractiveNodeHasAName() {

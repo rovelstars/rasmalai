@@ -3,11 +3,13 @@ import { Build, Key, Node, Role, Tree } from "@std/ui"
 class Appearance {
     let scheme: String = "system"
     let reduceMotion: Bool = false
+    let query: String = ""
     let resets: Int = 0
 }
 
 fn screen(b: Build, s: Appearance): Node {
     let col = b.column()
+    col.addChild(b.textField(s.query, "Search settings", (v: String) => { s.query = v }))
     col.addChild(b.heading("Appearance"))
     col.addChild(b.text("Choose how runixOS looks and moves."))
 
@@ -23,7 +25,7 @@ fn screen(b: Build, s: Appearance): Node {
     size.addChild(b.slider("Text size"))
     col.addChild(size)
 
-    col.addChild(b.toggle("Reduce motion"))
+    col.addChild(b.checkbox("Reduce motion", s.reduceMotion, () => { s.reduceMotion = !s.reduceMotion }))
     col.addChild(b.button("Reset", () => {
         s.scheme = "system"
         s.resets += 1
@@ -47,9 +49,16 @@ fn Main(): Int {
         print("enter fired:", t.keyDown(Node(tree: t, id: first), Key.enter))
     }
 
+    let search = t.find(Role.textbox, "Search settings")
+    t.setText(Node(tree: t, id: search), "theme")
+    print("query:", s.query)
     let reset = t.find(Role.button, "Reset")
     let l = t.find(Role.button, "Light")
     let d = t.find(Role.button, "Dark")
+    let lx = t.x[l] + 2
+    let ly = t.y[l] + 2
+    print("pointer light:", t.pointerDown(lx, ly))
+    print("scheme after pointer:", s.scheme)
     t.tap(Node(tree: t, id: l))
     print("scheme after Light:", s.scheme)
     t.tap(Node(tree: t, id: d))
