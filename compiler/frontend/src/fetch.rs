@@ -64,6 +64,14 @@ pub fn local_override_dir(pkg: &str, anchor: &Path) -> Option<PathBuf> {
     {
         return Some(candidate);
     }
+    if let Some(env) = std::env::var(LOCAL_VENDOR_ENV).ok().filter(|s| !s.trim().is_empty()) {
+        if let Some(short) = pkg.strip_prefix("@std/") {
+            let flat = PathBuf::from(env).join(short);
+            if flat.join(crate::project::MANIFEST_FILE).is_file() {
+                return Some(flat);
+            }
+        }
+    }
     None
 }
 
