@@ -46,7 +46,21 @@ pub fn clear() {
 }
 
 pub fn is_known_module(rest: &str) -> bool {
-    stdlib::MODULES.contains(&normalize_rest(rest).as_str()) || crate::sysroot::has_std_source(rest)
+    stdlib::MODULES.contains(&normalize_rest(rest).as_str())
+        || crate::sysroot::has_std_source(rest)
+        || vendored_module(rest).is_some()
+}
+
+fn vendored_module(rest: &str) -> Option<std::path::PathBuf> {
+    let key = normalize_rest(rest);
+    let (pkg, _) = match key.split_once('/') {
+        Some((top, sub)) => (format!("@std/{top}"), Some(sub)),
+        None => (format!("@std/{key}"), None),
+    };
+    let anchor = std::env::current_dir()
+        .ok()
+        .map(|cwd| crate::fetch::cache_anchor(&cwd))?;
+    crate::fetch::local_override_dir(&pkg, &anchor)
 }
 
 pub fn std_source(rest: &str) -> Option<String> {
@@ -105,15 +119,15 @@ fn cached_std_source(key: &str) -> Option<String> {
 }
 
 fn cached_std_source_no_overlay(key: &str) -> Option<String> {
-    if !stdlib::MODULES.contains(&key) {
-        return None;
-    }
     let (pkg, sub) = match key.split_once('/') {
         Some((top, s)) => (format!("@std/{top}"), Some(s)),
         None => (format!("@std/{key}"), None),
     };
     if let Some(src) = vendor_std_source(&pkg, sub) {
         return Some(src);
+    }
+    if !stdlib::MODULES.contains(&key) {
+        return None;
     }
     if let Some(src) = project_std_source(&pkg, sub) {
         return Some(src);
