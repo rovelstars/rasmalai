@@ -1174,6 +1174,16 @@ fn hygienize_expr(
     }
 }
 
+fn check_member_attrs(members: &[A::Spanned<A::ClassMember>], diags: &mut Vec<Diagnostic>) {
+    for member in members {
+        match &member.node {
+            A::ClassMember::Field(field) => check_attrs_closed("field", &field.attrs, diags),
+            A::ClassMember::Method(method) => check_attrs_closed("method", &method.attrs, diags),
+            _ => {}
+        }
+    }
+}
+
 fn check_attrs_closed(decl_kind: &str, attrs: &[A::Attr], diags: &mut Vec<Diagnostic>) {
     for a in attrs {
         if a.inner {
@@ -1248,8 +1258,14 @@ pub fn expand_phase_b(
     }
     for decl in &module.decls {
         match &decl.node {
-            A::Decl::Class { attrs, .. } => check_attrs_closed("class", attrs, &mut diags),
-            A::Decl::Struct { attrs, .. } => check_attrs_closed("struct", attrs, &mut diags),
+            A::Decl::Class { attrs, members, .. } => {
+                check_attrs_closed("class", attrs, &mut diags);
+                check_member_attrs(members, &mut diags);
+            }
+            A::Decl::Struct { attrs, members, .. } => {
+                check_attrs_closed("struct", attrs, &mut diags);
+                check_member_attrs(members, &mut diags);
+            }
             A::Decl::Record { attrs, .. } => check_attrs_closed("record", attrs, &mut diags),
             A::Decl::Enum { attrs, .. } => check_attrs_closed("enum", attrs, &mut diags),
             A::Decl::Fn(f) => check_attrs_closed("fn", &f.attrs, &mut diags),
