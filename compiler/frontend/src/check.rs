@@ -74,12 +74,24 @@ pub fn check_package(root: &Path) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     check_package_with_dump(root, None)
 }
 
+fn cabi_surface(root: &Path) -> Option<std::path::PathBuf> {
+    let dir = crate::project::find_project_root(root)?;
+    let cfg = crate::project::ProjectConfig::load_from_dir(&dir).ok().flatten()?;
+    let path = cfg.cabi_path(&dir)?;
+    path.is_file().then_some(path)
+}
+
 pub fn check_package_with_dump(
     root: &Path,
     dump: Option<std::path::PathBuf>,
 ) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     use crate::modules::merged_decl_files;
-    let graph = match ModuleGraph::build_collecting(root) {
+    let cabi = cabi_surface(root);
+    let graph = match cabi.as_deref() {
+        Some(surface) => ModuleGraph::build_collecting_extra(root, &[surface.to_path_buf()]),
+        None => ModuleGraph::build_collecting(root),
+    };
+    let graph = match graph {
         Ok(g) => g,
         Err(errs) => return Err(errs),
     };
@@ -101,7 +113,7 @@ pub fn check_package_with_dump(
     }
     diags.extend(crate::macros::expand_phase_b(&mut module, &mut opts, None));
     diags.extend(crate::desugar::desugar_with_files(&mut module, &files));
-    diags.extend(semantic::check_with_files(&module, &files));
+    diags.extend(semantic::check_with_files_and_surface(&module, &files, cabi.as_deref()));
     diags.extend(crate::security::verify_runtime_imports(&graph));
     if diags.iter().all(|d| d.code.is_warning()) {
         diags.extend(graph.isolation_errors());

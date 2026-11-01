@@ -1,6 +1,7 @@
 use crate::ast::*;
 use diagnostics::{decl_file, tag_new, Code, DeclFiles, Diagnostic, Span};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 mod lints;
 mod walker;
@@ -12,6 +13,14 @@ pub fn check(module: &Module) -> Vec<Diagnostic> {
 }
 
 pub fn check_with_files(module: &Module, files: &DeclFiles) -> Vec<Diagnostic> {
+    check_with_files_and_surface(module, files, None)
+}
+
+pub fn check_with_files_and_surface(
+    module: &Module,
+    files: &DeclFiles,
+    cabi_surface: Option<&Path>,
+) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for decl in &module.decls {
         if let Decl::Class { name, members, .. } = &decl.node {
@@ -24,7 +33,7 @@ pub fn check_with_files(module: &Module, files: &DeclFiles) -> Vec<Diagnostic> {
     check_w108(module, &mut diags, files);
     check_cyclic_defaults(module, &mut diags, files);
     check_scopes(module, &mut diags, files);
-    check_export_cabi(module, &mut diags, files);
+    check_export_cabi(module, &mut diags, files, cabi_surface);
     let taint_from = diags.len();
     diags.extend(crate::unsafe_taint::check_module(module));
     for d in &mut diags[taint_from..] {
@@ -787,10 +796,46 @@ pub fn prelude_uses(module: &Module) -> BTreeSet<String> {
     run_scope_check(module, &DeclFiles::new()).used_prelude
 }
 
-fn check_export_cabi(module: &Module, diags: &mut Vec<Diagnostic>, files: &DeclFiles) {
+const CABI_SIGNATURE_HINT: &str = "change the signature to a C-representable one (Int, Float, Byte, Bool, String params, Pointer<Byte> with a `_len: Int` sibling, Int/Float/Bool/Void returns), pass the value as a `Pointer<Byte>` handle, or move this declaration out of the cabi file. `export struct`, `export class`, and `export enum` in the cabi file are package API and never become symbols.";
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    let ca = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
+    let cb = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
+    ca == cb
+}
+
+fn check_export_cabi(
+    module: &Module,
+    diags: &mut Vec<Diagnostic>,
+    files: &DeclFiles,
+    cabi_surface: Option<&Path>,
+) {
     use crate::header::CABI;
     let mut seen = BTreeSet::new();
+    let mut surface_fns = 0usize;
+    let mut surface_misuse = false;
     for decl in &module.decls {
+        let file = decl_file(files, decl.span);
+        let in_surface = match (cabi_surface, file.as_deref()) {
+            (Some(surface), Some(path)) => same_file(path, surface),
+            _ => false,
+        };
+        if let Decl::ExportFrom(_) = &decl.node {
+            if in_surface {
+                surface_misuse = true;
+                diags.push(
+                    Diagnostic::new(
+                        Code::E108,
+                        "an `export { ... } from` re-export writes no C symbol",
+                    )
+                    .with_span(decl.span)
+                    .with_hint(
+                        "declare a wrapper with a C-representable signature in the cabi file; the surface is declarations, not re-exports",
+                    ),
+                );
+            }
+            continue;
+        }
         let f = match &decl.node {
             Decl::Fn(f) => f,
             _ => continue,
@@ -798,10 +843,19 @@ fn check_export_cabi(module: &Module, diags: &mut Vec<Diagnostic>, files: &DeclF
         if f.access != Access::Export || f.is_test {
             continue;
         }
-        if let Some(path) = decl_file(files, decl.span)
+        if in_surface {
+            surface_fns += 1;
+        }
+        if let Some(path) = file.as_deref()
             && path.to_string_lossy().starts_with("@std/")
         {
             continue;
+        }
+        if let Some(surface) = cabi_surface {
+            let in_surface = file.as_deref().is_some_and(|p| same_file(p, surface));
+            if !in_surface {
+                continue;
+            }
         }
         let from = diags.len();
         let short = f.name.rsplit('.').next().unwrap_or(&f.name).to_string();
@@ -853,16 +907,18 @@ fn check_export_cabi(module: &Module, diags: &mut Vec<Diagnostic>, files: &DeclF
                 match CABI::of_ast(t) {
                     Some(CABI::Void) | None => {
                         let shown = ty_name(t).unwrap_or_else(|| "unknown".to_string());
-                        diags.push(
-                            Diagnostic::new(
-                                Code::E108,
-                                format!(
-                                    "export fn `{short}` param `{}` has non-C-ABI type `{shown}`; use Int, Float, Byte, Bool, String, or Pointer<Byte>",
-                                    p.name
-                                ),
-                            )
-                            .with_span(decl.span),
-                        );
+                        let mut d = Diagnostic::new(
+                            Code::E108,
+                            format!(
+                                "export fn `{short}` param `{}` has non-C-ABI type `{shown}`; use Int, Float, Byte, Bool, String, or Pointer<Byte>",
+                                p.name
+                            ),
+                        )
+                        .with_span(decl.span);
+                        if cabi_surface.is_some() {
+                            d = d.with_hint(CABI_SIGNATURE_HINT);
+                        }
+                        diags.push(d);
                         ok = false;
                     }
                     _ => {}
@@ -912,20 +968,32 @@ fn check_export_cabi(module: &Module, diags: &mut Vec<Diagnostic>, files: &DeclF
                     Some(CABI::Int) | Some(CABI::Float) | Some(CABI::Bool) | Some(CABI::Void) => {}
                     _ => {
                         let shown = ty_name(t).unwrap_or_else(|| "unknown".to_string());
-                        diags.push(
-                            Diagnostic::new(
-                                Code::E108,
-                                format!(
-                                    "export fn `{short}` has non-C-ABI return type `{shown}`; use Int, Float, Byte, Bool, or Void",
-                                    ),
-                            )
-                            .with_span(decl.span),
-                        );
+                        let mut d = Diagnostic::new(
+                            Code::E108,
+                            format!(
+                                "export fn `{short}` has non-C-ABI return type `{shown}`; use Int, Float, Byte, Bool, or Void",
+                            ),
+                        )
+                        .with_span(decl.span);
+                        if cabi_surface.is_some() {
+                            d = d.with_hint(CABI_SIGNATURE_HINT);
+                        }
+                        diags.push(d);
                     }
                 },
             }
         }
-        tag_new(&mut *diags, from, decl_file(files, decl.span));
+        tag_new(&mut *diags, from, file);
+    }
+    if let Some(surface) = cabi_surface
+        && surface_fns == 0
+        && !surface_misuse
+    {
+        diags.push(Diagnostic::new(
+            Code::E108,
+            format!("{}: the cabi surface declares no `export fn`", surface.display()),
+        )
+        .with_hint("add a wrapper with a C-representable signature, or remove `entries.cabi` from the manifest"));
     }
 }
 

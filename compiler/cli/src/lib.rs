@@ -499,7 +499,12 @@ pub fn load_program_cfg(
     let mut warnings = Vec::new();
     if errors.is_empty() {
         let decl_files = frontend::modules::merged_decl_files(&graph);
-        for d in frontend::semantic::check_with_files(&module, &decl_files) {
+        let surface = cabi_surface_for(std::path::Path::new(path));
+        for d in frontend::semantic::check_with_files_and_surface(
+            &module,
+            &decl_files,
+            surface.as_deref(),
+        ) {
             if d.code.is_warning() {
                 warnings.push(d);
             } else {
@@ -572,8 +577,48 @@ pub fn package_name_for(path: &str) -> String {
     sanitize_lib_name(&stem)
 }
 
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let ca = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
+    let cb = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
+    ca == cb
+}
+
+pub(crate) fn cabi_surface_for(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let root = frontend::project::find_project_root(path)?;
+    let cfg = frontend::project::ProjectConfig::load_from_dir(&root).ok().flatten()?;
+    let cabi = cfg.cabi_path(&root)?;
+    cabi.is_file().then_some(cabi)
+}
+
+fn surface_fn_names(
+    graph: &frontend::modules::ModuleGraph,
+    surface: &std::path::Path,
+) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for f in &graph.files {
+        if !same_file(&f.path, surface) {
+            continue;
+        }
+        for decl in &f.module.decls {
+            if let frontend::ast::Decl::Fn(fd) = &decl.node
+                && fd.access == frontend::ast::Access::Export
+                && !fd.is_test
+            {
+                out.insert(if f.key.is_empty() {
+                    fd.name.clone()
+                } else {
+                    format!("{}.{}", f.key, fd.name)
+                });
+            }
+        }
+    }
+    out
+}
+
 fn collect_exports(
     module: &frontend::ast::Module,
+    files: &diagnostics::DeclFiles,
+    cabi_surface: Option<&std::path::Path>,
 ) -> Result<Vec<frontend::header::ExportedFn>, diagnostics::Diagnostic> {
     use diagnostics::{Code, Diagnostic};
     use frontend::header::{CABI, ExportedFn};
@@ -586,6 +631,13 @@ fn collect_exports(
         };
         if f.access != frontend::ast::Access::Export || f.is_test {
             continue;
+        }
+        if let Some(surface) = cabi_surface {
+            let inside = diagnostics::decl_file(files, decl.span)
+                .is_some_and(|p| same_file(&p, surface));
+            if !inside {
+                continue;
+            }
         }
         let short = f.name.rsplit('.').next().unwrap_or(&f.name).to_string();
         if !seen.insert(short.clone()) {
@@ -713,7 +765,11 @@ pub fn build_lib_files_cfg(
     let opt_level = if release { opt_level.max(1) } else { opt_level };
     let mut profiler = cfg.profiler();
     profiler.start("lex_parse");
-    let graph = frontend::modules::ModuleGraph::build_collecting_parallel(std::path::Path::new(path), cfg.jobs);
+    let root = std::path::Path::new(path);
+    let surface = cabi_surface_for(root);
+    let extra: Vec<std::path::PathBuf> = surface.iter().cloned().collect();
+    let graph =
+        frontend::modules::ModuleGraph::build_collecting_extra_parallel(root, &extra, cfg.jobs);
     let graph = match graph {
         Ok(g) => g,
         Err(errs) => return Err(errs),
@@ -754,10 +810,8 @@ pub fn build_lib_files_cfg(
     profiler.start("typecheck");
     frontend::harness::strip_tests(&mut module);
     frontend::harness::strip_benches(&mut module);
-    let exports = match collect_exports(&module) {
-        Ok(e) => e,
-        Err(e) => return Err(vec![e]),
-    };
+    let decl_files = frontend::modules::merged_decl_files(&graph);
+    let surface_names = surface.as_ref().map(|s| surface_fn_names(&graph, s));
     let package = package_name_for(path);
     let dump = runtime::comptime::dump_dir_for(&base_dir, cfg.expand_macros);
     let exp_diags = crate::comptime::expand_all(&mut module, &base_dir, dump, Some(&mut profiler));
@@ -773,8 +827,11 @@ pub fn build_lib_files_cfg(
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         let mut warnings = Vec::new();
-        let decl_files = frontend::modules::merged_decl_files(&graph);
-        for d in frontend::semantic::check_with_files(&module, &decl_files) {
+        for d in frontend::semantic::check_with_files_and_surface(
+            &module,
+            &decl_files,
+            surface.as_deref(),
+        ) {
             if d.code.is_warning() {
                 warnings.push(d);
             } else {
@@ -788,6 +845,10 @@ pub fn build_lib_files_cfg(
     if !errors.is_empty() {
         return Err(errors);
     }
+    let exports = match collect_exports(&module, &decl_files, surface.as_deref()) {
+        Ok(e) => e,
+        Err(e) => return Err(vec![e]),
+    };
     profiler.start("lower");
     let lowered = match lir::lower::lower(&module) {
         Ok(l) => l,
@@ -796,6 +857,13 @@ pub fn build_lib_files_cfg(
     profiler.stop();
     profiler.start("opt_pipeline");
     let mut lowered = lowered;
+    if let Some(names) = &surface_names {
+        for f in &mut lowered.functions {
+            if f.is_pub && !names.contains(&f.name) {
+                f.is_pub = false;
+            }
+        }
+    }
     let opt_timings = lir::opt::optimize_lir_lib_timed(&mut lowered, opt_level);
     record_opt_subs(&mut profiler, &opt_timings);
     profiler.stop();
@@ -1574,6 +1642,7 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
             entries: frontend::project::Entries {
                 main: frontend::project::DEFAULT_ENTRY.to_string(),
                 lib: None,
+                cabi: None,
                 docs: None,
                 bins: std::collections::BTreeMap::new(),
             },
@@ -2055,7 +2124,8 @@ pub fn load_test_program_cfg(
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         let decl_files = frontend::modules::merged_decl_files(&graph);
-        for d in frontend::semantic::check_with_files(&module, &decl_files) {
+        let surface = config.cabi_path(pkg_root).filter(|p| p.is_file());
+        for d in frontend::semantic::check_with_files_and_surface(&module, &decl_files, surface.as_deref()) {
             if !d.code.is_warning() {
                 errors.push(d);
             }
@@ -2153,7 +2223,8 @@ pub fn load_bench_program_cfg(
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         let decl_files = frontend::modules::merged_decl_files(&graph);
-        for d in frontend::semantic::check_with_files(&module, &decl_files) {
+        let surface = config.cabi_path(pkg_root).filter(|p| p.is_file());
+        for d in frontend::semantic::check_with_files_and_surface(&module, &decl_files, surface.as_deref()) {
             if !d.code.is_warning() {
                 errors.push(d);
             }

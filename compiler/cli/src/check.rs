@@ -254,7 +254,12 @@ pub fn run_check(
             Ok(warnings) => (warnings, false),
             Err(errors) => (errors, true),
         };
-        let graph = frontend::modules::ModuleGraph::build(entry).ok();
+        let graph = match crate::cabi_surface_for(entry) {
+            Some(surface) => {
+                frontend::modules::ModuleGraph::build_collecting_extra(entry, &[surface]).ok()
+            }
+            None => frontend::modules::ModuleGraph::build(entry).ok(),
+        };
         let (lenient_files, mut lenient_failed) = match &graph {
             Some(_) => (Vec::new(), Vec::new()),
             None => match frontend::project::find_project_root(entry) {

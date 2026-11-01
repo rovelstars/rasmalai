@@ -20,7 +20,7 @@ cd hello
 
 ## Project.config
 
-The manifest is an `.rnx` module exporting a default object. It declares package identity, entry points, and dependencies. `project` requires `name` and `version`; `engine` states the minimum toolchain requirement. An optional top-level `entries` object names the files: `main` defaults to `src/main.rnx`, `lib` names the library file, `docs` the guides folder, and `bins` maps tool names to files. The old `entry` and `edition` keys are rejected outright; there is no compatibility alias.
+The manifest is an `.rnx` module exporting a default object. It declares package identity, entry points, and dependencies. `project` requires `name` and `version`; `engine` states the minimum toolchain requirement. An optional top-level `entries` object names the files: `main` defaults to `src/main.rnx`, `lib` names the library file, `cabi` names the C surface file, `docs` the guides folder, and `bins` maps tool names to files. The old `entry` and `edition` keys are rejected outright; there is no compatibility alias.
 
 ```rnx
 export default {
@@ -46,6 +46,8 @@ export default {
     }
 }
 ```
+
+`entries.cabi` names the file whose `export fn` declarations form the C surface for `rnx build --lib`. The rest of the package keeps `export` as package API, so a class or struct export outside that file does not need a C signature. `rnx check` reads the cabi file as a second root even when nothing imports it. Without a cabi entry, `rnx build --lib` uses `entries.lib`, then `entries.main`, and validates every export reachable from that entry, which is the behavior projects had before the cabi entry existed. See [Hardware and FFI](/manual/13-hardware-and-ffi) for the signature rules.
 
 Manifests evaluate in a sandbox: top-level `const`, object and array spreads (`...deps`), ternaries, `switch` over the ambient `target` object (`target.os`, `target.arch`, `target.env`), and member access. Functions, loops, imports, and I/O are rejected with `E108`. The exact allowed-versus-forbidden list lives in [Packages and Registries](/manual/18-packages-and-registries). A conditional native dependency looks like this:
 
@@ -188,11 +190,11 @@ Any deduced capability outside `allowed`, counting the package's own code plus e
 A `test fn` takes no parameters and returns nothing. The runner discovers every one in `src/**/*.rnx` and `tests/**/*.rnx`, times each, and reports one line apiece. `assert` takes a `Bool` condition and a `String` message; on false it prints the message and marks that test failed without aborting it. `test fn` blocks are stripped from normal `run`/`build` pipelines. Tests run on the Cranelift JIT by default; pass `--backend interpreter` or `--backend llvm` to exercise the interpreter or AOT codegen. Filter by substring, pass `--exact` for full names. Output captures per test; `--nocapture` streams live.
 
 ```rnx
-test fn adds_up() {
+test fn addsUp() {
     assert(1 + 1 == 2, "math");
 }
 
-test fn starts_empty() {
+test fn startsEmpty() {
     let items: Array<Int> = [];
     assert(items.length == 0, "fresh array");
 }
@@ -265,7 +267,7 @@ print(quote(2.0));
 
 Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners. `--prefer-system` resolves every native dependency from the host library and `--prefer-bundled` from bundled OCI blobs; the two conflict, and per-dependency `native` pins override either.
 
-`rnx download` with no package names resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). With names, it downloads `name` or `name@range` libraries (the same SemVer grammar as dependency requirements, with the engine-range check after resolve) into the global cache. With `--local`, it targets the project-local cache (`.rnx-cache/registry/`) instead, with the pin recorded at `.rnx-cache/std-pin.json`. Global downloads land in the content-addressed store (`store/` under the cache root: chunk blobs plus one verified tree per manifest digest; see [Packages and Registries](/manual/18-packages-and-registries)); `--local` keeps the older per-version project layout instead. The installer runs `rnx download` automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. `download` and `doctor` accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default, which is how a self-hosted registry seeds its own standard library. With an empty cache and no network, `@std/*` imports fail as `E108` naming the registry instead of falling back silently. There is no embedded fallback: the binary carries no stdlib bytes. To seed or hack on the standard library without a registry instead, run `rnx vendor @std/... --dir <DIR>` from a checkout (see below), then point `RNX_VENDOR_DIR` at the staged directory: `@std/*` imports resolve straight from that tree with zero network, the same local-source override that covers every registry package (see [Packages and Registries](/manual/18-packages-and-registries)). Distributors bundle a pre-seeded cache directory and set `RNX_CACHE_HOME` at it. No second mechanism exists.
+`rnx download` with no package names resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). With names, it downloads `name` or `name@range` libraries (the same SemVer grammar as dependency requirements, with the engine-range check after resolve) into the global cache. With `--local`, it targets the project-local cache (`.rnx-cache/registry/`) instead, with the pin recorded at `.rnx-cache/std-pin.json`. Global downloads land in the content-addressed store (`store/` under the cache root: chunk blobs plus one verified tree per manifest digest; see [Packages and Registries](/manual/18-packages-and-registries)); `--local` keeps the older per-version project layout instead. The installer runs `rnx download` automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. `download` and `doctor` accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default, which is how a self-hosted registry seeds its own standard library. With an empty cache and no network, `@std/*` imports fail as `E108` naming the registry instead of falling back silently. There is no embedded fallback: the binary carries no stdlib bytes. To seed or hack on the standard library without a registry instead, run `rnx vendor @std/... --dir <DIR>` from a checkout (see below), then point `RNX_VENDOR_DIR` at the staged directory: `@std/*` imports resolve straight from that tree with zero network, the same local-source override that covers every registry package (see [Packages and Registries](/manual/18-packages-and-registries)). Distributors bundle a pre-seeded cache directory and set `RNX_CACHE_HOME` at it. The stdlib sources in this repository are a workspace of packages, one manifest per module, so `RNX_VENDOR_DIR=<repo>/compiler/stdlib/src` resolves every `@std/*` import from the checkout. With a vendor directory, `@std/<name>` accepts either `<dir>/@std/<name>` or `<dir>/<name>`. No second mechanism exists.
 
 `rnx install` runs `lock` and then `fetch`, so a fresh checkout gets a lockfile and a warm dependency cache in one step. `rnx run` and `rnx check` already download missing registry packages on demand, but they never write the lock.
 

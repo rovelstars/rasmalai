@@ -79,7 +79,12 @@ pub fn build_program(    path: &Path,
     let mut errors = frontend::desugar::desugar(&mut module);
     if errors.is_empty() {
         let decl_files = frontend::modules::merged_decl_files(&graph);
-        for d in frontend::semantic::check_with_files(&module, &decl_files) {
+        let surface = crate::cabi_surface_for(path);
+        for d in frontend::semantic::check_with_files_and_surface(
+            &module,
+            &decl_files,
+            surface.as_deref(),
+        ) {
             if d.code.is_warning() {
                 continue;
             }
