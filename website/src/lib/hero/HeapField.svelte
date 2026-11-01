@@ -40,7 +40,7 @@
 			caption:
 				'A GenRef keeps a slot and an epoch, not a pointer. When the owner dies the epoch moves, so the handle reads null instead of freed memory.',
 			lir: 'genref_of %0   genref_get %1   genref_invalidate %0',
-			first: 2,
+			first: 1,
 			duration: 20,
 			source: [
 				'  let weak: GenRef<Node>? = null',
@@ -896,10 +896,8 @@
 	}
 
 	.field-title {
-		font-family: var(--font-mono);
+		font-family: var(--font-body);
 		font-size: var(--text-2xs);
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
 		color: var(--color-muted);
 		white-space: nowrap;
 		overflow: hidden;

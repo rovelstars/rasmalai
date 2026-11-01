@@ -325,25 +325,24 @@
 			<section id="registry" class="block block-end" style="--accent: rgb(var(--aura-green))">
 				<header class="block-head">
 					<h2 class="block-title">
-						Packages are addressed by <span class="title-accent">hash</span>
+						Every publish is audited, then <span class="title-accent">hashed</span>
 					</h2>
 					<p class="block-note">
-						The server minifies and chunks what you publish, so a version is a digest over
-						its chunk list, not an archive. Two versions share almost every chunk, and an
-						install is a verified set of writes pinned in <code>Project.deplock</code>.
-						Versions never change: a yank is bounded, a takedown is permanent.
+						The server runs the compiler's analyzer over the source tree, rejects
+						undeclared capabilities, canonicalizes and chunks it, then names the version
+						by digest.
 					</p>
 				</header>
 				<figure class="figure">
 					<figcaption class="fig-bar">
-						<span class="fig-cap">three versions of one package</span>
+						<span class="fig-cap">schematic: one package, four stages</span>
 					</figcaption>
 					<RegistryLedger />
 				</figure>
 				<div class="end-links">
 					<a href="/packages" class="btn btn-primary">Browse packages</a>
-					<a href="/guide/08-modules-and-packages" class="btn btn-ghost">Publish your first</a>
-					<a href="/manual" class="btn btn-quiet">Read the manual</a>
+					<a href="/guide/08-modules-and-packages" class="btn btn-ghost">Publish a package</a>
+					<a href="/manual" class="btn btn-quiet">Manual</a>
 				</div>
 			</section>
 		</div>
@@ -567,9 +566,8 @@
 	}
 
 	.report-index-label {
-		font-family: var(--font-mono);
+		font-family: var(--font-body);
 		font-size: var(--text-2xs);
-		letter-spacing: 0.04em;
 		color: var(--color-faint);
 		padding-left: var(--space-sm);
 	}
