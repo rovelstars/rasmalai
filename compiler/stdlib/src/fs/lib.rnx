@@ -1711,7 +1711,8 @@ fn readBytesAsync(path: String): Promise<Result<ByteBuffer, String>> {
 * @example
 * import fs from "@std/fs";
 *
-* print(fs.writeTextAsync("doc-demo-async-w.txt", "wval", .Overwrite).wait().unwrapOr(0));
+* let written: Result<Int, String> = await fs.writeTextAsync("doc-demo-async-w.txt", "wval", .Overwrite);
+* print(written.unwrapOr(0));
 */
 fn writeTextAsync(path: String, text: String, mode: WriteMode): Promise<Result<Int, String>> {
     let m = 2;
@@ -1758,7 +1759,8 @@ fn writeTextAsync(path: String, text: String, mode: WriteMode): Promise<Result<I
 * import { ByteBuffer } from "@std/bytes";
 *
 * let buf = ByteBuffer.fromArray([1, 2, 3]);
-* print(fs.writeBytesAsync("doc-demo-async-wb.bin", buf, .Overwrite).wait().unwrapOr(0));
+* let written: Result<Int, String> = await fs.writeBytesAsync("doc-demo-async-wb.bin", buf, .Overwrite);
+* print(written.unwrapOr(0));
 */
 fn writeBytesAsync(path: String, buf: ByteBuffer, mode: WriteMode): Promise<Result<Int, String>> {
     let m = 2;
