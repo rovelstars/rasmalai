@@ -492,7 +492,10 @@ pub class Tree {
         this.place(root.id, 0, 0)
     }
 
-    pub fn dump() {
+    /** One line per node, in tree order, ready for a snapshot test or the
+     * inspector. The core does no I/O, so the caller prints it. */
+    pub fn snapshot(): String {
+        let out: Array<String> = []
         let id = 0
         let depth = 0
         while id != -1 {
@@ -506,7 +509,7 @@ pub class Tree {
             if id == this.focus {
                 mark = " *"
             }
-            print(pad + roleName(this.role[id]) + " " + this.name[id] + mark)
+            out.push(pad + roleName(this.role[id]) + " " + this.name[id] + mark)
             if this.first[id] != -1 {
                 id = this.first[id]
                 depth += 1
@@ -525,6 +528,7 @@ pub class Tree {
                 }
             }
         }
+        return out.join("\n")
     }
 }
 
