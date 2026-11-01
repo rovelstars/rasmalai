@@ -141,7 +141,7 @@ fn add(a: Int, b: Int): Int {
     return a + b;
 }
 
-test fn adds_up() {
+test fn addsUp() {
     assert(add(20, 22) == 42, "addition");
 }
 
