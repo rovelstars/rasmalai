@@ -219,7 +219,7 @@ assert((ghost?.profile?.name ?? "anonymous") == "anonymous", "fallback");
 Functions marked `test fn` take no parameters, return nothing, and are stripped from normal builds. The test runner discovers them, times them, and reports each one. `assert` takes a `Bool` and a message. Test execution is specified in [Project and Toolchain](/manual/16-project-and-toolchain).
 
 ```rnx
-test fn adds_up() {
+test fn addsUp() {
     assert(1 + 1 == 2, "math");
 }
 ```
