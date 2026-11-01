@@ -74,6 +74,9 @@ print(v is String);
 | trait plus interface | `class U with T : I` | trait fills defaults, interface checks signatures |
 | `extends` plus traits | `class C extends Base with T` | one parent, any number of traits |
 
+Generic parameters erase to `Any` at runtime, so conformance treats a type parameter in the interface or the class as a wildcard. A method returning `T` satisfies an interface method returning `T` whatever `T` becomes at the call site. Concrete types are still compared exactly: an interface method returning `String` rejects a class method returning `Int`.
+
+
 ```rnx
 trait Named {
     fn label(): String { return "unnamed"; }
