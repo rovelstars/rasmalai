@@ -1,0 +1,23 @@
+import { ByteBuffer } from "@std/bytes"
+import {
+    fn gpu_adapter_count(p: Pointer<Byte>): Int,
+    fn gpu_adapter_name(p: Pointer<Byte>, index: Int, out: Pointer<Byte>, len: Int): Int,
+    fn gpu_clear_rgba(w: Int, h: Int, r: Int, g: Int, b: Int, a: Int, out: Pointer<Byte>): Int,
+    fn gpu_instance_create(): Pointer<Byte>,
+    fn gpu_instance_destroy(p: Pointer<Byte>),
+} from native "gpu_sys"
+
+fn Main(): Int {
+    unsafe {
+        let inst = gpu_instance_create()
+        print("adapters:", gpu_adapter_count(inst))
+        let name = ByteBuffer.allocate(256)
+        let n = gpu_adapter_name(inst, 0, Pointer.fromAddress<Byte>(name.address()), 256)
+        print("name bytes:", n)
+        let px = ByteBuffer.allocate(8)
+        let rc = gpu_clear_rgba(2, 1, 10, 20, 30, 255, Pointer.fromAddress<Byte>(px.address()))
+        print("rc:", rc, "rgba:", px.readUInt8(0), px.readUInt8(1), px.readUInt8(2), px.readUInt8(3))
+        gpu_instance_destroy(inst)
+    }
+    return 0
+}

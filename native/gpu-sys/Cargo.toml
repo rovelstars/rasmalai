@@ -1,0 +1,16 @@
+[package]
+name = "gpu-sys"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+wgpu = "27"
+pollster = "0.4"
+
+[profile.release]
+opt-level = 2
+
+[workspace]
