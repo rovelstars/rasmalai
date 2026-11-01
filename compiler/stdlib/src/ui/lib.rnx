@@ -1,0 +1,678 @@
+//! The UI core, first slice: roles, actions, the node arena, and the builder.
+//!
+//! Nodes live in parallel arrays addressed by an integer id, so a subtree walk
+//! is index arithmetic and a snapshot is a copy. Roles and actions are stored
+//! as wire ids because an enum-typed array in a class field currently trips the
+//! prelude interface check. The enums stay in the signatures, which is what an
+//! author sees.
+
+pub enum Role {
+    root,
+    column,
+    row,
+    section,
+    heading,
+    text,
+    button,
+    slider,
+    toggle,
+    radio,
+    radiogroup,
+    textbox,
+    dialog,
+}
+
+fn roleId(r: Role): Int {
+    if r == Role.root { return 0 }
+    if r == Role.column { return 1 }
+    if r == Role.row { return 2 }
+    if r == Role.section { return 3 }
+    if r == Role.heading { return 4 }
+    if r == Role.text { return 5 }
+    if r == Role.button { return 6 }
+    if r == Role.slider { return 7 }
+    if r == Role.toggle { return 8 }
+    if r == Role.radio { return 9 }
+    if r == Role.radiogroup { return 10 }
+    if r == Role.textbox { return 11 }
+    return 12
+}
+
+fn roleName(id: Int): String {
+    if id == 0 { return "root" }
+    if id == 1 { return "column" }
+    if id == 2 { return "row" }
+    if id == 3 { return "section" }
+    if id == 4 { return "heading" }
+    if id == 5 { return "text" }
+    if id == 6 { return "button" }
+    if id == 7 { return "slider" }
+    if id == 8 { return "toggle" }
+    if id == 9 { return "radio" }
+    if id == 10 { return "radiogroup" }
+    if id == 11 { return "textbox" }
+    if id == 12 { return "dialog" }
+    return "unknown"
+}
+
+pub enum Action {
+    tap,
+    toggle,
+    setValue,
+    dismiss,
+}
+
+fn actionId(a: Action): Int {
+    if a == Action.tap { return 1 }
+    if a == Action.toggle { return 2 }
+    if a == Action.setValue { return 4 }
+    if a == Action.dismiss { return 8 }
+    return 0
+}
+
+pub enum Key {
+    enter,
+    space,
+    escape,
+    left,
+    right,
+    up,
+    down,
+}
+
+/** A node handle. The id is the only state a caller holds. */
+pub struct Node {
+    let id: Int
+}
+
+/**
+ * The arena. `open` pushes a parent, `close` pops it, and every node created in
+ * between becomes a child in creation order. The UI block syntax compiles to
+ * exactly this pairing, so the sugar adds no new runtime concept.
+ */
+pub class Tree {
+    let role: Array<Int> = []
+    let name: Array<String> = []
+    let parent: Array<Int> = []
+    let first: Array<Int> = []
+    let next: Array<Int> = []
+    let last: Array<Int> = []
+    let count: Array<Int> = []
+    let actions: Array<Int> = []
+    let handler: Array<Int> = []
+    let handlers: Array<fn(): Void> = []
+    let x: Array<Int> = []
+    let y: Array<Int> = []
+    let w: Array<Int> = []
+    let h: Array<Int> = []
+    let stack: Array<Int> = []
+    let focus: Int = -1
+
+    fn add(r: Role, n: String): Int {
+        let id = this.role.length()
+        this.role.push(roleId(r))
+        this.name.push(n)
+        this.parent.push(-1)
+        this.first.push(-1)
+        this.next.push(-1)
+        this.last.push(-1)
+        this.count.push(0)
+        this.actions.push(0)
+        this.handler.push(-1)
+        this.x.push(0)
+        this.y.push(0)
+        this.w.push(0)
+        this.h.push(0)
+        if this.stack.length() > 0 {
+            let p = this.stack[this.stack.length() - 1]
+            this.parent[id] = p
+            if this.first[p] == -1 {
+                this.first[p] = id
+            } else {
+                this.next[this.last[p]] = id
+            }
+            this.last[p] = id
+            this.count[p] += 1
+        }
+        return id
+    }
+
+    pub fn open(r: Role, n: String): Node {
+        let id = this.add(r, n)
+        this.stack.push(id)
+        return Node(id: id)
+    }
+
+    pub fn close() {
+        if this.stack.length() > 1 {
+            this.stack.pop()
+        }
+    }
+
+    pub fn depth(): Int {
+        return this.stack.length()
+    }
+
+    pub fn enter(n: Node) {
+        this.stack.push(n.id)
+    }
+
+    pub fn text(s: String): Node {
+        return Node(id: this.add(Role.text, s))
+    }
+
+    pub fn heading(s: String): Node {
+        return Node(id: this.add(Role.heading, s))
+    }
+
+    fn interactive(r: Role, s: String, mask: Int): Node {
+        let id = this.add(r, s)
+        this.actions[id] = mask
+        return Node(id: id)
+    }
+
+    pub fn button(s: String, onTap: fn(): Void): Node {
+        let n = this.interactive(Role.button, s, actionId(Action.tap))
+        this.handler[n.id] = this.handlers.length()
+        this.handlers.push(onTap)
+        return n
+    }
+
+    pub fn buttonInert(s: String): Node {
+        return this.interactive(Role.button, s, actionId(Action.tap))
+    }
+
+    pub fn slider(s: String): Node {
+        return this.interactive(Role.slider, s, actionId(Action.setValue))
+    }
+
+    pub fn toggle(s: String): Node {
+        return this.interactive(Role.toggle, s, actionId(Action.toggle))
+    }
+
+    pub fn toggleWith(s: String, onToggle: fn(): Void): Node {
+        let n = this.interactive(Role.toggle, s, actionId(Action.toggle))
+        this.handler[n.id] = this.handlers.length()
+        this.handlers.push(onToggle)
+        return n
+    }
+
+    pub fn bounds(n: Node, x: Int, y: Int, w: Int, h: Int) {
+        this.x[n.id] = x
+        this.y[n.id] = y
+        this.w[n.id] = w
+        this.h[n.id] = h
+    }
+
+    pub fn len(): Int {
+        return this.role.length()
+    }
+
+    pub fn childCount(n: Node): Int {
+        return this.count[n.id]
+    }
+
+    pub fn focusOn(n: Node) {
+        if n.id >= 0 && n.id < this.role.length() {
+            this.focus = n.id
+        }
+    }
+
+    pub fn focused(): Int {
+        return this.focus
+    }
+
+    /** Activation keys reach the same handler a tap does. */
+    pub fn keyDown(n: Node, k: Key): Bool {
+        if k == Key.enter || k == Key.space {
+            if this.actions[n.id] == 0 {
+                return false
+            }
+            return this.fire(n)
+        }
+        if k == Key.escape {
+            if this.role[n.id] == roleId(Role.dialog) {
+                return this.fire(n)
+            }
+        }
+        return false
+    }
+
+    pub fn can(n: Node, a: Action): Bool {
+        return (this.actions[n.id] & actionId(a)) != 0
+    }
+
+    /** Run the handler attached to a node's tap action. */
+    pub fn tap(n: Node): Bool {
+        if (this.actions[n.id] & actionId(Action.tap)) == 0 {
+            return false
+        }
+        let h = this.handler[n.id]
+        if h < 0 {
+            return false
+        }
+        this.handlers[h]()
+        return true
+    }
+
+    /** Run the handler attached to a node, whatever action asked for it. */
+    fn fire(n: Node): Bool {
+        let h = this.handler[n.id]
+        if h < 0 {
+            return false
+        }
+        this.handlers[h]()
+        return true
+    }
+
+    /** Move focus to the next interactive node in tree order, wrapping once. */
+    pub fn focusNext(): Int {
+        let start = this.focus
+        let seen = this.nextInteractive(start + 1)
+        if seen == -1 {
+            seen = this.nextInteractive(0)
+        }
+        if seen != -1 {
+            this.focus = seen
+        }
+        return seen
+    }
+
+    /** Move focus to the previous interactive node, wrapping once. */
+    pub fn focusPrev(): Int {
+        let start = this.focus
+        let seen = this.prevInteractive(start - 1)
+        if seen == -1 {
+            seen = this.prevInteractive(this.role.length() - 1)
+        }
+        if seen != -1 {
+            this.focus = seen
+        }
+        return seen
+    }
+
+    fn nextInteractive(start: Int): Int {
+        let i = start
+        while i < this.role.length() {
+            if this.actions[i] != 0 {
+                return i
+            }
+            i += 1
+        }
+        return -1
+    }
+
+    fn prevInteractive(start: Int): Int {
+        let i = start
+        while i >= 0 {
+            if this.actions[i] != 0 {
+                return i
+            }
+            i -= 1
+        }
+        return -1
+    }
+
+    /** Deepest node containing the point. Later siblings win. */
+    pub fn hitTest(px: Int, py: Int): Int {
+        return this.hitFrom(0, px, py)
+    }
+
+    fn hitFrom(id: Int, px: Int, py: Int): Int {
+        let hit = -1
+        let c = this.first[id]
+        while c != -1 {
+            let inner = this.hitFrom(c, px, py)
+            if inner != -1 {
+                hit = inner
+            }
+            c = this.next[c]
+        }
+        if hit != -1 {
+            return hit
+        }
+        if px >= this.x[id] && py >= this.y[id] && px < this.x[id] + this.w[id] && py < this.y[id] + this.h[id] {
+            return id
+        }
+        return -1
+    }
+
+    /** First node with this role and name, depth first. */
+    pub fn find(r: Role, n: String): Int {
+        return this.findFrom(0, roleId(r), n)
+    }
+
+    fn findFrom(id: Int, rid: Int, n: String): Int {
+        if this.role[id] == rid && this.name[id] == n {
+            return id
+        }
+        let c = this.first[id]
+        while c != -1 {
+            let hit = this.findFrom(c, rid, n)
+            if hit != -1 {
+                return hit
+            }
+            c = this.next[c]
+        }
+        return -1
+    }
+
+    /** The first interactive node without a name, or -1. */
+    pub fn unnamedInteractive(): Int {
+        return this.unnamedFrom(0)
+    }
+
+    fn unnamedFrom(id: Int): Int {
+        if this.actions[id] != 0 && this.name[id] == "" {
+            return id
+        }
+        let c = this.first[id]
+        while c != -1 {
+            let hit = this.unnamedFrom(c)
+            if hit != -1 {
+                return hit
+            }
+            c = this.next[c]
+        }
+        return -1
+    }
+
+    fn inset(r: Int): Int {
+        if r == 1 { return 16 }
+        if r == 3 { return 12 }
+        if r == 0 { return 0 }
+        return 0
+    }
+
+    fn gapFor(r: Int): Int {
+        if r == 1 { return 8 }
+        if r == 2 { return 8 }
+        if r == 3 { return 8 }
+        return 0
+    }
+
+    fn leafHeight(r: Int): Int {
+        if r == 4 { return 30 }
+        if r == 6 { return 32 }
+        if r == 7 { return 32 }
+        if r == 8 { return 32 }
+        if r == 11 { return 32 }
+        return 22
+    }
+
+    fn intrinsicWidth(id: Int): Int {
+        let r = this.role[id]
+        let text = this.name[id].length() * 8
+        if r == 6 { return text + 28 }
+        if r == 7 { return 180 }
+        if r == 8 { return 180 }
+        if r == 11 { return 220 }
+        if r == 0 { return 0 }
+        return text
+    }
+
+    fn contentWidth(id: Int, avail: Int): Int {
+        let r = this.role[id]
+        if r == 0 {
+            return avail
+        }
+        if r == 1 || r == 3 {
+            return avail - this.inset(r) * 2
+        }
+        if r == 2 {
+            let n = this.childCount(Node(id: id))
+            if n == 0 { return 0 }
+            return (avail - this.gapFor(r) * (n - 1)) / n
+        }
+        let w = this.intrinsicWidth(id)
+        if w < avail { return w }
+        return avail
+    }
+
+    fn measure(id: Int, avail: Int) {
+        let r = this.role[id]
+        let w = this.contentWidth(id, avail)
+        if r == 0 || r == 1 || r == 3 || r == 2 {
+            let total = 0
+            let count = 0
+            let c = this.first[id]
+            while c != -1 {
+                this.measure(c, this.contentWidth(c, w))
+                if r == 2 {
+                    let hh = this.h[c]
+                    if hh > total { total = hh }
+                } else {
+                    total += this.h[c]
+                    count += 1
+                }
+                c = this.next[c]
+            }
+            this.w[id] = w
+            if r == 2 {
+                this.h[id] = total
+            } else {
+                let gaps = 0
+                if count > 1 { gaps = this.gapFor(r) * (count - 1) }
+                this.h[id] = total + gaps + this.inset(r) * 2
+            }
+        } else {
+            this.w[id] = w
+            this.h[id] = this.leafHeight(r)
+        }
+    }
+
+    fn place(id: Int, x: Int, y: Int) {
+        this.x[id] = x
+        this.y[id] = y
+        let r = this.role[id]
+        if r == 0 || r == 1 || r == 3 || r == 2 {
+            let inset = this.inset(r)
+            let gap = this.gapFor(r)
+            let mut_x = x + inset
+            let mut_y = y + inset
+            let cw = this.contentWidth(id, this.w[id])
+            let c = this.first[id]
+            while c != -1 {
+                if r == 2 {
+                    this.place(c, mut_x, mut_y)
+                    mut_x += this.w[c] + gap
+                } else {
+                    this.place(c, mut_x, mut_y)
+                    mut_y += this.h[c] + gap
+                }
+                c = this.next[c]
+            }
+        }
+    }
+
+    /** Lay out a subtree top-down. Widths flow from the parent, heights from
+     * the children, so one measure pass and one place pass settle the tree. */
+    pub fn layout(root: Node, width: Int) {
+        this.measure(root.id, width)
+        this.place(root.id, 0, 0)
+    }
+
+    pub fn dump() {
+        let id = 0
+        let depth = 0
+        while id != -1 {
+            let pad = ""
+            let i = 0
+            while i < depth {
+                pad = pad + "  "
+                i += 1
+            }
+            let mark = ""
+            if id == this.focus {
+                mark = " *"
+            }
+            print(pad + roleName(this.role[id]) + " " + this.name[id] + mark)
+            if this.first[id] != -1 {
+                id = this.first[id]
+                depth += 1
+            } else {
+                let cur = id
+                let d = depth
+                while cur != 0 && this.next[cur] == -1 {
+                    cur = this.parent[cur]
+                    d -= 1
+                }
+                if cur == 0 {
+                    id = -1
+                } else {
+                    id = this.next[cur]
+                    depth = d
+                }
+            }
+        }
+    }
+}
+
+/** The builder a view writes into. */
+pub class Build {
+    let tree: Tree
+    let root: Node
+
+    init(tree: Tree) {
+        this.tree = tree
+        this.root = tree.open(Role.root, "")
+    }
+
+    pub fn root(): Node {
+        return this.root
+    }
+
+    pub fn column(): Node {
+        return this.tree.open(Role.column, "")
+    }
+
+    pub fn row(): Node {
+        return this.tree.open(Role.row, "")
+    }
+
+    pub fn section(title: String): Node {
+        let n = this.tree.open(Role.section, "")
+        this.tree.heading(title)
+        return n
+    }
+
+    pub fn close() {
+        this.tree.close()
+    }
+
+    pub fn text(s: String): Node {
+        return this.tree.text(s)
+    }
+
+    pub fn heading(s: String): Node {
+        return this.tree.heading(s)
+    }
+
+    pub fn button(s: String, onTap: fn(): Void): Node {
+        return this.tree.button(s, onTap)
+    }
+
+    pub fn buttonInert(s: String): Node {
+        return this.tree.buttonInert(s)
+    }
+
+    pub fn slider(s: String): Node {
+        return this.tree.slider(s)
+    }
+
+    pub fn toggle(s: String): Node {
+        return this.tree.toggle(s)
+    }
+}
+
+test fn buildsNestedTreeInCreationOrder() {
+    let t = new Tree()
+    let b = new Build(t)
+    let col = b.column()
+    b.text("one")
+    b.text("two")
+    b.close()
+    assert(t.len() == 4, "root plus column plus two texts")
+    assert(t.childCount(col) == 2, "two children")
+    assert(t.find(Role.text, "two") == 3, "depth-first order")
+}
+
+test fn hitTestPrefersTheDeepestNode() {
+    let t = new Tree()
+    let b = new Build(t)
+    let col = b.column()
+    let btn = b.buttonInert("Save")
+    t.bounds(col, 0, 0, 200, 100)
+    t.bounds(btn, 10, 10, 80, 24)
+    assert(t.hitTest(20, 20) == btn.id, "inside the button")
+    assert(t.hitTest(150, 90) == col.id, "inside the column only")
+    assert(t.hitTest(300, 300) == -1, "outside")
+}
+
+test fn tapRunsTheAttachedHandler() {
+    let t = new Tree()
+    let b = new Build(t)
+    let hits: Array<Int> = []
+    let btn = b.button("Add", () => { hits.push(1) })
+    assert(t.tap(btn), "tapped")
+    assert(hits.length() == 1, "handler ran once")
+}
+
+test fn layoutStacksColumnChildren() {
+    let t = new Tree()
+    let b = new Build(t)
+    b.column()
+    let first = b.buttonInert("First")
+    let second = b.buttonInert("Second")
+    b.close()
+    t.layout(b.root(), 400)
+    assert(t.x[first.id] == 16, "children start at the column inset")
+    assert(t.y[second.id] > t.y[first.id] + t.h[first.id], "second sits below the first")
+    assert(t.hitTest(t.x[second.id] + 2, t.y[second.id] + 2) == second.id, "hit lands on the second button")
+}
+
+test fn enterAndTapReachTheSameHandler() {
+    let t = new Tree()
+    let b = new Build(t)
+    let hits: Array<Int> = []
+    let btn = b.button("Add", () => { hits.push(1) })
+    t.focusOn(btn)
+    assert(t.keyDown(btn, Key.enter), "enter handled")
+    assert(t.tap(btn), "tap handled")
+    assert(hits.length() == 2, "one handler, two sources")
+}
+
+test fn focusMovesThroughInteractiveNodesOnly() {
+    let t = new Tree()
+    let b = new Build(t)
+    b.text("label")
+    let first = b.buttonInert("One")
+    b.text("more")
+    let second = b.toggle("Two")
+    b.close()
+    assert(t.focusNext() == first.id, "skips text")
+    assert(t.focusNext() == second.id, "next interactive")
+    assert(t.focusNext() == first.id, "wraps")
+    assert(t.focusPrev() == second.id, "backwards wraps")
+}
+
+test fn closingPastTheRootKeepsOneTree() {
+    let t = new Tree()
+    let b = new Build(t)
+    b.column()
+    b.close()
+    b.close()
+    b.close()
+    b.text("after")
+    assert(t.len() == 3, "root, column, text")
+    assert(t.childCount(b.root()) == 2, "the late text still belongs to the root")
+}
+
+test fn everyInteractiveNodeHasAName() {
+    let t = new Tree()
+    let b = new Build(t)
+    b.slider("Text size")
+    b.toggle("Reduce motion")
+    b.buttonInert("Reset")
+    assert(t.unnamedInteractive() == -1, "all named")
+}

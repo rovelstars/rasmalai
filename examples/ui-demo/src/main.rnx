@@ -1,0 +1,62 @@
+import { Build, Key, Node, Role, Tree } from "@std/ui"
+
+class Appearance {
+    let scheme: String = "system"
+    let reduceMotion: Bool = false
+    let resets: Int = 0
+}
+
+fn screen(b: Build, s: Appearance) {
+    b.column()
+    b.heading("Appearance")
+    b.text("Choose how runixOS looks and moves.")
+
+    b.section("Theme")
+    b.row()
+    b.button("System", () => { s.scheme = "system" })
+    b.button("Light", () => { s.scheme = "light" })
+    b.button("Dark", () => { s.scheme = "dark" })
+    b.close()
+    b.close()
+
+    b.section("Text size")
+    b.slider("Text size")
+    b.close()
+
+    b.toggle("Reduce motion")
+    b.button("Reset", () => {
+        s.scheme = "system"
+        s.resets += 1
+    })
+    b.close()
+}
+
+fn Main(): Int {
+    let t = new Tree()
+    let b = new Build(t)
+    let s = new Appearance()
+
+    screen(b, s)
+    t.layout(b.root(), 640)
+    print("size:", t.w[0], t.h[0])
+    t.dump()
+
+    let first = t.focusNext()
+    print("focus:", first)
+    if first != -1 {
+        print("enter fired:", t.keyDown(Node(id: first), Key.enter))
+    }
+
+    let reset = t.find(Role.button, "Reset")
+    t.focusOn(Node(id: reset))
+    let l = t.find(Role.button, "Light")
+    let d = t.find(Role.button, "Dark")
+    t.tap(Node(id: l))
+    print("scheme after Light:", s.scheme)
+    t.tap(Node(id: d))
+    print("scheme after Dark:", s.scheme)
+    t.tap(Node(id: reset))
+    print("resets:", s.resets, "scheme:", s.scheme)
+    print("hit at 20,60:", t.hitTest(20, 60))
+    return 0
+}
