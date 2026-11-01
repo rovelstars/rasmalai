@@ -110,6 +110,9 @@ pub enum Command {
         /// Package selection for workspace builds
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
+        /// Read the manifest, lock, and capability ceiling from this project
+        #[arg(long, value_name = "DIR")]
+        context: Option<PathBuf>,
         /// Parallel worker count (or RNX_JOBS). Default: available parallelism
         #[arg(long, env = "RNX_JOBS")]
         jobs: Option<usize>,
@@ -156,6 +159,9 @@ pub enum Command {
         /// Package selection
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
+        /// Read the manifest, lock, and capability ceiling from this project
+        #[arg(long, value_name = "DIR")]
+        context: Option<PathBuf>,
         /// Verify Project.deplock checksums (floating ranges always resolve from the lock; accepted for compatibility)
         #[arg(long)]
         locked: bool,
@@ -262,6 +268,25 @@ pub enum Command {
         /// Package selection
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
+    },
+    /// Resolve, download, and precompile every dependency (lock + fetch)
+    Install {
+        /// Package selection
+        #[arg(short = 'p', long = "package")]
+        package: Option<String>,
+    },
+    /// Download and run a CLI tool from a package (npx-style)
+    X {
+        /// Package name, optionally versioned (`@scope/tool@1.2.3`)
+        package: String,
+        /// Bin name from entries.bins (optional when the package declares exactly one)
+        bin: Option<String>,
+        /// Approve the package's declared capabilities without prompting
+        #[arg(long)]
+        yes: bool,
+        /// Arguments passed to the tool
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// Download libraries from the registry into the cache
     Download {
@@ -524,6 +549,9 @@ pub enum Command {
         /// Ignore the incremental input/output check
         #[arg(long)]
         force: bool,
+        /// Rerun the task when the selected package's files change (Ctrl-C to stop)
+        #[arg(long)]
+        watch: bool,
     },
     /// Generate shell completion scripts
     Completions {

@@ -162,7 +162,7 @@ fn env_flag_enabled(name: &str) -> bool {
     }
 }
 
-pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, lib_prefix: Option<String>, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, deny_perf_lints: Vec<String>, show_perf_notes: bool, fix: bool, fix_force: bool, fix_keep_backup: bool, expand_macros: bool, verbose: bool, quiet: bool, prefer: frontend::native::NativePrefer) {
+pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, lib_prefix: Option<String>, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, context: Option<std::path::PathBuf>, deny_perf_lints: Vec<String>, show_perf_notes: bool, fix: bool, fix_force: bool, fix_keep_backup: bool, expand_macros: bool, verbose: bool, quiet: bool, prefer: frontend::native::NativePrefer) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let deny_raw: Vec<String> = if deny_perf_lints.is_empty() {
@@ -194,11 +194,20 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 std::process::exit(2);
             }
             let show_notes = show_perf_notes || env_flag_enabled("RNX_SHOW_PERF_NOTES");
-            let target = cli::resolve_scope_target(path.as_deref(), package.as_deref())
+            let mut target = cli::resolve_scope_target(path.as_deref(), package.as_deref())
                 .unwrap_or_else(|e| {
                     eprintln!("{e}");
                     std::process::exit(1);
                 });
+            if let Some(dir) = context.as_deref() {
+                match resolve_context_root(dir) {
+                    Some(root) => target.scope_root = Some(root),
+                    None => {
+                        eprintln!("error: --context {} has no Project.config", dir.display());
+                        std::process::exit(1);
+                    }
+                }
+            }
             let input = target.entry;
             let root = project_root_for(&input);
             let scope_root = target.scope_root.clone().unwrap_or_else(|| root.clone());

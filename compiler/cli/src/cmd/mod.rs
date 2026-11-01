@@ -1,3 +1,15 @@
+pub(super) fn resolve_context_root(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    frontend::project::find_workspace_root(dir)
+        .or_else(|| frontend::project::find_project_root(dir))
+        .or_else(|| {
+            if dir.join(frontend::project::MANIFEST_FILE).is_file() {
+                Some(dir.to_path_buf())
+            } else {
+                None
+            }
+        })
+}
+
 fn parse_opt_level(s: &str) -> u8 {
     match s {
         "0" => 0,
@@ -81,6 +93,7 @@ mod unpack;
 mod unpublish;
 mod update;
 mod vendor;
+mod x;
 
 use self::add::run_add;
 use self::audit::run_audit;
@@ -114,6 +127,7 @@ use self::unpack::run_unpack;
 use self::unpublish::run_unpublish;
 use self::update::run_update;
 use self::vendor::run_vendor;
+use self::x::run_x;
 
 pub(super) fn dispatch(
     command: cli::args::Command,
@@ -141,6 +155,7 @@ pub(super) fn dispatch(
                 path,
                 entry,
                 package,
+                context,
                 locked,
                 opt_level,
                 backend,
@@ -153,7 +168,7 @@ pub(super) fn dispatch(
                 expand_macros,
                 args: rest,
             } => {
-                run_run(path, entry, package, locked, opt_level, backend, time_passes, trace, perf_map, debug, jobs, memory_cap, expand_macros, verbose, rest, prefer);
+                run_run(path, entry, package, context, locked, opt_level, backend, time_passes, trace, perf_map, debug, jobs, memory_cap, expand_macros, verbose, rest, prefer);
             }
             cli::args::Command::Explain { code } => {
                 run_explain(code);
@@ -178,6 +193,7 @@ pub(super) fn dispatch(
                 jobs,
                 memory_cap,
                 package,
+                context,
                 deny_perf_lints,
                 show_perf_notes,
                 fix,
@@ -185,7 +201,7 @@ pub(super) fn dispatch(
                 fix_keep_backup,
                 expand_macros,
             } => {
-                run_build(path, entry, release, lib, lib_prefix, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, deny_perf_lints, show_perf_notes, fix, fix_force, fix_keep_backup, expand_macros, verbose, quiet, prefer);
+                run_build(path, entry, release, lib, lib_prefix, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, context, deny_perf_lints, show_perf_notes, fix, fix_force, fix_keep_backup, expand_macros, verbose, quiet, prefer);
             }
             cli::args::Command::Init { name } => {
                 run_init(name);
@@ -214,6 +230,13 @@ pub(super) fn dispatch(
             }
             cli::args::Command::Fetch { package } => {
                 run_fetch(package);
+            }
+            cli::args::Command::Install { package } => {
+                run_lock(package.clone(), prefer);
+                run_fetch(package);
+            }
+            cli::args::Command::X { package, bin, yes, args } => {
+                run_x(package, bin, yes, args);
             }
             cli::args::Command::Download { packages, local, registry } => {
                 run_download(packages, local, registry);
@@ -290,8 +313,8 @@ pub(super) fn dispatch(
             } => {
                 run_test(filter, package, opt_level, backend, exact, nocapture, jobs, memory_cap, verbose, quiet, no_color);
             }
-            cli::args::Command::Task { name, package, all, explain, allow, force } => {
-                run_task(name, package, all, explain, allow, force, prefer);
+            cli::args::Command::Task { name, package, all, explain, allow, force, watch } => {
+                run_task(name, package, all, explain, allow, force, watch, prefer);
             }
             cli::args::Command::Setup { editor } => {
                 run_setup(editor);

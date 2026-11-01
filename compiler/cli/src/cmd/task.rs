@@ -34,6 +34,7 @@ pub(super) fn run_task(
     explain: bool,
     allow: Vec<String>,
     force: bool,
+    watch: bool,
     prefer: frontend::native::NativePrefer,
 ) {
     let project = match select_project(package.as_deref()) {
@@ -77,6 +78,24 @@ pub(super) fn run_task(
                 }
             }
             return;
+        }
+        Some(task) if watch && !explain => {
+            let root = project.dir.clone();
+            println!("watching {} (Ctrl-C to stop)", root.display());
+            loop {
+                let options = cli::task::RunOptions::new(allow.clone(), force, false);
+                if let Err(e) = cli::task::run_task(&project, &task, &options, prefer) {
+                    eprintln!("{e}");
+                }
+                let baseline = cli::task::tree_fingerprint(&root);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    if cli::task::tree_fingerprint(&root) != baseline {
+                        println!("change detected, rerunning");
+                        break;
+                    }
+                }
+            }
         }
         Some(task) => {
             if explain {

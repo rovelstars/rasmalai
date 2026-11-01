@@ -237,8 +237,8 @@ print(quote(2.0));
 | `rnx check` | rapid lexer/parser/module/typecheck, no codegen | `[paths...]`, `-p`, `--json` |
 | `rnx dev` | watch sources, hot-swap function bodies without restart | `[path]`, `--entry F`, `--no-rerun`, `--mcp` |
 | `rnx repl` | interactive JIT shell | none |
-| `rnx run` | execute program (Cranelift JIT by default) | `--entry F`, `--backend <interpreter\|cranelift\|llvm>`, `-p`, `--locked`, `-O`, `-- <args>` |
-| `rnx build` | link native binary into `.rnx-cache/build/{dev,release}/<name>` | `--release`, `--lib`, `--emit-obj`, `--target`, `--entry F`, `-p`, `--locked`, `-O`, `-g/--debug`, `--deny-perf-lints[=codes]`, `--show-perf-notes`, `--fix[--force]`, `--fix-keep-backup` |
+| `rnx run` | execute program (Cranelift JIT by default) | `--entry F`, `--backend <interpreter\|cranelift\|llvm>`, `-p`, `--context <dir>`, `--locked`, `-O`, `-- <args>` |
+| `rnx build` | link native binary into `.rnx-cache/build/{dev,release}/<name>` | `--release`, `--lib`, `--emit-obj`, `--target`, `--entry F`, `-p`, `--context <dir>`, `--locked`, `-O`, `-g/--debug`, `--deny-perf-lints[=codes]`, `--show-perf-notes`, `--fix[--force]`, `--fix-keep-backup` |
 | `rnx test` | run `test fn` blocks (Cranelift JIT by default) | `[filter]`, `-p`, `--backend`, `-O`, `--exact` |
 | `rnx bench` | time `bench` blocks (LLVM release by default) | `--filter`, `-p`, `--backend`, `--release/--no-release` |
 | `rnx doc` | docs to `target/doc` (HTML or `--json`) | `-p`, `--open`, `--no-deps`, `--all`/`--private`, `--json`, `--stdlib`, `--out-dir` |
@@ -251,19 +251,25 @@ print(quote(2.0));
 | `rnx explain` | diagnostic text plus fix | `<code>` |
 | `rnx audit` | report capability and tier surface per package, plus advisory check against the lockfile | `--path <dir>`, `--json`, `--export-manifest`, `--licenses`, `--deny-license <spdx>`, `--registry <url>` |
 | `rnx bindgen` | generate `bindgen.rnx` plus OCI annotations from C headers | `--header <file>`, `--native-lib <lib>`, `--pkg-name <name>`, `--out <dir>`, `--target`, `--prefix`, `--skip`, `--include`, `--case keep\|camel\|pascal`, `--rename old=new`, `--check` |
-| `rnx task` | run a local task or an exported task from a direct dependency (`bindgen` replays the driver table) | `[<ref>]` (lists local tasks when omitted), `--all`, `--explain <ref>`, `--allow <pkg#task>`, `--force`, `-p <package>` |
+| `rnx task` | run a local task or an exported task from a direct dependency (`bindgen` replays the driver table) | `[<ref>]` (lists local tasks when omitted), `--all`, `--explain <ref>`, `--allow <pkg#task>`, `--force`, `--watch`, `-p <package>` |
 | `rnx completions` | shell completion scripts | `bash`, `zsh`, `fish`, `powershell`, `elvish` |
 | `rnx pack` | deterministic ustar plus SHA-256 | `-p`, `--out-dir`, `--gzip/-z` |
 | `rnx unpack` | verify and extract archive | `--out-dir <dir>` |
 | `rnx init` | scaffold a new project | `[name]` |
 | `rnx setup` | configure editor LSP and highlighting | `<vscode\|zed\|helix\|neovim>` |
 | `rnx lock/fetch/vendor` | lockfiles, git-dependency cache, dep precompilation, and local source staging | `[packages]`, `--dir <path>` |
+| `rnx install` | resolve, download, and precompile every dependency (lock then fetch) | `-p <package>` |
+| `rnx x` | download and run a CLI tool from a package | `<package>[@version]`, `[bin]`, `--yes`, `-- <args>` |
 | `rnx download` | seed the registry cache with libraries (`@std/*` when no names are given) | `[packages]`, `--local`, `--registry <url>` |
 | `rnx doctor` | check the stdlib cache pin and contents, plus dep product status | `--repair-std`, `--registry <url>` |
 
 Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners. `--prefer-system` resolves every native dependency from the host library and `--prefer-bundled` from bundled OCI blobs; the two conflict, and per-dependency `native` pins override either.
 
 `rnx download` with no package names resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). With names, it downloads `name` or `name@range` libraries (the same SemVer grammar as dependency requirements, with the engine-range check after resolve) into the global cache. With `--local`, it targets the project-local cache (`.rnx-cache/registry/`) instead, with the pin recorded at `.rnx-cache/std-pin.json`. Global downloads land in the content-addressed store (`store/` under the cache root: chunk blobs plus one verified tree per manifest digest; see [Packages and Registries](/manual/18-packages-and-registries)); `--local` keeps the older per-version project layout instead. The installer runs `rnx download` automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. `download` and `doctor` accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default, which is how a self-hosted registry seeds its own standard library. With an empty cache and no network, `@std/*` imports fail as `E108` naming the registry instead of falling back silently. There is no embedded fallback: the binary carries no stdlib bytes. To seed or hack on the standard library without a registry instead, run `rnx vendor @std/... --dir <DIR>` from a checkout (see below), then point `RNX_VENDOR_DIR` at the staged directory: `@std/*` imports resolve straight from that tree with zero network, the same local-source override that covers every registry package (see [Packages and Registries](/manual/18-packages-and-registries)). Distributors bundle a pre-seeded cache directory and set `RNX_CACHE_HOME` at it. No second mechanism exists.
+
+`rnx install` runs `lock` and then `fetch`, so a fresh checkout gets a lockfile and a warm dependency cache in one step. `rnx run` and `rnx check` already download missing registry packages on demand, but they never write the lock.
+
+`rnx x <package> [bin] [-- args]` resolves and downloads a package, picks a bin from `entries.bins` (or `entries.main` when no bin is declared), prints the package's declared capabilities, asks once, and runs the entry in your current directory. `--yes` approves in CI. It does not add the package to your project or write a lock.
 
 `rnx fetch` downloads every dependency of the current scope and then precompiles the scope: it loads each member's entry module so the dependency resolver records its products. Each product is mirrored from the project cache into the global store at `products/<registry-host>/<package>/<version>/<toolchain>/` (git dependencies under `products/git/<name>/<rev>/<toolchain>/`), next to a `manifest` file holding the content hash, dep set, and toolchain. A product is reused only when the exact pinned version, the toolchain hash, and the content digest all match; floating ranges never populate, and a missing or corrupt entry falls back to the normal path. `rnx build` also keeps whole-program codegen units in a content-keyed global `objects/` pool, so rebuilding the same program with an empty project cache skips LLVM emission. `rnx doctor` lists each pinned dependency as `cached` or `absent` (floating ranges are reported as unpinned), and `rnx cache status` reports the content-addressed store usage alongside the other pools, and `rnx cache prune` reclaims the pools plus deletes the old `registry/` tree left by previous versions wholesale (everything in it re-derives via `rnx download`); the store itself is retained.
 
@@ -372,7 +378,9 @@ rnx task core#build           # workspace member
 
 A task from a workspace member is part of the same project and runs without approval. A task from an external dependency is resolved down to its leaves, a file or a shell script, before anything runs. The graph is printed, and the approval is stored in `.rnx/tasks.consent` keyed by content hash, so a changed file or script prompts again. `rnx task --allow <pkg#task>` approves a graph in CI. Local tasks need no approval.
 
-A task that declares `inputs` or `outputs` is skipped when the recorded input hash still matches and every output exists. `rnx task --force` runs it anyway. A task with neither field always runs.
+A task that declares `inputs` or `outputs` is skipped when the recorded input hash still matches and every output exists. `rnx task --force` runs it anyway. A task with neither field always runs. `rnx task --watch` reruns when the selected package's files change, after the first run finishes.
+
+`rnx run` and `rnx build` accept `--context <dir>`, which reads the manifest, lock, and capability ceiling from that project while running the given file. `rnx task` passes it for file bodies, so a task from a dependency runs with the invoking project's grants instead of the library's.
 
 No command other than `rnx task` runs a task, and there are no lifecycle hooks. Exported tasks are the ones that travel: publishing keeps them in the stored `Project.config` with their `description`, `runs_in`, `inputs`, and `outputs`, and drops private tasks along with `bindgen`. An exported task's text is public, so name an environment variable and never paste the token.
 
