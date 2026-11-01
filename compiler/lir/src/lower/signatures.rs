@@ -330,16 +330,35 @@ impl Lower {
                 })?;
                 let f = self.out.functions[mr.id].clone();
                 let have = &f.sig_params[1..];
+                let generic = |t: &LirType| match t {
+                    LirType::Obj(n) => {
+                        iface.type_params.iter().any(|p| p == n)
+                            || self.out.classes[ci].type_params.iter().any(|p| p == n)
+                    }
+                    _ => false,
+                };
                 if have.len() != m.params.len()
                     || have
                         .iter()
                         .zip(m.params.iter())
-                        .any(|(a, b)| a != b && *b != LirType::Any)
-                    || (f.ret != m.ret && m.ret != LirType::Any && !self.ret_conforms(&f.ret, &m.ret))
+                        .any(|(a, b)| a != b && *b != LirType::Any && !generic(b))
+                    || (f.ret != m.ret
+                        && m.ret != LirType::Any
+                        && !generic(&m.ret)
+                        && !generic(&f.ret)
+                        && !self.ret_conforms(&f.ret, &m.ret))
                 {
                     return Err(Lower::derr(
                         Code::E108,
-                        format!("`{cname}.{}` signature does not match interface `{}`", m.name, iface.name),
+                        format!(
+                            "`{cname}.{}` signature does not match interface `{}`: have params {:?} ret {:?}, want params {:?} ret {:?}",
+                            m.name,
+                            iface.name,
+                            have,
+                            f.ret,
+                            m.params,
+                            m.ret
+                        ),
                         span,
                     ));
                 }
