@@ -6,29 +6,29 @@ class Appearance {
     let resets: Int = 0
 }
 
-fn screen(b: Build, s: Appearance) {
-    b.column()
-    b.heading("Appearance")
-    b.text("Choose how runixOS looks and moves.")
+fn screen(b: Build, s: Appearance): Node {
+    let col = b.column()
+    col.addChild(b.heading("Appearance"))
+    col.addChild(b.text("Choose how runixOS looks and moves."))
 
-    b.section("Theme")
-    b.row()
-    b.button("System", () => { s.scheme = "system" })
-    b.button("Light", () => { s.scheme = "light" })
-    b.button("Dark", () => { s.scheme = "dark" })
-    b.close()
-    b.close()
+    let theme = b.section("Theme")
+    let row = b.row()
+    row.addChild(b.button("System", () => { s.scheme = "system" }))
+    row.addChild(b.button("Light", () => { s.scheme = "light" }))
+    row.addChild(b.button("Dark", () => { s.scheme = "dark" }))
+    theme.addChild(row)
+    col.addChild(theme)
 
-    b.section("Text size")
-    b.slider("Text size")
-    b.close()
+    let size = b.section("Text size")
+    size.addChild(b.slider("Text size"))
+    col.addChild(size)
 
-    b.toggle("Reduce motion")
-    b.button("Reset", () => {
+    col.addChild(b.toggle("Reduce motion"))
+    col.addChild(b.button("Reset", () => {
         s.scheme = "system"
         s.resets += 1
-    })
-    b.close()
+    }))
+    return col
 }
 
 fn Main(): Int {
@@ -36,26 +36,25 @@ fn Main(): Int {
     let b = new Build(t)
     let s = new Appearance()
 
-    screen(b, s)
-    t.layout(b.root(), 640)
-    print("size:", t.w[0], t.h[0])
+    let root = screen(b, s)
+    t.layout(root, 640)
+    print("size:", t.w[root.id], t.h[root.id])
     print(t.snapshot())
 
     let first = t.focusNext()
     print("focus:", first)
     if first != -1 {
-        print("enter fired:", t.keyDown(Node(id: first), Key.enter))
+        print("enter fired:", t.keyDown(Node(tree: t, id: first), Key.enter))
     }
 
     let reset = t.find(Role.button, "Reset")
-    t.focusOn(Node(id: reset))
     let l = t.find(Role.button, "Light")
     let d = t.find(Role.button, "Dark")
-    t.tap(Node(id: l))
+    t.tap(Node(tree: t, id: l))
     print("scheme after Light:", s.scheme)
-    t.tap(Node(id: d))
+    t.tap(Node(tree: t, id: d))
     print("scheme after Dark:", s.scheme)
-    t.tap(Node(id: reset))
+    t.tap(Node(tree: t, id: reset))
     print("resets:", s.resets, "scheme:", s.scheme)
     print("hit at 20,60:", t.hitTest(20, 60))
     return 0

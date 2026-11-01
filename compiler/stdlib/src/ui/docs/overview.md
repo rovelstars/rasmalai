@@ -23,9 +23,10 @@ all an author sees.
 unless the package declares a cabi file, so the core exports classes and enums
 and keeps free helpers package-internal.
 
-**A builder, not a callback.** Views receive a `Build` and emit `open`/`close`
-pairs. The UI block syntax compiles to exactly these calls, so the sugar adds no
-runtime concept.
+**A context, then explicit children.** Views receive a `Build`, create nodes
+with its factories, and attach them with `addChild`. A node carries its tree, so
+attachment needs no ambient state. The trailing-block syntax compiles to exactly
+these calls, so the sugar adds no runtime concept.
 
 **Two layout passes.** `measure` walks down with the width a node receives and
 back up with the height it needs. `place` walks down once more and writes
