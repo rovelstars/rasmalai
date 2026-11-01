@@ -67,7 +67,7 @@ let mult = (x: Int) => x * factor;
 assert(mult(5) == 50, "capture");
 ```
 
-Closures capture their environment by value and are first-class: they pass as arguments, store in fields, and call anywhere. Captures keep heap values alive. Parameter annotations may be omitted when the call site determines the shape: `map`/`filter` infer the element type from the receiver, and plain functions infer from `fn`-typed parameters.
+Closures capture their environment by value and are first-class: they pass as arguments, store in fields, and call anywhere. Captures keep heap values alive for as long as the closure lives, including when the closure is stored in a field, an array, or another closure. Parameter annotations may be omitted when the call site determines the shape: `map`/`filter` infer the element type from the receiver, and plain functions infer from `fn`-typed parameters.
 
 ```rnx
 fn apply(x: Int, f: fn(Int): Int): Int {

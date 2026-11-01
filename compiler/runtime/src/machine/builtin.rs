@@ -1995,6 +1995,31 @@ impl<'a> Machine<'a> {
                     fields: fields.clone(),
                 };
             }
+            Value::Closure(c) => {
+                let heap = c.captures.iter().any(|cap| {
+                    matches!(
+                        cap,
+                        Value::Obj { .. }
+                            | Value::Array { .. }
+                            | Value::Enum { .. }
+                            | Value::Struct { .. }
+                            | Value::Closure(_)
+                    )
+                });
+                if !heap {
+                    return v;
+                }
+                let mut caps = Vec::with_capacity(c.captures.len());
+                for cap in &c.captures {
+                    caps.push(self.shared(cap.clone()));
+                }
+                return Value::Closure(crate::value::ClosureVal {
+                    func: c.func,
+                    captures: caps,
+                    decay: c.decay,
+                    decay_this: c.decay_this,
+                });
+            }
             _ => {}
         }
         v
