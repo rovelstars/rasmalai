@@ -1,0 +1,13 @@
+[package]
+name = "parley-cabi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "parley_cabi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+parley = "0.12"
+
+[workspace]

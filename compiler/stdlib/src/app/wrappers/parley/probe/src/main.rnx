@@ -1,0 +1,22 @@
+import { ByteBuffer } from "@std/bytes"
+import {
+    fn parley_abi_version(): Int,
+    fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float,
+} from native "parley_cabi"
+
+fn widthOf(s: String, size: Float): Float {
+    let b = ByteBuffer.fromString(s)
+    unsafe {
+        return parley_measure(Pointer.fromAddress<Byte>(b.address()), b.length(), size)
+    }
+}
+
+fn Main(): Int {
+    print("hello 16:", widthOf("Hello", 16.0))
+    print("hello 32:", widthOf("Hello", 32.0))
+    print("long 16:", widthOf("Hello world", 16.0))
+    unsafe {
+        print("abi:", parley_abi_version())
+    }
+    return 0
+}
