@@ -177,7 +177,7 @@ fn object_native_link_runs() {
             linker::LinkInput::ArchiveBytes(runtime::archive::BYTES.to_vec()),
         ],
         &exe,
-        &linker::native::StaticOpts { entry: "_start".to_string(), icf: false, target: "x86_64-unknown-linux-gnu".to_string(), strip: false },
+        &linker::native::StaticOpts { entry: "_start".to_string(), icf: false, target: "x86_64-unknown-linux-gnu".to_string(), strip: false, lib_dirs: Vec::new(), runpath: None },
     )
     .unwrap_or_else(|e| panic!("native link failed: {e}"));
     let (ncode, nout) = run_exe(&exe);

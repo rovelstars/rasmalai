@@ -79,6 +79,25 @@ run_probe vello "heading ink: true" "corner: 20,22,26,255" "round center: 200,50
 (cd "$app/tests" && "$rnx" run --backend "$backend")
 (cd "$repo/examples/app-window" && "$rnx" check)
 
+for profile in dev release; do
+    if [ "$profile" = release ]; then
+        (cd "$repo/examples/app-window" && "$rnx" build --release)
+    else
+        (cd "$repo/examples/app-window" && "$rnx" build)
+    fi
+    bin="$repo/examples/app-window/.rnx-cache/build/$profile/app-window"
+    if ldd "$bin" | grep -q "not found"; then
+        echo "built app has unresolved libraries" >&2
+        ldd "$bin" >&2
+        exit 1
+    fi
+    out=$(cd "$repo/examples/app-window" && RUNIX_SMOKE=1 env -u LD_LIBRARY_PATH "$bin")
+    echo "$out" | grep -q "smoke: 0" || {
+        echo "built $profile app did not run without LD_LIBRARY_PATH" >&2
+        exit 1
+    }
+done
+
 for b in cranelift llvm; do
     out=$(cd "$repo/examples/app-demo" && "$rnx" run --backend "$b")
     echo "$out"

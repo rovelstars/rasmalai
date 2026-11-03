@@ -39,6 +39,8 @@ fn static_opts() -> native::StaticOpts {
         icf: true,
         target: "x86_64-unknown-linux-gnu".to_string(),
         strip: false,
+        lib_dirs: Vec::new(),
+        runpath: None,
     }
 }
 

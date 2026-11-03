@@ -493,6 +493,13 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 .filter(|n| n.archive.is_none())
                 .map(|n| n.lib.clone())
                 .collect();
+            let mut system_lib_dirs: Vec<std::path::PathBuf> = link_plan
+                .iter()
+                .filter(|n| n.archive.is_none())
+                .flat_map(|n| n.lib_dirs.iter().cloned())
+                .collect();
+            system_lib_dirs.sort();
+            system_lib_dirs.dedup();
             let user_objects: Vec<linker::LinkInput> = built
                 .objects
                 .into_iter()
@@ -557,6 +564,8 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                         icf: release,
                         target: target.0.clone(),
                         strip: release,
+                        lib_dirs: system_lib_dirs.clone(),
+                        runpath: Some(system_lib_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":")),
                     },
                     &sysroot::Sysroot::discover(None),
                 )
@@ -578,6 +587,8 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                             icf: true,
                             target: target.0.clone(),
                             strip: true,
+                            lib_dirs: system_lib_dirs.clone(),
+                            runpath: Some(system_lib_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":")),
                         },
                         &cache,
                     )
@@ -587,6 +598,10 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                         Some(lib_dir) => {
                             let mut dyn_libs = vec!["runtime_native".to_string()];
                             dyn_libs.extend(system_lib_names.iter().cloned());
+                            let mut lib_dirs = vec![lib_dir.clone()];
+                            lib_dirs.extend(system_lib_dirs.iter().cloned());
+                            let mut runpath = vec![lib_dir.display().to_string()];
+                            runpath.extend(system_lib_dirs.iter().map(|d| d.display().to_string()));
                             let mut dyn_objects = user_objects;
                             dyn_objects.extend(bundled_archives);
                             linker::native::native_link_dynamic(
@@ -596,9 +611,9 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                                     entry: "_start".to_string(),
                                     icf: false,
                                     target: target.0.clone(),
-                                    lib_dirs: vec![lib_dir.clone()],
+                                    lib_dirs,
                                     libs: dyn_libs,
-                                    runpath: Some(lib_dir.display().to_string()),
+                                    runpath: Some(runpath.join(":")),
                                     strip: false,
                                 },
                             )
@@ -620,6 +635,8 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                                     icf: false,
                                     target: target.0.clone(),
                                     strip: false,
+                                    lib_dirs: system_lib_dirs.clone(),
+                                    runpath: Some(system_lib_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":")),
                                 },
                                 &cache,
                             )
@@ -643,7 +660,11 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                             &dyn_objects,
                             std::path::Path::new(&out_path),
                             &target,
-                            &linker::DynLink { lib_dir, libs: dyn_libs },
+                            &linker::DynLink {
+                                lib_dir,
+                                lib_dirs: system_lib_dirs.clone(),
+                                libs: dyn_libs,
+                            },
                         )
                     }
                     None => {
