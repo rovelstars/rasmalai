@@ -201,6 +201,7 @@ struct State {
     scroll_acc: f32,
     last_a: i32,
     last_b: i32,
+    generation: u32,
 }
 
 struct Host {
@@ -271,20 +272,29 @@ impl State {
             scratch: None,
             blitter,
         });
+        self.generation += 1;
         true
     }
 
     fn resize_gpu(&mut self) {
+        let width = self.width.max(1);
+        let height = self.height.max(1);
         let Some(gpu) = &mut self.gpu else {
             return;
         };
-        gpu.config.width = self.width.max(1);
-        gpu.config.height = self.height.max(1);
+        if gpu.config.width == width && gpu.config.height == height {
+            return;
+        }
+        if std::env::var_os("RUNIX_TRACE").is_some() {
+            eprintln!("target {}x{}", width, height);
+        }
+        gpu.config.width = width;
+        gpu.config.height = height;
         gpu.surface.configure(&gpu.resources.device, &gpu.config);
-        let (target, view) =
-            make_target(&gpu.resources.device, gpu.config.width, gpu.config.height);
+        let (target, view) = make_target(&gpu.resources.device, width, height);
         gpu.target = target;
         gpu.target_view = view;
+        self.generation += 1;
     }
 
     fn rebuild(&mut self) {
@@ -502,6 +512,8 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
     ) {
         if let xdg_surface::Event::Configure { serial } = event {
             xdg_surface.ack_configure(serial);
+            let old_width = state.width;
+            let old_height = state.height;
             state.width = state.pending_width.max(1);
             state.height = state.pending_height.max(1);
             state.configured = true;
@@ -510,9 +522,11 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
             } else {
                 state.create_gpu();
             }
-            state
-                .events
-                .push_back(Event::Resize(state.width as i32, state.height as i32));
+            if state.width != old_width || state.height != old_height {
+                state
+                    .events
+                    .push_back(Event::Resize(state.width as i32, state.height as i32));
+            }
         }
     }
 }
@@ -716,6 +730,7 @@ fn open(title: &str, width: u32, height: u32, backend: i32) -> Option<Host> {
             scroll_acc: 0.0,
             last_a: 0,
             last_b: 0,
+            generation: 0,
         },
     };
     while !host.state.configured && !host.state.closed {
@@ -836,6 +851,15 @@ pub extern "C" fn host_event_b(handle: *mut c_void) -> i32 {
     unsafe { (handle as *mut Host).as_ref() }
         .map(|h| h.state.last_b)
         .unwrap_or(0)
+}
+
+/// Changes whenever the host recreates its target texture. The app forces a
+/// full frame when this differs from the last value it saw.
+#[no_mangle]
+pub extern "C" fn host_generation(handle: *mut c_void) -> i32 {
+    unsafe { (handle as *mut Host).as_ref() }
+        .map(|h| h.state.generation as i32)
+        .unwrap_or(-1)
 }
 
 #[no_mangle]

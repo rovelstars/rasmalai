@@ -12,6 +12,7 @@ int32_t host_wait(host h);
 int32_t host_event_a(host h);
 int32_t host_event_b(host h);
 int32_t host_width(host h);
+int32_t host_generation(host h);
 int32_t host_height(host h);
 int32_t host_present(host h, const uint8_t* list, int32_t len, const int32_t* damage, int32_t count);
 int32_t host_render_offscreen(int32_t w, int32_t h, const uint8_t* list, int32_t len, uint8_t* out);
