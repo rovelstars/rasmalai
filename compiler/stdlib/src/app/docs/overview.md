@@ -67,7 +67,9 @@ region through a translated scene into a scratch texture, copies that rectangle
 into the target, and blits the target to the swapchain. The first frame, a resize, and any
 host target recreation are full. The host increments a generation counter when
 it recreates the target, and the app forces a full frame when it sees a new
-generation, so a cleared target can never be left partially painted.
+generation, so a cleared target can never be left partially painted. After each
+frame the app commits the tree, so damage from input that arrived between
+frames is measured against the pixels on screen.
 
 `App.runHost` presents while the view asks for frames and blocks on input while
 it does not. `b.animate(false)` in the view, or `App.setAnimating(false)`

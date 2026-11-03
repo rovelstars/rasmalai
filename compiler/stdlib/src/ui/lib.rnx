@@ -647,30 +647,14 @@ pub class Tree {
         this.claimed = []
         let i = 0
         while i < this.role.length() {
-            this.live[i] = false
             this.claimed.push(false)
-            this.prevX[i] = this.x[i]
-            this.prevY[i] = this.y[i]
-            this.prevW[i] = this.w[i]
-            this.prevH[i] = this.h[i]
-            this.prevName[i] = this.name[i]
-            this.prevValue[i] = this.value[i]
-            this.prevChecked[i] = this.checked[i]
-            this.prevRole[i] = this.role[i]
-            this.prevDisabled[i] = this.disabledV[i]
-            this.prevCaret[i] = this.caretV[i]
-            this.prevSelStart[i] = this.selStartV[i]
-            this.prevSelEnd[i] = this.selEndV[i]
-            this.prevNumber[i] = this.numberV[i]
-            if this.key[i] != "" {
+            if this.live[i] && this.key[i] != "" {
                 this.keyIndexKeys.push(this.key[i])
                 this.keyIndexIds.push(i)
             }
+            this.live[i] = false
             i += 1
         }
-        this.prevFocus = this.focus
-        this.prevHovered = this.hovered
-        this.prevPressed = this.pressed
         this.handlers = []
         this.textHandlers = []
         this.canvasHandlers = []
@@ -682,6 +666,39 @@ pub class Tree {
     }
 
     /** Close the frame and drop focus from nodes that were not rebuilt. */
+    /**
+     * Snapshot the presented state. Call once after painting a frame, so input
+     * that arrives between frames is compared against what the screen shows
+     * rather than against a value that was already mutated by the event.
+     */
+    pub fn commit() {
+        let i = 0
+        while i < this.role.length() {
+            if this.live[i] {
+                this.prevX[i] = this.x[i]
+                this.prevY[i] = this.y[i]
+                this.prevW[i] = this.w[i]
+                this.prevH[i] = this.h[i]
+                this.prevName[i] = this.name[i]
+                this.prevValue[i] = this.value[i]
+                this.prevChecked[i] = this.checked[i]
+                this.prevRole[i] = this.role[i]
+                this.prevDisabled[i] = this.disabledV[i]
+                this.prevCaret[i] = this.caretV[i]
+                this.prevSelStart[i] = this.selStartV[i]
+                this.prevSelEnd[i] = this.selEndV[i]
+                this.prevNumber[i] = this.numberV[i]
+            } else {
+                this.prevW[i] = 0
+                this.prevH[i] = 0
+            }
+            i += 1
+        }
+        this.prevFocus = this.focus
+        this.prevHovered = this.hovered
+        this.prevPressed = this.pressed
+    }
+
     pub fn endFrame() {
         if this.focus >= 0 && !this.live[this.focus] {
             this.focus = -1
@@ -3137,6 +3154,7 @@ test fn damageTracksChangedNodes() {
     t.endFrame()
     t.layout(root, 200)
     let first = t.damageOf(200, 100, true)
+    t.commit()
     assert(first.count() == 1, "forced full surface")
     assert(first.wAt(0) == 200 && first.hAt(0) == 100, "full rect")
 
@@ -3147,6 +3165,7 @@ test fn damageTracksChangedNodes() {
     t.endFrame()
     t.layout(root2, 200)
     let same = t.damageOf(200, 100, false)
+    t.commit()
     assert(same.count() == 0, "unchanged frame has no damage: " + same.count().toString())
 
     t.beginFrame()
@@ -3156,6 +3175,7 @@ test fn damageTracksChangedNodes() {
     t.endFrame()
     t.layout(root3, 200)
     let changed = t.damageOf(200, 100, false)
+    t.commit()
     assert(changed.count() >= 1, "changed label reports damage")
     assert(changed.wAt(0) < 200, "damage is narrower than the surface")
 }
@@ -3391,6 +3411,7 @@ test fn canvasesReportSeparateDamage() {
     root.addChild(row)
     t.endFrame()
     t.layout(root, 960)
+    t.commit()
 
     t.beginFrame()
     let b2 = new Build(t)
@@ -3403,6 +3424,7 @@ test fn canvasesReportSeparateDamage() {
     t.endFrame()
     t.layout(root2, 960)
     let d = t.damageOf(960, 470, false)
+    t.commit()
     assert(d.count() == 3, "three canvases, three regions: " + d.count().toString())
 }
 
@@ -3533,4 +3555,95 @@ test fn virtualListBuildsOnlyVisibleRows() {
     t.layout(root2, 320)
     assert(t.childCount(v2.node) <= 6, "rebuilt viewport")
     assert(t.snapshot().contains("row 2"), t.snapshot())
+}
+
+test fn sliderTrackFollowsTheValue() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let got = [0.25]
+    let sl = b.sliderValue("Volume", 0.25, (v: Float) => { got[0] = v })
+    let root = b.column()
+    root.addChild(sl)
+    t.endFrame()
+    t.layout(root, 300)
+
+    t.pointerDown(t.x[sl.id] + t.w[sl.id] * 3 / 4, t.y[sl.id] + 36)
+    assert(got[0] > 0.6, "drag updates the callback: " + got[0].toString())
+
+    t.beginFrame()
+    let b2 = new Build(t)
+    let sl2 = b2.sliderValue("Volume", got[0], (v: Float) => { got[0] = v })
+    let root2 = b2.column()
+    root2.addChild(sl2)
+    t.endFrame()
+    t.layout(root2, 300)
+    assert(t.numberOf(sl2) > 0.6, "range follows state: " + t.numberOf(sl2).toString())
+
+    let dm = t.damageOf(300, 200, false)
+    assert(dm.count() > 0, "slider value change damages")
+    let th = Theme.dark()
+    let d = Painter.paintRegions(t, 300, 200, th, dm)
+    let i = 0
+    let fillW = 0.0
+    while i < d.recordCount() {
+        if d.kindAt(i) == 1 && d.colorAt(i) == th.accent && d.wAt(i) > fillW {
+            fillW = d.wAt(i)
+        }
+        i += 1
+    }
+    t.commit()
+    assert(fillW > Float(t.w[sl2.id]) * 0.5, "track fill grew: " + fillW.toString())
+}
+
+test fn virtualListRecyclesAcrossScrolls() {
+    let t = new Tree(TextEngine.fixed())
+    let listId = -1
+    let rounds = 0
+    while rounds < 80 {
+        t.beginFrame()
+        let b = new Build(t)
+        let v = b.virtualList("rows", "rows", 20, 30, 120)
+        listId = v.node.id
+        let root = b.column()
+        root.addChild(v.node)
+        let i = 0
+        while i < v.count {
+            let r = b.listItem("row " + (v.first + i).toString(), () => {})
+            r.fixedHeight(30)
+            if i == 0 {
+                r.offsetY(v.offset)
+            }
+            v.node.addChild(r)
+            i += 1
+        }
+        t.endFrame()
+        t.layout(root, 320)
+        let dy = 45.0
+        if rounds >= 40 {
+            dy = 0.0 - 45.0
+        }
+        t.scrollAt(t.x[listId] + 2, t.y[listId] + 2, dy)
+        rounds += 1
+    }
+    assert(t.len() < 80, "node count stays bounded: " + t.len().toString())
+
+    t.beginFrame()
+    let b2 = new Build(t)
+    let v2 = b2.virtualList("rows", "rows", 20, 30, 120)
+    let root2 = b2.column()
+    root2.addChild(v2.node)
+    let j = 0
+    while j < v2.count {
+        let r = b2.listItem("row " + (v2.first + j).toString(), () => {})
+        r.fixedHeight(30)
+        if j == 0 {
+            r.offsetY(v2.offset)
+        }
+        v2.node.addChild(r)
+        j += 1
+    }
+    t.endFrame()
+    t.layout(root2, 320)
+    assert(t.snapshot().contains("row 0"), "scrolled back to the top: " + t.snapshot())
 }
