@@ -1,0 +1,58 @@
+import { App, Surface, measureText } from "@std/app"
+import { Build, Node } from "@std/ui"
+
+fn check(ok: Bool, msg: String, failed: Int): Int {
+    if ok {
+        return failed
+    }
+    print("FAIL:", msg)
+    return failed + 1
+}
+
+fn Main(): Int {
+    let failed = 0
+
+    let app = App.launch("Settings", 320, 240, (b: Build): Node => {
+        let root = b.column()
+        root.addChild(b.heading("Appearance"))
+        root.addChild(b.buttonInert("Reset"))
+        return root
+    })
+    let first = app.frame()
+    failed = check(first.records() > 0, "records encoded", failed)
+    failed = check(first.bytes() > 32, "header plus body", failed)
+    failed = check(first.snapshot.contains("heading Appearance"), first.snapshot, failed)
+
+    let stable = App.launch("Stable", 200, 100, (b: Build): Node => {
+        let root = b.column()
+        root.addChild(b.text("stable"))
+        return root
+    })
+    let a = stable.frame()
+    let size = stable.tree().len()
+    let b = stable.frame()
+    failed = check(stable.tree().len() == size, "unchanged view does not append nodes", failed)
+    failed = check(a.records() == b.records(), "same record count", failed)
+    failed = check(b.index == a.index + 1, "frame counter advances", failed)
+
+    failed = check(measureText("Hello", 16.0) > 0.0, "parley answered", failed)
+
+    let cpu = App.launch("CPU", 64, 48, (b: Build): Node => {
+        return b.column() {
+            b.text("hi")
+        }
+    })
+    let cf = cpu.frame()
+    let s = new Surface(64, 48, cf.list)
+    failed = check(s.drawCpu() == 0, "cpu render", failed)
+    failed = check(s.backend() == 2, "cpu backend recorded", failed)
+    failed = check(s.rgbaAt(2, 2) == "20,22,26,255", s.rgbaAt(2, 2), failed)
+
+    failed = check(cf.damage().count() == 1, "one damage rect", failed)
+    failed = check(cf.damage().wAt(0) == 64 && cf.damage().hAt(0) == 48, "full surface damage", failed)
+
+    if failed == 0 {
+        print("app tests: ok")
+    }
+    return failed
+}

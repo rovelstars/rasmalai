@@ -5,7 +5,8 @@ Headless: no renderer, no window, no bus.
 
 This is M0 from `requirements_UI/49-m0-contract.md`. The parts of the contract
 that exist here are the arena, the builder, layout, input dispatch, focus, and
-the semantic tree. The packet encoding and reconciliation come next.
+the semantic tree, and positional plus keyed reconciliation. The packet encoding
+comes next.
 
 ## How it is built
 
@@ -69,7 +70,7 @@ trailing block, which compiles to the same calls.
 
 ## Not here yet
 
-- Keyed reconciliation and virtualization. A list lays out every child for now.
+- Virtualization. A list lays out every child for now.
 - The frame packet. Layout, layout bounds, and the semantic tree are separate
   views in memory rather than one encoded buffer.
 - A renderer. The CPU rasterizer is the next milestone.
@@ -79,3 +80,45 @@ trailing block, which compiles to the same calls.
 The `test fn` blocks cover creation order, deepest-node hit testing, tap dispatch,
 Enter reaching the same handler, focus wraparound, column stacking, root
 protection, and the unnamed-interactive audit.
+
+## Display list v2
+
+`DisplayList` encodes primitives into one little-endian buffer. A frame is a
+32-byte header, an array of 64-byte records, and a blob table for UTF-8 text and
+PNG images:
+
+| Offset | Header field | Type |
+|---|---|---|
+| 0 | magic `0x44584E52` | `u32` |
+| 4 | version (`2`) | `u32` |
+| 8 | record count | `u32` |
+| 12 | record stride (`64`) | `u32` |
+| 16 | blob table offset | `u32` |
+| 20 | blob table bytes | `u32` |
+| 24 | width | `u32` |
+| 28 | height | `u32` |
+
+Each record is `kind`, `color`, `a`, `b` as `u32`, then `x`, `y`, `w`, `h`, `e`,
+`f` as `f64`. `color` is `0xRRGGBBAA`. The kinds are:
+
+| Kind | Meaning | Payload |
+|---|---|---|
+| 1 | fill | rect in `x`, `y`, `w`, `h` |
+| 2 | text | `a`/`b` is a blob range; `x`/`y` is the text box top-left; `w` is the font size |
+| 3 | clip push | rect in `x`, `y`, `w`, `h` |
+| 4 | clip pop | none |
+| 5 | rounded rect | rect in `x`, `y`, `w`, `h`; radius in `e` |
+| 6 | image | `a`/`b` is a PNG blob range; target rect in `x`, `y`, `w`, `h` |
+| 7 | transform push | `[a b c d e f]` across all six lanes |
+| 8 | transform pop | none |
+
+`finish(width, height)` returns the buffer. `Display.textOf(bytes)` decodes it
+back to one line per record, which is what snapshots and the inspector use.
+Unknown kinds are skipped by a reader, so the format can grow.
+
+## Painting
+
+`Painter.paint(tree, width, height, theme)` walks the arena in child order and
+emits a background fill, one surface and outline per control, one text run per
+label, and an accent outline for the focused node. `Theme.dark()` and
+`Theme.light()` are data; a brand kit passes its own colors to the same call.

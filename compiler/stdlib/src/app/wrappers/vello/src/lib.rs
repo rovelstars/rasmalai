@@ -1,6 +1,22 @@
+use std::slice;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions};
+
+fn open() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter =
+        match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        {
+            Ok(adapter) => adapter,
+            Err(_) => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                force_fallback_adapter: true,
+                ..Default::default()
+            }))
+            .ok()?,
+        };
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+}
 
 fn readback(
     device: &wgpu::Device,
@@ -58,7 +74,7 @@ fn readback(
         Ok(d) => d,
         Err(_) => return -9,
     };
-    let dst = unsafe { std::slice::from_raw_parts_mut(out, (w * h * 4) as usize) };
+    let dst = unsafe { slice::from_raw_parts_mut(out, (w * h * 4) as usize) };
     for row in 0..h as usize {
         let src = &data[row * padded as usize..row * padded as usize + unpadded as usize];
         let at = row * unpadded as usize;
@@ -69,49 +85,18 @@ fn readback(
     0
 }
 
-#[no_mangle]
-pub extern "C" fn vello_fill(
-    w: i32,
-    h: i32,
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-    out: *mut u8,
-) -> i32 {
-    if w <= 0 || h <= 0 || out.is_null() {
-        return -1;
-    }
-    let (wu, hu) = (w as u32, h as u32);
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let Some(adapter) =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()
-    else {
+fn render_scene(w: u32, h: u32, scene: &vello::Scene, out: *mut u8) -> i32 {
+    let Some((device, queue)) = open() else {
         return -2;
     };
-    let Ok((device, queue)) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-    else {
-        return -3;
-    };
-
-    let mut scene = vello::Scene::new();
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        Color::from_rgba8(r, g, b, a),
-        None,
-        &Rect::new(0.0, 0.0, wu as f64, hu as f64),
-    );
-
     let Ok(mut renderer) = Renderer::new(&device, RendererOptions::default()) else {
         return -4;
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
-            width: wu,
-            height: hu,
+            width: w,
+            height: h,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -126,20 +111,49 @@ pub extern "C" fn vello_fill(
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let params = RenderParams {
         base_color: Color::TRANSPARENT,
-        width: wu,
-        height: hu,
+        width: w,
+        height: h,
         antialiasing_method: AaConfig::Area,
     };
     if renderer
-        .render_to_texture(&device, &queue, &scene, &view, &params)
+        .render_to_texture(&device, &queue, scene, &view, &params)
         .is_err()
     {
         return -5;
     }
-    readback(&device, &queue, &texture, wu, hu, out)
+    readback(&device, &queue, &texture, w, h, out)
+}
+
+#[no_mangle]
+pub extern "C" fn vello_fill(w: i32, h: i32, r: u8, g: u8, b: u8, a: u8, out: *mut u8) -> i32 {
+    if w <= 0 || h <= 0 || out.is_null() {
+        return -1;
+    }
+    let mut scene = vello::Scene::new();
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::from_rgba8(r, g, b, a),
+        None,
+        &Rect::new(0.0, 0.0, w as f64, h as f64),
+    );
+    render_scene(w as u32, h as u32, &scene, out)
+}
+
+#[no_mangle]
+pub extern "C" fn vello_render(w: i32, h: i32, list: *const u8, len: i32, out: *mut u8) -> i32 {
+    if w <= 0 || h <= 0 || list.is_null() || out.is_null() || len < 0 {
+        return -1;
+    }
+    let bytes = unsafe { slice::from_raw_parts(list, len as usize) };
+    let scene = match scene::from_list(bytes) {
+        Ok(scene) => scene,
+        Err(code) => return code,
+    };
+    render_scene(w as u32, h as u32, &scene, out)
 }
 
 #[no_mangle]
 pub extern "C" fn vello_abi_version() -> i32 {
-    1
+    2
 }

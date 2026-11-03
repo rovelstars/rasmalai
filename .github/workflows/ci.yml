@@ -181,6 +181,40 @@ jobs:
             exit 1
           }
 
+  wrappers:
+    name: native wrappers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Vulkan, GL, and fonts
+        # vello and wgpu need an adapter; the runner has no GPU, so lavapipe
+        # provides Vulkan in software. Parley needs at least one font.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri libwayland-dev fonts-dejavu-core
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wrappers
+          cache-all-crates: true
+
+      - name: Cache wrapper build tree
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.rnx-cache/wrapper-target
+          key: wrapper-target-${{ runner.os }}-${{ hashFiles('compiler/stdlib/src/app/wrappers/*/Cargo.lock') }}
+
+      - name: Build the compiler
+        run: cargo build -p cli
+
+      - name: Build wrappers and run the probes
+        run: sh compiler/stdlib/src/app/tools/ci-wrappers.sh
+
   website:
     name: website checks and build
     runs-on: ubuntu-24.04

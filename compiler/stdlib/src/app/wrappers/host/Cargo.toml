@@ -1,0 +1,19 @@
+[package]
+name = "host-cabi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "host_cabi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+vello = "0.11"
+wgpu = "30"
+pollster = "0.4"
+scene = { path = "../scene" }
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols = { version = "0.32", features = ["client"] }
+raw-window-handle = "0.6"
+
+[workspace]

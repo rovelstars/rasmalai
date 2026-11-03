@@ -6,6 +6,8 @@
 //! call. Roles and actions are stored as wire ids because an enum-typed array
 //! costs more than an integer lane; the enums stay in the signatures.
 
+import { ByteBuffer } from "@std/bytes"
+
 pub enum Role {
     root,
     column,
@@ -106,12 +108,20 @@ pub struct Node {
     pub fn bounds(x: Int, y: Int, w: Int, h: Int) {
         this.tree.setBounds(this.id, x, y, w, h)
     }
+
+    /** Stable key for reconciliation across frames. */
+    pub fn key(k: String) {
+        this.tree.setKey(this.id, k)
+    }
 }
 
 /** The arena. Ids are creation order until keyed reconciliation lands. */
 pub class Tree {
     let role: Array<Int> = []
     let name: Array<String> = []
+    let key: Array<String> = []
+    let live: Array<Bool> = []
+    let claimed: Array<Bool> = []
     let parent: Array<Int> = []
     let first: Array<Int> = []
     let next: Array<Int> = []
@@ -130,11 +140,121 @@ pub class Tree {
     let h: Array<Int> = []
     let focus: Int = -1
     let scope: Int = -1
+    let root: Int = 0
+    let frameOpen: Bool = false
+    let aligned: Bool = false
+    let cursor: Int = 0
+    let pendingKey: String = ""
+    let keyIndexKeys: Array<String> = []
+    let keyIndexIds: Array<Int> = []
+
+    fn resetNode(id: Int, r: Role, n: String, k: String) {
+        this.role[id] = roleId(r)
+        this.name[id] = n
+        this.key[id] = k
+        this.parent[id] = -1
+        this.first[id] = -1
+        this.next[id] = -1
+        this.last[id] = -1
+        this.count[id] = 0
+        this.actions[id] = 0
+        this.value[id] = ""
+        this.checked[id] = false
+        this.handler[id] = -1
+        this.textHandler[id] = -1
+        this.x[id] = 0
+        this.y[id] = 0
+        this.w[id] = 0
+        this.h[id] = 0
+        this.live[id] = true
+    }
+
+    fn keyed(k: String): Int {
+        let i = 0
+        while i < this.keyIndexKeys.length() {
+            if this.keyIndexKeys[i] == k {
+                return this.keyIndexIds[i]
+            }
+            i += 1
+        }
+        return -1
+    }
+
+    /** Start a frame. Existing nodes become reusable and handlers are cleared. */
+    pub fn beginFrame() {
+        this.keyIndexKeys = []
+        this.keyIndexIds = []
+        this.claimed = []
+        let i = 0
+        while i < this.role.length() {
+            this.live[i] = false
+            this.claimed.push(false)
+            if this.key[i] != "" {
+                this.keyIndexKeys.push(this.key[i])
+                this.keyIndexIds.push(i)
+            }
+            i += 1
+        }
+        this.handlers = []
+        this.textHandlers = []
+        this.cursor = 0
+        this.aligned = true
+        this.pendingKey = ""
+        this.frameOpen = true
+    }
+
+    /** Close the frame and drop focus from nodes that were not rebuilt. */
+    pub fn endFrame() {
+        if this.focus >= 0 && !this.live[this.focus] {
+            this.focus = -1
+        }
+        if this.scope >= 0 && !this.live[this.scope] {
+            this.scope = -1
+        }
+        this.frameOpen = false
+        this.pendingKey = ""
+    }
+
+    pub fn setPendingKey(k: String) {
+        this.pendingKey = k
+    }
+
+    pub fn setKey(id: Int, k: String) {
+        if id >= 0 && id < this.key.length() {
+            this.key[id] = k
+        }
+    }
 
     pub fn newNode(r: Role, n: String): Node {
+        let k = this.pendingKey
+        this.pendingKey = ""
+        if this.frameOpen {
+            if k != "" {
+                let hit = this.keyed(k)
+                if hit != -1 && !this.claimed[hit] && this.role[hit] == roleId(r) {
+                    this.resetNode(hit, r, n, k)
+                    this.claimed[hit] = true
+                    return Node(tree: this, id: hit)
+                }
+            }
+            if this.aligned {
+                while this.cursor < this.role.length() && this.claimed[this.cursor] {
+                    this.cursor += 1
+                }
+                if this.cursor < this.role.length() && this.role[this.cursor] == roleId(r) {
+                    let id = this.cursor
+                    this.resetNode(id, r, n, k)
+                    this.cursor += 1
+                    return Node(tree: this, id: id)
+                }
+                this.aligned = false
+                this.cursor = this.role.length()
+            }
+        }
         let id = this.role.length()
         this.role.push(roleId(r))
         this.name.push(n)
+        this.key.push(k)
         this.parent.push(-1)
         this.first.push(-1)
         this.next.push(-1)
@@ -149,6 +269,8 @@ pub class Tree {
         this.y.push(0)
         this.w.push(0)
         this.h.push(0)
+        this.live.push(true)
+        this.claimed.push(false)
         return Node(tree: this, id: id)
     }
 
@@ -384,7 +506,7 @@ pub class Tree {
     fn nextInteractive(start: Int): Int {
         let i = start
         while i < this.role.length() {
-            if this.actions[i] != 0 && this.inScope(i) {
+            if this.live[i] && this.actions[i] != 0 && this.inScope(i) {
                 return i
             }
             i += 1
@@ -395,7 +517,7 @@ pub class Tree {
     fn prevInteractive(start: Int): Int {
         let i = start
         while i >= 0 {
-            if this.actions[i] != 0 && this.inScope(i) {
+            if this.live[i] && this.actions[i] != 0 && this.inScope(i) {
                 return i
             }
             i -= 1
@@ -428,7 +550,7 @@ pub class Tree {
     }
 
     pub fn hitTest(px: Int, py: Int): Int {
-        return this.hitFrom(0, px, py)
+        return this.hitFrom(this.root, px, py)
     }
 
     fn hitFrom(id: Int, px: Int, py: Int): Int {
@@ -451,7 +573,7 @@ pub class Tree {
     }
 
     pub fn find(r: Role, n: String): Int {
-        return this.findFrom(0, roleId(r), n)
+        return this.findFrom(this.root, roleId(r), n)
     }
 
     fn findFrom(id: Int, rid: Int, n: String): Int {
@@ -470,7 +592,7 @@ pub class Tree {
     }
 
     pub fn unnamedInteractive(): Int {
-        return this.unnamedFrom(0)
+        return this.unnamedFrom(this.root)
     }
 
     fn unnamedFrom(id: Int): Int {
@@ -599,14 +721,19 @@ pub class Tree {
 
     /** One measure pass and one place pass. Widths flow down, heights up. */
     pub fn layout(root: Node, width: Int) {
+        this.root = root.id
         this.measure(root.id, width)
         this.place(root.id, 0, 0)
+    }
+
+    pub fn rootId(): Int {
+        return this.root
     }
 
     /** One line per node in tree order, for snapshots and the inspector. */
     pub fn snapshot(): String {
         let out: Array<String> = []
-        let id = 0
+        let id = this.root
         let depth = 0
         while id != -1 {
             let pad = ""
@@ -633,11 +760,11 @@ pub class Tree {
             } else {
                 let cur = id
                 let d = depth
-                while cur != 0 && this.next[cur] == -1 {
+                while cur != this.root && this.next[cur] == -1 {
                     cur = this.parent[cur]
                     d -= 1
                 }
-                if cur == 0 {
+                if cur == this.root {
                     id = -1
                 } else {
                     id = this.next[cur]
@@ -646,6 +773,65 @@ pub class Tree {
             }
         }
         return out.join("\n")
+    }
+
+    fn paintNode(id: Int, d: DisplayList, th: Theme) {
+        let r = this.role[id]
+        let x = Float(this.x[id])
+        let y = Float(this.y[id])
+        let w = Float(this.w[id])
+        let h = Float(this.h[id])
+
+        if r == 3 || r == 6 || r == 11 || r == 12 || r == 14 || r == 15 {
+            d.fillRect(th.surface, x, y, w, h)
+            outline(d, th.border, x, y, w, h)
+        }
+        if r == 7 {
+            let cy = y + h / 2.0
+            d.fillRect(th.border, x, cy - 2.0, w, 4.0)
+            d.fillRect(th.accent, x, cy - 2.0, w * 0.6, 4.0)
+            d.fillRect(th.text, x + w * 0.6 - 5.0, cy - 5.0, 10.0, 10.0)
+        }
+        if r == 8 || r == 9 || r == 13 {
+            let box = 18.0
+            let by = y + (h - box) / 2.0
+            d.fillRect(th.surface, x, by, box, box)
+            outline(d, th.border, x, by, box, box)
+            if this.checked[id] {
+                d.fillRect(th.accent, x + 3.0, by + 3.0, box - 6.0, box - 6.0)
+            }
+        }
+        if id == this.focus {
+            outline(d, th.accent, x, y, w, h)
+        }
+
+        if r == 4 {
+            d.textRun(th.text, x, y + (h - 20.0) / 2.0, 20.0, this.name[id])
+        } else if r == 5 {
+            d.textRun(th.text, x, y + (h - 14.0) / 2.0, 14.0, this.name[id])
+        } else if r == 6 {
+            d.textRun(th.text, x + 12.0, y + (h - 14.0) / 2.0, 14.0, this.name[id])
+        } else if r == 7 || r == 8 || r == 9 || r == 13 {
+            d.textRun(th.text, x + 24.0, y + (h - 14.0) / 2.0, 14.0, this.name[id])
+        } else if r == 11 {
+            let v = this.value[id]
+            let c = th.text
+            if v == "" {
+                v = this.name[id]
+                c = th.muted
+            }
+            d.textRun(c, x + 10.0, y + (h - 14.0) / 2.0, 14.0, v)
+        } else if r == 12 {
+            d.textRun(th.text, x + 12.0, y + 8.0, 20.0, this.name[id])
+        } else if r == 15 {
+            d.textRun(th.text, x + 10.0, y + (h - 14.0) / 2.0, 14.0, this.name[id])
+        }
+
+        let c = this.first[id]
+        while c != -1 {
+            this.paintNode(c, d, th)
+            c = this.next[c]
+        }
     }
 }
 
@@ -659,6 +845,11 @@ pub class Build {
 
     pub fn handle(): Tree {
         return this.tree
+    }
+
+    /** Key the next node created by a factory. */
+    pub fn key(k: String) {
+        this.tree.setPendingKey(k)
     }
 
     pub fn column(): Node {
@@ -726,6 +917,580 @@ pub class Build {
     pub fn item(label: String, onTap: fn(): Void): Node {
         return this.tree.radio(label, false, onTap)
     }
+}
+
+/** Rectangles a frame touched, in surface space. */
+pub class Damage {
+    let xs: Array<Int> = []
+    let ys: Array<Int> = []
+    let ws: Array<Int> = []
+    let hs: Array<Int> = []
+
+    pub fn add(x: Int, y: Int, w: Int, h: Int) {
+        this.xs.push(x)
+        this.ys.push(y)
+        this.ws.push(w)
+        this.hs.push(h)
+    }
+
+    pub fn clear() {
+        this.xs = []
+        this.ys = []
+        this.ws = []
+        this.hs = []
+    }
+
+    pub fn count(): Int {
+        return this.xs.length()
+    }
+
+    pub fn xAt(i: Int): Int {
+        return this.xs[i]
+    }
+
+    pub fn yAt(i: Int): Int {
+        return this.ys[i]
+    }
+
+    pub fn wAt(i: Int): Int {
+        return this.ws[i]
+    }
+
+    pub fn hAt(i: Int): Int {
+        return this.hs[i]
+    }
+}
+
+/**
+ * A display list, version 2.
+ *
+ * The format is little-endian. The 32-byte header is `magic, version, records,
+ * recordBytes, blobOffset, blobBytes, width, height`, all `u32`. `magic` is
+ * `0x44584E52` (`RNXD` in byte order). Every record is 64 bytes:
+ * `kind, color, a, b` as `u32`, then six little-endian `f64` lanes named
+ * `x, y, w, h, e, f`. `color` is `0xRRGGBBAA`.
+ *
+ * Kinds: 1 fill, 2 text, 3 clip push, 4 clip pop, 5 rounded rect, 6 image,
+ * 7 transform push, 8 transform pop. Text and image records read `a` and `b`
+ * as a byte range into the blob table that starts at `blobOffset`. A transform
+ * uses all six lanes as `[a b c d e f]`. A rounded rect puts the radius in `e`.
+ *
+ * The builder owns a fixed record buffer; a command past the limit increments
+ * `dropped()` instead of growing or aborting mid-frame.
+ *
+ * The builder owns a fixed record buffer; a command past the limit increments
+ * `dropped()` instead of growing or aborting mid-frame.
+ */
+pub class DisplayList {
+    let records: ByteBuffer
+    let blob: Array<Int> = []
+    let count: Int = 0
+    let limit: Int
+    let droppedCount: Int = 0
+
+    let damageRects: Damage
+
+    init(limit: Int) {
+        this.limit = limit
+        this.records = ByteBuffer.allocate(limit * 64)
+        this.damageRects = new Damage()
+    }
+
+    static create(limit: Int): DisplayList {
+        return new DisplayList(limit)
+    }
+
+    static createDefault(): DisplayList {
+        return new DisplayList(1024)
+    }
+
+    pub fn recordCount(): Int {
+        return this.count
+    }
+
+    pub fn dropped(): Int {
+        return this.droppedCount
+    }
+
+    /** Conservative damage for this frame. v2 still names the whole surface. */
+    pub fn damage(): Damage {
+        return this.damageRects
+    }
+
+    fn write(kind: Int, color: Int, a: Int, b: Int, x: Float, y: Float, w: Float, h: Float, e: Float, f: Float) {
+        if this.count >= this.limit {
+            this.droppedCount += 1
+            return
+        }
+        let o = this.count * 64
+        this.records.writeUInt32LE(o, kind)
+        this.records.writeUInt32LE(o + 4, color)
+        this.records.writeUInt32LE(o + 8, a)
+        this.records.writeUInt32LE(o + 12, b)
+        this.records.writeFloat64LE(o + 16, x)
+        this.records.writeFloat64LE(o + 24, y)
+        this.records.writeFloat64LE(o + 32, w)
+        this.records.writeFloat64LE(o + 40, h)
+        this.records.writeFloat64LE(o + 48, e)
+        this.records.writeFloat64LE(o + 56, f)
+        this.count += 1
+    }
+
+    fn appendBlob(bytes: ByteBuffer): Int {
+        let at = this.blob.length()
+        let i = 0
+        while i < bytes.length() {
+            this.blob.push(bytes.readUInt8(i))
+            i += 1
+        }
+        return at
+    }
+
+    pub fn fillRect(color: Int, x: Float, y: Float, w: Float, h: Float) {
+        this.write(1, color, 0, 0, x, y, w, h, 0.0, 0.0)
+    }
+
+    pub fn roundRect(color: Int, x: Float, y: Float, w: Float, h: Float, radius: Float) {
+        this.write(5, color, 0, 0, x, y, w, h, radius, 0.0)
+    }
+
+    pub fn textRun(color: Int, x: Float, y: Float, size: Float, s: String) {
+        let bytes = ByteBuffer.fromString(s)
+        let at = this.appendBlob(bytes)
+        this.write(2, color, at, bytes.length(), x, y, size, 0.0, 0.0, 0.0)
+    }
+
+    /** Draw a PNG into the given rectangle. */
+    pub fn image(x: Float, y: Float, w: Float, h: Float, png: ByteBuffer) {
+        let at = this.appendBlob(png)
+        this.write(6, 0, at, png.length(), x, y, w, h, 0.0, 0.0)
+    }
+
+    pub fn pushClip(x: Float, y: Float, w: Float, h: Float) {
+        this.write(3, 0, 0, 0, x, y, w, h, 0.0, 0.0)
+    }
+
+    pub fn popClip() {
+        this.write(4, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    }
+
+    /** Push a 2D affine transform: [a b c d e f]. */
+    pub fn pushTransform(a: Float, b: Float, c: Float, d: Float, e: Float, f: Float) {
+        this.write(7, 0, 0, 0, a, b, c, d, e, f)
+    }
+
+    pub fn popTransform() {
+        this.write(8, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    }
+
+    /** Encode the header, records, and blob table into one buffer. */
+    pub fn finish(width: Int, height: Int): ByteBuffer {
+        let body = this.count * 64
+        let bytes = this.blob.length()
+        let out = ByteBuffer.allocate(32 + body + bytes)
+        out.writeUInt32LE(0, 0x44584E52)
+        out.writeUInt32LE(4, 2)
+        out.writeUInt32LE(8, this.count)
+        out.writeUInt32LE(12, 64)
+        out.writeUInt32LE(16, 32 + body)
+        out.writeUInt32LE(20, bytes)
+        out.writeUInt32LE(24, width)
+        out.writeUInt32LE(28, height)
+        let i = 0
+        while i < body {
+            out.writeUInt8(32 + i, this.records.readUInt8(i))
+            i += 1
+        }
+        i = 0
+        while i < bytes {
+            out.writeUInt8(32 + body + i, this.blob[i])
+            i += 1
+        }
+        return out
+    }
+
+    pub fn kindAt(i: Int): Int {
+        return this.records.readUInt32LE(i * 64)
+    }
+
+    pub fn colorAt(i: Int): Int {
+        return this.records.readUInt32LE(i * 64 + 4)
+    }
+
+    pub fn xAt(i: Int): Float {
+        return this.records.readFloat64LE(i * 64 + 16)
+    }
+
+    pub fn yAt(i: Int): Float {
+        return this.records.readFloat64LE(i * 64 + 24)
+    }
+
+    pub fn wAt(i: Int): Float {
+        return this.records.readFloat64LE(i * 64 + 32)
+    }
+
+    pub fn hAt(i: Int): Float {
+        return this.records.readFloat64LE(i * 64 + 40)
+    }
+
+    pub fn eAt(i: Int): Float {
+        return this.records.readFloat64LE(i * 64 + 48)
+    }
+
+    pub fn fAt(i: Int): Float {
+        return this.records.readFloat64LE(i * 64 + 56)
+    }
+
+    pub fn textAt(i: Int): String {
+        let o = i * 64
+        let at = this.records.readUInt32LE(o + 8)
+        let n = this.records.readUInt32LE(o + 12)
+        if n == 0 {
+            return ""
+        }
+        let table = ByteBuffer.fromArray(this.blob)
+        return table.readString(at, n)
+    }
+
+    /** One line per record, for snapshots and the inspector. */
+    pub fn describe(i: Int): String {
+        let k = this.kindAt(i)
+        if k == 1 {
+            return "fill " + this.colorAt(i).toString() + " " + this.xAt(i).toString() + "," + this.yAt(i).toString() + " " + this.wAt(i).toString() + "x" + this.hAt(i).toString()
+        }
+        if k == 2 {
+            return "text " + this.colorAt(i).toString() + " " + this.xAt(i).toString() + "," + this.yAt(i).toString() + " " + this.wAt(i).toString() + " " + this.textAt(i)
+        }
+        if k == 3 {
+            return "clip " + this.xAt(i).toString() + "," + this.yAt(i).toString() + " " + this.wAt(i).toString() + "x" + this.hAt(i).toString()
+        }
+        if k == 4 {
+            return "pop"
+        }
+        if k == 5 {
+            return "round " + this.colorAt(i).toString() + " " + this.xAt(i).toString() + "," + this.yAt(i).toString() + " " + this.wAt(i).toString() + "x" + this.hAt(i).toString() + " r=" + this.eAt(i).toString()
+        }
+        if k == 6 {
+            return "image " + this.xAt(i).toString() + "," + this.yAt(i).toString() + " " + this.wAt(i).toString() + "x" + this.hAt(i).toString() + " " + this.records.readUInt32LE(i * 64 + 12).toString() + " bytes"
+        }
+        if k == 7 {
+            return "transform " + this.xAt(i).toString() + " " + this.yAt(i).toString() + " " + this.wAt(i).toString() + " " + this.hAt(i).toString() + " " + this.eAt(i).toString() + " " + this.fAt(i).toString()
+        }
+        return "popTransform"
+    }
+
+    pub fn toString(): String {
+        return Display.textOf(this.finish(0, 0))
+    }
+}
+
+/** Reads a finished display list, for snapshots and the inspector. */
+pub class Display {
+    static fn textOf(bytes: ByteBuffer): String {
+        if bytes.length() < 32 {
+            return ""
+        }
+        let n = bytes.readUInt32LE(8)
+        let blobAt = bytes.readUInt32LE(16)
+        let lines: Array<String> = []
+        let i = 0
+        while i < n {
+            let o = 32 + i * 64
+            let k = bytes.readUInt32LE(o)
+            let x = bytes.readFloat64LE(o + 16)
+            let y = bytes.readFloat64LE(o + 24)
+            let w = bytes.readFloat64LE(o + 32)
+            let h = bytes.readFloat64LE(o + 40)
+            if k == 1 {
+                lines.push("fill " + bytes.readUInt32LE(o + 4).toString() + " " + x.toString() + "," + y.toString() + " " + w.toString() + "x" + h.toString())
+            } else if k == 2 {
+                let a = bytes.readUInt32LE(o + 8)
+                let b = bytes.readUInt32LE(o + 12)
+                lines.push("text " + bytes.readUInt32LE(o + 4).toString() + " " + x.toString() + "," + y.toString() + " " + w.toString() + " " + bytes.readString(blobAt + a, b))
+            } else if k == 3 {
+                lines.push("clip " + x.toString() + "," + y.toString() + " " + w.toString() + "x" + h.toString())
+            } else if k == 5 {
+                lines.push("round " + bytes.readUInt32LE(o + 4).toString() + " " + x.toString() + "," + y.toString() + " " + w.toString() + "x" + h.toString() + " r=" + bytes.readFloat64LE(o + 48).toString())
+            } else if k == 6 {
+                lines.push("image " + x.toString() + "," + y.toString() + " " + w.toString() + "x" + h.toString() + " " + bytes.readUInt32LE(o + 12).toString() + " bytes")
+            } else if k == 7 {
+                lines.push("transform " + x.toString() + " " + y.toString() + " " + w.toString() + " " + h.toString() + " " + bytes.readFloat64LE(o + 48).toString() + " " + bytes.readFloat64LE(o + 56).toString())
+            } else if k == 8 {
+                lines.push("popTransform")
+            } else {
+                lines.push("pop")
+            }
+            i += 1
+        }
+        return lines.join("\n")
+    }
+}
+
+/** `r`, `g`, `b`, `a` are masked to 8 bits and packed as `0xRRGGBBAA`. */
+pub fn rgba(r: Int, g: Int, b: Int, a: Int): Int {
+    return ((r & 255) << 24) | ((g & 255) << 16) | ((b & 255) << 8) | (a & 255)
+}
+
+/** Colors used by the built-in painter. Brand kits pass their own. */
+pub class Theme {
+    let background: Int
+    let surface: Int
+    let text: Int
+    let accent: Int
+    let muted: Int
+    let border: Int
+
+    init(background: Int, surface: Int, text: Int, accent: Int, muted: Int, border: Int) {
+        this.background = background
+        this.surface = surface
+        this.text = text
+        this.accent = accent
+        this.muted = muted
+        this.border = border
+    }
+
+    static dark(): Theme {
+        return new Theme(
+            rgba(20, 22, 26, 255),
+            rgba(30, 33, 40, 255),
+            rgba(230, 231, 235, 255),
+            rgba(91, 141, 239, 255),
+            rgba(138, 143, 153, 255),
+            rgba(43, 47, 56, 255),
+        )
+    }
+
+    static light(): Theme {
+        return new Theme(
+            rgba(255, 255, 255, 255),
+            rgba(244, 245, 247, 255),
+            rgba(26, 28, 32, 255),
+            rgba(47, 111, 228, 255),
+            rgba(98, 102, 110, 255),
+            rgba(216, 219, 224, 255),
+        )
+    }
+}
+
+fn outline(d: DisplayList, color: Int, x: Float, y: Float, w: Float, h: Float) {
+    d.fillRect(color, x, y, w, 1.0)
+    d.fillRect(color, x, y + h - 1.0, w, 1.0)
+    d.fillRect(color, x, y, 1.0, h)
+    d.fillRect(color, x + w - 1.0, y, 1.0, h)
+}
+
+fn textSize(role: Int): Float {
+    if role == 4 {
+        return 20.0
+    }
+    return 14.0
+}
+
+/**
+ * Paint a laid-out tree into a display list. The built-in painter is a flat
+ * rect per surface plus one text run per label, so it shows structure, not the
+ * final look. A brand kit replaces it with the same primitive set.
+ */
+pub class Painter {
+    static fn paint(t: Tree, width: Int, height: Int, th: Theme): DisplayList {
+        let d = DisplayList.createDefault()
+        d.damage().add(0, 0, width, height)
+        d.fillRect(th.background, 0.0, 0.0, Float(width), Float(height))
+        t.paintNode(t.rootId(), d, th)
+        return d
+    }
+}
+
+test fn displayListRoundTripsRecords() {
+    let d = DisplayList.create(8)
+    d.fillRect(rgba(10, 20, 30, 255), 1.0, 2.0, 3.0, 4.0)
+    d.textRun(rgba(1, 2, 3, 4), 5.0, 6.0, 14.0, "hi")
+    let bytes = d.finish(320, 240)
+    assert(bytes.length() == 32 + 2 * 64 + 2, "header, records, and the blob table")
+    assert(bytes.readUInt32LE(0) == 0x44584E52, "magic")
+    assert(bytes.readUInt32LE(4) == 2, "version")
+    assert(bytes.readUInt32LE(8) == 2, "record count")
+    assert(bytes.readUInt32LE(12) == 64, "record stride")
+    assert(bytes.readUInt32LE(16) == 32 + 2 * 64, "blob table offset")
+    assert(bytes.readUInt32LE(20) == 2, "blob table bytes")
+    assert(bytes.readUInt32LE(24) == 320, "width")
+    assert(bytes.readUInt32LE(28) == 240, "height")
+    assert(d.kindAt(0) == 1 && d.colorAt(0) == rgba(10, 20, 30, 255), "fill record")
+    assert(d.xAt(0) == 1.0 && d.hAt(0) == 4.0, "fill rect")
+    assert(d.kindAt(1) == 2 && d.textAt(1) == "hi", "text record")
+}
+
+test fn v2RecordsCarryRadiusImagesAndTransforms() {
+    let d = DisplayList.create(8)
+    d.roundRect(0, 1.0, 2.0, 3.0, 4.0, 6.0)
+    let png = ByteBuffer.fromArray([137, 80, 78, 71])
+    d.image(5.0, 6.0, 7.0, 8.0, png)
+    d.pushTransform(1.0, 0.0, 0.0, 1.0, 9.0, 10.0)
+    d.popTransform()
+    assert(d.kindAt(0) == 5 && d.eAt(0) == 6.0, "radius lane")
+    assert(d.kindAt(1) == 6 && d.records.readUInt32LE(64 + 12) == 4, "image record")
+    assert(d.kindAt(2) == 7 && d.fAt(2) == 10.0, "transform lane")
+    assert(d.kindAt(3) == 8, "transform pop")
+}
+
+test fn textOffsetsAreUtf8Bytes() {
+    let d = DisplayList.create(4)
+    d.textRun(0, 0.0, 0.0, 12.0, "é")
+    d.textRun(0, 0.0, 0.0, 12.0, "ok")
+    let bytes = d.finish(10, 10)
+    assert(bytes.readUInt32LE(20) == 4, "one two-byte run plus two ASCII")
+    assert(d.textAt(0) == "é" && d.textAt(1) == "ok", "byte ranges decode")
+}
+
+test fn clipRecordsKeepOrder() {
+    let d = DisplayList.create(4)
+    d.pushClip(0.0, 0.0, 10.0, 10.0)
+    d.fillRect(0, 1.0, 1.0, 2.0, 2.0)
+    d.popClip()
+    assert(d.kindAt(0) == 3 && d.kindAt(1) == 1 && d.kindAt(2) == 4, "clip, fill, pop")
+}
+
+test fn paintCoversTheRootAndLabels() {
+    let t = new Tree()
+    let b = new Build(t)
+    let root = b.column()
+    root.addChild(b.heading("Appearance"))
+    root.addChild(b.buttonInert("Reset"))
+    t.layout(root, 320)
+    let d = Painter.paint(t, 320, 240, Theme.dark())
+    assert(d.dropped() == 0, "fits")
+    let list = d.toString()
+    assert(list.contains("text "), list)
+    assert(list.contains("Appearance"), list)
+    assert(list.contains("Reset"), list)
+    assert(d.describe(0).startsWith("fill"), d.describe(0))
+}
+
+test fn layoutTracksANonZeroRoot() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    let stray = b.text("outside")
+    b.key("root")
+    let root = b.column()
+    root.addChild(b.text("inside"))
+    t.endFrame()
+    t.layout(root, 100)
+    assert(stray.id != root.id, "stray node came first")
+    assert(t.rootId() == root.id, "layout records the real root")
+    assert(t.snapshot().contains("text inside"), t.snapshot())
+    assert(!t.snapshot().contains("outside"), t.snapshot())
+}
+
+test fn reuseKeepsIdsStable() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    let root = b.column()
+    let label = b.text("A")
+    root.addChild(label)
+    t.endFrame()
+    let before = t.len()
+
+    t.beginFrame()
+    let b2 = new Build(t)
+    let root2 = b2.column()
+    let label2 = b2.text("A")
+    root2.addChild(label2)
+    t.endFrame()
+
+    assert(root2.id == root.id, "root id")
+    assert(label2.id == label.id, "child id")
+    assert(t.len() == before, "no growth on an unchanged tree")
+}
+
+test fn keysFollowReorderedNodes() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    b.key("a")
+    let a = b.text("A")
+    b.key("b")
+    let bb = b.text("B")
+    t.endFrame()
+
+    t.beginFrame()
+    let b2 = new Build(t)
+    b2.key("b")
+    let b2node = b2.text("B")
+    b2.key("a")
+    let a2 = b2.text("A")
+    t.endFrame()
+
+    assert(b2node.id == bb.id, "B kept its id")
+    assert(a2.id == a.id, "A kept its id")
+}
+
+test fn handlersRefreshEveryFrame() {
+    let t = new Tree()
+    let seen: Array<Int> = []
+    t.beginFrame()
+    let b = new Build(t)
+    let first = b.button("go", () => { seen.push(1) })
+    t.endFrame()
+
+    t.beginFrame()
+    let b2 = new Build(t)
+    let second = b2.button("go", () => { seen.push(2) })
+    t.endFrame()
+
+    assert(second.id == first.id, "button reused")
+    assert(t.tap(second), "tap handled")
+    assert(seen.length() == 1 && seen[0] == 2, "only the new handler ran")
+}
+
+test fn focusSurvivesAStableRebuild() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    let btn = b.buttonInert("Save")
+    t.focusOn(btn)
+    t.endFrame()
+
+    t.beginFrame()
+    let b2 = new Build(t)
+    let btn2 = b2.buttonInert("Save")
+    t.endFrame()
+
+    assert(btn2.id == btn.id, "button reused")
+    assert(t.focused() == btn.id, "focus kept")
+}
+
+test fn painterReportsFullSurfaceDamage() {
+    let t = new Tree()
+    let b = new Build(t)
+    let root = b.column()
+    root.addChild(b.text("hi"))
+    t.layout(root, 200)
+    let d = Painter.paint(t, 200, 100, Theme.dark())
+    assert(d.damage().count() == 1, "one rect")
+    assert(d.damage().xAt(0) == 0 && d.damage().yAt(0) == 0, "origin")
+    assert(d.damage().wAt(0) == 200 && d.damage().hAt(0) == 100, "full surface")
+}
+
+test fn paintMarksFocusWithTheAccent() {
+    let t = new Tree()
+    let b = new Build(t)
+    let root = b.column()
+    let button = b.buttonInert("Save")
+    root.addChild(button)
+    t.layout(root, 200)
+    t.focusOn(button)
+    let d = Painter.paint(t, 200, 100, Theme.dark())
+    let seen = false
+    let i = 0
+    while i < d.recordCount() {
+        if d.kindAt(i) == 1 && d.colorAt(i) == Theme.dark().accent {
+            seen = true
+        }
+        i += 1
+    }
+    assert(seen, "the accent outline is present")
 }
 
 test fn childrenKeepCreationOrder() {

@@ -1,0 +1,15 @@
+[package]
+name = "cpu-cabi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "cpu_cabi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+vello_cpu = "0.3"
+parley = "0.12"
+scene = { path = "../scene" }
+
+[workspace]

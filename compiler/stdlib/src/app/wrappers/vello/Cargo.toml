@@ -11,5 +11,6 @@ crate-type = ["staticlib", "cdylib"]
 vello = "0.11"
 wgpu = "30"
 pollster = "0.4"
+scene = { path = "../scene" }
 
 [workspace]
