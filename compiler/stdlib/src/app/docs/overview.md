@@ -64,8 +64,10 @@ Each frame carries the regions that changed. `App.frame()` returns a full list
 for tests and headless dumps; the window path builds only the damaged regions
 and hands them to the host. The host keeps one target texture, renders each
 region through a translated scene into a scratch texture, copies that rectangle
-into the target, and blits the target to the swapchain. The first frame and a
-resize are full.
+into the target, and blits the target to the swapchain. The first frame, a resize, and any
+host target recreation are full. The host increments a generation counter when
+it recreates the target, and the app forces a full frame when it sees a new
+generation, so a cleared target can never be left partially painted.
 
 `App.runHost` presents while the view asks for frames and blocks on input while
 it does not. `b.animate(false)` in the view, or `App.setAnimating(false)`

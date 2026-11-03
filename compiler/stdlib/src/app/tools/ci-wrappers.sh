@@ -50,7 +50,7 @@ check_names parley_cabi parleyAbiVersion parleyClusters parleyMeasure
 check_names wgpu_cabi wgpuAdapterCount wgpuAdapterName wgpuClearRgba wgpuInstanceCreate wgpuTriangle wgpuAbiVersion wgpuInstanceDestroy
 check_names taffy_cabi taffyAbiVersion taffyLayout
 check_names cpu_cabi cpuAbiVersion cpuRender
-check_names host_cabi hostAbiVersion hostClose hostEventA hostEventB hostHeight hostOpen hostPresent hostPump hostPumpTimeout hostRenderOffscreen hostWait hostWidth
+check_names host_cabi hostAbiVersion hostClose hostEventA hostEventB hostGeneration hostHeight hostOpen hostPresent hostPump hostPumpTimeout hostRenderOffscreen hostWait hostWidth
 
 run_probe() {
     w=$1
