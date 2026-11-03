@@ -117,6 +117,260 @@ pub struct Node {
     pub fn key(k: String) {
         this.tree.setKey(this.id, k)
     }
+
+    /** Horizontal alignment for this node's text. */
+    pub fn textAlign(a: Align) {
+        this.tree.setTextAlign(this.id, a)
+    }
+
+    /** Wrap text at the node width instead of clipping it. */
+    pub fn textWrap(on: Bool) {
+        this.tree.setTextWrap(this.id, on)
+    }
+
+    /** Zero keeps the role default; one enables ellipsis for clipped text. */
+    pub fn textMaxLines(n: Int) {
+        this.tree.setTextMaxLines(this.id, n)
+    }
+}
+
+/** Horizontal text alignment inside a node's content box. */
+pub enum Align {
+    start,
+    center,
+    end,
+}
+
+fn alignId(a: Align): Int {
+    if a == Align.center { return 1 }
+    if a == Align.end { return 2 }
+    return 0
+}
+
+fn textSize(role: Int): Float {
+    if role == 4 || role == 12 {
+        return 20.0
+    }
+    return 14.0
+}
+
+fn textWraps(role: Int): Bool {
+    if role == 4 || role == 5 || role == 12 {
+        return true
+    }
+    return false
+}
+
+fn textDefaultLines(role: Int): Int {
+    if textWraps(role) {
+        return 0
+    }
+    return 1
+}
+
+fn textPad(role: Int): Float {
+    if role == 6 {
+        return 12.0
+    }
+    if role == 7 || role == 8 || role == 9 || role == 13 {
+        return 24.0
+    }
+    if role == 11 || role == 15 {
+        return 10.0
+    }
+    if role == 12 {
+        return 12.0
+    }
+    return 0.0
+}
+
+fn textPadY(role: Int): Float {
+    if role == 12 {
+        return 8.0
+    }
+    if role == 4 || role == 5 {
+        return 0.0
+    }
+    return 6.0
+}
+
+fn isTextRole(role: Int): Bool {
+    if role == 4 || role == 5 || role == 6 || role == 7 || role == 8 {
+        return true
+    }
+    if role == 9 || role == 11 || role == 12 || role == 13 || role == 15 {
+        return true
+    }
+    return false
+}
+
+/** One laid-out line of text. */
+pub struct TextRow {
+    let text: String
+    let width: Float
+    let height: Float
+    let baseline: Float
+    let ellipsized: Bool
+}
+
+fn monoMeasure(s: String, size: Float): Float {
+    return Float(s.length()) * size * 0.56
+}
+
+fn monoRow(text: String, size: Float): TextRow {
+    let h = size * 1.35
+    return TextRow(
+        text: text,
+        width: monoMeasure(text, size),
+        height: h,
+        baseline: h * 0.8,
+        ellipsized: false
+    )
+}
+
+fn monoRows(
+    s: String,
+    size: Float,
+    maxWidth: Float,
+    wrap: Bool,
+    maxLines: Int,
+    ellipsis: Bool
+): Array<TextRow> {
+    let rows: Array<TextRow> = []
+    if s == "" {
+        rows.push(monoRow("", size))
+        return rows
+    }
+    let paragraphs = s.split("\n")
+    let p = 0
+    while p < paragraphs.length() {
+        let para = paragraphs[p]
+        if !wrap || maxWidth <= 0.0 {
+            rows.push(monoRow(para, size))
+        } else {
+            let words = para.split(" ")
+            let line = ""
+            let wi = 0
+            while wi < words.length() {
+                let word = words[wi]
+                let candidate = word
+                if line != "" {
+                    candidate = line + " " + word
+                }
+                if monoMeasure(candidate, size) <= maxWidth + 0.01 {
+                    line = candidate
+                } else if line == "" {
+                    if monoMeasure(word, size) <= maxWidth + 0.01 {
+                        line = word
+                    } else {
+                        let piece = ""
+                        let ci = 0
+                        while ci < word.length() {
+                            let next = piece + word.slice(ci, ci + 1)
+                            if monoMeasure(next, size) > maxWidth + 0.01 && piece != "" {
+                                rows.push(monoRow(piece, size))
+                                piece = word.slice(ci, ci + 1)
+                            } else {
+                                piece = next
+                            }
+                            ci += 1
+                        }
+                        line = piece
+                    }
+                } else {
+                    rows.push(monoRow(line, size))
+                    line = word
+                }
+                wi += 1
+            }
+            rows.push(monoRow(line, size))
+        }
+        p += 1
+    }
+    let over = false
+    if maxLines > 0 && rows.length() > maxLines {
+        over = true
+    }
+    if maxLines > 0 && rows.length() > 0 && rows[rows.length() - 1].width > maxWidth + 0.01 {
+        over = true
+    }
+    if over && ellipsis && maxWidth > 0.0 {
+        while maxLines > 0 && rows.length() > maxLines {
+            rows.pop()
+        }
+        if rows.length() > 0 {
+            let last = rows[rows.length() - 1]
+            let text = last.text
+            while text.length() > 0 && monoMeasure(text + "…", size) > maxWidth + 0.01 {
+                text = text.slice(0, text.length() - 1)
+            }
+            rows[rows.length() - 1] = TextRow(
+                text: text + "…",
+                width: monoMeasure(text + "…", size),
+                height: last.height,
+                baseline: last.baseline,
+                ellipsized: true
+            )
+        }
+    }
+    return rows
+}
+
+/**
+ * A text measurement and line-breaking backend.
+ *
+ * `@std/ui` is headless, so it never shapes text itself. The app supplies an
+ * engine backed by the platform shaper; the default engine measures a fixed
+ * advance per character, which keeps tests and headless runs deterministic.
+ */
+pub class TextEngine {
+    let measureFn: fn(String, Float): Float
+    let rowsFn: fn(String, Float, Float, Bool, Int, Bool): Array<TextRow>
+
+    init(
+        m: fn(String, Float): Float,
+        r: fn(String, Float, Float, Bool, Int, Bool): Array<TextRow>
+    ) {
+        this.measureFn = m
+        this.rowsFn = r
+    }
+
+    static fn mono(): TextEngine {
+        return new TextEngine(
+            (s: String, size: Float): Float => monoMeasure(s, size),
+            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool): Array<TextRow> => monoRows(s, size, width, wrap, lines, ell)
+        )
+    }
+
+    /** Width of one unwrapped line. */
+    pub fn measure(s: String, size: Float): Float {
+        return this.measureFn(s, size)
+    }
+
+    /** Break `s` into rows. `maxWidth <= 0` disables wrapping and ellipsis. */
+    pub fn rows(
+        s: String,
+        size: Float,
+        maxWidth: Float,
+        wrap: Bool,
+        maxLines: Int,
+        ellipsis: Bool
+    ): Array<TextRow> {
+        return this.rowsFn(s, size, maxWidth, wrap, maxLines, ellipsis)
+    }
+}
+
+/** The laid-out rows of one node, computed once per measure pass. */
+class TextLayout {
+    let rows: Array<TextRow>
+    let height: Float
+    let width: Float
+
+    init(rows: Array<TextRow>, height: Float, width: Float) {
+        this.rows = rows
+        this.height = height
+        this.width = width
+    }
 }
 
 /** The arena. Ids are creation order until keyed reconciliation lands. */
@@ -142,6 +396,11 @@ pub class Tree {
     let canvasHandlers: Array<fn(Canvas): Void> = []
     let fixedW: Array<Int> = []
     let fixedH: Array<Int> = []
+    let textAlignV: Array<Int> = []
+    let textLines: Array<Int> = []
+    let textWrapV: Array<Bool> = []
+    let textLayoutV: Array<TextLayout> = []
+    let engine: TextEngine = TextEngine.mono()
     let x: Array<Int> = []
     let y: Array<Int> = []
     let w: Array<Int> = []
@@ -173,6 +432,9 @@ pub class Tree {
         this.canvasHandler[id] = -1
         this.fixedW[id] = 0
         this.fixedH[id] = 0
+        this.textAlignV[id] = 0
+        this.textLines[id] = 0
+        this.textWrapV[id] = textWraps(roleId(r))
         this.x[id] = 0
         this.y[id] = 0
         this.w[id] = 0
@@ -237,6 +499,29 @@ pub class Tree {
         }
     }
 
+    /** Replace the text backend. Called once by the app before the first view. */
+    pub fn setTextEngine(e: TextEngine) {
+        this.engine = e
+    }
+
+    pub fn setTextAlign(id: Int, a: Align) {
+        if id >= 0 && id < this.textAlignV.length() {
+            this.textAlignV[id] = alignId(a)
+        }
+    }
+
+    pub fn setTextWrap(id: Int, on: Bool) {
+        if id >= 0 && id < this.textWrapV.length() {
+            this.textWrapV[id] = on
+        }
+    }
+
+    pub fn setTextMaxLines(id: Int, n: Int) {
+        if id >= 0 && id < this.textLines.length() {
+            this.textLines[id] = n
+        }
+    }
+
     pub fn newNode(r: Role, n: String): Node {
         let k = this.pendingKey
         this.pendingKey = ""
@@ -280,6 +565,10 @@ pub class Tree {
         this.canvasHandler.push(-1)
         this.fixedW.push(0)
         this.fixedH.push(0)
+        this.textAlignV.push(0)
+        this.textLines.push(0)
+        this.textWrapV.push(textWraps(roleId(r)))
+        this.textLayoutV.push(new TextLayout([], 0.0, 0.0))
         this.x.push(0)
         this.y.push(0)
         this.w.push(0)
@@ -661,15 +950,54 @@ pub class Tree {
         return 22
     }
 
+    fn textOf(id: Int): String {
+        if this.role[id] == 11 && this.value[id] != "" {
+            return this.value[id]
+        }
+        return this.name[id]
+    }
+
+    /** Lay out this node's text once; measure and paint both read the result. */
+    fn layoutText(id: Int, width: Int) {
+        let r = this.role[id]
+        let size = textSize(r)
+        let pad = textPad(r)
+        let inner = Float(width) - pad * 2.0
+        let maxW = 0.0
+        if inner > 0.0 {
+            maxW = inner
+        }
+        let wrap = this.textWrapV[id]
+        let lines = this.textLines[id]
+        if lines == 0 {
+            lines = textDefaultLines(r)
+        }
+        let ell = lines > 0
+        let rows = this.engine.rows(this.textOf(id), size, maxW, wrap, lines, ell)
+        let hh = 0.0
+        let ww = 0.0
+        let i = 0
+        while i < rows.length() {
+            hh += rows[i].height
+            if rows[i].width > ww {
+                ww = rows[i].width
+            }
+            i += 1
+        }
+        this.textLayoutV[id] = new TextLayout(rows, hh, ww)
+    }
+
     fn intrinsicWidth(id: Int): Int {
         let r = this.role[id]
-        let text = this.name[id].length() * 8
-        if r == 6 { return text + 28 }
+        if r == 0 { return 0 }
         if r == 7 { return 180 }
         if r == 8 { return 180 }
         if r == 11 { return 220 }
-        if r == 0 { return 0 }
-        return text
+        if isTextRole(r) {
+            let tw = this.engine.measure(this.textOf(id), textSize(r)) + textPad(r) * 2.0
+            return Int(tw + 0.999)
+        }
+        return 0
     }
 
     fn contentWidth(id: Int, avail: Int): Int {
@@ -687,6 +1015,9 @@ pub class Tree {
             let n = this.count[id]
             if n == 0 { return 0 }
             return (avail - this.gapFor(r) * (n - 1)) / n
+        }
+        if r == 4 || r == 5 || r == 12 || r == 15 {
+            return avail
         }
         let iw = this.intrinsicWidth(id)
         if iw < avail { return iw }
@@ -724,10 +1055,21 @@ pub class Tree {
             }
         } else {
             this.w[id] = width
+            let textH = 0.0
+            if isTextRole(r) {
+                this.layoutText(id, width)
+                textH = this.textLayoutV[id].height
+            }
             if this.fixedH[id] > 0 {
                 this.h[id] = this.fixedH[id]
             } else {
-                this.h[id] = this.leafHeight(r)
+                let base = this.leafHeight(r)
+                let want = Int(textH + textPadY(r) * 2.0 + 0.999)
+                if want > base {
+                    this.h[id] = want
+                } else {
+                    this.h[id] = base
+                }
             }
         }
     }
@@ -850,26 +1192,36 @@ pub class Tree {
             }
         }
 
-        if r == 4 {
-            d.textRun(th.text, x, y + (h - 20.0) / 2.0, 20.0, this.name[id])
-        } else if r == 5 {
-            d.textRun(th.text, x, y + (h - 14.0) / 2.0, 14.0, this.name[id])
-        } else if r == 6 {
-            d.textRun(th.text, x + 12.0, y + (h - 14.0) / 2.0, 14.0, this.name[id])
-        } else if r == 7 || r == 8 || r == 9 || r == 13 {
-            d.textRun(th.text, x + 24.0, y + (h - 14.0) / 2.0, 14.0, this.name[id])
-        } else if r == 11 {
-            let v = this.value[id]
-            let c = th.text
-            if v == "" {
-                v = this.name[id]
-                c = th.muted
+        if isTextRole(r) {
+            let lay = this.textLayoutV[id]
+            let size = textSize(r)
+            let pad = textPad(r)
+            let inner = w - pad * 2.0
+            let color = th.text
+            if r == 11 && this.value[id] == "" {
+                color = th.muted
             }
-            d.textRun(c, x + 10.0, y + (h - 14.0) / 2.0, 14.0, v)
-        } else if r == 12 {
-            d.textRun(th.text, x + 12.0, y + 8.0, 20.0, this.name[id])
-        } else if r == 15 {
-            d.textRun(th.text, x + 10.0, y + (h - 14.0) / 2.0, 14.0, this.name[id])
+            let ty = y + (h - lay.height) / 2.0
+            if r == 4 || r == 5 {
+                ty = y
+            } else if r == 12 {
+                ty = y + textPadY(r)
+            }
+            let i = 0
+            while i < lay.rows.length() {
+                let row = lay.rows[i]
+                let rx = x + pad
+                if this.textAlignV[id] == 1 {
+                    rx = x + pad + (inner - row.width) / 2.0
+                } else if this.textAlignV[id] == 2 {
+                    rx = x + pad + inner - row.width
+                }
+                if row.text != "" {
+                    d.textRun(color, rx, ty, size, row.text)
+                }
+                ty += row.height
+                i += 1
+            }
         }
 
         let c = this.first[id]
@@ -984,6 +1336,11 @@ pub class Build {
     /** Key the next node created by a factory. */
     pub fn key(k: String) {
         this.tree.setPendingKey(k)
+    }
+
+    /** Replace the text backend before the view runs. */
+    pub fn setTextEngine(e: TextEngine) {
+        this.tree.setTextEngine(e)
     }
 
     pub fn column(): Node {
@@ -1466,13 +1823,6 @@ fn outline(d: DisplayList, color: Int, x: Float, y: Float, w: Float, h: Float) {
     d.fillRect(color, x, y + h - 1.0, w, 1.0)
     d.fillRect(color, x, y, 1.0, h)
     d.fillRect(color, x + w - 1.0, y, 1.0, h)
-}
-
-fn textSize(role: Int): Float {
-    if role == 4 {
-        return 20.0
-    }
-    return 14.0
 }
 
 /**
@@ -1971,4 +2321,58 @@ test fn buildCarriesTheFrameClock() {
     let c = new FrameClock()
     b.setClock(c)
     assert(b.frameClock() == c, "clock shared")
+}
+
+test fn textWrapsAtTheNodeWidth() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    let root = b.column()
+    root.addChild(b.text("one two three four five six seven"))
+    t.endFrame()
+    t.layout(root, 120)
+    let d = Painter.paint(t, 120, 240, Theme.dark())
+    let i = 0
+    let runs = 0
+    while i < d.recordCount() {
+        if d.kindAt(i) == 2 {
+            runs += 1
+        }
+        i += 1
+    }
+    assert(runs >= 3, "wrapped text has several runs: " + runs.toString())
+}
+
+test fn buttonEllipsizesAtItsWidth() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    let root = b.column()
+    root.addChild(b.buttonInert("A very long button label"))
+    t.endFrame()
+    t.layout(root, 140)
+    let d = Painter.paint(t, 140, 120, Theme.dark())
+    assert(d.toString().contains("…"), d.toString())
+}
+
+test fn alignmentMovesTheTextRun() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    let root = b.column()
+    let label = b.text("mid")
+    label.textAlign(Align.center)
+    root.addChild(label)
+    t.endFrame()
+    t.layout(root, 320)
+    let d = Painter.paint(t, 320, 120, Theme.dark())
+    let i = 0
+    let at = 0.0
+    while i < d.recordCount() {
+        if d.kindAt(i) == 2 {
+            at = d.xAt(i)
+        }
+        i += 1
+    }
+    assert(at > 100.0, "centered run starts past the left edge: " + at.toString())
 }

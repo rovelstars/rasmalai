@@ -124,6 +124,29 @@ emits a background fill, one surface and outline per control, one text run per
 label, and an accent outline for the focused node. `Theme.dark()` and
 `Theme.light()` are data; a brand kit passes its own colors to the same call.
 
+## Text layout
+
+`@std/ui` never shapes text itself. A `TextEngine` supplies two operations:
+`measure(text, size)` for one unwrapped line, and `rows(text, size, maxWidth,
+wrap, maxLines, ellipsis)` for line breaking. The default engine uses a fixed
+advance per character, which keeps tests and headless runs deterministic.
+`@std/app` installs a parley-backed engine before the first frame.
+
+Every text-bearing node is laid out once during the measure pass. The rows,
+their heights, and their baselines are stored on the node and reused by the
+painter, so a label is shaped once per frame, not once per pass.
+
+- `text` and `heading` fill the width they are given and wrap by default.
+- Buttons and the other controls are single-line and clip with `…`.
+- `Node.textAlign(Align.center)` and `Align.end` move each row inside the
+  content box.
+- `Node.textWrap(false)` disables wrapping; `Node.textMaxLines(n)` caps rows.
+- `Node.setTextEngine` on the tree, or `Build.setTextEngine`, swaps the engine.
+
+Row text comes from parley's line ranges, so Unicode shaping, cluster
+boundaries, and explicit newlines are handled by the shaper. Character offsets
+cross the ABI, which matches `String.slice`.
+
 ## Canvas nodes
 
 `b.canvas(name, width, height, paint)` creates a fixed-size node that draws
