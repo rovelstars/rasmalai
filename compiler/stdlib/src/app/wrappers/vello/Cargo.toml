@@ -1,0 +1,15 @@
+[package]
+name = "vello-cabi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "vello_cabi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+vello = "0.11"
+wgpu = "30"
+pollster = "0.4"
+
+[workspace]
