@@ -1226,9 +1226,19 @@ pub class Display {
     }
 }
 
-/** `r`, `g`, `b`, `a` are masked to 8 bits and packed as `0xRRGGBBAA`. */
+fn colorLane(v: Int): Int {
+    if v < 0 {
+        return 0
+    }
+    if v > 255 {
+        return 255
+    }
+    return v
+}
+
+/** `r`, `g`, `b`, `a` are clamped to 8 bits and packed as `0xRRGGBBAA`. */
 pub fn rgba(r: Int, g: Int, b: Int, a: Int): Int {
-    return ((r & 255) << 24) | ((g & 255) << 16) | ((b & 255) << 8) | (a & 255)
+    return colorLane(r) * 16777216 + colorLane(g) * 65536 + colorLane(b) * 256 + colorLane(a)
 }
 
 /** Colors used by the built-in painter. Brand kits pass their own. */
