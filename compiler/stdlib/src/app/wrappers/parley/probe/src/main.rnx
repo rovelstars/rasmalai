@@ -1,6 +1,7 @@
 import { ByteBuffer } from "@std/bytes"
 import {
     fn parley_abi_version(): Int,
+    fn parley_clusters(text: Pointer<Byte>, len: Int, size: Float, out: Pointer<Byte>, cap: Int): Int,
     fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float,
 } from native "parley_cabi"
 
@@ -11,7 +12,24 @@ fn widthOf(s: String, size: Float): Float {
     }
 }
 
+fn clustersOf(s: String, size: Float) {
+    let b = ByteBuffer.fromString(s)
+    let out = ByteBuffer.allocate(64 * 16)
+    let n = 0
+    unsafe {
+        n = parley_clusters(Pointer.fromAddress<Byte>(b.address()), b.length(), size, Pointer.fromAddress<Byte>(out.address()), 64)
+    }
+    print("clusters:", n)
+    let i = 0
+    while i < n && i < 3 {
+        let o = i * 16
+        print("c", i, "range:", out.readInt32LE(o), out.readInt32LE(o + 4), "advance:", out.readFloat64LE(o + 8))
+        i += 1
+    }
+}
+
 fn Main(): Int {
+    clustersOf("Hi", 16.0)
     print("hello 16:", widthOf("Hello", 16.0))
     print("hello 32:", widthOf("Hello", 32.0))
     print("long 16:", widthOf("Hello world", 16.0))
