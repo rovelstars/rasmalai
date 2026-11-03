@@ -19,13 +19,13 @@ Expected output:
 adapters: 2
 name bytes: 39
 rc: 0 rgba: 10 20 30 255
-triangle rc: 0 center: 25 204 102 255
+triangle rc: 0 center: 51 204 102 255
 abi: 1
 ```
 
 `adapters` depends on the machine. Two results matter: a 2x1 RGBA8 texture was
 cleared to `(10, 20, 30, 255)` and copied back byte exact, and a WGSL pipeline
-drew a triangle whose center pixel is `(25, 204, 102, 255)`, which is the shader
+drew a triangle whose center pixel is `(51, 204, 102, 255)`, which is the shader
 color quantized to eight bits.
 
 ## ABI rules this follows
