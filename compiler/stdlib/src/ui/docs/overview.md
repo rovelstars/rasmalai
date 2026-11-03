@@ -128,9 +128,16 @@ label, and an accent outline for the focused node. `Theme.dark()` and
 
 `@std/ui` never shapes text itself. A `TextEngine` supplies two operations:
 `measure(text, size)` for one unwrapped line, and `rows(text, size, maxWidth,
-wrap, maxLines, ellipsis)` for line breaking. The default engine uses a fixed
-advance per character, which keeps tests and headless runs deterministic.
-`@std/app` installs a parley-backed engine before the first frame.
+wrap, maxLines, ellipsis)` for line breaking. `@std/app` installs a parley-backed
+engine before the first frame.
+
+`TextEngine.fixed()` is the default when nothing injects one. It advances a
+fixed amount per character, so it is deterministic and fast, but it is a test
+double, not the shaper the app ships. A test that asserts visual text layout
+must inject the app's engine, or it is only proving the core's wrapping logic.
+The app tests do that: they assert that parley wraps a paragraph, ellipsizes a
+narrow control, and centers a row. Exact golden output additionally needs a
+pinned font, because the system font is the remaining variable.
 
 Every text-bearing node is laid out once during the measure pass. The rows,
 their heights, and their baselines are stored on the node and reused by the

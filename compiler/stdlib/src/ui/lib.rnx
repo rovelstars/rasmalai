@@ -335,7 +335,12 @@ pub class TextEngine {
         this.rowsFn = r
     }
 
-    static fn mono(): TextEngine {
+    /**
+     * A fixed-advance engine for logic tests and headless runs. Every character
+     * is `size * 0.56` wide. It is not the shaper the app ships, so do not use
+     * it to assert visual text layout; inject the app's engine for that.
+     */
+    static fn fixed(): TextEngine {
         return new TextEngine(
             (s: String, size: Float): Float => monoMeasure(s, size),
             (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool): Array<TextRow> => monoRows(s, size, width, wrap, lines, ell)
@@ -400,7 +405,7 @@ pub class Tree {
     let textLines: Array<Int> = []
     let textWrapV: Array<Bool> = []
     let textLayoutV: Array<TextLayout> = []
-    let engine: TextEngine = TextEngine.mono()
+    let engine: TextEngine = TextEngine.fixed()
     let prevX: Array<Int> = []
     let prevY: Array<Int> = []
     let prevW: Array<Int> = []
