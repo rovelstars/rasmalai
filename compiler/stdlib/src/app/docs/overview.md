@@ -79,8 +79,9 @@ demo; set `RUNIX_SMOKE=1` to present three frames and exit.
 
 ## Text and backends
 
-`measureText(text, size)` returns the shaped width through parley. The renderer
-shapes display-list text runs with the same crate, so layout and paint agree.
+`measureText(text, size)` returns the shaped width through parley, and the
+`TextEngine` installed by `App` lays out wrapped rows with the same crate. The
+renderer shapes display-list text runs with it too, so layout and paint agree.
 
 The runtime calls native wrappers, so `rnx run` needs their `.pc` files and
 shared libraries. `tools/ci-wrappers.sh` builds all four, installs them into a

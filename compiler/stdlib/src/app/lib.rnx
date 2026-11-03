@@ -10,9 +10,12 @@
 //! frame, damage, or present call reaches app code.
 
 import { ByteBuffer } from "@std/bytes"
-import { Build, Damage, Display, FrameClock, Key, Node, Painter, Theme, Tree, rgba } from "@std/ui"
+import { Build, Damage, Display, FrameClock, Key, Node, Painter, TextEngine, TextRow, Theme, Tree, rgba } from "@std/ui"
 import { Clock } from "@std/time"
-import { fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float as parleyMeasure } from native "parley_cabi"
+import {
+    fn parley_layout(text: Pointer<Byte>, len: Int, size: Float, maxWidth: Float, maxLines: Int, wrap: Int, ellipsis: Int, out: Pointer<Byte>, cap: Int): Int as parleyLayout,
+    fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float as parleyMeasure,
+} from native "parley_cabi"
 import {
     fn cpu_abi_version(): Int as cpuAbiVersion,
     fn cpu_render(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as cpuRender,
@@ -66,6 +69,116 @@ pub fn measureText(s: String, size: Float): Float {
         w = parleyMeasure(Pointer.fromAddress<Byte>(bytes.address()), bytes.length(), size)
     }
     return w
+}
+
+/**
+ * The parley-backed text backend. One instance per app so the scratch buffer
+ * and the shaping context are reused across frames.
+ */
+class ParleyText {
+    let buf: ByteBuffer = ByteBuffer.allocate(16 * 24)
+
+    fn ensure(bytes: Int) {
+        if this.buf.length() < bytes {
+            this.buf = ByteBuffer.allocate(bytes)
+        }
+    }
+
+    fn measure(s: String, size: Float): Float {
+        if s == "" {
+            return 0.0
+        }
+        let bytes = ByteBuffer.fromString(s)
+        let w = 0.0
+        unsafe {
+            w = parleyMeasure(Pointer.fromAddress<Byte>(bytes.address()), bytes.length(), size)
+        }
+        return w
+    }
+
+    fn rows(
+        s: String,
+        size: Float,
+        maxWidth: Float,
+        wrap: Bool,
+        maxLines: Int,
+        ellipsis: Bool
+    ): Array<TextRow> {
+        let rows: Array<TextRow> = []
+        if s == "" {
+            return rows
+        }
+        let bytes = ByteBuffer.fromString(s)
+        let wf = 0
+        if wrap {
+            wf = 1
+        }
+        let ef = 0
+        if ellipsis {
+            ef = 1
+        }
+        let n = 0
+        this.ensure(16 * 24)
+        unsafe {
+            n = parleyLayout(
+                Pointer.fromAddress<Byte>(bytes.address()),
+                bytes.length(),
+                size,
+                maxWidth,
+                maxLines,
+                wf,
+                ef,
+                Pointer.fromAddress<Byte>(this.buf.address()),
+                this.buf.length(),
+            )
+        }
+        if n <= 0 {
+            return rows
+        }
+        if n * 24 > this.buf.length() {
+            this.ensure(n * 24)
+            unsafe {
+                n = parleyLayout(
+                    Pointer.fromAddress<Byte>(bytes.address()),
+                    bytes.length(),
+                    size,
+                    maxWidth,
+                    maxLines,
+                    wf,
+                    ef,
+                    Pointer.fromAddress<Byte>(this.buf.address()),
+                    this.buf.length(),
+                )
+            }
+            if n <= 0 {
+                return rows
+            }
+        }
+        let i = 0
+        while i < n {
+            let o = i * 24
+            let start = this.buf.readUInt32LE(o)
+            let end = this.buf.readUInt32LE(o + 4)
+            let flags = this.buf.readUInt32LE(o + 8)
+            let width = this.buf.readFloat32LE(o + 12)
+            let height = this.buf.readFloat32LE(o + 16)
+            let baseline = this.buf.readFloat32LE(o + 20)
+            let text = s.slice(start, end)
+            let ellipsized = (flags & 1) != 0
+            if ellipsized {
+                text = text + "…"
+            }
+            rows.push(TextRow(
+                text: text,
+                width: width,
+                height: height,
+                baseline: baseline,
+                ellipsized: ellipsized,
+            ))
+            i += 1
+        }
+        return rows
+    }
 }
 
 /** The app's one window. On runixOS Epiclese owns the surface, not the app. */
@@ -216,6 +329,7 @@ pub class App {
     let rendererChoice: Renderer
     let frameClock: FrameClock = new FrameClock()
     let animatingFlag: Bool = true
+    let textEngine: TextEngine
 
     init(w: Window, th: Theme, v: fn(Build): Node) {
         this.window = w
@@ -223,6 +337,11 @@ pub class App {
         this.view = v
         this.rootTree = new Tree()
         this.rendererChoice = Renderer.auto
+        let text = new ParleyText()
+        this.textEngine = new TextEngine(
+            (s: String, size: Float): Float => text.measure(s, size),
+            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool): Array<TextRow> => text.rows(s, size, width, wrap, lines, ell),
+        )
     }
 
     static launch(title: String, width: Int, height: Int, view: fn(Build): Node): App {
@@ -272,6 +391,7 @@ pub class App {
         this.rootTree.beginFrame()
         let b = new Build(this.rootTree)
         b.setClock(this.frameClock)
+        b.setTextEngine(this.textEngine)
         b.animate(this.animatingFlag)
         let root = this.view(b)
         this.setAnimating(b.animating())

@@ -2,6 +2,7 @@ import { ByteBuffer } from "@std/bytes"
 import {
     fn parley_abi_version(): Int as parleyAbiVersion,
     fn parley_clusters(text: Pointer<Byte>, len: Int, size: Float, out: Pointer<Byte>, cap: Int): Int as parleyClusters,
+    fn parley_layout(text: Pointer<Byte>, len: Int, size: Float, maxWidth: Float, maxLines: Int, wrap: Int, ellipsis: Int, out: Pointer<Byte>, cap: Int): Int as parleyLayout,
     fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float as parleyMeasure,
 } from native "parley_cabi"
 
@@ -28,11 +29,37 @@ fn clustersOf(s: String, size: Float) {
     }
 }
 
+fn layoutOf(s: String, size: Float, maxWidth: Float, maxLines: Int, wrap: Bool, ellipsis: Bool) {
+    let b = ByteBuffer.fromString(s)
+    let out = ByteBuffer.allocate(16 * 24)
+    let wrapFlag = 0
+    if wrap {
+        wrapFlag = 1
+    }
+    let flag = 0
+    if ellipsis {
+        flag = 1
+    }
+    let n = 0
+    unsafe {
+        n = parleyLayout(Pointer.fromAddress<Byte>(b.address()), b.length(), size, maxWidth, maxLines, wrapFlag, flag, Pointer.fromAddress<Byte>(out.address()), 16 * 24)
+    }
+    print("rows:", n)
+    let i = 0
+    while i < n {
+        let o = i * 24
+        print("row", i, "chars:", out.readUInt32LE(o), out.readUInt32LE(o + 4), "flags:", out.readUInt32LE(o + 8), "width:", out.readFloat32LE(o + 12))
+        i += 1
+    }
+}
+
 fn Main(): Int {
     clustersOf("Hi", 16.0)
     print("hello 16:", widthOf("Hello", 16.0))
     print("hello 32:", widthOf("Hello", 32.0))
     print("long 16:", widthOf("Hello world", 16.0))
+    layoutOf("hello world from rasmalai", 14.0, 90.0, 0, true, false)
+    layoutOf("hello world from rasmalai", 14.0, 70.0, 1, false, true)
     unsafe {
         print("abi:", parleyAbiVersion())
     }

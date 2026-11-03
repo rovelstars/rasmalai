@@ -95,6 +95,30 @@ print(Display.textOf(bytes))
 primitives for every node. `Theme.dark()` and `Theme.light()` are data, so a
 brand package can supply colors without forking the core.
 
+## Text layout
+
+Measurement and line breaking come from the shaper, not from a character-count
+guess. `@std/app` installs a parley-backed `TextEngine`; the headless core uses
+a fixed-advance engine when nothing supplies one.
+
+- `text` and `heading` fill the available width and wrap.
+- Buttons and controls are single-line and clip with `…`.
+- `Node.textAlign(Align.center)` or `Align.end` aligns each row.
+- `Node.textWrap(false)` turns wrapping off and `Node.textMaxLines(n)` caps it.
+
+Wrapping a paragraph is automatic once the node has a width:
+
+```rnx
+fn screen(b: Build): Node {
+    return b.column() {
+        b.text("A long paragraph wraps at the column width and grows the layout.")
+    }
+}
+```
+
+Every text node is laid out once per measure pass and the painter reuses those
+rows, so a label is shaped once per frame.
+
 ## Canvas and animation
 
 `b.canvas(name, width, height, paint)` creates a fixed-size node that draws

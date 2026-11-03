@@ -56,6 +56,25 @@ fn Main(): Int {
     failed = check(s.backend() == 2, "cpu backend recorded", failed)
     failed = check(s.rgbaAt(2, 2) == "20,22,26,255", s.rgbaAt(2, 2), failed)
 
+    let paragraph = App.launch("Text", 200, 120, (b: Build): Node => {
+        return b.column() {
+            b.heading("Wrap")
+            b.text("The quick brown fox jumps over the lazy dog and keeps going")
+        }
+    })
+    let pf = paragraph.frame()
+    let lines = pf.describe().split("\n")
+    let runs = 0
+    let li = 0
+    while li < lines.length() {
+        if lines[li].startsWith("text ") {
+            runs += 1
+        }
+        li += 1
+    }
+    failed = check(runs >= 4, "paragraph wraps through parley: " + runs.toString(), failed)
+    failed = check(pf.records() > 4, "wrapped frame has records", failed)
+
     let paused = App.launch("Paused", 64, 48, (b: Build): Node => {
         return b.column() {
             b.text("still")
