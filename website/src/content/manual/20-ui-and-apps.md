@@ -142,6 +142,52 @@ fn screen(b: Build): Node {
 Every text node is laid out once per measure pass and the painter reuses those
 rows, so a label is shaped once per frame.
 
+## Kit, shortcuts, and virtual lists
+
+The headless core carries the behavior, not just the look:
+
+- hover, pressed, and disabled states
+- sliders with `sliderValue(label, value, onChange)`
+- text fields with caret, selection, and grapheme-cluster editing
+- `Shortcuts` as a chord registry the app owns
+- a virtual list viewport that builds only visible rows
+
+```rnx
+fn Main(): Int {
+    let app = App.launch("Kit", 800, 600, view)
+    app.bind("ctrl+s", () => save())
+    app.bind("f1", () => showHelp())
+    return app.show()
+}
+```
+
+Chords are normalized to lower case, so `Ctrl+S` and `ctrl+s` are the same.
+`bind` returns true when it replaced an existing binding.
+
+A fixed-row list is a viewport plus a visible range:
+
+```rnx
+let v = b.virtualList("Rows", "rows", 10000, 30, 240)
+root.addChild(v.node)
+let i = 0
+while i < v.count {
+    let row = b.listItem("Item " + (v.first + i).toString(), () => {})
+    row.fixedHeight(30)
+    if i == 0 {
+        row.offsetY(v.offset)
+    }
+    v.node.addChild(row)
+    i += 1
+}
+```
+
+The list keeps its scroll offset on the keyed node, and `scrollAt` handles the
+wheel. Only the rows in view exist, so a 10,000-row list holds about ten nodes.
+
+Text editing uses the `TextEngine` for grapheme boundaries. Typing, Backspace,
+Delete, arrows, Home, and End work without a native text service; the window
+host feeds evdev key codes, and `App.sendKey(code, down)` does the same for tests.
+
 ## Canvas and animation
 
 `b.canvas(name, width, height, paint)` creates a fixed-size node that draws

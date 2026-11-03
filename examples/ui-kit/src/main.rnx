@@ -1,0 +1,136 @@
+import { App, Renderer } from "@std/app"
+import { Build, Node } from "@std/ui"
+import { Env } from "@std/env"
+import fs from "@std/fs"
+
+class State {
+    let count: Int = 0
+    let notif: Bool = true
+    let compact: Bool = false
+    let mode: Int = 0
+    let volume: Float = 0.5
+    let name: String = ""
+    let selected: Int = -1
+    let help: Bool = false
+    let focusField: Bool = false
+}
+
+fn view(b: Build, s: State): Node {
+    let t = b.handle()
+    let root = b.column()
+    root.addChild(b.heading("UI kit"))
+    root.addChild(b.text("Ctrl+K focus, Ctrl+R reset, F1 help. Wheel scrolls the list."))
+
+    let actions = b.row()
+    actions.addChild(b.button("Add", () => { s.count += 1 }))
+    actions.addChild(b.button("Clear", () => { s.count = 0 }))
+    let off = b.button("Disabled", () => {})
+    off.disabled(true)
+    actions.addChild(off)
+    root.addChild(actions)
+
+    let checks = b.row()
+    checks.addChild(b.checkbox("Notifications", s.notif, () => { s.notif = !s.notif }))
+    checks.addChild(b.toggleWith("Compact", () => { s.compact = !s.compact }))
+    root.addChild(checks)
+
+    let modes = b.row()
+    modes.addChild(b.radio("Light", s.mode == 0, () => { s.mode = 0 }))
+    modes.addChild(b.radio("Dark", s.mode == 1, () => { s.mode = 1 }))
+    root.addChild(modes)
+
+    root.addChild(b.sliderValue("Volume", s.volume, (v: Float) => { s.volume = v }))
+    root.addChild(b.text("volume " + s.volume.toString()))
+
+    let field = b.textField(s.name, "Your name", (v: String) => { s.name = v })
+    root.addChild(field)
+    if s.focusField {
+        t.focusOn(field)
+        s.focusField = false
+    }
+
+    root.addChild(b.heading("Virtual list"))
+    let v = b.virtualList("Rows", "rows", 10000, 30, 180)
+    root.addChild(v.node)
+    let i = 0
+    while i < v.count {
+        let idx = v.first + i
+        let label = "Item " + idx.toString()
+        if idx == s.selected {
+            label = label + "  selected"
+        }
+        let r = b.listItem(label, () => { s.selected = idx })
+        r.fixedHeight(30)
+        if i == 0 {
+            r.offsetY(v.offset)
+        }
+        v.node.addChild(r)
+        i += 1
+    }
+
+    root.addChild(b.text("nodes " + t.len().toString() + "   selected " + s.selected.toString() + "   count " + s.count.toString()))
+
+    if s.help {
+        let dialog = b.dialog("Help")
+        dialog.addChild(b.text("Tab moves focus, Space activates, Escape closes this panel."))
+        let close = b.button("Close", () => { s.help = false })
+        dialog.addChild(close)
+        root.addChild(dialog)
+        t.focusScope(dialog)
+        t.focusOn(close)
+    } else {
+        t.clearFocusScope()
+    }
+    return root
+}
+
+fn Main(): Int {
+    let s = new State()
+    let app = App.launch("UI kit", 940, 780, (b: Build): Node => {
+        return view(b, s)
+    })
+    app.bind("ctrl+k", () => { s.focusField = true })
+    app.bind("ctrl+r", () => {
+        s.count = 0
+        s.name = ""
+        s.selected = -1
+        s.volume = 0.5
+        s.notif = true
+    })
+    app.bind("f1", () => { s.help = !s.help })
+    app.bind("escape", () => { s.help = false })
+
+    if Env.get("RUNIX_GL") != "" {
+        app.setRenderer(Renderer.gles)
+    }
+    if Env.get("RUNIX_DAMAGE") != "" {
+        app.setDamageOverlay(true)
+    }
+    if Env.get("RUNIX_PAUSED") != "" {
+        app.setAnimating(false)
+    }
+    if Env.get("RUNIX_HEADLESS") != "" {
+        let f = app.frame()
+        if Env.get("RUNIX_WARM") != "" {
+            let warm = 0
+            while warm < 2 {
+                f = app.frame()
+                warm += 1
+            }
+        }
+        let surface = app.draw(f)
+        let rc = surface.drawCpu()
+        print("headless:", rc, f.records(), "nodes", app.tree().len(), f.describe())
+        let dump = Env.get("RUNIX_DUMP")
+        if dump != "" {
+            fs.writeBytes(dump, surface.pixels(), .Overwrite)
+        }
+        return rc
+    }
+    if Env.get("RUNIX_SMOKE") != "" {
+        let rc = app.showFor(3)
+        print("smoke:", rc)
+        return rc
+    }
+    return app.show()
+}

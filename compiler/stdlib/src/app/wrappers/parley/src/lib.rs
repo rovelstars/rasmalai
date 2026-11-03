@@ -78,9 +78,68 @@ pub extern "C" fn parley_measure(text: *const u8, len: i32, size: f64) -> f64 {
     text_width(s, size as f32) as f64
 }
 
+fn char_to_byte(text: &str, at: i32) -> usize {
+    if at <= 0 {
+        return 0;
+    }
+    text.char_indices()
+        .nth(at as usize)
+        .map(|(b, _)| b)
+        .unwrap_or(text.len())
+}
+
+fn byte_to_char(text: &str, at: usize) -> i32 {
+    text[..at].chars().count() as i32
+}
+
+/// Character index of the next grapheme cluster boundary after `at`.
+#[no_mangle]
+pub extern "C" fn parley_grapheme_next(text: *const u8, len: i32, at: i32) -> i32 {
+    if text.is_null() || len < 0 {
+        return -1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(text, len as usize) };
+    let Ok(s) = std::str::from_utf8(bytes) else {
+        return -2;
+    };
+    use unicode_segmentation::UnicodeSegmentation;
+    let start = char_to_byte(s, at);
+    let mut next = s.len();
+    for (b, _) in s.grapheme_indices(true) {
+        if b > start {
+            next = b;
+            break;
+        }
+    }
+    byte_to_char(s, next)
+}
+
+/// Character index of the previous grapheme cluster boundary before `at`.
+#[no_mangle]
+pub extern "C" fn parley_grapheme_prev(text: *const u8, len: i32, at: i32) -> i32 {
+    if text.is_null() || len < 0 {
+        return -1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(text, len as usize) };
+    let Ok(s) = std::str::from_utf8(bytes) else {
+        return -2;
+    };
+    use unicode_segmentation::UnicodeSegmentation;
+    let start = char_to_byte(s, at);
+    let mut prev = 0usize;
+    for (b, _) in s.grapheme_indices(true) {
+        if b < start {
+            prev = b;
+        } else {
+            break;
+        }
+    }
+    byte_to_char(s, prev)
+}
+
 #[no_mangle]
 pub extern "C" fn parley_abi_version() -> i32 {
-    2
+    3
 }
 
 /// Lay out UTF-8 text into lines and write one 24-byte record per line:

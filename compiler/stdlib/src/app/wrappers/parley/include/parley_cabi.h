@@ -4,6 +4,8 @@
 #include <stdint.h>
 
 double parley_measure(const uint8_t* text, int32_t len, double size);
+int32_t parley_grapheme_next(const uint8_t* text, int32_t len, int32_t at);
+int32_t parley_grapheme_prev(const uint8_t* text, int32_t len, int32_t at);
 int32_t parley_layout(
     const uint8_t* text,
     int32_t len,

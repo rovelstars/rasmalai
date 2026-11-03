@@ -29,6 +29,7 @@ enum Event {
     KeyDown(i32),
     KeyUp(i32),
     SurfaceLost,
+    Scroll(i32),
 }
 
 struct GpuCore {
@@ -197,6 +198,7 @@ struct State {
     events: VecDeque<Event>,
     pointer_x: f64,
     pointer_y: f64,
+    scroll_acc: f32,
     last_a: i32,
     last_b: i32,
 }
@@ -612,6 +614,30 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
             } if button == BTN_LEFT => {
                 state.events.push_back(Event::PointerUp(0, 0));
             }
+            wl_pointer::Event::Axis {
+                axis: WEnum::Value(wl_pointer::Axis::VerticalScroll),
+                value,
+                ..
+            } => {
+                state.scroll_acc += value as f32;
+                while state.scroll_acc >= 10.0 {
+                    state.scroll_acc -= 10.0;
+                    state.events.push_back(Event::Scroll(1));
+                }
+                while state.scroll_acc <= -10.0 {
+                    state.scroll_acc += 10.0;
+                    state.events.push_back(Event::Scroll(-1));
+                }
+            }
+            wl_pointer::Event::AxisDiscrete {
+                axis: WEnum::Value(wl_pointer::Axis::VerticalScroll),
+                discrete,
+                ..
+            } => {
+                if discrete != 0 {
+                    state.events.push_back(Event::Scroll(discrete));
+                }
+            }
             _ => {}
         }
     }
@@ -687,6 +713,7 @@ fn open(title: &str, width: u32, height: u32, backend: i32) -> Option<Host> {
             events: VecDeque::new(),
             pointer_x: 0.0,
             pointer_y: 0.0,
+            scroll_acc: 0.0,
             last_a: 0,
             last_b: 0,
         },
@@ -727,12 +754,6 @@ pub extern "C" fn host_open(
 fn next_event(host: &mut Host) -> Option<i32> {
     loop {
         let event = host.state.events.pop_front()?;
-        if matches!(
-            event,
-            Event::PointerMove(..) | Event::PointerUp(..) | Event::KeyUp(_)
-        ) {
-            continue;
-        }
         let (code, a, b) = match event {
             Event::Close => (1, 0, 0),
             Event::Resize(w, h) => (2, w, h),
@@ -742,6 +763,7 @@ fn next_event(host: &mut Host) -> Option<i32> {
             Event::KeyDown(k) => (6, k, 0),
             Event::KeyUp(k) => (7, k, 0),
             Event::SurfaceLost => (8, 0, 0),
+            Event::Scroll(d) => (9, d, 0),
         };
         host.state.last_a = a;
         host.state.last_b = b;

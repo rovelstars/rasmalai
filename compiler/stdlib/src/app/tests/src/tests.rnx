@@ -1,9 +1,13 @@
 import { App, Renderer, Surface, measureText } from "@std/app"
-import { Align, Build, Canvas, Node } from "@std/ui"
+import { Align, Build, Canvas, Key, Node, Role } from "@std/ui"
 import { ByteBuffer } from "@std/bytes"
 
 class Counter {
     let n: Int = 0
+}
+
+class TextState {
+    let value: String = ""
 }
 
 fn nthFillWidth(list: ByteBuffer, which: Int): Int {
@@ -110,6 +114,52 @@ fn Main(): Int {
     failed = check(runs >= 4, "paragraph wraps through parley: " + runs.toString(), failed)
     failed = check(pf.records() > 4, "wrapped frame has records", failed)
 
+    let textState = new TextState()
+    let typing = App.launch("Type", 320, 120, (b: Build): Node => {
+        let root = b.column()
+        root.addChild(b.textField(textState.value, "name", (v: String) => { textState.value = v }))
+        return root
+    })
+    typing.frame()
+    let fieldId = typing.tree().find(Role.textbox, "name")
+    let fieldNode = Node(tree: typing.tree(), id: fieldId)
+    typing.tree().focusOn(fieldNode)
+    typing.tree().typeText(fieldNode, "e\u{301}x")
+    failed = check(typing.tree().valueOf(fieldNode) == "e\u{301}x", "typed unicode", failed)
+    typing.tree().keyDown(fieldNode, Key.backspace)
+    failed = check(typing.tree().valueOf(fieldNode) == "e\u{301}", "backspace removed one cluster", failed)
+    typing.tree().keyDown(fieldNode, Key.backspace)
+    failed = check(typing.tree().valueOf(fieldNode) == "", "backspace removed the combining pair", failed)
+
+    let keyState = new TextState()
+    let keys = App.launch("Keys", 320, 120, (b: Build): Node => {
+        let root = b.column()
+        root.addChild(b.textField(keyState.value, "name", (v: String) => { keyState.value = v }))
+        return root
+    })
+    keys.frame()
+    let kid = keys.tree().find(Role.textbox, "name")
+    keys.tree().focusOn(Node(tree: keys.tree(), id: kid))
+    keys.sendKey(30, true)
+    keys.sendKey(30, false)
+    keys.sendKey(42, true)
+    keys.sendKey(30, true)
+    keys.sendKey(42, false)
+    keys.sendKey(30, false)
+    failed = check(keyState.value == "aA", "shifted key input types: " + keyState.value, failed)
+    keys.sendKey(14, true)
+    keys.sendKey(14, false)
+    failed = check(keyState.value == "a", "backspace edits the field", failed)
+
+    let hits = [0]
+    keys.bind("ctrl+s", () => { hits[0] += 1 })
+    keys.sendKey(29, true)
+    keys.sendKey(31, true)
+    keys.sendKey(31, false)
+    keys.sendKey(29, false)
+    failed = check(hits[0] == 1, "app shortcut ran", failed)
+    failed = check(keyState.value == "a", "shortcut did not type", failed)
+
     let sized = App.launch("Width", 320, 120, (b: Build): Node => {
         return b.column() {
             b.buttonInert("Save")
@@ -166,6 +216,31 @@ fn Main(): Int {
     canv.frame()
     let c2 = canv.frame()
     failed = check(c2.damage().count() == 3, "three canvas regions: " + c2.damage().count().toString(), failed)
+
+    let virtual = App.launch("Virtual", 320, 240, (b: Build): Node => {
+        let root = b.column()
+        let v = b.virtualList("rows", "rows", 10000, 30, 120)
+        root.addChild(v.node)
+        let i = 0
+        while i < v.count {
+            let r = b.listItem("row " + (v.first + i).toString(), () => {})
+            r.fixedHeight(30)
+            if i == 0 {
+                r.offsetY(v.offset)
+            }
+            v.node.addChild(r)
+            i += 1
+        }
+        return root
+    })
+    let vf1 = virtual.frame()
+    failed = check(virtual.tree().len() < 15, "virtual list builds only visible rows: " + virtual.tree().len().toString(), failed)
+    failed = check(vf1.snapshot.contains("row 0"), "first row is present", failed)
+    failed = check(virtual.scrollAt(20, 20, 90.0), "scrolled the virtual list", failed)
+    let vf2 = virtual.frame()
+    failed = check(vf2.snapshot.contains("row 3"), "scrolled rows are present: " + vf2.snapshot, failed)
+    failed = check(!vf2.snapshot.contains("row 0"), "offscreen row is gone", failed)
+    failed = check(virtual.tree().len() < 15, "still only visible rows", failed)
 
     let paused = App.launch("Paused", 64, 48, (b: Build): Node => {
         return b.column() {
