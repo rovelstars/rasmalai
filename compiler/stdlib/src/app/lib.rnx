@@ -10,7 +10,7 @@
 //! frame, damage, or present call reaches app code.
 
 import { ByteBuffer } from "@std/bytes"
-import { Build, Damage, Display, FrameClock, Key, Node, Painter, TextEngine, TextRow, Theme, Tree, rgba } from "@std/ui"
+import { Build, Damage, Display, DisplayList, FrameClock, Key, Node, Painter, TextEngine, TextRow, Theme, Tree, rgba } from "@std/ui"
 import { Clock } from "@std/time"
 import {
     fn parley_layout(text: Pointer<Byte>, len: Int, size: Float, maxWidth: Float, maxLines: Int, wrap: Int, ellipsis: Int, out: Pointer<Byte>, cap: Int): Int as parleyLayout,
@@ -329,6 +329,9 @@ pub class App {
     let rendererChoice: Renderer
     let frameClock: FrameClock = new FrameClock()
     let animatingFlag: Bool = true
+    let damageOverlay: Bool = false
+    let lastW: Int = 0
+    let lastH: Int = 0
     let textEngine: TextEngine
 
     init(w: Window, th: Theme, v: fn(Build): Node) {
@@ -385,8 +388,22 @@ pub class App {
         return this.frameClock
     }
 
-    /** Build the tree, lay it out, and encode the frame. */
+    /** Outline changed regions, like the show-surface-updates developer flag. */
+    pub fn setDamageOverlay(on: Bool) {
+        this.damageOverlay = on
+    }
+
+    /** Build the tree, lay it out, and encode a full frame. */
     pub fn frame(): Frame {
+        return this.buildFrame(false)
+    }
+
+    /** Encode only the damaged regions. The host paints those into the target. */
+    fn framePresent(): Frame {
+        return this.buildFrame(true)
+    }
+
+    fn buildFrame(regions: Bool): Frame {
         this.frameClock.tick(Clock.mono().nanos)
         this.rootTree.beginFrame()
         let b = new Build(this.rootTree)
@@ -397,10 +414,22 @@ pub class App {
         this.setAnimating(b.animating())
         this.rootTree.endFrame()
         this.rootTree.layout(root, this.window.width)
+        let full = this.frames == 0 || this.window.width != this.lastW || this.window.height != this.lastH
+        this.lastW = this.window.width
+        this.lastH = this.window.height
+        let damage = this.rootTree.damageOf(this.window.width, this.window.height, full)
         this.frames += 1
-        let d = Painter.paint(this.rootTree, this.window.width, this.window.height, this.theme)
+        let d = DisplayList.createDefault()
+        if regions {
+            d = Painter.paintRegions(this.rootTree, this.window.width, this.window.height, this.theme, damage)
+        } else {
+            d = Painter.paint(this.rootTree, this.window.width, this.window.height, this.theme)
+        }
+        if this.damageOverlay {
+            Painter.paintDamage(d, damage, rgba(255, 0, 220, 255))
+        }
         let list = d.finish(this.window.width, this.window.height)
-        return new Frame(this.frames, list, this.rootTree.snapshot(), d.damage())
+        return new Frame(this.frames, list, this.rootTree.snapshot(), damage)
     }
 
     /** Render an encoded frame into a new surface. */
@@ -482,7 +511,7 @@ pub class App {
             let dirty = true
             while !done {
                 if this.animatingFlag || dirty || limit > 0 {
-                    let f = this.frame()
+                    let f = this.framePresent()
                     let dn = f.damage().count()
                     let dmg = ByteBuffer.allocate(dn * 16)
                     let di = 0

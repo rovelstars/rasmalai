@@ -147,6 +147,28 @@ Row text comes from parley's line ranges, so Unicode shaping, cluster
 boundaries, and explicit newlines are handled by the shaper. Character offsets
 cross the ABI, which matches `String.slice`.
 
+## Damage
+
+`Tree.beginFrame` snapshots each node's bounds, text, value, checked state, and
+role. After layout, `Tree.damageOf(width, height, full)` returns the rectangles
+that changed: moved or resized nodes, changed labels and states, canvas nodes
+(their paint runs every frame), and the old and new focused node. Removed nodes
+contribute their previous bounds.
+
+`Damage.compact()` merges overlapping and touching rectangles, and collapses a
+large set into one bounding box. The list is small by construction, so the
+merge stays cheap.
+
+`Painter.paintRegions(tree, width, height, theme, damage)` fills only the
+damaged regions and paints only the nodes that intersect them. The app uses it
+for the window path; `Painter.paint` still builds a full list for tests,
+snapshots, and headless dumps. The first frame and a resize force full damage
+because the target starts undefined.
+
+`Painter.paintDamage(list, damage, color)` outlines the regions for the
+show-updates overlay. `RUNIX_DAMAGE=1` enables it and `RUNIX_TRACE=1` prints the
+damage rectangles each frame.
+
 ## Canvas nodes
 
 `b.canvas(name, width, height, paint)` creates a fixed-size node that draws

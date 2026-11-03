@@ -154,7 +154,8 @@ fn make_target(
         format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC,
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -167,6 +168,7 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     target: wgpu::Texture,
     target_view: wgpu::TextureView,
+    scratch: Option<(wgpu::Texture, wgpu::TextureView, u32, u32)>,
     blitter: wgpu::util::TextureBlitter,
 }
 
@@ -264,6 +266,7 @@ impl State {
             config,
             target,
             target_view,
+            scratch: None,
             blitter,
         });
         true
@@ -289,7 +292,7 @@ impl State {
         }
     }
 
-    fn present(&mut self, bytes: &[u8]) -> i32 {
+    fn present(&mut self, bytes: &[u8], rects: &[(i32, i32, i32, i32)]) -> i32 {
         if !self.configured {
             return -2;
         }
@@ -297,14 +300,24 @@ impl State {
             return -3;
         }
         let started = std::time::Instant::now();
-        let scene = match scene::from_list(bytes) {
-            Ok(scene) => scene,
+        let commands = match scene::parse(bytes) {
+            Ok(commands) => commands,
             Err(code) => return code,
         };
         let parsed = started.elapsed();
-        let Some(gpu) = self.gpu.as_ref() else {
+        if rects.is_empty() {
+            return 0;
+        }
+        let Some(gpu) = self.gpu.as_mut() else {
             return -3;
         };
+        let surface_w = gpu.config.width;
+        let surface_h = gpu.config.height;
+        let full = rects.len() == 1
+            && rects[0].0 <= 0
+            && rects[0].1 <= 0
+            && rects[0].0 + rects[0].2 >= surface_w as i32
+            && rects[0].1 + rects[0].3 >= surface_h as i32;
         let acquired = started.elapsed();
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -322,31 +335,96 @@ impl State {
             }
             wgpu::CurrentSurfaceTexture::Validation => return -4,
         };
+
+        if full {
+            let scene = scene::to_gpu(&commands);
+            let params = RenderParams {
+                base_color: Color::TRANSPARENT,
+                width: surface_w,
+                height: surface_h,
+                antialiasing_method: AaConfig::Area,
+            };
+            if gpu
+                .resources
+                .renderer
+                .lock()
+                .unwrap()
+                .render_to_texture(
+                    &gpu.resources.device,
+                    &gpu.resources.queue,
+                    &scene,
+                    &gpu.target_view,
+                    &params,
+                )
+                .is_err()
+            {
+                return -5;
+            }
+        } else {
+            let max_w = rects.iter().map(|r| r.2.max(1) as u32).max().unwrap_or(1);
+            let max_h = rects.iter().map(|r| r.3.max(1) as u32).max().unwrap_or(1);
+            let grow = gpu
+                .scratch
+                .as_ref()
+                .map_or(true, |(_, _, w, h)| *w < max_w || *h < max_h);
+            if grow {
+                let (texture, view) = make_target(&gpu.resources.device, max_w, max_h);
+                gpu.scratch = Some((texture, view, max_w, max_h));
+            }
+            let (scratch, scratch_view, sw, sh) = gpu.scratch.as_ref().unwrap();
+            let params = RenderParams {
+                base_color: Color::TRANSPARENT,
+                width: *sw,
+                height: *sh,
+                antialiasing_method: AaConfig::Area,
+            };
+            for rect in rects {
+                let scene = scene::to_gpu_at(&commands, -(rect.0 as f64), -(rect.1 as f64));
+                if gpu
+                    .resources
+                    .renderer
+                    .lock()
+                    .unwrap()
+                    .render_to_texture(
+                        &gpu.resources.device,
+                        &gpu.resources.queue,
+                        &scene,
+                        scratch_view,
+                        &params,
+                    )
+                    .is_err()
+                {
+                    return -5;
+                }
+                let mut encoder = gpu
+                    .resources
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                encoder.copy_texture_to_texture(
+                    scratch.as_image_copy(),
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &gpu.target,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: rect.0.max(0) as u32,
+                            y: rect.1.max(0) as u32,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: rect.2.max(1) as u32,
+                        height: rect.3.max(1) as u32,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                gpu.resources.queue.submit(Some(encoder.finish()));
+            }
+        }
+
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let params = RenderParams {
-            base_color: Color::TRANSPARENT,
-            width: gpu.config.width,
-            height: gpu.config.height,
-            antialiasing_method: AaConfig::Area,
-        };
-        if gpu
-            .resources
-            .renderer
-            .lock()
-            .unwrap()
-            .render_to_texture(
-                &gpu.resources.device,
-                &gpu.resources.queue,
-                &scene,
-                &gpu.target_view,
-                &params,
-            )
-            .is_err()
-        {
-            return -5;
-        }
         let mut encoder = gpu
             .resources
             .device
@@ -356,8 +434,15 @@ impl State {
         gpu.resources.queue.submit(Some(encoder.finish()));
         gpu.resources.queue.present(frame);
         if std::env::var_os("RUNIX_TRACE").is_some() {
+            for rect in rects {
+                eprintln!(
+                    "  region {} {} {} {}",
+                    rect.0, rect.1, rect.2, rect.3
+                );
+            }
             eprintln!(
-                "present parse={:?} acquire={:?} total={:?}",
+                "present rects={} parse={:?} acquire={:?} total={:?}",
+                rects.len(),
                 parsed,
                 acquired - parsed,
                 started.elapsed()
@@ -763,7 +848,22 @@ pub extern "C" fn host_present(
         return -1;
     }
     let bytes = unsafe { slice::from_raw_parts(list, len as usize) };
-    host.state.present(bytes)
+    let values = if count > 0 {
+        unsafe { slice::from_raw_parts(damage, count as usize * 4) }
+    } else {
+        &[]
+    };
+    let mut rects = Vec::with_capacity(values.len() / 4);
+    for r in values.chunks_exact(4) {
+        let x = r[0].max(0).min(host.state.width as i32);
+        let y = r[1].max(0).min(host.state.height as i32);
+        let x1 = (r[0] + r[2]).max(0).min(host.state.width as i32);
+        let y1 = (r[1] + r[3]).max(0).min(host.state.height as i32);
+        if x1 > x && y1 > y {
+            rects.push((x, y, x1 - x, y1 - y));
+        }
+    }
+    host.state.present(bytes, &rects)
 }
 
 #[no_mangle]

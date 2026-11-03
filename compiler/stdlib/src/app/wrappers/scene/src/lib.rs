@@ -265,8 +265,17 @@ pub fn shape(text: &str, size: f32) -> Vec<ShapedRun> {
 
 /// Turn decoded commands into a GPU scene.
 pub fn to_gpu(commands: &[Command]) -> vello::Scene {
+    to_gpu_with(commands, Affine::IDENTITY)
+}
+
+/// Turn decoded commands into a scene shifted by `dx`, `dy`.
+pub fn to_gpu_at(commands: &[Command], dx: f64, dy: f64) -> vello::Scene {
+    to_gpu_with(commands, Affine::translate((dx, dy)))
+}
+
+fn to_gpu_with(commands: &[Command], start: Affine) -> vello::Scene {
     let mut scene = vello::Scene::new();
-    let mut transform = Affine::IDENTITY;
+    let mut transform = start;
     let mut stack: Vec<Affine> = Vec::new();
     for command in commands {
         match command {
@@ -363,3 +372,4 @@ pub fn to_gpu(commands: &[Command]) -> vello::Scene {
 pub fn from_list(bytes: &[u8]) -> Result<vello::Scene, i32> {
     Ok(to_gpu(&parse(bytes)?))
 }
+
