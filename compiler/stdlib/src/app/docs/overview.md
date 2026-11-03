@@ -79,7 +79,7 @@ Wayland the swapchain paces acquisition; an Epiclese host blocks on
 
 `RUNIX_DAMAGE=1` outlines damaged regions when an app enables
 `App.setDamageOverlay`. `RUNIX_TRACE=1` prints each present's regions and
-timing from the host.
+timing from the host, plus one line per scroll step.
 
 ## The window host
 
@@ -110,3 +110,13 @@ shared libraries. `tools/ci-wrappers.sh` builds all four, installs them into a
 prefix, and runs the probes and the examples on Cranelift and LLVM. The
 interpreter's foreign-call path accepts `Int`, `Bool`, and `Pointer` arguments
 but not `Float`; use a compiled backend for an app that calls the runtime.
+
+## Native ABI widths
+
+A wrapper function that the app reads as `Int` must return `int64_t` in its
+header and `i64` in Rust. The call site reads the full 64-bit return register;
+a 32-bit `int` return is zero-extended, so `-1` arrives as `4294967295`. That
+breaks every negative status code: a wheel-up delta clamps a list to its
+maximum, a GPU failure never reaches the CPU fallback, and a `-4` present
+retry is read as success. Keep the header, the Rust signature, and the rnx
+declaration on the same 64-bit width.

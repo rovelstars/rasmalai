@@ -94,7 +94,7 @@ fn byte_to_char(text: &str, at: usize) -> i32 {
 
 /// Character index of the next grapheme cluster boundary after `at`.
 #[no_mangle]
-pub extern "C" fn parley_grapheme_next(text: *const u8, len: i32, at: i32) -> i32 {
+pub extern "C" fn parley_grapheme_next(text: *const u8, len: i32, at: i32) -> i64 {
     if text.is_null() || len < 0 {
         return -1;
     }
@@ -111,12 +111,12 @@ pub extern "C" fn parley_grapheme_next(text: *const u8, len: i32, at: i32) -> i3
             break;
         }
     }
-    byte_to_char(s, next)
+    byte_to_char(s, next) as i64
 }
 
 /// Character index of the previous grapheme cluster boundary before `at`.
 #[no_mangle]
-pub extern "C" fn parley_grapheme_prev(text: *const u8, len: i32, at: i32) -> i32 {
+pub extern "C" fn parley_grapheme_prev(text: *const u8, len: i32, at: i32) -> i64 {
     if text.is_null() || len < 0 {
         return -1;
     }
@@ -134,11 +134,11 @@ pub extern "C" fn parley_grapheme_prev(text: *const u8, len: i32, at: i32) -> i3
             break;
         }
     }
-    byte_to_char(s, prev)
+    byte_to_char(s, prev) as i64
 }
 
 #[no_mangle]
-pub extern "C" fn parley_abi_version() -> i32 {
+pub extern "C" fn parley_abi_version() -> i64 {
     3
 }
 
@@ -161,7 +161,7 @@ pub extern "C" fn parley_layout(
     ellipsis: i32,
     out: *mut u8,
     cap: i32,
-) -> i32 {
+) -> i64 {
     if text.is_null() || len < 0 || size <= 0.0 || cap < 0 {
         return -1;
     }
@@ -194,7 +194,7 @@ pub extern "C" fn parley_layout(
         total
     };
     if cap < (keep * ROW_BYTES) as i32 {
-        return keep as i32;
+        return keep as i64;
     }
 
     for (i, line) in layout.lines().take(keep).enumerate() {
@@ -220,7 +220,7 @@ pub extern "C" fn parley_layout(
             (record.add(20) as *mut f32).write_unaligned(metrics.baseline);
         }
     }
-    keep as i32
+    keep as i64
 }
 
 #[no_mangle]
@@ -233,7 +233,7 @@ pub extern "C" fn parley_clusters(
     size: f64,
     out: *mut u8,
     cap: i32,
-) -> i32 {
+) -> i64 {
     if text.is_null() || out.is_null() || len <= 0 || size <= 0.0 || cap < 0 {
         return -1;
     }
@@ -262,5 +262,5 @@ pub extern "C" fn parley_clusters(
             }
         }
     }
-    i
+    i as i64
 }

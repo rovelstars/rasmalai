@@ -235,16 +235,16 @@ pub extern "C" fn wgpu_instance_destroy(p: *mut c_void) {
 }
 
 #[no_mangle]
-pub extern "C" fn wgpu_adapter_count(p: *mut c_void) -> i32 {
+pub extern "C" fn wgpu_adapter_count(p: *mut c_void) -> i64 {
     if p.is_null() {
         return -1;
     }
     let gpu = unsafe { &*(p as *const Gpu) };
-    pollster::block_on(gpu.instance.enumerate_adapters(wgpu::Backends::all())).len() as i32
+    pollster::block_on(gpu.instance.enumerate_adapters(wgpu::Backends::all())).len() as i64
 }
 
 #[no_mangle]
-pub extern "C" fn wgpu_adapter_name(p: *mut c_void, index: i32, out: *mut u8, len: i32) -> i32 {
+pub extern "C" fn wgpu_adapter_name(p: *mut c_void, index: i32, out: *mut u8, len: i32) -> i64 {
     if p.is_null() || out.is_null() || len <= 0 || index < 0 {
         return -1;
     }
@@ -261,26 +261,26 @@ pub extern "C" fn wgpu_adapter_name(p: *mut c_void, index: i32, out: *mut u8, le
     unsafe {
         *out.add(n) = 0;
     }
-    n as i32
+    n as i64
 }
 
 #[no_mangle]
-pub extern "C" fn wgpu_clear_rgba(w: i32, h: i32, r: u8, g: u8, b: u8, a: u8, out: *mut u8) -> i32 {
+pub extern "C" fn wgpu_clear_rgba(w: i32, h: i32, r: u8, g: u8, b: u8, a: u8, out: *mut u8) -> i64 {
     if w <= 0 || h <= 0 {
         return -1;
     }
-    paint(w as u32, h as u32, color(r, g, b, a), false, out)
+    paint(w as u32, h as u32, color(r, g, b, a), false, out) as i64
 }
 
 #[no_mangle]
-pub extern "C" fn wgpu_triangle(w: i32, h: i32, out: *mut u8) -> i32 {
+pub extern "C" fn wgpu_triangle(w: i32, h: i32, out: *mut u8) -> i64 {
     if w <= 0 || h <= 0 {
         return -1;
     }
-    paint(w as u32, h as u32, color(0, 0, 0, 255), true, out)
+    paint(w as u32, h as u32, color(0, 0, 0, 255), true, out) as i64
 }
 
 #[no_mangle]
-pub extern "C" fn wgpu_abi_version() -> i32 {
+pub extern "C" fn wgpu_abi_version() -> i64 {
     1
 }

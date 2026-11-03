@@ -36,7 +36,7 @@ fn draw_text(
 }
 
 #[no_mangle]
-pub extern "C" fn cpu_render(w: i32, h: i32, list: *const u8, len: i32, out: *mut u8) -> i32 {
+pub extern "C" fn cpu_render(w: i32, h: i32, list: *const u8, len: i32, out: *mut u8) -> i64 {
     if w <= 0 || h <= 0 || w > u16::MAX as i32 || h > u16::MAX as i32 {
         return -1;
     }
@@ -46,7 +46,7 @@ pub extern "C" fn cpu_render(w: i32, h: i32, list: *const u8, len: i32, out: *mu
     let bytes = unsafe { slice::from_raw_parts(list, len as usize) };
     let commands = match scene::parse(bytes) {
         Ok(commands) => commands,
-        Err(code) => return code,
+        Err(code) => return code as i64,
     };
     let width = w as u16;
     let height = h as u16;
@@ -165,6 +165,6 @@ pub extern "C" fn cpu_render(w: i32, h: i32, list: *const u8, len: i32, out: *mu
 }
 
 #[no_mangle]
-pub extern "C" fn cpu_abi_version() -> i32 {
+pub extern "C" fn cpu_abi_version() -> i64 {
     1
 }

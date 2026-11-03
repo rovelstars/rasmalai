@@ -788,13 +788,13 @@ fn next_event(host: &mut Host) -> Option<i32> {
 }
 
 #[no_mangle]
-pub extern "C" fn host_pump(handle: *mut c_void) -> i32 {
+pub extern "C" fn host_pump(handle: *mut c_void) -> i64 {
     let Some(host) = (unsafe { (handle as *mut Host).as_mut() }) else {
         return -1;
     };
     loop {
         if let Some(code) = next_event(host) {
-            return code;
+            return code as i64;
         }
         if host.state.closed {
             return 1;
@@ -807,7 +807,7 @@ pub extern "C" fn host_pump(handle: *mut c_void) -> i32 {
 /// paused app does. `block == 0` drains what has arrived and returns 0, so a
 /// running animation keeps drawing without waiting on input.
 #[no_mangle]
-pub extern "C" fn host_pump_timeout(handle: *mut c_void, block: i32) -> i32 {
+pub extern "C" fn host_pump_timeout(handle: *mut c_void, block: i32) -> i64 {
     let Some(host) = (unsafe { (handle as *mut Host).as_mut() }) else {
         return -1;
     };
@@ -815,7 +815,7 @@ pub extern "C" fn host_pump_timeout(handle: *mut c_void, block: i32) -> i32 {
         return host_pump(handle);
     }
     if let Some(code) = next_event(host) {
-        return code;
+        return code as i64;
     }
     if host.state.closed {
         return 1;
@@ -825,7 +825,7 @@ pub extern "C" fn host_pump_timeout(handle: *mut c_void, block: i32) -> i32 {
         let _ = guard.read();
     }
     let _ = queue.dispatch_pending(state);
-    next_event(host).unwrap_or(0)
+    next_event(host).unwrap_or(0) as i64
 }
 
 /// Wait until the previously presented buffer is free for reuse.
@@ -833,7 +833,7 @@ pub extern "C" fn host_pump_timeout(handle: *mut c_void, block: i32) -> i32 {
 /// The Wayland swapchain already paces acquisition, so this is a no-op here.
 /// An Epiclese host blocks on frame_done instead.
 #[no_mangle]
-pub extern "C" fn host_wait(handle: *mut c_void) -> i32 {
+pub extern "C" fn host_wait(handle: *mut c_void) -> i64 {
     if unsafe { (handle as *mut Host).as_ref() }.is_none() {
         return -1;
     }
@@ -841,39 +841,39 @@ pub extern "C" fn host_wait(handle: *mut c_void) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn host_event_a(handle: *mut c_void) -> i32 {
+pub extern "C" fn host_event_a(handle: *mut c_void) -> i64 {
     unsafe { (handle as *mut Host).as_ref() }
-        .map(|h| h.state.last_a)
+        .map(|h| h.state.last_a as i64)
         .unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn host_event_b(handle: *mut c_void) -> i32 {
+pub extern "C" fn host_event_b(handle: *mut c_void) -> i64 {
     unsafe { (handle as *mut Host).as_ref() }
-        .map(|h| h.state.last_b)
+        .map(|h| h.state.last_b as i64)
         .unwrap_or(0)
 }
 
 /// Changes whenever the host recreates its target texture. The app forces a
 /// full frame when this differs from the last value it saw.
 #[no_mangle]
-pub extern "C" fn host_generation(handle: *mut c_void) -> i32 {
+pub extern "C" fn host_generation(handle: *mut c_void) -> i64 {
     unsafe { (handle as *mut Host).as_ref() }
-        .map(|h| h.state.generation as i32)
+        .map(|h| h.state.generation as i64)
         .unwrap_or(-1)
 }
 
 #[no_mangle]
-pub extern "C" fn host_width(handle: *mut c_void) -> i32 {
+pub extern "C" fn host_width(handle: *mut c_void) -> i64 {
     unsafe { (handle as *mut Host).as_ref() }
-        .map(|h| h.state.width as i32)
+        .map(|h| h.state.width as i64)
         .unwrap_or(-1)
 }
 
 #[no_mangle]
-pub extern "C" fn host_height(handle: *mut c_void) -> i32 {
+pub extern "C" fn host_height(handle: *mut c_void) -> i64 {
     unsafe { (handle as *mut Host).as_ref() }
-        .map(|h| h.state.height as i32)
+        .map(|h| h.state.height as i64)
         .unwrap_or(-1)
 }
 
@@ -884,7 +884,7 @@ pub extern "C" fn host_present(
     len: i32,
     damage: *const i32,
     count: i32,
-) -> i32 {
+) -> i64 {
     let Some(host) = (unsafe { (handle as *mut Host).as_mut() }) else {
         return -1;
     };
@@ -910,7 +910,7 @@ pub extern "C" fn host_present(
             rects.push((x, y, x1 - x, y1 - y));
         }
     }
-    host.state.present(bytes, &rects)
+    host.state.present(bytes, &rects) as i64
 }
 
 #[no_mangle]
@@ -924,7 +924,7 @@ pub extern "C" fn host_close(handle: *mut c_void) {
 }
 
 #[no_mangle]
-pub extern "C" fn host_abi_version() -> i32 {
+pub extern "C" fn host_abi_version() -> i64 {
     1
 }
 
@@ -1002,14 +1002,14 @@ pub extern "C" fn host_render_offscreen(
     list: *const u8,
     len: i32,
     out: *mut u8,
-) -> i32 {
+) -> i64 {
     if w <= 0 || h <= 0 || list.is_null() || out.is_null() || len < 0 {
         return -1;
     }
     let bytes = unsafe { slice::from_raw_parts(list, len as usize) };
     let scene = match scene::from_list(bytes) {
         Ok(scene) => scene,
-        Err(code) => return code,
+        Err(code) => return code as i64,
     };
     let Some(core) = core(0) else {
         return -3;
@@ -1030,5 +1030,5 @@ pub extern "C" fn host_render_offscreen(
     {
         return -5;
     }
-    readback(&core.device, &core.queue, &texture, w as u32, h as u32, out)
+    readback(&core.device, &core.queue, &texture, w as u32, h as u32, out) as i64
 }
