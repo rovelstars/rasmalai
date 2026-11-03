@@ -4,7 +4,9 @@ use vello::peniko::{Color, Fill};
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions};
 
 fn open() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::VULKAN;
+    let instance = wgpu::Instance::new(descriptor);
     let adapter =
         match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
         {
@@ -89,7 +91,13 @@ fn render_scene(w: u32, h: u32, scene: &vello::Scene, out: *mut u8) -> i32 {
     let Some((device, queue)) = open() else {
         return -2;
     };
-    let Ok(mut renderer) = Renderer::new(&device, RendererOptions::default()) else {
+    let Ok(mut renderer) = Renderer::new(
+        &device,
+        RendererOptions {
+            antialiasing_support: vello::AaSupport::area_only(),
+            ..Default::default()
+        },
+    ) else {
         return -4;
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {

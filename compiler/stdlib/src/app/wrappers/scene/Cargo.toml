@@ -8,7 +8,7 @@ name = "scene"
 crate-type = ["rlib"]
 
 [dependencies]
-vello = "0.11"
+vello = { version = "0.11", default-features = false, features = ["wgpu"] }
 parley = "0.12"
 png = "0.18"
 

@@ -22,7 +22,9 @@ fn fs() -> @location(0) vec4<f32> {
 "#;
 
 fn open() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::VULKAN;
+    let instance = wgpu::Instance::new(descriptor);
     let adapter =
         match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
         {
@@ -216,7 +218,9 @@ fn paint(w: u32, h: u32, clear: wgpu::Color, triangle: bool, out: *mut u8) -> i3
 
 #[no_mangle]
 pub extern "C" fn wgpu_instance_create() -> *mut c_void {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::VULKAN;
+    let instance = wgpu::Instance::new(descriptor);
     Box::into_raw(Box::new(Gpu { instance })) as *mut c_void
 }
 
