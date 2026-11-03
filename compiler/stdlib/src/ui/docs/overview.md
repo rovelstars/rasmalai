@@ -173,6 +173,15 @@ contribute their previous bounds.
 large set into one bounding box. The list is small by construction, so the
 merge stays cheap.
 
+Damage compares against the last presented frame, not against the start of the
+current build. `Tree.commit()` snapshots the frame after it is painted; input
+that arrives between frames mutates the tree after that snapshot, so the next
+`damageOf` sees it. Without this, a slider drag or a typed character would
+already be in the tree when `beginFrame` ran and would leave the old pixels on
+screen. `App.frame` calls `commit` itself. A program that drives `Tree` directly
+must call it after presenting. A removed node reports its last committed bounds
+once, then stops.
+
 `Painter.paintRegions(tree, width, height, theme, damage)` fills only the
 damaged regions and paints only the nodes that intersect them. The app uses it
 for the window path; `Painter.paint` still builds a full list for tests,

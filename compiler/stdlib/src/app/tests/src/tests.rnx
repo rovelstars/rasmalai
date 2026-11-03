@@ -1,5 +1,5 @@
 import { App, Renderer, Surface, measureText } from "@std/app"
-import { Align, Build, Canvas, Key, Node, Role } from "@std/ui"
+import { Align, Build, Canvas, Key, Node, Role, rgba } from "@std/ui"
 import { ByteBuffer } from "@std/bytes"
 
 class Counter {
@@ -8,6 +8,27 @@ class Counter {
 
 class TextState {
     let value: String = ""
+}
+
+class SliderState {
+    let v: Float = 0.25
+}
+
+fn widestFillOf(list: ByteBuffer, color: Int): Int {
+    let n = list.readUInt32LE(8)
+    let i = 0
+    let best = 0
+    while i < n {
+        let o = 32 + i * 64
+        if list.readUInt32LE(o) == 1 && list.readUInt32LE(o + 4) == color {
+            let w = Int(list.readFloat64LE(o + 32))
+            if w > best {
+                best = w
+            }
+        }
+        i += 1
+    }
+    return best
 }
 
 fn nthFillWidth(list: ByteBuffer, which: Int): Int {
@@ -113,6 +134,20 @@ fn Main(): Int {
     }
     failed = check(runs >= 4, "paragraph wraps through parley: " + runs.toString(), failed)
     failed = check(pf.records() > 4, "wrapped frame has records", failed)
+
+    let sliderState = new SliderState()
+    let sliderApp = App.launch("Slider", 400, 200, (b: Build): Node => {
+        let root = b.column()
+        root.addChild(b.sliderValue("Volume", sliderState.v, (v: Float) => { sliderState.v = v }))
+        return root
+    })
+    sliderApp.frame()
+    let slid = sliderApp.tree().find(Role.slider, "Volume")
+    sliderApp.pointerDown(sliderApp.tree().x[slid] + sliderApp.tree().w[slid] * 3 / 4, sliderApp.tree().y[slid] + 36)
+    failed = check(sliderState.v > 0.6, "slider drag updates state: " + sliderState.v.toString(), failed)
+    let sliderFrame = sliderApp.frame()
+    let track = widestFillOf(sliderFrame.list, rgba(91, 141, 239, 255))
+    failed = check(track > sliderApp.tree().w[slid] / 2, "slider track follows the value: " + track.toString(), failed)
 
     let textState = new TextState()
     let typing = App.launch("Type", 320, 120, (b: Build): Node => {

@@ -16,6 +16,7 @@ class State {
 }
 
 fn view(b: Build, s: State): Node {
+    b.animate(false)
     let t = b.handle()
     let root = b.column()
     root.addChild(b.heading("UI kit"))

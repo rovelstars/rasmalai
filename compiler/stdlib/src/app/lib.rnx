@@ -481,6 +481,7 @@ pub class App {
             Painter.paintDamage(d, damage, rgba(255, 0, 220, 255))
         }
         let list = d.finish(this.window.width, this.window.height)
+        this.rootTree.commit()
         return new Frame(this.frames, list, this.rootTree.snapshot(), damage)
     }
 
