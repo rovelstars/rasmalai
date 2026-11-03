@@ -229,6 +229,14 @@ mod tests {
     }
 
     #[test]
+    fn format_accepts_bitwise_operators() {
+        let src = "fn f(a: Int, b: Int): Int {\n    return (~a | b) ^ (a & b);\n}\n";
+        let formatted = crate::fmt::format_source(src).unwrap();
+        let min = verify_and_minify("src/main.rnx", &formatted).unwrap();
+        assert!(min.contains('|') && min.contains('^') && min.contains('~'), "{min}");
+    }
+
+    #[test]
     fn verify_round_trip_on_fixture() {
         let formatted = crate::fmt::format_source(FIXTURE).unwrap();
         let min = verify_and_minify("src/main.rnx", &formatted).unwrap();

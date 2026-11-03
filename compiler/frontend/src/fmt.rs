@@ -324,7 +324,7 @@ fn tokenize(src: &str) -> Result<Vec<Ft>, String> {
                 push(Fk::Op, slice(i, i + 2), 0);
                 i += 2;
             }
-            b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'&' => {
+            b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'&' | b'|' | b'^' | b'~' => {
                 push(Fk::Op, slice(i, i + 1), 0);
                 i += 1;
             }
@@ -966,7 +966,9 @@ impl<'a> Emitter<'a> {
                         },
                         None => false,
                     };
-                    let unary = (text == "-" || text == "!" || text == "&") && !prev_is_operand;
+                    let unary =
+                        (text == "-" || text == "!" || text == "&" || text == "~")
+                            && !prev_is_operand;
                     if !unary {
                         if !self.start
                             && !self.out.ends_with('(')
