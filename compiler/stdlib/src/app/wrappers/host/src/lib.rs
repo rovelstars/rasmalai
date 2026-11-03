@@ -647,15 +647,6 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                     state.events.push_back(Event::Scroll(-1));
                 }
             }
-            wl_pointer::Event::AxisDiscrete {
-                axis: WEnum::Value(wl_pointer::Axis::VerticalScroll),
-                discrete,
-                ..
-            } => {
-                if discrete != 0 {
-                    state.events.push_back(Event::Scroll(discrete));
-                }
-            }
             _ => {}
         }
     }
@@ -782,7 +773,12 @@ fn next_event(host: &mut Host) -> Option<i32> {
             Event::KeyDown(k) => (6, k, 0),
             Event::KeyUp(k) => (7, k, 0),
             Event::SurfaceLost => (8, 0, 0),
-            Event::Scroll(d) => (9, d, 0),
+            Event::Scroll(d) => {
+                if std::env::var_os("RUNIX_TRACE").is_some() {
+                    eprintln!("scroll step={d}");
+                }
+                (9, d, 0)
+            }
             Event::PointerLeave => (10, 0, 0),
         };
         host.state.last_a = a;
