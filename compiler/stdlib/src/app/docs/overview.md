@@ -57,14 +57,22 @@ matters; the app does not see the reuse.
 
 ## Damage and pacing
 
-Each frame carries a damage list. v2 still reports the whole surface, but the
-list is part of the host call, so a narrower painter can shrink it later.
+Each frame carries the regions that changed. `App.frame()` returns a full list
+for tests and headless dumps; the window path builds only the damaged regions
+and hands them to the host. The host keeps one target texture, renders each
+region through a translated scene into a scratch texture, copies that rectangle
+into the target, and blits the target to the swapchain. The first frame and a
+resize are full.
 
 `App.runHost` presents while the view asks for frames and blocks on input while
 it does not. `b.animate(false)` in the view, or `App.setAnimating(false)`
-outside it, freezes the frame clock and stops presenting identical frames.
-On Wayland the swapchain paces acquisition; an Epiclese host blocks on
+outside it, freezes the frame clock and stops presenting identical frames. On
+Wayland the swapchain paces acquisition; an Epiclese host blocks on
 `frame_done` there.
+
+`RUNIX_DAMAGE=1` outlines damaged regions when an app enables
+`App.setDamageOverlay`. `RUNIX_TRACE=1` prints each present's regions and
+timing from the host.
 
 ## The window host
 

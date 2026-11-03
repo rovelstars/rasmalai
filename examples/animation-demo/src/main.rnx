@@ -336,14 +336,27 @@ fn screen(b: Build, d: Demo): Node {
 
 fn Main(): Int {
     let d = new Demo()
+    if Env.get("RUNIX_PAUSED") != "" {
+        d.playing = false
+    }
     let app = App.launch("Motion", 960, 470, (b: Build): Node => {
         return screen(b, d)
     })
     if Env.get("RUNIX_GL") != "" {
         app.setRenderer(Renderer.gles)
     }
+    if Env.get("RUNIX_DAMAGE") != "" {
+        app.setDamageOverlay(true)
+    }
     if Env.get("RUNIX_HEADLESS") != "" {
         let f = app.frame()
+        if Env.get("RUNIX_WARM") != "" {
+            let warm = 0
+            while warm < 2 {
+                f = app.frame()
+                warm += 1
+            }
+        }
         let surface = app.draw(f)
         let rc = surface.drawCpu()
         print("headless:", rc, f.records(), f.describe())

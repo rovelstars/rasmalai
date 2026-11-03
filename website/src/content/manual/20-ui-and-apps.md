@@ -95,6 +95,27 @@ print(Display.textOf(bytes))
 primitives for every node. `Theme.dark()` and `Theme.light()` are data, so a
 brand package can supply colors without forking the core.
 
+## Damage and idle frames
+
+A frame records which regions changed. `Tree.damageOf` compares each node's
+bounds, label, value, checked state, and role with the previous frame; a canvas
+node always counts because its paint function can draw anything. The rectangles
+are merged and the window renders only those regions into a persistent target.
+
+- The first frame and a resize are full frames.
+- `Painter.paintRegions` drops nodes outside the damage, so the display list is
+  proportional to what changed.
+- An unchanged view produces no damage and no frame. While a view is paused, the
+  app blocks on input, so an idle window uses no CPU and presents nothing.
+- `RUNIX_DAMAGE=1` outlines changed regions, like the show-surface-updates
+  developer flag. `RUNIX_TRACE=1` prints the rectangles and timing.
+
+```rnx
+let app = App.launch("Settings", 800, 600, view)
+let frame = app.frame()
+print(frame.damage().count())
+```
+
 ## Text layout
 
 Measurement and line breaking come from the shaper, not from a character-count

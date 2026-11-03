@@ -1,5 +1,9 @@
 import { App, Renderer, Surface, measureText } from "@std/app"
-import { Build, Node } from "@std/ui"
+import { Build, Canvas, Node } from "@std/ui"
+
+class Counter {
+    let n: Int = 0
+}
 
 fn check(ok: Bool, msg: String, failed: Int): Int {
     if ok {
@@ -74,6 +78,35 @@ fn Main(): Int {
     }
     failed = check(runs >= 4, "paragraph wraps through parley: " + runs.toString(), failed)
     failed = check(pf.records() > 4, "wrapped frame has records", failed)
+
+    let counter = new Counter()
+    let damage = App.launch("Damage", 200, 120, (b: Build): Node => {
+        return b.column() {
+            b.text("count " + counter.n.toString())
+        }
+    })
+    let d1 = damage.frame()
+    failed = check(d1.damage().count() == 1, "first frame has one damage rect", failed)
+    failed = check(d1.damage().wAt(0) == 200 && d1.damage().hAt(0) == 120, "first frame is full", failed)
+    let d2 = damage.frame()
+    failed = check(d2.damage().count() == 0, "unchanged frame has no damage: " + d2.damage().count().toString(), failed)
+    counter.n = 1
+    let d3 = damage.frame()
+    failed = check(d3.damage().count() >= 1, "changed text reports damage", failed)
+    failed = check(d3.damage().wAt(0) < 200, "damage is a region, not the surface", failed)
+
+    let canv = App.launch("Canvases", 960, 470, (b: Build): Node => {
+        let root = b.column()
+        let row = b.row()
+        row.addChild(b.canvas("a", 300, 300, (c: Canvas) => {}))
+        row.addChild(b.canvas("b", 300, 300, (c: Canvas) => {}))
+        row.addChild(b.canvas("c", 300, 300, (c: Canvas) => {}))
+        root.addChild(row)
+        return root
+    })
+    canv.frame()
+    let c2 = canv.frame()
+    failed = check(c2.damage().count() == 3, "three canvas regions: " + c2.damage().count().toString(), failed)
 
     let paused = App.launch("Paused", 64, 48, (b: Build): Node => {
         return b.column() {

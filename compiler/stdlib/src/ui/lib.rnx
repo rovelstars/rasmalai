@@ -401,6 +401,15 @@ pub class Tree {
     let textWrapV: Array<Bool> = []
     let textLayoutV: Array<TextLayout> = []
     let engine: TextEngine = TextEngine.mono()
+    let prevX: Array<Int> = []
+    let prevY: Array<Int> = []
+    let prevW: Array<Int> = []
+    let prevH: Array<Int> = []
+    let prevName: Array<String> = []
+    let prevValue: Array<String> = []
+    let prevChecked: Array<Bool> = []
+    let prevRole: Array<Int> = []
+    let prevFocus: Int = -1
     let x: Array<Int> = []
     let y: Array<Int> = []
     let w: Array<Int> = []
@@ -462,12 +471,21 @@ pub class Tree {
         while i < this.role.length() {
             this.live[i] = false
             this.claimed.push(false)
+            this.prevX[i] = this.x[i]
+            this.prevY[i] = this.y[i]
+            this.prevW[i] = this.w[i]
+            this.prevH[i] = this.h[i]
+            this.prevName[i] = this.name[i]
+            this.prevValue[i] = this.value[i]
+            this.prevChecked[i] = this.checked[i]
+            this.prevRole[i] = this.role[i]
             if this.key[i] != "" {
                 this.keyIndexKeys.push(this.key[i])
                 this.keyIndexIds.push(i)
             }
             i += 1
         }
+        this.prevFocus = this.focus
         this.handlers = []
         this.textHandlers = []
         this.canvasHandlers = []
@@ -569,6 +587,14 @@ pub class Tree {
         this.textLines.push(0)
         this.textWrapV.push(textWraps(roleId(r)))
         this.textLayoutV.push(new TextLayout([], 0.0, 0.0))
+        this.prevX.push(0)
+        this.prevY.push(0)
+        this.prevW.push(0)
+        this.prevH.push(0)
+        this.prevName.push("")
+        this.prevValue.push("")
+        this.prevChecked.push(false)
+        this.prevRole.push(-1)
         this.x.push(0)
         this.y.push(0)
         this.w.push(0)
@@ -1108,6 +1134,63 @@ pub class Tree {
         return this.root
     }
 
+    /**
+     * Rectangles that changed since the previous frame, in surface space.
+     * `full` forces the whole surface, which the first frame and a resize need
+     * because the target starts undefined.
+     */
+    pub fn damageOf(width: Int, height: Int, full: Bool): Damage {
+        let out = new Damage()
+        if full {
+            out.add(0, 0, width, height)
+            return out
+        }
+        let i = 0
+        while i < this.role.length() {
+            if !this.live[i] {
+                if this.prevW[i] > 0 && this.prevH[i] > 0 {
+                    out.add(this.prevX[i], this.prevY[i], this.prevW[i], this.prevH[i])
+                }
+            } else {
+                let moved = this.x[i] != this.prevX[i] || this.y[i] != this.prevY[i] || this.w[i] != this.prevW[i] || this.h[i] != this.prevH[i]
+                let changed = this.role[i] != this.prevRole[i] || this.name[i] != this.prevName[i] || this.value[i] != this.prevValue[i] || this.checked[i] != this.prevChecked[i]
+                let canvas = this.role[i] == 16
+                if moved || changed || canvas {
+                    let x0 = this.x[i]
+                    let y0 = this.y[i]
+                    if this.prevX[i] < x0 {
+                        x0 = this.prevX[i]
+                    }
+                    if this.prevY[i] < y0 {
+                        y0 = this.prevY[i]
+                    }
+                    let x1 = this.x[i] + this.w[i]
+                    if this.prevX[i] + this.prevW[i] > x1 {
+                        x1 = this.prevX[i] + this.prevW[i]
+                    }
+                    let y1 = this.y[i] + this.h[i]
+                    if this.prevY[i] + this.prevH[i] > y1 {
+                        y1 = this.prevY[i] + this.prevH[i]
+                    }
+                    if x1 > x0 && y1 > y0 {
+                        out.add(x0, y0, x1 - x0, y1 - y0)
+                    }
+                }
+            }
+            i += 1
+        }
+        if this.focus != this.prevFocus {
+            if this.focus >= 0 && this.focus < this.role.length() {
+                out.add(this.x[this.focus], this.y[this.focus], this.w[this.focus], this.h[this.focus])
+            }
+            if this.prevFocus >= 0 && this.prevFocus < this.role.length() {
+                out.add(this.prevX[this.prevFocus], this.prevY[this.prevFocus], this.prevW[this.prevFocus], this.prevH[this.prevFocus])
+            }
+        }
+        out.compact()
+        return out
+    }
+
     /** One line per node in tree order, for snapshots and the inspector. */
     pub fn snapshot(): String {
         let out: Array<String> = []
@@ -1153,7 +1236,44 @@ pub class Tree {
         return out.join("\n")
     }
 
+    fn boundsHit(dm: Damage, x: Float, y: Float, w: Float, h: Float): Bool {
+        let i = 0
+        while i < dm.count() {
+            let rx = Float(dm.xAt(i))
+            let ry = Float(dm.yAt(i))
+            let rw = Float(dm.wAt(i))
+            let rh = Float(dm.hAt(i))
+            if x < rx + rw && rx < x + w && y < ry + rh && ry < y + h {
+                return true
+            }
+            i += 1
+        }
+        return false
+    }
+
+    /** Paint only the nodes that intersect the damage rectangles. */
+    fn paintNodeD(id: Int, d: DisplayList, th: Theme, dm: Damage) {
+        if !this.boundsHit(dm, Float(this.x[id]), Float(this.y[id]), Float(this.w[id]), Float(this.h[id])) {
+            return
+        }
+        this.paintOne(id, d, th)
+        let c = this.first[id]
+        while c != -1 {
+            this.paintNodeD(c, d, th, dm)
+            c = this.next[c]
+        }
+    }
+
     fn paintNode(id: Int, d: DisplayList, th: Theme) {
+        this.paintOne(id, d, th)
+        let c = this.first[id]
+        while c != -1 {
+            this.paintNode(c, d, th)
+            c = this.next[c]
+        }
+    }
+
+    fn paintOne(id: Int, d: DisplayList, th: Theme) {
         let r = this.role[id]
         let x = Float(this.x[id])
         let y = Float(this.y[id])
@@ -1224,11 +1344,6 @@ pub class Tree {
             }
         }
 
-        let c = this.first[id]
-        while c != -1 {
-            this.paintNode(c, d, th)
-            c = this.next[c]
-        }
     }
 }
 
@@ -1433,6 +1548,103 @@ pub class Damage {
         this.ys = []
         this.ws = []
         this.hs = []
+    }
+
+    /**
+     * Merge overlapping or touching rectangles and collapse a large set into
+     * its bounding box. Damage is small by construction, so the quadratic scan
+     * stays cheap.
+     */
+    fn dropAt(at: Int) {
+        let xs: Array<Int> = []
+        let ys: Array<Int> = []
+        let ws: Array<Int> = []
+        let hs: Array<Int> = []
+        let k = 0
+        while k < this.xs.length() {
+            if k != at {
+                xs.push(this.xs[k])
+                ys.push(this.ys[k])
+                ws.push(this.ws[k])
+                hs.push(this.hs[k])
+            }
+            k += 1
+        }
+        this.xs = xs
+        this.ys = ys
+        this.ws = ws
+        this.hs = hs
+    }
+
+    fn compact() {
+        if this.xs.length() > 24 {
+            let x0 = this.xs[0]
+            let y0 = this.ys[0]
+            let x1 = x0 + this.ws[0]
+            let y1 = y0 + this.hs[0]
+            let i = 1
+            while i < this.xs.length() {
+                if this.xs[i] < x0 {
+                    x0 = this.xs[i]
+                }
+                if this.ys[i] < y0 {
+                    y0 = this.ys[i]
+                }
+                if this.xs[i] + this.ws[i] > x1 {
+                    x1 = this.xs[i] + this.ws[i]
+                }
+                if this.ys[i] + this.hs[i] > y1 {
+                    y1 = this.ys[i] + this.hs[i]
+                }
+                i += 1
+            }
+            this.xs = [x0]
+            this.ys = [y0]
+            this.ws = [x1 - x0]
+            this.hs = [y1 - y0]
+            return
+        }
+        let merged = true
+        while merged {
+            merged = false
+            let i = 0
+            while i < this.xs.length() {
+                let j = i + 1
+                while j < this.xs.length() {
+                    let ax0 = this.xs[i]
+                    let ay0 = this.ys[i]
+                    let ax1 = ax0 + this.ws[i]
+                    let ay1 = ay0 + this.hs[i]
+                    let bx0 = this.xs[j]
+                    let by0 = this.ys[j]
+                    let bx1 = bx0 + this.ws[j]
+                    let by1 = by0 + this.hs[j]
+                    if ax0 <= bx1 + 1 && bx0 <= ax1 + 1 && ay0 <= by1 + 1 && by0 <= ay1 + 1 {
+                        if bx0 < ax0 {
+                            ax0 = bx0
+                        }
+                        if by0 < ay0 {
+                            ay0 = by0
+                        }
+                        if bx1 > ax1 {
+                            ax1 = bx1
+                        }
+                        if by1 > ay1 {
+                            ay1 = by1
+                        }
+                        this.xs[i] = ax0
+                        this.ys[i] = ay0
+                        this.ws[i] = ax1 - ax0
+                        this.hs[i] = ay1 - ay0
+                        this.dropAt(j)
+                        merged = true
+                    } else {
+                        j += 1
+                    }
+                }
+                i += 1
+            }
+        }
     }
 
     pub fn count(): Int {
@@ -1925,10 +2137,39 @@ pub class Canvas {
 pub class Painter {
     static fn paint(t: Tree, width: Int, height: Int, th: Theme): DisplayList {
         let d = DisplayList.createDefault()
-        d.damage().add(0, 0, width, height)
         d.fillRect(th.background, 0.0, 0.0, Float(width), Float(height))
         t.paintNode(t.rootId(), d, th)
         return d
+    }
+
+    /** Fill only the damaged regions and paint the nodes that touch them. */
+    static fn paintRegions(t: Tree, width: Int, height: Int, th: Theme, dm: Damage): DisplayList {
+        let d = DisplayList.createDefault()
+        let i = 0
+        while i < dm.count() {
+            d.fillRect(th.background, Float(dm.xAt(i)), Float(dm.yAt(i)), Float(dm.wAt(i)), Float(dm.hAt(i)))
+            i += 1
+        }
+        t.paintNodeD(t.rootId(), d, th, dm)
+        return d
+    }
+
+    /** Outline each damage rectangle, for the show-updates overlay. */
+    static fn paintDamage(d: DisplayList, dm: Damage, color: Int) {
+        let i = 0
+        while i < dm.count() {
+            let x = Float(dm.xAt(i)) + 1.0
+            let y = Float(dm.yAt(i)) + 1.0
+            let w = Float(dm.wAt(i)) - 2.0
+            let h = Float(dm.hAt(i)) - 2.0
+            if w > 2.0 && h > 2.0 {
+                d.fillRect(color, x, y, w, 1.0)
+                d.fillRect(color, x, y + h - 1.0, w, 1.0)
+                d.fillRect(color, x, y, 1.0, h)
+                d.fillRect(color, x + w - 1.0, y, 1.0, h)
+            }
+            i += 1
+        }
     }
 }
 
@@ -2092,16 +2333,36 @@ test fn focusSurvivesAStableRebuild() {
     assert(t.focused() == btn.id, "focus kept")
 }
 
-test fn painterReportsFullSurfaceDamage() {
+test fn damageTracksChangedNodes() {
     let t = new Tree()
+    t.beginFrame()
     let b = new Build(t)
     let root = b.column()
     root.addChild(b.text("hi"))
+    t.endFrame()
     t.layout(root, 200)
-    let d = Painter.paint(t, 200, 100, Theme.dark())
-    assert(d.damage().count() == 1, "one rect")
-    assert(d.damage().xAt(0) == 0 && d.damage().yAt(0) == 0, "origin")
-    assert(d.damage().wAt(0) == 200 && d.damage().hAt(0) == 100, "full surface")
+    let first = t.damageOf(200, 100, true)
+    assert(first.count() == 1, "forced full surface")
+    assert(first.wAt(0) == 200 && first.hAt(0) == 100, "full rect")
+
+    t.beginFrame()
+    let b2 = new Build(t)
+    let root2 = b2.column()
+    root2.addChild(b2.text("hi"))
+    t.endFrame()
+    t.layout(root2, 200)
+    let same = t.damageOf(200, 100, false)
+    assert(same.count() == 0, "unchanged frame has no damage: " + same.count().toString())
+
+    t.beginFrame()
+    let b3 = new Build(t)
+    let root3 = b3.column()
+    root3.addChild(b3.text("bye"))
+    t.endFrame()
+    t.layout(root3, 200)
+    let changed = t.damageOf(200, 100, false)
+    assert(changed.count() >= 1, "changed label reports damage")
+    assert(changed.wAt(0) < 200, "damage is narrower than the surface")
 }
 
 test fn paintMarksFocusWithTheAccent() {
@@ -2375,4 +2636,49 @@ test fn alignmentMovesTheTextRun() {
         i += 1
     }
     assert(at > 100.0, "centered run starts past the left edge: " + at.toString())
+}
+
+test fn canvasesReportSeparateDamage() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    let root = b.column()
+    let row = b.row()
+    row.addChild(b.canvas("a", 300, 300, (c: Canvas) => {}))
+    row.addChild(b.canvas("b", 300, 300, (c: Canvas) => {}))
+    row.addChild(b.canvas("c", 300, 300, (c: Canvas) => {}))
+    root.addChild(row)
+    t.endFrame()
+    t.layout(root, 960)
+
+    t.beginFrame()
+    let b2 = new Build(t)
+    let root2 = b2.column()
+    let row2 = b2.row()
+    row2.addChild(b2.canvas("a", 300, 300, (c: Canvas) => {}))
+    row2.addChild(b2.canvas("b", 300, 300, (c: Canvas) => {}))
+    row2.addChild(b2.canvas("c", 300, 300, (c: Canvas) => {}))
+    root2.addChild(row2)
+    t.endFrame()
+    t.layout(root2, 960)
+    let d = t.damageOf(960, 470, false)
+    assert(d.count() == 3, "three canvases, three regions: " + d.count().toString())
+}
+
+test fn regionPaintSkipsUnchangedNodes() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    let root = b.column()
+    root.addChild(b.heading("Title"))
+    root.addChild(b.buttonInert("Reset"))
+    t.endFrame()
+    t.layout(root, 300)
+    let full = Painter.paint(t, 300, 200, Theme.dark())
+    let dm = new Damage()
+    dm.add(0, 0, 300, 40)
+    let part = Painter.paintRegions(t, 300, 200, Theme.dark(), dm)
+    assert(part.recordCount() < full.recordCount(), "region paint drops the button")
+    assert(part.toString().contains("Title"), part.toString())
+    assert(!part.toString().contains("Reset"), part.toString())
 }

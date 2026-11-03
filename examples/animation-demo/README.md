@@ -26,3 +26,8 @@ RUNIX_HEADLESS=1 sh examples/animation-demo/run.sh
 
 `RUNIX_DUMP=/path/frame.rgba` writes the RGBA8 frame buffer from the headless
 run. The size is 960 by 470.
+
+`RUNIX_WARM=1` builds three frames before dumping, so the dump exercises the
+damage path. `RUNIX_PAUSED=1` starts paused to check that an idle window uses no
+CPU. `RUNIX_DAMAGE=1` outlines changed regions and `RUNIX_TRACE=1` prints the
+damage rectangles and present timing.
