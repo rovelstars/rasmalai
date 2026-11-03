@@ -1,8 +1,22 @@
 import { App, Renderer, Surface, measureText } from "@std/app"
-import { Build, Canvas, Node } from "@std/ui"
+import { Align, Build, Canvas, Node } from "@std/ui"
+import { ByteBuffer } from "@std/bytes"
 
 class Counter {
     let n: Int = 0
+}
+
+fn firstTextX(list: ByteBuffer): Float {
+    let n = list.readUInt32LE(8)
+    let i = 0
+    while i < n {
+        let o = 32 + i * 64
+        if list.readUInt32LE(o) == 2 {
+            return list.readFloat64LE(o + 16)
+        }
+        i += 1
+    }
+    return -1.0
 }
 
 fn check(ok: Bool, msg: String, failed: Int): Int {
@@ -78,6 +92,24 @@ fn Main(): Int {
     }
     failed = check(runs >= 4, "paragraph wraps through parley: " + runs.toString(), failed)
     failed = check(pf.records() > 4, "wrapped frame has records", failed)
+
+    let clipped = App.launch("Clip", 120, 100, (b: Build): Node => {
+        return b.column() {
+            b.buttonInert("A very long button label that will not fit")
+        }
+    })
+    let clipFrame = clipped.frame()
+    failed = check(clipFrame.describe().contains("…"), "parley ellipsizes a clipped control", failed)
+
+    let centered = App.launch("Center", 320, 120, (b: Build): Node => {
+        let root = b.column()
+        let label = b.text("mid")
+        label.textAlign(Align.center)
+        root.addChild(label)
+        return root
+    })
+    let cx = firstTextX(centered.frame().list)
+    failed = check(cx > 100.0, "parley rows are centered: " + cx.toString(), failed)
 
     let counter = new Counter()
     let damage = App.launch("Damage", 200, 120, (b: Build): Node => {

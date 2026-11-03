@@ -119,8 +119,10 @@ print(frame.damage().count())
 ## Text layout
 
 Measurement and line breaking come from the shaper, not from a character-count
-guess. `@std/app` installs a parley-backed `TextEngine`; the headless core uses
-a fixed-advance engine when nothing supplies one.
+guess. `@std/app` installs a parley-backed `TextEngine`; the headless core falls
+back to `TextEngine.fixed()` when nothing supplies one. That fallback is a test
+double for logic tests, not the layout the app ships, so visual layout tests
+should inject the app engine.
 
 - `text` and `heading` fill the available width and wrap.
 - Buttons and controls are single-line and clip with `…`.
