@@ -50,7 +50,7 @@ check_names parley_cabi parleyAbiVersion parleyClusters parleyMeasure
 check_names wgpu_cabi wgpuAdapterCount wgpuAdapterName wgpuClearRgba wgpuInstanceCreate wgpuTriangle wgpuAbiVersion wgpuInstanceDestroy
 check_names taffy_cabi taffyAbiVersion taffyLayout
 check_names cpu_cabi cpuAbiVersion cpuRender
-check_names host_cabi hostAbiVersion hostClose hostEventA hostEventB hostHeight hostOpen hostPresent hostPump hostRenderOffscreen hostWait hostWidth
+check_names host_cabi hostAbiVersion hostClose hostEventA hostEventB hostHeight hostOpen hostPresent hostPump hostPumpTimeout hostRenderOffscreen hostWait hostWidth
 
 run_probe() {
     w=$1
@@ -73,8 +73,8 @@ run_probe() {
 run_probe wgpu "rgba: 10 20 30 255" "center: 51 204 102 255"
 run_probe parley "hello 16:" "clusters:"
 run_probe taffy "rc: 0" "node 0 xywh: 0.0 0.0 120.0 78.0"
-run_probe cpu "rc: 0" "corner: 20,22,26,255" "heading ink: true" "round center: 200,50,50,255" "moved: 50,200,50,255" "image: 255,0,0,255"
-run_probe vello "heading ink: true" "corner: 20,22,26,255" "round center: 200,50,50,255" "moved: 50,200,50,255" "image: 255,0,0,255"
+run_probe cpu "rc: 0" "corner: 20,22,26,255" "heading ink: true" "round center: 200,50,50,255" "moved: 50,200,50,255" "image: 255,0,0,255" "poly center: 50,200,200,255"
+run_probe vello "heading ink: true" "corner: 20,22,26,255" "round center: 200,50,50,255" "moved: 50,200,50,255" "image: 255,0,0,255" "poly center: 50,200,200,255"
 
 (cd "$app/tests" && "$rnx" run --backend "$backend")
 (cd "$repo/examples/app-window" && "$rnx" check)
@@ -97,6 +97,25 @@ for profile in dev release; do
         exit 1
     }
 done
+
+(cd "$repo/examples/animation-demo" && "$rnx" check)
+(cd "$repo/examples/animation-demo" && "$rnx" build)
+anim="$repo/examples/animation-demo/.rnx-cache/build/dev/animation-demo"
+if ldd "$anim" | grep -q "not found"; then
+    echo "animation demo has unresolved libraries" >&2
+    ldd "$anim" >&2
+    exit 1
+fi
+out=$(cd "$repo/examples/animation-demo" && RUNIX_HEADLESS=1 env -u LD_LIBRARY_PATH "$anim")
+echo "$out" | grep -q "headless: 0" || {
+    echo "animation demo did not render headless" >&2
+    echo "$out" >&2
+    exit 1
+}
+echo "$out" | grep -q "polygon" || {
+    echo "animation demo frame has no polygons" >&2
+    exit 1
+}
 
 for b in cranelift llvm; do
     out=$(cd "$repo/examples/app-demo" && "$rnx" run --backend "$b")
