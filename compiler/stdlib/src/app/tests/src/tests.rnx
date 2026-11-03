@@ -367,6 +367,11 @@ fn Main(): Int {
     declared.frame()
     failed = check(!declared.animating(), "view can pause the app", failed)
 
+    let emptyList = ByteBuffer.allocate(0)
+    let badSurface = new Surface(0, 0, emptyList)
+    let badRc = badSurface.draw()
+    failed = check(badRc < 0, "negative native status keeps its sign: " + badRc.toString(), failed)
+
     failed = check(cf.damage().count() == 1, "one damage rect", failed)
     failed = check(cf.damage().wAt(0) == 64 && cf.damage().hAt(0) == 48, "full surface damage", failed)
 

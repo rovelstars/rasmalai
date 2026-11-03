@@ -10,7 +10,7 @@ pub extern "C" fn taffy_layout(
     root_w: f64,
     root_h: f64,
     out: *mut u8,
-) -> i32 {
+) -> i64 {
     if nodes.is_null() || out.is_null() || count <= 0 {
         return -1;
     }
@@ -99,6 +99,6 @@ pub extern "C" fn taffy_layout(
 }
 
 #[no_mangle]
-pub extern "C" fn taffy_abi_version() -> i32 {
+pub extern "C" fn taffy_abi_version() -> i64 {
     1
 }

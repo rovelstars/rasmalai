@@ -133,7 +133,7 @@ fn render_scene(w: u32, h: u32, scene: &vello::Scene, out: *mut u8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn vello_fill(w: i32, h: i32, r: u8, g: u8, b: u8, a: u8, out: *mut u8) -> i32 {
+pub extern "C" fn vello_fill(w: i32, h: i32, r: u8, g: u8, b: u8, a: u8, out: *mut u8) -> i64 {
     if w <= 0 || h <= 0 || out.is_null() {
         return -1;
     }
@@ -145,23 +145,23 @@ pub extern "C" fn vello_fill(w: i32, h: i32, r: u8, g: u8, b: u8, a: u8, out: *m
         None,
         &Rect::new(0.0, 0.0, w as f64, h as f64),
     );
-    render_scene(w as u32, h as u32, &scene, out)
+    render_scene(w as u32, h as u32, &scene, out) as i64
 }
 
 #[no_mangle]
-pub extern "C" fn vello_render(w: i32, h: i32, list: *const u8, len: i32, out: *mut u8) -> i32 {
+pub extern "C" fn vello_render(w: i32, h: i32, list: *const u8, len: i32, out: *mut u8) -> i64 {
     if w <= 0 || h <= 0 || list.is_null() || out.is_null() || len < 0 {
         return -1;
     }
     let bytes = unsafe { slice::from_raw_parts(list, len as usize) };
     let scene = match scene::from_list(bytes) {
         Ok(scene) => scene,
-        Err(code) => return code,
+        Err(code) => return code as i64,
     };
-    render_scene(w as u32, h as u32, &scene, out)
+    render_scene(w as u32, h as u32, &scene, out) as i64 as i64
 }
 
 #[no_mangle]
-pub extern "C" fn vello_abi_version() -> i32 {
+pub extern "C" fn vello_abi_version() -> i64 {
     2
 }
