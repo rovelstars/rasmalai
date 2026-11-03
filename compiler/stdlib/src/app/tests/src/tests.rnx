@@ -1,4 +1,4 @@
-import { App, Surface, measureText } from "@std/app"
+import { App, Renderer, Surface, measureText } from "@std/app"
 import { Build, Node } from "@std/ui"
 
 fn check(ok: Bool, msg: String, failed: Int): Int {
@@ -36,6 +36,14 @@ fn Main(): Int {
     failed = check(b.index == a.index + 1, "frame counter advances", failed)
 
     failed = check(measureText("Hello", 16.0) > 0.0, "parley answered", failed)
+
+    let chosen = App.launchWith(Renderer.gles, "GL", 100, 80, (b: Build): Node => {
+        return b.column() {
+            b.text("hi")
+        }
+    })
+    failed = check(chosen.renderer() == Renderer.gles, "renderer kept", failed)
+    failed = check(chosen.frame().records() > 0, "renderer frame", failed)
 
     let cpu = App.launch("CPU", 64, 48, (b: Build): Node => {
         return b.column() {

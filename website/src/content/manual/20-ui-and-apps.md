@@ -125,6 +125,8 @@ fn Main(): Int {
 - `measureText(text, size)` returns shaped width through parley.
 - `App.show()` opens a Wayland window and renders until it closes.
 - `App.showFor(frames)` presents a fixed number of frames and closes.
+- `App.launchWith(Renderer.vulkan, ...)` or `Renderer.gles` selects one GPU
+  backend; `Renderer.auto` is the launch default.
 
 The view runs on every frame. `Tree.beginFrame` reuses nodes by position and by
 explicit key, so node ids, focus, and handlers survive an unchanged frame. Use

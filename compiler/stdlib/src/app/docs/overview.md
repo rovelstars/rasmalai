@@ -25,7 +25,11 @@ fn Main(): Int {
 ## What each call does
 
 - `App.launch(title, width, height, view)` builds the window and starts with the
-  dark theme. Use `new App(window, theme, view)` to pass another theme.
+  dark theme and an automatic GPU backend. Use `new App(window, theme, view)` to
+  pass another theme.
+- `App.launchWith(Renderer.vulkan, ...)` or `Renderer.gles` forces one backend.
+  `App.setRenderer` changes it before the first GPU call. `Renderer.auto` tries
+  Vulkan first and falls back to GL.
 - `App.frame()` creates a fresh tree, runs the view, lays it out, and encodes a
   display list. It returns `Frame(index, list, snapshot)`.
 - `App.draw(frame)` renders the list into a `Surface` and stores the status code.
