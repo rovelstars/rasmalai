@@ -220,13 +220,6 @@ jobs:
       - name: Build the compiler
         run: cargo build -p cli
 
-      - name: Stage the local standard library
-        run: |
-          cargo run -q -p cli -- vendor \
-            @std/prelude @std/bytes @std/env @std/ui @std/app \
-            --dir "${{ runner.temp }}/std-vendor"
-          echo "RNX_VENDOR_DIR=${{ runner.temp }}/std-vendor" >> "$GITHUB_ENV"
-
       - name: Build wrappers and run the probes
         run: sh compiler/stdlib/src/app/tools/ci-wrappers.sh
 
