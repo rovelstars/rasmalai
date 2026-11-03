@@ -38,9 +38,13 @@ fn Main(): Int {
 - `Surface.draw()` renders on the app's GPU device and falls back to the CPU
   when the device fails. `Surface.drawCpu()` forces the CPU renderer.
   `Surface.pixel(x, y)` returns `0xRRGGBBAA`; `rgbaAt(x, y)` returns
-  `"r,g,b,a"`; `records()` reads the list record count.
+  `"r,g,b,a"`; `records()` reads the list record count. `Surface.pixels()` is
+  the raw RGBA8 buffer, for dumps and tests.
 - `App.pointerDown(x, y)` and `App.keyDown(key)` route through the same handlers
   the headless core uses. `App.focusNext()` advances focus.
+- `App.clock()` is the `FrameClock` the view reads for `dt()` and `elapsed()`.
+- `App.setAnimating(false)` stops continuous frames. The window then redraws
+  once per input event and sleeps in between.
 - `App.show()` opens a Wayland window and loops until it closes. Escape closes.
   On runixOS Epiclese will replace this host behind the same call.
 - `App.showFor(frames)` opens the same window, presents that many frames, and
@@ -55,8 +59,12 @@ matters; the app does not see the reuse.
 
 Each frame carries a damage list. v2 still reports the whole surface, but the
 list is part of the host call, so a narrower painter can shrink it later.
-`App.runHost` calls `hostWait` before the next frame; on Wayland the swapchain
-already paces acquisition, and an Epiclese host blocks on `frame_done` there.
+
+`App.runHost` presents while the view asks for frames and blocks on input while
+it does not. `b.animate(false)` in the view, or `App.setAnimating(false)`
+outside it, freezes the frame clock and stops presenting identical frames.
+On Wayland the swapchain paces acquisition; an Epiclese host blocks on
+`frame_done` there.
 
 ## The window host
 

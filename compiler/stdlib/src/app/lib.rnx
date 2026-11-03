@@ -10,7 +10,8 @@
 //! frame, damage, or present call reaches app code.
 
 import { ByteBuffer } from "@std/bytes"
-import { Build, Damage, Display, Key, Node, Painter, Theme, Tree, rgba } from "@std/ui"
+import { Build, Damage, Display, FrameClock, Key, Node, Painter, Theme, Tree, rgba } from "@std/ui"
+import { Clock } from "@std/time"
 import { fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float as parleyMeasure } from native "parley_cabi"
 import {
     fn cpu_abi_version(): Int as cpuAbiVersion,
@@ -24,9 +25,8 @@ import {
     fn host_height(h: Pointer<Byte>): Int as hostHeight,
     fn host_open(title: Pointer<Byte>, titleLen: Int, width: Int, height: Int, backend: Int): Pointer<Byte> as hostOpen,
     fn host_present(h: Pointer<Byte>, list: Pointer<Byte>, len: Int, damage: Pointer<Int>, count: Int): Int as hostPresent,
-    fn host_pump(h: Pointer<Byte>): Int as hostPump,
+    fn host_pump_timeout(h: Pointer<Byte>, block: Int): Int as hostPumpTimeout,
     fn host_render_offscreen(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as hostRenderOffscreen,
-    fn host_wait(h: Pointer<Byte>): Int as hostWait,
     fn host_width(h: Pointer<Byte>): Int as hostWidth,
 } from native "host_cabi"
 
@@ -166,6 +166,11 @@ pub class Surface {
         return rc
     }
 
+    /** Raw RGBA8 pixels, row-major. For dumps and tests. */
+    pub fn pixels(): ByteBuffer {
+        return this.pixels
+    }
+
     /** 1 after a GPU draw, 2 after a CPU draw, 0 before any draw. */
     pub fn backend(): Int {
         return this.usedBackend
@@ -209,6 +214,8 @@ pub class App {
     let frames: Int = 0
     let status: Int = 0
     let rendererChoice: Renderer
+    let frameClock: FrameClock = new FrameClock()
+    let animatingFlag: Bool = true
 
     init(w: Window, th: Theme, v: fn(Build): Node) {
         this.window = w
@@ -237,11 +244,37 @@ pub class App {
         return this.rendererChoice
     }
 
+    /**
+     * Ask for continuous frames. While animating, the window draws as fast as
+     * the compositor accepts frames. While paused, it draws once per input
+     * event and sleeps otherwise, and the frame clock stops advancing.
+     */
+    pub fn setAnimating(on: Bool) {
+        if this.animatingFlag == on {
+            return
+        }
+        this.animatingFlag = on
+        this.frameClock.setPaused(!on)
+    }
+
+    pub fn animating(): Bool {
+        return this.animatingFlag
+    }
+
+    /** Time source for the view. Ticked once per frame by `App.frame`. */
+    pub fn clock(): FrameClock {
+        return this.frameClock
+    }
+
     /** Build the tree, lay it out, and encode the frame. */
     pub fn frame(): Frame {
+        this.frameClock.tick(Clock.mono().nanos)
         this.rootTree.beginFrame()
         let b = new Build(this.rootTree)
+        b.setClock(this.frameClock)
+        b.animate(this.animatingFlag)
         let root = this.view(b)
+        this.setAnimating(b.animating())
         this.rootTree.endFrame()
         this.rootTree.layout(root, this.window.width)
         this.frames += 1
@@ -326,52 +359,62 @@ pub class App {
             let done = false
             let count = 0
             let status = 0
+            let dirty = true
             while !done {
-                hostWait(host)
-                let f = this.frame()
-                let dn = f.damage().count()
-                let dmg = ByteBuffer.allocate(dn * 16)
-                let di = 0
-                while di < dn {
-                    dmg.writeInt32LE(di * 16, f.damage().xAt(di))
-                    dmg.writeInt32LE(di * 16 + 4, f.damage().yAt(di))
-                    dmg.writeInt32LE(di * 16 + 8, f.damage().wAt(di))
-                    dmg.writeInt32LE(di * 16 + 12, f.damage().hAt(di))
-                    di += 1
-                }
-                let rc = hostPresent(
-                    host,
-                    Pointer.fromAddress<Byte>(f.list.address()),
-                    f.list.length(),
-                    Pointer.fromAddress<Int>(dmg.address()),
-                    dn,
-                )
-                if rc < 0 && rc != -4 {
-                    status = rc
-                    done = true
-                } else {
-                    if rc == 0 {
+                if this.animatingFlag || dirty || limit > 0 {
+                    let f = this.frame()
+                    let dn = f.damage().count()
+                    let dmg = ByteBuffer.allocate(dn * 16)
+                    let di = 0
+                    while di < dn {
+                        dmg.writeInt32LE(di * 16, f.damage().xAt(di))
+                        dmg.writeInt32LE(di * 16 + 4, f.damage().yAt(di))
+                        dmg.writeInt32LE(di * 16 + 8, f.damage().wAt(di))
+                        dmg.writeInt32LE(di * 16 + 12, f.damage().hAt(di))
+                        di += 1
+                    }
+                    let rc = hostPresent(
+                        host,
+                        Pointer.fromAddress<Byte>(f.list.address()),
+                        f.list.length(),
+                        Pointer.fromAddress<Int>(dmg.address()),
+                        dn,
+                    )
+                    dirty = false
+                    if rc < 0 && rc != -4 {
+                        status = rc
+                        done = true
+                    } else if rc == 0 {
                         count += 1
                     }
                     if limit > 0 && count >= limit {
                         done = true
+                    }
+                }
+                if done {
+                    continue
+                }
+                let wait = 1
+                if this.animatingFlag || limit > 0 {
+                    wait = 0
+                }
+                let ev = hostPumpTimeout(host, wait)
+                if ev == 1 {
+                    done = true
+                } else if ev == 2 || ev == 8 {
+                    this.window.width = hostWidth(host)
+                    this.window.height = hostHeight(host)
+                    dirty = true
+                } else if ev == 3 {
+                    this.pointerDown(hostEventA(host), hostEventB(host))
+                    dirty = true
+                } else if ev == 6 {
+                    let code = hostEventA(host)
+                    if code == 9 {
+                        done = true
                     } else {
-                        let ev = hostPump(host)
-                        if ev == 1 {
-                            done = true
-                        } else if ev == 2 || ev == 8 {
-                            this.window.width = hostWidth(host)
-                            this.window.height = hostHeight(host)
-                        } else if ev == 3 {
-                            this.pointerDown(hostEventA(host), hostEventB(host))
-                        } else if ev == 6 {
-                            let code = hostEventA(host)
-                            if code == 9 {
-                                done = true
-                            } else {
-                                this.keyEvent(code)
-                            }
-                        }
+                        this.keyEvent(code)
+                        dirty = true
                     }
                 }
             }
