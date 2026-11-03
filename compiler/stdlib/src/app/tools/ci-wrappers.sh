@@ -49,7 +49,12 @@ check_names host_cabi hostAbiVersion hostClose hostEventA hostEventB hostHeight 
 run_probe() {
     w=$1
     shift
-    out=$(cd "$app/wrappers/$w/probe" && "$rnx" run --backend "$backend")
+    echo "probe: $w"
+    if ! out=$(cd "$app/wrappers/$w/probe" && "$rnx" run --backend "$backend"); then
+        echo "$out"
+        echo "probe $w failed to run" >&2
+        exit 1
+    fi
     echo "$out"
     for want in "$@"; do
         echo "$out" | grep -q "$want" || {
