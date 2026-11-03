@@ -7,7 +7,13 @@ rnx=${RNX_BIN:-$repo/target/debug/rnx}
 prefix=${WRAPPER_PREFIX:-$repo/.rnx-cache/wrappers}
 backend=${RNX_BACKEND:-cranelift}
 
-export RNX_VENDOR_DIR="${RNX_VENDOR_DIR:-$repo/compiler/stdlib/src}"
+if [ -z "${RNX_VENDOR_DIR:-}" ]; then
+    stage=${RNX_STAGE_DIR:-$repo/.rnx-cache/std-vendor}
+    "$here/stage-stdlib.sh" "$stage"
+    export RNX_VENDOR_DIR="$stage"
+else
+    export RNX_VENDOR_DIR
+fi
 export RNX_BIN="$rnx"
 
 if [ ! -x "$rnx" ]; then
