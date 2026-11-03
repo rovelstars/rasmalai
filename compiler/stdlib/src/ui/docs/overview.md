@@ -79,7 +79,8 @@ or with a trailing block, which compiles to the same calls.
 
 The `test fn` blocks cover creation order, deepest-node hit testing, tap dispatch,
 Enter reaching the same handler, focus wraparound, column stacking, root
-protection, and the unnamed-interactive audit.
+protection, damage regions, and the unnamed-interactive audit. They use fixed
+text metrics, so they check structure, not the shipped font layout.
 
 ## Display list v2
 
@@ -131,13 +132,17 @@ label, and an accent outline for the focused node. `Theme.dark()` and
 wrap, maxLines, ellipsis)` for line breaking. `@std/app` installs a parley-backed
 engine before the first frame.
 
-`TextEngine.fixed()` is the default when nothing injects one. It advances a
-fixed amount per character, so it is deterministic and fast, but it is a test
-double, not the shaper the app ships. A test that asserts visual text layout
-must inject the app's engine, or it is only proving the core's wrapping logic.
-The app tests do that: they assert that parley wraps a paragraph, ellipsizes a
-narrow control, and centers a row. Exact golden output additionally needs a
-pinned font, because the system font is the remaining variable.
+`Tree` takes an engine in its constructor. There is no implicit default. The
+app passes the parley engine; core tests pass `TextEngine.fixed()`, which
+advances a fixed amount per character. That engine is a test double, not the
+shaper the app ships.
+
+This package's tests stay at the level React core tests operate on: the tree,
+reconciliation, focus, dispatch, semantics, damage bookkeeping, and layout
+structure with explicit or fixed metrics. They do not assert font-derived
+sizes. Text layout with real metrics lives in `@std/app` tests, where parley,
+the OS font, and the software renderer are available: wrapping, ellipsis,
+alignment, button width, and eventually text editing.
 
 Every text-bearing node is laid out once during the measure pass. The rows,
 their heights, and their baselines are stored on the node and reused by the

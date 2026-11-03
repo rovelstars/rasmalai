@@ -338,13 +338,13 @@ pub class App {
         this.window = w
         this.theme = th
         this.view = v
-        this.rootTree = new Tree()
         this.rendererChoice = Renderer.auto
         let text = new ParleyText()
         this.textEngine = new TextEngine(
             (s: String, size: Float): Float => text.measure(s, size),
             (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool): Array<TextRow> => text.rows(s, size, width, wrap, lines, ell),
         )
+        this.rootTree = new Tree(this.textEngine)
     }
 
     static launch(title: String, width: Int, height: Int, view: fn(Build): Node): App {
@@ -408,7 +408,6 @@ pub class App {
         this.rootTree.beginFrame()
         let b = new Build(this.rootTree)
         b.setClock(this.frameClock)
-        b.setTextEngine(this.textEngine)
         b.animate(this.animatingFlag)
         let root = this.view(b)
         this.setAnimating(b.animating())

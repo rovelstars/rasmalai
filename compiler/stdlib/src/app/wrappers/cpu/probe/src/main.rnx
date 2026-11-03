@@ -1,5 +1,5 @@
 import { ByteBuffer } from "@std/bytes"
-import { Build, DisplayList, Painter, Theme, Tree, rgba } from "@std/ui"
+import { Build, DisplayList, Painter, TextEngine, Theme, Tree, rgba } from "@std/ui"
 import {
     fn cpu_abi_version(): Int as cpuAbiVersion,
     fn cpu_render(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as cpuRender,
@@ -11,7 +11,7 @@ fn pixelAt(px: ByteBuffer, x: Int, y: Int): String {
 }
 
 fn Main(): Int {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let root = b.column() {
         b.heading("Hi")

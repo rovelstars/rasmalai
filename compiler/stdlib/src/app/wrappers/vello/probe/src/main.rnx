@@ -1,5 +1,5 @@
 import { ByteBuffer } from "@std/bytes"
-import { Build, DisplayList, Painter, Theme, Tree, rgba } from "@std/ui"
+import { Build, DisplayList, Painter, TextEngine, Theme, Tree, rgba } from "@std/ui"
 import {
     fn vello_abi_version(): Int as velloAbiVersion,
     fn vello_fill(w: Int, h: Int, r: Byte, g: Byte, b: Byte, a: Byte, out: Pointer<Byte>): Int as velloFill,
@@ -12,7 +12,7 @@ fn pixelAt(px: ByteBuffer, x: Int, y: Int): String {
 }
 
 fn Main(): Int {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let root = b.column() {
         b.heading("Hi")
