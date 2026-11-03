@@ -218,7 +218,10 @@ only `count` rows. Fixed-row lists snap to row boundaries, so the first row
 starts at the top of the viewport. The scroll position lives on the keyed list
 node, so it survives rebuilds.
 `scrollAt(x, y, dy)` scrolls the nearest scrollable ancestor under the point.
-Painting and hit testing respect clipping, so offscreen rows cost nothing.
+If the point is just outside the list, it falls back to the last list that
+scrolled, then to any scrollable node containing the point, so a stale pointer
+coordinate does not stop the wheel. Painting and hit testing respect clipping,
+so offscreen rows cost nothing.
 Fixed-row lists snap to row boundaries, so a row is never half outside the
 viewport. The reconciler falls back to the next unclaimed node of the same
 role after the creation cursor; a list whose row count changes can be followed

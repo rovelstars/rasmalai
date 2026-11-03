@@ -66,7 +66,12 @@ fn view(b: Build, s: State): Node {
         i += 1
     }
 
-    root.addChild(b.text("nodes " + t.len().toString() + "   selected " + s.selected.toString() + "   count " + s.count.toString()))
+    let lid = t.find(Role.list, "Rows")
+    let off = 0.0
+    if lid != -1 {
+        off = t.scrollOf(Node(tree: t, id: lid))
+    }
+    root.addChild(b.text("nodes " + t.len().toString() + "   selected " + s.selected.toString() + "   scroll " + off.toString()))
 
     if s.help {
         let dialog = b.dialog("Help")
@@ -96,6 +101,14 @@ fn Main(): Int {
         s.notif = true
     })
     app.bind("f1", () => { s.help = !s.help })
+    app.bind("pageup", () => {
+        let lid = app.tree().find(Role.list, "Rows")
+        app.scrollAt(app.tree().x[lid] + 2, app.tree().y[lid] + 2, 0.0 - 180.0)
+    })
+    app.bind("pagedown", () => {
+        let lid = app.tree().find(Role.list, "Rows")
+        app.scrollAt(app.tree().x[lid] + 2, app.tree().y[lid] + 2, 180.0)
+    })
     app.bind("escape", () => { s.help = false })
 
     if Env.get("RUNIX_GL") != "" {
