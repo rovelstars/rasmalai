@@ -56,6 +56,29 @@ fn Main(): Int {
     failed = check(s.backend() == 2, "cpu backend recorded", failed)
     failed = check(s.rgbaAt(2, 2) == "20,22,26,255", s.rgbaAt(2, 2), failed)
 
+    let paused = App.launch("Paused", 64, 48, (b: Build): Node => {
+        return b.column() {
+            b.text("still")
+        }
+    })
+    paused.frame()
+    paused.setAnimating(false)
+    failed = check(!paused.animating(), "paused flag", failed)
+    let frozen = paused.clock().elapsed()
+    let frozenFrames = paused.clock().frames()
+    paused.frame()
+    failed = check(paused.clock().elapsed() == frozen, "paused clock does not advance", failed)
+    failed = check(paused.clock().frames() == frozenFrames, "paused clock does not tick", failed)
+
+    let declared = App.launch("Declared", 64, 48, (b: Build): Node => {
+        b.animate(false)
+        return b.column() {
+            b.text("still")
+        }
+    })
+    declared.frame()
+    failed = check(!declared.animating(), "view can pause the app", failed)
+
     failed = check(cf.damage().count() == 1, "one damage rect", failed)
     failed = check(cf.damage().wAt(0) == 64 && cf.damage().hAt(0) == 48, "full surface damage", failed)
 

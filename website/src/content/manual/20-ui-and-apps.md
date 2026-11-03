@@ -73,6 +73,7 @@ Each record is `kind`, `color`, `a`, `b` as `u32`, then `x`, `y`, `w`, `h`, `e`,
 | 6 | image | `a` and `b` are a PNG blob range; target rect in `x`, `y`, `w`, `h` |
 | 7 | transform push | `[a b c d e f]` across all six lanes |
 | 8 | transform pop | none |
+| 9 | polygon | `a` is the blob offset and `b` is the point count; each point is two `f64` values |
 
 The builder has a fixed command cap and counts drops, so a frame never
 reallocates or aborts halfway. `finish(width, height)` returns the bytes, and
@@ -93,6 +94,63 @@ print(Display.textOf(bytes))
 `Painter.paint(tree, width, height, theme)` walks the tree and produces the same
 primitives for every node. `Theme.dark()` and `Theme.light()` are data, so a
 brand package can supply colors without forking the core.
+
+## Canvas and animation
+
+`b.canvas(name, width, height, paint)` creates a fixed-size node that draws
+itself. The callback gets a `Canvas` clipped to the node and works in local
+coordinates:
+
+```rnx
+fn orbit(b: Build, angle: Float): Node {
+    return b.canvas("orbit", 240, 240, (c: Canvas) => {
+        c.fill(0x1A1D24FF)
+        let points = [120.0, 40.0, 200.0, 200.0, 40.0, 200.0]
+        c.polygon(0x48C4D6FF, points)
+        c.text(0xD8DBE2FF, 12.0, 20.0, 12.0, "orbit")
+    })
+}
+```
+
+`Canvas` has `fill`, `rect`, `roundRect`, `polygon`, `line`, `text`, `clip`,
+`unclip`, `pushTransform`, and `popTransform`. It appends to the same display
+list as the built-in roles.
+
+Animate from the frame clock instead of a timer:
+
+```rnx
+fn screen(b: Build, state: State): Node {
+    let dt = b.frameClock().dt()
+    if state.playing {
+        state.angle += dt * 1.5
+    }
+    b.animate(state.playing)
+    return orbit(b, state.angle)
+}
+```
+
+- `b.frameClock().dt()` is the seconds since the previous frame;
+  `elapsed()` and `frames()` are the running totals.
+- `b.animate(false)` stops continuous frames. The app then redraws once per
+  input event and sleeps, and the clock stops advancing, so every animation
+  freezes in place.
+- `App.setAnimating(false)` changes the same flag outside a view.
+
+Advance physics in fixed substeps inside the view, so the result does not depend
+on the refresh rate:
+
+```rnx
+let left = dt
+while left > 0.0 {
+    let h = 0.004166666666666667
+    if left < h {
+        h = left
+    }
+    left -= h
+    velY += 1500.0 * h
+    y += velY * h
+}
+```
 
 ## Frames
 
@@ -127,6 +185,9 @@ fn Main(): Int {
 - `App.showFor(frames)` presents a fixed number of frames and closes.
 - `App.launchWith(Renderer.vulkan, ...)` or `Renderer.gles` selects one GPU
   backend; `Renderer.auto` is the launch default.
+- `App.setAnimating(false)` stops continuous frames; the window redraws on
+  input only. `App.clock()` is the same `FrameClock` the view reads.
+- `Surface.pixels()` is the RGBA8 buffer, for dumps and tests.
 
 The view runs on every frame. `Tree.beginFrame` reuses nodes by position and by
 explicit key, so node ids, focus, and handlers survive an unchanged frame. Use

@@ -17,5 +17,9 @@ RUNIX_SMOKE=1 sh examples/app-window/run.sh
 The window maps as `app_id=dev.runix.app`. The host is `wrappers/host`; the app
 only calls `App.show` and `App.showFor`.
 
+The view calls `b.animate(false)` because nothing here moves on its own. The
+window then redraws once per click or key press and sleeps in between, instead
+of presenting identical frames.
+
 Set `RUNIX_HEADLESS=1` to render one frame offscreen and exit. The wrapper CI
 uses that instead of opening a window.

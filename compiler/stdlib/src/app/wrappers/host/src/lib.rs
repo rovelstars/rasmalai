@@ -639,30 +639,38 @@ pub extern "C" fn host_open(
 }
 
 #[no_mangle]
+fn next_event(host: &mut Host) -> Option<i32> {
+    loop {
+        let event = host.state.events.pop_front()?;
+        if matches!(
+            event,
+            Event::PointerMove(..) | Event::PointerUp(..) | Event::KeyUp(_)
+        ) {
+            continue;
+        }
+        let (code, a, b) = match event {
+            Event::Close => (1, 0, 0),
+            Event::Resize(w, h) => (2, w, h),
+            Event::PointerDown(x, y) => (3, x, y),
+            Event::PointerUp(x, y) => (4, x, y),
+            Event::PointerMove(x, y) => (5, x, y),
+            Event::KeyDown(k) => (6, k, 0),
+            Event::KeyUp(k) => (7, k, 0),
+            Event::SurfaceLost => (8, 0, 0),
+        };
+        host.state.last_a = a;
+        host.state.last_b = b;
+        return Some(code);
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn host_pump(handle: *mut c_void) -> i32 {
     let Some(host) = (unsafe { (handle as *mut Host).as_mut() }) else {
         return -1;
     };
     loop {
-        if let Some(event) = host.state.events.pop_front() {
-            if matches!(
-                event,
-                Event::PointerMove(..) | Event::PointerUp(..) | Event::KeyUp(_)
-            ) {
-                continue;
-            }
-            let (code, a, b) = match event {
-                Event::Close => (1, 0, 0),
-                Event::Resize(w, h) => (2, w, h),
-                Event::PointerDown(x, y) => (3, x, y),
-                Event::PointerUp(x, y) => (4, x, y),
-                Event::PointerMove(x, y) => (5, x, y),
-                Event::KeyDown(k) => (6, k, 0),
-                Event::KeyUp(k) => (7, k, 0),
-                Event::SurfaceLost => (8, 0, 0),
-            };
-            host.state.last_a = a;
-            host.state.last_b = b;
+        if let Some(code) = next_event(host) {
             return code;
         }
         if host.state.closed {
@@ -670,6 +678,31 @@ pub extern "C" fn host_pump(handle: *mut c_void) -> i32 {
         }
         host.pump_blocking();
     }
+}
+
+/// Return the next input event. `block != 0` waits for one, which is what a
+/// paused app does. `block == 0` drains what has arrived and returns 0, so a
+/// running animation keeps drawing without waiting on input.
+#[no_mangle]
+pub extern "C" fn host_pump_timeout(handle: *mut c_void, block: i32) -> i32 {
+    let Some(host) = (unsafe { (handle as *mut Host).as_mut() }) else {
+        return -1;
+    };
+    if block != 0 {
+        return host_pump(handle);
+    }
+    if let Some(code) = next_event(host) {
+        return code;
+    }
+    if host.state.closed {
+        return 1;
+    }
+    let Host { queue, state } = host;
+    if let Some(guard) = queue.prepare_read() {
+        let _ = guard.read();
+    }
+    let _ = queue.dispatch_pending(state);
+    next_event(host).unwrap_or(0)
 }
 
 /// Wait until the previously presented buffer is free for reuse.

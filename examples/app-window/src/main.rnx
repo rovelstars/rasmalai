@@ -10,6 +10,7 @@ class State {
 fn Main(): Int {
     let state = new State()
     let app = App.launch("runix window", 520, 360, (b: Build): Node => {
+        b.animate(false)
         let root = b.column()
         root.addChild(b.heading("runixOS"))
         root.addChild(b.text("Wayland xdg-shell, a wgpu surface, vello rendering."))
