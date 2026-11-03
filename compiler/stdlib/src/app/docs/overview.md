@@ -40,8 +40,11 @@ fn Main(): Int {
   `Surface.pixel(x, y)` returns `0xRRGGBBAA`; `rgbaAt(x, y)` returns
   `"r,g,b,a"`; `records()` reads the list record count. `Surface.pixels()` is
   the raw RGBA8 buffer, for dumps and tests.
-- `App.pointerDown(x, y)` and `App.keyDown(key)` route through the same handlers
-  the headless core uses. `App.focusNext()` advances focus.
+- `App.pointerDown(x, y)`, `pointerMove`, `pointerUp`, and `keyDown(key)` route
+  through the same handlers the headless core uses. `App.focusNext()` advances
+  focus. `App.scrollAt` feeds the wheel.
+- `App.bind(chord, run)` registers a shortcut such as `ctrl+s` or `f1`.
+  `App.sendKey(code, down)` feeds an evdev key for tests and automation.
 - `App.clock()` is the `FrameClock` the view reads for `dt()` and `elapsed()`.
 - `App.setAnimating(false)` stops continuous frames. The window then redraws
   once per input event and sleeps in between.

@@ -44,10 +44,12 @@ cd examples/ui-demo && rnx run --backend interpreter
 ## Input
 
 `pointerDown(x, y)` hit-tests the last layout and runs the node's action.
-`keyDown(node, key)` maps Enter and Space to the primary action, Escape to a
-dialog's dismiss action, and Left and Right to the next interactive sibling, which
-is how a radio group moves and selects. `focusNext` and `focusPrev` walk only
-interactive nodes and wrap. `focusScope(dialog)` holds traversal inside a subtree
+`pointerMove` tracks hover and drags a slider. `pointerUp` clears the pressed
+state. `keyDown(node, key, shift)` maps Enter and Space to the primary action,
+Escape to a dialog's dismiss action, and Left and Right to the next interactive
+sibling, which is how a radio group moves and selects. `disabled(true)` removes
+a node from focus, hover activation, and dispatch. `focusNext` and `focusPrev`
+walk only interactive nodes and wrap. `focusScope(dialog)` holds traversal inside a subtree
 while it is open, and `clearFocusScope` releases it.
 
 All of them end in the same handler. A test that clicks, one that presses Enter,
@@ -64,8 +66,8 @@ instead of in review.
 ## Components
 
 `Build` creates `column`, `row`, `section`, `text`, `heading`, `button`,
-`slider`, `toggle`, `checkbox`, `radio`, `textField`, `dialog`, `list`, `item`,
-and `canvas`. Factories create nodes; the view attaches them with `addChild`,
+`slider`, `sliderValue`, `toggle`, `checkbox`, `radio`, `textField`, `dialog`,
+`list`, `listItem`, `virtualList`, and `canvas`. Factories create nodes; the view attaches them with `addChild`,
 or with a trailing block, which compiles to the same calls.
 
 ## Not here yet
@@ -180,6 +182,29 @@ because the target starts undefined.
 `Painter.paintDamage(list, damage, color)` outlines the regions for the
 show-updates overlay. `RUNIX_DAMAGE=1` enables it and `RUNIX_TRACE=1` prints the
 damage rectangles each frame.
+
+## State and editing
+
+Every node carries hover, pressed, and disabled state. `disabled(true)` dims the
+control and removes it from focus and dispatch. `range(v)` sets a slider's
+fraction; `sliderValue(label, v, onChange)` reports changes. Text fields keep a
+caret and a selection and edit by grapheme cluster through the `TextEngine`:
+`typeText`, `deleteBackward`, `deleteForward`, `selectAllText`, and the arrow,
+Home, End, Backspace, and Delete keys.
+
+`Shortcuts` is a small chord registry, normalized to lower case. `bind` returns
+whether it replaced an existing chord, and `run` tells the caller whether the
+chord was consumed. The app owns the registry; the UI core does not impose a
+default set beyond what the app binds.
+
+## Virtual lists
+
+`b.virtualList(label, key, total, rowHeight, viewport)` creates a clipped list
+node and returns a `VirtualRange` with `first`, `count`, and `offset`. The caller
+builds only `count` rows and sets the first row's `offsetY` to the range offset.
+The scroll position lives on the keyed list node, so it survives rebuilds.
+`scrollAt(x, y, dy)` scrolls the nearest scrollable ancestor under the point.
+Painting and hit testing respect clipping, so offscreen rows cost nothing.
 
 ## Canvas nodes
 

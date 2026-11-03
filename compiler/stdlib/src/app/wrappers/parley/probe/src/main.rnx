@@ -2,6 +2,8 @@ import { ByteBuffer } from "@std/bytes"
 import {
     fn parley_abi_version(): Int as parleyAbiVersion,
     fn parley_clusters(text: Pointer<Byte>, len: Int, size: Float, out: Pointer<Byte>, cap: Int): Int as parleyClusters,
+    fn parley_grapheme_next(text: Pointer<Byte>, len: Int, at: Int): Int as parleyGraphemeNext,
+    fn parley_grapheme_prev(text: Pointer<Byte>, len: Int, at: Int): Int as parleyGraphemePrev,
     fn parley_layout(text: Pointer<Byte>, len: Int, size: Float, maxWidth: Float, maxLines: Int, wrap: Int, ellipsis: Int, out: Pointer<Byte>, cap: Int): Int as parleyLayout,
     fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float as parleyMeasure,
 } from native "parley_cabi"
@@ -58,6 +60,11 @@ fn Main(): Int {
     print("hello 16:", widthOf("Hello", 16.0))
     print("hello 32:", widthOf("Hello", 32.0))
     print("long 16:", widthOf("Hello world", 16.0))
+    let accent = ByteBuffer.fromString("e\u{301}x")
+    unsafe {
+        print("grapheme next:", parleyGraphemeNext(Pointer.fromAddress<Byte>(accent.address()), accent.length(), 0))
+        print("grapheme prev:", parleyGraphemePrev(Pointer.fromAddress<Byte>(accent.address()), accent.length(), 2))
+    }
     layoutOf("hello world from rasmalai", 14.0, 90.0, 0, true, false)
     layoutOf("hello world from rasmalai", 14.0, 70.0, 1, false, true)
     unsafe {

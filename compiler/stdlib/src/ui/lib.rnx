@@ -89,6 +89,13 @@ pub enum Key {
     enter,
     space,
     escape,
+    tab,
+    backspace,
+    delete,
+    home,
+    end,
+    pageUp,
+    pageDown,
     left,
     right,
     up,
@@ -132,6 +139,34 @@ pub struct Node {
     pub fn textMaxLines(n: Int) {
         this.tree.setTextMaxLines(this.id, n)
     }
+
+    /** A disabled node is skipped by focus, hover activation, and shortcuts. */
+    pub fn disabled(on: Bool) {
+        this.tree.setDisabled(this.id, on)
+    }
+
+    /** Clip children and painting to this node's rectangle. */
+    pub fn clip(on: Bool) {
+        this.tree.setClip(this.id, on)
+    }
+
+    /** Shift this node down inside its parent, after the normal stack. */
+    pub fn offsetY(y: Float) {
+        this.tree.setOffsetY(this.id, y)
+    }
+
+    /** Numeric value in 0..1, for sliders and progress controls. */
+    pub fn range(v: Float) {
+        this.tree.setNumber(this.id, v)
+    }
+
+    pub fn fixedHeight(h: Int) {
+        this.tree.setFixedHeight(this.id, h)
+    }
+
+    pub fn fixedWidth(w: Int) {
+        this.tree.setFixedWidth(this.id, w)
+    }
 }
 
 /** Horizontal text alignment inside a node's content box. */
@@ -172,7 +207,7 @@ fn textPad(role: Int): Float {
     if role == 6 {
         return 12.0
     }
-    if role == 7 || role == 8 || role == 9 || role == 13 {
+    if role == 8 || role == 9 || role == 13 {
         return 24.0
     }
     if role == 11 || role == 15 {
@@ -215,6 +250,26 @@ pub struct TextRow {
 
 fn monoMeasure(s: String, size: Float): Float {
     return Float(s.length()) * size * 0.56
+}
+
+fn fixedNext(s: String, at: Int): Int {
+    if at < 0 {
+        return 0
+    }
+    if at >= s.length() {
+        return s.length()
+    }
+    return at + 1
+}
+
+fn fixedPrev(s: String, at: Int): Int {
+    if at <= 0 {
+        return 0
+    }
+    if at > s.length() {
+        return s.length()
+    }
+    return at - 1
 }
 
 fn monoRow(text: String, size: Float): TextRow {
@@ -326,13 +381,19 @@ fn monoRows(
 pub class TextEngine {
     let measureFn: fn(String, Float): Float
     let rowsFn: fn(String, Float, Float, Bool, Int, Bool): Array<TextRow>
+    let nextFn: fn(String, Int): Int
+    let prevFn: fn(String, Int): Int
 
     init(
         m: fn(String, Float): Float,
-        r: fn(String, Float, Float, Bool, Int, Bool): Array<TextRow>
+        r: fn(String, Float, Float, Bool, Int, Bool): Array<TextRow>,
+        n: fn(String, Int): Int,
+        p: fn(String, Int): Int
     ) {
         this.measureFn = m
         this.rowsFn = r
+        this.nextFn = n
+        this.prevFn = p
     }
 
     /**
@@ -343,13 +404,25 @@ pub class TextEngine {
     static fn fixed(): TextEngine {
         return new TextEngine(
             (s: String, size: Float): Float => monoMeasure(s, size),
-            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool): Array<TextRow> => monoRows(s, size, width, wrap, lines, ell)
+            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool): Array<TextRow> => monoRows(s, size, width, wrap, lines, ell),
+            (s: String, at: Int): Int => fixedNext(s, at),
+            (s: String, at: Int): Int => fixedPrev(s, at)
         )
     }
 
     /** Width of one unwrapped line. */
     pub fn measure(s: String, size: Float): Float {
         return this.measureFn(s, size)
+    }
+
+    /** Character index after the grapheme that starts at `at`. */
+    pub fn nextGrapheme(s: String, at: Int): Int {
+        return this.nextFn(s, at)
+    }
+
+    /** Character index of the grapheme boundary before `at`. */
+    pub fn prevGrapheme(s: String, at: Int): Int {
+        return this.prevFn(s, at)
     }
 
     /** Break `s` into rows. `maxWidth <= 0` disables wrapping and ellipsis. */
@@ -378,6 +451,75 @@ class TextLayout {
     }
 }
 
+/** The visible window of a virtual list. */
+pub class VirtualRange {
+    let node: Node
+    let first: Int
+    let count: Int
+    let offset: Float
+
+    init(node: Node, first: Int, count: Int, offset: Float) {
+        this.node = node
+        this.first = first
+        this.count = count
+        this.offset = offset
+    }
+}
+
+/**
+ * Named keyboard chords. A chord is normalized to lower case, so `Ctrl+S` and
+ * `ctrl+s` are the same binding. The last bind for a chord replaces the
+ * previous handler; the return value says whether it replaced one.
+ */
+pub class Shortcuts {
+    let keys: Array<String> = []
+    let handlers: Array<fn(): Void> = []
+
+    fn norm(chord: String): String {
+        return chord.trim().toLowerCase()
+    }
+
+    pub fn bind(chord: String, run: fn(): Void): Bool {
+        let k = this.norm(chord)
+        if k == "" {
+            return false
+        }
+        let i = 0
+        while i < this.keys.length() {
+            if this.keys[i] == k {
+                this.handlers[i] = run
+                return true
+            }
+            i += 1
+        }
+        this.keys.push(k)
+        this.handlers.push(run)
+        return false
+    }
+
+    pub fn run(chord: String): Bool {
+        let k = this.norm(chord)
+        let i = 0
+        while i < this.keys.length() {
+            if this.keys[i] == k {
+                this.handlers[i]()
+                return true
+            }
+            i += 1
+        }
+        return false
+    }
+
+    pub fn clear() {
+        this.keys = []
+        this.handlers = []
+    }
+
+    pub fn len(): Int {
+        return this.keys.length()
+    }
+}
+
 /** The arena. Ids are creation order until keyed reconciliation lands. */
 pub class Tree {
     let role: Array<Int> = []
@@ -399,6 +541,8 @@ pub class Tree {
     let textHandlers: Array<fn(String): Void> = []
     let canvasHandler: Array<Int> = []
     let canvasHandlers: Array<fn(Canvas): Void> = []
+    let numberHandler: Array<Int> = []
+    let numberHandlers: Array<fn(Float): Void> = []
     let fixedW: Array<Int> = []
     let fixedH: Array<Int> = []
     let textAlignV: Array<Int> = []
@@ -415,6 +559,24 @@ pub class Tree {
     let prevChecked: Array<Bool> = []
     let prevRole: Array<Int> = []
     let prevFocus: Int = -1
+    let disabledV: Array<Bool> = []
+    let clipV: Array<Bool> = []
+    let scrollV: Array<Float> = []
+    let scrollMax: Array<Float> = []
+    let numberV: Array<Float> = []
+    let caretV: Array<Int> = []
+    let selStartV: Array<Int> = []
+    let selEndV: Array<Int> = []
+    let offsetYV: Array<Float> = []
+    let hovered: Int = -1
+    let pressed: Int = -1
+    let prevHovered: Int = -1
+    let prevPressed: Int = -1
+    let prevDisabled: Array<Bool> = []
+    let prevCaret: Array<Int> = []
+    let prevSelStart: Array<Int> = []
+    let prevSelEnd: Array<Int> = []
+    let prevNumber: Array<Float> = []
     let x: Array<Int> = []
     let y: Array<Int> = []
     let w: Array<Int> = []
@@ -448,11 +610,18 @@ pub class Tree {
         this.handler[id] = -1
         this.textHandler[id] = -1
         this.canvasHandler[id] = -1
+        this.numberHandler[id] = -1
         this.fixedW[id] = 0
         this.fixedH[id] = 0
         this.textAlignV[id] = 0
         this.textLines[id] = 0
         this.textWrapV[id] = textWraps(roleId(r))
+        this.disabledV[id] = false
+        this.clipV[id] = false
+        this.scrollV[id] = 0.0
+        this.scrollMax[id] = 0.0
+        this.numberV[id] = 0.0
+        this.offsetYV[id] = 0.0
         this.x[id] = 0
         this.y[id] = 0
         this.w[id] = 0
@@ -488,6 +657,11 @@ pub class Tree {
             this.prevValue[i] = this.value[i]
             this.prevChecked[i] = this.checked[i]
             this.prevRole[i] = this.role[i]
+            this.prevDisabled[i] = this.disabledV[i]
+            this.prevCaret[i] = this.caretV[i]
+            this.prevSelStart[i] = this.selStartV[i]
+            this.prevSelEnd[i] = this.selEndV[i]
+            this.prevNumber[i] = this.numberV[i]
             if this.key[i] != "" {
                 this.keyIndexKeys.push(this.key[i])
                 this.keyIndexIds.push(i)
@@ -495,9 +669,12 @@ pub class Tree {
             i += 1
         }
         this.prevFocus = this.focus
+        this.prevHovered = this.hovered
+        this.prevPressed = this.pressed
         this.handlers = []
         this.textHandlers = []
         this.canvasHandlers = []
+        this.numberHandlers = []
         this.cursor = 0
         this.aligned = true
         this.pendingKey = ""
@@ -549,6 +726,87 @@ pub class Tree {
         }
     }
 
+    pub fn setDisabled(id: Int, on: Bool) {
+        if id >= 0 && id < this.disabledV.length() {
+            this.disabledV[id] = on
+            if on && this.focus == id {
+                this.focus = -1
+            }
+        }
+    }
+
+    pub fn setFixedHeight(id: Int, h: Int) {
+        if id >= 0 && id < this.fixedH.length() {
+            this.fixedH[id] = h
+        }
+    }
+
+    pub fn setFixedWidth(id: Int, w: Int) {
+        if id >= 0 && id < this.fixedW.length() {
+            this.fixedW[id] = w
+        }
+    }
+
+    pub fn setClip(id: Int, on: Bool) {
+        if id >= 0 && id < this.clipV.length() {
+            this.clipV[id] = on
+        }
+    }
+
+    pub fn setOffsetY(id: Int, y: Float) {
+        if id >= 0 && id < this.offsetYV.length() {
+            this.offsetYV[id] = y
+        }
+    }
+
+    pub fn scrollOf(n: Node): Float {
+        return this.scrollV[n.id]
+    }
+
+    pub fn scrollMaxOf(n: Node): Float {
+        return this.scrollMax[n.id]
+    }
+
+    pub fn numberOf(n: Node): Float {
+        return this.numberV[n.id]
+    }
+
+    pub fn setNumber(id: Int, v: Float) {
+        let x = v
+        if x < 0.0 {
+            x = 0.0
+        }
+        if x > 1.0 {
+            x = 1.0
+        }
+        this.numberV[id] = x
+    }
+
+    pub fn setScroll(id: Int, v: Float, max: Float) {
+        let x = v
+        if x < 0.0 {
+            x = 0.0
+        }
+        if x > max {
+            x = max
+        }
+        this.scrollV[id] = x
+        this.scrollMax[id] = max
+    }
+
+    fn disabledNode(id: Int): Bool {
+        return id >= 0 && this.disabledV[id]
+    }
+
+    /** Scroll offset of a keyed node from the previous frame. */
+    pub fn scrollForKey(k: String): Float {
+        let id = this.keyed(k)
+        if id == -1 {
+            return 0.0
+        }
+        return this.scrollV[id]
+    }
+
     pub fn newNode(r: Role, n: String): Node {
         let k = this.pendingKey
         this.pendingKey = ""
@@ -590,6 +848,7 @@ pub class Tree {
         this.handler.push(-1)
         this.textHandler.push(-1)
         this.canvasHandler.push(-1)
+        this.numberHandler.push(-1)
         this.fixedW.push(0)
         this.fixedH.push(0)
         this.textAlignV.push(0)
@@ -604,6 +863,20 @@ pub class Tree {
         this.prevValue.push("")
         this.prevChecked.push(false)
         this.prevRole.push(-1)
+        this.disabledV.push(false)
+        this.clipV.push(false)
+        this.scrollV.push(0.0)
+        this.scrollMax.push(0.0)
+        this.numberV.push(0.0)
+        this.caretV.push(0)
+        this.selStartV.push(0)
+        this.selEndV.push(0)
+        this.offsetYV.push(0.0)
+        this.prevDisabled.push(false)
+        this.prevCaret.push(0)
+        this.prevSelStart.push(0)
+        this.prevSelEnd.push(0)
+        this.prevNumber.push(0.0)
         this.x.push(0)
         this.y.push(0)
         this.w.push(0)
@@ -647,7 +920,16 @@ pub class Tree {
 
     /** The current value of a text field or slider, for the semantic tree. */
     pub fn setValue(n: Node, v: String) {
-        this.value[n.id] = v
+        if this.value[n.id] != v {
+            this.value[n.id] = v
+            if this.focus != n.id {
+                this.caretV[n.id] = v.length()
+                this.selStartV[n.id] = this.caretV[n.id]
+                this.selEndV[n.id] = this.caretV[n.id]
+            } else {
+                this.clampEditing(n.id)
+            }
+        }
     }
 
     pub fn valueOf(n: Node): String {
@@ -664,7 +946,17 @@ pub class Tree {
     }
 
     pub fn slider(s: String): Node {
-        return this.interactive(Role.slider, s, actionId(Action.setValue))
+        let node = this.interactive(Role.slider, s, actionId(Action.setValue))
+        this.numberV[node.id] = 0.5
+        return node
+    }
+
+    pub fn sliderValue(s: String, v: Float, onChange: fn(Float): Void): Node {
+        let node = this.slider(s)
+        this.setNumber(node.id, v)
+        this.numberHandler[node.id] = this.numberHandlers.length()
+        this.numberHandlers.push(onChange)
+        return node
     }
 
     pub fn toggle(s: String): Node {
@@ -687,10 +979,20 @@ pub class Tree {
         return node
     }
 
+    pub fn listItem(s: String, onTap: fn(): Void): Node {
+        let node = this.interactive(Role.listitem, s, actionId(Action.tap))
+        this.handler[node.id] = this.handlers.length()
+        this.handlers.push(onTap)
+        return node
+    }
+
     pub fn textField(v: String, placeholder: String, onChange: fn(String): Void): Node {
         let node = this.newNode(Role.textbox, placeholder)
         this.actions[node.id] = actionId(Action.setValue)
         this.value[node.id] = v
+        this.caretV[node.id] = v.length()
+        this.selStartV[node.id] = this.caretV[node.id]
+        this.selEndV[node.id] = this.caretV[node.id]
         this.textHandler[node.id] = this.textHandlers.length()
         this.textHandlers.push(onChange)
         return node
@@ -724,13 +1026,101 @@ pub class Tree {
         return true
     }
 
+    fn caretFromX(id: Int, px: Int) {
+        let pad = textPad(this.role[id])
+        let local = Float(px) - Float(this.x[id]) - pad
+        let v = this.value[id]
+        let best = 0
+        let bestd = this.engine.measure("", textSize(this.role[id])) - local
+        if bestd < 0.0 {
+            bestd = 0.0 - bestd
+        }
+        let i = 1
+        while i <= v.length() {
+            let w = this.engine.measure(v.slice(0, i), textSize(this.role[id]))
+            let d = w - local
+            if d < 0.0 {
+                d = 0.0 - d
+            }
+            if d < bestd {
+                bestd = d
+                best = i
+            }
+            i += 1
+        }
+        this.caretV[id] = best
+        this.selStartV[id] = best
+        this.selEndV[id] = best
+    }
+
+    fn sliderFromX(id: Int, px: Int) {
+        let w = Float(this.w[id])
+        if w <= 0.0 {
+            return
+        }
+        this.setNumber(id, (Float(px) - Float(this.x[id])) / w)
+        this.fireNumber(id)
+    }
+
     /** Route a pointer press through the hit test to the same handler a key reaches. */
     pub fn pointerDown(x: Int, y: Int): Bool {
         let id = this.hitTest(x, y)
-        if id == -1 || this.actions[id] == 0 {
+        if id == -1 || this.disabledNode(id) {
+            return false
+        }
+        this.pressed = id
+        if this.role[id] == roleId(Role.textbox) {
+            this.setFocus(id)
+            this.caretFromX(id, x)
+            return true
+        }
+        if this.role[id] == roleId(Role.slider) {
+            this.setFocus(id)
+            this.sliderFromX(id, x)
+            return this.fire(Node(tree: this, id: id))
+        }
+        this.pressed = id
+        if this.actions[id] == 0 {
             return false
         }
         return this.fire(Node(tree: this, id: id))
+    }
+
+    /** Track hover and an active drag. Returns true when something visible changed. */
+    pub fn pointerMove(x: Int, y: Int): Bool {
+        let changed = false
+        let h = this.hitTest(x, y)
+        if h != this.hovered {
+            this.hovered = h
+            changed = true
+        }
+        if this.pressed != -1 && this.role[this.pressed] == roleId(Role.slider) {
+            this.sliderFromX(this.pressed, x)
+            changed = true
+        }
+        return changed
+    }
+
+    pub fn pointerUp(x: Int, y: Int): Bool {
+        if this.pressed == -1 {
+            return false
+        }
+        this.pressed = -1
+        return true
+    }
+
+    /** Scroll the nearest scrollable ancestor of the node under the point. */
+    pub fn scrollAt(x: Int, y: Int, dy: Float): Bool {
+        let cur = this.hitTest(x, y)
+        while cur != -1 {
+            if this.scrollMax[cur] > 0.0 {
+                let before = this.scrollV[cur]
+                this.setScroll(cur, before + dy, this.scrollMax[cur])
+                return this.scrollV[cur] != before
+            }
+            cur = this.parent[cur]
+        }
+        return false
     }
 
     pub fn toggleWith(s: String, onToggle: fn(): Void): Node {
@@ -755,9 +1145,16 @@ pub class Tree {
         return this.count[n.id]
     }
 
+    fn setFocus(id: Int) {
+        this.focus = id
+        if id >= 0 {
+            this.resetEditing(id)
+        }
+    }
+
     pub fn focusOn(n: Node) {
-        if n.id >= 0 && n.id < this.role.length() {
-            this.focus = n.id
+        if n.id >= 0 && n.id < this.role.length() && !this.disabledNode(n.id) {
+            this.setFocus(n.id)
         }
     }
 
@@ -769,7 +1166,17 @@ pub class Tree {
         return (this.actions[n.id] & actionId(a)) != 0
     }
 
+    fn fireNumber(id: Int) {
+        let h = this.numberHandler[id]
+        if h >= 0 {
+            this.numberHandlers[h](this.numberV[id])
+        }
+    }
+
     fn fire(n: Node): Bool {
+        if this.disabledNode(n.id) {
+            return false
+        }
         let h = this.handler[n.id]
         if h < 0 {
             return false
@@ -779,14 +1186,222 @@ pub class Tree {
     }
 
     pub fn tap(n: Node): Bool {
+        if this.disabledNode(n.id) {
+            return false
+        }
         if (this.actions[n.id] & actionId(Action.tap)) == 0 {
             return false
         }
         return this.fire(n)
     }
 
+    fn notifyText(id: Int) {
+        let h = this.textHandler[id]
+        if h >= 0 {
+            this.textHandlers[h](this.value[id])
+        }
+    }
+
+    fn resetEditing(id: Int) {
+        if this.role[id] == roleId(Role.textbox) {
+            this.caretV[id] = this.value[id].length()
+            this.selStartV[id] = this.caretV[id]
+            this.selEndV[id] = this.caretV[id]
+        }
+    }
+
+    fn clampEditing(id: Int) {
+        let len = this.value[id].length()
+        if this.caretV[id] > len {
+            this.caretV[id] = len
+        }
+        if this.selStartV[id] > len {
+            this.selStartV[id] = len
+        }
+        if this.selEndV[id] > len {
+            this.selEndV[id] = len
+        }
+    }
+
+    /** Insert text at the caret, replacing the selection. */
+    pub fn typeText(n: Node, s: String): Bool {
+        let id = n.id
+        if id < 0 || id >= this.role.length() || this.role[id] != roleId(Role.textbox) {
+            return false
+        }
+        if this.disabledNode(id) || s == "" {
+            return false
+        }
+        let a = this.selStartV[id]
+        let b = this.selEndV[id]
+        if a > b {
+            let t = a
+            a = b
+            b = t
+        }
+        let v = this.value[id]
+        this.value[id] = v.slice(0, a) + s + v.slice(b, v.length())
+        this.caretV[id] = a + s.length()
+        this.selStartV[id] = this.caretV[id]
+        this.selEndV[id] = this.caretV[id]
+        this.notifyText(id)
+        return true
+    }
+
+    fn deleteSelection(id: Int): Bool {
+        let a = this.selStartV[id]
+        let b = this.selEndV[id]
+        if a == b {
+            return false
+        }
+        if a > b {
+            let t = a
+            a = b
+            b = t
+        }
+        let v = this.value[id]
+        this.value[id] = v.slice(0, a) + v.slice(b, v.length())
+        this.caretV[id] = a
+        this.selStartV[id] = a
+        this.selEndV[id] = a
+        this.notifyText(id)
+        return true
+    }
+
+    pub fn deleteBackward(n: Node): Bool {
+        let id = n.id
+        if this.deleteSelection(id) {
+            return true
+        }
+        let at = this.caretV[id]
+        if at <= 0 {
+            return false
+        }
+        let to = this.engine.prevGrapheme(this.value[id], at)
+        let v = this.value[id]
+        this.value[id] = v.slice(0, to) + v.slice(at, v.length())
+        this.caretV[id] = to
+        this.selStartV[id] = to
+        this.selEndV[id] = to
+        this.notifyText(id)
+        return true
+    }
+
+    pub fn deleteForward(n: Node): Bool {
+        let id = n.id
+        if this.deleteSelection(id) {
+            return true
+        }
+        let at = this.caretV[id]
+        let v = this.value[id]
+        if at >= v.length() {
+            return false
+        }
+        let to = this.engine.nextGrapheme(v, at)
+        this.value[id] = v.slice(0, at) + v.slice(to, v.length())
+        this.selStartV[id] = at
+        this.selEndV[id] = at
+        this.notifyText(id)
+        return true
+    }
+
+    pub fn selectAllText(n: Node): Bool {
+        let id = n.id
+        if id < 0 || this.role[id] != roleId(Role.textbox) {
+            return false
+        }
+        this.selStartV[id] = 0
+        this.selEndV[id] = this.value[id].length()
+        this.caretV[id] = this.selEndV[id]
+        return true
+    }
+
+    fn moveCaret(n: Node, back: Bool, extend: Bool) {
+        let id = n.id
+        let v = this.value[id]
+        let to = this.caretV[id]
+        if back {
+            to = this.engine.prevGrapheme(v, to)
+        } else {
+            to = this.engine.nextGrapheme(v, to)
+        }
+        if extend {
+            this.selEndV[id] = to
+            this.caretV[id] = to
+        } else {
+            this.caretV[id] = to
+            this.selStartV[id] = to
+            this.selEndV[id] = to
+        }
+    }
+
+    fn sliderStep(n: Node, dir: Int) {
+        this.setNumber(n.id, this.numberV[n.id] + 0.05 * Float(dir))
+        this.fireNumber(n.id)
+    }
+
     /** Activation keys reach the same handler a tap does. */
-    pub fn keyDown(n: Node, k: Key): Bool {
+    pub fn keyDown(n: Node, k: Key, shift: Bool = false): Bool {
+        if this.disabledNode(n.id) {
+            return false
+        }
+        if this.role[n.id] == roleId(Role.textbox) {
+            if k == Key.backspace {
+                return this.deleteBackward(n)
+            }
+            if k == Key.delete {
+                return this.deleteForward(n)
+            }
+            if k == Key.left {
+                this.moveCaret(n, true, shift)
+                return true
+            }
+            if k == Key.right {
+                this.moveCaret(n, false, shift)
+                return true
+            }
+            if k == Key.home {
+                this.caretV[n.id] = 0
+                if !shift {
+                    this.selStartV[n.id] = 0
+                    this.selEndV[n.id] = 0
+                } else {
+                    this.selEndV[n.id] = 0
+                }
+                return true
+            }
+            if k == Key.end {
+                let len = this.value[n.id].length()
+                this.caretV[n.id] = len
+                if !shift {
+                    this.selStartV[n.id] = len
+                    this.selEndV[n.id] = len
+                } else {
+                    this.selEndV[n.id] = len
+                }
+                return true
+            }
+        }
+        if this.role[n.id] == roleId(Role.slider) {
+            if k == Key.left {
+                this.sliderStep(n, -1)
+                return true
+            }
+            if k == Key.right {
+                this.sliderStep(n, 1)
+                return true
+            }
+            if k == Key.home {
+                this.setNumber(n.id, 0.0)
+                this.fireNumber(n.id)
+                return true
+            }
+            if k == Key.end {
+                this.setNumber(n.id, 1.0)
+                this.fireNumber(n.id)
+                return true
+            }
+        }
         if k == Key.enter || k == Key.space {
             if this.actions[n.id] == 0 {
                 return false
@@ -803,7 +1418,7 @@ pub class Tree {
             if p != -1 {
                 let sib = this.siblingInteractive(p, n.id, k == Key.right)
                 if sib != -1 {
-                    this.focus = sib
+                    this.setFocus(sib)
                     return this.fire(Node(tree: this, id: sib))
                 }
             }
@@ -817,7 +1432,7 @@ pub class Tree {
             seen = this.nextInteractive(0)
         }
         if seen != -1 {
-            this.focus = seen
+            this.setFocus(seen)
         }
         return seen
     }
@@ -828,7 +1443,7 @@ pub class Tree {
             seen = this.prevInteractive(this.role.length() - 1)
         }
         if seen != -1 {
-            this.focus = seen
+            this.setFocus(seen)
         }
         return seen
     }
@@ -859,7 +1474,7 @@ pub class Tree {
     fn nextInteractive(start: Int): Int {
         let i = start
         while i < this.role.length() {
-            if this.live[i] && this.actions[i] != 0 && this.inScope(i) {
+            if this.live[i] && this.actions[i] != 0 && !this.disabledV[i] && this.inScope(i) {
                 return i
             }
             i += 1
@@ -870,7 +1485,7 @@ pub class Tree {
     fn prevInteractive(start: Int): Int {
         let i = start
         while i >= 0 {
-            if this.live[i] && this.actions[i] != 0 && this.inScope(i) {
+            if this.live[i] && this.actions[i] != 0 && !this.disabledV[i] && this.inScope(i) {
                 return i
             }
             i -= 1
@@ -886,7 +1501,7 @@ pub class Tree {
             if c == origin {
                 seen = true
             }
-            if this.actions[c] != 0 {
+            if this.actions[c] != 0 && !this.disabledV[c] {
                 if forward && seen && c != origin {
                     return c
                 }
@@ -906,12 +1521,23 @@ pub class Tree {
         return this.hitFrom(this.root, px, py)
     }
 
+    fn clippedAt(id: Int, px: Int, py: Int): Bool {
+        let cur = this.parent[id]
+        while cur != -1 {
+            if this.clipV[cur] && (px < this.x[cur] || py < this.y[cur] || px >= this.x[cur] + this.w[cur] || py >= this.y[cur] + this.h[cur]) {
+                return true
+            }
+            cur = this.parent[cur]
+        }
+        return false
+    }
+
     fn hitFrom(id: Int, px: Int, py: Int): Int {
         let hit = -1
         let c = this.first[id]
         while c != -1 {
             let inner = this.hitFrom(c, px, py)
-            if inner != -1 {
+            if inner != -1 && !this.clippedAt(inner, px, py) {
                 hit = inner
             }
             c = this.next[c]
@@ -919,8 +1545,27 @@ pub class Tree {
         if hit != -1 {
             return hit
         }
-        if px >= this.x[id] && py >= this.y[id] && px < this.x[id] + this.w[id] && py < this.y[id] + this.h[id] {
+        if px >= this.x[id] && py >= this.y[id] && px < this.x[id] + this.w[id] && py < this.y[id] + this.h[id] && !this.clippedAt(id, px, py) {
             return id
+        }
+        return -1
+    }
+
+    pub fn firstRole(r: Role): Int {
+        return this.firstRoleFrom(this.root, roleId(r))
+    }
+
+    fn firstRoleFrom(id: Int, rid: Int): Int {
+        if this.live[id] && this.role[id] == rid {
+            return id
+        }
+        let c = this.first[id]
+        while c != -1 {
+            let hit = this.firstRoleFrom(c, rid)
+            if hit != -1 {
+                return hit
+            }
+            c = this.next[c]
         }
         return -1
     }
@@ -966,6 +1611,7 @@ pub class Tree {
     fn inset(r: Int): Int {
         if r == 1 { return 16 }
         if r == 3 { return 12 }
+        if r == 12 { return 12 }
         return 0
     }
 
@@ -973,13 +1619,14 @@ pub class Tree {
         if r == 1 { return 8 }
         if r == 2 { return 8 }
         if r == 3 { return 8 }
+        if r == 12 { return 8 }
         return 0
     }
 
     fn leafHeight(r: Int): Int {
         if r == 4 { return 30 }
         if r == 6 { return 32 }
-        if r == 7 { return 32 }
+        if r == 7 { return 44 }
         if r == 8 { return 32 }
         if r == 11 { return 32 }
         return 22
@@ -1051,7 +1698,7 @@ pub class Tree {
             if n == 0 { return 0 }
             return (avail - this.gapFor(r) * (n - 1)) / n
         }
-        if r == 4 || r == 5 || r == 12 || r == 15 {
+        if r == 4 || r == 5 || r == 12 || r == 14 || r == 15 {
             return avail
         }
         let iw = this.intrinsicWidth(id)
@@ -1062,7 +1709,7 @@ pub class Tree {
     fn measure(id: Int, avail: Int) {
         let r = this.role[id]
         let width = this.contentWidth(id, avail)
-        if r == 0 || r == 1 || r == 3 || r == 2 {
+        if r == 0 || r == 1 || r == 3 || r == 2 || r == 12 || r == 14 {
             let total = 0
             let children = 0
             let c = this.first[id]
@@ -1087,6 +1734,12 @@ pub class Tree {
                     gaps = this.gapFor(r) * (children - 1)
                 }
                 this.h[id] = total + gaps + this.inset(r) * 2
+                if r == 12 {
+                    this.h[id] += 36
+                }
+            }
+            if this.fixedH[id] > 0 {
+                this.h[id] = this.fixedH[id]
             }
         } else {
             this.w[id] = width
@@ -1113,18 +1766,22 @@ pub class Tree {
         this.x[id] = x
         this.y[id] = y
         let r = this.role[id]
-        if r == 0 || r == 1 || r == 3 || r == 2 {
+        if r == 0 || r == 1 || r == 3 || r == 2 || r == 12 || r == 14 {
             let inset = this.inset(r)
             let gap = this.gapFor(r)
             let cx = x + inset
             let cy = y + inset
+            if r == 12 {
+                cy = y + 36
+            }
             let c = this.first[id]
             while c != -1 {
+                let oy = Int(this.offsetYV[c])
                 if r == 2 {
-                    this.place(c, cx, cy)
+                    this.place(c, cx, cy + oy)
                     cx += this.w[c] + gap
                 } else {
-                    this.place(c, cx, cy)
+                    this.place(c, cx, cy + oy)
                     cy += this.h[c] + gap
                 }
                 c = this.next[c]
@@ -1162,7 +1819,7 @@ pub class Tree {
                 }
             } else {
                 let moved = this.x[i] != this.prevX[i] || this.y[i] != this.prevY[i] || this.w[i] != this.prevW[i] || this.h[i] != this.prevH[i]
-                let changed = this.role[i] != this.prevRole[i] || this.name[i] != this.prevName[i] || this.value[i] != this.prevValue[i] || this.checked[i] != this.prevChecked[i]
+                let changed = this.role[i] != this.prevRole[i] || this.name[i] != this.prevName[i] || this.value[i] != this.prevValue[i] || this.checked[i] != this.prevChecked[i] || this.disabledV[i] != this.prevDisabled[i] || this.caretV[i] != this.prevCaret[i] || this.selStartV[i] != this.prevSelStart[i] || this.selEndV[i] != this.prevSelEnd[i] || this.numberV[i] != this.prevNumber[i]
                 let canvas = this.role[i] == 16
                 if moved || changed || canvas {
                     let x0 = this.x[i]
@@ -1187,6 +1844,22 @@ pub class Tree {
                 }
             }
             i += 1
+        }
+        if this.hovered != this.prevHovered {
+            if this.hovered >= 0 && this.hovered < this.role.length() {
+                out.add(this.x[this.hovered], this.y[this.hovered], this.w[this.hovered], this.h[this.hovered])
+            }
+            if this.prevHovered >= 0 && this.prevHovered < this.role.length() {
+                out.add(this.prevX[this.prevHovered], this.prevY[this.prevHovered], this.prevW[this.prevHovered], this.prevH[this.prevHovered])
+            }
+        }
+        if this.pressed != this.prevPressed {
+            if this.pressed >= 0 && this.pressed < this.role.length() {
+                out.add(this.x[this.pressed], this.y[this.pressed], this.w[this.pressed], this.h[this.pressed])
+            }
+            if this.prevPressed >= 0 && this.prevPressed < this.role.length() {
+                out.add(this.prevX[this.prevPressed], this.prevY[this.prevPressed], this.prevW[this.prevPressed], this.prevH[this.prevPressed])
+            }
         }
         if this.focus != this.prevFocus {
             if this.focus >= 0 && this.focus < this.role.length() {
@@ -1265,20 +1938,34 @@ pub class Tree {
         if !this.boundsHit(dm, Float(this.x[id]), Float(this.y[id]), Float(this.w[id]), Float(this.h[id])) {
             return
         }
+        let clip = this.clipV[id]
+        if clip {
+            d.pushClip(Float(this.x[id]), Float(this.y[id]), Float(this.w[id]), Float(this.h[id]))
+        }
         this.paintOne(id, d, th)
         let c = this.first[id]
         while c != -1 {
             this.paintNodeD(c, d, th, dm)
             c = this.next[c]
         }
+        if clip {
+            d.popClip()
+        }
     }
 
     fn paintNode(id: Int, d: DisplayList, th: Theme) {
+        let clip = this.clipV[id]
+        if clip {
+            d.pushClip(Float(this.x[id]), Float(this.y[id]), Float(this.w[id]), Float(this.h[id]))
+        }
         this.paintOne(id, d, th)
         let c = this.first[id]
         while c != -1 {
             this.paintNode(c, d, th)
             c = this.next[c]
+        }
+        if clip {
+            d.popClip()
         }
     }
 
@@ -1289,15 +1976,26 @@ pub class Tree {
         let w = Float(this.w[id])
         let h = Float(this.h[id])
 
+        let surf = th.surface
+        if this.hovered == id && !this.disabledV[id] {
+            surf = mix(surf, th.text, 0.07)
+        }
+        if this.pressed == id && !this.disabledV[id] {
+            surf = mix(surf, th.accent, 0.28)
+        }
+        if this.disabledV[id] {
+            surf = mix(surf, th.background, 0.45)
+        }
         if r == 3 || r == 6 || r == 11 || r == 12 || r == 14 || r == 15 {
-            d.fillRect(th.surface, x, y, w, h)
+            d.fillRect(surf, x, y, w, h)
             outline(d, th.border, x, y, w, h)
         }
         if r == 7 {
-            let cy = y + h / 2.0
+            let cy = y + 36.0
+            let frac = this.numberV[id]
             d.fillRect(th.border, x, cy - 2.0, w, 4.0)
-            d.fillRect(th.accent, x, cy - 2.0, w * 0.6, 4.0)
-            d.fillRect(th.text, x + w * 0.6 - 5.0, cy - 5.0, 10.0, 10.0)
+            d.fillRect(th.accent, x, cy - 2.0, w * frac, 4.0)
+            d.fillRect(th.text, x + w * frac - 5.0, cy - 5.0, 10.0, 10.0)
         }
         if r == 8 || r == 9 || r == 13 {
             let box = 18.0
@@ -1327,14 +2025,34 @@ pub class Tree {
             let pad = textPad(r)
             let inner = w - pad * 2.0
             let color = th.text
+            if this.disabledV[id] {
+                color = th.muted
+            }
             if r == 11 && this.value[id] == "" {
                 color = th.muted
             }
             let ty = y + (h - lay.height) / 2.0
             if r == 4 || r == 5 {
                 ty = y
+            } else if r == 7 {
+                ty = y + 4.0
             } else if r == 12 {
                 ty = y + textPadY(r)
+            }
+            if r == 11 && id == this.focus {
+                let v = this.value[id]
+                let a = this.selStartV[id]
+                let b = this.selEndV[id]
+                if a > b {
+                    let t = a
+                    a = b
+                    b = t
+                }
+                if a != b {
+                    let x0 = x + pad + this.engine.measure(v.slice(0, a), size)
+                    let x1 = x + pad + this.engine.measure(v.slice(0, b), size)
+                    d.fillRect(mix(th.accent, th.surface, 0.55), x0, ty, x1 - x0, lay.height)
+                }
             }
             let i = 0
             while i < lay.rows.length() {
@@ -1350,6 +2068,15 @@ pub class Tree {
                 }
                 ty += row.height
                 i += 1
+            }
+            if r == 11 && id == this.focus {
+                let v = this.value[id]
+                let at = this.caretV[id]
+                if at > v.length() {
+                    at = v.length()
+                }
+                let cx = x + pad + this.engine.measure(v.slice(0, at), size)
+                d.fillRect(th.text, cx, ty - lay.height, 1.5, lay.height)
             }
         }
 
@@ -1501,6 +2228,10 @@ pub class Build {
         return this.tree.slider(s)
     }
 
+    pub fn sliderValue(s: String, v: Float, onChange: fn(Float): Void): Node {
+        return this.tree.sliderValue(s, v, onChange)
+    }
+
     pub fn toggle(s: String): Node {
         return this.tree.toggle(s)
     }
@@ -1523,6 +2254,46 @@ pub class Build {
 
     pub fn canvas(s: String, w: Int, h: Int, paint: fn(Canvas): Void): Node {
         return this.tree.canvas(s, w, h, paint)
+    }
+
+    pub fn listItem(label: String, onTap: fn(): Void): Node {
+        return this.tree.listItem(label, onTap)
+    }
+
+    /**
+     * A fixed-row list viewport. The scroll offset lives on the keyed list
+     * node, so the caller only builds `count` rows starting at `first`.
+     */
+    pub fn virtualList(
+        label: String,
+        k: String,
+        total: Int,
+        rowH: Int,
+        viewport: Int
+    ): VirtualRange {
+        let scroll = this.tree.scrollForKey(k)
+        this.key(k)
+        let list = this.tree.newNode(Role.list, label)
+        this.tree.setFixedHeight(list.id, viewport)
+        this.tree.setClip(list.id, true)
+        this.tree.setScroll(list.id, scroll, Float(total * rowH - viewport))
+        let first = Int(scroll / Float(rowH))
+        if first < 0 {
+            first = 0
+        }
+        let visible = viewport / rowH + 2
+        if first + visible > total {
+            visible = total - first
+        }
+        if visible < 0 {
+            visible = 0
+        }
+        return new VirtualRange(
+            node: list,
+            first: first,
+            count: visible,
+            offset: Float(first * rowH) - scroll
+        )
     }
 
     pub fn dialog(title: String): Node {
@@ -1994,6 +2765,21 @@ fn colorLane(v: Int): Int {
 }
 
 /** `r`, `g`, `b`, `a` are clamped to 8 bits and packed as `0xRRGGBBAA`. */
+fn mix(a: Int, b: Int, t: Float): Int {
+    let ar = Float((a >> 24) & 255)
+    let ag = Float((a >> 16) & 255)
+    let ab = Float((a >> 8) & 255)
+    let br = Float((b >> 24) & 255)
+    let bg = Float((b >> 16) & 255)
+    let bb = Float((b >> 8) & 255)
+    return rgba(
+        Int(ar + (br - ar) * t + 0.5),
+        Int(ag + (bg - ag) * t + 0.5),
+        Int(ab + (bb - ab) * t + 0.5),
+        255
+    )
+}
+
 pub fn rgba(r: Int, g: Int, b: Int, a: Int): Int {
     return colorLane(r) * 16777216 + colorLane(g) * 65536 + colorLane(b) * 256 + colorLane(a)
 }
@@ -2636,4 +3422,115 @@ test fn regionPaintSkipsUnchangedNodes() {
     assert(part.recordCount() < full.recordCount(), "region paint drops the button")
     assert(part.toString().contains("Title"), part.toString())
     assert(!part.toString().contains("Reset"), part.toString())
+}
+
+test fn shortcutsBindReplaceAndRun() {
+    let s = new Shortcuts()
+    let hits = [0]
+    assert(!s.bind("Ctrl+S", () => { hits[0] += 1 }), "new binding")
+    assert(s.run("ctrl+s"), "case-insensitive")
+    assert(hits[0] == 1, "handler ran")
+    assert(s.bind("ctrl+s", () => { hits[0] += 10 }), "replaced")
+    assert(s.len() == 1, "one chord")
+    assert(s.run("CTRL+S"), "still bound")
+    assert(hits[0] == 11, "replacement ran")
+    assert(!s.run("ctrl+x"), "unknown chord")
+}
+
+test fn disabledControlsStayOutOfFocusAndInput() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let hits = [0]
+    let btn = b.button("Go", () => { hits[0] += 1 })
+    btn.disabled(true)
+    let root = b.column()
+    root.addChild(btn)
+    t.endFrame()
+    t.layout(root, 300)
+    assert(!t.pointerDown(t.x[btn.id] + 2, t.y[btn.id] + 2), "disabled tap ignored")
+    assert(hits[0] == 0, "handler not fired")
+    assert(t.focusNext() == -1, "disabled skipped by focus")
+}
+
+test fn textFieldEditsAtTheCaret() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let seen = [""]
+    let field = b.textField("ab", "type", (v: String) => { seen[0] = v })
+    let root = b.column()
+    root.addChild(field)
+    t.endFrame()
+    t.layout(root, 300)
+    t.focusOn(field)
+    assert(t.typeText(field, "c"), "typed")
+    assert(t.valueOf(field) == "abc", t.valueOf(field))
+    assert(t.keyDown(field, Key.left), "moved left")
+    assert(t.typeText(field, "X"), "typed in the middle")
+    assert(t.valueOf(field) == "abXc", t.valueOf(field))
+    assert(t.keyDown(field, Key.backspace), "backspace")
+    assert(t.valueOf(field) == "abc", t.valueOf(field))
+    assert(seen[0] == "abc", "handler saw the value")
+}
+
+test fn sliderMovesWithArrowKeys() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let moves = [0]
+    let sl = b.slider("Volume")
+    let root = b.column()
+    root.addChild(sl)
+    t.endFrame()
+    t.layout(root, 300)
+    t.focusOn(sl)
+    let before = t.numberOf(sl)
+    assert(t.keyDown(sl, Key.right), "right steps")
+    assert(t.numberOf(sl) > before, "value grew")
+    assert(t.keyDown(sl, Key.home), "home")
+    assert(t.numberOf(sl) == 0.0, "clamped at zero")
+}
+
+test fn virtualListBuildsOnlyVisibleRows() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let v = b.virtualList("rows", "rows", 1000, 30, 120)
+    let root = b.column()
+    root.addChild(v.node)
+    let i = 0
+    while i < v.count {
+        let r = b.listItem("row " + (v.first + i).toString(), () => {})
+        r.fixedHeight(30)
+        if i == 0 {
+            r.offsetY(v.offset)
+        }
+        v.node.addChild(r)
+        i += 1
+    }
+    t.endFrame()
+    t.layout(root, 320)
+    assert(t.childCount(v.node) <= 6, "only the viewport rows: " + t.childCount(v.node).toString())
+    assert(t.scrollAt(t.x[v.node.id] + 2, t.y[v.node.id] + 2, 60.0), "wheel scrolls the list")
+
+    t.beginFrame()
+    let b2 = new Build(t)
+    let v2 = b2.virtualList("rows", "rows", 1000, 30, 120)
+    let root2 = b2.column()
+    root2.addChild(v2.node)
+    let j = 0
+    while j < v2.count {
+        let r = b2.listItem("row " + (v2.first + j).toString(), () => {})
+        r.fixedHeight(30)
+        if j == 0 {
+            r.offsetY(v2.offset)
+        }
+        v2.node.addChild(r)
+        j += 1
+    }
+    t.endFrame()
+    t.layout(root2, 320)
+    assert(t.childCount(v2.node) <= 6, "rebuilt viewport")
+    assert(t.snapshot().contains("row 2"), t.snapshot())
 }

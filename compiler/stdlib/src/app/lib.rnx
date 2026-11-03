@@ -10,10 +10,12 @@
 //! frame, damage, or present call reaches app code.
 
 import { ByteBuffer } from "@std/bytes"
-import { Build, Damage, Display, DisplayList, FrameClock, Key, Node, Painter, TextEngine, TextRow, Theme, Tree, rgba } from "@std/ui"
+import { Build, Damage, Display, DisplayList, FrameClock, Key, Node, Painter, Role, Shortcuts, TextEngine, TextRow, Theme, Tree, rgba } from "@std/ui"
 import { Clock } from "@std/time"
 import {
     fn parley_layout(text: Pointer<Byte>, len: Int, size: Float, maxWidth: Float, maxLines: Int, wrap: Int, ellipsis: Int, out: Pointer<Byte>, cap: Int): Int as parleyLayout,
+    fn parley_grapheme_next(text: Pointer<Byte>, len: Int, at: Int): Int as parleyGraphemeNext,
+    fn parley_grapheme_prev(text: Pointer<Byte>, len: Int, at: Int): Int as parleyGraphemePrev,
     fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float as parleyMeasure,
 } from native "parley_cabi"
 import {
@@ -82,6 +84,30 @@ class ParleyText {
         if this.buf.length() < bytes {
             this.buf = ByteBuffer.allocate(bytes)
         }
+    }
+
+    fn nextGrapheme(s: String, at: Int): Int {
+        if s == "" {
+            return 0
+        }
+        let b = ByteBuffer.fromString(s)
+        let n = 0
+        unsafe {
+            n = parleyGraphemeNext(Pointer.fromAddress<Byte>(b.address()), b.length(), at)
+        }
+        return n
+    }
+
+    fn prevGrapheme(s: String, at: Int): Int {
+        if s == "" {
+            return 0
+        }
+        let b = ByteBuffer.fromString(s)
+        let n = 0
+        unsafe {
+            n = parleyGraphemePrev(Pointer.fromAddress<Byte>(b.address()), b.length(), at)
+        }
+        return n
     }
 
     fn measure(s: String, size: Float): Float {
@@ -333,6 +359,10 @@ pub class App {
     let lastW: Int = 0
     let lastH: Int = 0
     let textEngine: TextEngine
+    let shortcuts: Shortcuts = new Shortcuts()
+    let modifiers: Int = 0
+    let pointerX: Int = 0
+    let pointerY: Int = 0
 
     init(w: Window, th: Theme, v: fn(Build): Node) {
         this.window = w
@@ -343,8 +373,18 @@ pub class App {
         this.textEngine = new TextEngine(
             (s: String, size: Float): Float => text.measure(s, size),
             (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool): Array<TextRow> => text.rows(s, size, width, wrap, lines, ell),
+            (s: String, at: Int): Int => text.nextGrapheme(s, at),
+            (s: String, at: Int): Int => text.prevGrapheme(s, at),
         )
         this.rootTree = new Tree(this.textEngine)
+        let app = this
+        this.shortcuts.bind("tab", () => { app.focusNext() })
+        this.shortcuts.bind("shift+tab", () => {
+            let prev = app.rootTree.focusPrev()
+            if prev != -1 {
+                app.rootTree.focusOn(Node(tree: app.rootTree, id: prev))
+            }
+        })
     }
 
     static launch(title: String, width: Int, height: Int, view: fn(Build): Node): App {
@@ -391,6 +431,15 @@ pub class App {
     /** Outline changed regions, like the show-surface-updates developer flag. */
     pub fn setDamageOverlay(on: Bool) {
         this.damageOverlay = on
+    }
+
+    /** Bind a named chord such as `ctrl+s` or `f1`. */
+    pub fn bind(chord: String, run: fn(): Void) {
+        this.shortcuts.bind(chord, run)
+    }
+
+    pub fn shortcuts(): Shortcuts {
+        return this.shortcuts
     }
 
     /** Build the tree, lay it out, and encode a full frame. */
@@ -455,6 +504,18 @@ pub class App {
         return this.rootTree.pointerDown(x, y)
     }
 
+    pub fn pointerMove(x: Int, y: Int): Bool {
+        return this.rootTree.pointerMove(x, y)
+    }
+
+    pub fn pointerUp(x: Int, y: Int): Bool {
+        return this.rootTree.pointerUp(x, y)
+    }
+
+    pub fn scrollAt(x: Int, y: Int, dy: Float): Bool {
+        return this.rootTree.scrollAt(x, y, dy)
+    }
+
     /** Route a key to the focused node, focusing the first control if none is. */
     pub fn keyDown(k: Key): Bool {
         let id = this.rootTree.focused()
@@ -471,23 +532,212 @@ pub class App {
         return this.rootTree.focusNext()
     }
 
-    fn keyEvent(code: Int) {
-        if code == 9 {
-            this.keyDown(Key.escape)
-        } else if code == 36 {
-            this.keyDown(Key.enter)
-        } else if code == 65 {
-            this.keyDown(Key.space)
-        } else if code == 23 {
-            this.focusNext()
-        } else if code == 113 {
-            this.keyDown(Key.left)
-        } else if code == 114 {
-            this.keyDown(Key.right)
-        } else if code == 111 {
+    fn keyName(code: Int): String {
+        if code == 1 { return "escape" }
+        if code == 15 { return "tab" }
+        if code == 28 { return "enter" }
+        if code == 57 { return "space" }
+        if code == 14 { return "backspace" }
+        if code == 111 { return "delete" }
+        if code == 102 { return "home" }
+        if code == 107 { return "end" }
+        if code == 104 { return "pageup" }
+        if code == 109 { return "pagedown" }
+        if code == 103 { return "up" }
+        if code == 105 { return "left" }
+        if code == 106 { return "right" }
+        if code == 108 { return "down" }
+        if code == 59 { return "f1" }
+        if code == 60 { return "f2" }
+        if code == 61 { return "f3" }
+        if code == 62 { return "f4" }
+        if code == 63 { return "f5" }
+        if code == 64 { return "f6" }
+        if code == 65 { return "f7" }
+        if code == 66 { return "f8" }
+        if code == 67 { return "f9" }
+        if code == 68 { return "f10" }
+        if code == 87 { return "f11" }
+        if code == 88 { return "f12" }
+        return this.appKeyChar(code, false)
+    }
+
+    fn appKeyChar(code: Int, shift: Bool): String {
+        let lower = ""
+        if code >= 16 && code <= 25 {
+            lower = "qwertyuiop".slice(code - 16, code - 15)
+        } else if code >= 30 && code <= 38 {
+            lower = "asdfghjkl".slice(code - 30, code - 29)
+        } else if code >= 44 && code <= 50 {
+            lower = "zxcvbnm".slice(code - 44, code - 43)
+        } else if code >= 2 && code <= 11 {
+            lower = "1234567890".slice(code - 2, code - 1)
+        } else if code == 12 {
+            lower = "-"
+        } else if code == 13 {
+            lower = "="
+        } else if code == 26 {
+            lower = "["
+        } else if code == 27 {
+            lower = "]"
+        } else if code == 39 {
+            lower = ";"
+        } else if code == 40 {
+            lower = "'"
+        } else if code == 41 {
+            lower = "`"
+        } else if code == 43 {
+            lower = "\\"
+        } else if code == 51 {
+            lower = ","
+        } else if code == 52 {
+            lower = "."
+        } else if code == 53 {
+            lower = "/"
+        } else if code == 57 {
+            return " "
+        }
+        if lower == "" {
+            return ""
+        }
+        if !shift {
+            return lower
+        }
+        let upper = lower.toUpperCase()
+        if upper != lower {
+            return upper
+        }
+        if lower == "1" { return "!" }
+        if lower == "2" { return "@" }
+        if lower == "3" { return "#" }
+        if lower == "4" { return "$" }
+        if lower == "5" { return "%" }
+        if lower == "6" { return "^" }
+        if lower == "7" { return "&" }
+        if lower == "8" { return "*" }
+        if lower == "9" { return "(" }
+        if lower == "0" { return ")" }
+        if lower == "-" { return "_" }
+        if lower == "=" { return "+" }
+        if lower == "[" { return "\{" }
+        if lower == "]" { return "}" }
+        if lower == ";" { return ":" }
+        if lower == "'" { return "\"" }
+        if lower == "`" { return "~" }
+        if lower == "\\" { return "|" }
+        if lower == "," { return "<" }
+        if lower == "." { return ">" }
+        if lower == "/" { return "?" }
+        return lower
+    }
+
+    fn chordFor(code: Int): String {
+        let name = this.keyName(code)
+        if name == "" {
+            return ""
+        }
+        let out = ""
+        if (this.modifiers & 1) != 0 { out = out + "ctrl+" }
+        if (this.modifiers & 2) != 0 { out = out + "alt+" }
+        if (this.modifiers & 4) != 0 { out = out + "shift+" }
+        if (this.modifiers & 8) != 0 { out = out + "meta+" }
+        return out + name
+    }
+
+    /** Feed an evdev key code. Tests and automation use this instead of a window. */
+    pub fn sendKey(code: Int, down: Bool) {
+        this.keyEvent(code, down)
+    }
+
+    fn keyEvent(code: Int, down: Bool) {
+        let bit = 0
+        if code == 29 || code == 97 {
+            bit = 1
+        } else if code == 56 || code == 100 {
+            bit = 2
+        } else if code == 42 || code == 54 {
+            bit = 4
+        } else if code == 125 || code == 126 {
+            bit = 8
+        }
+        if bit != 0 {
+            if down {
+                this.modifiers = this.modifiers | bit
+            } else {
+                this.modifiers = this.modifiers & (0 - 1 - bit)
+            }
+            return
+        }
+        if !down {
+            return
+        }
+        let chord = this.chordFor(code)
+        if chord != "" && this.shortcuts.run(chord) {
+            return
+        }
+        if code == 15 {
+            if (this.modifiers & 4) != 0 {
+                this.rootTree.focusPrev()
+            } else {
+                this.focusNext()
+            }
+            return
+        }
+        let id = this.rootTree.focused()
+        if id < 0 {
+            return
+        }
+        let node = Node(tree: this.rootTree, id: id)
+        if code == 14 {
+            this.keyDown(Key.backspace)
+            return
+        }
+        if code == 111 {
+            this.keyDown(Key.delete)
+            return
+        }
+        if code == 102 {
+            this.keyDown(Key.home)
+            return
+        }
+        if code == 107 {
+            this.keyDown(Key.end)
+            return
+        }
+        if code == 103 {
             this.keyDown(Key.up)
-        } else if code == 116 {
+            return
+        }
+        if code == 105 {
+            this.keyDown(Key.left)
+            return
+        }
+        if code == 106 {
+            this.keyDown(Key.right)
+            return
+        }
+        if code == 108 {
             this.keyDown(Key.down)
+            return
+        }
+        if code == 28 {
+            this.keyDown(Key.enter)
+            return
+        }
+        if (this.modifiers & (1 | 2 | 8)) == 0 {
+            let ch = this.appKeyChar(code, (this.modifiers & 4) != 0)
+            if ch != "" && this.rootTree.role[id] == 11 {
+                this.rootTree.typeText(node, ch)
+                return
+            }
+        }
+        if code == 57 {
+            this.keyDown(Key.space)
+        }
+        if code == 1 {
+            if this.rootTree.firstRole(Role.dialog) != -1 {
+                this.keyDown(Key.escape)
+            }
         }
     }
 
@@ -554,14 +804,31 @@ pub class App {
                     this.window.height = hostHeight(host)
                     dirty = true
                 } else if ev == 3 {
-                    this.pointerDown(hostEventA(host), hostEventB(host))
+                    this.pointerX = hostEventA(host)
+                    this.pointerY = hostEventB(host)
+                    this.pointerDown(this.pointerX, this.pointerY)
                     dirty = true
+                } else if ev == 4 {
+                    this.pointerUp(hostEventA(host), hostEventB(host))
+                    dirty = true
+                } else if ev == 5 {
+                    this.pointerX = hostEventA(host)
+                    this.pointerY = hostEventB(host)
+                    if this.pointerMove(this.pointerX, this.pointerY) {
+                        dirty = true
+                    }
                 } else if ev == 6 {
                     let code = hostEventA(host)
-                    if code == 9 {
+                    if code == 1 && this.rootTree.firstRole(Role.dialog) == -1 {
                         done = true
                     } else {
-                        this.keyEvent(code)
+                        this.keyEvent(code, true)
+                        dirty = true
+                    }
+                } else if ev == 7 {
+                    this.keyEvent(hostEventA(host), false)
+                } else if ev == 9 {
+                    if this.rootTree.scrollAt(this.pointerX, this.pointerY, Float(hostEventA(host)) * 40.0) {
                         dirty = true
                     }
                 }

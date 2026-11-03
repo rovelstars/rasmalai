@@ -71,7 +71,7 @@ run_probe() {
 }
 
 run_probe wgpu "rgba: 10 20 30 255" "center: 51 204 102 255"
-run_probe parley "hello 16:" "clusters:" "rows: 3" "flags: 1" "abi: 2"
+run_probe parley "hello 16:" "clusters:" "rows: 3" "flags: 1" "abi: 3" "grapheme next: 2" "grapheme prev: 0"
 run_probe taffy "rc: 0" "node 0 xywh: 0.0 0.0 120.0 78.0"
 run_probe cpu "rc: 0" "corner: 20,22,26,255" "heading ink: true" "round center: 200,50,50,255" "moved: 50,200,50,255" "image: 255,0,0,255" "poly center: 50,200,200,255"
 run_probe vello "heading ink: true" "corner: 20,22,26,255" "round center: 200,50,50,255" "moved: 50,200,50,255" "image: 255,0,0,255" "poly center: 50,200,200,255"
@@ -114,6 +114,25 @@ echo "$out" | grep -q "headless: 0" || {
 }
 echo "$out" | grep -q "polygon" || {
     echo "animation demo frame has no polygons" >&2
+    exit 1
+}
+
+(cd "$repo/examples/ui-kit" && "$rnx" check)
+(cd "$repo/examples/ui-kit" && "$rnx" build)
+kit="$repo/examples/ui-kit/.rnx-cache/build/dev/ui-kit"
+if ldd "$kit" | grep -q "not found"; then
+    echo "ui-kit has unresolved libraries" >&2
+    ldd "$kit" >&2
+    exit 1
+fi
+out=$(cd "$repo/examples/ui-kit" && RUNIX_HEADLESS=1 env -u LD_LIBRARY_PATH "$kit")
+echo "$out" | grep -q "headless: 0" || {
+    echo "ui-kit did not render headless" >&2
+    echo "$out" >&2
+    exit 1
+}
+echo "$out" | grep -q "Virtual list" || {
+    echo "ui-kit frame has no list" >&2
     exit 1
 }
 

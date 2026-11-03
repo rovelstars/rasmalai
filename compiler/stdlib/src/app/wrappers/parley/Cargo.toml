@@ -9,5 +9,6 @@ crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
 parley = "0.12"
+unicode-segmentation = "1"
 
 [workspace]
