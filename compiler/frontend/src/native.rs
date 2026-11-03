@@ -63,6 +63,7 @@ pub fn effective_choice(
 pub struct NativeLink {
     pub lib: String,
     pub archive: Option<std::path::PathBuf>,
+    pub lib_dirs: Vec<std::path::PathBuf>,
 }
 
 struct NativeDecl {
@@ -195,7 +196,11 @@ pub fn resolve_native_links(
     let Some(manifest) = manifest else {
         return Ok(wanted
             .iter()
-            .map(|lib| NativeLink { lib: lib.clone(), archive: None })
+            .map(|lib| NativeLink {
+                lib: lib.clone(),
+                archive: None,
+                lib_dirs: pkg_config_lib_dirs(lib),
+            })
             .collect());
     };
     let mut roots: Vec<(std::path::PathBuf, crate::project::ProjectConfig)> = Vec::new();
@@ -281,11 +286,19 @@ pub fn resolve_native_links(
     let mut out = Vec::with_capacity(wanted.len());
     for lib in wanted {
         let Some(decl) = decls.get(lib) else {
-            out.push(NativeLink { lib: lib.clone(), archive: None });
+            out.push(NativeLink {
+                lib: lib.clone(),
+                archive: None,
+                lib_dirs: pkg_config_lib_dirs(lib),
+            });
             continue;
         };
         if decl.system {
-            out.push(NativeLink { lib: lib.clone(), archive: None });
+            out.push(NativeLink {
+                lib: lib.clone(),
+                archive: None,
+                lib_dirs: pkg_config_lib_dirs(lib),
+            });
             continue;
         }
         let Some(title) = decl.title.as_deref() else {
@@ -298,7 +311,11 @@ pub fn resolve_native_links(
             ));
         };
         match find_bundled_blob(&decl.owner, title) {
-            Some(path) => out.push(NativeLink { lib: lib.clone(), archive: Some(path) }),
+            Some(path) => out.push(NativeLink {
+                lib: lib.clone(),
+                archive: Some(path),
+                lib_dirs: pkg_config_lib_dirs(lib),
+            }),
             None => {
                 return Err(Diagnostic::new(
                     Code::E108,
@@ -313,6 +330,24 @@ pub fn resolve_native_links(
         }
     }
     Ok(out)
+}
+
+fn pkg_config_lib_dirs(lib: &str) -> Vec<std::path::PathBuf> {
+    let Ok(out) = std::process::Command::new("pkg-config")
+        .args(["--libs-only-L", lib])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter_map(|flag| flag.strip_prefix("-L"))
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect()
 }
 
 fn valid_probe_name(lib: &str) -> bool {
@@ -580,14 +615,14 @@ mod tests {
         let plan = resolve_wanted(&root, NativePrefer::Bundled, &["foo"]).unwrap();
         assert!(plan[0].archive.is_some());
         let plan = resolve_wanted(&root, NativePrefer::System, &["foo"]).unwrap();
-        assert_eq!(plan, vec![NativeLink { lib: "foo".to_string(), archive: None }]);
+        assert_eq!(plan, vec![NativeLink { lib: "foo".to_string(), archive: None, lib_dirs: Vec::new() }]);
     }
 
     #[test]
     fn link_plan_undeclared_lib_stays_system() {
         let (_dir, root) = link_tree("undeclared", "", "");
         let plan = resolve_wanted(&root, NativePrefer::Bundled, &["z"]).unwrap();
-        assert_eq!(plan, vec![NativeLink { lib: "z".to_string(), archive: None }]);
+        assert_eq!(plan, vec![NativeLink { lib: "z".to_string(), archive: None, lib_dirs: Vec::new() }]);
     }
 
     #[test]
@@ -625,7 +660,7 @@ mod tests {
             "",
         );
         let plan = resolve_wanted(&root, NativePrefer::None, &["z"]).unwrap();
-        assert_eq!(plan, vec![NativeLink { lib: "z".to_string(), archive: None }]);
+        assert_eq!(plan, vec![NativeLink { lib: "z".to_string(), archive: None, lib_dirs: Vec::new() }]);
         let err = resolve_wanted(&root, NativePrefer::Bundled, &["z"]).unwrap_err();
         assert!(err.contains("names no blob"), "{err}");
         assert!(err.contains("from:"), "{err}");
@@ -635,7 +670,7 @@ mod tests {
     fn link_plan_without_manifest_stays_system() {
         let dir = crate::scratch::dir("native-link-nomanifest");
         let plan = resolve_wanted(&dir, NativePrefer::Bundled, &["z"]).unwrap();
-        assert_eq!(plan, vec![NativeLink { lib: "z".to_string(), archive: None }]);
+        assert_eq!(plan, vec![NativeLink { lib: "z".to_string(), archive: None, lib_dirs: Vec::new() }]);
     }
 
     #[test]
@@ -653,7 +688,7 @@ mod tests {
             "",
         );
         let plan = resolve_wanted(&root, NativePrefer::None, &["other"]).unwrap();
-        assert_eq!(plan, vec![NativeLink { lib: "other".to_string(), archive: None }]);
+        assert_eq!(plan, vec![NativeLink { lib: "other".to_string(), archive: None, lib_dirs: Vec::new() }]);
     }
 
     #[test]

@@ -17,11 +17,20 @@ pub struct StaticOpts {
     pub icf: bool,
     pub target: String,
     pub strip: bool,
+    pub lib_dirs: Vec<PathBuf>,
+    pub runpath: Option<String>,
 }
 
 impl Default for StaticOpts {
     fn default() -> StaticOpts {
-        StaticOpts { entry: "_start".to_string(), icf: true, target: "x86_64-unknown-linux-gnu".to_string(), strip: false }
+        StaticOpts {
+            entry: "_start".to_string(),
+            icf: true,
+            target: "x86_64-unknown-linux-gnu".to_string(),
+            strip: false,
+            lib_dirs: Vec::new(),
+            runpath: None,
+        }
     }
 }
 
@@ -643,7 +652,7 @@ fn static_link_inner(
                     )));
                 }
                 None => {
-                    let path = find_shlib_in(&[], sysroot, &opts.target, lib)?;
+                    let path = find_shlib_in(&opts.lib_dirs, sysroot, &opts.target, lib)?;
                     if !shared.early.iter().any(|l| l.path == path) {
                         shared.early.push(tphase!("link-dynparse", parse_dyn_lib(&path)?));
                     }
@@ -690,6 +699,7 @@ fn static_link_inner(
         cache,
         &opts_desc,
         static_interp(&opts.target)?,
+        opts.runpath.as_deref(),
     )
 }
 
@@ -804,6 +814,7 @@ fn link_all<'a>(
     cache: Option<&crate::plan::CacheCtx>,
     opts_desc: &str,
     interp_path: &str,
+    runpath: Option<&str>,
 ) -> Result<NativeStats, LinkError> {
     let keep_debug = !strip && cmdline_has_debug(&objects);
     let mut db = SymDb::new();
@@ -1019,7 +1030,7 @@ fn link_all<'a>(
         info.force_dynamic = force_dynamic;
         info
     } else {
-        tphase!("link-dyninfo", build_dyn_info(&g, &db, &shared.early, &shared.late, shared.loader.as_ref(), None, interp_path, target)?)
+        tphase!("link-dyninfo", build_dyn_info(&g, &db, &shared.early, &shared.late, shared.loader.as_ref(), runpath, interp_path, target)?)
     };
     if force_dynamic && pie {
         dyn_info.osabi = 3;

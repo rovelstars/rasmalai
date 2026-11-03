@@ -109,6 +109,7 @@ pub fn link_executable(
 #[derive(Clone, Debug)]
 pub struct DynLink {
     pub lib_dir: PathBuf,
+    pub lib_dirs: Vec<PathBuf>,
     pub libs: Vec<String>,
 }
 
@@ -162,10 +163,15 @@ pub fn link_executable_dynamic(
         cmd.arg(s);
     }
     cmd.arg(format!("-L{}", dyn_link.lib_dir.display()));
+    for dir in &dyn_link.lib_dirs {
+        cmd.arg(format!("-L{}", dir.display()));
+    }
     for lib in &dyn_link.libs {
         cmd.arg(format!("-l{lib}"));
     }
-    cmd.arg(format!("-Wl,-rpath,{}", dyn_link.lib_dir.display()));
+    let mut runpath = vec![dyn_link.lib_dir.display().to_string()];
+    runpath.extend(dyn_link.lib_dirs.iter().map(|d| d.display().to_string()));
+    cmd.arg(format!("-Wl,-rpath,{}", runpath.join(":")));
     for lib in ["pthread", "dl", "m", "c"] {
         cmd.arg(format!("-l{lib}"));
     }
