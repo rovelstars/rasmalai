@@ -1,0 +1,38 @@
+import { ByteBuffer } from "@std/bytes"
+import {
+    fn taffy_abi_version(): Int,
+    fn taffy_layout(nodes: Pointer<Byte>, count: Int, rootW: Float, rootH: Float, out: Pointer<Byte>): Int,
+} from native "taffy_cabi"
+
+fn put(b: ByteBuffer, i: Int, parent: Int, kind: Int, w: Float, h: Float, pad: Float, gap: Float) {
+    let o = i * 40
+    b.writeInt32LE(o, parent)
+    b.writeInt32LE(o + 4, kind)
+    b.writeFloat64LE(o + 8, w)
+    b.writeFloat64LE(o + 16, h)
+    b.writeFloat64LE(o + 24, pad)
+    b.writeFloat64LE(o + 32, gap)
+}
+
+fn Main(): Int {
+    let nodes = ByteBuffer.allocate(3 * 40)
+    put(nodes, 0, -1, 0, 0.0, 0.0, 10.0, 8.0)
+    put(nodes, 1, 0, 2, 100.0, 20.0, 0.0, 0.0)
+    put(nodes, 2, 0, 2, 100.0, 30.0, 0.0, 0.0)
+    let out = ByteBuffer.allocate(3 * 32)
+    let rc = 0
+    unsafe {
+        rc = taffy_layout(Pointer.fromAddress<Byte>(nodes.address()), 3, 640.0, 480.0, Pointer.fromAddress<Byte>(out.address()))
+    }
+    print("rc:", rc)
+    let i = 0
+    while i < 3 {
+        let o = i * 32
+        print("node", i, "xywh:", out.readFloat64LE(o), out.readFloat64LE(o + 8), out.readFloat64LE(o + 16), out.readFloat64LE(o + 24))
+        i += 1
+    }
+    unsafe {
+        print("abi:", taffy_abi_version())
+    }
+    return 0
+}

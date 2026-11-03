@@ -1,0 +1,13 @@
+[package]
+name = "taffy-cabi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "taffy_cabi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+taffy = "0.15"
+
+[workspace]

@@ -1,0 +1,19 @@
+import { ByteBuffer } from "@std/bytes"
+import {
+    fn vello_abi_version(): Int,
+    fn vello_fill(w: Int, h: Int, r: Byte, g: Byte, b: Byte, a: Byte, out: Pointer<Byte>): Int,
+} from native "vello_cabi"
+
+fn Main(): Int {
+    let px = ByteBuffer.allocate(8 * 8 * 4)
+    let rc = 0
+    unsafe {
+        rc = vello_fill(8, 8, 10, 20, 30, 255, Pointer.fromAddress<Byte>(px.address()))
+    }
+    let at = (4 * 8 + 4) * 4
+    print("rc:", rc, "center:", px.readUInt8(at), px.readUInt8(at + 1), px.readUInt8(at + 2), px.readUInt8(at + 3))
+    unsafe {
+        print("abi:", vello_abi_version())
+    }
+    return 0
+}
