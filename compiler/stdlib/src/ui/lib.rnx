@@ -570,6 +570,7 @@ pub class Tree {
     let offsetYV: Array<Float> = []
     let hovered: Int = -1
     let pressed: Int = -1
+    let lastScroller: Int = -1
     let prevHovered: Int = -1
     let prevPressed: Int = -1
     let prevDisabled: Array<Bool> = []
@@ -1149,18 +1150,38 @@ pub class Tree {
         return true
     }
 
-    /** Scroll the nearest scrollable ancestor of the node under the point. */
+    fn scrollNode(id: Int, dy: Float): Bool {
+        if id < 0 || id >= this.role.length() || !this.live[id] || this.scrollMax[id] <= 0.0 {
+            return false
+        }
+        let before = this.scrollV[id]
+        this.setScroll(id, before + dy, this.scrollMax[id])
+        this.lastScroller = id
+        return this.scrollV[id] != before
+    }
+
+    /**
+     * Scroll the nearest scrollable ancestor of the node under the point. If
+     * the point is just outside the list, fall back to the last list that
+     * scrolled, then to any scrollable node containing the point.
+     */
     pub fn scrollAt(x: Int, y: Int, dy: Float): Bool {
         let cur = this.hitTest(x, y)
-        while cur != -1 {
-            if this.scrollMax[cur] > 0.0 {
-                let before = this.scrollV[cur]
-                this.setScroll(cur, before + dy, this.scrollMax[cur])
-                return this.scrollV[cur] != before
+        let at = cur
+        while at != -1 {
+            if this.scrollMax[at] > 0.0 {
+                return this.scrollNode(at, dy)
             }
-            cur = this.parent[cur]
+            at = this.parent[at]
         }
-        return false
+        let i = 0
+        while i < this.role.length() {
+            if this.live[i] && this.scrollMax[i] > 0.0 && x >= this.x[i] && y >= this.y[i] && x < this.x[i] + this.w[i] && y < this.y[i] + this.h[i] && !this.clippedAt(i, x, y) {
+                return this.scrollNode(i, dy)
+            }
+            i += 1
+        }
+        return this.scrollNode(this.lastScroller, dy)
     }
 
     pub fn toggleWith(s: String, onToggle: fn(): Void): Node {
@@ -3757,4 +3778,26 @@ test fn sliderKnobStaysInsideTheTrack() {
         i += 1
     }
     assert(knobX == Float(t.x[sl.id]), "knob sits at the left edge: " + knobX.toString())
+}
+
+test fn scrollFallsBackToTheLastList() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let v = b.virtualList("rows", "rows", 200, 30, 120)
+    let root = b.column()
+    root.addChild(v.node)
+    let i = 0
+    while i < v.count {
+        let r = b.listItem("row " + (v.first + i).toString(), () => {})
+        r.fixedHeight(30)
+        v.node.addChild(r)
+        i += 1
+    }
+    t.endFrame()
+    t.layout(root, 320)
+    assert(t.scrollAt(t.x[v.node.id] + 2, t.y[v.node.id] + 2, 90.0), "first scroll hits the list")
+    let after = t.scrollOf(v.node)
+    assert(t.scrollAt(2, 2, 0.0 - 30.0), "fallback scrolls the last list")
+    assert(t.scrollOf(v.node) < after, "fallback moved the list")
 }
