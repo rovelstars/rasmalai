@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use vello::kurbo::{Affine, Rect, RoundedRect};
+use vello::kurbo::{Affine, BezPath, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Blob, Color, Fill, ImageData, ImageFormat};
 
 const MAGIC: u32 = 0x4458_4E52;
@@ -50,6 +50,10 @@ pub enum Command {
     ClipPop,
     TransformPush([f64; 6]),
     TransformPop,
+    Polygon {
+        color: u32,
+        points: Vec<(f64, f64)>,
+    },
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
@@ -132,10 +136,31 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Command>, i32> {
             }
             7 => out.push(Command::TransformPush([x, y, w, h, e, f])),
             8 => out.push(Command::TransformPop),
+            9 => {
+                let mut points = Vec::with_capacity(b);
+                for p in 0..b {
+                    let at = a + p * 16;
+                    let px = f64_at(blob, at).ok_or(-20)?;
+                    let py = f64_at(blob, at + 8).ok_or(-20)?;
+                    points.push((px, py));
+                }
+                out.push(Command::Polygon { color, points });
+            }
             _ => {}
         }
     }
     Ok(out)
+}
+
+fn poly_path(points: &[(f64, f64)]) -> Option<BezPath> {
+    let (first, rest) = points.split_first()?;
+    let mut path = BezPath::new();
+    path.move_to(*first);
+    for p in rest {
+        path.line_to(*p);
+    }
+    path.close_path();
+    Some(path)
 }
 
 fn color_of(v: u32) -> Color {
@@ -309,6 +334,17 @@ pub fn to_gpu(commands: &[Command]) -> vello::Scene {
                     transform,
                     &Rect::new(*x, *y, x + w, y + h),
                 );
+            }
+            Command::Polygon { color, points } => {
+                if let Some(path) = poly_path(points) {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        color_of(*color),
+                        None,
+                        &path,
+                    );
+                }
             }
             Command::ClipPop => scene.pop_layer(),
             Command::TransformPush(m) => {

@@ -64,9 +64,9 @@ instead of in review.
 ## Components
 
 `Build` creates `column`, `row`, `section`, `text`, `heading`, `button`,
-`slider`, `toggle`, `checkbox`, `radio`, `textField`, `dialog`, `list`, and
-`item`. Factories create nodes; the view attaches them with `addChild`, or with a
-trailing block, which compiles to the same calls.
+`slider`, `toggle`, `checkbox`, `radio`, `textField`, `dialog`, `list`, `item`,
+and `canvas`. Factories create nodes; the view attaches them with `addChild`,
+or with a trailing block, which compiles to the same calls.
 
 ## Not here yet
 
@@ -111,6 +111,7 @@ Each record is `kind`, `color`, `a`, `b` as `u32`, then `x`, `y`, `w`, `h`, `e`,
 | 6 | image | `a`/`b` is a PNG blob range; target rect in `x`, `y`, `w`, `h` |
 | 7 | transform push | `[a b c d e f]` across all six lanes |
 | 8 | transform pop | none |
+| 9 | polygon | `a` is the blob offset, `b` is the point count; each point is two `f64` values |
 
 `finish(width, height)` returns the buffer. `Display.textOf(bytes)` decodes it
 back to one line per record, which is what snapshots and the inspector use.
@@ -122,3 +123,31 @@ Unknown kinds are skipped by a reader, so the format can grow.
 emits a background fill, one surface and outline per control, one text run per
 label, and an accent outline for the focused node. `Theme.dark()` and
 `Theme.light()` are data; a brand kit passes its own colors to the same call.
+
+## Canvas nodes
+
+`b.canvas(name, width, height, paint)` creates a fixed-size node that draws
+itself. `paint` receives a `Canvas` clipped to the node rectangle and works in
+local coordinates; the painter adds the node origin. The drawing calls are
+`fill`, `rect`, `roundRect`, `polygon`, `line`, `text`, `clip`, `unclip`,
+`pushTransform`, and `popTransform`. Each call appends to the frame's display
+list, so a canvas is another producer of the same primitives, not a separate
+renderer.
+
+A canvas callback runs once per frame. Use it for charts, sprites, and
+animation; use the built-in roles for text and controls.
+
+## Animation
+
+`FrameClock` is the time source. `App.frame` ticks it with `Clock.mono()` and
+passes it to the view through `b.frameClock()`. `dt()` is the seconds since the
+previous frame, `elapsed()` is the running total, and `frames()` counts ticks.
+
+`b.animate(false)` tells the app the view is paused. `App` then draws once per
+input event and sleeps instead of requesting continuous frames. The clock keeps
+its baseline current while paused, so `dt()` is zero and animations freeze
+without jumping on resume. `App.setAnimating` exposes the same flag outside a
+view.
+
+Physics belongs in the view, driven by `dt()`: integrate in fixed substeps so
+the motion is the same at any refresh rate.

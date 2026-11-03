@@ -7,6 +7,7 @@
 //! costs more than an integer lane; the enums stay in the signatures.
 
 import { ByteBuffer } from "@std/bytes"
+import { Math } from "@std/math"
 
 pub enum Role {
     root,
@@ -25,6 +26,7 @@ pub enum Role {
     checkbox,
     list,
     listitem,
+    canvas,
 }
 
 fn roleId(r: Role): Int {
@@ -43,7 +45,8 @@ fn roleId(r: Role): Int {
     if r == Role.dialog { return 12 }
     if r == Role.checkbox { return 13 }
     if r == Role.list { return 14 }
-    return 15
+    if r == Role.listitem { return 15 }
+    return 16
 }
 
 fn roleName(id: Int): String {
@@ -63,6 +66,7 @@ fn roleName(id: Int): String {
     if id == 13 { return "checkbox" }
     if id == 14 { return "list" }
     if id == 15 { return "listitem" }
+    if id == 16 { return "canvas" }
     return "unknown"
 }
 
@@ -134,6 +138,10 @@ pub class Tree {
     let handlers: Array<fn(): Void> = []
     let textHandler: Array<Int> = []
     let textHandlers: Array<fn(String): Void> = []
+    let canvasHandler: Array<Int> = []
+    let canvasHandlers: Array<fn(Canvas): Void> = []
+    let fixedW: Array<Int> = []
+    let fixedH: Array<Int> = []
     let x: Array<Int> = []
     let y: Array<Int> = []
     let w: Array<Int> = []
@@ -162,6 +170,9 @@ pub class Tree {
         this.checked[id] = false
         this.handler[id] = -1
         this.textHandler[id] = -1
+        this.canvasHandler[id] = -1
+        this.fixedW[id] = 0
+        this.fixedH[id] = 0
         this.x[id] = 0
         this.y[id] = 0
         this.w[id] = 0
@@ -197,6 +208,7 @@ pub class Tree {
         }
         this.handlers = []
         this.textHandlers = []
+        this.canvasHandlers = []
         this.cursor = 0
         this.aligned = true
         this.pendingKey = ""
@@ -265,6 +277,9 @@ pub class Tree {
         this.checked.push(false)
         this.handler.push(-1)
         this.textHandler.push(-1)
+        this.canvasHandler.push(-1)
+        this.fixedW.push(0)
+        this.fixedH.push(0)
         this.x.push(0)
         this.y.push(0)
         this.w.push(0)
@@ -354,6 +369,20 @@ pub class Tree {
         this.value[node.id] = v
         this.textHandler[node.id] = this.textHandlers.length()
         this.textHandlers.push(onChange)
+        return node
+    }
+
+    /**
+     * A fixed-size node that draws itself. The paint function runs during
+     * painting with a {@link Canvas} clipped to the node's rectangle, so an
+     * animation is a pure function of the frame clock and draws every frame.
+     */
+    pub fn canvas(s: String, w: Int, h: Int, paint: fn(Canvas): Void): Node {
+        let node = this.newNode(Role.canvas, s)
+        this.fixedW[node.id] = w
+        this.fixedH[node.id] = h
+        this.canvasHandler[node.id] = this.canvasHandlers.length()
+        this.canvasHandlers.push(paint)
         return node
     }
 
@@ -644,6 +673,9 @@ pub class Tree {
     }
 
     fn contentWidth(id: Int, avail: Int): Int {
+        if this.fixedW[id] > 0 {
+            return this.fixedW[id]
+        }
         let r = this.role[id]
         if r == 0 {
             return avail
@@ -692,7 +724,11 @@ pub class Tree {
             }
         } else {
             this.w[id] = width
-            this.h[id] = this.leafHeight(r)
+            if this.fixedH[id] > 0 {
+                this.h[id] = this.fixedH[id]
+            } else {
+                this.h[id] = this.leafHeight(r)
+            }
         }
     }
 
@@ -805,6 +841,15 @@ pub class Tree {
             outline(d, th.accent, x, y, w, h)
         }
 
+        if r == 16 {
+            let hnd = this.canvasHandler[id]
+            if hnd >= 0 {
+                d.pushClip(x, y, w, h)
+                this.canvasHandlers[hnd](new Canvas(d, x, y, w, h, th))
+                d.popClip()
+            }
+        }
+
         if r == 4 {
             d.textRun(th.text, x, y + (h - 20.0) / 2.0, 20.0, this.name[id])
         } else if r == 5 {
@@ -835,12 +880,101 @@ pub class Tree {
     }
 }
 
+/**
+ * Frame timing for animation.
+ *
+ * `tick` takes a monotonic nanosecond reading and exposes the time since the
+ * last frame plus the total running time. While paused, a tick keeps the
+ * baseline current but does not advance time, so animations freeze rather
+ * than jump when they resume.
+ */
+pub class FrameClock {
+    let last: Int = 0
+    let elapsedNs: Int = 0
+    let deltaNs: Int = 0
+    let ticks: Int = 0
+    let pausedFlag: Bool = false
+
+    pub fn tick(nowNs: Int) {
+        if this.pausedFlag || this.last == 0 {
+            this.last = nowNs
+            this.deltaNs = 0
+            return
+        }
+        let d = nowNs - this.last
+        if d < 0 {
+            d = 0
+        }
+        this.last = nowNs
+        this.deltaNs = d
+        this.elapsedNs += d
+        this.ticks += 1
+    }
+
+    /** Seconds since the previous tick, zero while paused. */
+    pub fn dt(): Float {
+        return Float(this.deltaNs) / 1000000000.0
+    }
+
+    /** Seconds of animation time since the clock started. */
+    pub fn elapsed(): Float {
+        return Float(this.elapsedNs) / 1000000000.0
+    }
+
+    pub fn frames(): Int {
+        return this.ticks
+    }
+
+    pub fn setPaused(p: Bool) {
+        if this.pausedFlag == p {
+            return
+        }
+        this.pausedFlag = p
+        this.last = 0
+    }
+
+    pub fn paused(): Bool {
+        return this.pausedFlag
+    }
+
+    pub fn reset() {
+        this.last = 0
+        this.elapsedNs = 0
+        this.deltaNs = 0
+        this.ticks = 0
+    }
+}
+
 /** A view context. Factories create nodes; the view attaches them. */
 pub class Build {
     let tree: Tree
+    let clock: FrameClock = new FrameClock()
+    let wantsFrames: Bool = true
 
     init(tree: Tree) {
         this.tree = tree
+    }
+
+    /**
+     * Declare whether this view needs continuous frames. A paused view draws
+     * once per input event; a running animation draws every frame. The app
+     * reads this after the view returns.
+     */
+    pub fn animate(on: Bool) {
+        this.wantsFrames = on
+    }
+
+    pub fn animating(): Bool {
+        return this.wantsFrames
+    }
+
+    /** The clock the app ticks before it runs the view. */
+    pub fn frameClock(): FrameClock {
+        return this.clock
+    }
+
+    pub fn setClock(c: FrameClock) {
+        this.clock = c
     }
 
     pub fn handle(): Tree {
@@ -904,6 +1038,10 @@ pub class Build {
 
     pub fn textField(v: String, placeholder: String, onChange: fn(String): Void): Node {
         return this.tree.textField(v, placeholder, onChange)
+    }
+
+    pub fn canvas(s: String, w: Int, h: Int, paint: fn(Canvas): Void): Node {
+        return this.tree.canvas(s, w, h, paint)
     }
 
     pub fn dialog(title: String): Node {
@@ -971,12 +1109,11 @@ pub class Damage {
  * `x, y, w, h, e, f`. `color` is `0xRRGGBBAA`.
  *
  * Kinds: 1 fill, 2 text, 3 clip push, 4 clip pop, 5 rounded rect, 6 image,
- * 7 transform push, 8 transform pop. Text and image records read `a` and `b`
- * as a byte range into the blob table that starts at `blobOffset`. A transform
- * uses all six lanes as `[a b c d e f]`. A rounded rect puts the radius in `e`.
- *
- * The builder owns a fixed record buffer; a command past the limit increments
- * `dropped()` instead of growing or aborting mid-frame.
+ * 7 transform push, 8 transform pop, 9 polygon. Text and image records read
+ * `a` and `b` as a byte range into the blob table that starts at
+ * `blobOffset`. A polygon reads `a` as the blob offset and `b` as the point
+ * count; each point is two `f64` values. A transform uses all six lanes as
+ * `[a b c d e f]`. A rounded rect puts the radius in `e`.
  *
  * The builder owns a fixed record buffer; a command past the limit increments
  * `dropped()` instead of growing or aborting mid-frame.
@@ -984,6 +1121,7 @@ pub class Damage {
 pub class DisplayList {
     let records: ByteBuffer
     let blob: Array<Int> = []
+    let scratch: ByteBuffer
     let count: Int = 0
     let limit: Int
     let droppedCount: Int = 0
@@ -993,6 +1131,7 @@ pub class DisplayList {
     init(limit: Int) {
         this.limit = limit
         this.records = ByteBuffer.allocate(limit * 64)
+        this.scratch = ByteBuffer.allocate(8)
         this.damageRects = new Damage()
     }
 
@@ -1036,6 +1175,17 @@ pub class DisplayList {
         this.count += 1
     }
 
+    fn appendFloat(v: Float): Int {
+        let at = this.blob.length()
+        this.scratch.writeFloat64LE(0, v)
+        let i = 0
+        while i < 8 {
+            this.blob.push(this.scratch.readUInt8(i))
+            i += 1
+        }
+        return at
+    }
+
     fn appendBlob(bytes: ByteBuffer): Int {
         let at = this.blob.length()
         let i = 0
@@ -1064,6 +1214,30 @@ pub class DisplayList {
     pub fn image(x: Float, y: Float, w: Float, h: Float, png: ByteBuffer) {
         let at = this.appendBlob(png)
         this.write(6, 0, at, png.length(), x, y, w, h, 0.0, 0.0)
+    }
+
+    /** A filled polygon. `points` is [x0, y0, x1, y1, ...]. */
+    pub fn polygon(color: Int, points: Array<Float>) {
+        this.polygonAt(color, points, 0.0, 0.0)
+    }
+
+    /**
+     * A filled polygon shifted by `dx`, `dy`. The shift happens while the
+     * points are copied into the blob, so a canvas does not allocate a
+     * temporary array on every frame.
+     */
+    pub fn polygonAt(color: Int, points: Array<Float>, dx: Float, dy: Float) {
+        if points.length() < 6 {
+            return
+        }
+        let at = this.blob.length()
+        let i = 0
+        while i + 1 < points.length() {
+            this.appendFloat(points[i] + dx)
+            this.appendFloat(points[i + 1] + dy)
+            i += 2
+        }
+        this.write(9, color, at, points.length() / 2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     }
 
     pub fn pushClip(x: Float, y: Float, w: Float, h: Float) {
@@ -1176,6 +1350,9 @@ pub class DisplayList {
         if k == 7 {
             return "transform " + this.xAt(i).toString() + " " + this.yAt(i).toString() + " " + this.wAt(i).toString() + " " + this.hAt(i).toString() + " " + this.eAt(i).toString() + " " + this.fAt(i).toString()
         }
+        if k == 9 {
+            return "polygon " + this.colorAt(i).toString() + " " + this.records.readUInt32LE(i * 64 + 12).toString() + " points"
+        }
         return "popTransform"
     }
 
@@ -1217,6 +1394,8 @@ pub class Display {
                 lines.push("transform " + x.toString() + " " + y.toString() + " " + w.toString() + " " + h.toString() + " " + bytes.readFloat64LE(o + 48).toString() + " " + bytes.readFloat64LE(o + 56).toString())
             } else if k == 8 {
                 lines.push("popTransform")
+            } else if k == 9 {
+                lines.push("polygon " + bytes.readUInt32LE(o + 4).toString() + " " + bytes.readUInt32LE(o + 12).toString() + " points")
             } else {
                 lines.push("pop")
             }
@@ -1294,6 +1473,98 @@ fn textSize(role: Int): Float {
         return 20.0
     }
     return 14.0
+}
+
+/**
+ * A drawing surface for one canvas node, in local coordinates.
+ *
+ * The painter adds the node's origin, so a paint function works in its own
+ * space and never sees screen coordinates. Every call appends to the frame's
+ * display list.
+ */
+pub class Canvas {
+    let list: DisplayList
+    let ox: Float
+    let oy: Float
+    let width: Float
+    let height: Float
+    let themeRef: Theme
+
+    init(list: DisplayList, ox: Float, oy: Float, width: Float, height: Float, th: Theme) {
+        this.list = list
+        this.ox = ox
+        this.oy = oy
+        this.width = width
+        this.height = height
+        this.themeRef = th
+    }
+
+    pub fn w(): Float {
+        return this.width
+    }
+
+    pub fn h(): Float {
+        return this.height
+    }
+
+    pub fn theme(): Theme {
+        return this.themeRef
+    }
+
+    pub fn fill(color: Int) {
+        this.list.fillRect(color, this.ox, this.oy, this.width, this.height)
+    }
+
+    pub fn rect(color: Int, x: Float, y: Float, w: Float, h: Float) {
+        this.list.fillRect(color, this.ox + x, this.oy + y, w, h)
+    }
+
+    pub fn roundRect(color: Int, x: Float, y: Float, w: Float, h: Float, radius: Float) {
+        this.list.roundRect(color, this.ox + x, this.oy + y, w, h, radius)
+    }
+
+    pub fn text(color: Int, x: Float, y: Float, size: Float, s: String) {
+        this.list.textRun(color, this.ox + x, this.oy + y, size, s)
+    }
+
+    /** A filled polygon. `points` is [x0, y0, x1, y1, ...] in local space. */
+    pub fn polygon(color: Int, points: Array<Float>) {
+        this.list.polygonAt(color, points, this.ox, this.oy)
+    }
+
+    /** A thick line, drawn as a quad. */
+    pub fn line(color: Int, x0: Float, y0: Float, x1: Float, y1: Float, thickness: Float) {
+        let dx = x1 - x0
+        let dy = y1 - y0
+        let len = Math.sqrt(dx * dx + dy * dy)
+        if len <= 0.0 {
+            return
+        }
+        let nx = (0.0 - dy) / len * thickness * 0.5
+        let ny = dx / len * thickness * 0.5
+        this.polygon(color, [
+            x0 + nx, y0 + ny,
+            x1 + nx, y1 + ny,
+            x1 - nx, y1 - ny,
+            x0 - nx, y0 - ny,
+        ])
+    }
+
+    pub fn clip(x: Float, y: Float, w: Float, h: Float) {
+        this.list.pushClip(this.ox + x, this.oy + y, w, h)
+    }
+
+    pub fn unclip() {
+        this.list.popClip()
+    }
+
+    pub fn pushTransform(a: Float, b: Float, c: Float, d: Float, e: Float, f: Float) {
+        this.list.pushTransform(a, b, c, d, this.ox + e, this.oy + f)
+    }
+
+    pub fn popTransform() {
+        this.list.popTransform()
+    }
 }
 
 /**
@@ -1658,4 +1929,46 @@ test fn everyInteractiveNodeHasAName() {
     b.toggle("Reduce motion")
     b.buttonInert("Reset")
     assert(t.unnamedInteractive() == -1, "all named")
+}
+
+test fn frameClockFreezesWhilePaused() {
+    let c = new FrameClock()
+    c.tick(1000000000)
+    c.tick(1016666666)
+    assert(c.dt() > 0.016, "delta advances")
+    let running = c.elapsed()
+    c.setPaused(true)
+    c.tick(3000000000)
+    assert(c.dt() == 0.0, "paused delta is zero")
+    assert(c.elapsed() == running, "paused time does not advance")
+    c.setPaused(false)
+    c.tick(4000000000)
+    assert(c.dt() == 0.0, "resume does not jump")
+    c.tick(4010000000)
+    assert(c.dt() > 0.0, "running again after resume")
+}
+
+test fn canvasKeepsItsSizeAndDrawsAPolygon() {
+    let t = new Tree()
+    t.beginFrame()
+    let b = new Build(t)
+    let root = b.column()
+    let c = b.canvas("cube", 120, 90, (cv: Canvas) => {
+        cv.fill(rgba(10, 20, 30, 255))
+        cv.polygon(rgba(200, 50, 50, 255), [1.0, 2.0, 20.0, 2.0, 10.0, 18.0])
+    })
+    root.addChild(c)
+    t.endFrame()
+    t.layout(root, 300)
+    let d = Painter.paint(t, 300, 200, Theme.dark())
+    assert(d.describe(3) == "polygon " + rgba(200, 50, 50, 255).toString() + " 3 points", d.describe(3))
+    assert(d.describe(2).startsWith("fill " + rgba(10, 20, 30, 255).toString() + " 16.0,16.0 120.0x90.0"), d.describe(2))
+}
+
+test fn buildCarriesTheFrameClock() {
+    let t = new Tree()
+    let b = new Build(t)
+    let c = new FrameClock()
+    b.setClock(c)
+    assert(b.frameClock() == c, "clock shared")
 }

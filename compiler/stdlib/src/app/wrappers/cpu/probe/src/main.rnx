@@ -50,6 +50,12 @@ fn Main(): Int {
     extra.popTransform()
     let png = ByteBuffer.fromArray([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0, 114, 182, 13, 36, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 132, 25, 96, 12, 0, 71, 202, 7, 249, 103, 89, 110, 183, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130])
     extra.image(100.0, 50.0, 20.0, 20.0, png)
+    extra.polygon(rgba(50, 200, 200, 255), [
+        70.0, 10.0,
+        120.0, 10.0,
+        120.0, 40.0,
+        70.0, 40.0,
+    ])
     let elist = extra.finish(128, 96)
     let epx = ByteBuffer.allocate(128 * 96 * 4)
     let erc = 0
@@ -60,6 +66,7 @@ fn Main(): Int {
     print("round center:", pixelAt(epx, 20, 20), "corner:", pixelAt(epx, 11, 11))
     print("moved:", pixelAt(epx, 55, 5), "origin:", pixelAt(epx, 5, 5))
     print("image:", pixelAt(epx, 105, 55))
+    print("poly center:", pixelAt(epx, 95, 25), "outside:", pixelAt(epx, 60, 60))
     unsafe {
         print("abi:", cpuAbiVersion())
     }
