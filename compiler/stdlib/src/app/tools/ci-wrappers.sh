@@ -70,7 +70,7 @@ run_probe() {
     done
 }
 
-run_probe wgpu "rgba: 10 20 30 255" "center: 25 204 102 255"
+run_probe wgpu "rgba: 10 20 30 255" "center: 51 204 102 255"
 run_probe parley "hello 16:" "clusters:"
 run_probe taffy "rc: 0" "node 0 xywh: 0.0 0.0 120.0 78.0"
 run_probe cpu "rc: 0" "corner: 20,22,26,255" "heading ink: true" "round center: 200,50,50,255" "moved: 50,200,50,255" "image: 255,0,0,255"
