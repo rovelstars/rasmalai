@@ -173,16 +173,14 @@ let i = 0
 while i < v.count {
     let row = b.listItem("Item " + (v.first + i).toString(), () => {})
     row.fixedHeight(30)
-    if i == 0 {
-        row.offsetY(v.offset)
-    }
     v.node.addChild(row)
     i += 1
 }
 ```
 
-The list keeps its scroll offset on the keyed node, and `scrollAt` handles the
-wheel. Only the rows in view exist, so a 10,000-row list holds about ten nodes.
+The list keeps its scroll offset on the keyed node, snaps to row boundaries,
+and `scrollAt` handles the wheel. Only the rows in view exist, so a 10,000-row
+list holds about ten nodes.
 
 Text editing uses the `TextEngine` for grapheme boundaries. Typing, Backspace,
 Delete, arrows, Home, and End work without a native text service; the window
