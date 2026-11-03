@@ -1,4 +1,4 @@
-import { App, Surface } from "@std/app"
+import { App, Renderer, Surface } from "@std/app"
 import { Env } from "@std/env"
 import { Build, Node } from "@std/ui"
 
@@ -22,6 +22,9 @@ fn Main(): Int {
         root.addChild(b.text("Click the button. Tab and Enter work. Escape closes."))
         return root
     })
+    if Env.get("RUNIX_GL") != "" {
+        app.setRenderer(Renderer.gles)
+    }
     if Env.get("RUNIX_HEADLESS") != "" {
         let f = app.frame()
         let s = new Surface(520, 360, f.list)

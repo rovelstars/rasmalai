@@ -22,13 +22,26 @@ import {
     fn host_event_a(h: Pointer<Byte>): Int as hostEventA,
     fn host_event_b(h: Pointer<Byte>): Int as hostEventB,
     fn host_height(h: Pointer<Byte>): Int as hostHeight,
-    fn host_open(title: Pointer<Byte>, titleLen: Int, width: Int, height: Int): Pointer<Byte> as hostOpen,
+    fn host_open(title: Pointer<Byte>, titleLen: Int, width: Int, height: Int, backend: Int): Pointer<Byte> as hostOpen,
     fn host_present(h: Pointer<Byte>, list: Pointer<Byte>, len: Int, damage: Pointer<Int>, count: Int): Int as hostPresent,
     fn host_pump(h: Pointer<Byte>): Int as hostPump,
     fn host_render_offscreen(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as hostRenderOffscreen,
     fn host_wait(h: Pointer<Byte>): Int as hostWait,
     fn host_width(h: Pointer<Byte>): Int as hostWidth,
 } from native "host_cabi"
+
+/** The GPU backend an app asks for. Auto prefers Vulkan and falls back to GL. */
+pub enum Renderer {
+    auto,
+    vulkan,
+    gles,
+}
+
+fn rendererId(r: Renderer): Int {
+    if r == Renderer.vulkan { return 1 }
+    if r == Renderer.gles { return 2 }
+    return 0
+}
 
 pub fn abiVersion(): Int {
     return 3
@@ -195,16 +208,33 @@ pub class App {
     let rootTree: Tree
     let frames: Int = 0
     let status: Int = 0
+    let rendererChoice: Renderer
 
     init(w: Window, th: Theme, v: fn(Build): Node) {
         this.window = w
         this.theme = th
         this.view = v
         this.rootTree = new Tree()
+        this.rendererChoice = Renderer.auto
     }
 
     static launch(title: String, width: Int, height: Int, view: fn(Build): Node): App {
         return new App(new Window(title, width, height), Theme.dark(), view)
+    }
+
+    static launchWith(r: Renderer, title: String, width: Int, height: Int, view: fn(Build): Node): App {
+        let app = new App(new Window(title, width, height), Theme.dark(), view)
+        app.rendererChoice = r
+        return app
+    }
+
+    /** Change the backend before the first GPU call. One backend per process. */
+    pub fn setRenderer(r: Renderer) {
+        this.rendererChoice = r
+    }
+
+    pub fn renderer(): Renderer {
+        return this.rendererChoice
     }
 
     /** Build the tree, lay it out, and encode the frame. */
@@ -288,6 +318,7 @@ pub class App {
                 title.length(),
                 this.window.width,
                 this.window.height,
+                rendererId(this.rendererChoice),
             )
             if hostWidth(host) < 0 {
                 return -1

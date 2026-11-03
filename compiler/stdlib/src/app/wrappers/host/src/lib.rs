@@ -5,7 +5,8 @@ use std::slice;
 use std::sync::{Mutex, OnceLock};
 
 use raw_window_handle::{
-    RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+    DisplayHandle, HandleError, HasDisplayHandle, RawDisplayHandle, RawWindowHandle,
+    WaylandDisplayHandle, WaylandWindowHandle,
 };
 use vello::peniko::Color;
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions};
@@ -40,40 +41,99 @@ struct GpuCore {
 
 static CORE: OnceLock<Option<GpuCore>> = OnceLock::new();
 
-fn core() -> Option<&'static GpuCore> {
-    CORE.get_or_init(|| {
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        descriptor.backends = wgpu::Backends::VULKAN;
-        let instance = wgpu::Instance::new(descriptor);
-        let adapter = match pollster::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-        ) {
-            Ok(adapter) => adapter,
-            Err(_) => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                force_fallback_adapter: true,
-                ..Default::default()
-            }))
-            .ok()?,
+#[derive(Debug)]
+struct RawDisplay(RawDisplayHandle);
+
+// The raw display is the live wl_display behind the Host connection.
+unsafe impl Send for RawDisplay {}
+unsafe impl Sync for RawDisplay {}
+
+impl HasDisplayHandle for RawDisplay {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+        Ok(unsafe { DisplayHandle::borrow_raw(self.0) })
+    }
+}
+
+fn candidates(choice: i32) -> Vec<wgpu::Backends> {
+    match choice {
+        1 => vec![wgpu::Backends::VULKAN],
+        2 => vec![wgpu::Backends::GL],
+        _ => vec![wgpu::Backends::VULKAN, wgpu::Backends::GL],
+    }
+}
+
+fn open_resources(
+    choice: i32,
+    handles: Option<(RawDisplayHandle, RawWindowHandle)>,
+) -> Option<(GpuCore, Option<wgpu::Surface<'static>>)> {
+    for backend in candidates(choice) {
+        let mut descriptor = match handles {
+            Some((display, _)) => {
+                wgpu::InstanceDescriptor::new_with_display_handle(Box::new(RawDisplay(display)))
+            }
+            None => wgpu::InstanceDescriptor::new_without_display_handle(),
         };
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
-        let renderer = Renderer::new(
+        descriptor.backends = backend;
+        let instance = wgpu::Instance::new(descriptor);
+        let surface = handles.and_then(|(display, window)| {
+            let created: Result<wgpu::Surface<'static>, _> = unsafe {
+                instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                    raw_display_handle: Some(display),
+                    raw_window_handle: window,
+                })
+            };
+            created.ok()
+        });
+        if handles.is_some() && surface.is_none() {
+            continue;
+        }
+        let adapter_options = wgpu::RequestAdapterOptions {
+            compatible_surface: surface.as_ref(),
+            ..Default::default()
+        };
+        let adapter = match pollster::block_on(instance.request_adapter(&adapter_options)) {
+            Ok(adapter) => adapter,
+            Err(_) => {
+                match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    force_fallback_adapter: true,
+                    ..adapter_options
+                })) {
+                    Ok(adapter) => adapter,
+                    Err(_) => continue,
+                }
+            }
+        };
+        let Ok((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+        else {
+            continue;
+        };
+        let Ok(renderer) = Renderer::new(
             &device,
             RendererOptions {
                 antialiasing_support: vello::AaSupport::area_only(),
                 ..Default::default()
             },
-        )
-        .ok()?;
-        Some(GpuCore {
-            instance,
-            adapter,
-            device,
-            queue,
-            renderer: Mutex::new(renderer),
-        })
-    })
-    .as_ref()
+        ) else {
+            continue;
+        };
+        return Some((
+            GpuCore {
+                instance,
+                adapter,
+                device,
+                queue,
+                renderer: Mutex::new(renderer),
+            },
+            surface,
+        ));
+    }
+    None
+}
+
+fn core(choice: i32) -> Option<&'static GpuCore> {
+    CORE.get_or_init(|| open_resources(choice, None).map(|(core, _)| core))
+        .as_ref()
 }
 
 fn make_target(
@@ -102,6 +162,7 @@ fn make_target(
 }
 
 struct Gpu {
+    resources: GpuCore,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     target: wgpu::Texture,
@@ -113,6 +174,7 @@ struct State {
     // The GPU surface must drop before the Wayland connection closes, or the
     // Vulkan swapchain teardown calls into a dead wl_display.
     gpu: Option<Gpu>,
+    backend: i32,
     _compositor: wl_compositor::WlCompositor,
     _wm_base: xdg_wm_base::XdgWmBase,
     surface: wl_surface::WlSurface,
@@ -147,9 +209,6 @@ impl State {
         if self.gpu.is_some() {
             return true;
         }
-        let Some(core) = core() else {
-            return false;
-        };
         let Some(display) = NonNull::new(self.conn.backend().display_ptr() as *mut c_void) else {
             return false;
         };
@@ -158,17 +217,12 @@ impl State {
         };
         let raw_display = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(display));
         let raw_window = RawWindowHandle::Wayland(WaylandWindowHandle::new(window));
-        let created: Result<wgpu::Surface<'static>, _> = unsafe {
-            core.instance
-                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                    raw_display_handle: Some(raw_display),
-                    raw_window_handle: raw_window,
-                })
-        };
-        let Ok(surface) = created else {
+        let Some((resources, Some(surface))) =
+            open_resources(self.backend, Some((raw_display, raw_window)))
+        else {
             return false;
         };
-        let caps = surface.get_capabilities(&core.adapter);
+        let caps = surface.get_capabilities(&resources.adapter);
         let format = caps
             .formats
             .iter()
@@ -191,10 +245,7 @@ impl State {
             height,
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 1,
-            alpha_mode: if caps
-                .alpha_modes
-                .contains(&wgpu::CompositeAlphaMode::Opaque)
-            {
+            alpha_mode: if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
                 wgpu::CompositeAlphaMode::Opaque
             } else {
                 caps.alpha_modes
@@ -204,10 +255,11 @@ impl State {
             },
             view_formats: vec![],
         };
-        surface.configure(&core.device, &config);
-        let (target, target_view) = make_target(&core.device, width, height);
-        let blitter = wgpu::util::TextureBlitter::new(&core.device, format);
+        surface.configure(&resources.device, &config);
+        let (target, target_view) = make_target(&resources.device, width, height);
+        let blitter = wgpu::util::TextureBlitter::new(&resources.device, format);
         self.gpu = Some(Gpu {
+            resources,
             surface,
             config,
             target,
@@ -218,16 +270,14 @@ impl State {
     }
 
     fn resize_gpu(&mut self) {
-        let Some(core) = core() else {
-            return;
-        };
         let Some(gpu) = &mut self.gpu else {
             return;
         };
         gpu.config.width = self.width.max(1);
         gpu.config.height = self.height.max(1);
-        gpu.surface.configure(&core.device, &gpu.config);
-        let (target, view) = make_target(&core.device, gpu.config.width, gpu.config.height);
+        gpu.surface.configure(&gpu.resources.device, &gpu.config);
+        let (target, view) =
+            make_target(&gpu.resources.device, gpu.config.width, gpu.config.height);
         gpu.target = target;
         gpu.target_view = view;
     }
@@ -252,9 +302,6 @@ impl State {
             Err(code) => return code,
         };
         let parsed = started.elapsed();
-        let Some(core) = core() else {
-            return -3;
-        };
         let Some(gpu) = self.gpu.as_ref() else {
             return -3;
         };
@@ -263,7 +310,7 @@ impl State {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated => {
-                gpu.surface.configure(&core.device, &gpu.config);
+                gpu.surface.configure(&gpu.resources.device, &gpu.config);
                 return -4;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
@@ -284,22 +331,30 @@ impl State {
             height: gpu.config.height,
             antialiasing_method: AaConfig::Area,
         };
-        if core
+        if gpu
+            .resources
             .renderer
             .lock()
             .unwrap()
-            .render_to_texture(&core.device, &core.queue, &scene, &gpu.target_view, &params)
+            .render_to_texture(
+                &gpu.resources.device,
+                &gpu.resources.queue,
+                &scene,
+                &gpu.target_view,
+                &params,
+            )
             .is_err()
         {
             return -5;
         }
-        let mut encoder = core
+        let mut encoder = gpu
+            .resources
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         gpu.blitter
-            .copy(&core.device, &mut encoder, &gpu.target_view, &view);
-        core.queue.submit(Some(encoder.finish()));
-        core.queue.present(frame);
+            .copy(&gpu.resources.device, &mut encoder, &gpu.target_view, &view);
+        gpu.resources.queue.submit(Some(encoder.finish()));
+        gpu.resources.queue.present(frame);
         if std::env::var_os("RUNIX_TRACE").is_some() {
             eprintln!(
                 "present parse={:?} acquire={:?} total={:?}",
@@ -502,7 +557,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
     }
 }
 
-fn open(title: &str, width: u32, height: u32) -> Option<Host> {
+fn open(title: &str, width: u32, height: u32, backend: i32) -> Option<Host> {
     let conn = Connection::connect_to_env().ok()?;
     let (globals, queue) = registry_queue_init::<State>(&conn).ok()?;
     let qh = queue.handle();
@@ -533,6 +588,7 @@ fn open(title: &str, width: u32, height: u32) -> Option<Host> {
             pointer: None,
             keyboard: None,
             gpu: None,
+            backend,
             _compositor: compositor,
             _wm_base: wm_base,
             width,
@@ -565,6 +621,7 @@ pub extern "C" fn host_open(
     title_len: i32,
     width: i32,
     height: i32,
+    backend: i32,
 ) -> *mut c_void {
     if width <= 0 || height <= 0 {
         return std::ptr::null_mut();
@@ -575,7 +632,7 @@ pub extern "C" fn host_open(
         let bytes = unsafe { slice::from_raw_parts(title, title_len as usize) };
         String::from_utf8_lossy(bytes).into_owned()
     };
-    match open(&title, width as u32, height as u32) {
+    match open(&title, width as u32, height as u32, backend) {
         Some(host) => Box::into_raw(Box::new(host)) as *mut c_void,
         None => std::ptr::null_mut(),
     }
@@ -774,7 +831,7 @@ pub extern "C" fn host_render_offscreen(
         Ok(scene) => scene,
         Err(code) => return code,
     };
-    let Some(core) = core() else {
+    let Some(core) = core(0) else {
         return -3;
     };
     let (texture, view) = make_target(&core.device, w as u32, h as u32);

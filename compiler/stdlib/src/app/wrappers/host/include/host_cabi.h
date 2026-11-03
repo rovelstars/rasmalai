@@ -5,7 +5,7 @@
 
 typedef struct host_t* host;
 
-host host_open(const uint8_t* title, int32_t title_len, int32_t width, int32_t height);
+host host_open(const uint8_t* title, int32_t title_len, int32_t width, int32_t height, int32_t backend);
 int32_t host_pump(host h);
 int32_t host_wait(host h);
 int32_t host_event_a(host h);

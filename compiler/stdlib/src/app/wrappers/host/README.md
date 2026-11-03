@@ -19,9 +19,11 @@ Dependencies are pinned to `wayland-client` 0.31.15, `wayland-protocols`
 feature makes `wayland-client` use the system libwayland, which is required for
 the raw display pointer.
 
-wgpu is built Vulkan-only and Vello compiles Area AA only. That avoids loading
-Mesa's GL/gallium path for an app that only presents through Vulkan. The surface
-uses one frame of latency and an opaque alpha mode when the driver offers it.
+wgpu is built with Vulkan and GL support, but only the backend the app selects
+is instantiated. The default is Vulkan, so a Vulkan app never loads Mesa's
+GL/gallium path; `Renderer.gles` opts into GL. Vello compiles Area AA only. The
+surface uses one frame of latency and an opaque alpha mode when the driver
+offers it.
 
 Set `RUNIX_TRACE=1` to print display-list parse, surface acquire, and total
 present time for each frame to stderr.
