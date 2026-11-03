@@ -7,12 +7,13 @@ for dir in "$here"/wrappers/*/; do
     for header in "$dir"include/*.h; do
         [ -f "$header" ] || continue
         lib=$(basename "$header" .h)
-        mkdir -p "$dir"generated
+        out="$here/.rnx-cache/generated/$lib"
+        mkdir -p "$out"
         "$rnx" bindgen \
             --header "$header" \
             --native-lib "$lib" \
             --pkg-name "std-app" \
-            --out "$dir"generated \
+            --out "$out" \
             --case camel
     done
 done

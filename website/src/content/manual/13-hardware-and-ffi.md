@@ -68,6 +68,10 @@ fn bound(n: Int): Int {
 
 `rnx bindgen` reads C headers and writes `bindgen.rnx` plus `bindgen.oci.json` (the registry annotation set: kind, role, target, generator, upstream digest, title). The header parser is built in, with no clang needed, with fixed per-target preprocessor defines, so the same inputs produce byte-identical output on any machine. Only value-shaped surface emits: scalars, fixed-size POD pointers, strings, and opaque handles as `Pointer<Byte>`; each emitted function becomes an `unsafe fn` wrapper over a private native import (unsafe-by-construction, so hand wrappers own containment). Callback, `void*`, and variadic surface warns instead of emitting.
 
+The output is a build artifact. Keep it under `.rnx-cache/` or a `target/` directory and do not commit it. Non-source artifacts are OCI images, not repository files and not registry chunks (`requirements/15_REGISTRY.md` section 19), so publishing stages the generated tree as an image with `run.rasmalai.kind=bindings`. A wrapper that ships generated bindings declares its `artifacts` ref and the digest travels in the publish frame.
+
+An opaque C handle must be written as `typedef struct x_t* x;`. A `typedef void*` is skipped by the parser, which is easy to miss because the generator warns per function rather than failing the run.
+
 ```sh
 rnx bindgen --header /usr/include/sqlite3.h --native-lib sqlite3 \
     --pkg-name sqlite3 --out ./gen --include /usr/include
