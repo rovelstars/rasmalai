@@ -1,0 +1,67 @@
+import { ByteBuffer } from "@std/bytes"
+import { Build, DisplayList, Painter, Theme, Tree, rgba } from "@std/ui"
+import {
+    fn cpu_abi_version(): Int as cpuAbiVersion,
+    fn cpu_render(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as cpuRender,
+} from native "cpu_cabi"
+
+fn pixelAt(px: ByteBuffer, x: Int, y: Int): String {
+    let at = (y * 128 + x) * 4
+    return px.readUInt8(at).toString() + "," + px.readUInt8(at + 1).toString() + "," + px.readUInt8(at + 2).toString() + "," + px.readUInt8(at + 3).toString()
+}
+
+fn Main(): Int {
+    let t = new Tree()
+    let b = new Build(t)
+    let root = b.column() {
+        b.heading("Hi")
+        b.buttonInert("Save")
+    }
+    t.layout(root, 128)
+    let d = Painter.paint(t, 128, 96, Theme.dark())
+    let list = d.finish(128, 96)
+    let px = ByteBuffer.allocate(128 * 96 * 4)
+    let rc = 0
+    unsafe {
+        rc = cpuRender(128, 96, Pointer.fromAddress<Byte>(list.address()), list.length(), Pointer.fromAddress<Byte>(px.address()))
+    }
+    print("rc:", rc, "records:", d.recordCount(), "bytes:", list.length())
+    print("corner:", pixelAt(px, 2, 2))
+
+    let ink = false
+    let y = 16
+    while y < 46 {
+        let x = 16
+        while x < 100 {
+            let at = (y * 128 + x) * 4
+            if px.readUInt8(at) != 20 || px.readUInt8(at + 1) != 22 || px.readUInt8(at + 2) != 26 {
+                ink = true
+            }
+            x += 1
+        }
+        y += 1
+    }
+    print("heading ink:", ink)
+    let extra = DisplayList.createDefault()
+    extra.fillRect(rgba(20, 22, 26, 255), 0.0, 0.0, 128.0, 96.0)
+    extra.roundRect(rgba(200, 50, 50, 255), 10.0, 10.0, 20.0, 20.0, 8.0)
+    extra.pushTransform(1.0, 0.0, 0.0, 1.0, 50.0, 0.0)
+    extra.fillRect(rgba(50, 200, 50, 255), 0.0, 0.0, 10.0, 10.0)
+    extra.popTransform()
+    let png = ByteBuffer.fromArray([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0, 114, 182, 13, 36, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 132, 25, 96, 12, 0, 71, 202, 7, 249, 103, 89, 110, 183, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130])
+    extra.image(100.0, 50.0, 20.0, 20.0, png)
+    let elist = extra.finish(128, 96)
+    let epx = ByteBuffer.allocate(128 * 96 * 4)
+    let erc = 0
+    unsafe {
+        erc = cpuRender(128, 96, Pointer.fromAddress<Byte>(elist.address()), elist.length(), Pointer.fromAddress<Byte>(epx.address()))
+    }
+    print("extra rc:", erc)
+    print("round center:", pixelAt(epx, 20, 20), "corner:", pixelAt(epx, 11, 11))
+    print("moved:", pixelAt(epx, 55, 5), "origin:", pixelAt(epx, 5, 5))
+    print("image:", pixelAt(epx, 105, 55))
+    unsafe {
+        print("abi:", cpuAbiVersion())
+    }
+    return 0
+}

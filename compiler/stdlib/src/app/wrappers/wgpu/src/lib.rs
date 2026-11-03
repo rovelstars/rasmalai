@@ -24,7 +24,15 @@ fn fs() -> @location(0) vec4<f32> {
 fn open() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        {
+            Ok(adapter) => adapter,
+            Err(_) => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                force_fallback_adapter: true,
+                ..Default::default()
+            }))
+            .ok()?,
+        };
     let (device, queue) =
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
     Some((instance, device, queue))
@@ -151,13 +159,7 @@ fn readback(
     0
 }
 
-fn paint(
-    w: u32,
-    h: u32,
-    clear: wgpu::Color,
-    triangle: bool,
-    out: *mut u8,
-) -> i32 {
+fn paint(w: u32, h: u32, clear: wgpu::Color, triangle: bool, out: *mut u8) -> i32 {
     if out.is_null() || w == 0 || h == 0 {
         return -1;
     }
@@ -259,15 +261,7 @@ pub extern "C" fn wgpu_adapter_name(p: *mut c_void, index: i32, out: *mut u8, le
 }
 
 #[no_mangle]
-pub extern "C" fn wgpu_clear_rgba(
-    w: i32,
-    h: i32,
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-    out: *mut u8,
-) -> i32 {
+pub extern "C" fn wgpu_clear_rgba(w: i32, h: i32, r: u8, g: u8, b: u8, a: u8, out: *mut u8) -> i32 {
     if w <= 0 || h <= 0 {
         return -1;
     }

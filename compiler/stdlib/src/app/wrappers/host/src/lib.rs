@@ -1,0 +1,771 @@
+use std::collections::VecDeque;
+use std::ffi::c_void;
+use std::ptr::NonNull;
+use std::slice;
+use std::sync::{Mutex, OnceLock};
+
+use raw_window_handle::{
+    RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+};
+use vello::peniko::Color;
+use vello::{AaConfig, RenderParams, Renderer, RendererOptions};
+use wayland_client::{
+    delegate_noop,
+    globals::{registry_queue_init, GlobalListContents},
+    protocol::{wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_surface},
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
+};
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+
+const BTN_LEFT: u32 = 0x110;
+
+enum Event {
+    Close,
+    Resize(i32, i32),
+    PointerDown(i32, i32),
+    PointerUp(i32, i32),
+    PointerMove(i32, i32),
+    KeyDown(i32),
+    KeyUp(i32),
+    SurfaceLost,
+}
+
+struct GpuCore {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    renderer: Mutex<Renderer>,
+}
+
+static CORE: OnceLock<Option<GpuCore>> = OnceLock::new();
+
+fn core() -> Option<&'static GpuCore> {
+    CORE.get_or_init(|| {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = match pollster::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        ) {
+            Ok(adapter) => adapter,
+            Err(_) => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                force_fallback_adapter: true,
+                ..Default::default()
+            }))
+            .ok()?,
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+        let renderer = Renderer::new(&device, RendererOptions::default()).ok()?;
+        Some(GpuCore {
+            instance,
+            adapter,
+            device,
+            queue,
+            renderer: Mutex::new(renderer),
+        })
+    })
+    .as_ref()
+}
+
+fn make_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("host target"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+struct Gpu {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    target: wgpu::Texture,
+    target_view: wgpu::TextureView,
+    blitter: wgpu::util::TextureBlitter,
+}
+
+struct State {
+    // The GPU surface must drop before the Wayland connection closes, or the
+    // Vulkan swapchain teardown calls into a dead wl_display.
+    gpu: Option<Gpu>,
+    _compositor: wl_compositor::WlCompositor,
+    _wm_base: xdg_wm_base::XdgWmBase,
+    surface: wl_surface::WlSurface,
+    _xdg_surface: xdg_surface::XdgSurface,
+    _toplevel: xdg_toplevel::XdgToplevel,
+    _seat: Option<wl_seat::WlSeat>,
+    pointer: Option<wl_pointer::WlPointer>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    conn: Connection,
+    width: u32,
+    height: u32,
+    requested_width: u32,
+    requested_height: u32,
+    pending_width: u32,
+    pending_height: u32,
+    configured: bool,
+    closed: bool,
+    events: VecDeque<Event>,
+    pointer_x: f64,
+    pointer_y: f64,
+    last_a: i32,
+    last_b: i32,
+}
+
+struct Host {
+    queue: EventQueue<State>,
+    state: State,
+}
+
+impl State {
+    fn create_gpu(&mut self) -> bool {
+        if self.gpu.is_some() {
+            return true;
+        }
+        let Some(core) = core() else {
+            return false;
+        };
+        let Some(display) = NonNull::new(self.conn.backend().display_ptr() as *mut c_void) else {
+            return false;
+        };
+        let Some(window) = NonNull::new(self.surface.id().as_ptr() as *mut c_void) else {
+            return false;
+        };
+        let raw_display = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(display));
+        let raw_window = RawWindowHandle::Wayland(WaylandWindowHandle::new(window));
+        let created: Result<wgpu::Surface<'static>, _> = unsafe {
+            core.instance
+                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                    raw_display_handle: Some(raw_display),
+                    raw_window_handle: raw_window,
+                })
+        };
+        let Ok(surface) = created else {
+            return false;
+        };
+        let caps = surface.get_capabilities(&core.adapter);
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| {
+                matches!(
+                    f,
+                    wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+                )
+            })
+            .or_else(|| caps.formats.first().copied())
+            .unwrap_or(wgpu::TextureFormat::Bgra8Unorm);
+        let width = self.width.max(1);
+        let height = self.height.max(1);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            width,
+            height,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: caps
+                .alpha_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::CompositeAlphaMode::Auto),
+            view_formats: vec![],
+        };
+        surface.configure(&core.device, &config);
+        let (target, target_view) = make_target(&core.device, width, height);
+        let blitter = wgpu::util::TextureBlitter::new(&core.device, format);
+        self.gpu = Some(Gpu {
+            surface,
+            config,
+            target,
+            target_view,
+            blitter,
+        });
+        true
+    }
+
+    fn resize_gpu(&mut self) {
+        let Some(core) = core() else {
+            return;
+        };
+        let Some(gpu) = &mut self.gpu else {
+            return;
+        };
+        gpu.config.width = self.width.max(1);
+        gpu.config.height = self.height.max(1);
+        gpu.surface.configure(&core.device, &gpu.config);
+        let (target, view) = make_target(&core.device, gpu.config.width, gpu.config.height);
+        gpu.target = target;
+        gpu.target_view = view;
+    }
+
+    fn rebuild(&mut self) {
+        self.gpu = None;
+        if self.create_gpu() {
+            self.events.push_back(Event::SurfaceLost);
+        }
+    }
+
+    fn present(&mut self, bytes: &[u8]) -> i32 {
+        if !self.configured {
+            return -2;
+        }
+        if self.gpu.is_none() && !self.create_gpu() {
+            return -3;
+        }
+        let scene = match scene::from_list(bytes) {
+            Ok(scene) => scene,
+            Err(code) => return code,
+        };
+        let Some(core) = core() else {
+            return -3;
+        };
+        let Some(gpu) = self.gpu.as_ref() else {
+            return -3;
+        };
+        let frame = match gpu.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                gpu.surface.configure(&core.device, &gpu.config);
+                return -4;
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                self.rebuild();
+                return -4;
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return 1;
+            }
+            wgpu::CurrentSurfaceTexture::Validation => return -4,
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let params = RenderParams {
+            base_color: Color::TRANSPARENT,
+            width: gpu.config.width,
+            height: gpu.config.height,
+            antialiasing_method: AaConfig::Area,
+        };
+        if core
+            .renderer
+            .lock()
+            .unwrap()
+            .render_to_texture(&core.device, &core.queue, &scene, &gpu.target_view, &params)
+            .is_err()
+        {
+            return -5;
+        }
+        let mut encoder = core
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        gpu.blitter
+            .copy(&core.device, &mut encoder, &gpu.target_view, &view);
+        core.queue.submit(Some(encoder.finish()));
+        core.queue.present(frame);
+        0
+    }
+}
+
+impl Host {
+    fn pump_blocking(&mut self) {
+        let Host { queue, state } = self;
+        let _ = queue.blocking_dispatch(state);
+    }
+}
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
+    fn event(
+        _: &mut Self,
+        _: &wl_registry::WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+delegate_noop!(State: ignore wl_compositor::WlCompositor);
+delegate_noop!(State: ignore wl_surface::WlSurface);
+
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for State {
+    fn event(
+        _: &mut Self,
+        wm_base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            wm_base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, ()> for State {
+    fn event(
+        state: &mut Self,
+        xdg_surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            xdg_surface.ack_configure(serial);
+            state.width = state.pending_width.max(1);
+            state.height = state.pending_height.max(1);
+            state.configured = true;
+            if state.gpu.is_some() {
+                state.resize_gpu();
+            } else {
+                state.create_gpu();
+            }
+            state
+                .events
+                .push_back(Event::Resize(state.width as i32, state.height as i32));
+        }
+    }
+}
+
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            xdg_toplevel::Event::Configure { width, height, .. } => {
+                state.pending_width = if width > 0 {
+                    width as u32
+                } else {
+                    state.requested_width
+                };
+                state.pending_height = if height > 0 {
+                    height as u32
+                } else {
+                    state.requested_height
+                };
+            }
+            xdg_toplevel::Event::Close => {
+                state.closed = true;
+                state.events.push_back(Event::Close);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for State {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(caps),
+        } = event
+        {
+            if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
+                state.pointer = Some(seat.get_pointer(qh, ()));
+            }
+            if caps.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
+                state.keyboard = Some(seat.get_keyboard(qh, ()));
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter {
+                surface_x,
+                surface_y,
+                ..
+            }
+            | wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer_x = surface_x;
+                state.pointer_y = surface_y;
+                state
+                    .events
+                    .push_back(Event::PointerMove(surface_x as i32, surface_y as i32));
+            }
+            wl_pointer::Event::Button {
+                button,
+                state: WEnum::Value(wl_pointer::ButtonState::Pressed),
+                ..
+            } if button == BTN_LEFT => {
+                state.events.push_back(Event::PointerDown(
+                    state.pointer_x as i32,
+                    state.pointer_y as i32,
+                ));
+            }
+            wl_pointer::Event::Button {
+                button,
+                state: WEnum::Value(wl_pointer::ButtonState::Released),
+                ..
+            } if button == BTN_LEFT => {
+                state.events.push_back(Event::PointerUp(0, 0));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_keyboard::Event::Key {
+            key,
+            state: WEnum::Value(key_state),
+            ..
+        } = event
+        {
+            let code = key as i32;
+            match key_state {
+                wl_keyboard::KeyState::Pressed => state.events.push_back(Event::KeyDown(code)),
+                wl_keyboard::KeyState::Released => state.events.push_back(Event::KeyUp(code)),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn open(title: &str, width: u32, height: u32) -> Option<Host> {
+    let conn = Connection::connect_to_env().ok()?;
+    let (globals, queue) = registry_queue_init::<State>(&conn).ok()?;
+    let qh = queue.handle();
+    let compositor = globals
+        .bind::<wl_compositor::WlCompositor, State, ()>(&qh, 4..=6, ())
+        .ok()?;
+    let wm_base = globals
+        .bind::<xdg_wm_base::XdgWmBase, State, ()>(&qh, 1..=6, ())
+        .ok()?;
+    let seat = globals
+        .bind::<wl_seat::WlSeat, State, ()>(&qh, 1..=9, ())
+        .ok();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg_surface.get_toplevel(&qh, ());
+    toplevel.set_title(title.to_string());
+    toplevel.set_app_id("dev.runix.app".to_string());
+    surface.commit();
+
+    let mut host = Host {
+        queue,
+        state: State {
+            conn,
+            surface,
+            _xdg_surface: xdg_surface,
+            _toplevel: toplevel,
+            _seat: seat,
+            pointer: None,
+            keyboard: None,
+            gpu: None,
+            _compositor: compositor,
+            _wm_base: wm_base,
+            width,
+            height,
+            requested_width: width,
+            requested_height: height,
+            pending_width: width,
+            pending_height: height,
+            configured: false,
+            closed: false,
+            events: VecDeque::new(),
+            pointer_x: 0.0,
+            pointer_y: 0.0,
+            last_a: 0,
+            last_b: 0,
+        },
+    };
+    while !host.state.configured && !host.state.closed {
+        host.pump_blocking();
+    }
+    if host.state.closed {
+        return None;
+    }
+    Some(host)
+}
+
+#[no_mangle]
+pub extern "C" fn host_open(
+    title: *const u8,
+    title_len: i32,
+    width: i32,
+    height: i32,
+) -> *mut c_void {
+    if width <= 0 || height <= 0 {
+        return std::ptr::null_mut();
+    }
+    let title = if title.is_null() || title_len <= 0 {
+        "runix app".to_string()
+    } else {
+        let bytes = unsafe { slice::from_raw_parts(title, title_len as usize) };
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    match open(&title, width as u32, height as u32) {
+        Some(host) => Box::into_raw(Box::new(host)) as *mut c_void,
+        None => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn host_pump(handle: *mut c_void) -> i32 {
+    let Some(host) = (unsafe { (handle as *mut Host).as_mut() }) else {
+        return -1;
+    };
+    loop {
+        if let Some(event) = host.state.events.pop_front() {
+            if matches!(
+                event,
+                Event::PointerMove(..) | Event::PointerUp(..) | Event::KeyUp(_)
+            ) {
+                continue;
+            }
+            let (code, a, b) = match event {
+                Event::Close => (1, 0, 0),
+                Event::Resize(w, h) => (2, w, h),
+                Event::PointerDown(x, y) => (3, x, y),
+                Event::PointerUp(x, y) => (4, x, y),
+                Event::PointerMove(x, y) => (5, x, y),
+                Event::KeyDown(k) => (6, k, 0),
+                Event::KeyUp(k) => (7, k, 0),
+                Event::SurfaceLost => (8, 0, 0),
+            };
+            host.state.last_a = a;
+            host.state.last_b = b;
+            return code;
+        }
+        if host.state.closed {
+            return 1;
+        }
+        host.pump_blocking();
+    }
+}
+
+/// Wait until the previously presented buffer is free for reuse.
+///
+/// The Wayland swapchain already paces acquisition, so this is a no-op here.
+/// An Epiclese host blocks on frame_done instead.
+#[no_mangle]
+pub extern "C" fn host_wait(handle: *mut c_void) -> i32 {
+    if unsafe { (handle as *mut Host).as_ref() }.is_none() {
+        return -1;
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn host_event_a(handle: *mut c_void) -> i32 {
+    unsafe { (handle as *mut Host).as_ref() }
+        .map(|h| h.state.last_a)
+        .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn host_event_b(handle: *mut c_void) -> i32 {
+    unsafe { (handle as *mut Host).as_ref() }
+        .map(|h| h.state.last_b)
+        .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn host_width(handle: *mut c_void) -> i32 {
+    unsafe { (handle as *mut Host).as_ref() }
+        .map(|h| h.state.width as i32)
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub extern "C" fn host_height(handle: *mut c_void) -> i32 {
+    unsafe { (handle as *mut Host).as_ref() }
+        .map(|h| h.state.height as i32)
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub extern "C" fn host_present(
+    handle: *mut c_void,
+    list: *const u8,
+    len: i32,
+    damage: *const i32,
+    count: i32,
+) -> i32 {
+    let Some(host) = (unsafe { (handle as *mut Host).as_mut() }) else {
+        return -1;
+    };
+    if list.is_null() || len < 0 || count < 0 {
+        return -1;
+    }
+    if count > 0 && damage.is_null() {
+        return -1;
+    }
+    let bytes = unsafe { slice::from_raw_parts(list, len as usize) };
+    host.state.present(bytes)
+}
+
+#[no_mangle]
+pub extern "C" fn host_close(handle: *mut c_void) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(handle as *mut Host));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn host_abi_version() -> i32 {
+    1
+}
+
+fn readback(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    w: u32,
+    h: u32,
+    out: *mut u8,
+) -> i32 {
+    let unpadded = w * 4;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded = unpadded.div_ceil(align) * align;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: (padded as u64) * (h as u64),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(Some(encoder.finish()));
+
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |res| {
+        let _ = tx.send(res);
+    });
+    if device.poll(wgpu::PollType::wait_indefinitely()).is_err() {
+        return -7;
+    }
+    if rx.recv().is_err() {
+        return -8;
+    }
+    let data = match slice.get_mapped_range() {
+        Ok(d) => d,
+        Err(_) => return -9,
+    };
+    let dst = unsafe { slice::from_raw_parts_mut(out, (w * h * 4) as usize) };
+    for row in 0..h as usize {
+        let src = &data[row * padded as usize..row * padded as usize + unpadded as usize];
+        let at = row * unpadded as usize;
+        dst[at..at + unpadded as usize].copy_from_slice(src);
+    }
+    drop(data);
+    buffer.unmap();
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn host_render_offscreen(
+    w: i32,
+    h: i32,
+    list: *const u8,
+    len: i32,
+    out: *mut u8,
+) -> i32 {
+    if w <= 0 || h <= 0 || list.is_null() || out.is_null() || len < 0 {
+        return -1;
+    }
+    let bytes = unsafe { slice::from_raw_parts(list, len as usize) };
+    let scene = match scene::from_list(bytes) {
+        Ok(scene) => scene,
+        Err(code) => return code,
+    };
+    let Some(core) = core() else {
+        return -3;
+    };
+    let (texture, view) = make_target(&core.device, w as u32, h as u32);
+    let params = RenderParams {
+        base_color: Color::TRANSPARENT,
+        width: w as u32,
+        height: h as u32,
+        antialiasing_method: AaConfig::Area,
+    };
+    if core
+        .renderer
+        .lock()
+        .unwrap()
+        .render_to_texture(&core.device, &core.queue, &scene, &view, &params)
+        .is_err()
+    {
+        return -5;
+    }
+    readback(&core.device, &core.queue, &texture, w as u32, h as u32, out)
+}

@@ -1,0 +1,15 @@
+[package]
+name = "scene"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "scene"
+crate-type = ["rlib"]
+
+[dependencies]
+vello = "0.11"
+parley = "0.12"
+png = "0.18"
+
+[workspace]

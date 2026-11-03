@@ -1,0 +1,38 @@
+import { App, measureText } from "@std/app"
+import { Build, Node } from "@std/ui"
+
+fn Main(): Int {
+    let app = App.launch("Settings", 320, 240, (b: Build): Node => {
+        let root = b.column()
+        root.addChild(b.heading("Appearance"))
+        root.addChild(b.text("Choose how runixOS looks and moves."))
+        let theme = b.section("Theme")
+        theme.addChild(b.buttonInert("System"))
+        theme.addChild(b.buttonInert("Light"))
+        root.addChild(theme)
+        root.addChild(b.checkbox("Reduce motion", false, () => {}))
+        return root
+    })
+    let frame = app.frame()
+    print("records:", frame.records(), "bytes:", frame.bytes())
+    print("text width:", measureText("Appearance", 20.0))
+    let surface = app.draw(frame)
+    print("status:", app.lastStatus(), "pixels:", surface.pixels.length())
+    print("corner:", surface.rgbaAt(2, 2))
+    print(surface.describe())
+
+    let ink = false
+    let y = 16
+    while y < 46 {
+        let x = 16
+        while x < 140 {
+            if surface.rgbaAt(x, y) != "20,22,26,255" {
+                ink = true
+            }
+            x += 1
+        }
+        y += 1
+    }
+    print("heading ink:", ink)
+    return 0
+}

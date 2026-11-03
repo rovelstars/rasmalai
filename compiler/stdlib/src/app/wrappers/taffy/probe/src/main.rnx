@@ -1,7 +1,7 @@
 import { ByteBuffer } from "@std/bytes"
 import {
-    fn taffy_abi_version(): Int,
-    fn taffy_layout(nodes: Pointer<Byte>, count: Int, rootW: Float, rootH: Float, out: Pointer<Byte>): Int,
+    fn taffy_abi_version(): Int as taffyAbiVersion,
+    fn taffy_layout(nodes: Pointer<Byte>, count: Int, rootW: Float, rootH: Float, out: Pointer<Byte>): Int as taffyLayout,
 } from native "taffy_cabi"
 
 fn put(b: ByteBuffer, i: Int, parent: Int, kind: Int, w: Float, h: Float, pad: Float, gap: Float) {
@@ -22,7 +22,7 @@ fn Main(): Int {
     let out = ByteBuffer.allocate(3 * 32)
     let rc = 0
     unsafe {
-        rc = taffy_layout(Pointer.fromAddress<Byte>(nodes.address()), 3, 640.0, 480.0, Pointer.fromAddress<Byte>(out.address()))
+        rc = taffyLayout(Pointer.fromAddress<Byte>(nodes.address()), 3, 640.0, 480.0, Pointer.fromAddress<Byte>(out.address()))
     }
     print("rc:", rc)
     let i = 0
@@ -32,7 +32,7 @@ fn Main(): Int {
         i += 1
     }
     unsafe {
-        print("abi:", taffy_abi_version())
+        print("abi:", taffyAbiVersion())
     }
     return 0
 }

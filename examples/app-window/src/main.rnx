@@ -1,0 +1,31 @@
+import { App } from "@std/app"
+import { Env } from "@std/env"
+import { Build, Node } from "@std/ui"
+
+class State {
+    let count: Int = 0
+    let enabled: Bool = true
+}
+
+fn Main(): Int {
+    let state = new State()
+    let app = App.launch("runix window", 520, 360, (b: Build): Node => {
+        let root = b.column()
+        root.addChild(b.heading("runixOS"))
+        root.addChild(b.text("Wayland xdg-shell, a wgpu surface, vello rendering."))
+        root.addChild(b.button("Count " + state.count.toString(), () => {
+            state.count += 1
+        }))
+        root.addChild(b.checkbox("Enabled", state.enabled, () => {
+            state.enabled = !state.enabled
+        }))
+        root.addChild(b.text("Click the button. Tab and Enter work. Escape closes."))
+        return root
+    })
+    if Env.get("RUNIX_SMOKE") != "" {
+        let rc = app.showFor(3)
+        print("smoke:", rc)
+        return rc
+    }
+    return app.show()
+}

@@ -1,9 +1,361 @@
 //! The app framework.
 //!
 //! Windows, GPU, and text live behind wrappers in `wrappers/`. Each wrapper is
-//! a Rust crate with a hand-written C header; `rnx task bindgen` regenerates the
-//! Rasmalai imports from those headers, and this package consumes them.
+//! a Rust crate with a hand-written C header; `rnx task wrappers` regenerates
+//! the imports from those headers, and the curated surface below is what the
+//! runtime calls.
+//!
+//! An app owns its surface. `App.frame` builds a tree and encodes a display
+//! list; `App.tick` hands that list to the renderer and returns the pixels. No
+//! frame, damage, or present call reaches app code.
+
+import { ByteBuffer } from "@std/bytes"
+import { Build, Damage, Display, Key, Node, Painter, Theme, Tree, rgba } from "@std/ui"
+import { fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float as parleyMeasure } from native "parley_cabi"
+import {
+    fn cpu_abi_version(): Int as cpuAbiVersion,
+    fn cpu_render(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as cpuRender,
+} from native "cpu_cabi"
+import {
+    fn host_abi_version(): Int as hostAbiVersion,
+    fn host_close(h: Pointer<Byte>) as hostClose,
+    fn host_event_a(h: Pointer<Byte>): Int as hostEventA,
+    fn host_event_b(h: Pointer<Byte>): Int as hostEventB,
+    fn host_height(h: Pointer<Byte>): Int as hostHeight,
+    fn host_open(title: Pointer<Byte>, titleLen: Int, width: Int, height: Int): Pointer<Byte> as hostOpen,
+    fn host_present(h: Pointer<Byte>, list: Pointer<Byte>, len: Int, damage: Pointer<Int>, count: Int): Int as hostPresent,
+    fn host_pump(h: Pointer<Byte>): Int as hostPump,
+    fn host_render_offscreen(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as hostRenderOffscreen,
+    fn host_wait(h: Pointer<Byte>): Int as hostWait,
+    fn host_width(h: Pointer<Byte>): Int as hostWidth,
+} from native "host_cabi"
 
 pub fn abiVersion(): Int {
-    return 1
+    return 3
+}
+
+pub fn rendererVersion(): Int {
+    let v = 0
+    unsafe {
+        v = hostAbiVersion()
+    }
+    return v
+}
+
+/** Width of shaped text at `size`, in device pixels. */
+pub fn measureText(s: String, size: Float): Float {
+    if s == "" {
+        return 0.0
+    }
+    let bytes = ByteBuffer.fromString(s)
+    let w = 0.0
+    unsafe {
+        w = parleyMeasure(Pointer.fromAddress<Byte>(bytes.address()), bytes.length(), size)
+    }
+    return w
+}
+
+/** The app's one window. On runixOS Epiclese owns the surface, not the app. */
+pub class Window {
+    let title: String
+    let width: Int
+    let height: Int
+
+    init(title: String, width: Int, height: Int) {
+        this.title = title
+        this.width = width
+        this.height = height
+    }
+}
+
+/** One encoded frame: the display list plus the semantic snapshot that made it. */
+pub class Frame {
+    let index: Int
+    let list: ByteBuffer
+    let snapshot: String
+    let damageList: Damage
+
+    init(index: Int, list: ByteBuffer, snapshot: String, damageList: Damage) {
+        this.index = index
+        this.list = list
+        this.snapshot = snapshot
+        this.damageList = damageList
+    }
+
+    pub fn damage(): Damage {
+        return this.damageList
+    }
+
+    pub fn records(): Int {
+        return this.list.readUInt32LE(8)
+    }
+
+    /** The display list in text form, for tests and the inspector. */
+    pub fn describe(): String {
+        return Display.textOf(this.list)
+    }
+
+    pub fn bytes(): Int {
+        return this.list.length()
+    }
+}
+
+/** RGBA8 pixels owned by the app, plus the list that produced them. */
+pub class Surface {
+    let width: Int
+    let height: Int
+    let pixels: ByteBuffer
+    let list: ByteBuffer
+    let usedBackend: Int = 0
+
+    init(width: Int, height: Int, list: ByteBuffer) {
+        this.width = width
+        this.height = height
+        this.pixels = ByteBuffer.allocate(width * height * 4)
+        this.list = list
+    }
+
+    /** Render on the GPU, falling back to the CPU when no device answers. */
+    pub fn draw(): Int {
+        let rc = 0
+        unsafe {
+            rc = hostRenderOffscreen(
+                this.width,
+                this.height,
+                Pointer.fromAddress<Byte>(this.list.address()),
+                this.list.length(),
+                Pointer.fromAddress<Byte>(this.pixels.address()),
+            )
+        }
+        if rc == -2 || rc == -3 || rc == -5 || rc == -7 || rc == -8 || rc == -9 {
+            rc = this.drawCpu()
+        } else if rc == 0 {
+            this.usedBackend = 1
+        }
+        return rc
+    }
+
+    /** Force the CPU renderer. Zero on success. */
+    pub fn drawCpu(): Int {
+        let rc = 0
+        unsafe {
+            rc = cpuRender(
+                this.width,
+                this.height,
+                Pointer.fromAddress<Byte>(this.list.address()),
+                this.list.length(),
+                Pointer.fromAddress<Byte>(this.pixels.address()),
+            )
+        }
+        if rc == 0 {
+            this.usedBackend = 2
+        }
+        return rc
+    }
+
+    /** 1 after a GPU draw, 2 after a CPU draw, 0 before any draw. */
+    pub fn backend(): Int {
+        return this.usedBackend
+    }
+
+    /** One pixel as `0xRRGGBBAA`. */
+    pub fn pixel(x: Int, y: Int): Int {
+        let at = (y * this.width + x) * 4
+        return rgba(
+            this.pixels.readUInt8(at),
+            this.pixels.readUInt8(at + 1),
+            this.pixels.readUInt8(at + 2),
+            this.pixels.readUInt8(at + 3),
+        )
+    }
+
+    pub fn records(): Int {
+        return this.list.readUInt32LE(8)
+    }
+
+    /** The display list in text form, for tests and the inspector. */
+    pub fn describe(): String {
+        return Display.textOf(this.list)
+    }
+
+    pub fn rgbaAt(x: Int, y: Int): String {
+        let at = (y * this.width + x) * 4
+        return this.pixels.readUInt8(at).toString() + "," + this.pixels.readUInt8(at + 1).toString() + "," + this.pixels.readUInt8(at + 2).toString() + "," + this.pixels.readUInt8(at + 3).toString()
+    }
+}
+
+/**
+ * An app: a window, a theme, and a view function. The view runs again on every
+ * frame, because the MVP tree is append-only and reconciliation is not here yet.
+ */
+pub class App {
+    let window: Window
+    let theme: Theme
+    let view: fn(Build): Node
+    let rootTree: Tree
+    let frames: Int = 0
+    let status: Int = 0
+
+    init(w: Window, th: Theme, v: fn(Build): Node) {
+        this.window = w
+        this.theme = th
+        this.view = v
+        this.rootTree = new Tree()
+    }
+
+    static launch(title: String, width: Int, height: Int, view: fn(Build): Node): App {
+        return new App(new Window(title, width, height), Theme.dark(), view)
+    }
+
+    /** Build the tree, lay it out, and encode the frame. */
+    pub fn frame(): Frame {
+        this.rootTree.beginFrame()
+        let b = new Build(this.rootTree)
+        let root = this.view(b)
+        this.rootTree.endFrame()
+        this.rootTree.layout(root, this.window.width)
+        this.frames += 1
+        let d = Painter.paint(this.rootTree, this.window.width, this.window.height, this.theme)
+        let list = d.finish(this.window.width, this.window.height)
+        return new Frame(this.frames, list, this.rootTree.snapshot(), d.damage())
+    }
+
+    /** Render an encoded frame into a new surface. */
+    pub fn draw(f: Frame): Surface {
+        let s = new Surface(this.window.width, this.window.height, f.list)
+        this.status = s.draw()
+        return s
+    }
+
+    /** Encode one frame and render it into a new surface. */
+    pub fn tick(): Surface {
+        return this.draw(this.frame())
+    }
+
+    pub fn tree(): Tree {
+        return this.rootTree
+    }
+
+    pub fn lastStatus(): Int {
+        return this.status
+    }
+
+    pub fn pointerDown(x: Int, y: Int): Bool {
+        return this.rootTree.pointerDown(x, y)
+    }
+
+    /** Route a key to the focused node, focusing the first control if none is. */
+    pub fn keyDown(k: Key): Bool {
+        let id = this.rootTree.focused()
+        if id < 0 {
+            id = this.rootTree.focusNext()
+        }
+        if id < 0 {
+            return false
+        }
+        return this.rootTree.keyDown(Node(tree: this.rootTree, id: id), k)
+    }
+
+    pub fn focusNext(): Int {
+        return this.rootTree.focusNext()
+    }
+
+    fn keyEvent(code: Int) {
+        if code == 9 {
+            this.keyDown(Key.escape)
+        } else if code == 36 {
+            this.keyDown(Key.enter)
+        } else if code == 65 {
+            this.keyDown(Key.space)
+        } else if code == 23 {
+            this.focusNext()
+        } else if code == 113 {
+            this.keyDown(Key.left)
+        } else if code == 114 {
+            this.keyDown(Key.right)
+        } else if code == 111 {
+            this.keyDown(Key.up)
+        } else if code == 116 {
+            this.keyDown(Key.down)
+        }
+    }
+
+    fn runHost(limit: Int): Int {
+        let title = ByteBuffer.fromString(this.window.title)
+        unsafe {
+            let host = hostOpen(
+                Pointer.fromAddress<Byte>(title.address()),
+                title.length(),
+                this.window.width,
+                this.window.height,
+            )
+            if hostWidth(host) < 0 {
+                return -1
+            }
+            let done = false
+            let count = 0
+            let status = 0
+            while !done {
+                hostWait(host)
+                let f = this.frame()
+                let dn = f.damage().count()
+                let dmg = ByteBuffer.allocate(dn * 16)
+                let di = 0
+                while di < dn {
+                    dmg.writeInt32LE(di * 16, f.damage().xAt(di))
+                    dmg.writeInt32LE(di * 16 + 4, f.damage().yAt(di))
+                    dmg.writeInt32LE(di * 16 + 8, f.damage().wAt(di))
+                    dmg.writeInt32LE(di * 16 + 12, f.damage().hAt(di))
+                    di += 1
+                }
+                let rc = hostPresent(
+                    host,
+                    Pointer.fromAddress<Byte>(f.list.address()),
+                    f.list.length(),
+                    Pointer.fromAddress<Int>(dmg.address()),
+                    dn,
+                )
+                if rc < 0 && rc != -4 {
+                    status = rc
+                    done = true
+                } else {
+                    if rc == 0 {
+                        count += 1
+                    }
+                    if limit > 0 && count >= limit {
+                        done = true
+                    } else {
+                        let ev = hostPump(host)
+                        if ev == 1 {
+                            done = true
+                        } else if ev == 2 || ev == 8 {
+                            this.window.width = hostWidth(host)
+                            this.window.height = hostHeight(host)
+                        } else if ev == 3 {
+                            this.pointerDown(hostEventA(host), hostEventB(host))
+                        } else if ev == 6 {
+                            let code = hostEventA(host)
+                            if code == 9 {
+                                done = true
+                            } else {
+                                this.keyEvent(code)
+                            }
+                        }
+                    }
+                }
+            }
+            hostClose(host)
+            return status
+        }
+    }
+
+    /** Open the window and render until it closes. */
+    pub fn show(): Int {
+        return this.runHost(-1)
+    }
+
+    /** Open the window, render `frames` frames, then close. For smoke tests. */
+    pub fn showFor(frames: Int): Int {
+        return this.runHost(frames)
+    }
 }
