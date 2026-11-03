@@ -1,5 +1,5 @@
 import { App, Renderer } from "@std/app"
-import { Build, Node } from "@std/ui"
+import { Build, Node, Role } from "@std/ui"
 import { Env } from "@std/env"
 import fs from "@std/fs"
 
@@ -62,9 +62,6 @@ fn view(b: Build, s: State): Node {
         }
         let r = b.listItem(label, () => { s.selected = idx })
         r.fixedHeight(30)
-        if i == 0 {
-            r.offsetY(v.offset)
-        }
         v.node.addChild(r)
         i += 1
     }
@@ -112,6 +109,12 @@ fn Main(): Int {
     }
     if Env.get("RUNIX_HEADLESS") != "" {
         let f = app.frame()
+        let scroll = Env.get("RUNIX_SCROLL")
+        if scroll != "" {
+            let lid = app.tree().find(Role.list, "Rows")
+            app.scrollAt(app.tree().x[lid] + 2, app.tree().y[lid] + 2, 47.0)
+            f = app.frame()
+        }
         if Env.get("RUNIX_WARM") != "" {
             let warm = 0
             while warm < 2 {

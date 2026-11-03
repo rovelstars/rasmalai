@@ -14,6 +14,11 @@ class SliderState {
     let v: Float = 0.25
 }
 
+class KitState {
+    let v: Float = 0.5
+    let selected: Int = -1
+}
+
 fn widestFillOf(list: ByteBuffer, color: Int): Int {
     let n = list.readUInt32LE(8)
     let i = 0
@@ -134,6 +139,60 @@ fn Main(): Int {
     }
     failed = check(runs >= 4, "paragraph wraps through parley: " + runs.toString(), failed)
     failed = check(pf.records() > 4, "wrapped frame has records", failed)
+
+    let kit = new KitState()
+    let kitApp = App.launch("Kit", 400, 360, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        root.addChild(b.sliderValue("Volume", kit.v, (v: Float) => { kit.v = v }))
+        root.addChild(b.heading("Rows"))
+        let v = b.virtualList("Rows", "rows", 1000, 30, 120)
+        root.addChild(v.node)
+        let i = 0
+        while i < v.count {
+            let idx = v.first + i
+            let r = b.listItem("row " + idx.toString(), () => { kit.selected = idx })
+            r.fixedHeight(30)
+            v.node.addChild(r)
+            i += 1
+        }
+        root.addChild(b.text("nodes " + b.handle().len().toString()))
+        return root
+    })
+    kitApp.frame()
+    let baseNodes = kitApp.tree().len()
+    let hovers = 0
+    while hovers < 10 {
+        kitApp.pointerMove(20 + hovers, 20)
+        kitApp.frame()
+        hovers += 1
+    }
+    failed = check(kitApp.tree().len() == baseNodes, "hover keeps the node count: " + baseNodes.toString() + " -> " + kitApp.tree().len().toString(), failed)
+    let slidKit = kitApp.tree().find(Role.slider, "Volume")
+    let drags = 0
+    kitApp.pointerDown(kitApp.tree().x[slidKit] + 10, kitApp.tree().y[slidKit] + 36)
+    while drags < 10 {
+        kitApp.pointerMove(kitApp.tree().x[slidKit] + 10 + drags * 4, kitApp.tree().y[slidKit] + 36)
+        kitApp.frame()
+        drags += 1
+    }
+    failed = check(kitApp.tree().len() == baseNodes, "slider drag keeps the node count: " + baseNodes.toString() + " -> " + kitApp.tree().len().toString(), failed)
+    let kitList = kitApp.tree().find(Role.list, "Rows")
+    let downs = 0
+    while downs < 30 {
+        kitApp.scrollAt(kitApp.tree().x[kitList] + 2, kitApp.tree().y[kitList] + 2, 45.0)
+        kitApp.frame()
+        downs += 1
+    }
+    let downNodes = kitApp.tree().len()
+    let ups = 0
+    while ups < 35 {
+        kitApp.scrollAt(kitApp.tree().x[kitList] + 2, kitApp.tree().y[kitList] + 2, 0.0 - 45.0)
+        kitApp.frame()
+        ups += 1
+    }
+    failed = check(kitApp.tree().snapshot().contains("row 0"), "scrolled back to the top", failed)
+    failed = check(kitApp.tree().len() < downNodes + 10, "scroll does not leak nodes: " + downNodes.toString() + " -> " + kitApp.tree().len().toString(), failed)
 
     let sliderState = new SliderState()
     let sliderApp = App.launch("Slider", 400, 200, (b: Build): Node => {
@@ -260,9 +319,6 @@ fn Main(): Int {
         while i < v.count {
             let r = b.listItem("row " + (v.first + i).toString(), () => {})
             r.fixedHeight(30)
-            if i == 0 {
-                r.offsetY(v.offset)
-            }
             v.node.addChild(r)
             i += 1
         }

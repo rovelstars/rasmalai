@@ -456,13 +456,11 @@ pub class VirtualRange {
     let node: Node
     let first: Int
     let count: Int
-    let offset: Float
 
-    init(node: Node, first: Int, count: Int, offset: Float) {
+    init(node: Node, first: Int, count: Int) {
         this.node = node
         this.first = first
         this.count = count
-        this.offset = offset
     }
 }
 
@@ -2308,8 +2306,7 @@ pub class Build {
         return new VirtualRange(
             node: list,
             first: first,
-            count: visible,
-            offset: Float(first * rowH) - scroll
+            count: visible
         )
     }
 
@@ -3525,9 +3522,6 @@ test fn virtualListBuildsOnlyVisibleRows() {
     while i < v.count {
         let r = b.listItem("row " + (v.first + i).toString(), () => {})
         r.fixedHeight(30)
-        if i == 0 {
-            r.offsetY(v.offset)
-        }
         v.node.addChild(r)
         i += 1
     }
@@ -3545,9 +3539,6 @@ test fn virtualListBuildsOnlyVisibleRows() {
     while j < v2.count {
         let r = b2.listItem("row " + (v2.first + j).toString(), () => {})
         r.fixedHeight(30)
-        if j == 0 {
-            r.offsetY(v2.offset)
-        }
         v2.node.addChild(r)
         j += 1
     }
@@ -3611,9 +3602,6 @@ test fn virtualListRecyclesAcrossScrolls() {
         while i < v.count {
             let r = b.listItem("row " + (v.first + i).toString(), () => {})
             r.fixedHeight(30)
-            if i == 0 {
-                r.offsetY(v.offset)
-            }
             v.node.addChild(r)
             i += 1
         }
@@ -3637,9 +3625,6 @@ test fn virtualListRecyclesAcrossScrolls() {
     while j < v2.count {
         let r = b2.listItem("row " + (v2.first + j).toString(), () => {})
         r.fixedHeight(30)
-        if j == 0 {
-            r.offsetY(v2.offset)
-        }
         v2.node.addChild(r)
         j += 1
     }

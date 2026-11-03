@@ -811,45 +811,51 @@ pub class App {
                     wait = 0
                 }
                 let ev = hostPumpTimeout(host, wait)
-                if ev == 1 {
-                    done = true
-                } else if ev == 2 {
-                    this.window.width = hostEventA(host)
-                    this.window.height = hostEventB(host)
-                    dirty = true
-                } else if ev == 8 {
-                    this.window.width = hostWidth(host)
-                    this.window.height = hostHeight(host)
-                    this.forceFull = true
-                    dirty = true
-                } else if ev == 3 {
-                    this.pointerX = hostEventA(host)
-                    this.pointerY = hostEventB(host)
-                    this.pointerDown(this.pointerX, this.pointerY)
-                    dirty = true
-                } else if ev == 4 {
-                    this.pointerUp(hostEventA(host), hostEventB(host))
-                    dirty = true
-                } else if ev == 5 {
-                    this.pointerX = hostEventA(host)
-                    this.pointerY = hostEventB(host)
-                    if this.pointerMove(this.pointerX, this.pointerY) {
-                        dirty = true
-                    }
-                } else if ev == 6 {
-                    let code = hostEventA(host)
-                    if code == 1 && this.rootTree.firstRole(Role.dialog) == -1 {
+                while ev != 0 && !done {
+                    if ev == 1 {
                         done = true
-                    } else {
-                        this.keyEvent(code, true)
+                    } else if ev == 2 {
+                        this.window.width = hostEventA(host)
+                        this.window.height = hostEventB(host)
                         dirty = true
-                    }
-                } else if ev == 7 {
-                    this.keyEvent(hostEventA(host), false)
-                } else if ev == 9 {
-                    if this.rootTree.scrollAt(this.pointerX, this.pointerY, Float(hostEventA(host)) * 40.0) {
+                    } else if ev == 8 {
+                        this.window.width = hostWidth(host)
+                        this.window.height = hostHeight(host)
+                        this.forceFull = true
                         dirty = true
+                    } else if ev == 3 {
+                        this.pointerX = hostEventA(host)
+                        this.pointerY = hostEventB(host)
+                        this.pointerDown(this.pointerX, this.pointerY)
+                        dirty = true
+                    } else if ev == 4 {
+                        this.pointerUp(hostEventA(host), hostEventB(host))
+                        dirty = true
+                    } else if ev == 5 {
+                        this.pointerX = hostEventA(host)
+                        this.pointerY = hostEventB(host)
+                        if this.pointerMove(this.pointerX, this.pointerY) {
+                            dirty = true
+                        }
+                    } else if ev == 6 {
+                        let code = hostEventA(host)
+                        if code == 1 && this.rootTree.firstRole(Role.dialog) == -1 {
+                            done = true
+                        } else {
+                            this.keyEvent(code, true)
+                            dirty = true
+                        }
+                    } else if ev == 7 {
+                        this.keyEvent(hostEventA(host), false)
+                    } else if ev == 9 {
+                        if this.rootTree.scrollAt(this.pointerX, this.pointerY, Float(hostEventA(host)) * 40.0) {
+                            dirty = true
+                        }
                     }
+                    if done {
+                        break
+                    }
+                    ev = hostPumpTimeout(host, 0)
                 }
             }
             hostClose(host)

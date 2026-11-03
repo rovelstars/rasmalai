@@ -209,9 +209,10 @@ default set beyond what the app binds.
 ## Virtual lists
 
 `b.virtualList(label, key, total, rowHeight, viewport)` creates a clipped list
-node and returns a `VirtualRange` with `first`, `count`, and `offset`. The caller
-builds only `count` rows and sets the first row's `offsetY` to the range offset.
-The scroll position lives on the keyed list node, so it survives rebuilds.
+node and returns a `VirtualRange` with `first` and `count`. The caller builds
+only `count` rows. Fixed-row lists snap to row boundaries, so the first row
+starts at the top of the viewport. The scroll position lives on the keyed list
+node, so it survives rebuilds.
 `scrollAt(x, y, dy)` scrolls the nearest scrollable ancestor under the point.
 Painting and hit testing respect clipping, so offscreen rows cost nothing.
 
