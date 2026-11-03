@@ -208,8 +208,8 @@ struct PassCtx<'a> {
 }
 
 impl PassCtx<'_> {
-    fn bump(&mut self, span: Span) {
-        self.node_count += 1;
+    fn add_nodes(&mut self, count: usize, span: Span) {
+        self.node_count += count;
         if self.node_count > NODE_CAP && !self.capped {
             self.capped = true;
             self.diags.push(
@@ -289,7 +289,7 @@ fn rewrite_decl_a(node: &mut A::Decl, ctx: &mut PassCtx) {
         }
         A::Decl::Fn(f) => rewrite_fn_a(f, ctx),
         A::Decl::Const { value, .. } => rewrite_expr_a(&mut value.node, value.span, ctx),
-        A::Decl::Stmt(s) => rewrite_stmt_a(&mut s.node, s.span, ctx),
+        A::Decl::Stmt(s) => rewrite_stmt_a(&mut s.node, ctx),
         _ => {}
     }
 }
@@ -317,15 +317,14 @@ fn rewrite_fn_a(f: &mut A::FnDecl, ctx: &mut PassCtx) {
 
 fn rewrite_block_a(block: &mut A::Block, ctx: &mut PassCtx) {
     for s in &mut block.stmts {
-        rewrite_stmt_a(&mut s.node, s.span, ctx);
+        rewrite_stmt_a(&mut s.node, ctx);
         if ctx.capped {
             return;
         }
     }
 }
 
-fn rewrite_stmt_a(stmt: &mut A::Stmt, span: Span, ctx: &mut PassCtx) {
-    ctx.bump(span);
+fn rewrite_stmt_a(stmt: &mut A::Stmt, ctx: &mut PassCtx) {
     if ctx.capped {
         return;
     }
@@ -370,12 +369,12 @@ fn rewrite_stmt_a(stmt: &mut A::Stmt, span: Span, ctx: &mut PassCtx) {
                     rewrite_expr_a(&mut g.node, g.span, ctx);
                 }
                 for s in &mut c.body {
-                    rewrite_stmt_a(&mut s.node, s.span, ctx);
+                    rewrite_stmt_a(&mut s.node, ctx);
                 }
             }
             if let Some(stmts) = default {
                 for s in stmts {
-                    rewrite_stmt_a(&mut s.node, s.span, ctx);
+                    rewrite_stmt_a(&mut s.node, ctx);
                 }
             }
         }
@@ -409,7 +408,6 @@ fn rewrite_stmt_a(stmt: &mut A::Stmt, span: Span, ctx: &mut PassCtx) {
 }
 
 fn rewrite_expr_a(expr: &mut A::Expr, span: Span, ctx: &mut PassCtx) {
-    ctx.bump(span);
     if ctx.capped {
         return;
     }
@@ -425,6 +423,7 @@ fn rewrite_expr_a(expr: &mut A::Expr, span: Span, ctx: &mut PassCtx) {
     };
     match expand_builtin_a(&name, &args, span, ctx.opts) {
         Ok(Some(new_expr)) => {
+            ctx.add_nodes(crate::semantic_tokens::expr_node_count(&new_expr), span);
             *expr = new_expr;
             ctx.changed = true;
         }
@@ -1609,8 +1608,8 @@ struct PhaseBCtx<'a> {
 }
 
 impl PhaseBCtx<'_> {
-    fn bump(&mut self, span: Span) {
-        self.node_count += 1;
+    fn add_nodes(&mut self, count: usize, span: Span) {
+        self.node_count += count;
         if self.node_count > NODE_CAP && !self.capped {
             self.capped = true;
             self.diags.push(
@@ -1629,6 +1628,10 @@ impl PhaseBCtx<'_> {
             A::Decl::Const { value, .. } => {
                 let vs = value.span;
                 if self.rewrite_comptime_value(&mut value.node, vs) {
+                    self.add_nodes(
+                        crate::semantic_tokens::expr_node_count(&value.node),
+                        vs,
+                    );
                     self.changed = true;
                 }
                 self.rewrite_expr(&mut value.node, vs);
@@ -1649,10 +1652,7 @@ impl PhaseBCtx<'_> {
                     }
                 }
             }
-            A::Decl::Stmt(s) => {
-                let ss = s.span;
-                self.rewrite_stmt(&mut s.node, ss);
-            }
+            A::Decl::Stmt(s) => self.rewrite_stmt(&mut s.node),
             _ => {}
         }
         let _ = span;
@@ -1673,19 +1673,21 @@ impl PhaseBCtx<'_> {
             if self.capped {
                 return;
             }
-            let ss = s.span;
             if let A::Stmt::Var { is_static: true, value, .. } = &mut s.node {
                 let vs = value.span;
                 if self.rewrite_comptime_value(&mut value.node, vs) {
+                    self.add_nodes(
+                        crate::semantic_tokens::expr_node_count(&value.node),
+                        vs,
+                    );
                     self.changed = true;
                 }
             }
-            self.rewrite_stmt(&mut s.node, ss);
+            self.rewrite_stmt(&mut s.node);
         }
     }
 
-    fn rewrite_stmt(&mut self, stmt: &mut A::Stmt, span: Span) {
-        self.bump(span);
+    fn rewrite_stmt(&mut self, stmt: &mut A::Stmt) {
         if self.capped {
             return;
         }
@@ -1744,7 +1746,6 @@ impl PhaseBCtx<'_> {
     }
 
     fn rewrite_expr(&mut self, expr: &mut A::Expr, span: Span) {
-        self.bump(span);
         if self.capped {
             return;
         }
@@ -1770,6 +1771,7 @@ impl PhaseBCtx<'_> {
                 if let Some(first) = args.first().cloned() {
                     let mut owned = std::mem::replace(expr, A::Expr::Bool(true));
                     if self.rewrite_comptime_call(&mut owned, &first, span) {
+                        self.add_nodes(crate::semantic_tokens::expr_node_count(&owned), span);
                         *expr = owned;
                         self.changed = true;
                         return;

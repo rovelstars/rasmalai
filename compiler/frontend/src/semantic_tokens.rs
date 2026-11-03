@@ -148,6 +148,173 @@ fn visit_stmt(out: &mut Vec<Span>, stmt: &Stmt) {
     }
 }
 
+/// Number of expression and statement nodes below `expr`, including itself.
+/// Macro expansion uses this to measure the size of what a macro produced.
+pub(crate) fn expr_node_count(expr: &Expr) -> usize {
+    expr_nodes(expr)
+}
+
+fn fn_body_nodes(body: &FnBody) -> usize {
+    match body {
+        FnBody::Block(b) => block_nodes(b),
+        FnBody::Expr(e) => expr_nodes(&e.node),
+    }
+}
+
+fn block_nodes(block: &Block) -> usize {
+    block.stmts.iter().map(|s| stmt_nodes(&s.node)).sum()
+}
+
+fn stmt_nodes(stmt: &Stmt) -> usize {
+    let mut n = 1;
+    match stmt {
+        Stmt::Var { value, .. }
+        | Stmt::DestructureTuple { value, .. }
+        | Stmt::DestructureRecord { value, .. }
+        | Stmt::DestructureArray { value, .. } => n += expr_nodes(&value.node),
+        Stmt::Assign { target, value, .. } => {
+            n += expr_nodes(&target.node) + expr_nodes(&value.node)
+        }
+        Stmt::Expr(e) | Stmt::Assert(e) | Stmt::Return(Some(e)) => n += expr_nodes(&e.node),
+        Stmt::If { cond, then, otherwise } => {
+            n += match cond {
+                IfCond::Expr(e) | IfCond::Let { value: e, .. } => expr_nodes(&e.node),
+            };
+            n += block_nodes(then);
+            n += match otherwise {
+                Some(Else::Block(b)) => block_nodes(b),
+                Some(Else::If(s)) => stmt_nodes(&s.node),
+                None => 0,
+            };
+        }
+        Stmt::For { iter, body, .. } => n += expr_nodes(&iter.node) + block_nodes(body),
+        Stmt::While { cond, body } => n += expr_nodes(&cond.node) + block_nodes(body),
+        Stmt::DoWhile { body, cond } => n += block_nodes(body) + expr_nodes(&cond.node),
+        Stmt::Switch { scrutinee, cases, default } => {
+            n += expr_nodes(&scrutinee.node);
+            for c in cases {
+                if let Some(g) = &c.guard {
+                    n += expr_nodes(&g.node);
+                }
+                n += c.body.iter().map(|s| stmt_nodes(&s.node)).sum::<usize>();
+            }
+            if let Some(d) = default {
+                n += d.iter().map(|s| stmt_nodes(&s.node)).sum::<usize>();
+            }
+        }
+        Stmt::Defer(b) | Stmt::UnsafeBlock(b) => n += block_nodes(b),
+        Stmt::Guard { value, otherwise, .. } => {
+            n += expr_nodes(&value.node) + block_nodes(otherwise)
+        }
+        Stmt::Try { body, catch, finally } => {
+            n += block_nodes(body);
+            if let Some((_, b)) = catch {
+                n += block_nodes(b);
+            }
+            if let Some(b) = finally {
+                n += block_nodes(b);
+            }
+        }
+        Stmt::Throw(Some(e)) => n += expr_nodes(&e.node),
+        Stmt::Return(None) | Stmt::Throw(None) | Stmt::Break | Stmt::Continue
+        | Stmt::Fallthrough | Stmt::Pass | Stmt::Empty => {}
+    }
+    n
+}
+
+fn expr_nodes(expr: &Expr) -> usize {
+    let mut n = 1;
+    match expr {
+        Expr::Interp(parts) => {
+            for part in parts {
+                if let InterpPart::Expr(e) = part {
+                    n += expr_nodes(&e.node);
+                }
+            }
+        }
+        Expr::Array(items) => {
+            for i in items {
+                n += expr_nodes(&i.expr.node);
+            }
+        }
+        Expr::Record(fields) => {
+            for f in fields {
+                n += expr_nodes(&f.value().node);
+            }
+        }
+        Expr::MapLiteral(entries) => {
+            for e in entries {
+                n += expr_nodes(&e.value().node);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Coalesce { lhs, rhs }
+        | Expr::Range { lo: lhs, hi: rhs, .. }
+        | Expr::Index { base: lhs, index: rhs } => {
+            n += expr_nodes(&lhs.node) + expr_nodes(&rhs.node)
+        }
+        Expr::Unary { rhs, .. }
+        | Expr::Postfix { expr: rhs, .. }
+        | Expr::Cast { expr: rhs, .. }
+        | Expr::Is { base: rhs, .. }
+        | Expr::OptChain { base: rhs, .. }
+        | Expr::Member { base: rhs, .. }
+        | Expr::TupleGet { base: rhs, .. }
+        | Expr::Await(rhs)
+        | Expr::Propagate(rhs) => n += expr_nodes(&rhs.node),
+        Expr::Ternary { cond, then, otherwise } => {
+            n += expr_nodes(&cond.node) + expr_nodes(&then.node) + expr_nodes(&otherwise.node)
+        }
+        Expr::OptCall { base, args, .. } | Expr::Call { callee: base, args, .. } => {
+            n += expr_nodes(&base.node);
+            for a in args {
+                n += expr_nodes(&a.value.node);
+            }
+            if let Expr::Call { trailing: Some(b), .. } = expr {
+                n += block_nodes(b);
+            }
+        }
+        Expr::New { args, .. } => {
+            for a in args {
+                n += expr_nodes(&a.value.node);
+            }
+        }
+        Expr::Macro { args, .. } => {
+            for a in args {
+                n += expr_nodes(&a.node);
+            }
+        }
+        Expr::Closure { body, .. } => n += fn_body_nodes(body),
+        Expr::UnsafeBlock(b) => n += block_nodes(b),
+        Expr::Tuple(items) => {
+            for i in items {
+                n += expr_nodes(&i.node);
+            }
+        }
+        Expr::Switch { scrutinee, cases, default } => {
+            n += expr_nodes(&scrutinee.node);
+            for c in cases {
+                if let Some(g) = &c.guard {
+                    n += expr_nodes(&g.node);
+                }
+                n += match &c.body {
+                    SwitchExprBody::Expr(e) => expr_nodes(&e.node),
+                    SwitchExprBody::Block(b) => block_nodes(b),
+                };
+            }
+            if let Some(d) = default {
+                n += match d {
+                    SwitchExprBody::Expr(e) => expr_nodes(&e.node),
+                    SwitchExprBody::Block(b) => block_nodes(b),
+                };
+            }
+        }
+        Expr::Ident(_) | Expr::This | Expr::Super | Expr::Bool(_) | Expr::Null
+        | Expr::Int(_) | Expr::Float(_) | Expr::ImplicitMember(_) => {}
+    }
+    n
+}
+
 fn visit_expr(out: &mut Vec<Span>, expr: &Expr) {
     match expr {
         Expr::Closure { params, body, .. } => {
