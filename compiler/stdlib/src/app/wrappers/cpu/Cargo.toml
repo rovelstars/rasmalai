@@ -9,7 +9,6 @@ crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
 vello_cpu = "0.3"
-parley = "0.12"
 scene = { path = "../scene" }
 
 [workspace]

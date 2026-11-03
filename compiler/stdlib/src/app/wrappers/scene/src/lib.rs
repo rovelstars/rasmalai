@@ -1,9 +1,10 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Blob, Color, Fill, ImageData, ImageFormat};
-use vello::Glyph;
 
 const MAGIC: u32 = 0x4458_4E52;
 const STRIDE: usize = 64;
@@ -163,39 +164,78 @@ pub fn decode_png(bytes: &[u8]) -> Option<ImageData> {
     })
 }
 
-fn draw_text(
-    scene: &mut vello::Scene,
-    text: &str,
-    x: f64,
-    y: f64,
-    size: f32,
-    color: Color,
-    transform: Affine,
-) {
-    let mut font_cx = parley::FontContext::new();
-    let mut layout_cx: parley::LayoutContext<()> = parley::LayoutContext::new();
-    let mut builder = layout_cx.ranged_builder(&mut font_cx, text, 1.0, true);
-    builder.push_default(parley::StyleProperty::FontSize(size));
-    let mut layout = builder.build(text);
-    layout.break_all_lines(None);
-    for line in layout.lines() {
-        for item in line.items() {
-            if let parley::PositionedLayoutItem::GlyphRun(run) = item {
-                let shaped = run.run();
-                let glyphs = run.positioned_glyphs().map(|g| Glyph {
-                    id: g.id,
-                    x: g.x,
-                    y: g.y,
-                });
-                scene
-                    .draw_glyphs(shaped.font())
-                    .font_size(shaped.font_size())
-                    .brush(color)
-                    .transform(transform * Affine::translate((x, y)))
-                    .draw(Fill::NonZero, glyphs);
+/// One shaped glyph, independent of the renderer that consumes it.
+#[derive(Clone, Copy)]
+pub struct Glyph {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// One glyph run with its font and size.
+#[derive(Clone)]
+pub struct ShapedRun {
+    pub font: parley::FontData,
+    pub size: f32,
+    pub glyphs: Vec<Glyph>,
+}
+
+thread_local! {
+    static SHAPER: RefCell<Option<(parley::FontContext, parley::LayoutContext<()>)>> =
+        const { RefCell::new(None) };
+    static CACHE: RefCell<HashMap<(u32, String), Vec<ShapedRun>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Shape text once and reuse the result. Fonts are discovered once per thread.
+pub fn shape(text: &str, size: f32) -> Vec<ShapedRun> {
+    let key = (size.to_bits(), text.to_string());
+    if let Some(runs) = CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+        return runs;
+    }
+    let runs = SHAPER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let (font_cx, layout_cx) = slot.get_or_insert_with(|| {
+            (
+                parley::FontContext::new(),
+                parley::LayoutContext::<()>::new(),
+            )
+        });
+        let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+        builder.push_default(parley::StyleProperty::FontSize(size));
+        let mut layout = builder.build(text);
+        layout.break_all_lines(None);
+        let mut runs = Vec::new();
+        for line in layout.lines() {
+            for item in line.items() {
+                if let parley::PositionedLayoutItem::GlyphRun(run) = item {
+                    let shaped = run.run();
+                    let glyphs = run
+                        .positioned_glyphs()
+                        .map(|g| Glyph {
+                            id: g.id,
+                            x: g.x,
+                            y: g.y,
+                        })
+                        .collect();
+                    runs.push(ShapedRun {
+                        font: shaped.font().clone(),
+                        size: shaped.font_size(),
+                        glyphs,
+                    });
+                }
             }
         }
-    }
+        runs
+    });
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() > 256 {
+            cache.clear();
+        }
+        cache.insert(key, runs.clone());
+    });
+    runs
 }
 
 /// Turn decoded commands into a GPU scene.
@@ -236,7 +276,21 @@ pub fn to_gpu(commands: &[Command]) -> vello::Scene {
                 y,
                 size,
                 text,
-            } => draw_text(&mut scene, text, *x, *y, *size, color_of(*color), transform),
+            } => {
+                for run in shape(text, *size) {
+                    let glyphs = run.glyphs.iter().map(|g| vello::Glyph {
+                        id: g.id,
+                        x: g.x,
+                        y: g.y,
+                    });
+                    scene
+                        .draw_glyphs(&run.font)
+                        .font_size(run.size)
+                        .brush(color_of(*color))
+                        .transform(transform * Affine::translate((*x, *y)))
+                        .draw(Fill::NonZero, glyphs);
+                }
+            }
             Command::Image { x, y, w, h, png } => {
                 if let Some(image) = decode_png(png) {
                     let iw = image.width as f64;

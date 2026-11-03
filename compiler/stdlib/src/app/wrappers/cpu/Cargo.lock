@@ -136,7 +136,6 @@ dependencies = [
 name = "cpu-cabi"
 version = "0.1.0"
 dependencies = [
- "parley",
  "scene",
  "vello_cpu",
 ]

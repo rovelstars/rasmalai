@@ -16,4 +16,5 @@ if [ -z "${RNX_VENDOR_DIR:-}" ]; then
 fi
 export PKG_CONFIG_PATH="$prefix${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export LD_LIBRARY_PATH="$prefix${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cd "$here"
 exec "$rnx" run --backend "${RNX_BACKEND:-cranelift}" "$@"
