@@ -1,7 +1,7 @@
 use std::slice;
 
 use scene::Command;
-use vello_cpu::kurbo::{Affine, Rect, RoundedRect, Shape};
+use vello_cpu::kurbo::{Affine, BezPath, Rect, RoundedRect, Shape};
 use vello_cpu::peniko::Color;
 use vello_cpu::{Glyph, Image, ImageSource, Pixmap, RenderContext, Resources};
 
@@ -115,6 +115,19 @@ pub extern "C" fn cpu_render(w: i32, h: i32, list: *const u8, len: i32, out: *mu
                 ctx.set_transform(transform);
                 let path = Rect::new(*x, *y, x + w, y + h).to_path(0.1);
                 ctx.push_clip_layer(&path);
+            }
+            Command::Polygon { color, points } => {
+                if let Some((first, rest)) = points.split_first() {
+                    let mut path = BezPath::new();
+                    path.move_to(*first);
+                    for p in rest {
+                        path.line_to(*p);
+                    }
+                    path.close_path();
+                    ctx.set_transform(transform);
+                    ctx.set_paint(color_of(*color));
+                    ctx.fill_path(&path);
+                }
             }
             Command::ClipPop => ctx.pop_layer(),
             Command::TransformPush(m) => {
