@@ -557,6 +557,8 @@ pub class Tree {
     let prevChecked: Array<Bool> = []
     let prevRole: Array<Int> = []
     let prevFocus: Int = -1
+    let focusVisible: Bool = false
+    let prevFocusVisible: Bool = false
     let disabledV: Array<Bool> = []
     let clipV: Array<Bool> = []
     let scrollV: Array<Float> = []
@@ -693,6 +695,7 @@ pub class Tree {
             i += 1
         }
         this.prevFocus = this.focus
+        this.prevFocusVisible = this.focusVisible
         this.prevHovered = this.hovered
         this.prevPressed = this.pressed
     }
@@ -845,7 +848,18 @@ pub class Tree {
                     return Node(tree: this, id: id)
                 }
                 this.aligned = false
-                this.cursor = this.role.length()
+            }
+        }
+        if !this.aligned && this.frameOpen {
+            let scan = this.cursor
+            while scan < this.role.length() {
+                if !this.claimed[scan] && this.role[scan] == roleId(r) {
+                    this.resetNode(scan, r, n, k)
+                    this.claimed[scan] = true
+                    this.cursor = scan + 1
+                    return Node(tree: this, id: scan)
+                }
+                scan += 1
             }
         }
         let id = this.role.length()
@@ -898,6 +912,7 @@ pub class Tree {
         this.h.push(0)
         this.live.push(true)
         this.claimed.push(false)
+        this.claimed[id] = true
         return Node(tree: this, id: id)
     }
 
@@ -1085,12 +1100,12 @@ pub class Tree {
         }
         this.pressed = id
         if this.role[id] == roleId(Role.textbox) {
-            this.setFocus(id)
+            this.setFocus(id, false)
             this.caretFromX(id, x)
             return true
         }
         if this.role[id] == roleId(Role.slider) {
-            this.setFocus(id)
+            this.setFocus(id, false)
             this.sliderFromX(id, x)
             return this.fire(Node(tree: this, id: id))
         }
@@ -1121,6 +1136,16 @@ pub class Tree {
             return false
         }
         this.pressed = -1
+        return true
+    }
+
+    /** Cancel hover and drag when the pointer leaves the surface. */
+    pub fn pointerLeave(): Bool {
+        if this.pressed == -1 && this.hovered == -1 {
+            return false
+        }
+        this.pressed = -1
+        this.hovered = -1
         return true
     }
 
@@ -1160,8 +1185,9 @@ pub class Tree {
         return this.count[n.id]
     }
 
-    fn setFocus(id: Int) {
+    fn setFocus(id: Int, visible: Bool) {
         this.focus = id
+        this.focusVisible = visible
         if id >= 0 {
             this.resetEditing(id)
         }
@@ -1169,12 +1195,17 @@ pub class Tree {
 
     pub fn focusOn(n: Node) {
         if n.id >= 0 && n.id < this.role.length() && !this.disabledNode(n.id) {
-            this.setFocus(n.id)
+            this.setFocus(n.id, true)
         }
     }
 
     pub fn focused(): Int {
         return this.focus
+    }
+
+    /** Whether the focus ring should be painted (keyboard or programmatic focus). */
+    pub fn focusIsVisible(): Bool {
+        return this.focusVisible
     }
 
     pub fn can(n: Node, a: Action): Bool {
@@ -1433,7 +1464,7 @@ pub class Tree {
             if p != -1 {
                 let sib = this.siblingInteractive(p, n.id, k == Key.right)
                 if sib != -1 {
-                    this.setFocus(sib)
+                    this.setFocus(sib, true)
                     return this.fire(Node(tree: this, id: sib))
                 }
             }
@@ -1447,7 +1478,7 @@ pub class Tree {
             seen = this.nextInteractive(0)
         }
         if seen != -1 {
-            this.setFocus(seen)
+            this.setFocus(seen, true)
         }
         return seen
     }
@@ -1458,7 +1489,7 @@ pub class Tree {
             seen = this.prevInteractive(this.role.length() - 1)
         }
         if seen != -1 {
-            this.setFocus(seen)
+            this.setFocus(seen, true)
         }
         return seen
     }
@@ -1876,6 +1907,9 @@ pub class Tree {
                 out.add(this.prevX[this.prevPressed], this.prevY[this.prevPressed], this.prevW[this.prevPressed], this.prevH[this.prevPressed])
             }
         }
+        if this.focusVisible != this.prevFocusVisible && this.focus >= 0 && this.focus < this.role.length() {
+            out.add(this.x[this.focus], this.y[this.focus], this.w[this.focus], this.h[this.focus])
+        }
         if this.focus != this.prevFocus {
             if this.focus >= 0 && this.focus < this.role.length() {
                 out.add(this.x[this.focus], this.y[this.focus], this.w[this.focus], this.h[this.focus])
@@ -2008,9 +2042,10 @@ pub class Tree {
         if r == 7 {
             let cy = y + 36.0
             let frac = this.numberV[id]
+            let kx = x + (w - 10.0) * frac
             d.fillRect(th.border, x, cy - 2.0, w, 4.0)
             d.fillRect(th.accent, x, cy - 2.0, w * frac, 4.0)
-            d.fillRect(th.text, x + w * frac - 5.0, cy - 5.0, 10.0, 10.0)
+            d.fillRect(th.text, kx, cy - 5.0, 10.0, 10.0)
         }
         if r == 8 || r == 9 || r == 13 {
             let box = 18.0
@@ -2021,7 +2056,7 @@ pub class Tree {
                 d.fillRect(th.accent, x + 3.0, by + 3.0, box - 6.0, box - 6.0)
             }
         }
-        if id == this.focus {
+        if id == this.focus && this.focusVisible {
             outline(d, th.accent, x, y, w, h)
         }
 
@@ -3472,6 +3507,39 @@ test fn disabledControlsStayOutOfFocusAndInput() {
     assert(t.focusNext() == -1, "disabled skipped by focus")
 }
 
+test fn pointerFocusHidesTheRing() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let sl = b.sliderValue("Volume", 0.5, (v: Float) => {})
+    let root = b.column()
+    root.addChild(sl)
+    t.endFrame()
+    t.layout(root, 300)
+    t.pointerDown(t.x[sl.id] + 40, t.y[sl.id] + 36)
+    assert(!t.focusIsVisible(), "pointer focus has no ring")
+    t.pointerLeave()
+    t.focusNext()
+    assert(t.focusIsVisible(), "keyboard focus shows the ring")
+}
+
+test fn pointerLeaveCancelsADrag() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let sl = b.sliderValue("Volume", 0.2, (v: Float) => {})
+    let root = b.column()
+    root.addChild(sl)
+    t.endFrame()
+    t.layout(root, 300)
+    t.pointerDown(t.x[sl.id] + 10, t.y[sl.id] + 36)
+    let before = t.numberOf(sl)
+    assert(t.pointerLeave(), "leave changes state")
+    assert(t.numberOf(sl) == before, "leave keeps the last value")
+    t.pointerMove(t.x[sl.id] + 200, t.y[sl.id] + 36)
+    assert(t.numberOf(sl) == before, "no drag after leave")
+}
+
 test fn textFieldEditsAtTheCaret() {
     let t = new Tree(TextEngine.fixed())
     t.beginFrame()
@@ -3631,4 +3699,62 @@ test fn virtualListRecyclesAcrossScrolls() {
     t.endFrame()
     t.layout(root2, 320)
     assert(t.snapshot().contains("row 0"), "scrolled back to the top: " + t.snapshot())
+}
+
+test fn focusRingOnlyAfterKeyboardFocus() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let field = b.textField("", "name", (v: String) => {})
+    let root = b.column()
+    root.addChild(field)
+    t.endFrame()
+    t.layout(root, 300)
+    t.pointerDown(t.x[field.id] + 5, t.y[field.id] + 5)
+    assert(!t.focusIsVisible(), "click does not show the ring")
+    let th = Theme.dark()
+    let d1 = Painter.paint(t, 300, 120, th)
+    let i = 0
+    let accent1 = 0
+    while i < d1.recordCount() {
+        if d1.kindAt(i) == 1 && d1.colorAt(i) == th.accent {
+            accent1 += 1
+        }
+        i += 1
+    }
+    assert(accent1 == 0, "no accent outline on a click")
+
+    t.focusNext()
+    let d2 = Painter.paint(t, 300, 120, th)
+    let j = 0
+    let accent2 = 0
+    while j < d2.recordCount() {
+        if d2.kindAt(j) == 1 && d2.colorAt(j) == th.accent {
+            accent2 += 1
+        }
+        j += 1
+    }
+    assert(accent2 > 0, "keyboard focus paints the ring")
+}
+
+test fn sliderKnobStaysInsideTheTrack() {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    let b = new Build(t)
+    let sl = b.sliderValue("Volume", 0.0, (v: Float) => {})
+    let root = b.column()
+    root.addChild(sl)
+    t.endFrame()
+    t.layout(root, 300)
+    let th = Theme.dark()
+    let d = Painter.paint(t, 300, 120, th)
+    let i = 0
+    let knobX = -1.0
+    while i < d.recordCount() {
+        if d.kindAt(i) == 1 && d.colorAt(i) == th.text && d.wAt(i) == 10.0 {
+            knobX = d.xAt(i)
+        }
+        i += 1
+    }
+    assert(knobX == Float(t.x[sl.id]), "knob sits at the left edge: " + knobX.toString())
 }
