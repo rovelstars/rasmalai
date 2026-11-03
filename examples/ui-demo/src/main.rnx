@@ -1,4 +1,4 @@
-import { Build, Key, Node, Role, Tree } from "@std/ui"
+import { Build, Key, Node, Role, TextEngine, Tree } from "@std/ui"
 
 class Appearance {
     let scheme: String = "system"
@@ -54,7 +54,7 @@ fn screen(b: Build, s: Appearance): Node {
 }
 
 fn Main(): Int {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let s = new Appearance()
 

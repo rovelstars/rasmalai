@@ -405,7 +405,7 @@ pub class Tree {
     let textLines: Array<Int> = []
     let textWrapV: Array<Bool> = []
     let textLayoutV: Array<TextLayout> = []
-    let engine: TextEngine = TextEngine.fixed()
+    let engine: TextEngine
     let prevX: Array<Int> = []
     let prevY: Array<Int> = []
     let prevW: Array<Int> = []
@@ -428,6 +428,10 @@ pub class Tree {
     let pendingKey: String = ""
     let keyIndexKeys: Array<String> = []
     let keyIndexIds: Array<Int> = []
+
+    init(e: TextEngine) {
+        this.engine = e
+    }
 
     fn resetNode(id: Int, r: Role, n: String, k: String) {
         this.role[id] = roleId(r)
@@ -2228,7 +2232,7 @@ test fn clipRecordsKeepOrder() {
 }
 
 test fn paintCoversTheRootAndLabels() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let root = b.column()
     root.addChild(b.heading("Appearance"))
@@ -2244,7 +2248,7 @@ test fn paintCoversTheRootAndLabels() {
 }
 
 test fn layoutTracksANonZeroRoot() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     t.beginFrame()
     let b = new Build(t)
     let stray = b.text("outside")
@@ -2260,7 +2264,7 @@ test fn layoutTracksANonZeroRoot() {
 }
 
 test fn reuseKeepsIdsStable() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     t.beginFrame()
     let b = new Build(t)
     let root = b.column()
@@ -2282,7 +2286,7 @@ test fn reuseKeepsIdsStable() {
 }
 
 test fn keysFollowReorderedNodes() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     t.beginFrame()
     let b = new Build(t)
     b.key("a")
@@ -2304,7 +2308,7 @@ test fn keysFollowReorderedNodes() {
 }
 
 test fn handlersRefreshEveryFrame() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let seen: Array<Int> = []
     t.beginFrame()
     let b = new Build(t)
@@ -2322,7 +2326,7 @@ test fn handlersRefreshEveryFrame() {
 }
 
 test fn focusSurvivesAStableRebuild() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     t.beginFrame()
     let b = new Build(t)
     let btn = b.buttonInert("Save")
@@ -2339,7 +2343,7 @@ test fn focusSurvivesAStableRebuild() {
 }
 
 test fn damageTracksChangedNodes() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     t.beginFrame()
     let b = new Build(t)
     let root = b.column()
@@ -2371,7 +2375,7 @@ test fn damageTracksChangedNodes() {
 }
 
 test fn paintMarksFocusWithTheAccent() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let root = b.column()
     let button = b.buttonInert("Save")
@@ -2391,7 +2395,7 @@ test fn paintMarksFocusWithTheAccent() {
 }
 
 test fn childrenKeepCreationOrder() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let col = b.column()
     col.addChild(b.text("one"))
@@ -2402,7 +2406,7 @@ test fn childrenKeepCreationOrder() {
 }
 
 test fn hitTestPrefersTheDeepestNode() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let col = b.column()
     let btn = b.buttonInert("Save")
@@ -2415,7 +2419,7 @@ test fn hitTestPrefersTheDeepestNode() {
 }
 
 test fn tapRunsTheAttachedHandler() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let hits: Array<Int> = []
     let btn = b.button("Add", () => { hits.push(1) })
@@ -2424,7 +2428,7 @@ test fn tapRunsTheAttachedHandler() {
 }
 
 test fn enterAndTapReachTheSameHandler() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let hits: Array<Int> = []
     let btn = b.button("Add", () => { hits.push(1) })
@@ -2435,7 +2439,7 @@ test fn enterAndTapReachTheSameHandler() {
 }
 
 test fn focusMovesThroughInteractiveNodesOnly() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let root = b.column()
     root.addChild(b.text("label"))
@@ -2451,7 +2455,7 @@ test fn focusMovesThroughInteractiveNodesOnly() {
 }
 
 test fn layoutStacksColumnChildren() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let col = b.column()
     let first = b.buttonInert("First")
@@ -2465,7 +2469,7 @@ test fn layoutStacksColumnChildren() {
 }
 
 test fn focusScopeKeepsTraversalInsideADialog() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let root = b.column()
     let outside = b.buttonInert("Outside")
@@ -2482,7 +2486,7 @@ test fn focusScopeKeepsTraversalInsideADialog() {
 }
 
 test fn arrowsMoveBetweenSiblings() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let root = b.row()
     let seen: Array<Int> = []
@@ -2497,7 +2501,7 @@ test fn arrowsMoveBetweenSiblings() {
 }
 
 test fn pointerDownReachesTheSameHandlerAsEnter() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let root = b.column()
     let hits: Array<Int> = []
@@ -2512,7 +2516,7 @@ test fn pointerDownReachesTheSameHandlerAsEnter() {
 }
 
 test fn typingReachesTheFieldHandler() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let seen: Array<String> = []
     let field = b.textField("", "Search settings", (v: String) => { seen.push(v) })
@@ -2522,7 +2526,7 @@ test fn typingReachesTheFieldHandler() {
 }
 
 test fn valuesAndCheckedStatesReachTheSnapshot() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let root = b.column()
     let size = b.slider("Text size")
@@ -2539,7 +2543,7 @@ test fn valuesAndCheckedStatesReachTheSnapshot() {
 }
 
 test fn everyInteractiveNodeHasAName() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     b.slider("Text size")
     b.toggle("Reduce motion")
@@ -2565,7 +2569,7 @@ test fn frameClockFreezesWhilePaused() {
 }
 
 test fn canvasKeepsItsSizeAndDrawsAPolygon() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     t.beginFrame()
     let b = new Build(t)
     let root = b.column()
@@ -2582,69 +2586,15 @@ test fn canvasKeepsItsSizeAndDrawsAPolygon() {
 }
 
 test fn buildCarriesTheFrameClock() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     let b = new Build(t)
     let c = new FrameClock()
     b.setClock(c)
     assert(b.frameClock() == c, "clock shared")
 }
 
-test fn textWrapsAtTheNodeWidth() {
-    let t = new Tree()
-    t.beginFrame()
-    let b = new Build(t)
-    let root = b.column()
-    root.addChild(b.text("one two three four five six seven"))
-    t.endFrame()
-    t.layout(root, 120)
-    let d = Painter.paint(t, 120, 240, Theme.dark())
-    let i = 0
-    let runs = 0
-    while i < d.recordCount() {
-        if d.kindAt(i) == 2 {
-            runs += 1
-        }
-        i += 1
-    }
-    assert(runs >= 3, "wrapped text has several runs: " + runs.toString())
-}
-
-test fn buttonEllipsizesAtItsWidth() {
-    let t = new Tree()
-    t.beginFrame()
-    let b = new Build(t)
-    let root = b.column()
-    root.addChild(b.buttonInert("A very long button label"))
-    t.endFrame()
-    t.layout(root, 140)
-    let d = Painter.paint(t, 140, 120, Theme.dark())
-    assert(d.toString().contains("…"), d.toString())
-}
-
-test fn alignmentMovesTheTextRun() {
-    let t = new Tree()
-    t.beginFrame()
-    let b = new Build(t)
-    let root = b.column()
-    let label = b.text("mid")
-    label.textAlign(Align.center)
-    root.addChild(label)
-    t.endFrame()
-    t.layout(root, 320)
-    let d = Painter.paint(t, 320, 120, Theme.dark())
-    let i = 0
-    let at = 0.0
-    while i < d.recordCount() {
-        if d.kindAt(i) == 2 {
-            at = d.xAt(i)
-        }
-        i += 1
-    }
-    assert(at > 100.0, "centered run starts past the left edge: " + at.toString())
-}
-
 test fn canvasesReportSeparateDamage() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     t.beginFrame()
     let b = new Build(t)
     let root = b.column()
@@ -2671,7 +2621,7 @@ test fn canvasesReportSeparateDamage() {
 }
 
 test fn regionPaintSkipsUnchangedNodes() {
-    let t = new Tree()
+    let t = new Tree(TextEngine.fixed())
     t.beginFrame()
     let b = new Build(t)
     let root = b.column()

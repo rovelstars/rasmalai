@@ -91,6 +91,13 @@ demo; set `RUNIX_SMOKE=1` to present three frames and exit.
 `TextEngine` installed by `App` lays out wrapped rows with the same crate. The
 renderer shapes display-list text runs with it too, so layout and paint agree.
 
+The app tests are the conformance layer for text. They build frames with no
+window, inspect display-list geometry, and assert real results: a paragraph
+wraps, a clipped control ends in `…`, a centered row moves, and a button is
+exactly `measureText(label, size)` plus its padding. Run them on each target OS
+to cover that OS's font defaults; exact pixel goldens are a separate, smaller
+set per OS.
+
 The runtime calls native wrappers, so `rnx run` needs their `.pc` files and
 shared libraries. `tools/ci-wrappers.sh` builds all four, installs them into a
 prefix, and runs the probes and the examples on Cranelift and LLVM. The

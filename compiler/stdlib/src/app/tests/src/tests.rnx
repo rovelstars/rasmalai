@@ -6,6 +6,23 @@ class Counter {
     let n: Int = 0
 }
 
+fn nthFillWidth(list: ByteBuffer, which: Int): Int {
+    let n = list.readUInt32LE(8)
+    let seen = 0
+    let i = 0
+    while i < n {
+        let o = 32 + i * 64
+        if list.readUInt32LE(o) == 1 {
+            if seen == which {
+                return Int(list.readFloat64LE(o + 32))
+            }
+            seen += 1
+        }
+        i += 1
+    }
+    return -1
+}
+
 fn firstTextX(list: ByteBuffer): Float {
     let n = list.readUInt32LE(8)
     let i = 0
@@ -92,6 +109,16 @@ fn Main(): Int {
     }
     failed = check(runs >= 4, "paragraph wraps through parley: " + runs.toString(), failed)
     failed = check(pf.records() > 4, "wrapped frame has records", failed)
+
+    let sized = App.launch("Width", 320, 120, (b: Build): Node => {
+        return b.column() {
+            b.buttonInert("Save")
+        }
+    })
+    let sizedFrame = sized.frame()
+    let wantWidth = Int(measureText("Save", 14.0) + 24.999)
+    let gotWidth = nthFillWidth(sizedFrame.list, 1)
+    failed = check(gotWidth == wantWidth, "button width follows measured text: " + gotWidth.toString() + " vs " + wantWidth.toString(), failed)
 
     let clipped = App.launch("Clip", 120, 100, (b: Build): Node => {
         return b.column() {
