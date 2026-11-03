@@ -1,0 +1,362 @@
+import { App, Renderer } from "@std/app"
+import { Build, Canvas, FrameClock, Node, rgba } from "@std/ui"
+import { Env } from "@std/env"
+import { Math } from "@std/math"
+import fs from "@std/fs"
+
+const GRAVITY: Float = 1500.0
+const BALL_RADIUS: Float = 18.0
+const FLOOR: Float = 268.0
+const STEP: Float = 0.004166666666666667
+
+class Demo {
+    let playing: Bool = true
+    let yaw: Float = 0.7
+    let pitch: Float = 0.0 - 0.42
+    let spin2d: Float = 0.0
+    let ballX: Float = 120.0
+    let ballY: Float = 80.0
+    let velX: Float = 210.0
+    let velY: Float = 0.0
+    let rest: Float = 0.0
+    let bounces: Int = 0
+}
+
+fn advance(d: Demo, dt: Float) {
+    d.yaw += dt * 0.8
+    d.pitch -= dt * 0.45
+    d.spin2d += dt * 1.7
+
+    let left = dt
+    let steps = 0
+    while left > 0.0 && steps < 512 {
+        let h = STEP
+        if left < h {
+            h = left
+        }
+        left -= h
+        steps += 1
+
+        d.velY += GRAVITY * h
+        d.ballX += d.velX * h
+        d.ballY += d.velY * h
+
+        if d.ballY > FLOOR - BALL_RADIUS {
+            d.ballY = FLOOR - BALL_RADIUS
+            if d.velY > 45.0 {
+                d.velY = 0.0 - d.velY * 0.78
+                d.velX = d.velX * 0.985
+                d.bounces += 1
+            } else {
+                d.velY = 0.0
+                d.rest += h
+                if d.rest > 0.4 {
+                    d.rest = 0.0
+                    d.velY = 0.0 - Math.sqrt(2.0 * GRAVITY * 150.0)
+                    if Math.abs(d.velX) < 80.0 {
+                        d.velX = 190.0
+                    }
+                }
+            }
+        } else {
+            d.rest = 0.0
+        }
+
+        if d.ballX < BALL_RADIUS {
+            d.ballX = BALL_RADIUS
+            d.velX = Math.abs(d.velX) * 0.92
+        }
+        if d.ballX > 300.0 - BALL_RADIUS {
+            d.ballX = 300.0 - BALL_RADIUS
+            d.velX = 0.0 - Math.abs(d.velX) * 0.92
+        }
+    }
+}
+
+fn shade(base: Int, lit: Float): Int {
+    let k = 0.34 + 0.66 * lit
+    let r = Int(Float((base >> 24) & 255) * k)
+    let g = Int(Float((base >> 16) & 255) * k)
+    let b = Int(Float((base >> 8) & 255) * k)
+    return rgba(r, g, b, 255)
+}
+
+fn rotate(x: Float, y: Float, z: Float, yaw: Float, pitch: Float): Array<Float> {
+    let cy = Math.cos(yaw)
+    let sy = Math.sin(yaw)
+    let cp = Math.cos(pitch)
+    let sp = Math.sin(pitch)
+    let x1 = x * cy + z * sy
+    let z1 = z * cy - x * sy
+    let y1 = y * cp - z1 * sp
+    let z2 = y * sp + z1 * cp
+    return [x1, y1, z2]
+}
+
+fn paintCube3d(c: Canvas, d: Demo) {
+    c.fill(rgba(26, 29, 36, 255))
+    c.text(rgba(136, 148, 168, 255), 12.0, 20.0, 12.0, "3D cube")
+
+    let verts: Array<Float> = [
+        0.0 - 1.0, 0.0 - 1.0, 0.0 - 1.0,
+        1.0, 0.0 - 1.0, 0.0 - 1.0,
+        1.0, 1.0, 0.0 - 1.0,
+        0.0 - 1.0, 1.0, 0.0 - 1.0,
+        0.0 - 1.0, 0.0 - 1.0, 1.0,
+        1.0, 0.0 - 1.0, 1.0,
+        1.0, 1.0, 1.0,
+        0.0 - 1.0, 1.0, 1.0,
+    ]
+    let faces: Array<Int> = [
+        4, 5, 6, 7,
+        1, 0, 3, 2,
+        5, 1, 2, 6,
+        0, 4, 7, 3,
+        4, 0, 1, 5,
+        3, 7, 6, 2,
+    ]
+    let normals: Array<Float> = [
+        0.0, 0.0, 1.0,
+        0.0, 0.0, 0.0 - 1.0,
+        1.0, 0.0, 0.0,
+        0.0 - 1.0, 0.0, 0.0,
+        0.0, 0.0 - 1.0, 0.0,
+        0.0, 1.0, 0.0,
+    ]
+    let tints: Array<Int> = [
+        rgba(72, 196, 214, 255),
+        rgba(64, 120, 220, 255),
+        rgba(146, 110, 232, 255),
+        rgba(60, 84, 148, 255),
+        rgba(226, 238, 255, 255),
+        rgba(38, 52, 78, 255),
+    ]
+
+    let rx: Array<Float> = []
+    let ry: Array<Float> = []
+    let rz: Array<Float> = []
+    let i = 0
+    while i < 8 {
+        let p = rotate(verts[i * 3], verts[i * 3 + 1], verts[i * 3 + 2], d.yaw, d.pitch)
+        rx.push(p[0])
+        ry.push(p[1])
+        rz.push(p[2])
+        i += 1
+    }
+
+    let cx = c.w() * 0.5
+    let cy = c.h() * 0.5
+    let scale = 46.0
+    let focal = 6.0
+    let px: Array<Float> = []
+    let py: Array<Float> = []
+    i = 0
+    while i < 8 {
+        let k = focal / (focal - rz[i])
+        px.push(cx + rx[i] * k * scale)
+        py.push(cy + ry[i] * k * scale)
+        i += 1
+    }
+
+    let order: Array<Int> = [0, 1, 2, 3, 4, 5]
+    let depth: Array<Float> = []
+    let f = 0
+    while f < 6 {
+        let z = 0.0
+        let v = 0
+        while v < 4 {
+            z += rz[faces[f * 4 + v]]
+            v += 1
+        }
+        depth.push(z * 0.25)
+        f += 1
+    }
+
+    let a = 1
+    while a < 6 {
+        let j = a
+        while j > 0 && depth[order[j - 1]] > depth[order[j]] {
+            let tmp = order[j - 1]
+            order[j - 1] = order[j]
+            order[j] = tmp
+            j -= 1
+        }
+        a += 1
+    }
+
+    let lightX = 0.4
+    let lightY = 0.0 - 0.6
+    let lightZ = 0.7
+    let n = 0
+    while n < 6 {
+        let fi = order[n]
+        let nn = rotate(normals[fi * 3], normals[fi * 3 + 1], normals[fi * 3 + 2], d.yaw, d.pitch)
+        let lit = nn[0] * lightX + nn[1] * lightY + nn[2] * lightZ
+        if lit < 0.0 {
+            lit = 0.0
+        }
+        let points: Array<Float> = []
+        let v = 0
+        while v < 4 {
+            let id = faces[fi * 4 + v]
+            points.push(px[id])
+            points.push(py[id])
+            v += 1
+        }
+        c.polygon(shade(tints[fi], lit), points)
+
+        let edge = shade(tints[fi], lit * 0.4)
+        v = 0
+        while v < 4 {
+            let id0 = faces[fi * 4 + v]
+            let id1 = faces[fi * 4 + ((v + 1) & 3)]
+            c.line(edge, px[id0], py[id0], px[id1], py[id1], 1.5)
+            v += 1
+        }
+        n += 1
+    }
+}
+
+fn paintCube2d(c: Canvas, d: Demo) {
+    c.fill(rgba(26, 29, 36, 255))
+    c.text(rgba(136, 148, 168, 255), 12.0, 20.0, 12.0, "2D cube")
+
+    let s = 78.0
+    let w = s * 0.866
+    let cx = c.w() * 0.5
+    let cy = c.h() * 0.5 + 8.0
+    let cosA = Math.cos(d.spin2d)
+    let sinA = Math.sin(d.spin2d)
+
+    let base: Array<Float> = [
+        0.0, 0.0 - s,
+        w, 0.0 - s * 0.5,
+        0.0, 0.0,
+        0.0 - w, 0.0 - s * 0.5,
+
+        0.0 - w, 0.0 - s * 0.5,
+        0.0, 0.0,
+        0.0, s,
+        0.0 - w, s * 0.5,
+
+        w, 0.0 - s * 0.5,
+        0.0, 0.0,
+        0.0, s,
+        w, s * 0.5,
+    ]
+    let tints: Array<Int> = [
+        rgba(96, 214, 232, 255),
+        rgba(58, 92, 170, 255),
+        rgba(110, 130, 220, 255),
+    ]
+
+    let points: Array<Float> = []
+    let i = 0
+    while i < 12 {
+        let x = base[i * 2]
+        let y = base[i * 2 + 1]
+        points.push(cx + x * cosA - y * sinA)
+        points.push(cy + x * sinA + y * cosA)
+        i += 1
+    }
+
+    c.polygon(tints[1], [points[8], points[9], points[10], points[11], points[12], points[13], points[14], points[15]])
+    c.polygon(tints[2], [points[16], points[17], points[18], points[19], points[20], points[21], points[22], points[23]])
+    c.polygon(tints[0], [points[0], points[1], points[2], points[3], points[4], points[5], points[6], points[7]])
+
+    c.line(rgba(10, 12, 18, 255), points[4], points[5], points[20], points[21], 1.5)
+    c.line(rgba(10, 12, 18, 255), points[4], points[5], points[12], points[13], 1.5)
+}
+
+fn paintBall(c: Canvas, d: Demo) {
+    c.fill(rgba(26, 29, 36, 255))
+    c.text(rgba(136, 148, 168, 255), 12.0, 20.0, 12.0, "ball")
+    c.rect(rgba(34, 40, 52, 255), 12.0, FLOOR, 276.0, 2.0)
+
+    let height = FLOOR - BALL_RADIUS - d.ballY
+    let squash = 1.0 - Math.min(0.7, height / 220.0)
+    let shadowW = 30.0 * (0.5 + 0.5 * squash)
+    let shadow: Array<Float> = []
+    let i = 0
+    while i < 20 {
+        let a = Math.TAU() * Float(i) / 20.0
+        shadow.push(d.ballX + Math.cos(a) * shadowW)
+        shadow.push(FLOOR + 4.0 + Math.sin(a) * 4.5)
+        i += 1
+    }
+    c.polygon(rgba(0, 0, 0, Int(40.0 + 70.0 * squash)), shadow)
+
+    let ball: Array<Float> = []
+    i = 0
+    while i < 28 {
+        let a = Math.TAU() * Float(i) / 28.0
+        ball.push(d.ballX + Math.cos(a) * BALL_RADIUS)
+        ball.push(d.ballY + Math.sin(a) * BALL_RADIUS)
+        i += 1
+    }
+    c.polygon(rgba(232, 108, 92, 255), ball)
+
+    let highlight: Array<Float> = []
+    i = 0
+    while i < 16 {
+        let a = Math.TAU() * Float(i) / 16.0
+        highlight.push(d.ballX - 6.0 + Math.cos(a) * 5.5)
+        highlight.push(d.ballY - 7.0 + Math.sin(a) * 5.0)
+        i += 1
+    }
+    c.polygon(rgba(255, 210, 190, 210), highlight)
+}
+
+fn screen(b: Build, d: Demo): Node {
+    let clock = b.frameClock()
+    let dt = clock.dt()
+    if d.playing && dt > 0.0 {
+        advance(d, dt)
+    }
+    b.animate(d.playing)
+
+    let root = b.column()
+    root.addChild(b.heading("Motion"))
+    root.addChild(b.text("A frame clock drives a 3D cube, a 2D cube, and a ball under gravity."))
+
+    let row = b.row()
+    row.addChild(b.canvas("cube3d", 300, 300, (c: Canvas) => { paintCube3d(c, d) }))
+    row.addChild(b.canvas("cube2d", 300, 300, (c: Canvas) => { paintCube2d(c, d) }))
+    row.addChild(b.canvas("ball", 300, 300, (c: Canvas) => { paintBall(c, d) }))
+    root.addChild(row)
+
+    let label = "Pause"
+    if !d.playing {
+        label = "Play"
+    }
+    root.addChild(b.button(label, () => { d.playing = !d.playing }))
+    root.addChild(b.text("bounces " + d.bounces.toString() + "   frames " + clock.frames().toString()))
+    return root
+}
+
+fn Main(): Int {
+    let d = new Demo()
+    let app = App.launch("Motion", 960, 470, (b: Build): Node => {
+        return screen(b, d)
+    })
+    if Env.get("RUNIX_GL") != "" {
+        app.setRenderer(Renderer.gles)
+    }
+    if Env.get("RUNIX_HEADLESS") != "" {
+        let f = app.frame()
+        let surface = app.draw(f)
+        let rc = surface.drawCpu()
+        print("headless:", rc, f.records(), f.describe())
+        let dump = Env.get("RUNIX_DUMP")
+        if dump != "" {
+            fs.writeBytes(dump, surface.pixels(), .Overwrite)
+        }
+        return rc
+    }
+    if Env.get("RUNIX_SMOKE") != "" {
+        let rc = app.showFor(3)
+        print("smoke:", rc)
+        return rc
+    }
+    return app.show()
+}
