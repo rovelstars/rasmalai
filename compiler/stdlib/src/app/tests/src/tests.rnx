@@ -146,7 +146,7 @@ fn Main(): Int {
         let root = b.column()
         root.addChild(b.sliderValue("Volume", kit.v, (v: Float) => { kit.v = v }))
         root.addChild(b.heading("Rows"))
-        let v = b.virtualList("Rows", "rows", 1000, 30, 120)
+        let v = b.virtualList("Rows", "rows", 20, 30, 120)
         root.addChild(v.node)
         let i = 0
         while i < v.count {

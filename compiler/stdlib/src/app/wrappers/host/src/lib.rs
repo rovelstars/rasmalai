@@ -30,6 +30,7 @@ enum Event {
     KeyUp(i32),
     SurfaceLost,
     Scroll(i32),
+    PointerLeave,
 }
 
 struct GpuCore {
@@ -628,6 +629,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
             } if button == BTN_LEFT => {
                 state.events.push_back(Event::PointerUp(0, 0));
             }
+            wl_pointer::Event::Leave { .. } => {
+                state.events.push_back(Event::PointerLeave);
+            }
             wl_pointer::Event::Axis {
                 axis: WEnum::Value(wl_pointer::Axis::VerticalScroll),
                 value,
@@ -779,6 +783,7 @@ fn next_event(host: &mut Host) -> Option<i32> {
             Event::KeyUp(k) => (7, k, 0),
             Event::SurfaceLost => (8, 0, 0),
             Event::Scroll(d) => (9, d, 0),
+            Event::PointerLeave => (10, 0, 0),
         };
         host.state.last_a = a;
         host.state.last_b = b;

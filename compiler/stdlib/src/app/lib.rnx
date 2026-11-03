@@ -834,7 +834,11 @@ pub class App {
                     } else if ev == 5 {
                         this.pointerX = hostEventA(host)
                         this.pointerY = hostEventB(host)
-                        if this.pointerMove(this.pointerX, this.pointerY) {
+                        if this.pointerX < 0 || this.pointerY < 0 || this.pointerX >= this.window.width || this.pointerY >= this.window.height {
+                            if this.rootTree.pointerLeave() {
+                                dirty = true
+                            }
+                        } else if this.pointerMove(this.pointerX, this.pointerY) {
                             dirty = true
                         }
                     } else if ev == 6 {
@@ -847,6 +851,10 @@ pub class App {
                         }
                     } else if ev == 7 {
                         this.keyEvent(hostEventA(host), false)
+                    } else if ev == 10 {
+                        if this.rootTree.pointerLeave() {
+                            dirty = true
+                        }
                     } else if ev == 9 {
                         if this.rootTree.scrollAt(this.pointerX, this.pointerY, Float(hostEventA(host)) * 40.0) {
                             dirty = true

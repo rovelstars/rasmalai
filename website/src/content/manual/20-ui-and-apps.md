@@ -180,7 +180,9 @@ while i < v.count {
 
 The list keeps its scroll offset on the keyed node, snaps to row boundaries,
 and `scrollAt` handles the wheel. Only the rows in view exist, so a 10,000-row
-list holds about ten nodes.
+list holds about ten nodes. Clicking a control focuses it without painting the
+focus ring; the ring appears for keyboard navigation. Dragging a slider out of
+the window cancels the drag instead of jumping to an edge.
 
 Text editing uses the `TextEngine` for grapheme boundaries. Typing, Backspace,
 Delete, arrows, Home, and End work without a native text service; the window

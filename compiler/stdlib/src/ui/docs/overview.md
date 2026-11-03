@@ -48,7 +48,11 @@ cd examples/ui-demo && rnx run --backend interpreter
 state. `keyDown(node, key, shift)` maps Enter and Space to the primary action,
 Escape to a dialog's dismiss action, and Left and Right to the next interactive
 sibling, which is how a radio group moves and selects. `disabled(true)` removes
-a node from focus, hover activation, and dispatch. `focusNext` and `focusPrev`
+a node from focus, hover activation, and dispatch. `pointerLeave` cancels hover
+and an active drag, so dragging a slider out of the window stops at the last
+inside value instead of jumping to an edge. The focus ring is painted only for
+keyboard or programmatic focus; clicking a field or slider moves focus without
+showing the ring. `focusNext` and `focusPrev`
 walk only interactive nodes and wrap. `focusScope(dialog)` holds traversal inside a subtree
 while it is open, and `clearFocusScope` releases it.
 
@@ -215,6 +219,10 @@ starts at the top of the viewport. The scroll position lives on the keyed list
 node, so it survives rebuilds.
 `scrollAt(x, y, dy)` scrolls the nearest scrollable ancestor under the point.
 Painting and hit testing respect clipping, so offscreen rows cost nothing.
+Fixed-row lists snap to row boundaries, so a row is never half outside the
+viewport. The reconciler falls back to the next unclaimed node of the same
+role after the creation cursor; a list whose row count changes can be followed
+by more nodes without appending a fresh tail every frame.
 
 ## Canvas nodes
 
