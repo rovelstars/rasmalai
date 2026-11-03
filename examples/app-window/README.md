@@ -16,3 +16,6 @@ RUNIX_SMOKE=1 sh examples/app-window/run.sh
 
 The window maps as `app_id=dev.runix.app`. The host is `wrappers/host`; the app
 only calls `App.show` and `App.showFor`.
+
+Set `RUNIX_HEADLESS=1` to render one frame offscreen and exit. The wrapper CI
+uses that instead of opening a window.

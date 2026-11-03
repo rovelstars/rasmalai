@@ -91,8 +91,8 @@ for profile in dev release; do
         ldd "$bin" >&2
         exit 1
     fi
-    out=$(cd "$repo/examples/app-window" && RUNIX_SMOKE=1 env -u LD_LIBRARY_PATH "$bin")
-    echo "$out" | grep -q "smoke: 0" || {
+    out=$(cd "$repo/examples/app-window" && RUNIX_HEADLESS=1 env -u LD_LIBRARY_PATH "$bin")
+    echo "$out" | grep -q "headless: 0" || {
         echo "built $profile app did not run without LD_LIBRARY_PATH" >&2
         exit 1
     }
