@@ -231,16 +231,19 @@ impl State {
         if self.gpu.is_none() && !self.create_gpu() {
             return -3;
         }
+        let started = std::time::Instant::now();
         let scene = match scene::from_list(bytes) {
             Ok(scene) => scene,
             Err(code) => return code,
         };
+        let parsed = started.elapsed();
         let Some(core) = core() else {
             return -3;
         };
         let Some(gpu) = self.gpu.as_ref() else {
             return -3;
         };
+        let acquired = started.elapsed();
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -282,6 +285,14 @@ impl State {
             .copy(&core.device, &mut encoder, &gpu.target_view, &view);
         core.queue.submit(Some(encoder.finish()));
         core.queue.present(frame);
+        if std::env::var_os("RUNIX_TRACE").is_some() {
+            eprintln!(
+                "present parse={:?} acquire={:?} total={:?}",
+                parsed,
+                acquired - parsed,
+                started.elapsed()
+            );
+        }
         0
     }
 }

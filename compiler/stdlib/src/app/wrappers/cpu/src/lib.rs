@@ -19,31 +19,20 @@ fn draw_text(
     color: Color,
     transform: Affine,
 ) {
-    let mut font_cx = parley::FontContext::new();
-    let mut layout_cx: parley::LayoutContext<()> = parley::LayoutContext::new();
-    let mut builder = layout_cx.ranged_builder(&mut font_cx, text, 1.0, true);
-    builder.push_default(parley::StyleProperty::FontSize(size));
-    let mut layout = builder.build(text);
-    layout.break_all_lines(None);
-    for line in layout.lines() {
-        for item in line.items() {
-            if let parley::PositionedLayoutItem::GlyphRun(run) = item {
-                let shaped = run.run();
-                let glyphs = run.positioned_glyphs().map(|g| Glyph {
-                    id: g.id,
-                    x: g.x,
-                    y: g.y,
-                });
-                ctx.set_paint(color);
-                ctx.set_transform(transform * Affine::translate((x, y)));
-                let _ = ctx
-                    .glyph_run(resources, shaped.font())
-                    .font_size(shaped.font_size())
-                    .fill_glyphs(glyphs);
-                ctx.set_transform(transform);
-            }
-        }
+    for run in scene::shape(text, size) {
+        let glyphs = run.glyphs.iter().map(|g| Glyph {
+            id: g.id,
+            x: g.x,
+            y: g.y,
+        });
+        ctx.set_paint(color);
+        ctx.set_transform(transform * Affine::translate((x, y)));
+        let _ = ctx
+            .glyph_run(resources, &run.font)
+            .font_size(run.size)
+            .fill_glyphs(glyphs);
     }
+    ctx.set_transform(transform);
 }
 
 #[no_mangle]
