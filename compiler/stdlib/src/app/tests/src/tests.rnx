@@ -180,17 +180,28 @@ fn Main(): Int {
     let kitList = kitApp.tree().find(Role.list, "Rows")
     let downs = 0
     while downs < 30 {
-        kitApp.scrollAt(kitApp.tree().x[kitList] + 2, kitApp.tree().y[kitList] + 2, 45.0)
+        let batch = 0
+        while batch < 5 {
+            kitApp.scrollAt(kitApp.tree().x[kitList] + 2, kitApp.tree().y[kitList] + 2, 45.0)
+            batch += 1
+        }
         kitApp.frame()
         downs += 1
     }
     let downNodes = kitApp.tree().len()
+    let downOffset = kitApp.tree().scrollOf(Node(tree: kitApp.tree(), id: kitList))
     let ups = 0
-    while ups < 35 {
-        kitApp.scrollAt(kitApp.tree().x[kitList] + 2, kitApp.tree().y[kitList] + 2, 0.0 - 45.0)
+    while ups < 8 {
+        let batch = 0
+        while batch < 5 {
+            kitApp.scrollAt(kitApp.tree().x[kitList] + 2, kitApp.tree().y[kitList] + 2, 0.0 - 45.0)
+            batch += 1
+        }
         kitApp.frame()
         ups += 1
     }
+    let upOffset = kitApp.tree().scrollOf(Node(tree: kitApp.tree(), id: kitList))
+    failed = check(upOffset < downOffset, "batched scroll up reduces the offset: " + downOffset.toString() + " -> " + upOffset.toString(), failed)
     failed = check(kitApp.tree().snapshot().contains("row 0"), "scrolled back to the top", failed)
     failed = check(kitApp.tree().len() < downNodes + 10, "scroll does not leak nodes: " + downNodes.toString() + " -> " + kitApp.tree().len().toString(), failed)
 

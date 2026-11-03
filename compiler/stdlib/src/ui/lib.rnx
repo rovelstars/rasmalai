@@ -597,6 +597,8 @@ pub class Tree {
     }
 
     fn resetNode(id: Int, r: Role, n: String, k: String) {
+        let wasList = this.role[id] == roleId(Role.list)
+        let keepScroll = wasList && r == Role.list
         this.role[id] = roleId(r)
         this.name[id] = n
         this.key[id] = k
@@ -619,7 +621,9 @@ pub class Tree {
         this.textWrapV[id] = textWraps(roleId(r))
         this.disabledV[id] = false
         this.clipV[id] = false
-        this.scrollV[id] = 0.0
+        if !keepScroll {
+            this.scrollV[id] = 0.0
+        }
         this.scrollMax[id] = 0.0
         this.numberV[id] = 0.0
         this.offsetYV[id] = 0.0
@@ -2342,9 +2346,9 @@ pub class Build {
         rowH: Int,
         viewport: Int
     ): VirtualRange {
-        let scroll = this.tree.scrollForKey(k)
         this.key(k)
         let list = this.tree.newNode(Role.list, label)
+        let scroll = this.tree.scrollOf(list)
         this.tree.setFixedHeight(list.id, viewport)
         this.tree.setClip(list.id, true)
         this.tree.setScroll(list.id, scroll, Float(total * rowH - viewport))
