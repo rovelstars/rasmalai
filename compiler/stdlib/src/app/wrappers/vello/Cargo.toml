@@ -8,8 +8,8 @@ name = "vello_cabi"
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-vello = "0.11"
-wgpu = "30"
+vello = { version = "0.11", default-features = false, features = ["wgpu"] }
+wgpu = { version = "30", default-features = false, features = ["std", "vulkan", "wgsl"] }
 pollster = "0.4"
 scene = { path = "../scene" }
 
