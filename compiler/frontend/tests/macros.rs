@@ -224,6 +224,18 @@ fn phase_a_node_cap_trips() {
 }
 
 #[test]
+fn phase_a_large_source_does_not_trip_the_cap() {
+    let dir = tmp();
+    let mut body = String::new();
+    for i in 0..(NODE_CAP + 1) {
+        body.push_str(&format!("let a{i} = {i};\n    "));
+    }
+    let src = format!("fn Main(): Int {{\n    {body}let v = vec![1, 2];\n    return v[0];\n}}");
+    let (_, diags) = expand_a(&src, &dir);
+    assert!(!diags.iter().any(|d| d.code == Code::E119), "{diags:?}");
+}
+
+#[test]
 fn phase_a_iter_cap_is_eight() {
     assert_eq!(ITER_CAP, 8);
 }
