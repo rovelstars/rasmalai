@@ -49,8 +49,34 @@ fn repo() -> PathBuf {
         .expect("repo root")
 }
 
+fn wrapper_has_symbol(lib: &str, symbol: &str) -> bool {
+    let path = repo().join(".rnx-cache/wrappers").join(lib);
+    if !path.exists() {
+        return false;
+    }
+    let Ok(out) = Command::new("nm")
+        .args(["-D", path.to_string_lossy().as_ref()])
+        .output()
+    else {
+        return false;
+    };
+    out.status.success()
+        && String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|line| line.split_whitespace().last() == Some(symbol))
+}
+
 #[test]
 fn ui_script_runs_headless_through_run() {
+    let wrappers = repo().join(".rnx-cache/wrappers");
+    if ["libcpu_cabi.so", "libhost_cabi.so", "libparley_cabi.so"]
+        .iter()
+        .any(|lib| !wrappers.join(lib).exists())
+        || !wrapper_has_symbol("libparley_cabi.so", "parley_layout")
+    {
+        eprintln!("skipping: native wrappers are not built for this compiler");
+        return;
+    }
     let dir = crate::scratch::dir("mcp-ui");
     std::fs::write(dir.join("main.rnx"), APP).unwrap();
     std::fs::write(dir.join("Project.config"), CONFIG).unwrap();

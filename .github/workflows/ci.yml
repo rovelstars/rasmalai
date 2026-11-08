@@ -247,6 +247,9 @@ jobs:
       - name: Build wrappers and run the probes
         run: sh compiler/stdlib/src/app/tools/ci-wrappers.sh
 
+      - name: MCP UI script test
+        run: cargo test --release -p cli --test mcp_ui
+
   website:
     name: website checks and build
     runs-on: ubuntu-24.04
