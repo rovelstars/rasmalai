@@ -9,8 +9,8 @@
 // keep resolving the older compatible line instead of installing bytes
 // they cannot compile.
 //
-//   RNX_BIN=/path/to/rnx SITE_URL=https://... PUBLISH_TOKEN=... node scripts/publish-std.mjs
-// RNX_BIN defaults to `cargo run -q -p cli` from the repo root.
+//   SITE_URL=https://... PUBLISH_TOKEN=... node scripts/publish-std.mjs
+// Uses `target/release/rnx` when present, otherwise `cargo run -q -p cli`.
 import { readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,10 +27,14 @@ if (!TOKEN) {
 	console.error('publish-std: missing PUBLISH_TOKEN');
 	process.exit(1);
 }
-const rnxBin = process.env['RNX_BIN'];
+const rnxBin = join(repo, 'target', 'release', 'rnx');
 const rnx = (args, cwd) => {
-	if (rnxBin) return execFileSync(rnxBin, args, { cwd, stdio: 'pipe' });
-	return execFileSync('cargo', ['run', '-q', '-p', 'cli', '--', ...args], { cwd: repo, stdio: 'pipe' });
+	if (existsSync(rnxBin)) return execFileSync(rnxBin, args, { cwd, stdio: 'pipe' });
+	return execFileSync(
+		'cargo',
+		['run', '-q', '--manifest-path', join(repo, 'compiler', 'cli', 'Cargo.toml'), '--', ...args],
+		{ cwd, stdio: 'pipe' },
+	);
 };
 
 const cliVersion = readFileSync(join(repo, 'compiler', 'cli', 'Cargo.toml'), 'utf8').match(

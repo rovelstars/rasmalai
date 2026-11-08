@@ -3,7 +3,16 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
 out="$root/target/probe"
-rnx=${RNX_BIN:-rnx}
+app=$(cd "$root/../.." && pwd)
+repo=$(cd "$app/../../../.." && pwd)
+if [ -x "$repo/target/release/rnx" ]; then
+    rnx=$repo/target/release/rnx
+elif [ -x "$repo/target/debug/rnx" ]; then
+    rnx=$repo/target/debug/rnx
+else
+    echo "no rnx build found; run: cargo build --release -p cli" >&2
+    exit 1
+fi
 
 mkdir -p "$out"
 cargo build --release --manifest-path "$root/Cargo.toml"

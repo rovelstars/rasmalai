@@ -603,7 +603,7 @@ token. `RNX_TOKEN` is the convention, not a reserved name.
 These names are not public. They exist for the repository's own scripts and
 tests and can change or disappear.
 
-- `RNX_BIN`, `RNX_STAGE_DIR`, `RNX_BACKEND`: CI wrapper scripts.
+- `RNX_STAGE_DIR`, `RNX_BACKEND`: CI wrapper scripts.
 - `RNX_DEP_CACHE`, `RNX_STDLIB_API`: repository and MCP internals.
 - `RNX_TASK`, `RNX_TARGET`, `RNX_TASK_DIR`, `RNX_TASK_ORIGIN`,
   `RNX_TASK_PACKAGE_DIR`, `RNX_ALLOW_TASKS`: set by `rnx task` for its child

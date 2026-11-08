@@ -10,7 +10,8 @@ symbol resolution, GPU execution, and readback.
 ## Run the probe
 
 ```sh
-RNX_BIN=/path/to/rnx ./probe/build.sh
+cargo build --release -p cli
+./probe/build.sh
 ```
 
 Expected output:

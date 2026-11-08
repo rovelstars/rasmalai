@@ -3,12 +3,13 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 app=$(dirname "$here")
 repo=$(cd "$app/../../../.." && pwd)
-if [ -n "${RNX_BIN:-}" ]; then
-    rnx=$RNX_BIN
-elif [ -x "$repo/target/release/rnx" ]; then
+if [ -x "$repo/target/release/rnx" ]; then
     rnx=$repo/target/release/rnx
-else
+elif [ -x "$repo/target/debug/rnx" ]; then
     rnx=$repo/target/debug/rnx
+else
+    echo "no rnx build found; run: cargo build --release -p cli" >&2
+    exit 1
 fi
 prefix=${WRAPPER_PREFIX:-$repo/.rnx-cache/wrappers}
 backend=${RNX_BACKEND:-cranelift}
@@ -20,7 +21,6 @@ if [ -z "${RNX_VENDOR_DIR:-}" ]; then
 else
     export RNX_VENDOR_DIR
 fi
-export RNX_BIN="$rnx"
 
 media_dir="$repo/.rnx-cache/media-ci"
 media_video=""
