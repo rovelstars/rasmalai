@@ -75,8 +75,8 @@ fn fresh_def(module: &Module, ins: &Instr, local: Local) -> bool {
                         return false;
                     }
                     // Every function return is an owned value in this
-                    // language. Body-based freshness misses precompiled
-                    // dependency functions, so the return slot is enough.
+                    // language. The retain pass makes a borrowed return
+                    // owned before the call, so the return slot is enough.
                     let _ = id;
                     true
                 }
@@ -284,7 +284,108 @@ fn last_owning_use(
     }
 }
 
+fn return_local_owned(func: &Function, root: Local) -> bool {
+    let mut count = 0;
+    let mut site = None;
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for (ii, ins) in block.instrs.iter().enumerate() {
+            if matches!(ins, Instr::Copy { .. } | Instr::Cast { .. }) {
+                continue;
+            }
+            let mut dsts = Vec::new();
+            crate::opt::instr_dsts(ins, &mut dsts);
+            if let Instr::Call { err: Some(e), .. } = ins {
+                dsts.push(*e);
+            }
+            if dsts.contains(&root) {
+                count += 1;
+                site = Some((bi, ii));
+            }
+        }
+        if let Terminator::BrErr { catch_bind, .. } = &block.term {
+            if *catch_bind == root {
+                count += 1;
+            }
+        }
+    }
+    if count != 1 {
+        return false;
+    }
+    let Some((bi, ii)) = site else {
+        return false;
+    };
+    matches!(
+        &func.blocks[bi].instrs[ii],
+        Instr::ObjNew { .. }
+            | Instr::ArrayNew { .. }
+            | Instr::EnumNew { .. }
+            | Instr::ClosureNew { .. }
+            | Instr::Concat { .. }
+            | Instr::ToStr { .. }
+            | Instr::ArrayPop { .. }
+            | Instr::GetField { .. }
+            | Instr::GetFieldByName { .. }
+            | Instr::ArrayGet { .. }
+            | Instr::EnumPayload { .. }
+            | Instr::GenRefGet { .. }
+            | Instr::Call { .. }
+    )
+}
+
+fn retain_borrowed_returns(module: &mut Module, fi: usize) -> bool {
+    let func = &module.functions[fi];
+    if func.name.ends_with(".init") {
+        return false;
+    }
+    let mut inserts: Vec<(usize, Vec<Local>)> = Vec::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        let Terminator::Ret(vals) = &block.term else {
+            continue;
+        };
+        let existing: BTreeSet<Local> = block
+            .instrs
+            .iter()
+            .rev()
+            .take_while(|ins| matches!(ins, Instr::Retain { .. }))
+            .filter_map(|ins| match ins {
+                Instr::Retain { obj, .. } => Some(*obj),
+                _ => None,
+            })
+            .collect();
+        let mut borrows = Vec::new();
+        for v in vals {
+            if existing.contains(v) {
+                continue;
+            }
+            if !matches!(func.locals.get(*v as usize), Some(LirType::Obj(_))) {
+                continue;
+            }
+            let root = alias_root(func, *v).unwrap_or(*v);
+            if !return_local_owned(func, root) {
+                borrows.push(*v);
+            }
+        }
+        if !borrows.is_empty() {
+            inserts.push((bi, borrows));
+        }
+    }
+    if inserts.is_empty() {
+        return false;
+    }
+    let func = &mut module.functions[fi];
+    for (bi, borrows) in inserts {
+        for obj in borrows {
+            func.blocks[bi].instrs.push(Instr::Retain {
+                span: UNKNOWN_SPAN,
+                obj,
+            });
+        }
+    }
+    true
+}
+
 pub fn sweep_temps(module: &mut Module, fi: usize) -> bool {
+    retain_borrowed_returns(module, fi);
     let func = &module.functions[fi];
     let mut defs: BTreeMap<Local, (usize, usize)> = BTreeMap::new();
     let mut def_count: BTreeMap<Local, usize> = BTreeMap::new();

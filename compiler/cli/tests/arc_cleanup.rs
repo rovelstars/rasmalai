@@ -425,3 +425,29 @@ fn loop_forwarded_receiver_is_released_once_per_trip() {
         assert!(!out.contains("bad"), "{backend}: {out}");
     }
 }
+
+const DISCARDED_BORROWED_RETURN: &str = r#"class C {
+    let x: Int = 1
+    fn bump(): C {
+        print("touch")
+        return this
+    }
+    deinit { print("drop") }
+}
+
+fn Main(): Int {
+    let c = new C()
+    c.bump()
+    print("alive", c.x)
+    return 0
+}
+"#;
+
+#[test]
+fn discarded_method_return_keeps_receiver_alive() {
+    for backend in ["interpreter", "cranelift", "llvm"] {
+        let out = run(DISCARDED_BORROWED_RETURN, backend);
+        assert!(out.contains("alive 1"), "{backend}: {out}");
+        assert_eq!(out.matches("drop").count(), 1, "{backend}: {out}");
+    }
+}
