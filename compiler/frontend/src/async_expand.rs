@@ -2165,6 +2165,8 @@ fn stmt_has_sync_wait(s: &Stmt) -> bool {
                 || default.as_ref().map(|d| d.iter().any(|x| stmt_has_sync_wait(&x.node))).unwrap_or(false)
         }
         Stmt::Defer(b) | Stmt::UnsafeBlock(b) => block_has_sync_wait(b),
+        Stmt::Slot { body, .. } => block_has_sync_wait(body),
+        Stmt::Spread { value, .. } => expr_has_sync_wait(&value.node),
         Stmt::Guard { value, otherwise, .. } => {
             expr_has_sync_wait(&value.node) || block_has_sync_wait(otherwise)
         }

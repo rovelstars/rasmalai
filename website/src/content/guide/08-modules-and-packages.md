@@ -97,6 +97,8 @@ The cache is the offline story: with a seeded machine, builds never touch the ne
 
 The web playground works the same way, minus the filesystem. Its compiler engine downloads first, then preloads `@std/prelude` and fetches each further `@std/*` import from the same site's registry at the engine-pinned version, caching every module in the browser beside the engine bytes. Module paths stay identical, so code that checks in the playground checks the same on the command line.
 
+Under `npm run dev`, the playground reads `@std/*` from `compiler/stdlib/src` in the checkout and skips the browser cache. The local registry route is preferred over the seeded database, so a stdlib edit is visible on the next run without publishing or restarting the site.
+
 A taste of the platform side: child processes and OS queries compose like everything else:
 
 ```rnx

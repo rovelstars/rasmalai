@@ -124,9 +124,6 @@ pub unsafe extern "C" fn rnx_free(ptr: *mut u8, size: usize) {
         let base = ptr.sub(HEADER_LEN);
         let (stored_size, stored_align) = read_header(base);
         if stored_size != size {
-            if std::env::var("RNX_FREE_DEBUG").is_ok() {
-                eprintln!("RNX_FREE_DEBUG ptr={ptr:?} want={size} stored={stored_size}");
-            }
             rnx_panic(
                 b"rnx_free size mismatch\0".as_ptr(),
                 "rnx_free size mismatch".len(),

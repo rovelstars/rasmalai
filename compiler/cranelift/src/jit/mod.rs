@@ -1,9 +1,10 @@
+pub(super) use cranelift_codegen::control::ControlPlane;
 pub(super) use cranelift_codegen::ir::{types, AbiParam, Function as ClFunction, InstBuilder, MemFlagsData, Signature, StackSlotData, StackSlotKind, UserFuncName};
 pub(super) use cranelift_codegen::isa::CallConv;
-pub(super) use cranelift_codegen::settings;
+pub(super) use cranelift_codegen::{settings, Context};
 pub(super) use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 pub(super) use cranelift_jit::{JITBuilder, JITModule};
-pub(super) use cranelift_module::{default_libcall_names, DataDescription, DataId, FuncId, Linkage, Module};
+pub(super) use cranelift_module::{default_libcall_names, DataDescription, DataId, FuncId, Linkage, Module, ModuleReloc};
 pub(super) use diagnostics::{Code, Diagnostic};
 pub(super) use lir::instr::{Module as LirModule, Function as LirFunction, *};
 pub(super) use std::collections::{BTreeMap, BTreeSet};
@@ -340,6 +341,10 @@ impl Jit {
 
     pub fn compile_with_timings(lir: &LirModule) -> Result<(Jit, CodegenTimings), Diagnostic> {
         Self::compile_inner_timed(lir, false, 0)
+    }
+
+    pub fn compile_with_timings_jobs(lir: &LirModule, jobs: usize) -> Result<(Jit, CodegenTimings), Diagnostic> {
+        Self::compile_inner_timed_jobs(lir, false, 0, jobs)
     }
 
     pub fn slot_of(&self, name: &str) -> Option<FunctionSlotId> {

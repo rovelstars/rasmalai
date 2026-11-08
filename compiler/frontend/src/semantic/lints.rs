@@ -192,6 +192,8 @@ fn stmt_uses_this(s: &Stmt) -> bool {
         }
         Stmt::Defer(b) => block_uses_this(b),
         Stmt::UnsafeBlock(b) => block_uses_this(b),
+        Stmt::Slot { body, .. } => block_uses_this(body),
+        Stmt::Spread { value, .. } => expr_uses_this(&value.node),
         Stmt::Guard { value, .. } => expr_uses_this(&value.node),
         Stmt::Try { body, catch, .. } => {
             block_uses_this(body)

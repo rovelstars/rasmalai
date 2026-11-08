@@ -1348,6 +1348,8 @@ impl IsoCheck<'_> {
                 }
             }
             A::Stmt::UnsafeBlock(b) => self.block(b),
+            A::Stmt::Slot { body, .. } => self.block(body),
+            A::Stmt::Spread { value, .. } => self.expr(value),
             A::Stmt::Break
             | A::Stmt::Continue
             | A::Stmt::Fallthrough
@@ -3917,6 +3919,8 @@ impl Rewriter<'_> {
                 }
             }
             A::Stmt::UnsafeBlock(b) => self.block(b),
+            A::Stmt::Slot { body, .. } => self.block(body),
+            A::Stmt::Spread { value, .. } => self.expr(&mut value.node),
             A::Stmt::Break | A::Stmt::Continue | A::Stmt::Fallthrough | A::Stmt::Pass | A::Stmt::Empty => {}
         }
     }

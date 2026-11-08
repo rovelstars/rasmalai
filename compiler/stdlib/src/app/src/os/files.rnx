@@ -1,0 +1,22 @@
+//! File helpers for app code.
+
+import fs from "@std/fs"
+
+/** Caller-path file reads and writes. */
+pub class Files {
+    static readText(path: String): String {
+        return fs.readText(path).unwrapOr("")
+    }
+
+    static writeText(path: String, text: String): Bool {
+        return fs.writeText(path, text, .Overwrite).isOk()
+    }
+
+    static exists(path: String): Bool {
+        return fs.exists(path)
+    }
+
+    static join(dir: String, name: String): String {
+        return dir + "/" + name
+    }
+}

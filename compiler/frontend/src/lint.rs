@@ -427,6 +427,11 @@ impl Walker {
                 self.check_empty(block, stmt.span);
                 self.walk_block(block, dead);
             }
+            A::Stmt::Slot { body, .. } => {
+                self.check_empty(body, stmt.span);
+                self.walk_block(body, dead);
+            }
+            A::Stmt::Spread { value, .. } => self.walk_expr(value),
             A::Stmt::Break | A::Stmt::Continue | A::Stmt::Fallthrough | A::Stmt::Pass | A::Stmt::Empty => {}
         }
     }

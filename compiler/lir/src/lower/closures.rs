@@ -219,12 +219,16 @@ impl<'a> Builder<'a> {
             let local = (p.params.len() + j) as Local;
             if cap.is_this {
                 self.this_alias = Some(local);
+                self.closure_captures.insert(local);
             } else if let Some(n) = &cap.name {
                 self.def(n.clone(), local, simple_of(&cap.ty), cap.ty.clone());
                 if let Some(r) = cap.ret.clone() {
                     if Self::any_box_tag(&r).is_some() {
                         self.closure_ret.insert(local, r);
                     }
+                }
+                if heap_type(&cap.ty) {
+                    self.closure_captures.insert(local);
                 }
             }
         }
@@ -238,7 +242,11 @@ impl<'a> Builder<'a> {
                 let rvt = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
                 let fresh = matches!(e.node, A::Expr::Array(_));
                 self.check_array_view(&rvt, &rt, fresh, e.span, "return value")?;
+                let raw = v;
                 let v = self.coerce_to_slot(v, &rt, e.span);
+                if v == raw && self.closure_captures.contains(&raw) && heap_type(&rvt) {
+                    self.emit(Instr::Retain { span: e.span, obj: raw });
+                }
                 self.emit_run_defers(0);
                 self.set_term(Terminator::Ret(vec![v]));
                 Ok(())

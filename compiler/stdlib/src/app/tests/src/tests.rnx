@@ -1,6 +1,75 @@
-import { App, Renderer, Surface, measureText } from "@std/app"
-import { Align, Build, Canvas, Key, Node, Role, rgba } from "@std/ui"
+import { App, AppBundle, AppConfig, AppFiles, Appearance, Driver, Gamepad, Mcp, Notifications, Renderer, Route, RouteMatch, Router, Surface, ViewRouter, WindowSet, Worker, measureText, registerFont } from "@std/app"
+import { AudioPlayer, AudioState, CameraStream, FilePicker, VideoPlayer } from "@std/app/media"
+import { Align, Build, Camera, Canvas, Card, Component, Curve, Decay, Display, DisplayList, DragData, ElevationToken, FontFace, FontFamily, FontRegistry, GradientStop, Image, ImageFit, Key, Keyframe, KeyframeTrack, MotionToken, Node, Page, Painter, Panel, Path, Place, Presence, RadiusToken, Reactive, RichText, RichTextField, Role, Section, SpaceScale, SpaceToken, Stack, FrameClock, Text, TextEngine, TextDecoration, TextField, TextSpan, Theme, Transition, Tree, TypeToken, View, ViewKind, imageRect, imageSize, pngSize, svgSize, rgba } from "@std/ui"
 import { ByteBuffer } from "@std/bytes"
+import { Map } from "@std/collections"
+import { Math } from "@std/math"
+import { Clock } from "@std/time"
+import { Env } from "@std/env"
+import fs from "@std/fs"
+import { Thread } from "@std/sync"
+import {
+    fn host_surface_socket_test_frames(path: Pointer<Byte>, len: Int): Int as surfaceSocketTestFrames,
+    fn host_surface_socket_test_last_id(path: Pointer<Byte>, len: Int): Int as surfaceSocketTestLastId,
+    fn host_surface_socket_test_last_list(path: Pointer<Byte>, len: Int): Int as surfaceSocketTestLastList,
+    fn host_surface_socket_test_last_packet(path: Pointer<Byte>, len: Int): Int as surfaceSocketTestLastPacket,
+    fn host_surface_socket_test_start(path: Pointer<Byte>, len: Int): Int as surfaceSocketTestStart,
+} from native "host_cabi"
+import { FontHash, FontSource, Fonts } from "@std/app/fonts"
+import { Google } from "@std/app/fonts/google"
+import { Platform } from "@std/app/os/platform"
+import { NotificationCenter } from "@std/app/os/notifications"
+import { Files } from "@std/app/os/files"
+import { Worker as OsWorker } from "@std/app/os/workers"
+
+fn bytesEqual(a: ByteBuffer, b: ByteBuffer): Bool {
+    if a.length() != b.length() {
+        return false
+    }
+    let i = 0
+    while i < a.length() {
+        if a.readUInt8(i) != b.readUInt8(i) {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+fn b0(): Build {
+    let t = new Tree(TextEngine.fixed())
+    t.beginFrame()
+    return new Build(t)
+}
+
+/** A valid 4x2 RGBA PNG, embedded so the test needs no fixture file. */
+fn tinyPng(): ByteBuffer {
+    return ByteBuffer.fromArray([
+        137, 80, 78, 71, 13, 10, 26, 10,
+        0, 0, 0, 13, 73, 72, 68, 82,
+        0, 0, 0, 4, 0, 0, 0, 2,
+        8, 6, 0, 0, 0, 127, 168, 125, 99,
+        0, 0, 0, 24, 73, 68, 65, 84,
+        120, 218, 99, 248, 207, 192, 240, 31, 12, 25, 254, 3, 1, 3, 148, 11, 229, 128, 24, 0, 36, 12, 17, 239, 162, 10, 216, 201,
+        0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ])
+}
+
+fn countKind(list: DisplayList, kind: Int): Int {
+    let total = 0
+    let i = 0
+    while i < list.recordCount() {
+        if list.kindAt(i) == kind {
+            total += 1
+        }
+        i += 1
+    }
+    return total
+}
+
+fn workerAnswer(): Int {
+    return 42
+}
 
 class Counter {
     let n: Int = 0
@@ -14,9 +83,111 @@ class SliderState {
     let v: Float = 0.25
 }
 
+class A11yState {
+    let n: Int = 0
+    let v: Float = 0.2
+    let name: String = ""
+}
+
 class KitState {
     let v: Float = 0.5
     let selected: Int = -1
+}
+
+class GestureProbe {
+    let longPresses: Int = 0
+    let taps: Int = 0
+    let peak: Float = 1.0
+    let rotation: Float = 0.0
+}
+
+class DropProbe {
+    let events: Int = 0
+    let fileEvents: Int = 0
+    let innerEvents: Int = 0
+    let outerEvents: Int = 0
+    let kind: String = ""
+    let text: String = ""
+}
+
+class LinkProbe {
+    let url: String = ""
+    let count: Int = 0
+}
+
+class RichProbe {
+    let value: String = ""
+    let count: Int = 0
+    let n: Int = 0
+    let start: Int = -1
+    let end: Int = -1
+    let weight: Int = 0
+}
+
+fn dropTestView(state: DropProbe): View {
+    let card = Section(gap: 4, padding: 12) {
+        Text("drag me", align: Align.start)
+    }
+    card.named("card")
+    card.draggable("text", "hello drop")
+
+    let textZone = Section(gap: 4, padding: 8) {
+        Text("accepts text", align: Align.start)
+    }
+    textZone.named("text zone")
+    textZone.dropTarget("text", (d: DragData) => {
+        state.events += 1
+        state.kind = d.kind
+        state.text = d.text
+    })
+
+    let fileZone = Section(gap: 4, padding: 8) {
+        Text("accepts file", align: Align.start)
+    }
+    fileZone.named("file zone")
+    fileZone.dropTarget("file", (d: DragData) => {
+        state.fileEvents += 1
+    })
+
+    let inner = Section(gap: 2, padding: 4) {
+        Text("inner", align: Align.start)
+    }
+    inner.named("inner zone")
+    inner.dropTarget("text", (d: DragData) => {
+        state.innerEvents += 1
+    })
+
+    let outer = Section(gap: 2, padding: 4) {
+        Text("outer", align: Align.start)
+        Place(inner, 20, 20, 120, 50)
+    }
+    outer.named("outer zone")
+    outer.dropTarget("text", (d: DragData) => {
+        state.outerEvents += 1
+    })
+
+    let plain = Text("plain drag", align: Align.start)
+    plain.named("plain")
+
+    let page = Page(padding: 0, gap: 0) {
+        Place(card, 20, 20, 180, 60)
+        Place(textZone, 20, 100, 180, 90)
+        Place(fileZone, 220, 100, 180, 90)
+        Place(outer, 20, 210, 240, 100)
+        Place(plain, 300, 20, 120, 30)
+    }
+    return page
+}
+
+fn dragToPoint(t: Tree, x0: Int, y0: Int, x1: Int, y1: Int) {
+    t.pointerDownId(0, x0, y0, 0)
+    t.pointerMoveTimed(0, (x0 + x1) / 2, (y0 + y1) / 2, 16000000)
+    t.pointerMoveTimed(0, x1, y1, 32000000)
+}
+
+fn tapAt(t: Tree, x: Int, y: Int) {
+    t.pointerDownId(0, x, y, 0)
+    t.pointerUpId(0, x, y)
 }
 
 fn widestFillOf(list: ByteBuffer, color: Int): Int {
@@ -74,9 +245,200 @@ fn check(ok: Bool, msg: String, failed: Int): Int {
     return failed + 1
 }
 
-fn Main(): Int {
-    let failed = 0
+// Keep large LLVM JIT bodies split: one very large Main miscompiles the
+// text-editing block into an out-of-bounds array index.
+fn testTextEditing(failed: Int): Int {
+    let textState = new TextState()
+    let typing = App.launch("Type", 320, 120, (b: Build): Node => {
+        let root = b.column()
+        root.addChild(b.textField(textState.value, "name", (v: String) => { textState.value = v }))
+        return root
+    })
+    typing.frame()
+    let fieldId = typing.tree().find(Role.textbox, "name")
+    let fieldNode = Node(tree: typing.tree(), id: fieldId)
+    typing.tree().focusOn(fieldNode)
+    typing.tree().typeText(fieldNode, "e\u{301}x")
+    failed = check(typing.tree().valueOf(fieldNode) == "e\u{301}x", "typed unicode", failed)
+    typing.tree().keyDown(fieldNode, Key.backspace)
+    failed = check(typing.tree().valueOf(fieldNode) == "e\u{301}", "backspace removed one cluster", failed)
+    typing.tree().keyDown(fieldNode, Key.backspace)
+    failed = check(typing.tree().valueOf(fieldNode) == "", "backspace removed the combining pair", failed)
 
+    typing.tree().typeText(fieldNode, "hello")
+    typing.tree().selectAllText(fieldNode)
+    failed = check(typing.copy(), "copy selected text", failed)
+    typing.tree().setValue(fieldNode, "")
+    typing.paste()
+    failed = check(typing.tree().valueOf(fieldNode) == "hello", "paste restores text: " + typing.tree().valueOf(fieldNode), failed)
+    typing.tree().selectAllText(fieldNode)
+    failed = check(typing.cut(), "cut selected text", failed)
+    failed = check(typing.tree().valueOf(fieldNode) == "", "cut clears the field", failed)
+    typing.paste()
+    failed = check(typing.tree().valueOf(fieldNode) == "hello", "paste after cut restores text", failed)
+    return failed
+}
+
+// Keep the large LLVM JIT body split; this block also isolates span style tests.
+fn testSpanStyles(failed: Int): Int {
+    let styleTree = new Tree(TextEngine.fixed())
+    styleTree.beginFrame()
+    let styleSpans: Array<TextSpan> = [
+        new TextSpan(0, 3, 700, false, 0.0, rgba(1, 2, 3, 255), FontFamily.serif, TextDecoration.underline),
+    ]
+    let styleRoot = View.mount(styleTree, RichText("abc", styleSpans))
+    styleTree.endFrame()
+    let mountedSpans = styleTree.textSpansOf(styleRoot.id)
+    failed = check(mountedSpans.length() == 1, "mounted text keeps its span", failed)
+    if mountedSpans.length() == 1 {
+        failed = check(mountedSpans[0].family == FontFamily.serif, "span family survives mount", failed)
+        failed = check(mountedSpans[0].decoration == TextDecoration.underline, "span decoration survives mount", failed)
+    }
+
+    let familyTheme = Theme.dark()
+    let underlineColor = rgba(255, 64, 0, 255)
+    let strikeColor = rgba(0, 160, 255, 255)
+    let decoSpans = [
+        new TextSpan(0, 3, 400, false, 0.0, -1, FontFamily.serif),
+        new TextSpan(4, 7, 400, false, 0.0, underlineColor, FontFamily.mono, TextDecoration.underline),
+        new TextSpan(8, 13, 400, false, 0.0, strikeColor, FontFamily.sans, TextDecoration.strikethrough),
+    ]
+    let familyTree = new Tree(TextEngine.fixed())
+    familyTree.beginFrame()
+    let familyRoot = View.mount(familyTree, RichText("one two three", decoSpans))
+    familyTree.endFrame()
+    familyTree.layout(familyRoot, 400)
+    let familyList = Painter.paint(familyTree, 400, 80, familyTheme)
+    let serifLane = false
+    let monoLane = false
+    let plainLane = false
+    let underlineFills = 0
+    let strikeFills = 0
+    let fI = 0
+    while fI < familyList.recordCount() {
+        if familyList.kindAt(fI) == 2 {
+            if familyList.textAt(fI) == "one" {
+                serifLane = true
+                failed = check(familyList.eAt(fI) == 1000400.0, "serif e lane: " + familyList.eAt(fI).toString(), failed)
+            }
+            if familyList.textAt(fI) == "two" {
+                monoLane = true
+                failed = check(familyList.eAt(fI) == 2000400.0, "mono e lane: " + familyList.eAt(fI).toString(), failed)
+            }
+            if familyList.textAt(fI) == "three" {
+                plainLane = true
+                failed = check(familyList.eAt(fI) == 400.0, "plain run keeps base e lane: " + familyList.eAt(fI).toString(), failed)
+            }
+        }
+        if familyList.kindAt(fI) == 1 {
+            if familyList.colorAt(fI) == underlineColor {
+                underlineFills += 1
+            }
+            if familyList.colorAt(fI) == strikeColor {
+                strikeFills += 1
+            }
+        }
+        fI += 1
+    }
+    failed = check(serifLane && monoLane && plainLane, "family and decoration runs painted", failed)
+    failed = check(underlineFills == 1, "underline emits one fill: " + underlineFills.toString(), failed)
+    failed = check(strikeFills == 1, "strikethrough emits one fill: " + strikeFills.toString(), failed)
+
+    let richEngine = TextEngine.fixed()
+    let familySplitSpans: Array<TextSpan> = [
+        new TextSpan(0, 3, 400, false, 0.0, -1, FontFamily.serif),
+        new TextSpan(3, 6, 400, false, 0.0, -1, FontFamily.serif, TextDecoration.strikethrough),
+        new TextSpan(6, 9, 400, false, 0.0, -1, FontFamily.mono),
+    ]
+    let familySplit = richEngine.richRows("abcdefghi", 14.0, 0.0, false, 0, false, familySplitSpans, 0.0)
+    failed = check(familySplit.runs.length() == 3, "fixed engine splits on family and decoration: " + familySplit.runs.length().toString(), failed)
+    if familySplit.runs.length() == 3 {
+        failed = check(familySplit.runs[0].start == 0 && familySplit.runs[0].end == 3, "first family run bounds", failed)
+        failed = check(familySplit.runs[1].start == 3 && familySplit.runs[1].end == 6, "decoration change bounds", failed)
+        failed = check(familySplit.runs[2].start == 6 && familySplit.runs[2].end == 9, "family change bounds", failed)
+    }
+
+    return failed
+}
+
+fn testDragDrop(failed: Int): Int {
+    let state = new DropProbe()
+    let app = App.launchView("Drop lab", 480, 400, (): View => dropTestView(state))
+    app.setAnimating(false)
+    app.frame()
+    let t = app.tree()
+    let cardId = t.find(Role.section, "card")
+    let textId = t.find(Role.section, "text zone")
+    let fileId = t.find(Role.section, "file zone")
+    let innerId = t.find(Role.section, "inner zone")
+    let outerId = t.find(Role.section, "outer zone")
+    failed = check(cardId >= 0 && textId >= 0 && fileId >= 0 && innerId >= 0 && outerId >= 0, "the drop test nodes exist", failed)
+    failed = check(t.dropTargetAt(110, 145, "text") == textId, "the text zone accepts the text kind", failed)
+    failed = check(t.dropTargetAt(310, 145, "text") == -1, "the file zone rejects the text kind", failed)
+    failed = check(t.dropTargetAt(104, 259, "text") == innerId, "the nearest nested target wins", failed)
+    failed = check(t.dropTargetAt(450, 380, "text") == -1, "empty space has no target", failed)
+
+    t.clearDropResult()
+    dragToPoint(t, 110, 50, 110, 145)
+    failed = check(t.dragPayload() != null, "dragging a source creates a payload", failed)
+    failed = check(t.dropHover() == textId, "hover tracks the matching target", failed)
+    t.pointerUpId(0, 110, 145)
+    failed = check(state.events == 1, "a matching drop fires once: " + state.events.toString(), failed)
+    failed = check(state.kind == "text" && state.text == "hello drop", "the handler gets the exact payload: " + state.kind + " " + state.text, failed)
+    failed = check(t.dragPayload() == null && t.dropHover() == -1, "the drop clears the payload and hover", failed)
+    failed = check(t.lastDropTarget() == textId, "the drop records its target", failed)
+    failed = check(t.lastDrop() != null, "the drop records its payload", failed)
+
+    t.clearDropResult()
+    dragToPoint(t, 110, 50, 310, 145)
+    failed = check(t.dropHover() == -1, "a rejecting target clears hover", failed)
+    t.pointerUpId(0, 310, 145)
+    failed = check(state.events == 1 && state.fileEvents == 0, "a rejecting target fires nothing", failed)
+    failed = check(t.dragPayload() == null && t.dropHover() == -1, "a rejected drop clears the payload", failed)
+    failed = check(t.lastDropTarget() == -1, "a rejected drop records no target", failed)
+
+    t.clearDropResult()
+    dragToPoint(t, 110, 50, 450, 380)
+    t.pointerUpId(0, 450, 380)
+    failed = check(state.events == 1, "a drop outside any target fires nothing", failed)
+    failed = check(t.lastDropTarget() == -1 && t.dragPayload() == null, "a drop outside records nothing", failed)
+
+    dragToPoint(t, 110, 50, 110, 145)
+    failed = check(t.dragPayload() != null && t.dropHover() == textId, "cancel starts from an active payload", failed)
+    failed = check(t.pointerCancelId(0), "cancel consumes the pointer", failed)
+    failed = check(t.dragPayload() == null && t.dropHover() == -1, "cancel clears the payload and hover", failed)
+    failed = check(state.events == 1, "cancel fires nothing", failed)
+
+    t.pointerDownId(0, 360, 35, 0)
+    t.pointerMoveTimed(0, 420, 60, 16000000)
+    failed = check(t.dragPayload() == null, "a plain drag has no payload", failed)
+    t.pointerUpId(0, 420, 60)
+    failed = check(t.lastDrop() == null && state.events == 1, "a plain drag fires no drop", failed)
+
+    t.clearDropResult()
+    dragToPoint(t, 110, 50, 104, 259)
+    failed = check(t.dropHover() == innerId, "hover resolves the nearest nested target", failed)
+    t.pointerUpId(0, 104, 259)
+    failed = check(state.innerEvents == 1 && state.outerEvents == 0, "the nearest target handles the drop", failed)
+    failed = check(t.lastDropTarget() == innerId, "a nested drop records the inner node", failed)
+
+    let driver = Driver.on(app)
+    let before = state.events
+    failed = check(driver.dragTo("section", "card", "section", "text zone"), "dragTo reports the drop", failed)
+    failed = check(state.events == before + 1, "dragTo fires the target handler", failed)
+    failed = check(!driver.dragTo("section", "card", "section", "file zone"), "dragTo reports a rejected drop", failed)
+    failed = check(state.events == before + 1 && state.fileEvents == 0, "dragTo fires nothing on a rejecting target", failed)
+
+    let script = driver.runScript("drop:section:card:section:text zone")
+    failed = check(script == 0, "the script drop step passes", failed)
+    failed = check(state.events == before + 2, "the script drop fires the handler", failed)
+    let badScript = driver.runScript("drop:section:card:section:file zone")
+    failed = check(badScript == 1, "the script drop step fails on a rejecting target", failed)
+    failed = check(state.events == before + 2, "the failing script drop fires nothing", failed)
+    return failed
+}
+
+fn testAppBasicsAndTheme(failed: Int): Int {
     let app = App.launch("Settings", 320, 240, (b: Build): Node => {
         let root = b.column()
         root.addChild(b.heading("Appearance"))
@@ -100,6 +462,231 @@ fn Main(): Int {
     failed = check(a.records() == b.records(), "same record count", failed)
     failed = check(b.index == a.index + 1, "frame counter advances", failed)
 
+    let themeApp = App.launch("Theme", 200, 100, (b: Build): Node => {
+        return b.column() {
+            b.text("theme")
+        }
+    })
+    themeApp.frame()
+    themeApp.frame()
+    let themeRev = themeApp.themeRevision()
+    themeApp.setTheme(Theme.light())
+    let themed = themeApp.frame()
+    failed = check(themeApp.themeRevision() == themeRev + 1, "a theme change bumps the revision", failed)
+    failed = check(themed.damage().count() == 1 && themed.damage().wAt(0) == 200 && themed.damage().hAt(0) == 100, "a theme change repaints the whole frame", failed)
+
+    let tokens = Theme.dark()
+    failed = check(Int(tokens.type(TypeToken.body).size) == 14, "body type token is 14", failed)
+    failed = check(Int(tokens.type(TypeToken.display).size) == 56, "display type token is 56", failed)
+    failed = check(Int(tokens.type(TypeToken.heading).size) == 20, "heading type token is 20", failed)
+    failed = check(tokens.space(SpaceToken.md) == 12, "space md token is 12", failed)
+    failed = check(tokens.space(SpaceToken.lg) == 16, "space lg token is 16", failed)
+    failed = check(tokens.radius(RadiusToken.md) == 6.0, "control radius token is 6", failed)
+    failed = check(tokens.radius(RadiusToken.lg) == 10.0, "container radius token is 10", failed)
+    failed = check(tokens.radius(RadiusToken.pill) < 0.0, "pill radius is a half-height sentinel", failed)
+    failed = check(tokens.elevation(ElevationToken.level0).blur == 0.0 && tokens.elevation(ElevationToken.level0).alpha == 0.0, "elevation 0 is flat", failed)
+    failed = check(tokens.elevation(ElevationToken.level2).blur == 6.0, "elevation 2 blur is 6", failed)
+    failed = check(tokens.motion(MotionToken.fast).duration == 0.12, "fast motion token", failed)
+    failed = check(tokens.motion(MotionToken.normal).duration == 0.24, "normal motion token", failed)
+    failed = check(tokens.motion(MotionToken.slow).duration == 0.4, "slow motion token", failed)
+    failed = check(tokens.motion(MotionToken.spring).stiffness == 220.0 && tokens.motion(MotionToken.spring).damping == 26.0, "spring motion token keeps the Spring defaults", failed)
+    failed = check(Transition.fast().duration == tokens.motion(MotionToken.fast).duration, "fast transition matches the motion scale", failed)
+
+    let darkTokens = Theme.dark()
+    let lightTokens = Theme.light()
+    let contrastTokens = Theme.highContrast()
+    failed = check(darkTokens.background != lightTokens.background && contrastTokens.background != darkTokens.background && contrastTokens.background != lightTokens.background, "preset backgrounds differ", failed)
+    failed = check(darkTokens.text != lightTokens.text && contrastTokens.text != darkTokens.text && contrastTokens.text != lightTokens.text, "preset text differs", failed)
+    failed = check(contrastTokens.border != darkTokens.border && contrastTokens.border != lightTokens.border, "high contrast border differs", failed)
+    failed = check(darkTokens.type(TypeToken.body).size == lightTokens.type(TypeToken.body).size && darkTokens.type(TypeToken.body).size == contrastTokens.type(TypeToken.body).size, "presets share the body size", failed)
+
+    let compactTokens = Theme.dark().withSpaceScale(SpaceScale.compact())
+    failed = check(compactTokens.space(SpaceToken.md) < darkTokens.space(SpaceToken.md), "compact spacing is tighter", failed)
+    failed = check(compactTokens.type(TypeToken.body).size == darkTokens.type(TypeToken.body).size, "compact keeps the type size", failed)
+
+    let compactTree = new Tree(TextEngine.fixed())
+    compactTree.setTheme(compactTokens)
+    compactTree.beginFrame()
+    let compactBuild = new Build(compactTree)
+    let compactRoot = compactBuild.column()
+    let compactText = compactBuild.text("compact")
+    compactRoot.addChild(compactText)
+    compactTree.endFrame()
+    compactTree.layout(compactRoot, 200)
+    let normalTree = new Tree(TextEngine.fixed())
+    normalTree.beginFrame()
+    let normalBuild = new Build(normalTree)
+    let normalRoot = normalBuild.column()
+    let normalText = normalBuild.text("compact")
+    normalRoot.addChild(normalText)
+    normalTree.endFrame()
+    normalTree.layout(normalRoot, 200)
+    failed = check(compactTree.x[compactText.id] < normalTree.x[normalText.id], "compact padding moves content inward", failed)
+    failed = check(compactTree.h[compactText.id] == normalTree.h[normalText.id], "compact spacing keeps the text height", failed)
+
+    let cardTree = new Tree(TextEngine.fixed())
+    let cardTheme = Theme.dark()
+    cardTree.setTheme(cardTheme)
+    cardTree.beginFrame()
+    let cardRoot = View.mount(cardTree, Card(title: "Lift", elevation: ElevationToken.level2, padding: 12) {
+        Text("shadow body")
+    })
+    cardTree.endFrame()
+    cardTree.layout(cardRoot, 240)
+    let cardList = Painter.paint(cardTree, 240, 160, cardTheme)
+    let shadowSeen = false
+    let frameI = 0
+    while frameI < cardList.recordCount() {
+        if cardList.kindAt(frameI) == 17 {
+            shadowSeen = true
+            failed = check(cardList.eAt(frameI) == cardTheme.radius(RadiusToken.lg), "card shadow uses the token radius", failed)
+            failed = check(cardList.fAt(frameI) == cardTheme.elevation(ElevationToken.level2).blur, "card shadow uses the token blur", failed)
+        }
+        frameI += 1
+    }
+    failed = check(shadowSeen, "an elevated card emits a shadow record", failed)
+
+    let maskTree = new Tree(TextEngine.fixed())
+    maskTree.beginFrame()
+    let maskCard: View = Card(children: [Text("masked body")])
+    maskCard.maskRadius = 18.0
+    let maskRoot = View.mount(maskTree, maskCard)
+    maskTree.endFrame()
+    maskTree.layout(maskRoot, 240)
+    let maskList = Painter.paint(maskTree, 240, 160, Theme.dark())
+    let maskPushes = 0
+    let maskPops = 0
+    let maskPushAt = -1
+    let maskPopAt = -1
+    let maskTextAt = -1
+    let mi = 0
+    while mi < maskList.recordCount() {
+        if maskList.kindAt(mi) == 19 {
+            maskPushes += 1
+            if maskPushAt == -1 {
+                maskPushAt = mi
+            }
+            failed = check(maskList.eAt(mi) == 18.0, "mask push carries the radius", failed)
+        }
+        if maskList.kindAt(mi) == 20 {
+            maskPops += 1
+            if maskPopAt == -1 {
+                maskPopAt = mi
+            }
+        }
+        if maskList.kindAt(mi) == 2 && maskTextAt == -1 {
+            maskTextAt = mi
+        }
+        mi += 1
+    }
+    failed = check(maskPushes == 1 && maskPops == 1, "one mask push and pop", failed)
+    failed = check(maskPushAt != -1 && maskTextAt != -1 && maskPopAt != -1, "mask records surround the text", failed)
+    failed = check(maskPushAt < maskTextAt && maskTextAt < maskPopAt, "the mask wraps its children", failed)
+    failed = check(Display.textOf(maskList.finish(240, 160)).contains("maskPush"), "display text names maskPush", failed)
+
+    let headingA11y = app.accessibility()
+    let headingIndex = headingA11y.find("heading", "Appearance")
+    failed = check(headingIndex >= 0 && headingA11y.at(headingIndex).level == 2, "heading defaults to level two", failed)
+    return failed
+}
+
+fn testWidgetsAndSurface(failed: Int): Int {
+    let blurTree = new Tree(TextEngine.fixed())
+    blurTree.beginFrame()
+    let blurCard: View = Card(children: [Text("blurred body")])
+    blurCard.blurSigma = 6.0
+    let blurRoot = View.mount(blurTree, blurCard)
+    blurTree.endFrame()
+    blurTree.layout(blurRoot, 240)
+    let blurList = Painter.paint(blurTree, 240, 160, Theme.dark())
+    let blurPushes = 0
+    let blurPops = 0
+    let blurPushAt = -1
+    let blurPopAt = -1
+    let blurTextAt = -1
+    let bi = 0
+    while bi < blurList.recordCount() {
+        if blurList.kindAt(bi) == 21 {
+            blurPushes += 1
+            if blurPushAt == -1 {
+                blurPushAt = bi
+            }
+            failed = check(blurList.eAt(bi) == 6.0, "blur push carries the sigma", failed)
+        }
+        if blurList.kindAt(bi) == 22 {
+            blurPops += 1
+            if blurPopAt == -1 {
+                blurPopAt = bi
+            }
+        }
+        if blurList.kindAt(bi) == 2 && blurTextAt == -1 {
+            blurTextAt = bi
+        }
+        bi += 1
+    }
+    failed = check(blurPushes == 1 && blurPops == 1, "one blur push and pop", failed)
+    failed = check(blurPushAt != -1 && blurTextAt != -1 && blurPopAt != -1, "blur records surround the text", failed)
+    failed = check(blurPushAt < blurTextAt && blurTextAt < blurPopAt, "the blur wraps its children", failed)
+    failed = check(Display.textOf(blurList.finish(240, 160)).contains("blurPush"), "display text names blurPush", failed)
+
+    let fxTree = new Tree(TextEngine.fixed())
+    fxTree.beginFrame()
+    let fxCard: View = Card(children: [Text("nested effects")])
+    fxCard.blurSigma = 4.0
+    fxCard.maskRadius = 20.0
+    let fxRoot = View.mount(fxTree, fxCard)
+    fxTree.endFrame()
+    fxTree.layout(fxRoot, 240)
+    let fxList = Painter.paint(fxTree, 240, 160, Theme.dark())
+    let fxBlurPush = -1
+    let fxMaskPush = -1
+    let fxMaskPop = -1
+    let fxBlurPop = -1
+    let fxText = -1
+    let fi = 0
+    while fi < fxList.recordCount() {
+        let fk = fxList.kindAt(fi)
+        if fk == 21 && fxBlurPush == -1 { fxBlurPush = fi }
+        if fk == 19 && fxMaskPush == -1 { fxMaskPush = fi }
+        if fk == 2 && fxText == -1 { fxText = fi }
+        if fk == 20 && fxMaskPop == -1 { fxMaskPop = fi }
+        if fk == 22 && fxBlurPop == -1 { fxBlurPop = fi }
+        fi += 1
+    }
+    failed = check(fxBlurPush != -1 && fxMaskPush != -1 && fxText != -1 && fxMaskPop != -1 && fxBlurPop != -1, "nested effects emit all four records", failed)
+    failed = check(fxBlurPush < fxMaskPush && fxMaskPush < fxText && fxText < fxMaskPop && fxMaskPop < fxBlurPop, "blur wraps mask wraps content", failed)
+
+    let maskApp = App.launchView("Mask full paint", 180, 120, (): View => {
+        let c: View = Card(children: [Text("mask")])
+        c.maskRadius = 12.0
+        return c
+    })
+    maskApp.frame()
+    let maskedFrame = maskApp.frame()
+    failed = check(maskedFrame.damage().count() == 1 && maskedFrame.damage().wAt(0) == 180 && maskedFrame.damage().hAt(0) == 120, "a masked view repaints the whole surface", failed)
+
+    let blurApp = App.launchView("Blur full paint", 180, 120, (): View => {
+        let c: View = Card(children: [Text("blur")])
+        c.blurSigma = 3.0
+        return c
+    })
+    blurApp.frame()
+    let blurredFrame = blurApp.frame()
+    failed = check(blurredFrame.damage().count() == 1 && blurredFrame.damage().wAt(0) == 180 && blurredFrame.damage().hAt(0) == 120, "a blurred view repaints the whole surface", failed)
+
+    let effectFlags: Array<Bool> = [true]
+    let effectApp = App.launchView("Effect removal", 180, 120, (): View => {
+        let c: View = Card(children: [Text("effect")])
+        if effectFlags[0] {
+            c.maskRadius = 10.0
+        }
+        return c
+    })
+    effectApp.frame()
+    effectFlags[0] = false
+    let effectlessFrame = effectApp.frame()
+    failed = check(effectlessFrame.damage().count() == 1 && effectlessFrame.damage().wAt(0) == 180 && effectlessFrame.damage().hAt(0) == 120, "removing a mask still repaints the whole surface", failed)
+
     failed = check(measureText("Hello", 16.0) > 0.0, "parley answered", failed)
 
     let chosen = App.launchWith(Renderer.gles, "GL", 100, 80, (b: Build): Node => {
@@ -119,7 +706,10 @@ fn Main(): Int {
     let s = new Surface(64, 48, cf.list)
     failed = check(s.drawCpu() == 0, "cpu render", failed)
     failed = check(s.backend() == 2, "cpu backend recorded", failed)
-    failed = check(s.rgbaAt(2, 2) == "20,22,26,255", s.rgbaAt(2, 2), failed)
+    failed = check(s.rgbaAt(2, 2) == "17,19,23,255", s.rgbaAt(2, 2), failed)
+
+    failed = check(cf.damage().count() == 1, "one damage rect", failed)
+    failed = check(cf.damage().wAt(0) == 64 && cf.damage().hAt(0) == 48, "full surface damage", failed)
 
     let paragraph = App.launch("Text", 200, 120, (b: Build): Node => {
         return b.column() {
@@ -153,6 +743,7 @@ fn Main(): Int {
             let idx = v.first + i
             let r = b.listItem("row " + idx.toString(), () => { kit.selected = idx })
             r.fixedHeight(30)
+            r.offsetY(0.0 - v.offset)
             v.node.addChild(r)
             i += 1
         }
@@ -216,26 +807,336 @@ fn Main(): Int {
     sliderApp.pointerDown(sliderApp.tree().x[slid] + sliderApp.tree().w[slid] * 3 / 4, sliderApp.tree().y[slid] + 36)
     failed = check(sliderState.v > 0.6, "slider drag updates state: " + sliderState.v.toString(), failed)
     let sliderFrame = sliderApp.frame()
-    let track = widestFillOf(sliderFrame.list, rgba(91, 141, 239, 255))
+    let track = widestFillOf(sliderFrame.list, Theme.dark().accent)
     failed = check(track > sliderApp.tree().w[slid] / 2, "slider track follows the value: " + track.toString(), failed)
 
-    let textState = new TextState()
-    let typing = App.launch("Type", 320, 120, (b: Build): Node => {
+    failed = testTextEditing(failed)
+    return failed
+}
+
+fn testAccessibilityAndDriver(failed: Int): Int {
+    let pad = new Gamepad()
+    pad.setAxis(0, 32767)
+    failed = check(pad.axis(0) == 1.0, "axis clamps at one", failed)
+    pad.setAxis(1, 0 - 32768)
+    failed = check(pad.axis(1) == 0.0 - 1.0, "axis clamps at minus one", failed)
+    pad.setAxis(2, 16384)
+    failed = check(pad.axis(2) > 0.49 && pad.axis(2) < 0.51, "axis is normalized", failed)
+    pad.setButton(0, true)
+    failed = check(pad.pressed(0), "button state is stored", failed)
+    pad.setConnected(true)
+    failed = check(pad.connected(), "gamepad reports connected", failed)
+    pad.reset()
+    failed = check(!pad.connected() && pad.axis(0) == 0.0 && !pad.pressed(0), "reset clears the pad", failed)
+
+    let a11yState = new A11yState()
+    let a11yApp = App.launch("A11y", 320, 240, (b: Build): Node => {
+        b.animate(false)
         let root = b.column()
-        root.addChild(b.textField(textState.value, "name", (v: String) => { textState.value = v }))
+        root.addChild(b.button("Add", () => { a11yState.n += 1 }))
+        root.addChild(b.sliderValue("Volume", a11yState.v, (v: Float) => { a11yState.v = v }))
+        root.addChild(b.textField(a11yState.name, "name", (v: String) => { a11yState.name = v }))
         return root
     })
-    typing.frame()
-    let fieldId = typing.tree().find(Role.textbox, "name")
-    let fieldNode = Node(tree: typing.tree(), id: fieldId)
-    typing.tree().focusOn(fieldNode)
-    typing.tree().typeText(fieldNode, "e\u{301}x")
-    failed = check(typing.tree().valueOf(fieldNode) == "e\u{301}x", "typed unicode", failed)
-    typing.tree().keyDown(fieldNode, Key.backspace)
-    failed = check(typing.tree().valueOf(fieldNode) == "e\u{301}", "backspace removed one cluster", failed)
-    typing.tree().keyDown(fieldNode, Key.backspace)
-    failed = check(typing.tree().valueOf(fieldNode) == "", "backspace removed the combining pair", failed)
+    a11yApp.frame()
+    let a11y = a11yApp.accessibility()
+    failed = check(a11y.count() > 0, "accessibility exports nodes", failed)
+    let bi = a11y.find("button", "Add")
+    failed = check(bi >= 0, "accessibility finds the button", failed)
+    let bnode = a11y.at(bi)
+    failed = check(bnode.can("tap"), "button exposes tap", failed)
+    failed = check(bnode.w > 0 && bnode.h > 0, "button exposes bounds", failed)
+    failed = check(a11y.press(a11yApp.tree(), bnode.id), "accessibility presses the button", failed)
+    failed = check(a11yState.n == 1, "press runs the pointer handler", failed)
+    failed = check(a11yApp.pointerDown(bnode.x + 2, bnode.y + 2), "pointer presses the button", failed)
+    failed = check(a11yState.n == 2, "pointer and accessibility share the handler", failed)
 
+    let si = a11y.find("slider", "Volume")
+    failed = check(si >= 0, "accessibility finds the slider", failed)
+    let snode = a11y.at(si)
+    failed = check(snode.can("setValue"), "slider exposes setValue", failed)
+    let before = a11yState.v
+    failed = check(a11y.increment(a11yApp.tree(), snode.id, 0.1), "accessibility increments the slider", failed)
+    failed = check(a11yState.v > before, "increment runs the slider handler", failed)
+
+    let ti = a11y.find("textbox", "name")
+    failed = check(ti >= 0, "accessibility finds the text box", failed)
+    let tnode = a11y.at(ti)
+    failed = check(a11y.setValue(a11yApp.tree(), tnode.id, "hello"), "accessibility sets the text value", failed)
+    failed = check(a11yState.name == "hello", "setValue runs the text handler: " + a11yState.name, failed)
+    failed = check(a11y.dump().contains("button \"Add\""), "dump lists the button", failed)
+    let packet = a11y.encode()
+    failed = check(packet.readUInt32LE(0) == 42394, "packet magic", failed)
+    failed = check(packet.readUInt32LE(4) == 6, "packet version", failed)
+    failed = check(packet.readUInt32LE(8) == a11y.count(), "packet count", failed)
+    failed = check(packet.readUInt32LE(12) == 112, "packet stride", failed)
+    let pi = 0
+    let packed = false
+    while pi < a11y.count() {
+        let po = 16 + pi * 112
+        if packet.readUInt32LE(po) == bnode.id {
+            packed = true
+            let no = packet.readUInt32LE(po + 36)
+            let nl = packet.readUInt32LE(po + 40)
+            failed = check(packet.readString(no, nl) == "Add", "packet name", failed)
+            failed = check(packet.readUInt32LE(po + 8) == 6, "packet role", failed)
+            failed = check(packet.readUInt32LE(po + 28) == 1, "packet actions", failed)
+            failed = check(packet.readInt32LE(po + 12) == bnode.x, "packet bounds", failed)
+        }
+        pi += 1
+    }
+    failed = check(packed, "packet carries the button", failed)
+
+    let camApp = App.launch("Camera a11y", 200, 100, (b: Build): Node => {
+        let root = b.column()
+        let btn = b.button("Cam", () => {})
+        btn.fixedWidth(50)
+        btn.fixedHeight(20)
+        root.addChild(btn)
+        return root
+    })
+    let cam = new Camera(2.0, 10.0, 20.0)
+    camApp.setCamera(cam)
+    camApp.frame()
+    let camA11y = camApp.accessibility()
+    let ci = camA11y.find("button", "Cam")
+    failed = check(ci >= 0, "camera accessibility finds the button", failed)
+    if ci >= 0 {
+        let cn = camA11y.at(ci)
+        let cid = cn.id
+        failed = check(cn.x == Int(cam.screenX(Float(camApp.tree().x[cid]))), "camera a11y projects x", failed)
+        failed = check(cn.y == Int(cam.screenY(Float(camApp.tree().y[cid]))), "camera a11y projects y", failed)
+        failed = check(cn.w == 100 && cn.h == 40, "camera a11y scales the box", failed)
+    }
+
+    let driver = Driver.on(a11yApp)
+    driver.frame()
+    failed = check(driver.exists("button", "Add"), "driver finds the button", failed)
+    let baseN = a11yState.n
+    failed = check(driver.press("button", "Add"), "driver presses the button", failed)
+    failed = check(a11yState.n == baseN + 1, "driver press runs the handler", failed)
+    failed = check(driver.click("button", "Add"), "driver clicks the button", failed)
+    failed = check(a11yState.n == baseN + 2, "driver click runs the handler", failed)
+    failed = check(driver.increment("slider", "Volume", 0.1), "driver increments the slider", failed)
+    failed = check(driver.value("textbox", "name") == "hello", "driver reads the text value: " + driver.value("textbox", "name"), failed)
+    failed = check(driver.setValue("textbox", "name", "world"), "driver sets the text value", failed)
+    failed = check(driver.value("textbox", "name") == "world", "driver reads the new value", failed)
+    failed = check(driver.focus("textbox", "name"), "driver focuses the field", failed)
+    failed = check(a11yApp.tree().focused() >= 0, "focus lands on a node", failed)
+
+    let mcp = Mcp.on(driver)
+    failed = check(mcp.tools().contains("ui.press"), "mcp lists the press tool", failed)
+    let result = mcp.call("ui.press", "button", "Add", "", 0.0)
+    failed = check(result.contains("\"isError\":false"), "mcp press succeeds: " + result, failed)
+    failed = check(a11yState.n == baseN + 3, "mcp press runs the handler", failed)
+    let listing = mcp.call("ui.list", "", "", "", 0.0)
+    failed = check(listing.contains("button"), "mcp list includes nodes", failed)
+
+    let png = a11yApp.screenshotBytes()
+    failed = check(png.length() > 57, "screenshot is a PNG", failed)
+    failed = check(png.readUInt8(0) == 137 && png.readUInt8(1) == 80 && png.readUInt8(2) == 78 && png.readUInt8(3) == 71, "PNG signature", failed)
+    failed = check(png.readString(12, 4) == "IHDR", "PNG starts with IHDR", failed)
+    failed = check(png.readUInt32BE(16) == 320 && png.readUInt32BE(20) == 240, "PNG carries the window size", failed)
+    failed = check(png.readString(png.length() - 8, 4) == "IEND", "PNG ends with IEND", failed)
+    failed = check(mcp.tools().contains("ui.screenshot"), "mcp lists the screenshot tool", failed)
+    let shotPath = "/tmp/rnx-mcp-shot.png"
+    let shot = mcp.call("ui.screenshot", "", "", shotPath, 0.0)
+    failed = check(shot.contains("\"isError\":false"), "mcp screenshot succeeds: " + shot, failed)
+    failed = check(fs.exists(shotPath), "mcp screenshot writes the file", failed)
+    return failed
+}
+
+fn testLanesAndRelations(failed: Int): Int {
+    let laneApp = App.launch("Lanes", 320, 240, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        let row = b.listItem("Row", () => {})
+        row.setSelected(true)
+        row.setExpanded(1)
+        row.setBusy(true)
+        row.setRequired(true)
+        row.setInvalid(2)
+        row.setLevel(3)
+        row.setLive(1)
+        row.setDescription("row hint")
+        row.setRange(0.0, 10.0, 2.0)
+        root.addChild(row)
+        return root
+    })
+    laneApp.frame()
+    let laneA11y = laneApp.accessibility()
+    let laneIndex = laneA11y.find("listitem", "Row")
+    failed = check(laneIndex >= 0, "lanes find the row", failed)
+    let laneNode = laneA11y.at(laneIndex)
+    failed = check(laneNode.selected, "selected is projected", failed)
+    failed = check(laneNode.expanded == 1, "expanded is projected", failed)
+    failed = check(laneNode.busy, "busy is projected", failed)
+    failed = check(laneNode.required, "required is projected", failed)
+    failed = check(laneNode.invalid == 2, "invalid is projected", failed)
+    failed = check(laneNode.level == 3, "level is projected", failed)
+    failed = check(laneNode.live == 1, "live is projected", failed)
+    failed = check(laneNode.description == "row hint", "description is projected", failed)
+    failed = check(laneNode.valueMin == 0.0 && laneNode.valueMax == 10.0 && laneNode.valueStep == 2.0, "range is projected", failed)
+    let laneDump = laneA11y.dump()
+    failed = check(laneDump.contains("selected") && laneDump.contains("range=0.0..10.0/2.0"), "dump carries the lane state: " + laneDump, failed)
+
+    let lanePacket = laneA11y.encode()
+    failed = check(lanePacket.readUInt32LE(0) == 42394, "v6 packet magic", failed)
+    failed = check(lanePacket.readUInt32LE(4) == 6, "v6 packet version", failed)
+    failed = check(lanePacket.readUInt32LE(8) == laneA11y.count(), "v6 packet count", failed)
+    failed = check(lanePacket.readUInt32LE(12) == 112, "v6 packet stride", failed)
+    let laneAt = 0
+    let laneRec = -1
+    while laneAt < laneA11y.count() {
+        let cand = 16 + laneAt * 112
+        if lanePacket.readUInt32LE(cand) == laneNode.id {
+            laneRec = cand
+        }
+        laneAt += 1
+    }
+    failed = check(laneRec >= 0, "v6 packet carries the row", failed)
+    if laneRec >= 0 {
+        let recFlags = lanePacket.readUInt32LE(laneRec + 32)
+        failed = check((recFlags & 16) != 0 && (recFlags & 32) != 0 && (recFlags & 64) != 0, "v6 packet state flags", failed)
+        failed = check(lanePacket.readInt32LE(laneRec + 52) == 1, "v6 packet expanded", failed)
+        failed = check(lanePacket.readUInt32LE(laneRec + 56) == 2, "v6 packet invalid", failed)
+        failed = check(lanePacket.readUInt32LE(laneRec + 60) == 3, "v6 packet level", failed)
+        failed = check(lanePacket.readUInt32LE(laneRec + 64) == 1, "v6 packet live", failed)
+        failed = check(lanePacket.readFloat64LE(laneRec + 68) == 0.0, "v6 packet range min", failed)
+        failed = check(lanePacket.readFloat64LE(laneRec + 76) == 10.0, "v6 packet range max", failed)
+        failed = check(lanePacket.readFloat64LE(laneRec + 84) == 2.0, "v6 packet range step", failed)
+        let descLen = lanePacket.readUInt32LE(laneRec + 92)
+        let valueOff = lanePacket.readUInt32LE(laneRec + 44)
+        let valueLen = lanePacket.readUInt32LE(laneRec + 48)
+        failed = check(descLen == 8, "v6 packet description length", failed)
+        failed = check(lanePacket.readString(valueOff + valueLen, descLen) == "row hint", "v6 packet description", failed)
+        let nameOff = lanePacket.readUInt32LE(laneRec + 36)
+        let nameLen = lanePacket.readUInt32LE(laneRec + 40)
+        failed = check(lanePacket.readString(nameOff, nameLen) == "Row", "v6 packet name", failed)
+    }
+    let laneDriver = Driver.on(laneApp)
+    let driverPacket = laneDriver.encode()
+    failed = check(driverPacket.readUInt32LE(4) == 6 && driverPacket.readUInt32LE(12) == 112, "driver encodes v6", failed)
+    failed = check(laneDriver.selectedOf("listitem", "Row"), "driver reads selected", failed)
+    failed = check(laneDriver.expandedOf("listitem", "Row") == 1, "driver reads expanded", failed)
+    failed = check(laneDriver.busyOf("listitem", "Row"), "driver reads busy", failed)
+    failed = check(laneDriver.descriptionOf("listitem", "Row") == "row hint", "driver reads description", failed)
+    let laneRange = laneDriver.rangeOf("listitem", "Row")
+    failed = check(laneRange.min == 0.0 && laneRange.max == 10.0 && laneRange.step == 2.0, "driver reads the range", failed)
+
+    let scriptOk = laneDriver.runScript("assertSelected:listitem:Row:true;assertExpanded:listitem:Row:true;assertBusy:listitem:Row:true;assertDescription:listitem:Row:row hint;assertRange:listitem:Row:0:10")
+    failed = check(scriptOk == 0, "new script steps pass: " + scriptOk.toString(), failed)
+    let scriptBad = laneDriver.runScript("assertBusy:listitem:Row:false")
+    failed = check(scriptBad == 1, "new script steps fail cleanly: " + scriptBad.toString(), failed)
+
+    let relIds: Array<Int> = [-1, -1, -1]
+    let relApp = App.launch("Relations", 320, 240, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        let label = b.text("Email")
+        let hint = b.text("Must be valid")
+        let target = b.button("Target", () => {})
+        let field = b.textField("", "email", (v: String) => {})
+        field.labelRel(label.id)
+        field.describedBy(hint.id)
+        field.controls(target.id)
+        relIds[0] = label.id
+        relIds[1] = hint.id
+        relIds[2] = target.id
+        root.addChild(label)
+        root.addChild(hint)
+        root.addChild(target)
+        root.addChild(field)
+        return root
+    })
+    relApp.frame()
+    let relA11y = relApp.accessibility()
+    let relIndex = relA11y.find("textbox", "email")
+    failed = check(relIndex >= 0, "relations find the text box", failed)
+    let relNode = relA11y.at(relIndex)
+    failed = check(relNode.labelId == relIds[0], "label relation is projected", failed)
+    failed = check(relNode.describedById == relIds[1], "described-by relation is projected", failed)
+    failed = check(relNode.controlsId == relIds[2], "controls relation is projected", failed)
+    let relPacket = relA11y.encode()
+    failed = check(relPacket.readUInt32LE(0) == 42394 && relPacket.readUInt32LE(4) == 6 && relPacket.readUInt32LE(12) == 112, "relation packet header is v6", failed)
+    let relRec = -1
+    let relAt = 0
+    while relAt < relA11y.count() {
+        let cand = 16 + relAt * 112
+        if relPacket.readUInt32LE(cand) == relNode.id {
+            relRec = cand
+        }
+        relAt += 1
+    }
+    failed = check(relRec >= 0, "relation packet carries the text box", failed)
+    if relRec >= 0 {
+        failed = check(relPacket.readInt32LE(relRec + 96) == relIds[0], "packet label lane", failed)
+        failed = check(relPacket.readInt32LE(relRec + 100) == relIds[1], "packet described-by lane", failed)
+        failed = check(relPacket.readInt32LE(relRec + 104) == relIds[2], "packet controls lane", failed)
+        failed = check(relPacket.readUInt32LE(relRec + 108) == 0, "packet announce lane starts at zero", failed)
+    }
+    relApp.frame()
+    let relAgain = relApp.accessibility()
+    let relIndex2 = relAgain.find("textbox", "email")
+    failed = check(relIndex2 >= 0, "rebuild finds the text box", failed)
+    let relNode2 = relAgain.at(relIndex2)
+    failed = check(relNode2.labelId == relIds[0] && relNode2.describedById == relIds[1] && relNode2.controlsId == relIds[2], "relations survive a rebuild", failed)
+
+    let announceApp = App.launch("Announce", 200, 120, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        root.addChild(b.text("Body"))
+        return root
+    })
+    announceApp.frame()
+    let announceBase = announceApp.accessibilityTree().count()
+    let announceDriver = Driver.on(announceApp)
+    announceApp.announce("Saved", 1)
+    let announced = announceApp.accessibility()
+    failed = check(announced.count() == announceBase + 1, "announcement appends one synthetic node", failed)
+    let announcedNode = announced.at(announced.count() - 1)
+    failed = check(announcedNode.id == 1000000, "announcement has a stable id", failed)
+    failed = check(announcedNode.parent == announceApp.tree().rootId(), "announcement parents at the root", failed)
+    failed = check(announcedNode.role == "heading" && announcedNode.roleId == 4, "announcement uses role four", failed)
+    failed = check(announcedNode.name == "Saved" && announcedNode.live == 1, "announcement is polite", failed)
+    failed = check(announcedNode.announceSeq == 1, "announcement sequence starts at one", failed)
+    failed = check(!announcedNode.focused && !announcedNode.can("tap"), "announcement is not focusable", failed)
+    failed = check(announceDriver.access().count() == announceBase, "driver lists exclude announcements", failed)
+    failed = check(announceApp.tree().role.length() == announceBase, "announcement never enters the tree", failed)
+    announceApp.announce("Saved again", 2)
+    let announcedAgain = announceApp.accessibility()
+    failed = check(announcedAgain.count() == announced.count(), "second announcement replaces the node", failed)
+    let announcedNode2 = announcedAgain.at(announcedAgain.count() - 1)
+    failed = check(announcedNode2.name == "Saved again" && announcedNode2.live == 2, "second announcement is assertive", failed)
+    failed = check(announcedNode2.announceSeq == 2, "second announcement advances the sequence", failed)
+    let announcedPacket = announcedAgain.encode()
+    let announcedRec = 16 + (announcedAgain.count() - 1) * 112
+    failed = check(announcedPacket.readUInt32LE(announcedRec) == 1000000, "packet carries the announcement", failed)
+    failed = check(announcedPacket.readUInt32LE(announcedRec + 64) == 2, "packet announcement live lane", failed)
+    failed = check(announcedPacket.readUInt32LE(announcedRec + 108) == 2, "packet announcement sequence lane", failed)
+    let announcedNameOff = announcedPacket.readUInt32LE(announcedRec + 36)
+    let announcedNameLen = announcedPacket.readUInt32LE(announcedRec + 40)
+    failed = check(announcedPacket.readString(announcedNameOff, announcedNameLen) == "Saved again", "packet announcement name", failed)
+    let announceScript = announceDriver.runScript("announce:Saved:1")
+    failed = check(announceScript == 0, "announce script step passes: " + announceScript.toString(), failed)
+    let announcePolite = announceDriver.runScript("announce:Notice")
+    failed = check(announcePolite == 0, "announce defaults to polite: " + announcePolite.toString(), failed)
+    let politeA11y = announceApp.accessibility()
+    let politeNode = politeA11y.at(politeA11y.count() - 1)
+    failed = check(politeNode.name == "Notice" && politeNode.live == 1 && politeNode.announceSeq == 4, "default announcement is polite and sequenced", failed)
+
+    let laneMcp = Mcp.on(laneDriver)
+    failed = check(laneMcp.tools().contains("ui.assertSelected"), "mcp lists the selected assertion", failed)
+    failed = check(laneMcp.tools().contains("ui.assertRange"), "mcp lists the range assertion", failed)
+    let laneTree = laneMcp.call("ui.tree", "", "", "", 0.0)
+    failed = check(laneTree.contains("\\\"selected\\\":true") && laneTree.contains("\\\"level\\\":3") && laneTree.contains("\\\"description\\\":\\\"row hint\\\""), "ui.tree carries the new fields: " + laneTree, failed)
+    failed = check(laneMcp.call("ui.assertSelected", "listitem", "Row", "true", 0.0).contains("\"isError\":false"), "mcp selected assertion passes", failed)
+    failed = check(laneMcp.call("ui.assertRange", "listitem", "Row", "0:10", 0.0).contains("\"isError\":false"), "mcp range assertion passes", failed)
+    failed = check(laneMcp.call("ui.assertBusy", "listitem", "Row", "false", 0.0).contains("\"isError\":true"), "mcp busy assertion fails", failed)
+    return failed
+}
+
+fn testInputAndLists(failed: Int): Int {
     let keyState = new TextState()
     let keys = App.launch("Keys", 320, 120, (b: Build): Node => {
         let root = b.column()
@@ -271,8 +1172,8 @@ fn Main(): Int {
         }
     })
     let sizedFrame = sized.frame()
-    let wantWidth = Int(measureText("Save", 14.0) + 24.999)
-    let gotWidth = nthFillWidth(sizedFrame.list, 1)
+    let wantWidth = Int(measureText("Save", 14.0) + 28.999)
+    let gotWidth = sized.tree().w[sized.tree().find(Role.button, "Save")]
     failed = check(gotWidth == wantWidth, "button width follows measured text: " + gotWidth.toString() + " vs " + wantWidth.toString(), failed)
 
     let clipped = App.launch("Clip", 120, 100, (b: Build): Node => {
@@ -303,7 +1204,8 @@ fn Main(): Int {
     failed = check(d1.damage().count() == 1, "first frame has one damage rect", failed)
     failed = check(d1.damage().wAt(0) == 200 && d1.damage().hAt(0) == 120, "first frame is full", failed)
     let d2 = damage.frame()
-    failed = check(d2.damage().count() == 0, "unchanged frame has no damage: " + d2.damage().count().toString(), failed)
+    let dm2 = d2.damage()
+    failed = check(dm2.count() == 0, "unchanged frame has no damage: " + dm2.count().toString(), failed)
     counter.n = 1
     let d3 = damage.frame()
     failed = check(d3.damage().count() >= 1, "changed text reports damage", failed)
@@ -366,14 +1268,2117 @@ fn Main(): Int {
     })
     declared.frame()
     failed = check(!declared.animating(), "view can pause the app", failed)
+    return failed
+}
+
+fn testPresenceAndGoldens(failed: Int): Int {
+    let enterTree = new Tree(TextEngine.fixed())
+    enterTree.setFrameDt(1.0 / 60.0)
+    enterTree.beginFrame()
+    let enterRoot = View.mount(enterTree, Presence(true, "enter", Transition.fast(), [Text("entering")]))
+    enterTree.endFrame()
+    enterTree.layout(enterRoot, 240)
+    let enterChild = enterTree.find(Role.text, "entering")
+    let enterPanel = -1
+    if enterChild >= 0 {
+        enterPanel = enterTree.parent[enterChild]
+    }
+    failed = check(enterChild >= 0, "presence mounts its children", failed)
+    failed = check(enterPanel >= 0, "presence wraps its children", failed)
+    let enterStart = 1.0
+    if enterPanel >= 0 {
+        enterStart = enterTree.opacityOf(Node(tree: enterTree, id: enterPanel))
+    }
+    failed = check(enterStart < 1.0, "enter starts below full opacity: " + enterStart.toString(), failed)
+    failed = check(enterTree.presenceAnimating(), "presence reports an active enter", failed)
+
+    let enterSteps = 0
+    while enterSteps < 120 {
+        enterTree.setFrameDt(1.0 / 60.0)
+        enterTree.beginFrame()
+        let rr = View.mount(enterTree, Presence(true, "enter", Transition.fast(), [Text("entering")]))
+        enterTree.endFrame()
+        enterTree.layout(rr, 240)
+        enterSteps += 1
+    }
+    let enterDone = enterTree.presenceProgressOf("enter")
+    failed = check(enterDone == 1.0, "enter reaches full progress: " + enterDone.toString(), failed)
+    let enteredChild = enterTree.find(Role.text, "entering")
+    let enterEnd = 0.0
+    if enteredChild >= 0 {
+        enterEnd = enterTree.opacityOf(Node(tree: enterTree, id: enterTree.parent[enteredChild]))
+    }
+    failed = check(enterEnd == 1.0, "enter reaches full opacity: " + enterEnd.toString(), failed)
+
+    enterTree.setFrameDt(1.0 / 60.0)
+    enterTree.beginFrame()
+    let rebuilt = View.mount(enterTree, Presence(true, "enter", Transition.fast(), [Text("rebuilt")]))
+    enterTree.endFrame()
+    enterTree.layout(rebuilt, 240)
+    let rebuiltChild = enterTree.find(Role.text, "rebuilt")
+    let rebuiltPanel = -1
+    if rebuiltChild >= 0 {
+        rebuiltPanel = enterTree.parent[rebuiltChild]
+    }
+    failed = check(enterTree.presenceProgressOf("enter") == 1.0, "presence keeps progress across a rebuild", failed)
+    failed = check(rebuiltPanel == enterPanel, "presence reuses the keyed container", failed)
+
+    let leaveSteps = 0
+    while leaveSteps < 3 {
+        enterTree.setFrameDt(1.0 / 60.0)
+        enterTree.beginFrame()
+        let rr = View.mount(enterTree, Presence(false, "enter", Transition.fast(), [Text("rebuilt")]))
+        enterTree.endFrame()
+        enterTree.layout(rr, 240)
+        leaveSteps += 1
+    }
+    let leaveProgress = enterTree.presenceProgressOf("enter")
+    failed = check(leaveProgress < 1.0, "leave fades toward zero: " + leaveProgress.toString(), failed)
+    failed = check(enterTree.find(Role.text, "rebuilt") >= 0, "leaving children stay mounted", failed)
+
+    let leaveFrames = 0
+    while leaveFrames < 120 && enterTree.presenceProgressOf("enter") > 0.0 {
+        enterTree.setFrameDt(1.0 / 60.0)
+        enterTree.beginFrame()
+        let rr = View.mount(enterTree, Presence(false, "enter", Transition.fast(), [Text("rebuilt")]))
+        enterTree.endFrame()
+        enterTree.layout(rr, 240)
+        leaveFrames += 1
+    }
+    let leaveDone = enterTree.presenceProgressOf("enter")
+    failed = check(leaveDone == 0.0, "leave reaches zero: " + leaveDone.toString(), failed)
+    failed = check(enterTree.find(Role.text, "rebuilt") < 0, "hidden presence drops its children", failed)
+    failed = check(!enterTree.presenceAnimating(), "presence stops animating once hidden", failed)
+    if enterPanel >= 0 {
+        failed = check(enterTree.h[enterPanel] == 0, "hidden presence leaves a zero-height placeholder: " + enterTree.h[enterPanel].toString(), failed)
+    }
+
+    let frameApp = App.launch("Presence frames", 200, 120, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        root.addChild(View.mount(b.handle(), Presence(true, "frames", Transition.slow(), [Text("animated")])))
+        return root
+    })
+    frameApp.frame()
+    failed = check(frameApp.tree().presenceAnimating(), "presence animates through the app tree", failed)
+    failed = check(frameApp.animating(), "presence keeps the app requesting frames", failed)
 
     let emptyList = ByteBuffer.allocate(0)
     let badSurface = new Surface(0, 0, emptyList)
     let badRc = badSurface.draw()
     failed = check(badRc < 0, "negative native status keeps its sign: " + badRc.toString(), failed)
 
-    failed = check(cf.damage().count() == 1, "one damage rect", failed)
-    failed = check(cf.damage().wAt(0) == 64 && cf.damage().hAt(0) == 48, "full surface damage", failed)
+    let goldenTree = new Tree(TextEngine.fixed())
+    goldenTree.beginFrame()
+    let gb = new Build(goldenTree)
+    let groot = gb.column()
+    groot.addChild(gb.heading("Golden"))
+    groot.addChild(gb.text("A deterministic screen."))
+    let grow = gb.row()
+    grow.addChild(gb.button("Save", () => {}))
+    grow.addChild(gb.checkbox("On", true, () => {}))
+    groot.addChild(grow)
+    groot.addChild(gb.sliderValue("Volume", 0.4, (v: Float) => {}))
+    groot.addChild(gb.progress(0.4))
+    goldenTree.endFrame()
+    goldenTree.layout(groot, 320)
+    let semantic = goldenTree.snapshot()
+    let semanticPath = "goldens/screen.semantic.txt"
+    let semanticWant = fs.readText(semanticPath).unwrapOr("")
+    if semanticWant == "" {
+        fs.writeText(semanticPath, semantic, .Overwrite)
+        failed = check(false, "semantic golden written; rerun", failed)
+    } else {
+        failed = check(semantic == semanticWant, "semantic golden matches", failed)
+    }
+
+    let frameTree = new Tree(TextEngine.fixed())
+    frameTree.beginFrame()
+    let fb = new Build(frameTree)
+    let froot = fb.column()
+    froot.padding(0)
+    let art = fb.canvas("golden", 160, 120, (cv: Canvas) => {
+        cv.fill(rgba(20, 22, 26, 255))
+        cv.roundRect(rgba(40, 48, 60, 255), 12.0, 12.0, 136.0, 40.0, 8.0)
+        cv.rect(rgba(91, 141, 239, 255), 20.0, 64.0, 80.0, 16.0)
+        cv.polygon(rgba(200, 80, 80, 255), [100.0, 64.0, 130.0, 64.0, 115.0, 92.0])
+        cv.line(rgba(230, 231, 235, 255), 20.0, 100.0, 140.0, 100.0, 2.0)
+    })
+    froot.addChild(art)
+    frameTree.endFrame()
+    frameTree.layout(froot, 160)
+    let frameList: DisplayList = Painter.paint(frameTree, 160, 120, Theme.dark())
+    let frameBytes = frameList.finish(160, 120)
+    let frameSurface = new Surface(160, 120, frameBytes)
+    let frameRc = frameSurface.drawCpu()
+    failed = check(frameRc == 0, "frame golden renders", failed)
+    let framePath = "goldens/frame-160x120.rgba"
+    let frameWant: ByteBuffer = fs.readBytes(framePath).unwrapOr(ByteBuffer.allocate(0))
+    if frameWant.length() == 0 {
+        fs.writeBytes(framePath, frameSurface.pixels(), .Overwrite)
+        failed = check(false, "frame golden written; rerun", failed)
+    } else {
+        failed = check(bytesEqual(frameWant, frameSurface.pixels()), "frame golden matches", failed)
+    }
+
+    let perf = new Tree(TextEngine.fixed())
+    perf.beginFrame()
+    let pb = new Build(perf)
+    let proot = pb.column()
+    proot.padding(0)
+    let pi = 0
+    while pi < 1000 {
+        let row = pb.text("row " + pi.toString())
+        row.fixedHeight(20)
+        proot.addChild(row)
+        pi += 1
+    }
+    perf.endFrame()
+    let perfStart = Clock.mono().nanos
+    perf.layout(proot, 320)
+    let perfList = Painter.paint(perf, 320, 2000, Theme.dark())
+    let perfMs = (Clock.mono().nanos - perfStart) / 1000000
+    print("budget 1k frame ms:", perfMs)
+    failed = check(perf.len() >= 1000, "1k frame built", failed)
+    failed = check(perfMs < 500, "1k frame under 500 ms: " + perfMs.toString(), failed)
+
+    let vtree = new Tree(TextEngine.fixed())
+    let vr = 0
+    let vstart = Clock.mono().nanos
+    while vr < 100 {
+        vtree.beginFrame()
+        let vb = new Build(vtree)
+        let v = vb.virtualList("Rows", "rows", 10000, 30, 180)
+        let vroot = vb.column()
+        vroot.addChild(v.node)
+        let vi = 0
+        while vi < v.count {
+            let row = vb.listItem("Item " + (v.first + vi).toString(), () => {})
+            row.fixedHeight(30)
+            v.node.addChild(row)
+            vi += 1
+        }
+        vtree.endFrame()
+        vtree.layout(vroot, 940)
+        vtree.scrollAt(vtree.x[v.node.id] + 2, vtree.y[v.node.id] + 2, 40.0)
+        vr += 1
+    }
+    let vms = (Clock.mono().nanos - vstart) / 1000000
+    print("budget 10k scroll ms:", vms, "nodes:", vtree.len())
+    failed = check(vtree.len() < 40, "10k scroll keeps the arena small: " + vtree.len().toString(), failed)
+    failed = check(vms < 2000, "10k scroll under 2000 ms: " + vms.toString(), failed)
+
+    let idle = App.launch("Idle", 320, 240, (b: Build): Node => {
+        b.animate(false)
+        return b.column() {
+            b.text("idle")
+        }
+    })
+    let idle1 = idle.frame()
+    failed = check(idle1.damage().count() == 1, "idle first frame is full", failed)
+    let idle2 = idle.frame()
+    failed = check(idle2.damage().count() == 0, "idle second frame has no damage", failed)
+    failed = check(!idle.animating(), "idle app is paused", failed)
+
+    let packetApp = App.launch("Packet", 320, 240, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        root.addChild(b.heading("Packet"))
+        root.addChild(b.button("Run", () => {}))
+        return root
+    })
+    let p1 = packetApp.frame()
+    failed = check(p1.scale() == 1000, "default scale is 1x", failed)
+    failed = check(p1.colorSpace() == 0, "default color space is sRGB", failed)
+    let n1 = p1.nodes()
+    failed = check(n1.width == 320 && n1.height == 240, "packet carries the surface size", failed)
+    failed = check(n1.count() > 0, "packet has nodes", failed)
+    let sawRun = false
+    let pi2 = 0
+    while pi2 < n1.count() {
+        let pn = n1.at(pi2)
+        if pn.name == "Run" {
+            sawRun = true
+            failed = check(pn.roleId == 6, "packet role is button", failed)
+            failed = check(pn.actions == 1, "packet carries the tap action", failed)
+            failed = check(pn.w > 0 && pn.h > 0, "packet carries the bounds", failed)
+        }
+        pi2 += 1
+    }
+    failed = check(sawRun, "packet carries the button", failed)
+
+    packetApp.setScale(2000)
+    packetApp.setColorSpace(1)
+    let p2 = packetApp.frame()
+    failed = check(p2.scale() == 2000, "2x scale is tagged", failed)
+    failed = check(p2.colorSpace() == 1, "linear color space is tagged", failed)
+    let n2 = p2.nodes()
+    failed = check(n2.scale == 2000, "decoded packet tags 2x", failed)
+    failed = check(n2.color == 1, "decoded packet tags linear", failed)
+    failed = check(n2.count() == n1.count(), "node count survives the tag change", failed)
+    return failed
+}
+
+fn testRouting(failed: Int): Int {
+    let router = new Router()
+    let visits = 0
+    router.route("home", () => {
+        visits += 1
+        return b0().text("home")
+    })
+    router.route("detail", () => b0().text("detail"))
+    failed = check(router.currentPath() == "home", "router starts on the first route", failed)
+    failed = check(router.navigate("detail"), "router navigates", failed)
+    failed = check(router.currentPath() == "detail" && router.depth() == 1, "router tracks the stack", failed)
+    failed = check(!router.navigate("missing"), "router rejects unknown routes", failed)
+    failed = check(router.back(), "router goes back", failed)
+    failed = check(router.currentPath() == "home" && router.depth() == 0, "router restored the previous route", failed)
+    failed = check(router.replace("detail"), "router replaces", failed)
+    failed = check(router.currentPath() == "detail" && router.depth() == 0, "replace clears no stack", failed)
+    let rv = router.view()
+    failed = check(rv.tree.name[rv.id] == "detail", "router view builds the current route", failed)
+
+    let viewRouter = new ViewRouter()
+    viewRouter.route("/", (_p: Map<String, String>) => Text("home"))
+    viewRouter.route("/about", (_p: Map<String, String>) => Text("about"))
+    viewRouter.route("/users/new", (_p: Map<String, String>) => Text("new user"))
+    viewRouter.route("/users/:id", (p: Map<String, String>) => Text("user " + (p.get("id") ?? "") + " " + (p.get("tab") ?? "")))
+    viewRouter.route("/docs/:id", (p: Map<String, String>) => Text("doc " + (p.get("id") ?? "")))
+    viewRouter.route("/docs/*", (_p: Map<String, String>) => Text("docs wildcard"))
+    failed = check(viewRouter.currentPath() == "/" && viewRouter.depth() == 0, "view router starts at the root", failed)
+    failed = check(viewRouter.view().text == "home", "view router renders the exact root route", failed)
+    failed = check(viewRouter.resolve("/about").text == "about", "view router resolves an exact route", failed)
+    failed = check(viewRouter.resolve("/users/7?tab=profile").text == "user 7 profile", "view router passes path and query params", failed)
+    failed = check(viewRouter.resolve("/docs/a/b").text == "docs wildcard", "view router falls back to the wildcard", failed)
+    failed = check(viewRouter.resolve("/users/new").text == "new user", "exact routes beat param routes", failed)
+    failed = check(viewRouter.resolve("/docs/guide").text == "doc guide", "param routes beat the wildcard", failed)
+    failed = check(!viewRouter.back(), "view router back returns false at the root", failed)
+    failed = check(viewRouter.navigate("/about"), "view router navigates", failed)
+    failed = check(viewRouter.navigate("/users/7?tab=profile"), "view router pushes history", failed)
+    failed = check((viewRouter.params().get("id") ?? "") == "7" && (viewRouter.params().get("tab") ?? "") == "profile", "view router exposes the current params", failed)
+    failed = check(viewRouter.back() && viewRouter.view().text == "about", "view router back restores the previous view", failed)
+    let routeDepth = viewRouter.depth()
+    failed = check(viewRouter.replace("/docs/guide") && viewRouter.depth() == routeDepth, "view router replace keeps depth", failed)
+    failed = check(viewRouter.view().text == "doc guide", "view router replace switches the view", failed)
+    failed = check(viewRouter.resolve("/missing").title == "Not found", "view router uses notFound for a missing path", failed)
+
+    let nestedRoot = new Route("/", (m: RouteMatch): View => {
+        return Page(title: "Root", padding: 0, gap: 0, children: [
+            Text("root frame"),
+            m.outlet(),
+        ])
+    }, [
+        new Route("/tasks", (m: RouteMatch): View => {
+            return Page(title: "Tasks", padding: 0, gap: 0, children: [
+                Text("tasks frame " + (m.params().get("lang") ?? "")),
+                m.outlet(),
+            ])
+        }, [
+            new Route("/", (m: RouteMatch): View => Text("list " + (m.params().get("lang") ?? "")), []),
+            new Route("/:id", (m: RouteMatch): View => Text("detail " + (m.params().get("id") ?? "") + " " + (m.params().get("lang") ?? "")), []),
+        ]),
+    ])
+    let nestedRouter = ViewRouter.fromRoute(nestedRoot)
+    let nestedTasks = nestedRouter.resolve("/tasks?lang=en")
+    failed = check(nestedTasks.title == "Root" && nestedTasks.children.length() == 2, "nested parent wraps its child outlet", failed)
+    failed = check(nestedTasks.children[1].title == "Tasks", "nested child resolves under its parent", failed)
+    failed = check(nestedTasks.children[1].children[1].text == "list en", "query params reach every nested match", failed)
+    let nestedDetail = nestedRouter.resolve("/tasks/7?lang=en")
+    failed = check(nestedDetail.children[1].children[1].text == "detail 7 en", "nested child receives merged params", failed)
+
+    let shadowRoot = new Route("/:id", (m: RouteMatch): View => m.outlet(), [
+        new Route("/:id", (m: RouteMatch): View => Text("child " + (m.params().get("id") ?? "")), []),
+    ])
+    failed = check(ViewRouter.fromRoute(shadowRoot).resolve("/outer/inner").text == "child inner", "a child param shadows its parent", failed)
+
+    let precedenceRoot = new Route("/", (m: RouteMatch): View => Page(title: "Root", padding: 0, gap: 0, children: [m.outlet()]), [
+        new Route("/exact", (_m: RouteMatch): View => Text("exact"), []),
+        new Route("/:name", (m: RouteMatch): View => Text("param " + (m.params().get("name") ?? "")), []),
+        new Route("/*", (_m: RouteMatch): View => Text("wild"), []),
+    ])
+    let precedenceRouter = ViewRouter.fromRoute(precedenceRoot)
+    failed = check(precedenceRouter.resolve("/exact").title == "Root", "parent builds with an outlet view", failed)
+    failed = check(precedenceRouter.resolve("/exact").children[0].text == "exact", "exact beats param and wildcard", failed)
+    failed = check(precedenceRouter.resolve("/other").children[0].text == "param other", "param beats wildcard", failed)
+    failed = check(precedenceRouter.resolve("/other/more").children[0].text == "wild", "wildcard catches extra segments", failed)
+
+    let deepRoot = new Route("/", (m: RouteMatch): View => m.outlet(), [
+        new Route("/docs/:id", (_m: RouteMatch): View => Text("doc param"), []),
+        new Route("/docs/new", (_m: RouteMatch): View => Text("doc new"), []),
+        new Route("/docs/*", (_m: RouteMatch): View => Text("doc wild"), []),
+    ])
+    let deepRouter = ViewRouter.fromRoute(deepRoot)
+    failed = check(deepRouter.resolve("/docs/new").text == "doc new", "deeper literal wins over a param", failed)
+    failed = check(deepRouter.resolve("/docs/7").text == "doc param", "deeper param wins over the wildcard", failed)
+    failed = check(deepRouter.resolve("/docs/a/b").text == "doc wild", "deeper wildcard catches the rest", failed)
+
+    let missingRoot = new Route("/", (_m: RouteMatch): View => Page(title: "Parent", padding: 0, gap: 0, children: [Text("frame"), _m.outlet()]), [
+        new Route("/known", (_m: RouteMatch): View => Text("known"), []),
+    ])
+    let missingView = ViewRouter.fromRoute(missingRoot).resolve("/unknown")
+    failed = check(missingView.title == "Parent", "parent renders when no child matches", failed)
+    failed = check(missingView.children[1].title == "Not found", "a missing child becomes the not-found outlet", failed)
+
+    let backRouter = ViewRouter.fromRoute(nestedRoot)
+    failed = check(backRouter.navigate("/tasks"), "nested router navigates to a parent path", failed)
+    failed = check(backRouter.navigate("/tasks/7?lang=en"), "nested router navigates to a child path", failed)
+    failed = check(backRouter.back() && backRouter.currentPath() == "/tasks", "nested back returns the previous full path", failed)
+
+    let transRouter = ViewRouter.fromRoute(nestedRoot)
+    transRouter.withTransition(Transition.fast())
+    let transView = transRouter.view()
+    failed = check(transView.kind == ViewKind.crossfadeKind, "a transition wraps the route in a crossfade", failed)
+    failed = check(transView.children.length() == 1, "the first render only mounts the incoming presence", failed)
+    let firstPresence = transView.children[0]
+    failed = check(firstPresence.kind == ViewKind.presenceKind && firstPresence.show, "the first route is a shown presence", failed)
+    failed = check(firstPresence.key.startsWith("/") && firstPresence.key != "/", "the route is keyed by a generation key: " + firstPresence.key, failed)
+    failed = check(firstPresence.transition.duration == Transition.fast().duration, "the presence keeps the configured duration", failed)
+    let transTree = new Tree(TextEngine.fixed())
+    transTree.beginFrame()
+    View.mount(transTree, transView)
+    transTree.endFrame()
+    failed = check(transTree.presenceProgressOf(firstPresence.key) == 0.0 && transTree.presenceAnimating(), "the transition starts an enter fade", failed)
+
+    let keyedRouter = ViewRouter.fromRoute(nestedRoot)
+    keyedRouter.withTransition(Transition.fast())
+    let keyedApp = App.launchView("Keyed router", 240, 140, (): View => keyedRouter.view())
+    keyedApp.frame()
+    let keyedLen = keyedApp.tree().len()
+    let keyedText = keyedApp.tree().find(Role.text, "root frame")
+    keyedApp.frame()
+    failed = check(keyedApp.tree().len() == keyedLen, "a keyed router survives a rebuild", failed)
+    failed = check(keyedApp.tree().find(Role.text, "root frame") == keyedText, "a keyed router reuses its nodes", failed)
+
+    let fadeRouter = new ViewRouter()
+    fadeRouter.route("/", (_p: Map<String, String>) => Text("fade home"))
+    fadeRouter.route("/next", (_p: Map<String, String>) => Text("fade next"))
+    fadeRouter.withTransition(new Transition(0.5, Curve.linear()))
+    let fadeTree = new Tree(TextEngine.fixed())
+    let fadeFirst = fadeRouter.view()
+    failed = check(fadeFirst.kind == ViewKind.crossfadeKind && fadeFirst.children.length() == 1, "the first transition render is a one-sided crossfade", failed)
+    let homeKey = fadeFirst.children[0].key
+    let fadeWarm = 0
+    while fadeWarm < 40 {
+        fadeTree.setFrameDt(1.0 / 60.0)
+        fadeTree.beginFrame()
+        let rr = View.mount(fadeTree, fadeRouter.view())
+        fadeTree.endFrame()
+        fadeTree.layout(rr, 240)
+        fadeWarm += 1
+    }
+    failed = check(fadeTree.find(Role.text, "fade home") >= 0, "the incoming route mounts", failed)
+    failed = check(fadeRouter.navigate("/next"), "the faded router navigates", failed)
+    let fadeMid = fadeRouter.view()
+    failed = check(fadeMid.kind == ViewKind.crossfadeKind && fadeMid.children.length() == 2, "navigating builds both crossfade sides", failed)
+    failed = check(!fadeMid.children[0].show && fadeMid.children[1].show, "the outgoing view is hidden and the incoming view is shown", failed)
+    failed = check(fadeMid.children[0].key == homeKey, "the outgoing view keeps its old generation key: " + fadeMid.children[0].key, failed)
+    failed = check(fadeMid.children[1].key != homeKey && fadeMid.children[1].key != "/next", "the incoming view gets a new generation key: " + fadeMid.children[1].key, failed)
+    let nextKey = fadeMid.children[1].key
+    fadeTree.setFrameDt(1.0 / 60.0)
+    fadeTree.beginFrame()
+    let midRoot = View.mount(fadeTree, fadeMid)
+    fadeTree.endFrame()
+    fadeTree.layout(midRoot, 240)
+    failed = check(fadeTree.presenceProgressOf(homeKey) == 1.0, "the outgoing view starts the crossfade at full progress", failed)
+    failed = check(fadeTree.presenceProgressOf(nextKey) == 0.0, "the incoming view starts the crossfade at zero", failed)
+    let midSteps = 0
+    while midSteps < 5 {
+        fadeTree.setFrameDt(1.0 / 60.0)
+        fadeTree.beginFrame()
+        let rr = View.mount(fadeTree, fadeRouter.view())
+        fadeTree.endFrame()
+        fadeTree.layout(rr, 240)
+        midSteps += 1
+    }
+    failed = check(fadeTree.find(Role.text, "fade home") >= 0, "the outgoing text stays mounted mid-fade", failed)
+    failed = check(fadeTree.find(Role.text, "fade next") >= 0, "the incoming text mounts mid-fade", failed)
+    let fadeSettle = 0
+    while fadeSettle < 60 && fadeTree.presenceAnimating() {
+        fadeTree.setFrameDt(1.0 / 60.0)
+        fadeTree.beginFrame()
+        let rr = View.mount(fadeTree, fadeRouter.view())
+        fadeTree.endFrame()
+        fadeTree.layout(rr, 240)
+        fadeSettle += 1
+    }
+    failed = check(fadeTree.find(Role.text, "fade home") < 0, "the outgoing text is gone after the fade", failed)
+    failed = check(fadeTree.find(Role.text, "fade next") >= 0, "only the incoming text remains", failed)
+    failed = check(fadeTree.presenceProgressOf(homeKey) == 0.0, "the outgoing presence reaches zero", failed)
+
+    failed = check(fadeRouter.back() && fadeRouter.currentPath() == "/", "the faded router goes back", failed)
+    let backMid = fadeRouter.view()
+    failed = check(backMid.kind == ViewKind.crossfadeKind && backMid.children.length() == 2, "back builds a crossfade", failed)
+    failed = check(backMid.children[0].key == nextKey, "back fades out the route it leaves", failed)
+    fadeTree.setFrameDt(1.0 / 60.0)
+    fadeTree.beginFrame()
+    let backRoot = View.mount(fadeTree, backMid)
+    fadeTree.endFrame()
+    fadeTree.layout(backRoot, 240)
+    let backSteps = 0
+    while backSteps < 5 {
+        fadeTree.setFrameDt(1.0 / 60.0)
+        fadeTree.beginFrame()
+        let rr = View.mount(fadeTree, fadeRouter.view())
+        fadeTree.endFrame()
+        fadeTree.layout(rr, 240)
+        backSteps += 1
+    }
+    failed = check(fadeTree.find(Role.text, "fade next") >= 0, "back keeps the route it leaves mounted mid-fade", failed)
+    failed = check(fadeTree.find(Role.text, "fade home") >= 0, "back mounts the previous route mid-fade", failed)
+    let backSettle = 0
+    while backSettle < 60 && fadeTree.presenceAnimating() {
+        fadeTree.setFrameDt(1.0 / 60.0)
+        fadeTree.beginFrame()
+        let rr = View.mount(fadeTree, fadeRouter.view())
+        fadeTree.endFrame()
+        fadeTree.layout(rr, 240)
+        backSettle += 1
+    }
+    failed = check(fadeTree.find(Role.text, "fade next") < 0, "back drops the route it left", failed)
+    failed = check(fadeTree.find(Role.text, "fade home") >= 0, "back settles on the previous route", failed)
+
+    let plainRouter = new ViewRouter()
+    plainRouter.route("/", (_p: Map<String, String>) => Text("plain home"))
+    let plainView = plainRouter.view()
+    failed = check(plainView.kind == ViewKind.textKind && plainView.text == "plain home", "a router without a transition returns the resolved view", failed)
+    return failed
+}
+
+fn testPlatform(failed: Int): Int {
+    let cfg = AppConfig.defaults("Demo")
+    failed = check(cfg.titleText() == "Demo" && cfg.widthValue() == 760, "config defaults", failed)
+    let lightTheme = new AppConfig("x", 100, 100, Appearance.light, "main.rnx").theme(true)
+    let darkTheme = new AppConfig("x", 100, 100, Appearance.dark, "main.rnx").theme(false)
+    let sysTheme = new AppConfig("x", 100, 100, Appearance.system, "main.rnx").theme(true)
+    failed = check(lightTheme.background != darkTheme.background, "appearance picks a theme", failed)
+    failed = check(sysTheme.background == darkTheme.background, "system follows the desktop", failed)
+
+    let notices = new Notifications()
+    let nid = notices.post("Saved", "three files")
+    failed = check(notices.count() == 1 && notices.title(0) == "Saved", "notification posts", failed)
+    let nl = new Tree(TextEngine.fixed())
+    nl.beginFrame()
+    let nb = new Build(nl)
+    let stack = notices.view(nb)
+    nl.endFrame()
+    failed = check(nl.count[stack.id] == 1, "notification view builds a toast", failed)
+    failed = check(notices.dismiss(nid), "notification dismisses", failed)
+    failed = check(notices.count() == 0 && !notices.dismiss(99), "queue empties", failed)
+
+    let af = new AppFiles()
+    let tmp = "/tmp/rnx-appfiles-test.txt"
+    failed = check(af.writeText(tmp, "hello"), "app files write", failed)
+    failed = check(af.readText(tmp) == "hello", "app files read", failed)
+    failed = check(af.exists(tmp), "app files exists", failed)
+    failed = check(af.join("/tmp", "x") == "/tmp/x", "app files join", failed)
+
+    let bundle = new AppBundle("demo", "0.1.0", "src/main.rnx", ["fs:delegated", "net:http:example.com"])
+    let manifest = bundle.manifest()
+    failed = check(manifest.contains("\"name\":\"demo\""), "manifest names the app: " + manifest, failed)
+    failed = check(manifest.contains("\"version\":\"0.1.0\""), "manifest carries the version", failed)
+    failed = check(manifest.contains("fs:delegated"), "manifest lists capabilities", failed)
+    failed = check(manifest.startsWith("\{") && manifest.endsWith("}"), "manifest is a JSON object", failed)
+
+    let worker = Worker.of(Thread.spawn(workerAnswer))
+    failed = check(worker.join() == 42, "worker join returns the body value", failed)
+
+    let camApp = App.launch("Camera", 200, 120, (b: Build): Node => {
+        b.animate(false)
+        return b.column() {
+            b.button("Zoom", () => {})
+        }
+    })
+    let beforeCam = camApp.frame()
+    failed = check(!beforeCam.describe().contains("transform "), "no camera means no transform", failed)
+    camApp.setCamera(new Camera(2.0, 4.0, 6.0))
+    let afterCam = camApp.frame()
+    failed = check(afterCam.describe().contains("transform 2.0"), "camera adds a transform", failed)
+    camApp.clearCamera()
+    let cleared = camApp.frame()
+    failed = check(!cleared.describe().contains("transform "), "clearing the camera removes it", failed)
+
+    let inertApp = App.launch("Inert", 320, 200, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        root.addChild(b.button("Background", () => {}))
+        return root
+    })
+    inertApp.frame()
+    let backId = inertApp.tree().find(Role.button, "Background")
+    failed = check(backId >= 0, "inert test finds the button", failed)
+    inertApp.tree().setInert(backId, true)
+    let ia = inertApp.accessibility()
+    let ii = ia.find("button", "Background")
+    failed = check(ii >= 0, "inert node stays in the projection", failed)
+    failed = check(ia.at(ii).inert, "inert is exported", failed)
+    failed = check(ia.dump().contains("inert"), "dump marks inert", failed)
+    inertApp.tree().setInert(backId, false)
+    let ia2 = inertApp.accessibility()
+    let ii2 = ia2.find("button", "Background")
+    failed = check(!ia2.at(ii2).inert, "clearing inert restores the node", failed)
+
+    let dpiApp = App.launch("Dpi", 320, 240, (b: Build): Node => {
+        b.animate(false)
+        return b.column() {
+            b.text("scaled")
+        }
+    })
+    dpiApp.setDpi(2.0)
+    failed = check(dpiApp.scale() == 2000, "dpi tags the frame at 2x", failed)
+    failed = check(dpiApp.tree().dp(16) == 32, "dpi converts logical units", failed)
+    let dpiFrame = dpiApp.frame()
+    failed = check(dpiFrame.scale() == 2000, "frame packet carries the dpi scale", failed)
+    dpiApp.setDpi(1.0)
+    failed = check(dpiApp.scale() == 1000 && dpiApp.tree().dp(16) == 16, "dpi resets to 1x", failed)
+    dpiApp.setTextScale(1.5)
+    failed = check(dpiApp.tree().textScale() == 1.5, "text scale is delegated", failed)
+    dpiApp.setSafeArea(4, 4, 4, 4)
+    failed = check(dpiApp.tree().safeTop() == 4, "safe area is delegated", failed)
+    dpiApp.setKeyboardInset(120)
+    failed = check(dpiApp.tree().keyboardInset() == 120, "keyboard inset is delegated", failed)
+
+    let windows = new WindowSet()
+    let w1 = windows.open("Main", 640, 480)
+    let w2 = windows.open("Inspector", 320, 240)
+    failed = check(windows.count() == 2, "window set opens two windows", failed)
+    failed = check(windows.focused() == w1, "the first window takes focus", failed)
+    failed = check(windows.focus(w2) && windows.route(w2), "focus routes to the second window", failed)
+    failed = check(!windows.route(w1), "the first window is no longer routed", failed)
+    failed = check(windows.resize(w1, 800, 600), "resize reports success", failed)
+    failed = check(windows.widthOf(w1) == 800 && windows.heightOf(w1) == 600, "resize stores the size", failed)
+    failed = check(windows.frame(w1), "visible window counts a frame", failed)
+    failed = check(windows.framesOf(w1) == 1, "frame counter advances", failed)
+    failed = check(windows.suspend(w2) && windows.suspendedAt(w2), "window suspends", failed)
+    failed = check(!windows.frame(w2), "suspended window does not count frames", failed)
+    failed = check(windows.resume(w2) && windows.frame(w2), "resumed window draws again", failed)
+    failed = check(windows.framesOf(w2) == 1, "each window has its own counter", failed)
+    failed = check(windows.setVisible(w1, false), "visibility changes", failed)
+    failed = check(!windows.frame(w1), "hidden window does not count frames", failed)
+    windows.setVisible(w1, true)
+    failed = check(windows.close(w1), "close removes the window", failed)
+    failed = check(windows.count() == 1 && windows.focused() == w2, "focus moves after a close", failed)
+    failed = check(!windows.close(w1), "closing a missing window fails", failed)
+
+    let suspendApp: App = App.launch("Suspend", 320, 240, (b: Build): Node => {
+        b.animate(true)
+        let root = b.column()
+        let field = b.textField("", "name", (v: String) => {})
+        root.addChild(field)
+        return root
+    })
+    suspendApp.frame()
+    let suspendClock: FrameClock = suspendApp.clock()
+    let ticksBefore = suspendClock.frames()
+    suspendApp.suspend()
+    failed = check(suspendApp.isSuspended(), "app reports suspended", failed)
+    failed = check(suspendClock.paused(), "suspend pauses the clock", failed)
+    failed = check(!suspendApp.animating(), "suspend stops animation", failed)
+    suspendApp.frame()
+    failed = check(suspendClock.frames() == ticksBefore, "suspended frame does not tick", failed)
+    suspendApp.resume()
+    failed = check(!suspendApp.isSuspended() && !suspendClock.paused(), "resume unpauses", failed)
+    failed = check(suspendApp.animating(), "resume restores animation", failed)
+    suspendApp.frame()
+    suspendApp.frame()
+    failed = check(suspendClock.frames() > ticksBefore, "resumed frame ticks", failed)
+
+    let noHost = App.launch("NoHost", 100, 100, (b: Build): Node => b.column() { b.text("x") })
+    failed = check(noHost.windowCount() == 1, "headless app reports one logical window", failed)
+    failed = check(noHost.openWindow("second", 80, 80) < 0, "opening a window without a host fails", failed)
+    failed = check(noHost.windowWidth(0) == 100, "logical window width falls back to the app window", failed)
+
+    failed = check(Platform.name() != "", "platform name is available: " + Platform.name(), failed)
+    failed = check(Platform.separator() == "/" || Platform.separator() == "\\", "path separator", failed)
+    failed = check(Platform.cpus() >= 1, "platform reports cpu count", failed)
+    failed = check(Platform.isLinux() || Platform.isMac() || Platform.isWindows(), "platform is one of the known hosts", failed)
+
+    let center = new NotificationCenter()
+    let notice = center.post("Build", "done")
+    failed = check(center.count() == 1 && center.title(0) == "Build", "os notifications post", failed)
+    failed = check(center.dismiss(notice) && center.count() == 0, "os notifications dismiss", failed)
+
+    let osFile = "/tmp/rnx-os-files-test.txt"
+    failed = check(Files.writeText(osFile, "platform os"), "os files write", failed)
+    failed = check(Files.readText(osFile) == "platform os", "os files read", failed)
+    failed = check(Files.join("/tmp", "x") == "/tmp/x", "os files join", failed)
+
+    let osWorker = OsWorker.wrap(Thread.spawn(workerAnswer))
+    failed = check(osWorker.join() == 42, "os worker join", failed)
+
+    let sockPath = "/tmp/rnx-surface-app-" + Clock.mono().nanos.toString() + ".sock"
+    let sockBytes: ByteBuffer = ByteBuffer.fromString(sockPath)
+    let started = 0
+    unsafe {
+        started = surfaceSocketTestStart(Pointer.fromAddress<Byte>(sockBytes.address()), sockBytes.length())
+    }
+    failed = check(started == 0, "surface socket test server starts: " + started.toString(), failed)
+    let sockApp: App = App.launch("Socket", 200, 120, (b: Build): Node => {
+        b.animate(false)
+        return b.column() {
+            b.text("surface socket")
+        }
+    })
+    sockApp.setSurfaceSocket(sockPath)
+    let sockStatus = sockApp.showFor(2)
+    failed = check(sockStatus == 0, "surface socket ack status is zero: " + sockStatus.toString(), failed)
+    let sockFrames = 0
+    let sockId = 0
+    let sockList = 0
+    let sockPacket = 0
+    unsafe {
+        sockFrames = surfaceSocketTestFrames(Pointer.fromAddress<Byte>(sockBytes.address()), sockBytes.length())
+        sockId = surfaceSocketTestLastId(Pointer.fromAddress<Byte>(sockBytes.address()), sockBytes.length())
+        sockList = surfaceSocketTestLastList(Pointer.fromAddress<Byte>(sockBytes.address()), sockBytes.length())
+        sockPacket = surfaceSocketTestLastPacket(Pointer.fromAddress<Byte>(sockBytes.address()), sockBytes.length())
+    }
+    failed = check(sockFrames >= 2, "surface socket received two frames: " + sockFrames.toString(), failed)
+    failed = check(sockId == 1, "surface socket frame carries window id one: " + sockId.toString(), failed)
+    failed = check(sockList > 0, "surface socket frame carries a display list", failed)
+    failed = check(sockPacket > 0, "surface socket frame carries a packet", failed)
+    return failed
+}
+
+fn testDragAndScroll(failed: Int): Int {
+    let dragTree = new Tree(TextEngine.fixed())
+    let dragBuild = new Build(dragTree)
+    let dragRoot = dragBuild.column()
+    let dragTarget = dragBuild.button("Drag", () => {})
+    dragRoot.addChild(dragTarget)
+    dragTarget.bounds(10, 10, 100, 40)
+
+    failed = check(dragTree.pointerDownId(0, 20, 20, 0), "drag press hits the target", failed)
+    failed = check(dragTree.dragNode() == dragTarget.id, "the pressed node owns the drag", failed)
+    failed = check(dragTree.dragging(0), "pointer zero owns the active drag", failed)
+    failed = check(dragTree.dragPhase() == 0, "a fresh press has no drag phase", failed)
+    dragTree.pointerMoveId(0, 22, 20)
+    failed = check(dragTree.dragPhase() == 0, "movement below the slop stays none", failed)
+    dragTree.pointerMoveId(0, 25, 20)
+    failed = check(dragTree.dragPhase() == 1, "crossing the slop begins the drag", failed)
+    dragTree.pointerMoveId(0, 30, 20)
+    failed = check(dragTree.dragPhase() == 2, "a later move reports changed", failed)
+    dragTree.pointerMoveId(0, 40, 40)
+    failed = check(dragTree.dragDx() == 20.0 && dragTree.dragDy() == 20.0, "drag offsets follow the pointer", failed)
+    dragTree.pointerUpId(0, 40, 40)
+    failed = check(dragTree.dragPhase() == 3, "release ends the drag", failed)
+    failed = check(!dragTree.dragging(0), "a released pointer no longer owns the drag", failed)
+
+    let velocityTree = new Tree(TextEngine.fixed())
+    let velocityBuild = new Build(velocityTree)
+    let velocityRoot = velocityBuild.column()
+    let velocityTarget = velocityBuild.button("Velocity", () => {})
+    velocityRoot.addChild(velocityTarget)
+    velocityTarget.bounds(10, 10, 100, 40)
+    velocityTree.pointerDownId(0, 20, 20, 0)
+    velocityTree.pointerMoveTimed(0, 24, 20, 16000000)
+    velocityTree.pointerMoveTimed(0, 28, 20, 32000000)
+    velocityTree.pointerMoveTimed(0, 32, 20, 48000000)
+    let dragVx = velocityTree.dragVelocityX()
+    failed = check(dragVx > 249.0 && dragVx < 251.0, "velocity matches the 16 ms sample sequence: " + dragVx.toString(), failed)
+    failed = check(velocityTree.dragVelocityY() == 0.0, "a horizontal sequence has no vertical velocity", failed)
+    velocityTree.pointerCancelId(0)
+    failed = check(velocityTree.dragPhase() == 4, "cancel reports the cancelled phase", failed)
+    failed = check(velocityTree.dragVelocityX() == 0.0, "cancel zeroes velocity", failed)
+    failed = check(velocityTree.dragDx() == 0.0 && velocityTree.dragDy() == 0.0, "cancel restores the start point", failed)
+    failed = check(!velocityTree.dragging(0), "a cancelled pointer does not own the drag", failed)
+
+    let pointerTree = new Tree(TextEngine.fixed())
+    let pointerBuild = new Build(pointerTree)
+    let pointerRoot = pointerBuild.column()
+    let pointerTarget = pointerBuild.button("Touches", () => {})
+    pointerRoot.addChild(pointerTarget)
+    pointerTarget.bounds(10, 10, 100, 40)
+    pointerTree.pointerDownId(2, 20, 20, 0)
+    pointerTree.pointerDownId(3, 25, 25, 0)
+    failed = check(pointerTree.dragging(2) && !pointerTree.dragging(3), "the first pointer owns the drag", failed)
+    pointerTree.pointerMoveId(3, 60, 25)
+    failed = check(pointerTree.dragDx() == 0.0 && pointerTree.dragPhase() == 0, "a second pointer does not move the owner", failed)
+    pointerTree.pointerMoveId(2, 30, 20)
+    failed = check(pointerTree.dragDx() == 10.0 && pointerTree.dragPhase() == 1, "the owner tracks its own movement", failed)
+    pointerTree.pointerCancelId(3)
+    failed = check(pointerTree.dragPhase() == 1 && pointerTree.dragging(2), "cancelling another pointer keeps the drag", failed)
+    pointerTree.pointerMoveId(2, 35, 20)
+    pointerTree.pointerUpId(2, 35, 20)
+    failed = check(pointerTree.dragPhase() == 3 && pointerTree.dragDx() == 15.0, "the owner ends with its own offset", failed)
+
+    let dragApp = App.launch("Drag", 320, 200, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        let target = b.button("Move me", () => {})
+        target.fixedWidth(120)
+        target.fixedHeight(40)
+        root.addChild(target)
+        return root
+    })
+    dragApp.frame()
+    let dragButton = dragApp.tree().find(Role.button, "Move me")
+    failed = check(dragButton >= 0, "the driver drag target exists", failed)
+    let dragDriver = Driver.on(dragApp)
+    failed = check(dragDriver.drag("button", "Move me", 24.0, 8.0, 4), "driver drag hits the node", failed)
+    failed = check(dragApp.tree().dragNode() == dragButton, "driver drag moves the same node", failed)
+    failed = check(dragApp.tree().dragPhase() == 3, "driver drag ends the phase", failed)
+    failed = check(dragApp.tree().dragDx() == 24.0 && dragApp.tree().dragDy() == 8.0, "driver drag lands on the offset", failed)
+    let dragScript = dragDriver.runScript("drag:button:Move me:10:0")
+    failed = check(dragScript == 0, "the script drag step passes", failed)
+    failed = check(dragApp.tree().dragPhase() == 3 && dragApp.tree().dragDx() == 10.0, "the script drag moves the node", failed)
+
+    let flingTree = new Tree(TextEngine.fixed())
+    flingTree.beginFrame()
+    let flingBuild = new Build(flingTree)
+    let flingRoot = flingBuild.column()
+    flingRoot.padding(0)
+    let flingView = flingBuild.scroll()
+    flingView.fixedHeight(60)
+    flingView.fixedWidth(200)
+    flingView.padding(0)
+    let flickRow = 0
+    while flickRow < 20 {
+        let row = flingBuild.text("flick " + flickRow.toString())
+        row.fixedHeight(40)
+        row.fixedWidth(200)
+        flingView.addChild(row)
+        flickRow += 1
+    }
+    flingRoot.addChild(flingView)
+    flingTree.endFrame()
+    flingTree.layout(flingRoot, 200)
+    let flingNode = Node(tree: flingTree, id: flingView.id)
+    failed = check(flingTree.scrollMaxOf(flingNode) == 740.0, "fling viewport has 740 of overflow", failed)
+    failed = check(flingTree.scrollFling(flingNode, 800.0), "a fling starts on the scroll node", failed)
+    let flingSteps = 0
+    while flingSteps < 300 && flingTree.scrollVelocityOf(flingNode) != 0.0 {
+        flingTree.stepScroll(1.0 / 60.0)
+        flingSteps += 1
+    }
+    failed = check(flingTree.scrollVelocityOf(flingNode) == 0.0, "fling velocity decays to zero", failed)
+    let flingRest = flingTree.scrollOf(flingNode)
+    let projected = Decay.normal(0.0, 800.0).projection()
+    failed = check(Math.abs(flingRest - projected) < 25.0, "fling rests near the decay projection: " + flingRest.toString() + " vs " + projected.toString(), failed)
+    flingTree.stepScroll(1.0 / 60.0)
+    failed = check(flingTree.scrollOf(flingNode) == flingRest, "the settled fling offset is stable", failed)
+    failed = check(flingTree.scrollFling(flingNode, 400.0), "a second fling starts", failed)
+    flingTree.stopScroll(flingNode)
+    failed = check(flingTree.scrollVelocityOf(flingNode) == 0.0, "stopScroll halts the velocity", failed)
+
+    flingTree.setScrollTo(flingNode.id, 5000.0)
+    failed = check(flingTree.scrollOf(flingNode) == 740.0, "scrollTo clamps exactly at the end", failed)
+    flingTree.setScrollTo(flingNode.id, 0.0 - 50.0)
+    failed = check(flingTree.scrollOf(flingNode) == 0.0, "scrollTo clamps exactly at the top", failed)
+    flingTree.setScrollTo(flingNode.id, 700.0)
+    failed = check(flingTree.scrollOf(flingNode) == 700.0, "an exact scroll lands on its offset", failed)
+    failed = check(flingTree.scrollFling(flingNode, 9000.0), "a fast fling starts", failed)
+    let boundSteps = 0
+    while boundSteps < 300 && flingTree.scrollVelocityOf(flingNode) != 0.0 {
+        flingTree.stepScroll(1.0 / 60.0)
+        boundSteps += 1
+    }
+    failed = check(flingTree.scrollOf(flingNode) == 740.0, "a fling stops at the end bound: " + flingTree.scrollOf(flingNode).toString(), failed)
+    failed = check(flingTree.scrollVelocityOf(flingNode) == 0.0, "a bound collision stops the velocity", failed)
+    flingTree.stepScroll(1.0 / 60.0)
+    failed = check(flingTree.scrollOf(flingNode) == 740.0, "a bound offset holds after more frames", failed)
+
+    let overOk = flingTree.scrollAt(2, 2, 200.0)
+    let over = flingTree.scrollOverscrollOf(flingNode)
+    failed = check(overOk && over > 0.0 && over < 200.0, "a wheel past the end compresses the overscroll: " + over.toString(), failed)
+    failed = check(flingTree.scrollOf(flingNode) == 740.0, "overscroll does not move the logical offset", failed)
+    let overSteps = 0
+    while overSteps < 300 && flingTree.scrollOverscrollOf(flingNode) != 0.0 {
+        flingTree.stepScroll(1.0 / 60.0)
+        overSteps += 1
+    }
+    failed = check(flingTree.scrollOverscrollOf(flingNode) == 0.0, "the spring returns the end overscroll", failed)
+    failed = check(flingTree.scrollOf(flingNode) == 740.0, "returning overscroll keeps the offset", failed)
+
+    flingTree.setScrollTo(flingNode.id, 0.0)
+    let topOk = flingTree.scrollAt(2, 2, 0.0 - 120.0)
+    let topOver = flingTree.scrollOverscrollOf(flingNode)
+    failed = check(topOk && topOver < 0.0 && topOver > -120.0, "a wheel before the top compresses the overscroll: " + topOver.toString(), failed)
+    let topSteps = 0
+    while topSteps < 300 && flingTree.scrollOverscrollOf(flingNode) != 0.0 {
+        flingTree.stepScroll(1.0 / 60.0)
+        topSteps += 1
+    }
+    failed = check(flingTree.scrollOverscrollOf(flingNode) == 0.0 && flingTree.scrollOf(flingNode) == 0.0, "the top overscroll returns to zero", failed)
+
+    let flingApp = App.launch("Fling", 240, 200, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        root.padding(0)
+        let view = b.scroll()
+        view.fixedHeight(60)
+        view.fixedWidth(200)
+        view.padding(0)
+        let i = 0
+        while i < 8 {
+            let row = b.text("fling row " + i.toString())
+            row.fixedHeight(40)
+            row.fixedWidth(200)
+            view.addChild(row)
+            i += 1
+        }
+        root.addChild(view)
+        return root
+    })
+    flingApp.frame()
+    let flingScroll = flingApp.tree().find(Role.scroll, "")
+    failed = check(flingScroll >= 0, "the app has a scroll viewport", failed)
+    failed = check(flingApp.tree().scrollMax[flingScroll] == 260.0, "the app scroll has 260 of overflow", failed)
+    let flingDriver = Driver.on(flingApp)
+    failed = check(flingDriver.fling("text", "fling row 0", 700.0), "driver starts a fling under the named node", failed)
+    let appFlingNode = Node(tree: flingApp.tree(), id: flingScroll)
+    failed = check(flingApp.tree().scrollVelocityOf(appFlingNode) > 0.0, "driver fling sets a velocity", failed)
+    let flingScript = flingDriver.runScript("fling:text:fling row 0:500")
+    failed = check(flingScript == 0, "the script fling step passes", failed)
+    failed = check(flingApp.tree().scrollVelocityOf(appFlingNode) > 0.0, "the script fling restarts the motion", failed)
+
+    let inspectApp = App.launch("Inspect", 240, 160, (b: Build): Node => {
+        let root = b.column()
+        root.addChild(b.heading("Layers"))
+        root.addChild(b.buttonInert("Apply"))
+        return root
+    })
+    let plainRecords = inspectApp.frame().records()
+    let inspectDriver = Driver.on(inspectApp)
+    inspectDriver.inspect(true)
+    let inspectorRecords = inspectApp.frame().records()
+    failed = check(inspectApp.inspector(), "inspector reports enabled", failed)
+    failed = check(inspectorRecords > plainRecords, "inspector adds records: " + plainRecords.toString() + " -> " + inspectorRecords.toString(), failed)
+    inspectDriver.inspect(false)
+    let restoredRecords = inspectApp.frame().records()
+    failed = check(!inspectApp.inspector(), "inspector reports disabled", failed)
+    failed = check(restoredRecords == plainRecords, "inspector off restores the record count", failed)
+
+    inspectDriver.inspect(true)
+    inspectApp.setInspectorNode(-1)
+    let unselectedRecords = inspectApp.frame().records()
+    let inspectorTarget = inspectApp.tree().find(Role.heading, "Layers")
+    failed = check(inspectorTarget >= 0, "inspector finds the selected node", failed)
+    inspectApp.setInspectorNode(inspectorTarget)
+    let selectedFrame = inspectApp.frame()
+    failed = check(selectedFrame.records() > unselectedRecords, "selected node adds a highlight", failed)
+    let tinted = false
+    let si = 0
+    while si < selectedFrame.records() {
+        let so = 32 + si * 64
+        if selectedFrame.list.readUInt32LE(so) == 1 && (selectedFrame.list.readUInt32LE(so + 4) & 255) == 40 {
+            tinted = true
+        }
+        si += 1
+    }
+    failed = check(tinted, "selected node draws the tint fill", failed)
+
+    let inspectScript = inspectDriver.runScript("inspect:on;inspect:off")
+    failed = check(inspectScript == 0, "inspect script steps pass: " + inspectScript.toString(), failed)
+    return failed
+}
+
+fn testReactiveAndImages(failed: Int): Int {
+    let crx = new Reactive()
+    let leftSig = crx.signal(0)
+    let rightSig = crx.signal(0)
+    let leftRuns: Array<Int> = [0]
+    let rightRuns: Array<Int> = [0]
+    let leftBuild = (): View => {
+        leftRuns[0] += 1
+        let v = leftSig.get() as Int
+        return Panel(padding: 0, gap: 2) {
+            Text("left " + v.toString())
+        }
+    }
+    let rightBuild = (): View => {
+        rightRuns[0] += 1
+        let v = rightSig.get() as Int
+        return Panel(padding: 0, gap: 2) {
+            Text("right " + v.toString())
+        }
+    }
+    let leftFace = crx.component("left", leftBuild)
+    crx.component("right", rightBuild)
+    failed = check(leftRuns[0] == 1 && rightRuns[0] == 1, "the first component call builds both", failed)
+    failed = check(leftFace.kind == ViewKind.componentKind && leftFace.key == "left", "the component carries its kind and key", failed)
+
+    leftSig.set(5)
+    failed = check(crx.componentDirty("left"), "a read signal write dirties the component", failed)
+    failed = check(!crx.componentDirty("right"), "a sibling that reads another signal stays clean", failed)
+
+    let rebuiltFace = crx.component("left", leftBuild)
+    failed = check(leftRuns[0] == 2, "the reader rebuilds once", failed)
+    failed = check(rightRuns[0] == 1, "the sibling does not rebuild", failed)
+    failed = check(rebuiltFace.key == "left" && crx.componentRebuilds("left") == 2, "the component survives the rebuild with its key", failed)
+    failed = check(crx.alive("component", rebuiltFace.component), "the component id stays live", failed)
+    failed = check(!crx.componentDirty("left"), "the rebuild clears the dirty flag", failed)
+
+    let cachedLeft = crx.componentViewAt(rebuiltFace.component)
+    let cleanFace = crx.component("left", leftBuild)
+    failed = check(leftRuns[0] == 2, "a clean component does not run its builder", failed)
+    failed = check(cleanFace == rebuiltFace && crx.componentViewAt(rebuiltFace.component) == cachedLeft, "a clean component reuses its cached view", failed)
+
+    leftSig.set(6)
+    failed = check(crx.frameNeeded(), "a dirty component keeps frame intent on", failed)
+    crx.component("left", leftBuild)
+    failed = check(!crx.frameNeeded(), "a rebuilt component lets frame intent rest", failed)
+    let queued = crx.effect(() => {
+        leftSig.get()
+    })
+    failed = check(crx.frameNeeded(), "a queued effect keeps frame intent on", failed)
+    crx.drain()
+    failed = check(!crx.frameNeeded(), "a drained queue lets frame intent rest", failed)
+    queued.dispose()
+
+    let mountRx = new Reactive()
+    let mountSig = mountRx.signal(0)
+    let mountRuns: Array<Int> = [0]
+    let mountApp = App.launchView("Component mount", 220, 140, (): View => {
+        let v = mountSig.get() as Int
+        return Page(title: "Component mount", children: [
+            mountRx.component("panel", () => {
+                mountRuns[0] += 1
+                let inner = mountSig.get() as Int
+                return Text("value " + inner.toString())
+            }),
+            Text("outer " + v.toString()),
+        ])
+    })
+    mountApp.bindReactive(mountRx)
+    mountApp.frame()
+    failed = check(mountRuns[0] == 1, "mounting builds the component once", failed)
+    mountApp.frame()
+    failed = check(mountRuns[0] == 1, "a second clean frame reuses the component view", failed)
+    mountSig.set(9)
+    let mounted = mountApp.frame()
+    failed = check(mountRuns[0] == 2, "a write rebuilds the mounted component", failed)
+    failed = check(mounted.snapshot.contains("text value 9"), mounted.snapshot, failed)
+    failed = check(mounted.snapshot.contains("text outer 9"), mounted.snapshot, failed)
+
+    let plainRuns: Array<Int> = [0]
+    let plainApp = App.launchView("Plain component", 160, 100, (): View => {
+        return Component("", () => {
+            plainRuns[0] += 1
+            return Text("plain")
+        })
+    })
+    plainApp.frame()
+    plainApp.frame()
+    failed = check(plainRuns[0] == 2, "an empty key mounts the builder without caching", failed)
+
+    let drainRx = new Reactive()
+    let drainRuns: Array<Int> = [0]
+    let drained = drainRx.effect(() => {
+        drainRuns[0] += 1
+    })
+    let drainApp = App.launchView("Drain", 160, 100, (): View => {
+        return Page(title: "Drain", children: [Text("drain")])
+    })
+    drainApp.bindReactive(drainRx)
+    drainApp.frame()
+    drainApp.frame()
+    failed = check(drainRuns[0] == 1, "the app drains the effect once per frame start: " + drainRuns[0].toString(), failed)
+    drained.dispose()
+
+    let png = tinyPng()
+    let info = pngSize(png)
+    failed = check(info.width == 4 && info.height == 2, "pngSize reads the IHDR dimensions", failed)
+    failed = check(pngSize(ByteBuffer.allocate(0)).width == 0 && pngSize(ByteBuffer.allocate(0)).height == 0, "an empty buffer has no size", failed)
+    let badSig = ByteBuffer.fromArray([0, 1, 2, 3, 4, 5, 6, 7, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 4, 0, 0, 0, 2])
+    let badSigSize = pngSize(badSig)
+    failed = check(badSigSize.width == 0 && badSigSize.height == 0, "a bad signature returns zero", failed)
+    let badType = ByteBuffer.fromArray([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 68, 65, 84, 0, 0, 0, 4, 0, 0, 0, 2])
+    let badTypeSize = pngSize(badType)
+    failed = check(badTypeSize.width == 0 && badTypeSize.height == 0, "a missing IHDR returns zero", failed)
+    failed = check(pngSize(png.slice(0, 20)).width == 0, "a truncated header returns zero", failed)
+
+    let jpegHeader: Array<Int> = [255, 216, 255, 192, 0, 17, 8, 0, 2, 0, 3, 3, 1, 34, 0, 2, 17, 1, 3, 17, 1]
+    let jpegBytes = ByteBuffer.fromArray(jpegHeader)
+    let jpegInfo = imageSize(jpegBytes)
+    failed = check(jpegInfo.width == 3 && jpegInfo.height == 2, "imageSize reads JPEG SOF dimensions", failed)
+
+    let webpHeader: Array<Int> = [82, 73, 70, 70, 28, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 76, 15, 0, 0, 0, 47, 2, 64, 0, 0, 0, 0, 0, 0, 0]
+    let webpInfo = imageSize(ByteBuffer.fromArray(webpHeader))
+    failed = check(webpInfo.width == 3 && webpInfo.height == 2, "imageSize reads WebP VP8L dimensions", failed)
+    failed = check(imageSize(ByteBuffer.allocate(0)).width == 0, "imageSize rejects empty bytes", failed)
+    let zeroDim = ByteBuffer.fromArray([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 0, 0, 0, 0, 0])
+    let zeroDimSize = pngSize(zeroDim)
+    failed = check(zeroDimSize.width == 0 && zeroDimSize.height == 0, "zero dimensions return zero", failed)
+
+    let svgAttrs = svgSize(ByteBuffer.fromString("<svg width=\"120\" height=\"80\"></svg>"))
+    failed = check(svgAttrs.width == 120 && svgAttrs.height == 80, "SVG width and height attributes supply the size", failed)
+    let svgLeading = svgSize(ByteBuffer.fromString("\n  <svg width=\"24\" height=\"18\"></svg>"))
+    failed = check(svgLeading.width == 24 && svgLeading.height == 18, "leading whitespace before <svg is skipped", failed)
+    let svgBom = svgSize(ByteBuffer.fromString("\u{feff}<svg width=\"12\" height=\"9\"></svg>"))
+    failed = check(svgBom.width == 12 && svgBom.height == 9, "a UTF-8 BOM before <svg is skipped", failed)
+    let svgPixels = imageSize(ByteBuffer.fromString("<svg width='64px' height='32px'></svg>"))
+    failed = check(svgPixels.width == 64 && svgPixels.height == 32, "SVG px suffixes are accepted", failed)
+    let svgBox = imageSize(ByteBuffer.fromString("<svg viewBox=\"0 0 64 48\"></svg>"))
+    failed = check(svgBox.width == 64 && svgBox.height == 48, "SVG viewBox supplies the size", failed)
+    let svgCommaBox = imageSize(ByteBuffer.fromString("<svg viewBox='0,0,22,11'></svg>"))
+    failed = check(svgCommaBox.width == 22 && svgCommaBox.height == 11, "SVG comma-separated viewBox supplies the size", failed)
+    let svgDefault = imageSize(ByteBuffer.fromString("<svg></svg>"))
+    failed = check(svgDefault.width == 300 && svgDefault.height == 150, "SVG without a size falls back to 300x150", failed)
+    let svgPercent = imageSize(ByteBuffer.fromString("<svg width=\"100%\" height=\"50%\" viewBox=\"0 0 32 24\"></svg>"))
+    failed = check(svgPercent.width == 32 && svgPercent.height == 24, "SVG percentage sizes fall back to viewBox", failed)
+    let svgTruncated = imageSize(ByteBuffer.fromString("<svg width=\"10\" height=\"10\""))
+    failed = check(svgTruncated.width == 0 && svgTruncated.height == 0, "a truncated SVG returns zero", failed)
+    let notSvg = imageSize(ByteBuffer.fromString("<html></html>"))
+    failed = check(notSvg.width == 0 && notSvg.height == 0, "non-SVG text returns zero", failed)
+
+    let svgTree = new Tree(TextEngine.fixed())
+    svgTree.beginFrame()
+    let svgView: View = Image(ByteBuffer.fromString("<svg width=\"40\" height=\"30\"></svg>"), ImageFit.contain)
+    let svgRoot = View.mount(svgTree, svgView)
+    svgTree.endFrame()
+    svgTree.layout(svgRoot, 100)
+    failed = check(svgTree.w[svgRoot.id] == 40 && svgTree.h[svgRoot.id] == 30, "an Image view uses the parsed SVG intrinsic size", failed)
+    let svgList = Painter.paint(svgTree, 100, 100, Theme.dark())
+    failed = check(countKind(svgList, 6) == 1, "an SVG Image view paints one image record", failed)
+
+    let fillRect = imageRect(ImageFit.fill, 10.0, 10.0, 4.0, 2.0)
+    failed = check(fillRect.x == 0.0 && fillRect.y == 0.0 && fillRect.w == 10.0 && fillRect.h == 10.0, "fill uses the whole box", failed)
+    let containRect = imageRect(ImageFit.contain, 10.0, 10.0, 4.0, 2.0)
+    failed = check(containRect.x == 0.0 && containRect.y == 2.5 && containRect.w == 10.0 && containRect.h == 5.0, "contain fits and centers", failed)
+    let coverRect = imageRect(ImageFit.cover, 10.0, 10.0, 4.0, 2.0)
+    failed = check(coverRect.x == -5.0 && coverRect.y == 0.0 && coverRect.w == 20.0 && coverRect.h == 10.0, "cover scales to the larger side", failed)
+    let scaleRect = imageRect(ImageFit.scaleDown, 10.0, 10.0, 4.0, 2.0)
+    failed = check(scaleRect.x == 3.0 && scaleRect.y == 4.0 && scaleRect.w == 4.0 && scaleRect.h == 2.0, "scaleDown never upscales", failed)
+    let noneRect = imageRect(ImageFit.none, 10.0, 10.0, 4.0, 2.0)
+    failed = check(noneRect.x == 0.0 && noneRect.y == 0.0 && noneRect.w == 4.0 && noneRect.h == 2.0, "none keeps the intrinsic size at the top left", failed)
+    let emptyRect = imageRect(ImageFit.contain, 0.0, 10.0, 4.0, 2.0)
+    failed = check(emptyRect.w == 0.0 && emptyRect.h == 0.0, "a zero box has no destination", failed)
+    let staticRect = View.imageRect(ImageFit.contain, 10.0, 10.0, 4.0, 2.0)
+    failed = check(staticRect.y == 2.5 && staticRect.h == 5.0, "View.imageRect exposes the same fit math", failed)
+
+    let imgTree = new Tree(TextEngine.fixed())
+    imgTree.beginFrame()
+    let imgView: View = Image(png, ImageFit.contain, 10, 10)
+    let imgRoot = View.mount(imgTree, imgView)
+    imgTree.endFrame()
+    imgTree.layout(imgRoot, 10)
+    failed = check(imgTree.roleNameOf(imgRoot.id) == "image", "an Image view maps to the image role", failed)
+    failed = check(imgTree.w[imgRoot.id] == 10 && imgTree.h[imgRoot.id] == 10, "an Image view keeps its explicit box", failed)
+    let imgList = Painter.paint(imgTree, 10, 10, Theme.dark())
+    failed = check(countKind(imgList, 6) == 1, "an Image view paints one image record", failed)
+    let imgAt = -1
+    let imgi = 0
+    while imgi < imgList.recordCount() {
+        if imgList.kindAt(imgi) == 6 {
+            imgAt = imgi
+            failed = check(imgList.xAt(imgi) == 0.0 && imgList.yAt(imgi) == 2.5, "the image record uses the fitted origin", failed)
+            failed = check(imgList.wAt(imgi) == 10.0 && imgList.hAt(imgi) == 5.0, "the image record uses the fitted size", failed)
+        }
+        imgi += 1
+    }
+    failed = check(imgAt >= 0, "the fitted image record is present", failed)
+
+    let coverTree = new Tree(TextEngine.fixed())
+    coverTree.beginFrame()
+    let coverRoot = View.mount(coverTree, Image(png, ImageFit.cover, 10, 10))
+    coverTree.endFrame()
+    coverTree.layout(coverRoot, 10)
+    let coverList = Painter.paint(coverTree, 10, 10, Theme.dark())
+    let coverAt = -1
+    let ci = 0
+    while ci < coverList.recordCount() {
+        if coverList.kindAt(ci) == 6 {
+            coverAt = ci
+        }
+        ci += 1
+    }
+    failed = check(coverAt > 0 && coverAt + 1 < coverList.recordCount(), "cover emits a clipped image record", failed)
+    if coverAt > 0 && coverAt + 1 < coverList.recordCount() {
+        failed = check(coverList.kindAt(coverAt - 1) == 3, "cover clips before painting", failed)
+        failed = check(coverList.xAt(coverAt - 1) == 0.0 && coverList.wAt(coverAt - 1) == 10.0 && coverList.hAt(coverAt - 1) == 10.0, "cover clips to the node box", failed)
+        failed = check(coverList.kindAt(coverAt + 1) == 4, "cover pops the clip after painting", failed)
+    }
+
+    let intrinsicTree = new Tree(TextEngine.fixed())
+    intrinsicTree.beginFrame()
+    let intrinsicRoot = View.mount(intrinsicTree, Image(png, ImageFit.fill))
+    intrinsicTree.endFrame()
+    intrinsicTree.layout(intrinsicRoot, 100)
+    failed = check(intrinsicTree.w[intrinsicRoot.id] == 4 && intrinsicTree.h[intrinsicRoot.id] == 2, "zero width and height mean intrinsic", failed)
+
+    let invalidTree = new Tree(TextEngine.fixed())
+    invalidTree.beginFrame()
+    let invalidRoot = View.mount(invalidTree, Image(ByteBuffer.fromArray([1, 2, 3]), ImageFit.fill, 50, 50))
+    invalidTree.endFrame()
+    invalidTree.layout(invalidRoot, 100)
+    let invalidList = Painter.paint(invalidTree, 100, 100, Theme.dark())
+    failed = check(countKind(invalidList, 6) == 0, "invalid bytes paint no image record", failed)
+
+    let emptyTree = new Tree(TextEngine.fixed())
+    emptyTree.beginFrame()
+    let emptyRoot = View.mount(emptyTree, Image(ByteBuffer.allocate(0)))
+    emptyTree.endFrame()
+    emptyTree.layout(emptyRoot, 100)
+    let emptyList = Painter.paint(emptyTree, 100, 100, Theme.dark())
+    failed = check(countKind(emptyList, 6) == 0, "a zero-size image paints no image record", failed)
+
+    let imageApp = App.launchView("Image a11y", 120, 80, (): View => {
+        let logo: View = Image(png, ImageFit.fill, 40, 20)
+        logo.imageLabel = "logo"
+        return Page(title: "Image", padding: 0, children: [logo])
+    })
+    imageApp.frame()
+    let imageA11y = imageApp.accessibility()
+    let imageIndex = imageA11y.find("image", "logo")
+    failed = check(imageIndex >= 0, "the image role reaches accessibility", failed)
+    if imageIndex >= 0 {
+        let imageNode = imageA11y.at(imageIndex)
+        failed = check(imageNode.w == 40 && imageNode.h == 20, "the image keeps its accessibility bounds", failed)
+    }
+
+    let holdBefore = new KeyframeTrack([new Keyframe(0.25, 10.0), new Keyframe(0.75, 30.0)])
+    failed = check(holdBefore.valueAt(-2.0) == 10.0, "a keyframe track clamps before its first frame", failed)
+    failed = check(holdBefore.valueAt(2.0) == 30.0, "a keyframe track clamps after its last frame", failed)
+    failed = check(holdBefore.duration() == 0.75 && holdBefore.frameCount() == 2 && !holdBefore.loopOn(), "a keyframe track reports its shape", failed)
+
+    let linearTrack = new KeyframeTrack([new Keyframe(0.0, 0.0), new Keyframe(1.0, 100.0)])
+    failed = check(linearTrack.valueAt(0.5) == 50.0, "a linear keyframe midpoint is exact", failed)
+
+    let curveTrack = new KeyframeTrack([new Keyframe(0.0, 0.0, Curve.easeIn()), new Keyframe(1.0, 100.0)])
+    let curveMid = curveTrack.valueAt(0.5)
+    failed = check(curveMid > 0.0 && curveMid < 50.0, "an ease-in curve moves the midpoint toward the start", failed)
+
+    let unsorted = new KeyframeTrack([new Keyframe(1.0, 20.0), new Keyframe(0.0, 10.0), new Keyframe(0.5, 15.0)])
+    failed = check(unsorted.frameCount() == 3 && unsorted.valueAt(0.0) == 10.0 && unsorted.valueAt(0.5) == 15.0 && unsorted.valueAt(1.0) == 20.0, "unsorted keyframes normalize", failed)
+
+    let duplicates = new KeyframeTrack([new Keyframe(0.0, 9.0), new Keyframe(0.5, 1.0), new Keyframe(0.5, 2.0), new Keyframe(1.0, 3.0)])
+    failed = check(duplicates.frameCount() == 3 && duplicates.valueAt(0.5) == 2.0, "duplicate timestamps keep the later frame", failed)
+
+    let looping = new KeyframeTrack([new Keyframe(0.0, 0.0), new Keyframe(1.0, 100.0)], true)
+    failed = check(looping.loopOn() && looping.valueAt(1.5) == 50.0, "a looping track wraps", failed)
+    let held = looping.withLoop(false)
+    failed = check(!held.loopOn() && held.valueAt(1.5) == 100.0, "a non-looping track clamps", failed)
+
+    let noFrames: Array<Keyframe> = []
+    let emptyTrack = new KeyframeTrack(noFrames)
+    failed = check(emptyTrack.valueAt(0.0) == 0.0 && emptyTrack.valueAt(99.0) == 0.0 && emptyTrack.duration() == 0.0, "an empty track holds zero", failed)
+    let single = new KeyframeTrack([new Keyframe(2.0, 7.0)])
+    failed = check(single.valueAt(-1.0) == 7.0 && single.valueAt(2.0) == 7.0 && single.valueAt(9.0) == 7.0, "a single-frame track holds its value", failed)
+    failed = check(single.valueAt(4.0) == 7.0, "a zero-length track returns a stable value", failed)
+
+    let helperTrack = KeyframeTrack.of([new Keyframe(0.0, 4.0), new Keyframe(1.0, 8.0)])
+    failed = check(helperTrack.valueAt(0.5) == 6.0, "KeyframeTrack.of builds a linear track", failed)
+
+    let sampleA = curveTrack.valueAt(0.37)
+    let sampleB = curveTrack.valueAt(0.37)
+    failed = check(sampleA == sampleB && sampleA == curveTrack.valueAt(0.37), "repeated keyframe sampling is deterministic", failed)
+    return failed
+}
+
+fn testGesturesAndProfiler(failed: Int): Int {
+    let holdTree = new Tree(TextEngine.fixed())
+    let holdBuild = new Build(holdTree)
+    let holdRoot = holdBuild.column()
+    let holdTarget = holdBuild.button("Hold", () => {})
+    holdRoot.addChild(holdTarget)
+    holdTarget.bounds(0, 0, 400, 300)
+    holdTree.pointerDownId(0, 100, 100, 0)
+    failed = check(!holdTree.longPressed(), "a fresh press has no long press", failed)
+    let holdStep = 0
+    while holdStep < 4 {
+        holdTree.stepGestures(0.1)
+        holdStep += 1
+    }
+    failed = check(!holdTree.longPressed(), "0.4 s stays below the long press threshold", failed)
+    holdTree.stepGestures(0.1)
+    failed = check(holdTree.longPressed(), "0.5 s fires the long press", failed)
+    holdTree.clearLongPress()
+    failed = check(!holdTree.longPressed(), "clearLongPress consumes the latch", failed)
+    holdTree.stepGestures(0.1)
+    failed = check(!holdTree.longPressed(), "a long press fires once per hold", failed)
+    holdTree.pointerUpId(0, 100, 100)
+
+    let holdFrameTree = new Tree(TextEngine.fixed())
+    let holdFrameBuild = new Build(holdFrameTree)
+    let holdFrameRoot = holdFrameBuild.column()
+    let holdFrameTarget = holdFrameBuild.button("FrameHold", () => {})
+    holdFrameRoot.addChild(holdFrameTarget)
+    holdFrameTarget.bounds(0, 0, 400, 300)
+    holdFrameTree.pointerDownId(0, 100, 100, 0)
+    holdFrameTree.setFrameDt(0.25)
+    holdFrameTree.beginFrame()
+    failed = check(!holdFrameTree.longPressed(), "beginFrame steps 0.25 s without firing", failed)
+    holdFrameTree.setFrameDt(0.25)
+    holdFrameTree.beginFrame()
+    failed = check(holdFrameTree.longPressed(), "beginFrame fires the long press at frameDt 0.5", failed)
+    holdFrameTree.pointerUpId(0, 100, 100)
+
+    let moveHoldTree = new Tree(TextEngine.fixed())
+    let moveHoldBuild = new Build(moveHoldTree)
+    let moveHoldRoot = moveHoldBuild.column()
+    let moveHoldTarget = moveHoldBuild.button("MoveHold", () => {})
+    moveHoldRoot.addChild(moveHoldTarget)
+    moveHoldTarget.bounds(0, 0, 400, 300)
+    moveHoldTree.pointerDownId(0, 100, 100, 0)
+    moveHoldTree.stepGestures(0.2)
+    moveHoldTree.pointerMoveId(0, 102, 100)
+    moveHoldTree.stepGestures(0.2)
+    moveHoldTree.stepGestures(0.1)
+    failed = check(moveHoldTree.longPressed(), "movement inside the slop keeps the hold", failed)
+    moveHoldTree.pointerUpId(0, 102, 100)
+
+    let cancelHoldTree = new Tree(TextEngine.fixed())
+    let cancelHoldBuild = new Build(cancelHoldTree)
+    let cancelHoldRoot = cancelHoldBuild.column()
+    let cancelHoldTarget = cancelHoldBuild.button("CancelHold", () => {})
+    cancelHoldRoot.addChild(cancelHoldTarget)
+    cancelHoldTarget.bounds(0, 0, 400, 300)
+    cancelHoldTree.pointerDownId(0, 100, 100, 0)
+    cancelHoldTree.stepGestures(0.2)
+    cancelHoldTree.pointerMoveId(0, 110, 100)
+    cancelHoldTree.stepGestures(0.2)
+    cancelHoldTree.stepGestures(0.2)
+    failed = check(!cancelHoldTree.longPressed(), "movement past the slop cancels the long press", failed)
+    cancelHoldTree.pointerUpId(0, 110, 100)
+
+    let retryHoldTree = new Tree(TextEngine.fixed())
+    let retryHoldBuild = new Build(retryHoldTree)
+    let retryHoldRoot = retryHoldBuild.column()
+    let retryHoldTarget = retryHoldBuild.button("RetryHold", () => {})
+    retryHoldRoot.addChild(retryHoldTarget)
+    retryHoldTarget.bounds(0, 0, 400, 300)
+    retryHoldTree.pointerDownId(0, 100, 100, 0)
+    retryHoldTree.stepGestures(0.4)
+    retryHoldTree.pointerUpId(0, 100, 100)
+    retryHoldTree.pointerDownId(0, 100, 100, 0)
+    retryHoldTree.stepGestures(0.3)
+    failed = check(!retryHoldTree.longPressed(), "a release resets the hold time", failed)
+    retryHoldTree.pointerUpId(0, 100, 100)
+
+    let tapTree = new Tree(TextEngine.fixed())
+    let tapBuild = new Build(tapTree)
+    let tapRoot = tapBuild.column()
+    let tapTarget = tapBuild.button("Tap", () => {})
+    tapRoot.addChild(tapTarget)
+    tapTarget.bounds(0, 0, 400, 300)
+    tapAt(tapTree, 100, 100)
+    failed = check(tapTree.tapCount() == 1, "a single tap counts one", failed)
+    failed = check(tapTree.lastTapX() == 100.0 && tapTree.lastTapY() == 100.0, "the last tap point is recorded", failed)
+    tapTree.stepGestures(0.2)
+    tapAt(tapTree, 105, 100)
+    failed = check(tapTree.tapCount() == 2, "two nearby taps inside the window count two", failed)
+    tapAt(tapTree, 105, 100)
+    failed = check(tapTree.tapCount() == 1, "a third tap starts a new count", failed)
+
+    let slowTapTree = new Tree(TextEngine.fixed())
+    let slowTapBuild = new Build(slowTapTree)
+    let slowTapRoot = slowTapBuild.column()
+    let slowTapTarget = slowTapBuild.button("SlowTap", () => {})
+    slowTapRoot.addChild(slowTapTarget)
+    slowTapTarget.bounds(0, 0, 400, 300)
+    tapAt(slowTapTree, 100, 100)
+    slowTapTree.stepGestures(0.25)
+    slowTapTree.stepGestures(0.1)
+    tapAt(slowTapTree, 100, 100)
+    failed = check(slowTapTree.tapCount() == 1, "a slow second tap is a new single", failed)
+
+    let farTapTree = new Tree(TextEngine.fixed())
+    let farTapBuild = new Build(farTapTree)
+    let farTapRoot = farTapBuild.column()
+    let farTapTarget = farTapBuild.button("FarTap", () => {})
+    farTapRoot.addChild(farTapTarget)
+    farTapTarget.bounds(0, 0, 400, 300)
+    tapAt(farTapTree, 100, 100)
+    farTapTree.stepGestures(0.1)
+    tapAt(farTapTree, 140, 100)
+    failed = check(farTapTree.tapCount() == 1, "a distant second tap is a new single", failed)
+    tapAt(farTapTree, 141, 100)
+    failed = check(farTapTree.tapCount() == 2, "two taps 30 px apart still pair", failed)
+
+    let pinchTree = new Tree(TextEngine.fixed())
+    let pinchBuild = new Build(pinchTree)
+    let pinchRoot = pinchBuild.column()
+    let pinchTarget = pinchBuild.button("Pinch", () => {})
+    pinchRoot.addChild(pinchTarget)
+    pinchTarget.bounds(0, 0, 400, 300)
+    failed = check(pinchTree.pinchScale() == 1.0 && !pinchTree.pinchActive(), "one pointer has no pinch", failed)
+    pinchTree.pointerDownId(0, 150, 100, 0)
+    pinchTree.pointerDownId(1, 250, 100, 0)
+    failed = check(pinchTree.pinchActive(), "two pointers start the pinch", failed)
+    failed = check(pinchTree.pinchScale() == 1.0, "the pinch starts at one", failed)
+    pinchTree.pointerMoveId(1, 350, 100)
+    let doubled = pinchTree.pinchScale()
+    failed = check(Math.abs(doubled - 2.0) < 0.000001, "moving from 100 px to 200 px doubles the pinch: " + doubled.toString(), failed)
+    pinchTree.pointerUpId(1, 350, 100)
+    failed = check(!pinchTree.pinchActive() && pinchTree.pinchScale() == 1.0 && pinchTree.pinchRotation() == 0.0, "releasing one pointer resets the pinch", failed)
+    pinchTree.pointerUpId(0, 150, 100)
+
+    let rotateTree = new Tree(TextEngine.fixed())
+    let rotateBuild = new Build(rotateTree)
+    let rotateRoot = rotateBuild.column()
+    let rotateTarget = rotateBuild.button("Rotate", () => {})
+    rotateRoot.addChild(rotateTarget)
+    rotateTarget.bounds(0, 0, 400, 300)
+    rotateTree.pointerDownId(0, 150, 100, 0)
+    rotateTree.pointerDownId(1, 250, 100, 0)
+    rotateTree.pointerMoveId(1, 150, 200)
+    let quarter = rotateTree.pinchRotation()
+    failed = check(quarter > 1.5707 && quarter < 1.5709, "a clockwise quarter turn rotates by plus pi over two: " + quarter.toString(), failed)
+    failed = check(Math.abs(rotateTree.pinchScale() - 1.0) < 0.000001, "a quarter turn keeps the distance", failed)
+    rotateTree.pointerUpId(1, 150, 200)
+    rotateTree.pointerUpId(0, 150, 100)
+
+    let zeroPinchTree = new Tree(TextEngine.fixed())
+    let zeroPinchBuild = new Build(zeroPinchTree)
+    let zeroPinchRoot = zeroPinchBuild.column()
+    let zeroPinchTarget = zeroPinchBuild.button("ZeroPinch", () => {})
+    zeroPinchRoot.addChild(zeroPinchTarget)
+    zeroPinchTarget.bounds(0, 0, 400, 300)
+    zeroPinchTree.pointerDownId(0, 150, 100, 0)
+    zeroPinchTree.pointerDownId(1, 150, 100, 0)
+    failed = check(zeroPinchTree.pinchActive() && zeroPinchTree.pinchScale() == 1.0 && zeroPinchTree.pinchRotation() == 0.0, "a zero start distance keeps the pinch at rest", failed)
+    zeroPinchTree.pointerMoveId(1, 250, 100)
+    let zeroScale = zeroPinchTree.pinchScale()
+    let zeroRotation = zeroPinchTree.pinchRotation()
+    failed = check(zeroScale == 1.0 && zeroRotation == 0.0, "a zero start distance never divides by zero", failed)
+    zeroPinchTree.pointerUpId(1, 250, 100)
+    zeroPinchTree.pointerUpId(0, 150, 100)
+
+    let probe = new GestureProbe()
+    let gestureApp = App.launch("Gestures", 400, 280, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        let target = b.button("Gesture", () => {})
+        target.fixedWidth(360)
+        target.fixedHeight(160)
+        root.addChild(target)
+        let t = b.handle()
+        if t.longPressed() {
+            probe.longPresses += 1
+            t.clearLongPress()
+        }
+        probe.taps = t.tapCount()
+        if t.pinchActive() {
+            if t.pinchScale() > probe.peak {
+                probe.peak = t.pinchScale()
+            }
+            probe.rotation = t.pinchRotation()
+        }
+        return root
+    })
+    gestureApp.frame()
+    let gestureDriver = Driver.on(gestureApp)
+    failed = check(gestureDriver.longPress("button", "Gesture"), "driver long press hits the node", failed)
+    failed = check(probe.longPresses == 1, "driver long press fires once: " + probe.longPresses.toString(), failed)
+    failed = check(gestureDriver.doubleTap("button", "Gesture"), "driver double tap reports two taps", failed)
+    failed = check(probe.taps == 2, "driver double tap reaches the view: " + probe.taps.toString(), failed)
+    failed = check(gestureDriver.pinch("button", "Gesture", 2.0), "driver pinch reaches the requested scale", failed)
+    failed = check(Math.abs(gestureDriver.pinchValue() - 2.0) <= 0.05, "driver exposes the pinch value: " + gestureDriver.pinchValue().toString(), failed)
+    failed = check(Math.abs(probe.peak - 2.0) <= 0.05, "the view sees the pinch scale: " + probe.peak.toString(), failed)
+    failed = check(gestureDriver.pinch("button", "Gesture", 0.1), "driver pinch accepts the lower bound", failed)
+    failed = check(gestureDriver.pinch("button", "Gesture", 4.0), "driver pinch accepts the upper bound", failed)
+    let gestureScript = gestureDriver.runScript("longPress:button:Gesture;doubleTap:button:Gesture;pinch:button:Gesture:2")
+    failed = check(gestureScript == 0, "gesture script steps pass: " + gestureScript.toString(), failed)
+    failed = check(probe.longPresses == 2, "the script long press fires again: " + probe.longPresses.toString(), failed)
+    failed = check(probe.taps == 2, "the script double tap counts two: " + probe.taps.toString(), failed)
+    let badPinch = gestureDriver.runScript("pinch:button:Gesture:9")
+    failed = check(badPinch == 1, "a pinch scale outside the range fails the script: " + badPinch.toString(), failed)
+
+    let touchApp = App.launch("Touch", 320, 240, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        let target = b.button("Touch", () => {})
+        target.fixedWidth(200)
+        target.fixedHeight(100)
+        root.addChild(target)
+        return root
+    })
+    touchApp.frame()
+    let touchId = touchApp.tree().find(Role.button, "Touch")
+    let touchX = touchApp.tree().x[touchId] + 40
+    let touchY = touchApp.tree().y[touchId] + 30
+    failed = check(touchApp.touchDown(3, touchX, touchY), "touch down reaches a node", failed)
+    failed = check(touchApp.tree().pointerIds[0] == 3, "touch down keeps the host pointer id", failed)
+    failed = check(touchApp.touchMove(3, touchX + 20, touchY + 5), "touch move reaches the pointer table", failed)
+    failed = check(touchApp.tree().dragDx() >= 20.0, "touch move feeds the drag offset", failed)
+    failed = check(touchApp.touchUp(3, touchX + 20, touchY + 5), "touch up ends the pointer", failed)
+    failed = check(!touchApp.tree().pointerDownV[0], "touch up clears the pointer slot", failed)
+
+    failed = check(touchApp.touchDown(6, touchX, touchY), "first pinch touch is accepted", failed)
+    failed = check(touchApp.touchDown(7, touchX + 100, touchY), "second pinch touch is accepted", failed)
+    failed = check(touchApp.tree().pinchScale() == 1.0, "pinch starts at one", failed)
+    failed = check(touchApp.touchMove(7, touchX + 200, touchY), "pinch move is accepted", failed)
+    failed = check(touchApp.tree().pinchScale() == 2.0, "touch move updates pinch scale", failed)
+    failed = check(touchApp.touchCancel(6), "touch cancel is accepted", failed)
+    failed = check(touchApp.tree().pinchScale() == 1.0, "touch cancel resets pinch", failed)
+    touchApp.touchCancel(7)
+
+    let profiled = App.launch("Profiler", 200, 120, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        root.addChild(b.heading("Profiler"))
+        root.addChild(b.text("timeline"))
+        return root
+    })
+    let profileFrame = profiled.frame()
+    failed = check(profileFrame.buildNs >= 0 && profileFrame.layoutNs >= 0 && profileFrame.paintNs >= 0 && profileFrame.totalNs >= 0, "frame timings are non-negative integers", failed)
+    failed = check(profileFrame.totalNs >= profileFrame.buildNs && profileFrame.totalNs >= profileFrame.layoutNs, "total covers build and layout", failed)
+    let frameStats = profileFrame.stats()
+    failed = check(frameStats.contains("build=") && frameStats.contains("total="), "frame stats carry the timeline: " + frameStats, failed)
+    failed = check(frameStats.contains("nodes ") && frameStats.contains("records "), "frame stats keep the existing tokens: " + frameStats, failed)
+    let appStats = profiled.lastStats()
+    failed = check(appStats.contains("build=") && appStats.contains("total="), "lastStats carries the timeline: " + appStats, failed)
+    let profileDriver = Driver.on(profiled)
+    let timelineScript = profileDriver.runScript("timeline")
+    failed = check(timelineScript == 0, "timeline script step passes: " + timelineScript.toString(), failed)
+    failed = check(profileDriver.timeline().contains("build=") && profileDriver.timeline().contains("total="), "driver exposes the last timeline: " + profileDriver.timeline(), failed)
+
+    let fixedProfiled = App.launch("Fixed profiler", 160, 100, (b: Build): Node => {
+        b.animate(false)
+        return b.column() {
+            b.text("fixed")
+        }
+    })
+    fixedProfiled.setFixedFrameNs(16000000)
+    let fixedFirst = fixedProfiled.frame()
+    let fixedSecond = fixedProfiled.frame()
+    let fixedFirstOk = fixedFirst.buildNs >= 0 && fixedFirst.layoutNs >= 0 && fixedFirst.paintNs >= 0 && fixedFirst.totalNs >= 0
+    let fixedSecondOk = fixedSecond.buildNs >= 0 && fixedSecond.layoutNs >= 0 && fixedSecond.paintNs >= 0 && fixedSecond.totalNs >= 0
+    failed = check(fixedFirstOk && fixedSecondOk, "fixed-frame timings stay non-negative", failed)
+    failed = check(fixedFirst.totalNs >= fixedFirst.buildNs && fixedFirst.totalNs >= fixedFirst.layoutNs && fixedSecond.totalNs >= fixedSecond.buildNs && fixedSecond.totalNs >= fixedSecond.layoutNs, "fixed-frame totals cover each phase", failed)
+    let fixedFirstTimeline = fixedFirst.timeline()
+    let fixedSecondTimeline = fixedSecond.timeline()
+    failed = check(fixedFirstTimeline.startsWith("build=") && fixedFirstTimeline.contains(" layout=") && fixedFirstTimeline.contains(" paint=") && fixedFirstTimeline.contains(" total="), "fixed-frame timeline keeps its shape: " + fixedFirstTimeline, failed)
+    failed = check(fixedSecondTimeline.startsWith("build=") && fixedSecondTimeline.contains(" total="), "fixed-frame timeline repeats its shape: " + fixedSecondTimeline, failed)
+    failed = check(fixedSecond.index == fixedFirst.index + 1, "fixed-frame timeline advances with the frame counter", failed)
+    return failed
+}
+
+fn testRichText(failed: Int): Int {
+    let splitTree = new Tree(TextEngine.fixed())
+    splitTree.beginFrame()
+    let splitSpans: Array<TextSpan> = [new TextSpan(0, 3, 700), new TextSpan(4, 7, 700)]
+    let splitRoot = View.mount(splitTree, RichText("abc def", splitSpans))
+    splitTree.endFrame()
+    splitTree.layout(splitRoot, 400)
+    let splitLay = splitTree.textLayoutV[splitRoot.id]
+    failed = check(splitLay.runs.length() == 3, "rich split makes three runs: " + splitLay.runs.length().toString(), failed)
+    if splitLay.runs.length() == 3 {
+        failed = check(splitLay.runs[0].start == 0 && splitLay.runs[0].end == 3, "run zero covers the first word", failed)
+        failed = check(splitLay.runs[1].start == 3 && splitLay.runs[1].end == 4, "run one covers the space", failed)
+        failed = check(splitLay.runs[2].start == 4 && splitLay.runs[2].end == 7, "run two covers the second word", failed)
+        failed = check(splitLay.runs[0].x == 0.0, "first run starts at zero", failed)
+        failed = check(Math.abs(splitLay.runs[1].x - splitLay.runs[0].advance) < 0.001, "second run follows the first advance", failed)
+        let afterTwo = splitLay.runs[0].advance + splitLay.runs[1].advance
+        failed = check(Math.abs(splitLay.runs[2].x - afterTwo) < 0.001, "third run follows both advances", failed)
+    }
+
+    let richEngine = TextEngine.fixed()
+    let noRichSpans: Array<TextSpan> = []
+    let plainRich = richEngine.richRows("abc", 14.0, 0.0, false, 0, false, noRichSpans, 0.0)
+    let boldSpans: Array<TextSpan> = [new TextSpan(0, 3, 700)]
+    let boldRich = richEngine.richRows("abc", 14.0, 0.0, false, 0, false, boldSpans, 0.0)
+    let trackedSpans: Array<TextSpan> = [new TextSpan(0, 3, 400, false, 2.0)]
+    let trackedRich = richEngine.richRows("abc", 14.0, 0.0, false, 0, false, trackedSpans, 0.0)
+    failed = check(boldRich.rows[0].width > plainRich.rows[0].width, "bold run is wider than plain", failed)
+    failed = check(trackedRich.rows[0].width > plainRich.rows[0].width, "tracked run is wider than plain", failed)
+
+    let richTheme = Theme.dark()
+    let accentSpanColor = rgba(255, 64, 0, 255)
+    let paintSpans: Array<TextSpan> = [new TextSpan(0, 3, 700, true, 1.5, accentSpanColor)]
+    let paintTree = new Tree(TextEngine.fixed())
+    paintTree.beginFrame()
+    let paintRoot = View.mount(paintTree, RichText("one two", paintSpans))
+    paintTree.endFrame()
+    paintTree.layout(paintRoot, 400)
+    let paintList = Painter.paint(paintTree, 400, 80, richTheme)
+    failed = check(countKind(paintList, 2) == 2, "rich text paints one record per run: " + countKind(paintList, 2).toString(), failed)
+    let styledSeen = false
+    let plainSeen = false
+    let pI = 0
+    while pI < paintList.recordCount() {
+        if paintList.kindAt(pI) == 2 {
+            let shown = paintList.textAt(pI)
+            if shown == "one" {
+                styledSeen = true
+                failed = check(paintList.colorAt(pI) == accentSpanColor, "span color reaches the text record", failed)
+                failed = check(paintList.eAt(pI) == 10700.0, "bold italic weight lane", failed)
+                failed = check(paintList.fAt(pI) == 1.5, "span tracking lane", failed)
+            }
+            if shown == " two" || shown == "two" {
+                plainSeen = true
+                failed = check(paintList.colorAt(pI) == richTheme.text, "uncovered run keeps the role color", failed)
+                failed = check(paintList.eAt(pI) == 400.0 && paintList.fAt(pI) == 0.0, "uncovered run keeps the base style", failed)
+            }
+        }
+        pI += 1
+    }
+    failed = check(styledSeen, "the styled span painted its run", failed)
+    failed = check(plainSeen, "the uncovered run painted", failed)
+
+    failed = testSpanStyles(failed)
+    failed = testDragDrop(failed)
+    let wrapText = "alpha beta gamma delta epsilon"
+    let wrapSpans: Array<TextSpan> = [new TextSpan(0, 5, 700), new TextSpan(11, 16, 400, true), new TextSpan(22, 27, 400, false, 2.0)]
+    let wrapTree = new Tree(TextEngine.fixed())
+    wrapTree.beginFrame()
+    let wrapRoot = View.mount(wrapTree, RichText(wrapText, wrapSpans))
+    wrapTree.endFrame()
+    wrapTree.layout(wrapRoot, 80)
+    let wrapLay = wrapTree.textLayoutV[wrapRoot.id]
+    failed = check(wrapLay.rows.length() > 1, "rich text wraps: " + wrapLay.rows.length().toString(), failed)
+    let wRow = 0
+    while wRow < wrapLay.rows.length() {
+        let built = ""
+        let wRun = 0
+        while wRun < wrapLay.runs.length() {
+            if wrapLay.runs[wRun].row == wRow {
+                built += wrapText.slice(wrapLay.runs[wRun].start, wrapLay.runs[wRun].end)
+            }
+            wRun += 1
+        }
+        failed = check(built == wrapLay.rows[wRow].text, "row " + wRow.toString() + " runs rebuild its text: " + built + " vs " + wrapLay.rows[wRow].text, failed)
+        wRow += 1
+    }
+
+    let zeroTree = new Tree(TextEngine.fixed())
+    zeroTree.beginFrame()
+    let zeroRoot = View.mount(zeroTree, RichText("same text", noRichSpans))
+    zeroTree.endFrame()
+    zeroTree.layout(zeroRoot, 200)
+    let plainTree = new Tree(TextEngine.fixed())
+    plainTree.beginFrame()
+    let plainRoot = View.mount(plainTree, Text("same text"))
+    plainTree.endFrame()
+    plainTree.layout(plainRoot, 200)
+    let zeroLay = zeroTree.textLayoutV[zeroRoot.id]
+    let plainLay = plainTree.textLayoutV[plainRoot.id]
+    failed = check(zeroLay.runs.length() == 0, "zero spans keeps the plain run path", failed)
+    failed = check(zeroLay.rows.length() == plainLay.rows.length(), "zero spans matches the plain row count", failed)
+    if zeroLay.rows.length() == plainLay.rows.length() && zeroLay.rows.length() > 0 {
+        failed = check(zeroLay.rows[0].text == plainLay.rows[0].text && zeroLay.rows[0].width == plainLay.rows[0].width, "zero spans matches plain row text and width", failed)
+    }
+
+    let ellTree = new Tree(TextEngine.fixed())
+    ellTree.beginFrame()
+    let ellSpans: Array<TextSpan> = [new TextSpan(0, 4, 700)]
+    let ellRoot = View.mount(ellTree, RichText("this line is far too long to fit", ellSpans))
+    ellTree.setTextMaxLines(ellRoot.id, 1)
+    ellTree.endFrame()
+    ellTree.layout(ellRoot, 60)
+    let ellLay = ellTree.textLayoutV[ellRoot.id]
+    let ellFlag = false
+    let eI = 0
+    while eI < ellLay.runs.length() {
+        if (ellLay.runs[eI].flags & 1) != 0 {
+            ellFlag = true
+        }
+        eI += 1
+    }
+    failed = check(ellLay.rows.length() == 1, "ellipsis keeps one row", failed)
+    failed = check(ellFlag, "ellipsis synthesizes a flagged run", failed)
+    let ellList = Painter.paint(ellTree, 60, 40, richTheme)
+    let dotsSeen = false
+    let dI = 0
+    while dI < ellList.recordCount() {
+        if ellList.kindAt(dI) == 2 && ellList.textAt(dI) == "…" {
+            dotsSeen = true
+        }
+        dI += 1
+    }
+    failed = check(dotsSeen, "ellipsis run paints the ellipsis glyph", failed)
+
+    return failed
+}
+
+fn linkProbeView(): View {
+    let spans: Array<TextSpan> = [
+        new TextSpan(4, 8, 400, false, 0.0, -1, FontFamily.sans, TextDecoration.none, null, "https://example.test/docs"),
+    ]
+    return Page(padding: 0, gap: 0) {
+        RichText("see docs", spans)
+        TextField("", "name", (v: String) => {})
+    }
+}
+
+fn testLinksAndRichFields(failed: Int): Int {
+    let url = "https://example.test/docs"
+    let probe = new LinkProbe()
+    let linkApp = App.launchView("Links", 400, 200, (): View => linkProbeView())
+    linkApp.frame()
+    let a11y = linkApp.accessibility()
+    let linkIndex = a11y.find("link", "docs")
+    failed = check(linkIndex >= 0, "accessibility projects a link node", failed)
+    let textIndex = a11y.find("text", "see docs")
+    failed = check(textIndex >= 0, "accessibility keeps the text node", failed)
+    if linkIndex >= 0 && textIndex >= 0 {
+        let linkNode = a11y.at(linkIndex)
+        let textNode = a11y.at(textIndex)
+        failed = check(linkNode.parent == textNode.id, "link node parents at the text node", failed)
+        failed = check(linkIndex == textIndex + 1, "link node follows its text node", failed)
+        failed = check(linkNode.role == "link" && linkNode.roleId == 29, "link node uses role 29", failed)
+        failed = check(linkNode.name == "docs", "link name comes from the rect text: " + linkNode.name, failed)
+        failed = check(linkNode.value == url && linkNode.description == url, "link value and description carry the URL", failed)
+        failed = check(linkNode.actions == 1 && linkNode.can("tap"), "link node taps", failed)
+        failed = check(!linkNode.checked && !linkNode.disabled && !linkNode.focused && !linkNode.inert && !linkNode.selected, "link node flags are clear", failed)
+        failed = check(!linkNode.busy && !linkNode.required && linkNode.expanded == -1 && linkNode.invalid == 0, "link node state lanes are clear", failed)
+        failed = check(linkNode.level == 0 && linkNode.live == 0 && linkNode.valueMin == 0.0 && linkNode.valueMax == 0.0, "link node carries no level, live, or range", failed)
+        failed = check(linkNode.id >= 2000000 && linkNode.id != 1000000, "link node id is synthetic", failed)
+        let inside = linkNode.x >= textNode.x && linkNode.y >= textNode.y
+        inside = inside && linkNode.x + linkNode.w <= textNode.x + textNode.w
+        inside = inside && linkNode.y + linkNode.h <= textNode.y + textNode.h
+        failed = check(inside, "link bounds sit inside the text node", failed)
+    }
+
+    linkApp.onLink((u: String) => {
+        probe.url = u
+        probe.count += 1
+    })
+    let linkDriver = Driver.on(linkApp)
+    failed = check(linkDriver.openLink("docs"), "driver opens a link by name", failed)
+    failed = check(probe.count == 1 && probe.url == url, "link handler saw the URL once", failed)
+    failed = check(linkDriver.openLinkUrl(url), "driver opens a link by URL", failed)
+    failed = check(probe.count == 2 && probe.url == url, "URL open fires the handler again", failed)
+
+    let tree = linkApp.tree()
+    let textId = tree.find(Role.text, "see docs")
+    let rects = tree.linkRects(textId)
+    failed = check(rects.length() == 1, "the paragraph has one link rect", failed)
+    if rects.length() == 1 {
+        let r = rects[0]
+        linkApp.pointerMove(r.x + r.w / 2, r.y + r.h / 2)
+        failed = check(tree.cursorShape() == 2, "pointer shows the link cursor", failed)
+    }
+    let fieldId = tree.find(Role.textbox, "name")
+    failed = check(fieldId >= 0, "the view has a text box", failed)
+    if fieldId >= 0 {
+        linkApp.pointerMove(tree.x[fieldId] + 5, tree.y[fieldId] + 5)
+        failed = check(tree.cursorShape() == 1, "pointer shows the text cursor over a text box", failed)
+    }
+    linkApp.pointerMove(2000, 2000)
+    failed = check(tree.cursorShape() == 0, "pointer resets over empty space", failed)
+
+    let tapProbe = new LinkProbe()
+    let taps = new Counter()
+    let tapApp = App.launch("Link tap", 400, 200, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        let rich = b.text("see docs")
+        let tapSpans: Array<TextSpan> = [
+            new TextSpan(4, 8, 400, false, 0.0, -1, FontFamily.sans, TextDecoration.none, null, url),
+        ]
+        b.handle().setTextSpans(rich.id, tapSpans)
+        root.addChild(rich)
+        root.addChild(b.button("other", () => { taps.n += 1 }))
+        return root
+    })
+    tapApp.frame()
+    tapApp.onLink((u: String) => {
+        tapProbe.url = u
+        tapProbe.count += 1
+    })
+    let tapTree = tapApp.tree()
+    let tapTextId = tapTree.find(Role.text, "see docs")
+    failed = check(tapTextId >= 0, "the tapped view has a text node", failed)
+    if tapTextId >= 0 {
+        let tapRects = tapTree.linkRects(tapTextId)
+        failed = check(tapRects.length() == 1, "the tapped view has one link rect", failed)
+        if tapRects.length() == 1 {
+            let tr = tapRects[0]
+            let tx = tr.x + tr.w / 2
+            let ty = tr.y + tr.h / 2
+            tapApp.pointerDown(tx, ty)
+            tapApp.pointerUp(tx, ty)
+            failed = check(tapProbe.count == 1 && tapProbe.url == url, "tapping the link fires it once", failed)
+            failed = check(taps.n == 0, "the link click does not activate the other button", failed)
+        }
+    }
+
+    let rich = new RichProbe()
+    let richSpans: Array<TextSpan> = [new TextSpan(0, 5, 700)]
+    let onRich: fn(String, Array<TextSpan>): Void = (v: String, out: Array<TextSpan>) => {
+        rich.value = v
+        rich.count += 1
+        rich.n = out.length()
+        if out.length() > 0 {
+            rich.start = out[0].start
+            rich.end = out[0].end
+            rich.weight = out[0].weight
+        }
+    }
+    let richApp = App.launchView("Rich field", 400, 160, (): View => RichTextField("hello world", richSpans, onRich, ""))
+    richApp.frame()
+    let richId = richApp.tree().find(Role.textbox, "")
+    failed = check(richId >= 0, "the rich field mounts", failed)
+    if richId >= 0 {
+        let richNode = Node(tree: richApp.tree(), id: richId)
+        richApp.tree().focusOn(richNode)
+        richApp.tree().typeText(richNode, "!")
+        failed = check(rich.value == "hello world!" && rich.count == 1, "typing reports the extended value", failed)
+        failed = check(rich.n == 1 && rich.start == 0 && rich.end == 5 && rich.weight == 700, "typing keeps the span style", failed)
+        richApp.tree().selectAllText(richNode)
+        richApp.tree().replaceSelection(richNode, "xyz")
+        failed = check(rich.value == "xyz" && rich.count == 2, "replacing reports the new value", failed)
+        failed = check(rich.n == 1 && rich.start == 0 && rich.end == 3 && rich.weight == 700, "replacement adopts the first style", failed)
+    }
+
+    let mcp = Mcp.on(linkDriver)
+    failed = check(mcp.tools().contains("ui.openLink"), "mcp lists the link tool", failed)
+    let before = probe.count
+    let byName = mcp.call("ui.openLink", "", "docs", "", 0.0)
+    failed = check(byName.contains("\"isError\":false"), "mcp opens a link by name: " + byName, failed)
+    failed = check(probe.count == before + 1 && probe.url == url, "mcp name open fires the handler", failed)
+    let byUrl = mcp.call("ui.openLink", "", "", url, 0.0)
+    failed = check(byUrl.contains("\"isError\":false"), "mcp opens a link by URL: " + byUrl, failed)
+    failed = check(probe.count == before + 2 && probe.url == url, "mcp URL open fires the handler", failed)
+
+    return failed
+}
+
+fn testFontTables(failed: Int): Int {
+    let reg = new FontRegistry()
+    let tiny = ByteBuffer.fromArray([1, 2, 3, 4])
+    let first = reg.register("Inter SemiBold", tiny)
+    failed = check(first != null, "registry assigns the first face", failed)
+    if first != null {
+        failed = check(first.id == 100, "first face id is 100: " + first.id.toString(), failed)
+        failed = check(first.name == "Inter SemiBold" && first.data.length() == 4, "face keeps its name and data", failed)
+    }
+    failed = check(reg.register("", tiny) == null, "empty name is rejected", failed)
+    failed = check(reg.register("Empty", ByteBuffer.allocate(0)) == null, "empty data is rejected", failed)
+    let rI = reg.len()
+    while rI < 16 {
+        failed = check(reg.register("Face" + rI.toString(), tiny) != null, "face " + rI.toString() + " registers", failed)
+        rI += 1
+    }
+    failed = check(reg.len() == 16, "sixteen faces fit: " + reg.len().toString(), failed)
+    let last = reg.at(15)
+    if last != null {
+        failed = check(last.id == 115, "last face id is 115: " + last.id.toString(), failed)
+    }
+    failed = check(reg.register("Over", tiny) == null, "a seventeenth face is rejected", failed)
+    failed = check(reg.at(16) == null, "out-of-range lookup returns null", failed)
+    failed = check(reg.find("Inter SemiBold") != null, "find walks the registry", failed)
+    failed = check(reg.find("Missing") == null, "unknown names return null", failed)
+
+    let byteReg = new FontRegistry()
+    let half = ByteBuffer.allocate(4194304)
+    failed = check(byteReg.register("One", half) != null, "first 4 MB block fits", failed)
+    failed = check(byteReg.register("Two", half) != null, "second 4 MB block fits", failed)
+    failed = check(byteReg.bytes() == 8388608, "the registry reaches the byte cap: " + byteReg.bytes().toString(), failed)
+    failed = check(byteReg.register("Three", ByteBuffer.fromArray([1])) == null, "one byte past 8 MB is rejected", failed)
+    failed = check(byteReg.len() == 2, "the rejected face is not stored", failed)
+
+    let face = reg.at(0)
+    let tree = new Tree(TextEngine.fixed())
+    tree.beginFrame()
+    let spans: Array<TextSpan> = [
+        new TextSpan(0, 5, 600, false, 0.0, -1, FontFamily.sans, TextDecoration.none, face),
+    ]
+    let root = View.mount(tree, RichText("named plain", spans))
+    tree.endFrame()
+    let mounted = tree.textSpansOf(root.id)
+    failed = check(mounted.length() == 1, "the named span survives mount", failed)
+    if mounted.length() == 1 {
+        failed = check(mounted[0].font != null, "the face survives mount", failed)
+        if mounted[0].font != null {
+            failed = check(mounted[0].font.id == 100 && mounted[0].font.name == "Inter SemiBold", "mounted face id and name", failed)
+        }
+        failed = check(mounted[0].fontFamilyId() == 100, "the span family tag is the face id", failed)
+    }
+    tree.layout(root, 400)
+    let list = Painter.paint(tree, 400, 80, Theme.dark())
+    let namedSeen = false
+    let lI = 0
+    while lI < list.recordCount() {
+        if list.kindAt(lI) == 2 && list.textAt(lI) == "named" {
+            namedSeen = true
+            failed = check(list.eAt(lI) == 100000600.0, "named span packs its id into e: " + list.eAt(lI).toString(), failed)
+        }
+        lI += 1
+    }
+    failed = check(namedSeen, "the named span paints its own run", failed)
+    failed = check(list.fontCount() == 1, "the frame stores the used face", failed)
+
+    let tableLen = list.fontTableLength()
+    let table = list.fontTable()
+    failed = check(tableLen > 0 && table.length() == tableLen, "the table length helper agrees", failed)
+    let out = list.finish(400, 80)
+    let blobAt = out.readUInt32LE(16)
+    failed = check(out.readUInt32LE(20) == tableLen + list.blobLength(), "blob bytes include the table", failed)
+    failed = check(out.readUInt32LE(blobAt) == 0x464E5432, "font table magic", failed)
+    failed = check(out.readUInt32LE(blobAt + 4) == tableLen, "font table length field", failed)
+    failed = check(out.readUInt32LE(blobAt + 8) == 1, "font table count", failed)
+    failed = check(out.readUInt32LE(blobAt + 12) == 100, "font table id", failed)
+    let nameLen = out.readUInt32LE(blobAt + 16)
+    failed = check(nameLen == 14, "font table name length: " + nameLen.toString(), failed)
+    failed = check(out.readString(blobAt + 20, nameLen) == "Inter SemiBold", "font table name bytes", failed)
+    failed = check(tableLen == 12 + 8 + nameLen, "the table is header plus id and name only: " + tableLen.toString(), failed)
+    let afterName = blobAt + 12 + 8 + nameLen
+    failed = check(out.readString(afterName, 5) == "named", "the run follows the table with no font bytes", failed)
+    failed = check(out.readUInt32LE(afterName) != 4, "the font data length is not in the table", failed)
+
+    let shiftList = DisplayList.create(8)
+    shiftList.textRun(0, 0.0, 0.0, 12.0, "named", 400, false, 0.0, FontFamily.sans, face)
+    shiftList.image(0.0, 0.0, 4.0, 4.0, ByteBuffer.fromArray([1, 2, 3]))
+    shiftList.polygon(0, [0.0, 0.0, 1.0, 1.0, 2.0, 0.0])
+    let shiftPath = new Path()
+    shiftPath.moveTo(0.0, 0.0)
+    shiftPath.lineTo(4.0, 4.0)
+    shiftList.pathFill(shiftPath, 0)
+    shiftList.pathStroke(shiftPath, 0, 1.0)
+    let shiftStops: Array<GradientStop> = [
+        new GradientStop(0.0, 0x000000FF),
+        new GradientStop(1.0, 0xFFFFFFFF),
+    ]
+    shiftList.gradientRect(shiftStops, 0, 0.0, 0.0, 0.0, 12.0, 12.0)
+    let shiftLen = shiftList.fontTableLength()
+    let shifted = shiftList.finish(60, 60)
+    failed = check(shiftList.recordCount() == 6, "six blob-offset records", failed)
+    let sI = 0
+    while sI < shiftList.recordCount() {
+        let kind = shiftList.kindAt(sI)
+        let a = shifted.readUInt32LE(32 + sI * 64 + 8)
+        failed = check(a == shiftList.aAt(sI) + shiftLen, "kind " + kind.toString() + " offset shifts past the table: " + a.toString(), failed)
+        sI += 1
+    }
+
+    let plain = DisplayList.create(2)
+    plain.textRun(0, 0.0, 0.0, 12.0, "plain", 400, false, 0.0, FontFamily.serif)
+    failed = check(plain.fontCount() == 0 && plain.fontTableLength() == 0, "generic fonts need no table", failed)
+    let plainOut = plain.finish(20, 20)
+    failed = check(plainOut.readUInt32LE(plainOut.readUInt32LE(16)) != 0x464E5432, "a generic-only frame has no table magic", failed)
+    failed = check(plainOut.readUInt32LE(32 + 8) == 0, "a generic-only frame keeps offsets at zero", failed)
+
+    let fontPath = "../../../../../website/static/fonts/Inter-Regular.ttf"
+    let fontBytes = fs.readBytes(fontPath).unwrapOr(ByteBuffer.allocate(0))
+    failed = check(fontBytes.length() > 0, "Inter Regular loads from " + fontPath, failed)
+    let fileReg = new FontRegistry()
+    let fileFace = fileReg.register("Inter Regular", fontBytes)
+    failed = check(fileFace != null, "the Inter Regular face registers", failed)
+    if fileFace != null {
+        failed = check(fileFace.id == 100, "the Inter Regular face id is 100", failed)
+        failed = check(registerFont(fileFace), "both renderers accept the Inter Regular face", failed)
+
+        let fileTree = new Tree(TextEngine.fixed())
+        fileTree.beginFrame()
+        let fileSpans: Array<TextSpan> = [
+            new TextSpan(0, 5, 400, false, 0.0, -1, FontFamily.sans, TextDecoration.none, fileFace),
+        ]
+        let fileRoot = View.mount(fileTree, RichText("named plain", fileSpans))
+        fileTree.endFrame()
+        fileTree.layout(fileRoot, 400)
+        let fileList = Painter.paint(fileTree, 400, 80, Theme.dark())
+        let fileSeen = false
+        let fI = 0
+        while fI < fileList.recordCount() {
+            if fileList.kindAt(fI) == 2 && fileList.textAt(fI) == "named" {
+                fileSeen = true
+                failed = check(fileList.eAt(fI) == 100000400.0, "the file face reaches the e lane: " + fileList.eAt(fI).toString(), failed)
+            }
+            fI += 1
+        }
+        failed = check(fileSeen, "the file face paints its own run", failed)
+        failed = check(fileList.fontCount() == 1, "the file face reaches the font table", failed)
+    }
+
+    return failed
+}
+
+fn testFontsCache(failed: Int): Int {
+    let root = ".rnx-cache/fonts-test"
+    fs.removeAll(root)
+    let fontPath = "../../../../../website/static/fonts/Inter-Regular.ttf"
+    let loaded = fs.readBytes(fontPath)
+    failed = check(loaded.isOk(), "font fixture loads", failed)
+    if !loaded.isOk() {
+        return failed
+    }
+    let data = loaded.unwrap()
+
+    failed = check(FontHash.sha256(ByteBuffer.fromString("")) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 empty vector", failed)
+    failed = check(FontHash.sha256(ByteBuffer.fromString("abc")) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc vector", failed)
+    failed = check(FontHash.sha256Text("The quick brown fox jumps over the lazy dog") == "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592", "sha256 fox vector", failed)
+
+    let digest = FontHash.sha256(data)
+    let reg = new FontRegistry()
+    let fonts = new Fonts(reg, root)
+    failed = check(fonts.loadLocal(fontPath) != null, "local font loads", failed)
+    failed = check(reg.len() == 1, "local font registers once", failed)
+    failed = check(fonts.loadLocal(fontPath) != null, "local font reloads", failed)
+    failed = check(reg.len() == 1, "local reload dedupes by content", failed)
+
+    let pinned = new FontSource("test", "Inter Test", 400, false, "https://example.invalid/inter.ttf", digest)
+    let first = fonts.loadSource(pinned, (url: String): ByteBuffer? => fs.readBytes(fontPath).unwrap())
+    failed = check(first != null, "pinned source fetches", failed)
+    failed = check(fonts.cached(pinned), "pinned source is cached", failed)
+    failed = check(fonts.cachePath(pinned).indexOf(digest) >= 0, "cache path uses the digest", failed)
+    failed = check(fonts.loadSource(pinned, null) != null, "cache hit needs no fetcher", failed)
+
+    let bad = new FontSource("test", "Bad", 400, false, "https://example.invalid/bad.ttf", "0000000000000000000000000000000000000000000000000000000000000000")
+    failed = check(fonts.loadSource(bad, (url: String): ByteBuffer? => fs.readBytes(fontPath).unwrap()) == null, "hash mismatch rejects", failed)
+    failed = check(!fonts.cached(bad), "hash mismatch writes nothing", failed)
+
+    let tofu = new FontSource("test", "Tofu", 400, false, "https://example.invalid/tofu.ttf")
+    failed = check(fonts.loadSource(tofu, (url: String): ByteBuffer? => fs.readBytes(fontPath).unwrap()) != null, "unpinned source fetches", failed)
+    let sidecar = fonts.cachePath(tofu) + ".sha256"
+    failed = check(fs.exists(sidecar), "unpinned source records a sidecar", failed)
+    failed = check(fs.readText(sidecar).unwrapOr("") == digest, "sidecar holds the digest", failed)
+    fs.writeBytes(fonts.cachePath(tofu), ByteBuffer.fromString("tampered"), .Overwrite)
+    failed = check(fonts.loadSource(tofu, null) == null, "tampered cache is rejected", failed)
+    failed = check(!fs.exists(fonts.cachePath(tofu)), "tampered cache is removed", failed)
+
+    let big = new FontSource("test", "Big", 400, false, "https://example.invalid/big.ttf", "", "", 10)
+    failed = check(fonts.loadSource(big, (url: String): ByteBuffer? => fs.readBytes(fontPath).unwrap()) == null, "oversized source rejects", failed)
+    let missing = new FontSource("test", "Missing", 400, false, "https://example.invalid/missing.ttf")
+    failed = check(fonts.loadSource(missing, null) == null, "cache miss without a fetcher returns null", failed)
+    failed = check(fonts.warnings().length() > 0, "cache failures record warnings", failed)
+
+    failed = check(Google.cssUrl("Inter", [400, 600], false) == "https://fonts.googleapis.com/css?family=Inter:400,600", "google css url", failed)
+    failed = check(Google.cssUrl("Inter", [400], true) == "https://fonts.googleapis.com/css?family=Inter:400,400i", "google italic css url", failed)
+    let css = "@font-face \{ font-family: 'Inter'; font-style: normal; font-weight: 400; src: url(https://a/x.ttf) format('truetype'); }\n@font-face \{ font-family: 'Inter'; font-style: italic; font-weight: 600; src: url('https://a/y.ttf') format('truetype'); }"
+    let all = Google.sources(css, "Inter", [400, 600], true)
+    failed = check(all.length() == 2, "google parses both faces", failed)
+    failed = check(all[0].weight == 400 && !all[0].italic && all[0].url == "https://a/x.ttf", "google normal face", failed)
+    failed = check(all[1].weight == 600 && all[1].italic && all[1].url == "https://a/y.ttf", "google italic face", failed)
+    let normalOnly = Google.sources(css, "Inter", [400, 600], false)
+    failed = check(normalOnly.length() == 1 && normalOnly[0].weight == 400, "google style filter", failed)
+    let one = Google.source(css, "Inter", 600, true)
+    failed = check(one != null && one.weight == 600 && one.italic, "google single source", failed)
+    failed = check(Google.source(css, "Inter", 700, false) == null, "google missing weight returns null", failed)
+
+    fs.removeAll(root)
+    return failed
+}
+
+fn mediaWait(ms: Int) {
+    let start = Clock.mono().toMillis()
+    while Clock.mono().toMillis() - start < ms {}
+}
+
+fn writeToneWav(path: String): Bool {
+    let rate = 44100
+    let channels = 2
+    let frames = 22050
+    let dataLen = frames * channels * 2
+    let buf: ByteBuffer = ByteBuffer.allocate(44 + dataLen)
+    buf.writeString(0, "RIFF")
+    buf.writeUInt32LE(4, 36 + dataLen)
+    buf.writeString(8, "WAVE")
+    buf.writeString(12, "fmt ")
+    buf.writeUInt32LE(16, 16)
+    buf.writeUInt16LE(20, 1)
+    buf.writeUInt16LE(22, channels)
+    buf.writeUInt32LE(24, rate)
+    buf.writeUInt32LE(28, rate * channels * 2)
+    buf.writeUInt16LE(32, channels * 2)
+    buf.writeUInt16LE(34, 16)
+    buf.writeString(36, "data")
+    buf.writeUInt32LE(40, dataLen)
+    let i = 0
+    while i < frames {
+        let sample = Int(Math.sin(Float(i) * 0.05) * 8000.0) & 0xFFFF
+        buf.writeUInt16LE(44 + i * 4, sample)
+        buf.writeUInt16LE(46 + i * 4, sample)
+        i += 1
+    }
+    return fs.writeBytes(path, buf, .Overwrite).isOk()
+}
+
+fn testMediaPlayback(failed: Int): Int {
+    fs.mkdirAll(".rnx-cache")
+    let wav = ".rnx-cache/media-tone.wav"
+    failed = check(writeToneWav(wav), "wav fixture writes", failed)
+    let audio = AudioPlayer.open(wav)
+    failed = check(audio != null, "audio opens the wav", failed)
+    if audio != null {
+        failed = check(audio.duration() >= 480 && audio.duration() <= 520, "audio duration is 500ms: " + audio.duration().toString(), failed)
+        failed = check(audio.channels() >= 1 && audio.rate() > 0, "audio reports channels and rate", failed)
+        failed = check(audio.play(), "audio starts", failed)
+        let i = 0
+        while i < 500 && audio.state() != AudioState.ended {
+            mediaWait(10)
+            i += 1
+        }
+        failed = check(audio.state() == AudioState.ended, "audio reaches the ended state", failed)
+        failed = check(audio.position() >= 480 && audio.position() <= 520, "audio position tracks playback: " + audio.position().toString(), failed)
+        failed = check(audio.pending() >= 0, "audio pending is not negative", failed)
+        failed = check(audio.seek(100) == 100, "audio seek clamps to the requested position", failed)
+        failed = check(audio.volume(50), "audio volume accepts a percent", failed)
+        failed = check(audio.pause() || audio.state() == AudioState.ended, "audio pause is safe", failed)
+        failed = check(audio.stop(), "audio stops", failed)
+        audio.close()
+        audio.close()
+    }
+    failed = check(AudioPlayer.open(".rnx-cache/missing.wav") == null, "missing audio returns null", failed)
+    failed = check(VideoPlayer.open(".rnx-cache/missing.mp4") == null, "missing video returns null", failed)
+
+    let cameraPath = Env.get("RNX_CAMERA")
+    if cameraPath != "" {
+        let camera = CameraStream.openDefault(64, 48)
+        failed = check(camera != null, "camera opens the stub", failed)
+        if camera != null {
+            let frame: ByteBuffer? = null
+            let i = 0
+            while i < 300 && frame == null {
+                frame = camera.next()
+                mediaWait(5)
+                i += 1
+            }
+            failed = check(frame != null, "camera produces a frame", failed)
+            if frame != null {
+                let size = imageSize(frame)
+                failed = check(size.width == camera.width() && size.height == camera.height(), "camera frame matches its size", failed)
+            }
+            failed = check(camera.frames() >= 0, "camera reports a frame count", failed)
+            camera.close()
+        }
+    }
+
+    let videoPath = Env.get("RNX_TEST_VIDEO")
+    if videoPath != "" {
+        let video = VideoPlayer.open(videoPath)
+        failed = check(video != null, "video opens the fixture", failed)
+        if video != null {
+            failed = check(video.width() > 0 && video.height() > 0, "video reports its size", failed)
+            let frame: ByteBuffer? = null
+            let i = 0
+            while i < 500 && frame == null {
+                frame = video.next()
+                mediaWait(5)
+                i += 1
+            }
+            failed = check(frame != null, "video produces a frame", failed)
+            if frame != null {
+                let size = imageSize(frame)
+                failed = check(size.width == video.width() && size.height == video.height(), "video frame matches its size", failed)
+            }
+            failed = check(video.seek(0), "video seeks to the start", failed)
+            failed = check(video.pending() >= 0, "video pending is not negative", failed)
+            video.close()
+        }
+    }
+
+    let pickPath = Env.get("RNX_PICK_FILE")
+    if pickPath != "" {
+        let picked = FilePicker.pickFile("Pick", "png,wav,mp4")
+        failed = check(picked == pickPath, "file picker returns the stub path: " + (picked ?? "null"), failed)
+        let many = FilePicker.pickFiles("Pick", "png,wav,mp4")
+        failed = check(many.length() >= 1, "file picker returns the multi-selection", failed)
+        let rejected = FilePicker.pickFile("Pick", "mp4")
+        failed = check(rejected == null || pickPath.endsWith(".mp4"), "file picker filters by extension", failed)
+    }
+    return failed
+}
+
+fn Main(): Int {
+    let failed = 0
+
+    failed = testAppBasicsAndTheme(failed)
+    failed = testWidgetsAndSurface(failed)
+    failed = testAccessibilityAndDriver(failed)
+    failed = testLanesAndRelations(failed)
+    failed = testInputAndLists(failed)
+    failed = testPresenceAndGoldens(failed)
+    failed = testRouting(failed)
+    failed = testPlatform(failed)
+    failed = testDragAndScroll(failed)
+    failed = testReactiveAndImages(failed)
+    failed = testGesturesAndProfiler(failed)
+    failed = testRichText(failed)
+    failed = testLinksAndRichFields(failed)
+    failed = testFontTables(failed)
+    failed = testFontsCache(failed)
+    failed = testMediaPlayback(failed)
 
     if failed == 0 {
         print("app tests: ok")

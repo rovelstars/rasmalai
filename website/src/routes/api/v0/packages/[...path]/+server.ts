@@ -92,7 +92,10 @@ async function serveLocalStd(full: string, rest: string[]): Promise<Response | n
 		if (sub === 'chunks' && rest.length === 2) {
 			const entries = local.localStdEntries(full);
 			if (!entries || entries.length === 0) return null;
-			return json({ entries }, { headers: headers({ Vary: 'accept-encoding' }) });
+			return json(
+				{ entries },
+				{ headers: headers({ Vary: 'accept-encoding', 'Cache-Control': 'no-store' }) }
+			);
 		}
 		if (sub === 'chunk' && rest.length === 3 && slug && /^[0-9a-fA-F]{64}$/.test(slug)) {
 			const bytes = local.localStdChunk(full, slug.toLowerCase());
@@ -168,6 +171,13 @@ export async function GET({ params, platform, setHeaders, url }) {
 	}
 
 	const [version, sub, slug] = rest;
+	// Dev serves @std from the checkout before the database. A seeded dev
+	// database otherwise returns the published package and the playground
+	// silently edits against old sources.
+	if (await isDev()) {
+		const local = await serveLocalStd(full, rest);
+		if (local) return local;
+	}
 	// The doc payload is up to 1 MiB per version row, and only the api
 	// sub-resource reads it. Every other read here takes the narrow
 	// projection and never pays for the doc payload.

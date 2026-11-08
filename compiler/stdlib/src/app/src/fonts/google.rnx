@@ -1,0 +1,176 @@
+//! Google Fonts provider.
+//!
+//! The provider builds the CSS request and turns the returned `@font-face`
+//! blocks into `FontSource` descriptors. It does not perform I/O: the app
+//! fetches the CSS and the TTF files, then hands the bytes to `Fonts`.
+//! Google serves TrueType URLs to clients that do not advertise WOFF2, and
+//! `Rasmalai/1.0` does not, so the request below returns `.ttf` sources.
+//!
+//! ```rnx
+//! import { Fonts } from "@std/app/fonts"
+//! import { Google } from "@std/app/fonts/google"
+//!
+//! let css = fetch(Google.cssUrl("Inter", [400, 600], false), null).wait().unwrap().text()
+//! let faces = Google.load(fonts, css, "Inter", [400, 600], false, (url) => {
+//!     let r = fetch(url, null).wait()
+//!     if r.isErr() { return null }
+//!     return r.unwrap().bytes()
+//! })
+//! ```
+import { ByteBuffer } from "@std/bytes"
+import { FontFace } from "@std/ui"
+import {
+    Fonts,
+    FontSource
+} from "@std/app/fonts"
+
+/** Google Fonts CSS and descriptor helpers. */
+pub class Google {
+    /** CSS request URL for one family. `italic` adds an italic face per weight. */
+    static fn cssUrl(family: String, weights: Array<Int>, italic: Bool): String {
+        let fam = family.replaceAll(" ", "+")
+        let spec = ""
+        let i = 0
+        while i < weights.length() {
+            if spec != "" {
+                spec = spec + ","
+            }
+            spec = spec + weights[i].toString()
+            if italic {
+                spec = spec + "," + weights[i].toString() + "i"
+            }
+            i += 1
+        }
+        if spec == "" {
+            return "https://fonts.googleapis.com/css?family=" + fam
+        }
+        return "https://fonts.googleapis.com/css?family=" + fam + ":" + spec
+    }
+
+    /** Turn a CSS reply into sources. Unknown or unrequested faces are skipped. */
+    static fn sources(css: String, family: String, weights: Array<Int>, italic: Bool): Array<FontSource> {
+        let out: Array<FontSource> = []
+        let blocks = css.split("@font-face")
+        let i = 1
+        while i < blocks.length() {
+            let block = blocks[i]
+            let url = srcUrl(block)
+            if url != "" {
+                let weight = weightOf(block)
+                let isItalic = styleOf(block) == 1
+                if weight > 0 && wants(weights, weight) && (isItalic == italic || !isItalic) {
+                    out.push(new FontSource("google", family, weight, isItalic, url))
+                }
+            }
+            i += 1
+        }
+        return out
+    }
+
+    /** Build one source from the first matching face, or null. */
+    static fn source(css: String, family: String, weight: Int, italic: Bool): FontSource? {
+        let list = Google.sources(css, family, [weight], italic)
+        if list.length() == 0 {
+            return null
+        }
+        return list[0]
+    }
+
+    /** Resolve and load every matching face through the given byte fetcher. */
+    static fn load(
+        fonts: Fonts,
+        css: String,
+        family: String,
+        weights: Array<Int>,
+        italic: Bool,
+        fetcher: fn(String): ByteBuffer?): Array<FontFace> {
+            return fonts.loadSources(Google.sources(css, family, weights, italic), fetcher)
+        }
+}
+
+fn wants(weights: Array<Int>, weight: Int): Bool {
+    if weights.length() == 0 {
+        return true
+    }
+    let i = 0
+    while i < weights.length() {
+        if weights[i] == weight {
+            return true
+        }
+        i += 1
+    }
+    return false
+}
+
+fn field(block: String, name: String): String {
+    let at = block.indexOf(name + ":")
+    if at < 0 {
+        return ""
+    }
+    at = at + name.length() + 1
+    let end = block.length()
+    let i = at
+    while i < block.length() {
+        let c = block.charCodeAt(i)
+        if c == 59 || c == 125 {
+            end = i
+            break
+        }
+        i += 1
+    }
+    return block.slice(at, end).trim()
+}
+
+fn weightOf(block: String): Int {
+    let text = field(block, "font-weight")
+    let value = 0
+    let i = 0
+    while i < text.length() {
+        let c = text.charCodeAt(i)
+        if c < 48 || c > 57 {
+            break
+        }
+        value = value * 10 + (c - 48)
+        i += 1
+    }
+    return value
+}
+
+fn styleOf(block: String): Int {
+    if field(block, "font-style").indexOf("italic") >= 0 {
+        return 1
+    }
+    return 0
+}
+
+fn srcUrl(block: String): String {
+    let at = block.indexOf("url(")
+    if at < 0 {
+        return ""
+    }
+    let i = at + 4
+    while i < block.length() && block.charCodeAt(i) == 32 {
+        i += 1
+    }
+    let quote = 0
+    if i < block.length() {
+        let c = block.charCodeAt(i)
+        if c == 34 || c == 39 {
+            quote = c
+            i += 1
+        }
+    }
+    let end = i
+    while end < block.length() {
+        let c = block.charCodeAt(end)
+        if quote != 0 {
+            if c == quote {
+                break
+            }
+        } else if c == 41 {
+            break
+        }
+        end += 1
+    }
+    return block.slice(i, end).trim()
+}

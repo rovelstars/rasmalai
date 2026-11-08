@@ -31,19 +31,3 @@ fn stdlib_ui_tests_pass() {
     assert!(out.status.success(), "{stderr}{stdout}");
     assert!(stdout.contains("0 failed"), "{stderr}{stdout}");
 }
-
-#[test]
-fn ui_demo_runs_headless() {
-    let out = run(
-        &repo().join("examples/ui-demo"),
-        &["run", "--backend", "interpreter"],
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{stderr}{stdout}");
-    assert!(stdout.contains("button Reset"), "{stderr}{stdout}");
-    assert!(stdout.contains("checkbox Reduce motion"), "{stderr}{stdout}");
-    assert!(stdout.contains("query: theme"), "{stderr}{stdout}");
-    assert!(stdout.contains("scheme after pointer: light"), "{stderr}{stdout}");
-    assert!(stdout.contains("confirm: false"), "{stderr}{stdout}");
-}

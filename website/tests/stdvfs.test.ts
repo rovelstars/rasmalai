@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
 	concatChunks,
 	entryCandidates,
+	ensureStdModule,
 	fetchStdModule,
 	findFileEntry,
 	isDevOrigin,
@@ -111,6 +112,22 @@ describe('fetchStdModule', () => {
 	it('fails closed on a missing file entry', async () => {
 		const fetchImpl = mockFetch(new Map(), new Map()) as typeof fetch;
 		await assert.rejects(fetchStdModule('fs', '0.1.0', 'https://example.test', fetchImpl), /ships no src\/lib\.rnx/);
+	});
+
+	it('does not cache local dev stdlib sources', async () => {
+		let touched = 0;
+		const db = {
+			transaction: () => {
+				touched += 1;
+				throw new Error('local dev must not use IndexedDB');
+			}
+		} as unknown as IDBDatabase;
+		const src = new TextEncoder().encode('export fn local(): Int { return 1; }\n');
+		const hash = createHash('sha256').update(src).digest('hex');
+		const fetchImpl = mockFetch(new Map([['src/lib.rnx', src]]), new Map([[hash, src]])) as typeof fetch;
+		const text = await ensureStdModule('fs', '0.1.0', 'http://localhost:5173', db, fetchImpl);
+		assert.equal(text, new TextDecoder().decode(src));
+		assert.equal(touched, 0);
 	});
 
 	it('fails closed on a chunk integrity mismatch', async () => {

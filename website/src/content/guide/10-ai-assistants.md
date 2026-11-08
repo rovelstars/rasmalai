@@ -6,7 +6,7 @@ icon: "Terminal"
 
 # AI assistants & MCP
 
-If you write code with an AI agent looking over your shoulder, you can give it the toolchain directly. `rnx mcp` serves the compiler over the Model Context Protocol on stdio, so an agent can check, run, format, test, and explain rnx code without shelling out. Seventeen tools: `check` (structured JSON, `pretty` opt-in), `run` (interpreter, 30s cap, structured output), `fmt` (plus `--check`/`--diff` modes), `explain`, `version`, `rasmalai_lookup_symbol` (`@std/*` signature search), `inspect_package_capabilities` (package audit with licenses, drift, and advisory verdicts), `eval_code` (persistent JIT session with `:type` and `reset`), `get_diagnostics` (structured JSON diagnostics), `hot_reload` (needs an attached `rnx dev --mcp` watcher), `build` (LLVM object, in memory), `test` (project test runner), `lint` (read-only), `doc` (`--json` API docs), `doctor` (read-only cache health), `cache_status` (read-only pool sizes), and `package_resolve` (offline cache verdicts). `path` inputs resolve project-aware, so relative imports work; `source` snippets stay self-contained. Stdout carries protocol frames only.
+If you write code with an AI agent looking over your shoulder, you can give it the toolchain directly. `rnx mcp` serves the compiler over the Model Context Protocol on stdio, so an agent can check, run, format, test, and explain rnx code without shelling out. Eighteen tools: `check` (structured JSON, `pretty` opt-in), `run` (interpreter, 30s cap, structured output), `fmt` (plus `--check`/`--diff` modes), `explain`, `version`, `rasmalai_lookup_symbol` (`@std/*` signature search), `inspect_package_capabilities` (package audit with licenses, drift, and advisory verdicts), `eval_code` (persistent JIT session with `:type` and `reset`), `get_diagnostics` (structured JSON diagnostics), `hot_reload` (needs an attached `rnx dev --mcp` watcher), `build` (LLVM object, in memory), `test` (project test runner), `lint` (read-only), `doc` (`--json` API docs), `doctor` (read-only cache health), `cache_status` (read-only pool sizes), `package_resolve` (offline cache verdicts), and `ui_drive` (run a semicolon UI script against an app, assert controls, drag/fling/scroll through real controls, return a `shot:` PNG as an inline image block, and compare it against a `golden` baseline). `path` inputs resolve project-aware, so relative imports work; `source` snippets stay self-contained. Stdout carries protocol frames only.
 
 Pick your harness below. Every entry follows the same trio (`rnx` on `PATH`, a server entry with `command`/`args`, and one command to verify). Then a manual section covers anything else.
 
@@ -25,7 +25,7 @@ Claude Code registers from the terminal:
 claude mcp add rnx -- rnx mcp
 ```
 
-Verify with `/mcp` inside a session; the `rnx` server lists seventeen tools.
+Verify with `/mcp` inside a session; the `rnx` server lists eighteen tools.
 
 Claude Desktop takes the same server in its JSON config. macOS `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows `%APPDATA%\Claude\`, Linux `~/.config/Claude`):
 

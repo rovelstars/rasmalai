@@ -31,6 +31,5 @@ source. Output is a checked AST ready for `lir` lowering.
 ## Tests
 
 `tests/` holds parser, semantic, module, workspace, and project suites.
-Corpus tests that used `examples/` were removed with that directory;
-coverage for the same grammar lives in inline-source tests such as
-`parses_switch_try_defer_guard`.
+The older corpus tests are gone; coverage for the same grammar now lives
+in inline-source tests such as `parses_switch_try_defer_guard`.

@@ -879,6 +879,7 @@ impl H {
             self.ty(t);
         }
         self.ty(&m.ret);
+        self.u8(m.throws as u8);
     }
     fn iface(&mut self, i: &InterfaceDesc) {
         self.str(&i.name);

@@ -548,6 +548,10 @@ fn rewrite_propagates_stmt(st: &mut Stmt, fin: &Block) {
             }
         }
         Stmt::UnsafeBlock(b) => rewrite_propagates(b, fin),
+        Stmt::Slot { body, .. } => rewrite_propagates(body, fin),
+        Stmt::Spread { value, .. } => {
+            rewrite_propagates_expr(&mut value.node, fin, value.span)
+        }
         Stmt::Defer(_) | Stmt::Return(None) | Stmt::Throw(None) | Stmt::Break
         | Stmt::Continue | Stmt::Fallthrough | Stmt::Pass | Stmt::Empty => {}
     }

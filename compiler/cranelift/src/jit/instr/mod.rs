@@ -230,7 +230,7 @@ pub(super) struct FnLower<'a, M> {
     pub(super) defer_base: cranelift_frontend::Variable,
     pub(super) dom: lir::licm::DominatorTree,
     pub(super) cur_block: usize,
-    pub(super) last_write: BTreeMap<Local, usize>,
+    pub(super) writes: BTreeMap<Local, Vec<usize>>,
 }
 
 impl<M: Module> FnLower<'_, M> {
@@ -240,11 +240,13 @@ impl<M: Module> FnLower<'_, M> {
 
     pub(super) fn set(&mut self, b: &mut FunctionBuilder<'_>, dst: Local, v: cranelift_codegen::ir::Value) {
         b.def_var(self.vars[dst as usize], v);
-        self.last_write.insert(dst, self.cur_block);
+        self.writes.entry(dst).or_default().push(self.cur_block);
     }
 
     pub(super) fn write_dominates(&self, dst: Local) -> bool {
-        self.last_write.get(&dst).is_some_and(|w| self.dom.dominates(*w, self.cur_block))
+        self.writes
+            .get(&dst)
+            .is_some_and(|blocks| blocks.iter().any(|b| self.dom.dominates(*b, self.cur_block)))
     }
 
     pub(super) fn emit_run_defers(
@@ -601,6 +603,12 @@ impl<M: Module> FnLower<'_, M> {
     }
 
     pub(super) fn array_elem_dtor(&mut self, b: &mut FunctionBuilder<'_>, elem: &LirType) -> Result<cranelift_codegen::ir::Value, String> {
+        if let Some(fid) = self.lir.array_dtors.get(&type_key(elem)).copied() {
+            let fname = self.lir.functions[fid].name.clone();
+            let id = *self.ids.get(&fname).ok_or("unknown array dtor".to_string())?;
+            let fr = self.module.declare_func_in_func(id, &mut b.func);
+            return Ok(b.ins().func_addr(types::I64, fr));
+        }
         match elem {
             LirType::Obj(name) => match self.lir.class_index.get(name) {
                 Some(ci) => self.dtor_for_class(b, *ci),

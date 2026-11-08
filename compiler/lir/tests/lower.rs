@@ -14,6 +14,15 @@ fn compile(src: &str) -> lir::instr::Module {
     out
 }
 
+fn count_instrs(m: &lir::instr::Module, pred: impl Fn(&lir::instr::Instr) -> bool) -> usize {
+    m.functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| pred(i))
+        .count()
+}
+
 #[test]
 fn arithmetic_fn() {
     let m = compile("fn Add(a: Int, b: Int): Int { return a + b }");
@@ -615,4 +624,464 @@ fn nested_submodule_import_lowers_under_mangled_name() {
     assert!(names.contains(&"std.net.http.statusCode"), "{names:?}");
     assert!(names.contains(&"std.net.http.isSuccess"), "{names:?}");
     assert!(names.contains(&"Main"), "{names:?}");
+}
+
+#[test]
+fn block_void_statement_fails() {
+    let code = lower_err(
+        "class Box { fn addChild(c: Box) {} fn make(): Box { return this } fn noise(): Void {} } fn F(b: Box) { b.make() { b.noise() } }",
+    );
+    assert_eq!(code, diagnostics::Code::E108);
+}
+
+#[test]
+fn block_add_child_statement_is_allowed() {
+    compile(
+        "class Box { fn addChild(c: Box) {} fn make(): Box { return this } } fn F(b: Box) { let c = b b.make() { b.addChild(c) } }",
+    );
+}
+
+#[test]
+fn collection_block_lowers_to_array() {
+    let m = compile(
+        r#"fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int {
+  let n = F {
+    1
+    2
+    for i in 0..3 { i }
+  }
+  return n
+}"#,
+    );
+    let mut new = 0;
+    let mut push = 0;
+    for f in &m.functions {
+        for b in &f.blocks {
+            for i in &b.instrs {
+                match i {
+                    lir::instr::Instr::ArrayNew { .. } => new += 1,
+                    lir::instr::Instr::ArrayPush { .. } => push += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert!(new >= 1, "collection block allocates an array");
+    assert!(push >= 3, "block elements and loop bodies push");
+}
+
+#[test]
+fn collection_block_slots_lower() {
+    let m = compile(
+        r#"fn F(title: Array<Int>, children: Array<Int>): Int {
+  return title.length() + children.length()
+}
+fn Main(): Int {
+  let n = F {
+    title: { 1 2 }
+    3
+  }
+  return n
+}"#,
+    );
+    let arrays = count_instrs(&m, |i| matches!(i, lir::instr::Instr::ArrayNew { .. }));
+    let pushes = count_instrs(&m, |i| matches!(i, lir::instr::Instr::ArrayPush { .. }));
+    assert_eq!(arrays, 2, "title and children each allocate an array");
+    assert_eq!(pushes, 3, "two title slots plus one child");
+}
+
+#[test]
+fn collection_block_rejects_wrong_element_type() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F(children: Array<String>): Int { return children.length() }
+fn Main(): Int { let n = F { 1 } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "Int is not a String element");
+}
+
+#[test]
+fn collection_block_rejects_return() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let n = F { return 1 } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "return cannot leave a collection block");
+}
+
+#[test]
+fn collection_block_rejects_defer() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let n = F { defer { } 1 } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "defer cannot live in a collection block");
+}
+
+#[test]
+fn collection_block_rejects_throw() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let n = F { throw 1 } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "throw cannot leave a collection block");
+}
+
+#[test]
+fn collection_slots_use_their_own_element_type() {
+    let m = compile(
+        r#"fn F(title: Array<String>, children: Array<Int>): Int {
+  return title.length() + children.length()
+}
+fn Main(): Int {
+  let n = F {
+    title: { "a" "b" }
+    3
+  }
+  return n
+}"#,
+    );
+    let arrays = count_instrs(&m, |i| matches!(i, lir::instr::Instr::ArrayNew { .. }));
+    let pushes = count_instrs(&m, |i| matches!(i, lir::instr::Instr::ArrayPush { .. }));
+    assert_eq!(arrays, 2, "title and children each allocate an array");
+    assert_eq!(pushes, 3, "two title slots plus one child");
+}
+
+#[test]
+fn collection_slot_rejects_wrong_element_type() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F(title: Array<String>, children: Array<Int>): Int {
+  return title.length() + children.length()
+}
+fn Main(): Int { let n = F { title: { 1 } 2 } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "slot element must match its own array");
+}
+
+#[test]
+fn collection_spread_rejects_boxed_any_into_concrete() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F(children: Array<String>): Int { return children.length() }
+fn Main(): Int {
+  let any: Array<Any> = [1]
+  let n = F { ...any }
+  return n
+}"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "Array<Any> cannot be spread into Array<String>");
+}
+
+#[test]
+fn collection_blocks_work_on_instance_and_this_methods() {
+    let m = compile(
+        r#"class C {
+  fn make(children: Array<Int>): Int { return children.length() }
+  fn run(): Int { return this.make { 1 2 } }
+}
+fn Main(): Int {
+  let c = new C()
+  let n = c.make { 1 2 3 }
+  return n + c.run()
+}"#,
+    );
+    assert!(m.functions.iter().any(|f| f.name.contains("C.make")));
+}
+
+#[test]
+fn collection_slot_rejects_non_array_parameter() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F(title: String, children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let n = F { title: { "a" } 1 } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "a slot must name an array parameter");
+}
+
+#[test]
+fn collection_slot_rejects_children_duplicate() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let n = F { children: { 1 } 2 } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "children cannot be both unnamed and named");
+}
+
+#[test]
+fn collection_block_rejects_generic_array_parameter() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F<T>(children: Array<T>): Int { return children.length() }
+fn Main(): Int { let n = F { 1 } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "generic collection arrays are rejected");
+}
+
+#[test]
+fn collection_block_rejects_throwing_calls() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn risky(): Int throws { throw 1 }
+fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let n = F { risky() } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "throwing calls are rejected in collection blocks");
+}
+
+#[test]
+fn collection_block_allows_non_throwing_local_closure() {
+    let m = compile(
+        r#"fn F(children: Array<Any>): Int { return children.length() }
+fn Main(): Int {
+  let f: fn(Int): Int = (x: Int): Int => x + 1
+  let n = F { f(1) }
+  return n
+}"#,
+    );
+    assert!(m.functions.iter().any(|f| f.name.contains("F")));
+}
+
+#[test]
+fn collection_block_generic_non_array_uses_legacy_child_sink() {
+    let m = compile(
+        r#"class Box {
+  fn addChild(c: Box) {}
+}
+fn wrap<T>(v: T): Box { return new Box() }
+fn Main(): Int {
+  let b = wrap(1) { new Box() }
+  return 0
+}"#,
+    );
+    assert!(m.functions.iter().any(|f| f.name.contains("wrap")));
+}
+
+#[test]
+fn collection_block_rejects_throwing_constructor() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"class C { init() { throw 1 } }
+fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let n = F { new C() } return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "throwing constructors are rejected");
+}
+
+#[test]
+fn collection_block_rejects_break_leaving_the_block() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int {
+  while true {
+    let n = F { break }
+    return n
+  }
+  return 0
+}"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "break cannot leave a collection block");
+}
+
+#[test]
+fn collection_any_box_releases_temporaries() {
+    let m = compile(
+        r#"fn F(children: Array<Any>): Int { return children.length() }
+fn Main(): Int {
+  let n = F { 1 2 3 }
+  return n
+}"#,
+    );
+    let f = m
+        .functions
+        .iter()
+        .find(|f| f.name.contains("Main"))
+        .expect("Main lowered");
+    let releases = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, lir::instr::Instr::Release { .. }))
+        .count();
+    assert!(releases >= 3, "boxed Any elements release their temporaries");
+}
+
+#[test]
+fn collection_block_rejects_throwing_extension_method() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"class Box { init() {} }
+extension Box {
+  fn boom(): Int throws { throw 1 }
+}
+fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let b = new Box(); let n = F { b.boom() }; return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "throwing extensions are rejected");
+}
+
+#[test]
+fn collection_block_allows_non_throwing_extension_method() {
+    let m = compile(
+        r#"class Box { init() {} }
+extension Box {
+  fn size(): Int { return 7 }
+}
+fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let b = new Box(); let n = F { b.size() }; return n }"#,
+    );
+    assert!(m.functions.iter().any(|f| f.name.contains("Main")));
+}
+
+#[test]
+fn collection_block_rejects_throwing_optional_call() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"class Box {
+  init() {}
+  fn boom(): Int throws { throw 1 }
+}
+fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let b: Box? = new Box(); let n = F { b?.boom() }; return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "throwing optional calls are rejected");
+}
+
+#[test]
+fn collection_block_rejects_throwing_super_call() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"class Base {
+  init() {}
+  fn go(): Int throws { throw 1 }
+}
+class Sub extends Base {
+  init() { super() }
+  fn run(): Int { return 1 }
+}
+fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let s = new Sub(); let n = F { s.go() }; return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "throwing inherited calls are rejected");
+}
+
+#[test]
+fn collection_spread_lowers_into_the_target_array() {
+    let m = compile(
+        r#"fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int {
+  let xs: Array<Int> = [1, 2]
+  let n = F { ...xs 3 }
+  return n
+}"#,
+    );
+    let lens = count_instrs(&m, |i| matches!(i, lir::instr::Instr::ArrayLen { .. }));
+    let pushes = count_instrs(&m, |i| matches!(i, lir::instr::Instr::ArrayPush { .. }));
+    assert!(lens >= 1, "spread reads the source length");
+    assert!(pushes >= 3, "spread loop and explicit element push into the block array");
+}
+
+#[test]
+fn collection_block_rejects_throwing_interface_method() {
+    let mut m = frontend::parser::Parser::parse_module(
+        r#"interface Op { fn run(): Int throws; }
+class Add : Op {
+  init() {}
+  fn run(): Int throws { throw 1 }
+}
+fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let o: Op = new Add(); let n = F { o.run() }; return n }"#,
+    )
+    .expect("parse");
+    let d = frontend::desugar::desugar(&mut m);
+    assert!(d.is_empty(), "{d:?}");
+    assert!(lower::lower(&m).is_err(), "throwing interface calls are rejected");
+}
+
+#[test]
+fn collection_block_allows_non_throwing_interface_method() {
+    let m = compile(
+        r#"interface Op { fn run(): Int; }
+class Add : Op {
+  init() {}
+  fn run(): Int { return 1 }
+}
+fn F(children: Array<Int>): Int { return children.length() }
+fn Main(): Int { let o: Op = new Add(); let n = F { o.run() }; return n }"#,
+    );
+    assert!(m.functions.iter().any(|f| f.name.contains("Main")));
+}
+
+#[test]
+fn function_shadows_enum_variant_in_call_position() {
+    let m = compile(
+        r#"enum E { screen, other }
+fn screen(a: Int, b: Int): Int { return a + b }
+fn Main(): Int { return screen(1, 2) }"#,
+    );
+    assert!(m.functions.iter().any(|f| f.name == "screen"));
+}
+
+#[test]
+fn bare_enum_variant_still_lowers() {
+    let m = compile(
+        r#"enum E { screen, other }
+fn Main(): Int { let e: E = E.screen; return 0 }"#,
+    );
+    assert!(m.functions.iter().any(|f| f.name == "Main"));
+}
+
+#[test]
+fn class_dtor_releases_owned_fields() {
+    let m = compile(
+        "class Inner { let n: Int = 1 } class Outer { let i: Inner = new Inner() } fn Main(): Int { let o = new Outer(); return 0 }",
+    );
+    let dtor = m
+        .functions
+        .iter()
+        .find(|f| f.name == "__dtor_Outer")
+        .expect("Outer dtor");
+    let releases = dtor
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, lir::instr::Instr::ReleaseField { .. }))
+        .count();
+    assert_eq!(releases, 1, "Outer dtor must release its Inner field");
 }

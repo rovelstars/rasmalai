@@ -11,11 +11,13 @@ const repo = join(root, '..');
 const outDir = join(root, '.std-doc');
 const apiPath = join(outDir, 'api.json');
 const stdDir = join(repo, 'compiler', 'stdlib', 'src');
+const SKIP_DIRS = new Set(['target', '.rnx-cache', 'node_modules', '.git', 'wrappers', 'tests']);
 
 function stdlibMtime(): number {
 	let newest = 0;
 	const walk = (dir: string): void => {
 		for (const e of readdirSync(dir, { withFileTypes: true })) {
+			if (e.name.startsWith('.') || SKIP_DIRS.has(e.name)) continue;
 			const p = join(dir, e.name);
 			if (e.isDirectory()) walk(p);
 			else if (e.name.endsWith('.rnx')) {
@@ -94,7 +96,7 @@ export function localStdEntries(full: string): LocalStdEntry[] | null {
 			return;
 		}
 		for (const name of names) {
-			if (name.startsWith('.')) continue;
+			if (name.startsWith('.') || SKIP_DIRS.has(name)) continue;
 			const disk = join(dir, name);
 			const key = rel ? `${rel}/${name}` : name;
 			let isDir = false;
@@ -113,11 +115,18 @@ export function localStdEntries(full: string): LocalStdEntry[] | null {
 				} catch {
 					continue;
 				}
-				out.push({ name: key, size: bytes.length, dir: false, chunks: [sha256HexBytes(bytes)] });
+				// The registry layout puts the module entry under src/. The
+				// checkout stores it at <module>/lib.rnx, so present the same
+				// path the playground asks for.
+				const name = key === 'lib.rnx' ? 'src/lib.rnx' : key;
+				out.push({ name, size: bytes.length, dir: false, chunks: [sha256HexBytes(bytes)] });
 			}
 		}
 	};
 	walk(root, '');
+	if (!out.some((e) => e.dir && e.name === 'src') && out.some((e) => e.name === 'src/lib.rnx')) {
+		out.push({ name: 'src', size: 0, dir: true, chunks: [] });
+	}
 	out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	return out;
 }
@@ -128,9 +137,10 @@ export function localStdChunk(full: string, hash: string): Uint8Array | null {
 	if (!entries) return null;
 	for (const e of entries) {
 		if (e.dir || !e.chunks.includes(hash)) continue;
+		const rel = e.name === 'src/lib.rnx' ? 'lib.rnx' : e.name;
 		let bytes: Uint8Array;
 		try {
-			bytes = readFileSync(join(stdDir, full.slice('@std/'.length), e.name));
+			bytes = readFileSync(join(stdDir, full.slice('@std/'.length), rel));
 		} catch {
 			return null;
 		}

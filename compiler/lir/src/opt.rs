@@ -1681,6 +1681,23 @@ fn shift_term(term: &Terminator, block_base: BlockId, local_base: Local) -> Term
     }
 }
 
+fn unique_def_instr(func: &Function, local: Local) -> Option<&Instr> {
+    let mut found = None;
+    for block in &func.blocks {
+        for ins in &block.instrs {
+            let mut dsts = Vec::new();
+            instr_dsts(ins, &mut dsts);
+            if dsts.contains(&local) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(ins);
+            }
+        }
+    }
+    found
+}
+
 fn is_move_pair(param_ty: &LirType, arg_ty: &LirType) -> bool {
     matches!(
         (param_ty, arg_ty),
@@ -1688,6 +1705,252 @@ fn is_move_pair(param_ty: &LirType, arg_ty: &LirType) -> bool {
             | (LirType::Array(_), LirType::Array(_))
             | (LirType::Enum(_), LirType::Enum(_))
     )
+}
+
+fn inlined_ret_releases(
+    known: &BTreeSet<String>,
+    structs: &BTreeSet<String>,
+    callee: &Function,
+    dom: &crate::licm::DominatorTree,
+    ret_bb: usize,
+    rets: &[Local],
+) -> Vec<Local> {
+    let heap = |t: &LirType| {
+        matches!(
+            t,
+            LirType::Obj(_)
+                | LirType::Str
+                | LirType::Array(_)
+                | LirType::Enum(_)
+                | LirType::Any
+                | LirType::Error
+                | LirType::Closure
+        )
+    };
+    let owning = |ins: &Instr, local: Local| match ins {
+        Instr::ObjNew { dst, .. }
+        | Instr::ArrayNew { dst, .. }
+        | Instr::EnumNew { dst, .. }
+        | Instr::ClosureNew { dst, .. }
+        | Instr::Concat { dst, .. }
+        | Instr::ToStr { dst, .. } => *dst == local,
+        _ => false,
+    };
+    let mut out = Vec::new();
+    for (li, ty) in callee.locals.iter().enumerate() {
+        let l = li as Local;
+        if li < callee.params.len() || rets.contains(&l) || !heap(ty) {
+            continue;
+        }
+        if let LirType::Obj(name) = ty {
+            if !known.contains(name) || structs.contains(name) {
+                continue;
+            }
+        }
+        let mut def: Option<(usize, &Instr)> = None;
+        let mut defs = 0;
+        let mut explicit = false;
+        let mut escaping = false;
+        for (bi, block) in callee.blocks.iter().enumerate() {
+            for ins in &block.instrs {
+                if let Instr::Release { obj, .. } = ins {
+                    if *obj == l {
+                        explicit = true;
+                    }
+                }
+                let mut reads = Vec::new();
+                crate::opt::instr_reads(ins, &mut reads);
+                if reads.contains(&l)
+                    && !matches!(
+                        ins,
+                        Instr::SetField { .. }
+                            | Instr::SetFieldByName { .. }
+                            | Instr::ArraySet { .. }
+                            | Instr::ArrayPush { .. }
+                            | Instr::GetField { .. }
+                            | Instr::GetFieldByName { .. }
+                            | Instr::ArrayGet { .. }
+                            | Instr::ArrayLen { .. }
+                            | Instr::ArrayPop { .. }
+                    )
+                {
+                    escaping = true;
+                }
+                let mut dsts = Vec::new();
+                crate::opt::instr_dsts(ins, &mut dsts);
+                if dsts.contains(&l) {
+                    defs += 1;
+                    def = Some((bi, ins));
+                }
+            }
+        }
+        if escaping {
+            continue;
+        }
+        if explicit || defs != 1 {
+            continue;
+        }
+        let Some((db, ins)) = def else { continue };
+        if dom.dominates(db, ret_bb) && owning(ins, l) {
+            out.push(l);
+        }
+    }
+    out
+}
+
+fn slot_releasable(
+    callee_fn: &Function,
+    param: Local,
+    heap_owned: &impl Fn(&LirType) -> bool,
+) -> bool {
+    if !heap_owned(callee_fn.params.get(param as usize).unwrap_or(&LirType::Any)) {
+        return false;
+    }
+    for block in &callee_fn.blocks {
+        for ins in &block.instrs {
+            match ins {
+                Instr::Call { .. }
+                | Instr::ThreadSpawn { .. }
+                | Instr::PoolSubmit { .. }
+                | Instr::PoolParallelFor { .. } => return false,
+                _ => {}
+            }
+            let mut dsts = Vec::new();
+            crate::opt::instr_dsts(ins, &mut dsts);
+            if dsts.contains(&param) {
+                return false;
+            }
+            match ins {
+                Instr::Copy { src, .. } | Instr::Cast { src, .. } if *src == param => {
+                    return false;
+                }
+                // Interior pointers and weak references can outlive the slot's
+                // +1, so a slot release could strand them. Stay conservative.
+                Instr::AddrOf { src, .. } if *src == param => {
+                    return false;
+                }
+                Instr::GenRefOf { obj, .. } | Instr::GenRefInvalidate { obj, .. }
+                    if *obj == param =>
+                {
+                    return false;
+                }
+                Instr::GenRefGet { gref, .. } if *gref == param => {
+                    return false;
+                }
+                Instr::Retain { obj, .. }
+                | Instr::Release { obj, .. }
+                | Instr::ReleaseAs { obj, .. }
+                    if *obj == param =>
+                {
+                    return false;
+                }
+                Instr::Defer { body, .. } => {
+                    for nested in body {
+                        let mut reads = Vec::new();
+                        crate::opt::instr_reads(nested, &mut reads);
+                        if reads.contains(&param) {
+                            return false;
+                        }
+                        let mut dsts = Vec::new();
+                        crate::opt::instr_dsts(nested, &mut dsts);
+                        if dsts.contains(&param) {
+                            return false;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut reads = Vec::new();
+        crate::opt::term_reads(&block.term, &mut reads);
+        if reads.contains(&param) {
+            return false;
+        }
+    }
+    true
+}
+
+fn arg_releasable(module: &Module, callee_fn: &Function, param: Local) -> bool {
+    // Weaker than slot_releasable: the continuation keeps the move-back, so
+    // the release pairs with it even when the callee calls out, copies the
+    // slot, or returns it. A moved-out slot makes the move-back retain, which
+    // the release then balances. Only redefinition, explicit ARC ops,
+    // interior pointers, and deferred touches are forbidden.
+    for block in &callee_fn.blocks {
+        for ins in &block.instrs {
+            // A call that consumes the reference (explicit release builtins,
+            // or a callee that may consume) would leave the move-back
+            // retaining freed memory.
+            if let Instr::Call { target, args, .. } = ins {
+                if args.contains(&param) {
+                    match target {
+                        CallTarget::Builtin(n)
+                            if crate::temp_sweep::consuming_builtin(n) =>
+                        {
+                            return false
+                        }
+                        CallTarget::Fn(id)
+                            if crate::temp_sweep::callee_may_consume(module, *id) =>
+                        {
+                            return false
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let mut dsts = Vec::new();
+            crate::opt::instr_dsts(ins, &mut dsts);
+            if dsts.contains(&param) {
+                return false;
+            }
+            if let Instr::Call { err: Some(e), .. } = ins {
+                if *e == param {
+                    return false;
+                }
+            }
+            match ins {
+                Instr::Retain { obj, .. }
+                | Instr::Release { obj, .. }
+                | Instr::ReleaseAs { obj, .. }
+                    if *obj == param =>
+                {
+                    return false;
+                }
+                Instr::AddrOf { src, .. } if *src == param => {
+                    return false;
+                }
+                Instr::GenRefOf { obj, .. } | Instr::GenRefInvalidate { obj, .. }
+                    if *obj == param =>
+                {
+                    return false;
+                }
+                Instr::GenRefGet { gref, .. } if *gref == param => {
+                    return false;
+                }
+                Instr::Defer { body, .. } => {
+                    for nested in body {
+                        let mut reads = Vec::new();
+                        crate::opt::instr_reads(nested, &mut reads);
+                        if reads.contains(&param) {
+                            return false;
+                        }
+                        let mut dsts = Vec::new();
+                        crate::opt::instr_dsts(nested, &mut dsts);
+                        if dsts.contains(&param) {
+                            return false;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Terminator::BrErr { catch_bind, .. } = &block.term {
+            if *catch_bind == param {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn splice_call(
@@ -1700,6 +1963,151 @@ fn splice_call(
     args: &[Local],
 ) {
     let callee_fn = module.functions[callee].clone();
+    let known_classes: BTreeSet<String> = module.class_index.keys().cloned().collect();
+    let struct_classes: BTreeSet<String> = module
+        .classes
+        .iter()
+        .filter(|c| c.is_struct)
+        .map(|c| c.name.clone())
+        .collect();
+    let mut release_args: Vec<(usize, Local)> = Vec::new();
+    let mut release_slots: Vec<usize> = Vec::new();
+    {
+        let caller_view = &module.functions[caller];
+        let caller_nparams = caller_view.params.len();
+        for (p, a) in args.iter().enumerate() {
+            let param_ty = callee_fn.params.get(p).cloned().unwrap_or(LirType::Any);
+            let arg_ty = caller_view
+                .locals
+                .get(*a as usize)
+                .cloned()
+                .unwrap_or(LirType::Any);
+            let arg_is_param = (*a as usize) < caller_nparams;
+            let heap_slot_owned = |t: &LirType| match t {
+                LirType::Obj(name) => match module.class_index.get(name) {
+                    Some(ci) => !module.classes[*ci].is_struct,
+                    None => false,
+                },
+                LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Closure => true,
+                _ => false,
+            };
+            if arg_is_param && heap_slot_owned(&arg_ty) && !dsts.contains(a) {
+                let aliases_ret = match (&arg_ty, &callee_fn.ret) {
+                    (LirType::Obj(x), LirType::Obj(y)) => x == y,
+                    (LirType::Str, LirType::Str) => true,
+                    (LirType::Array(x), LirType::Array(y)) => x == y,
+                    (LirType::Enum(x), LirType::Enum(y)) => x == y,
+                    (LirType::Closure, LirType::Closure) => true,
+                    _ => false,
+                };
+                if !aliases_ret
+                    && slot_releasable(&callee_fn, p as Local, &heap_slot_owned)
+                {
+                    release_slots.push(p);
+                    continue;
+                }
+            }
+            if !is_move_pair(&param_ty, &arg_ty) || dsts.contains(a) {
+                continue;
+            }
+            let aliases_ret = match (&arg_ty, &callee_fn.ret) {
+                (LirType::Obj(x), LirType::Obj(y)) => x == y,
+                (LirType::Str, LirType::Str) => true,
+                (LirType::Array(x), LirType::Array(y)) => x == y,
+                (LirType::Enum(x), LirType::Enum(y)) => x == y,
+                (LirType::Closure, LirType::Closure) => true,
+                _ => false,
+            };
+            if aliases_ret {
+                continue;
+            }
+            let mut def: Option<(usize, &Instr)> = None;
+            let mut defs = 0;
+            let mut later_uses = 0;
+            for (b, block) in caller_view.blocks.iter().enumerate() {
+                for (j, ins) in block.instrs.iter().enumerate() {
+                    if b == bi && j == ii {
+                        continue;
+                    }
+                    // Only uses that can execute after the call keep the
+                    // temporary alive past the continuation release. Reads in
+                    // the same block before the call (such as a field-default
+                    // store at construction) do not, except deferred bodies,
+                    // which run at scope exit and so execute after the call.
+                    if b == bi && j < ii && !matches!(ins, Instr::Defer { .. }) {
+                        let mut written = Vec::new();
+                        crate::opt::instr_dsts(ins, &mut written);
+                        if written.contains(a) {
+                            defs += 1;
+                            def = Some((b, ins));
+                        }
+                        continue;
+                    }
+                    let mut reads = Vec::new();
+                    crate::opt::instr_reads(ins, &mut reads);
+                    if reads.contains(a) {
+                        later_uses += 1;
+                    }
+                    let mut written = Vec::new();
+                    crate::opt::instr_dsts(ins, &mut written);
+                    if written.contains(a) {
+                        defs += 1;
+                        def = Some((b, ins));
+                    }
+                }
+                let mut reads = Vec::new();
+                crate::opt::term_reads(&block.term, &mut reads);
+                if reads.contains(a) {
+                    later_uses += 1;
+                }
+            }
+            if defs != 1 || later_uses != 0 {
+                continue;
+            }
+            let Some((db, ins)) = def else { continue };
+            if db != bi {
+                continue;
+            }
+            // Field and array reads produce an owned temporary that the
+            // inliner's move-back makes invisible to the caller's temporary
+            // sweep, so the continuation releases it. The same holds for a
+            // fresh constructor temporary forwarded into an inlined call
+            // (typically an `init` that stores it): the move-back restores it
+            // and the release balances the constructor reference. The release
+            // does not block stack promotion: the escape pass strips releases
+            // of promoted locals. Constructor temps additionally require the
+            // callee to leave the reference intact (no redefinition, ARC
+            // ops, interior pointers, or deferred touches).
+            // The temporary may already be a Copy of the value-producing
+            // instruction (an earlier inlining restores its return slot by
+            // copying). Follow that alias chain so a receiver taken from a
+            // field or a freshly constructed value is still recognised.
+            let mut root_ins = ins;
+            if matches!(ins, Instr::Copy { .. } | Instr::Cast { .. }) {
+                if let Some(root) = crate::temp_sweep::alias_root(caller_view, *a) {
+                    if let Some(ri) = unique_def_instr(caller_view, root) {
+                        root_ins = ri;
+                    }
+                }
+            }
+            let field_temp = matches!(
+                root_ins,
+                Instr::GetField { .. } | Instr::GetFieldByName { .. } | Instr::ArrayGet { .. }
+            );
+            let constructed = matches!(
+                root_ins,
+                Instr::ObjNew { .. }
+                    | Instr::ArrayNew { .. }
+                    | Instr::EnumNew { .. }
+                    | Instr::ClosureNew { .. }
+                    | Instr::Concat { .. }
+                    | Instr::ToStr { .. }
+            );
+            if field_temp || (constructed && arg_releasable(module, &callee_fn, p as Local)) {
+                release_args.push((p, *a));
+            }
+        }
+    }
     let caller_fn = &mut module.functions[caller];
     let base = caller_fn.locals.len() as Local;
     for ty in &callee_fn.locals {
@@ -1727,12 +2135,21 @@ fn splice_call(
         if !is_move_pair(&param_ty, &arg_ty) || dsts.contains(a) {
             continue;
         }
+        if release_slots.contains(&p) {
+            continue;
+        }
         restore.push((*a, base + p as Local));
     }
     // Move-backs restore caller ownership moved into param slots. Dropping
     // them leaks (arg stays unowned); replacing them with Retain double-frees.
     for (a, p) in &restore {
         cont_instrs.push(Instr::Copy { span: call_span, dst: *a, src: *p });
+    }
+    for p in &release_slots {
+        cont_instrs.push(Instr::Release { span: call_span, obj: base + *p as Local });
+    }
+    for (_, a) in &release_args {
+        cont_instrs.push(Instr::Release { span: call_span, obj: *a });
     }
     for (d, r) in dsts.iter().zip(res.iter()) {
         cont_instrs.push(Instr::Copy { span: call_span, dst: *d, src: *r });
@@ -1748,13 +2165,17 @@ fn splice_call(
     }
     let entry_id = caller_fn.blocks.len();
     caller_fn.blocks[bi].term = Terminator::Br(entry_id);
-    for cb in &callee_fn.blocks {
+    let dom = crate::licm::compute_dominators(&callee_fn);
+    for (cbi, cb) in callee_fn.blocks.iter().enumerate() {
         let mut instrs: Vec<Instr> =
             cb.instrs.iter().map(|ins| remap_instr(ins, base)).collect();
         let term = match &cb.term {
             Terminator::Ret(v) => {
                 for (r, val) in res.iter().zip(v.iter()) {
                     instrs.push(Instr::Copy { span: call_span, dst: *r, src: remap_local(base, *val) });
+                }
+                for local in inlined_ret_releases(&known_classes, &struct_classes, &callee_fn, &dom, cbi, v) {
+                    instrs.push(Instr::Release { span: call_span, obj: base + local });
                 }
                 Terminator::Br(cont_id)
             }
@@ -2360,18 +2781,15 @@ fn optimize_lir_impl_parallel(
     module
         .functions
         .par_iter_mut()
-        .zip(bce_analyses)
+        .zip(&bce_analyses)
         .for_each(|(f, (dom, loops))| {
-            crate::bce::eliminate_bounds_checks(f, &dom, &loops);
+            crate::bce::eliminate_bounds_checks(f, dom, loops);
         });
     t.bce += step.elapsed();
     step = stamp();
-    for fi in 0..module.functions.len() {
+    for (fi, (dom, _)) in bce_analyses.iter().enumerate() {
         let inner = stamp();
-        let dom = crate::licm::compute_dominators(&module.functions[fi]);
-        t.dom += inner.elapsed();
-        let inner = stamp();
-        crate::arc_opt::eliminate_redundant_arc(module, fi, &dom);
+        crate::arc_opt::eliminate_redundant_arc(module, fi, dom);
         t.arc += inner.elapsed();
     }
     step = stamp();

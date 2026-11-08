@@ -303,7 +303,7 @@ pub(super) struct FnCx<'ctx> {
     pub(super) dom: lir::licm::DominatorTree,
     pub(super) cur_block: usize,
     pub(super) cur_instr: usize,
-    pub(super) last_write: std::cell::RefCell<BTreeMap<Local, usize>>,
+    pub(super) writes: std::cell::RefCell<BTreeMap<Local, Vec<usize>>>,
     pub(super) in_enum_dtor: bool,
     pub(super) defers: Vec<Vec<Instr>>,
     pub(super) defer_base: Option<inkwell::values::PointerValue<'ctx>>,

@@ -11,8 +11,7 @@ ack, seat, pointer, keyboard, and close handling. `host_cabi.h` is the surface.
 cargo build --release
 ```
 
-`App.show` in `@std/app` is the only caller. The wrapper does not run on runixOS:
-Epiclese provides the surface there behind the same `host_cabi` call set.
+`App.show` in `@std/app` is the only caller. The wrapper does not run on runixOS. A surface socket host provides the surface there behind the same `host_cabi` call set.
 
 Dependencies are pinned to `wayland-client` 0.31.15, `wayland-protocols`
 0.32.13, `raw-window-handle` 0.6.2, wgpu 30, and vello 0.11. The `system`
@@ -25,5 +24,5 @@ GL/gallium path; `Renderer.gles` opts into GL. Vello compiles Area AA only. The
 surface uses one frame of latency and an opaque alpha mode when the driver
 offers it.
 
-Set `RUNIX_TRACE=1` to print display-list parse, surface acquire, and total
+Set `RNX_TRACE=1` to print display-list parse, surface acquire, and total
 present time for each frame to stderr.

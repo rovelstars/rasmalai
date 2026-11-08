@@ -1928,7 +1928,19 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
             }
             let save = self.pos;
             let s = self.peek_span().start;
-            match self.stmt() {
+            let parsed = if self.at(&TokenKind::Ellipsis) {
+                self.bump();
+                let vs = self.peek_span().start;
+                let v = self.expr()?;
+                let ve = self.peek_span().start;
+                self.eat_semi();
+                Ok(Stmt::Spread { value: sp(v, Span { start: vs, end: ve }) })
+            } else if self.slot_ahead() {
+                self.slot_stmt()
+            } else {
+                self.stmt()
+            };
+            match parsed {
                 Ok(st) => {
                     let e = self.peek_span().start;
                     stmts.push(sp(st, Span { start: s, end: e }));
@@ -1944,6 +1956,21 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
         }
         self.expect(&TokenKind::RBrace, "`}`")?;
         Ok(Block { stmts })
+    }
+
+    fn slot_ahead(&self) -> bool {
+        matches!(self.peek(), TokenKind::Ident(_))
+            && matches!(
+                self.toks.get(self.pos + 1).map(|t| &t.kind),
+                Some(TokenKind::Colon)
+            )
+    }
+
+    fn slot_stmt(&mut self) -> PR<Stmt> {
+        let (name, _) = self.ident()?;
+        self.expect(&TokenKind::Colon, "`:`")?;
+        let body = self.block()?;
+        Ok(Stmt::Slot { name, body })
     }
 
     fn destructure_tuple(&mut self) -> PR<Stmt> {

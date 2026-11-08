@@ -6,7 +6,9 @@ use diagnostics::{Code, Diagnostic, Span};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-pub const DEFAULT_FUEL: u64 = 500_000;
+// Large standard-library modules (the UI core is thousands of lines) need more
+// than the original 500k. The cap is a safety net, not a size limit.
+pub const DEFAULT_FUEL: u64 = 2_000_000;
 const SNIPPET_MAX: usize = 80;
 const SIG_MAX: usize = 96;
 
@@ -1319,6 +1321,8 @@ fn walk_stmt(
             }, stmt.span);
             walk_block(an, f, b, params, env, nodes, stack)?;
         }
+        Stmt::Slot { body, .. } => walk_block(an, f, body, params, env, nodes, stack)?,
+        Stmt::Spread { value, .. } => walk_expr(an, f, value, params, env, nodes, stack)?,
         Stmt::Break | Stmt::Continue | Stmt::Fallthrough | Stmt::Pass | Stmt::Empty => {}
     }
     Ok(())

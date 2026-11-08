@@ -321,6 +321,13 @@ pub enum Stmt {
     },
     Throw(Option<Spanned<Expr>>),
     UnsafeBlock(Block),
+    Slot {
+        name: String,
+        body: Block,
+    },
+    Spread {
+        value: Spanned<Expr>,
+    },
 }
 
 #[derive(Clone, Debug)]

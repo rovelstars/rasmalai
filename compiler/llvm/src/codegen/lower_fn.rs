@@ -931,12 +931,12 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
                     }
                 }
                 Instr::Retain { obj , ..} => {
-                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_))) {
+                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_)) | Some(LirType::Closure)) {
                         return Err(bad("retain of non-object"));
                     }
                 }
                 Instr::Release { obj , ..} => {
-                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_))) {
+                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_)) | Some(LirType::Closure)) {
                         return Err(bad("release of non-object"));
                     }
                 }
@@ -1891,7 +1891,7 @@ fn lower_fn<'a>(
         dom: lir::licm::compute_dominators(f),
         cur_block: 0,
         cur_instr: 0,
-        last_write: std::cell::RefCell::new(BTreeMap::new()),
+        writes: std::cell::RefCell::new(BTreeMap::new()),
         in_enum_dtor: f_raw.name.starts_with("__enum_dtor_"),
         defers: Vec::new(),
         defer_base: None,

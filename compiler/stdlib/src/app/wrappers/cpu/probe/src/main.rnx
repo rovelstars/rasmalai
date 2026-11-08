@@ -3,6 +3,7 @@ import { Build, DisplayList, Painter, TextEngine, Theme, Tree, rgba } from "@std
 import {
     fn cpu_abi_version(): Int as cpuAbiVersion,
     fn cpu_render(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as cpuRender,
+    fn cpu_wait_images(timeout_ms: Int): Int as cpuWaitImages,
 } from native "cpu_cabi"
 
 fn pixelAt(px: ByteBuffer, x: Int, y: Int): String {
@@ -63,6 +64,14 @@ fn Main(): Int {
         erc = cpuRender(128, 96, Pointer.fromAddress<Byte>(elist.address()), elist.length(), Pointer.fromAddress<Byte>(epx.address()))
     }
     print("extra rc:", erc)
+    unsafe {
+        cpuWaitImages(2000)
+    }
+    let erc2 = 0
+    unsafe {
+        erc2 = cpuRender(128, 96, Pointer.fromAddress<Byte>(elist.address()), elist.length(), Pointer.fromAddress<Byte>(epx.address()))
+    }
+    print("after-wait rc:", erc2)
     print("round center:", pixelAt(epx, 20, 20), "corner:", pixelAt(epx, 11, 11))
     print("moved:", pixelAt(epx, 55, 5), "origin:", pixelAt(epx, 5, 5))
     print("image:", pixelAt(epx, 105, 55))

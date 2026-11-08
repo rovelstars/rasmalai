@@ -1,0 +1,8 @@
+column 
+  heading Golden
+  text A deterministic screen.
+  row 
+    button Save
+    checkbox On checked
+  slider Volume
+  progress 

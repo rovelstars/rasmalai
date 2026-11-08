@@ -64,7 +64,9 @@ fn vendored_module(rest: &str) -> Option<std::path::PathBuf> {
     if let Some(sub) = sub {
         let named = dir.join(format!("{sub}.rnx"));
         let nested = dir.join(&sub).join("lib.rnx");
-        if !named.is_file() && !nested.is_file() {
+        let src_named = dir.join("src").join(format!("{sub}.rnx"));
+        let src_nested = dir.join("src").join(&sub).join("lib.rnx");
+        if !named.is_file() && !nested.is_file() && !src_named.is_file() && !src_nested.is_file() {
             return None;
         }
     }

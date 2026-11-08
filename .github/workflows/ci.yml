@@ -217,7 +217,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri libwayland-dev libfontconfig1-dev libfreetype-dev fonts-dejavu-core
+            mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype-dev fonts-dejavu-core \
+            libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libv4l-dev ffmpeg
 
       - name: Install LLVM 22
         run: |
@@ -241,7 +242,7 @@ jobs:
           key: wrapper-target-${{ runner.os }}-${{ hashFiles('compiler/stdlib/src/app/wrappers/*/Cargo.lock') }}
 
       - name: Build the compiler
-        run: cargo build -p cli
+        run: cargo build --release -p cli
 
       - name: Build wrappers and run the probes
         run: sh compiler/stdlib/src/app/tools/ci-wrappers.sh

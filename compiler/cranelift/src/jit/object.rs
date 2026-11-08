@@ -290,6 +290,8 @@ pub fn emit_object(lir: &LirModule, name: &str, entry: &str) -> Result<Vec<u8>, 
         &mut ctx,
         false,
         0,
+        1,
+        false,
         &mut timings,
     )?;
     define_glue(&mut module, lir, entry, &ids, &sigs, &rt, &mut ctx)?;

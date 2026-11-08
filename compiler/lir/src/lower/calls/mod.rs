@@ -15,7 +15,7 @@ fn result_payload_arg(t: &A::Type) -> Option<&A::Type> {
     }
 }
 
-fn child_type_name(ty: &LirType) -> String {
+pub(super) fn child_type_name(ty: &LirType) -> String {
     match ty {
         LirType::I64 => "Int".to_string(),
         LirType::I8 => "Byte".to_string(),
@@ -24,7 +24,7 @@ fn child_type_name(ty: &LirType) -> String {
         LirType::Str => "String".to_string(),
         LirType::Null => "Null".to_string(),
         LirType::Any => "Any".to_string(),
-        LirType::Obj(n) => n.clone(),
+        LirType::Obj(n) => n.rsplit('.').next().unwrap_or(n).to_string(),
         LirType::Array(inner) => format!("Array<{}>", child_type_name(inner)),
         LirType::Tuple(items) => format!(
             "({})",
@@ -339,6 +339,10 @@ impl<'a> Builder<'a> {
                         format!("cannot construct interface `{n}`"),
                         span,
                     ));
+                }
+                if let Some(id) = self.module.fn_index.get(n).copied() {
+                    let (argv, seed) = self.resolve_call_args(id, args, span)?;
+                    return self.call_fn(id, targs, argv, &seed, span);
                 }
                 if let Some((enu, vi)) = self.variant_of(n) {
                     return self.lower_enum_construct(enu, vi, args, span);

@@ -1,0 +1,526 @@
+//! Media playback: audio, video frames, camera frames, and a native file
+//! picker.
+//!
+//! ```rnx
+//! import { AudioPlayer, Camera, FilePicker, VideoPlayer } from "@std/app/media"
+//!
+//! let audio = AudioPlayer.open("assets/theme.wav")
+//! audio?.play()
+//!
+//! let video = VideoPlayer.open("assets/clip.mp4")
+//! let frame = video?.next()
+//! ```
+//!
+//! Audio and video decoders run on their own threads with bounded queues.
+//! Camera capture is a bounded single-consumer stream. Every handle is
+//! reference-counted by the runtime and closes its native worker when it is
+//! dropped; call `close()` when a lifetime ends earlier.
+//!
+//! Video and camera frames are RGBA with a 24-byte header, so the existing
+//! `Image` view and both renderers accept them without a PNG round trip.
+import { ByteBuffer } from "@std/bytes"
+import {
+    fn media_abi_version(): Int as mediaAbiVersion,
+    fn media_handle_address(h: Pointer<Byte>): Int as mediaHandleAddress,
+    fn media_audio_open(path: Pointer<Byte>, len: Int): Pointer<Byte> as mediaAudioOpen,
+    fn media_audio_close(h: Pointer<Byte>) as mediaAudioClose,
+    fn media_audio_play(h: Pointer<Byte>): Int as mediaAudioPlay,
+    fn media_audio_pause(h: Pointer<Byte>): Int as mediaAudioPause,
+    fn media_audio_stop(h: Pointer<Byte>): Int as mediaAudioStop,
+    fn media_audio_seek(h: Pointer<Byte>, ms: Int): Int as mediaAudioSeek,
+    fn media_audio_position(h: Pointer<Byte>): Int as mediaAudioPosition,
+    fn media_audio_duration(h: Pointer<Byte>): Int as mediaAudioDuration,
+    fn media_audio_channels(h: Pointer<Byte>): Int as mediaAudioChannels,
+    fn media_audio_rate(h: Pointer<Byte>): Int as mediaAudioRate,
+    fn media_audio_volume(h: Pointer<Byte>, percent: Int): Int as mediaAudioVolume,
+    fn media_audio_state(h: Pointer<Byte>): Int as mediaAudioState,
+    fn media_audio_pending(h: Pointer<Byte>): Int as mediaAudioPending,
+    fn media_video_open(path: Pointer<Byte>, len: Int): Pointer<Byte> as mediaVideoOpen,
+    fn media_video_close(h: Pointer<Byte>) as mediaVideoClose,
+    fn media_video_info(h: Pointer<Byte>, lane: Int): Int as mediaVideoInfo,
+    fn media_video_next(h: Pointer<Byte>, out: Pointer<Byte>, cap: Int): Int as mediaVideoNext,
+    fn media_video_seek(h: Pointer<Byte>, ms: Int): Int as mediaVideoSeek,
+    fn media_video_pending(h: Pointer<Byte>): Int as mediaVideoPending,
+    fn media_camera_open(device: Pointer<Byte>, len: Int, w: Int, h: Int): Pointer<Byte> as mediaCameraOpen,
+    fn media_camera_close(h: Pointer<Byte>) as mediaCameraClose,
+    fn media_camera_info(h: Pointer<Byte>, lane: Int): Int as mediaCameraInfo,
+    fn media_camera_next(h: Pointer<Byte>, out: Pointer<Byte>, cap: Int): Int as mediaCameraNext,
+    fn media_camera_pending(h: Pointer<Byte>): Int as mediaCameraPending,
+    fn media_pick_file(title: Pointer<Byte>, len: Int, filters: Pointer<Byte>, filtersLen: Int, out: Pointer<Byte>, cap: Int): Int as mediaPickFile,
+    fn media_pick_files(title: Pointer<Byte>, len: Int, filters: Pointer<Byte>, filtersLen: Int, out: Pointer<Byte>, cap: Int): Int as mediaPickFiles,
+} from native "media_cabi"
+
+const FRAME_HEADER: Int = 24
+
+/** Audio states reported by {@link AudioPlayer.state}. */
+pub enum AudioState {
+    stopped,
+    playing,
+    paused,
+    ended,
+}
+
+pub fn abiVersion(): Int {
+    let v = 0
+    unsafe {
+        v = mediaAbiVersion()
+    }
+    return v
+}
+
+fn stateOf(v: Int): AudioState {
+    if v == 1 {
+        return AudioState.playing
+    }
+    if v == 2 {
+        return AudioState.paused
+    }
+    if v == 3 {
+        return AudioState.ended
+    }
+    return AudioState.stopped
+}
+
+/** A decoded audio stream with a bounded playback queue. */
+pub class AudioPlayer {
+    let addr: Int
+    let durationMsV: Int
+    let channelCountV: Int
+    let sampleRateV: Int
+
+    init(addr: Int, durationMs: Int, channels: Int, rate: Int) {
+        this.addr = addr
+        this.durationMsV = durationMs
+        this.channelCountV = channels
+        this.sampleRateV = rate
+    }
+
+    static fn open(path: String): AudioPlayer? {
+        if path == "" {
+            return null
+        }
+        let bytes = ByteBuffer.fromString(path)
+        let addr = 0
+        unsafe {
+            let h = mediaAudioOpen(Pointer.fromAddress<Byte>(bytes.address()), bytes.length())
+            addr = mediaHandleAddress(h)
+        }
+        if addr == 0 {
+            return null
+        }
+        let duration = 0
+        let channels = 0
+        let rate = 0
+        unsafe {
+            duration = mediaAudioDuration(Pointer.fromAddress<Byte>(addr))
+            channels = mediaAudioChannels(Pointer.fromAddress<Byte>(addr))
+            rate = mediaAudioRate(Pointer.fromAddress<Byte>(addr))
+        }
+        return new AudioPlayer(addr, duration, channels, rate)
+    }
+
+    pub fn play(): Bool {
+        let rc = 0
+        unsafe {
+            rc = mediaAudioPlay(Pointer.fromAddress<Byte>(this.addr))
+        }
+        return rc == 0
+    }
+
+    pub fn pause(): Bool {
+        let rc = 0
+        unsafe {
+            rc = mediaAudioPause(Pointer.fromAddress<Byte>(this.addr))
+        }
+        return rc == 0
+    }
+
+    pub fn stop(): Bool {
+        let rc = 0
+        unsafe {
+            rc = mediaAudioStop(Pointer.fromAddress<Byte>(this.addr))
+        }
+        return rc == 0
+    }
+
+    /** Seek in milliseconds. Returns the clamped position, or -1. */
+    pub fn seek(ms: Int): Int {
+        let rc = 0
+        unsafe {
+            rc = mediaAudioSeek(Pointer.fromAddress<Byte>(this.addr), ms)
+        }
+        return rc
+    }
+
+    /** Playback position in milliseconds. */
+    pub fn position(): Int {
+        let v = 0
+        unsafe {
+            v = mediaAudioPosition(Pointer.fromAddress<Byte>(this.addr))
+        }
+        return v
+    }
+
+    pub fn duration(): Int {
+        return this.durationMsV
+    }
+
+    pub fn channels(): Int {
+        return this.channelCountV
+    }
+
+    pub fn rate(): Int {
+        return this.sampleRateV
+    }
+
+    /** Volume in percent, clamped to 0..=200 by the decoder. */
+    pub fn volume(percent: Int): Bool {
+        let rc = 0
+        unsafe {
+            rc = mediaAudioVolume(Pointer.fromAddress<Byte>(this.addr), percent)
+        }
+        return rc == 0
+    }
+
+    pub fn state(): AudioState {
+        return stateOf(this.stateId())
+    }
+
+    /** Raw state code: 0 stopped, 1 playing, 2 paused, 3 ended, negative error. */
+    pub fn stateId(): Int {
+        let v = 0
+        unsafe {
+            v = mediaAudioState(Pointer.fromAddress<Byte>(this.addr))
+        }
+        return v
+    }
+
+    /** Samples waiting in the bounded queue. */
+    pub fn pending(): Int {
+        let v = 0
+        unsafe {
+            v = mediaAudioPending(Pointer.fromAddress<Byte>(this.addr))
+        }
+        return v
+    }
+
+    pub fn close() {
+        if this.addr != 0 {
+            unsafe {
+                mediaAudioClose(Pointer.fromAddress<Byte>(this.addr))
+            }
+            this.addr = 0
+        }
+    }
+
+    deinit {
+        this.close()
+    }
+}
+
+fn videoInfo(addr: Int, lane: Int): Int {
+    let v = 0
+    unsafe {
+        v = mediaVideoInfo(Pointer.fromAddress<Byte>(addr), lane)
+    }
+    return v
+}
+
+fn cameraInfo(addr: Int, lane: Int): Int {
+    let v = 0
+    unsafe {
+        v = mediaCameraInfo(Pointer.fromAddress<Byte>(addr), lane)
+    }
+    return v
+}
+
+/** A decoded video stream. Frames are RGBA and fit the `Image` view directly. */
+pub class VideoPlayer {
+    let addr: Int
+    let widthV: Int
+    let heightV: Int
+    let durationMsV: Int
+    let fpsMilliV: Int
+    let hasAudioV: Bool
+    let frame: ByteBuffer
+
+    init(addr: Int, w: Int, h: Int, durationMs: Int, fpsMilli: Int, hasAudio: Bool) {
+        this.addr = addr
+        this.widthV = w
+        this.heightV = h
+        this.durationMsV = durationMs
+        this.fpsMilliV = fpsMilli
+        this.hasAudioV = hasAudio
+        this.frame = ByteBuffer.allocate(FRAME_HEADER + w * h * 4)
+    }
+
+    static fn open(path: String): VideoPlayer? {
+        if path == "" {
+            return null
+        }
+        let bytes = ByteBuffer.fromString(path)
+        let addr = 0
+        unsafe {
+            let h = mediaVideoOpen(Pointer.fromAddress<Byte>(bytes.address()), bytes.length())
+            addr = mediaHandleAddress(h)
+        }
+        if addr == 0 {
+            return null
+        }
+        let w = videoInfo(addr, 0)
+        let h = videoInfo(addr, 1)
+        if w <= 0 || h <= 0 {
+            unsafe {
+                mediaVideoClose(Pointer.fromAddress<Byte>(addr))
+            }
+            return null
+        }
+        let duration = videoInfo(addr, 2)
+        let fps = videoInfo(addr, 3)
+        let hasAudio = videoInfo(addr, 4) != 0
+        return new VideoPlayer(addr, w, h, duration, fps, hasAudio)
+    }
+
+    pub fn width(): Int {
+        return this.widthV
+    }
+
+    pub fn height(): Int {
+        return this.heightV
+    }
+
+    pub fn duration(): Int {
+        return this.durationMsV
+    }
+
+    /** Frames per second times 1000, as reported by the container. */
+    pub fn fpsMilli(): Int {
+        return this.fpsMilliV
+    }
+
+    pub fn hasAudio(): Bool {
+        return this.hasAudioV
+    }
+
+    /** Pop the next decoded frame, or null when none is ready yet. */
+    pub fn next(): ByteBuffer? {
+        let rc = 0
+        unsafe {
+            rc = mediaVideoNext(
+                Pointer.fromAddress<Byte>(this.addr),
+                Pointer.fromAddress<Byte>(this.frame.address()),
+                this.frame.length(),)
+        }
+        if rc <= 0 {
+            return null
+        }
+        return this.frame.slice(0, rc)
+    }
+
+    pub fn seek(ms: Int): Bool {
+        let rc = 0
+        unsafe {
+            rc = mediaVideoSeek(Pointer.fromAddress<Byte>(this.addr), ms)
+        }
+        return rc == 0
+    }
+
+    pub fn pending(): Int {
+        let v = 0
+        unsafe {
+            v = mediaVideoPending(Pointer.fromAddress<Byte>(this.addr))
+        }
+        return v
+    }
+
+    pub fn close() {
+        if this.addr != 0 {
+            unsafe {
+                mediaVideoClose(Pointer.fromAddress<Byte>(this.addr))
+            }
+            this.addr = 0
+        }
+    }
+
+    deinit {
+        this.close()
+    }
+}
+
+/**
+ * A camera stream. `RNX_CAMERA=stub` produces synthetic frames, so the same
+ * API works in headless tests and on a machine without a capture device.
+ */
+pub class CameraStream {
+    let addr: Int
+    let widthV: Int
+    let heightV: Int
+    let fpsMilliV: Int
+    let frame: ByteBuffer
+
+    init(addr: Int, w: Int, h: Int, fpsMilli: Int) {
+        this.addr = addr
+        this.widthV = w
+        this.heightV = h
+        this.fpsMilliV = fpsMilli
+        this.frame = ByteBuffer.allocate(FRAME_HEADER + w * h * 4)
+    }
+
+    static fn open(device: String, width: Int, height: Int): CameraStream? {
+        let bytes = ByteBuffer.fromString(device)
+        let addr = 0
+        unsafe {
+            let h = mediaCameraOpen(
+                Pointer.fromAddress<Byte>(bytes.address()),
+                bytes.length(),
+                width,
+                height,)
+            addr = mediaHandleAddress(h)
+        }
+        if addr == 0 {
+            return null
+        }
+        let w = cameraInfo(addr, 0)
+        let h = cameraInfo(addr, 1)
+        if w <= 0 || h <= 0 {
+            unsafe {
+                mediaCameraClose(Pointer.fromAddress<Byte>(addr))
+            }
+            return null
+        }
+        let fps = cameraInfo(addr, 2)
+        return new CameraStream(addr, w, h, fps)
+    }
+
+    /** Open the default device, or the stub selected by `RNX_CAMERA`. */
+    static fn openDefault(width: Int, height: Int): CameraStream? {
+        return CameraStream.open("", width, height)
+    }
+
+    pub fn width(): Int {
+        return this.widthV
+    }
+
+    pub fn height(): Int {
+        return this.heightV
+    }
+
+    pub fn fpsMilli(): Int {
+        return this.fpsMilliV
+    }
+
+    /** Frames produced since the stream opened. */
+    pub fn frames(): Int {
+        return cameraInfo(this.addr, 3)
+    }
+
+    pub fn next(): ByteBuffer? {
+        let rc = 0
+        unsafe {
+            rc = mediaCameraNext(
+                Pointer.fromAddress<Byte>(this.addr),
+                Pointer.fromAddress<Byte>(this.frame.address()),
+                this.frame.length(),)
+        }
+        if rc <= 0 {
+            return null
+        }
+        return this.frame.slice(0, rc)
+    }
+
+    pub fn pending(): Int {
+        let v = 0
+        unsafe {
+            v = mediaCameraPending(Pointer.fromAddress<Byte>(this.addr))
+        }
+        return v
+    }
+
+    pub fn close() {
+        if this.addr != 0 {
+            unsafe {
+                mediaCameraClose(Pointer.fromAddress<Byte>(this.addr))
+            }
+            this.addr = 0
+        }
+    }
+
+    deinit {
+        this.close()
+    }
+}
+
+/** Native file dialogs. Headless runs read `RNX_PICK_FILE` instead. */
+pub class FilePicker {
+    static fn allow(filters: String, path: String): Bool {
+        if filters == "" {
+            return true
+        }
+        let lower = path.toLowerCase()
+        let parts = filters.split(",")
+        let i = 0
+        while i < parts.length() {
+            let ext = parts[i].trim().toLowerCase()
+            if ext != "" && lower.endsWith("." + ext) {
+                return true
+            }
+            i += 1
+        }
+        return false
+    }
+
+    static fn pickFile(title: String, filters: String = ""): String? {
+        let t = ByteBuffer.fromString(title)
+        let f = ByteBuffer.fromString(filters)
+        let out: ByteBuffer = ByteBuffer.allocate(8192)
+        let rc = 0
+        unsafe {
+            rc = mediaPickFile(
+                Pointer.fromAddress<Byte>(t.address()),
+                t.length(),
+                Pointer.fromAddress<Byte>(f.address()),
+                f.length(),
+                Pointer.fromAddress<Byte>(out.address()),
+                out.length(),)
+        }
+        if rc <= 0 {
+            return null
+        }
+        let path = out.readString(0, rc)
+        if !FilePicker.allow(filters, path) {
+            return null
+        }
+        return path
+    }
+
+    static fn pickFiles(title: String, filters: String = ""): Array<String> {
+        let t = ByteBuffer.fromString(title)
+        let f = ByteBuffer.fromString(filters)
+        let out: ByteBuffer = ByteBuffer.allocate(65536)
+        let rc = 0
+        unsafe {
+            rc = mediaPickFiles(
+                Pointer.fromAddress<Byte>(t.address()),
+                t.length(),
+                Pointer.fromAddress<Byte>(f.address()),
+                f.length(),
+                Pointer.fromAddress<Byte>(out.address()),
+                out.length(),)
+        }
+        let paths: Array<String> = []
+        if rc <= 0 {
+            return paths
+        }
+        let raw = out.readString(0, rc)
+        let lines = raw.split("\n")
+        let i = 0
+        while i < lines.length() {
+            let line = lines[i].trim()
+            if line != "" && FilePicker.allow(filters, line) {
+                paths.push(line)
+            }
+            i += 1
+        }
+        return paths
+    }
+}

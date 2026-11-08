@@ -249,6 +249,8 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::W201 => "correct the spelling or remove the entry",
         Code::W202 => "remove the `unsafe` block or move a foreign call into it",
         Code::W204 => "replace `pub`/`public` with `export`",
+        Code::W205 => "declare entries.cabi and move the surface there",
+        Code::W206 => "declare entries.cabi to pin the C surface",
         Code::W108 => "make one side `GenRef` or add `#[Allow(CyclicReference)]`",
         Code::W109 => "set the field to `null` in `deinit` or a `clear*`/`close*`/`reset*` method",
     };
@@ -543,11 +545,38 @@ pub fn load_program_cfg(
     Ok(FileProgram { lir: lowered, warnings, perf_diags, profiler, debug, native_libs })
 }
 
+fn legacy_surface_warnings<'a>(
+    has_cabi: bool,
+    has_lib: bool,
+    names: impl Iterator<Item = &'a str>,
+) -> Vec<diagnostics::Diagnostic> {
+    if has_cabi {
+        return Vec::new();
+    }
+    if has_lib {
+        return names
+            .map(|name| {
+                diagnostics::Diagnostic::new(
+                    diagnostics::Code::W205,
+                    format!(
+                        "export fn `{name}` is part of the legacy entries.lib surface; declare entries.cabi and write the surface explicitly"
+                    ),
+                )
+            })
+            .collect();
+    }
+    vec![diagnostics::Diagnostic::new(
+        diagnostics::Code::W206,
+        "no entries.cabi or entries.lib: emitting the main entry's export fn set; declare entries.cabi to fail fast",
+    )]
+}
+
 pub struct LibBuild {
     pub object: Vec<u8>,
     pub header: String,
     pub package: String,
     pub exports: Vec<frontend::header::ExportedFn>,
+    pub warnings: Vec<diagnostics::Diagnostic>,
 }
 
 pub fn sanitize_lib_name(name: &str) -> String {
@@ -766,7 +795,27 @@ pub fn build_lib_files_cfg(
     let mut profiler = cfg.profiler();
     profiler.start("lex_parse");
     let root = std::path::Path::new(path);
-    let surface = cabi_surface_for(root);
+    let project = frontend::project::find_project_root(root).and_then(|dir| {
+        frontend::project::ProjectConfig::load_from_dir(&dir)
+            .ok()
+            .flatten()
+            .map(|cfg| (dir, cfg))
+    });
+    let mut cabi = None;
+    let mut lib_entry = None;
+    let mut main_entry = None;
+    if let Some((dir, cfg)) = &project {
+        cabi = cfg.cabi_path(dir).filter(|p| p.is_file());
+        lib_entry = cfg.entries.lib.as_ref().map(|l| dir.join(l));
+        main_entry = Some(cfg.main_path(dir));
+    }
+    let surface = cabi.clone().or_else(|| {
+        if lib_entry.is_none() {
+            main_entry.clone()
+        } else {
+            None
+        }
+    });
     let extra: Vec<std::path::PathBuf> = surface.iter().cloned().collect();
     let graph =
         frontend::modules::ModuleGraph::build_collecting_extra_parallel(root, &extra, cfg.jobs);
@@ -849,6 +898,11 @@ pub fn build_lib_files_cfg(
         Ok(e) => e,
         Err(e) => return Err(vec![e]),
     };
+    let warnings = legacy_surface_warnings(
+        cabi.is_some(),
+        lib_entry.is_some(),
+        exports.iter().map(|e| e.name.as_str()),
+    );
     profiler.start("lower");
     let lowered = match lir::lower::lower(&module) {
         Ok(l) => l,
@@ -893,7 +947,7 @@ pub fn build_lib_files_cfg(
     let object = object?;
     profiler.finish();
     let header = frontend::header::generate_c_header_prefixed(&package, &exports, lib_prefix);
-    Ok(LibBuild { object, header, package, exports })
+    Ok(LibBuild { object, header, package, exports, warnings })
 }
 
 pub struct DocTargets {
@@ -1347,7 +1401,7 @@ pub fn run_files_cfg(
                     }
                 }
             };
-            let mut jit = match cranelift::jit::Jit::compile_with_timings(&prog.lir) {
+            let mut jit = match cranelift::jit::Jit::compile_with_timings_jobs(&prog.lir, cfg.jobs) {
                 Ok((j, t)) => {
                     record_codegen_subs(&mut prog.profiler, &t);
                     j
@@ -2303,7 +2357,7 @@ pub fn run_test_harness_cfg(
             outcome
         }
         TestBackend::Cranelift => {
-            let mut jit = match cranelift::jit::Jit::compile_with_timings(&lowered) {
+            let mut jit = match cranelift::jit::Jit::compile_with_timings_jobs(&lowered, cfg.jobs) {
                 Ok((j, t)) => {
                     record_codegen_subs(profiler, &t);
                     j
@@ -3044,5 +3098,31 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "target/\n .rnx-cache/\n.rnx-cache/\n.vendor/\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod legacy_surface_tests {
+    use diagnostics::Code;
+
+    #[test]
+    fn cabi_silences_legacy_warnings() {
+        let warnings = super::legacy_surface_warnings(true, true, ["a"].into_iter());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn lib_alias_warns_per_symbol() {
+        let warnings = super::legacy_surface_warnings(false, true, ["add", "sub"].into_iter());
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings.iter().all(|w| w.code == Code::W205));
+        assert!(warnings[0].message.contains("`add`"));
+    }
+
+    #[test]
+    fn missing_surface_warns_once() {
+        let warnings = super::legacy_surface_warnings(false, false, ["add"].into_iter());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, Code::W206);
     }
 }

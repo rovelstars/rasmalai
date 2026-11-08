@@ -409,6 +409,32 @@ impl<'a> Machine<'a> {
     }
 
 
+    fn copy_heap(&mut self, fr: &mut Frame, dst: Local, src: Local) -> Result<(), ExecError> {
+        // A copy moves ownership from the source to the destination. When the
+        // source is unowned (a borrowed parameter or alias), the destination
+        // takes its own reference, mirroring the native backends. Without
+        // that retain, an explicit release of the copy frees memory the copy
+        // does not own.
+        if dst == src {
+            return Ok(());
+        }
+        let alias = heap_alias(&fr.locals[dst as usize], &fr.locals[src as usize]);
+        if fr.owned.contains(&dst) && !alias {
+            self.drop_local(fr, dst)?;
+        }
+        let borrowed = !fr.owned.contains(&src);
+        let v = fr.locals[src as usize].clone();
+        fr.locals[dst as usize] = v;
+        fr.owned.remove(&src);
+        fr.ever_owned.remove(&src);
+        if borrowed {
+            let v = fr.locals[dst as usize].clone();
+            fr.locals[dst as usize] = self.shared(v);
+        }
+        self.own(fr, dst);
+        Ok(())
+    }
+
     fn drop_local(&mut self, fr: &mut Frame, l: Local) -> Result<(), ExecError> {
         fr.owned.remove(&l);
         fr.ever_owned.remove(&l);

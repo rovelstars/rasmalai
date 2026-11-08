@@ -1,10 +1,80 @@
 use super::*;
+use cranelift_codegen::settings::Configurable;
+
+const LARGE_FUNCTION_INSTRS: usize = 16 * 1024;
+
+pub(super) fn default_codegen_jobs() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+// Backtracking regalloc is superlinear on generated giants; single-pass keeps
+// JIT compile time bounded for functions above LARGE_FUNCTION_INSTRS.
+fn fast_regalloc_isa() -> Option<cranelift_codegen::isa::OwnedTargetIsa> {
+    let mut flags = settings::builder();
+    for (name, value) in SHARED_FLAGS {
+        flags.set(name, value).ok()?;
+    }
+    flags.set("use_colocated_libcalls", "false").ok()?;
+    flags.set("is_pic", "false").ok()?;
+    flags.set("regalloc_algorithm", "single_pass").ok()?;
+    cranelift_native::builder()
+        .ok()?
+        .finish(settings::Flags::new(flags))
+        .ok()
+}
+
+struct CompiledFn {
+    id: FuncId,
+    alignment: u64,
+    bytes: Vec<u8>,
+    relocs: Vec<ModuleReloc>,
+    size: usize,
+}
+
+fn compile_context(
+    name: &str,
+    id: FuncId,
+    mut codegen_ctx: Context,
+    isa: &dyn cranelift_codegen::isa::TargetIsa,
+) -> Result<CompiledFn, Diagnostic> {
+    let (alignment, bytes, size) = {
+        let compiled = codegen_ctx
+            .compile(isa, &mut ControlPlane::default())
+            .map_err(|e| Diagnostic::new(Code::E108, format!("define {name}: {e:?}")))?;
+        (
+            compiled.buffer.alignment as u64,
+            compiled.code_buffer().to_vec(),
+            compiled.code_info().total_size as usize,
+        )
+    };
+    let relocs = codegen_ctx
+        .compiled_code()
+        .map(|compiled| {
+            compiled
+                .buffer
+                .relocs()
+                .iter()
+                .map(|r| ModuleReloc::from_mach_reloc(r, &codegen_ctx.func, id))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(CompiledFn { id, alignment, bytes, relocs, size })
+}
 
 impl Jit {
     pub(super) fn compile_inner_timed(
         lir: &LirModule,
         hot: bool,
         spare: usize,
+    ) -> Result<(Jit, CodegenTimings), Diagnostic> {
+        Self::compile_inner_timed_jobs(lir, hot, spare, default_codegen_jobs())
+    }
+
+    pub(super) fn compile_inner_timed_jobs(
+        lir: &LirModule,
+        hot: bool,
+        spare: usize,
+        jobs: usize,
     ) -> Result<(Jit, CodegenTimings), Diagnostic> {
         use std::time::Instant;
         let mut timings = CodegenTimings::default();
@@ -17,7 +87,7 @@ impl Jit {
         step = Instant::now();
         timings.fn_count = lir.functions.len();
         let mut ctx = FunctionBuilderContext::new();
-        let (slots, slot_names, table, sizes) = Self::define_functions(&mut module, lir, &ids, &sigs, &foreign_ids, &rt, &bytes_fns, &statics, &mut ctx, hot, spare, &mut timings)?;
+        let (slots, slot_names, table, sizes) = Self::define_functions(&mut module, lir, &ids, &sigs, &foreign_ids, &rt, &bytes_fns, &statics, &mut ctx, hot, spare, jobs, true, &mut timings)?;
         timings.define = step.elapsed();
         step = Instant::now();
         let vec_rets = Self::finalize_module(&mut module, lir, &ids, &table)?;
@@ -1595,7 +1665,7 @@ impl Jit {
         Ok((ids, sigs, rt, bytes_fns, statics, foreign_ids))
     }
 
-    pub(super) fn define_functions<M: Module>(module: &mut M, lir: &LirModule, ids: &BTreeMap<String, FuncId>, sigs: &BTreeMap<FuncId, Signature>, foreign_ids: &BTreeMap<(String, String), FuncId>, rt: &RtIds, bytes_fns: &BTreeMap<String, FuncId>, statics: &BTreeMap<String, DataId>, ctx: &mut FunctionBuilderContext, hot: bool, spare: usize, timings: &mut CodegenTimings) -> Result<(BTreeMap<String, FunctionSlotId>, Vec<String>, Option<Box<[AtomicU64]>>, BTreeMap<String, usize>), Diagnostic> {
+    pub(super) fn define_functions<M: Module>(module: &mut M, lir: &LirModule, ids: &BTreeMap<String, FuncId>, sigs: &BTreeMap<FuncId, Signature>, foreign_ids: &BTreeMap<(String, String), FuncId>, rt: &RtIds, bytes_fns: &BTreeMap<String, FuncId>, statics: &BTreeMap<String, DataId>, ctx: &mut FunctionBuilderContext, hot: bool, spare: usize, jobs: usize, precompiled: bool, timings: &mut CodegenTimings) -> Result<(BTreeMap<String, FunctionSlotId>, Vec<String>, Option<Box<[AtomicU64]>>, BTreeMap<String, usize>), Diagnostic> {
         use std::time::Instant;
         let mut sizes: BTreeMap<String, usize> = BTreeMap::new();
         let (slots, slot_names, table) = if hot {
@@ -1615,7 +1685,8 @@ impl Jit {
         };
         let table_base = table.as_ref().map(|t| t.as_ptr() as usize).unwrap_or(0);
         let hot_ctx = HotCtx { sigs: &sigs, slots: &slots, table_base };
-        for f in &lir.functions {
+        let mut prepared: Vec<(usize, &str, FuncId, Context, bool)> = Vec::with_capacity(lir.functions.len());
+        for (index, f) in lir.functions.iter().enumerate() {
             let id = ids[&f.name];
             let mut codegen_ctx = module.make_context();
             codegen_ctx.func =
@@ -1623,16 +1694,86 @@ impl Jit {
             let inner = Instant::now();
             lower_fn(lir, f, ids, foreign_ids, rt, hot.then_some(hot_ctx), bytes_fns, statics, module, &mut codegen_ctx.func, ctx)?;
             timings.clif_lower += inner.elapsed();
+            let instrs: usize = f.blocks.iter().map(|b| b.instrs.len()).sum();
+            prepared.push((index, f.name.as_str(), id, codegen_ctx, instrs > LARGE_FUNCTION_INSTRS));
+        }
+        if precompiled {
+            let isa = module.isa();
+            let oversized = prepared.iter().any(|p| p.4);
+            let fast_owned = if oversized { fast_regalloc_isa() } else { None };
+            let fast_isa = fast_owned.as_deref().filter(|fast| fast.triple() == isa.triple());
             let inner = Instant::now();
-            module
-                .define_function(id, &mut codegen_ctx)
-                .map_err(|e| Diagnostic::new(Code::E108, format!("define {}: {e}", f.name)))?;
+            let mut compiled: Vec<Option<CompiledFn>> = (0..lir.functions.len()).map(|_| None).collect();
+            // One oversized function dominates backend time; worker threads would
+            // only add allocator arenas without shortening its critical path.
+            let workers = if oversized {
+                1
+            } else {
+                jobs.max(1).min(lir.functions.len().max(1))
+            };
+            if workers <= 1 {
+                for (index, name, id, codegen_ctx, large) in prepared {
+                    let isa = if large { fast_isa.unwrap_or(isa) } else { isa };
+                    compiled[index] = Some(compile_context(name, id, codegen_ctx, isa)?);
+                }
+            } else {
+                let mut buckets: Vec<Vec<(usize, &str, FuncId, Context, bool)>> =
+                    (0..workers).map(|_| Vec::new()).collect();
+                for (position, item) in prepared.into_iter().enumerate() {
+                    buckets[position % workers].push(item);
+                }
+                std::thread::scope(|scope| -> Result<(), Diagnostic> {
+                    let mut handles = Vec::with_capacity(buckets.len());
+                    for (slot, bucket) in buckets.into_iter().enumerate() {
+                        let builder = std::thread::Builder::new()
+                            .name(format!("rnx-jit-{slot}"))
+                            .stack_size(8 * 1024 * 1024);
+                        let handle = builder
+                            .spawn_scoped(scope, move || {
+                                let mut out = Vec::with_capacity(bucket.len());
+                                for (index, name, id, codegen_ctx, large) in bucket {
+                                    let isa = if large { fast_isa.unwrap_or(isa) } else { isa };
+                                    out.push((index, compile_context(name, id, codegen_ctx, isa)?));
+                                }
+                                Ok::<_, Diagnostic>(out)
+                            })
+                            .map_err(|e| Diagnostic::new(Code::E108, format!("jit worker: {e}")))?;
+                        handles.push(handle);
+                    }
+                    for handle in handles {
+                        let out = handle
+                            .join()
+                            .map_err(|_| Diagnostic::new(Code::E108, "jit worker panicked"))??;
+                        for (index, code) in out {
+                            compiled[index] = Some(code);
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
             timings.clif_backend += inner.elapsed();
-            let size = codegen_ctx
-                .compiled_code()
-                .map(|c| c.code_info().total_size as usize)
-                .unwrap_or(0);
-            sizes.insert(f.name.clone(), size);
+            for (f, code) in lir.functions.iter().zip(compiled) {
+                let code = code.ok_or_else(|| {
+                    Diagnostic::new(Code::E108, format!("define {}: missing compiled body", f.name))
+                })?;
+                module
+                    .define_function_bytes(code.id, code.alignment, &code.bytes, &code.relocs)
+                    .map_err(|e| Diagnostic::new(Code::E108, format!("define {}: {e}", f.name)))?;
+                sizes.insert(f.name.clone(), code.size);
+            }
+        } else {
+            for (_, name, id, mut codegen_ctx, _) in prepared {
+                let inner = Instant::now();
+                module
+                    .define_function(id, &mut codegen_ctx)
+                    .map_err(|e| Diagnostic::new(Code::E108, format!("define {name}: {e}")))?;
+                timings.clif_backend += inner.elapsed();
+                let size = codegen_ctx
+                    .compiled_code()
+                    .map(|c| c.code_info().total_size as usize)
+                    .unwrap_or(0);
+                sizes.insert(name.to_string(), size);
+            }
         }
         Ok((slots, slot_names, table, sizes))
     }
@@ -1752,12 +1893,12 @@ pub(super) fn check_supported(lir: &LirModule, f: &LirFunction) -> Result<(), Di
                     }
                 }
                 Instr::Retain { obj , ..} => {
-                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_))) {
+                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_)) | Some(LirType::Closure)) {
                         return Err(bad("retain of non-object"));
                     }
                 }
                 Instr::Release { obj , ..} => {
-                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_))) {
+                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_)) | Some(LirType::Closure)) {
                         return Err(bad("release of non-object"));
                     }
                 }
@@ -2221,7 +2362,7 @@ pub(super) fn lower_fn<M: Module>(
         defer_base,
         dom: lir::licm::compute_dominators(f),
         cur_block: 0,
-        last_write: BTreeMap::new(),
+        writes: BTreeMap::new(),
     };
     for b in &f.blocks {
         lir::instr::walk_instrs(&b.instrs, &mut |ins| {

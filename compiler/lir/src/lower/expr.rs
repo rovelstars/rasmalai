@@ -66,10 +66,28 @@ impl<'a> Builder<'a> {
             A::Expr::Record(fields)  => self.lower_expr_record(fields),
             A::Expr::MapLiteral(entries)  => self.lower_map_literal(entries, span),
             A::Expr::Await(_)  => self.lower_expr_await(span),
-            A::Expr::Propagate(inner)  => self.lower_propagate(inner, span),
+            A::Expr::Propagate(inner)  => {
+                if self.collect_sink.is_some() {
+                    return self.fail(self.err(
+                        Code::E108,
+                        "`?` cannot appear in a collection block; hoist the call above the block",
+                        span,
+                    ));
+                }
+                self.lower_propagate(inner, span)
+            }
             A::Expr::Coalesce { lhs, rhs }  => self.lower_coalesce(lhs, rhs, span),
             A::Expr::OptChain { base, field }  => self.lower_opt_access(base, field, &[], span),
-            A::Expr::OptCall { base, field, args }  => self.lower_opt_access(base, field, args, span),
+            A::Expr::OptCall { base, field, args }  => {
+                if self.collect_sink.is_some() && self.method_may_throw(base, field) {
+                    return self.fail(self.err(
+                        Code::E108,
+                        "a throwing call cannot appear in a collection block; hoist it above the block",
+                        span,
+                    ));
+                }
+                self.lower_opt_access(base, field, args, span)
+            }
             A::Expr::Switch { scrutinee, cases, default }  => self.lower_expr_switch(scrutinee, cases, default, span),
             A::Expr::Tuple(items)  => self.lower_expr_tuple(items, span),
             A::Expr::TupleGet { base, index }  => self.lower_expr_tuple_get(base, index, span),
@@ -84,8 +102,24 @@ impl<'a> Builder<'a> {
                 type_args,
                 args,
                 trailing,
-            }  => self.lower_expr_call(callee, type_args, args, trailing, span),
+            }  => {
+                if self.collect_sink.is_some() && self.call_throws(callee, span)? {
+                    return self.fail(self.err(
+                        Code::E108,
+                        "a throwing call cannot appear in a collection block; hoist it above the block",
+                        span,
+                    ));
+                }
+                self.lower_expr_call(callee, type_args, args, trailing, span)
+            }
             A::Expr::New { target, type_args, args }  => {
+                if self.collect_sink.is_some() && self.new_throws(target) {
+                    return self.fail(self.err(
+                        Code::E108,
+                        "a throwing constructor cannot appear in a collection block; hoist it above the block",
+                        span,
+                    ));
+                }
                 let (obj, s) = self.lower_new(target, args, span)?;
                 if !type_args.is_empty() {
                     let targs: Vec<LirType> = type_args.iter().map(|t| self.resolve_here(t)).collect();
@@ -119,7 +153,11 @@ impl<'a> Builder<'a> {
                 ret,
                 throws,
                 body,
-            }  => self.lower_expr_closure(decay, is_async, params, ret, throws, body, span),
+            }  => {
+                let out = self.lower_expr_closure(decay, is_async, params, ret, throws, body, span)?;
+                self.closure_throws.insert(out.0, *throws);
+                Ok(out)
+            }
         }
     }
 
@@ -590,17 +628,248 @@ impl<'a> Builder<'a> {
     }
 
     pub(super) fn lower_expr_call(&mut self, callee: &Box<A::Spanned<A::Expr>>, type_args: &Vec<A::Type>, args: &Vec<A::CallArg>, trailing: &Option<A::Block>, span: Span) -> Result<(Local, Simple), Diagnostic> {
-
-        let (res, simple) = self.lower_call(callee, type_args, args, span)?;
         if let Some(block) = trailing {
+            if let Some((params, param, elem, mut all)) = self.collect_target(callee, args, span)? {
+                let (arr, slots) = self.lower_collect_block(block, elem, &param, &params, span)?;
+                for (name, local) in slots {
+                    self.push_block_arg(&mut all, name, local, span);
+                }
+                self.push_block_arg(&mut all, param, arr, span);
+                return self.lower_call(callee, type_args, &all, span);
+            }
+            let (res, simple) = self.lower_call(callee, type_args, args, span)?;
             self.check_child_receiver(res, span)?;
             let saved = self.child_sink.replace(res);
             let lowered = self.lower_block(block);
             self.child_sink = saved;
             lowered?;
+            return Ok((res, simple));
         }
-        Ok((res, simple))
+        self.lower_call(callee, type_args, args, span)
+    }
 
+    fn push_block_arg(&mut self, all: &mut Vec<A::CallArg>, name: String, local: Local, span: Span) {
+        let tmp = format!("$block{}", self.synth_seq);
+        self.synth_seq += 1;
+        let ty = self.func.locals.get(local as usize).cloned().unwrap_or(LirType::Any);
+        self.def(tmp.clone(), local, Simple::Other, ty);
+        all.push(A::CallArg {
+            name: Some(name),
+            value: A::Spanned {
+                node: A::Expr::Ident(tmp),
+                span,
+            },
+        });
+    }
+
+    fn call_throws(&mut self, callee: &A::Spanned<A::Expr>, span: Span) -> Result<bool, Diagnostic> {
+        let _ = span;
+        match &callee.node {
+            A::Expr::Ident(n) => {
+                if let Some((l, _, _)) = self.lookup(n) {
+                    let ty = self.func.locals.get(l as usize).cloned().unwrap_or(LirType::Any);
+                    if matches!(ty, LirType::Closure) {
+                        return Ok(self.closure_throws.get(&l).copied().unwrap_or(true));
+                    }
+                    return Ok(false);
+                }
+                let q = if self.module.class_index.contains_key(n) {
+                    format!("{n}.init")
+                } else {
+                    n.clone()
+                };
+                Ok(self.module.fn_index.get(&q).map(|id| self.module.functions[*id].throws).unwrap_or(false))
+            }
+            A::Expr::Member { base, field } => {
+                if matches!(base.node, A::Expr::Super) {
+                    return Ok(true);
+                }
+                if let A::Expr::Ident(root) = &base.node {
+                    let q = format!("{root}.{field}");
+                    if let Some(id) = self.module.fn_index.get(&q) {
+                        return Ok(self.module.functions[*id].throws);
+                    }
+                }
+                if let Some(class) = self.receiver_class(base) {
+                    if let Some(q) = self.class_method_q(&class, field) {
+                        if let Some(id) = self.module.fn_index.get(&q) {
+                            return Ok(self.module.functions[*id].throws);
+                        }
+                    }
+                }
+                if let Some(ty) = self.base_type(base) {
+                    if let Some(eid) = self.find_extension(&ty, field) {
+                        return Ok(self.module.functions[eid].throws);
+                    }
+                }
+                Ok(self.method_may_throw(base, field))
+            }
+            A::Expr::New { target, .. } => Ok(self.new_throws(target)),
+            A::Expr::Closure { throws, .. } => Ok(*throws),
+            _ => Ok(false),
+        }
+    }
+
+    fn new_throws(&self, target: &str) -> bool {
+        self.module
+            .fn_index
+            .get(&format!("{target}.init"))
+            .map(|id| self.module.functions[*id].throws)
+            .unwrap_or(false)
+    }
+
+    fn method_may_throw(&mut self, base: &A::Spanned<A::Expr>, field: &str) -> bool {
+        if let Some(class) = self.receiver_class(base) {
+            if let Some(q) = self.class_method_q(&class, field) {
+                if let Some(id) = self.module.fn_index.get(&q) {
+                    return self.module.functions[*id].throws;
+                }
+            }
+            let short = class.rsplit('.').next().unwrap_or(&class);
+            if let Some(ii) = self
+                .module
+                .interface_index
+                .get(&class)
+                .or_else(|| self.module.interface_index.get(short))
+                .copied()
+            {
+                let desc = &self.module.interfaces[ii];
+                if let Some(mi) = desc.method_index.get(field) {
+                    return desc.methods[*mi].throws;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    fn receiver_class(&mut self, base: &A::Spanned<A::Expr>) -> Option<String> {
+        let local = match &base.node {
+            A::Expr::Ident(n) => match self.lookup(n) {
+                Some((l, _, _)) => l,
+                None => return None,
+            },
+            A::Expr::This => self.self_local?,
+            _ => return None,
+        };
+        match self.func.locals.get(local as usize).cloned() {
+            Some(LirType::Obj(name)) => Some(name),
+            _ => None,
+        }
+    }
+
+    pub(super) fn class_method_q(&self, class: &str, field: &str) -> Option<String> {
+        let full = format!("{class}.{field}");
+        if self.module.fn_index.contains_key(&full) {
+            return Some(full);
+        }
+        let short = short_name(class);
+        let q = format!("{short}.{field}");
+        self.module.fn_index.contains_key(&q).then_some(q)
+    }
+
+    pub(super) fn base_type(&self, base: &A::Spanned<A::Expr>) -> Option<LirType> {
+        match &base.node {
+            A::Expr::Ident(n) => self
+                .lookup(n)
+                .and_then(|(l, _, _)| self.func.locals.get(l as usize).cloned()),
+            A::Expr::This => self
+                .self_local
+                .and_then(|l| self.func.locals.get(l as usize).cloned()),
+            A::Expr::Interp(_) => Some(LirType::Str),
+            A::Expr::Int(_) => Some(LirType::I64),
+            A::Expr::Bool(_) => Some(LirType::Bool),
+            A::Expr::Float(_) => Some(LirType::F64(FloatKind::Strict)),
+            A::Expr::Array(_) => Some(LirType::Array(Box::new(LirType::Any))),
+            _ => None,
+        }
+    }
+
+    fn collect_target(
+        &mut self,
+        callee: &A::Spanned<A::Expr>,
+        args: &[A::CallArg],
+        span: Span,
+    ) -> Result<Option<(BTreeMap<String, LirType>, String, LirType, Vec<A::CallArg>)>, Diagnostic> {
+        let q = match &callee.node {
+            A::Expr::Ident(n) => match self.module.fn_index.get(n) {
+                Some(id) => self.module.functions[*id].name.clone(),
+                None => return Ok(None),
+            },
+            A::Expr::Member { base, field } => {
+                let direct = if let A::Expr::Ident(root) = &base.node {
+                    let q = format!("{root}.{field}");
+                    self.module.fn_index.contains_key(&q).then_some(q)
+                } else {
+                    None
+                };
+                match direct {
+                    Some(q) => q,
+                    None => match self.receiver_class(base) {
+                        Some(class) => match self.class_method_q(&class, field) {
+                            Some(q) => q,
+                            None => return Ok(None),
+                        },
+                        None => return Ok(None),
+                    },
+                }
+            }
+            _ => return Ok(None),
+        };
+        let Some(ptys) = self.param_tys.get(&q) else {
+            return Ok(None);
+        };
+        let mut arrays: BTreeMap<String, LirType> = BTreeMap::new();
+        for (name, ty) in ptys {
+            if let LirType::Array(inner) = self.resolve_here(ty) {
+                arrays.insert(name.clone(), (*inner).clone());
+            }
+        }
+        let Some((pname, _)) = ptys.last() else {
+            return Ok(None);
+        };
+        let Some(final_elem) = arrays.get(pname).cloned() else {
+            return Ok(None);
+        };
+        if self.generic_fns.contains_key(&q) {
+            return self.fail(self.err(
+                Code::E108,
+                "collection blocks do not support generic array parameters yet",
+                span,
+            ));
+        }
+        if args.iter().any(|a| a.name.as_deref() == Some(pname.as_str())) {
+            return self.fail(self.err(
+                Code::E108,
+                format!("`{pname}` is already provided; remove it or the trailing block"),
+                span,
+            ));
+        }
+        let mut head = Vec::with_capacity(args.len());
+        let mut positional = 0usize;
+        for a in args {
+            let declared = match &a.name {
+                Some(n) => ptys.iter().find(|(pn, _)| pn == n).map(|(_, t)| t),
+                None => {
+                    let d = ptys.get(positional).map(|(_, t)| t);
+                    positional += 1;
+                    d
+                }
+            };
+            let (v, simple) = self.lower_call_arg(declared, a)?;
+            let ty = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
+            let tmp = format!("$head{}", self.synth_seq);
+            self.synth_seq += 1;
+            self.def(tmp.clone(), v, simple, ty);
+            head.push(A::CallArg {
+                name: a.name.clone(),
+                value: A::Spanned {
+                    node: A::Expr::Ident(tmp),
+                    span: a.value.span,
+                },
+            });
+        }
+        Ok(Some((arrays, pname.clone(), final_elem, head)))
     }
 
     pub(super) fn lower_expr_index(&mut self, base: &Box<A::Spanned<A::Expr>>, index: &Box<A::Spanned<A::Expr>>, span: Span) -> Result<(Local, Simple), Diagnostic> {

@@ -66,6 +66,9 @@ import {
     fn __rnx_bytes_write_u64le(handle: Int, off: Int, val: Int): Void,
     fn __rnx_bytes_write_u8(handle: Int, off: Int, val: Int): Void,
 } from runtime "bytes";
+import {
+    fn __rnx_bytes_free(handle: Int): Void,
+} from runtime "core";
 
 /**
 * Fixed-size raw byte buffer. All offsets and sizes are plain `Int`;
@@ -103,6 +106,10 @@ class ByteBuffer {
     */
     init(handle: Int) {
         this.handle = handle;
+    }
+
+    deinit {
+        __rnx_bytes_free(this.handle);
     }
 
     /**

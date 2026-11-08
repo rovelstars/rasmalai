@@ -51,7 +51,7 @@ impl Lower {
                 .collect::<Vec<_>>();
             let ret = f.ret.as_ref().map(|t| norm(t)).unwrap_or(LirType::Any);
             desc.method_index.insert(f.name.clone(), desc.methods.len());
-            desc.methods.push(IfaceMethod { name: f.name.clone(), params, ret });
+            desc.methods.push(IfaceMethod { name: f.name.clone(), params, ret, throws: f.throws });
         }
         self.out.interface_index.insert(name.to_string(), self.out.interfaces.len());
         self.out.interfaces.push(desc);

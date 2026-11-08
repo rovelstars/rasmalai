@@ -63,6 +63,13 @@ fn build_key(
         owned.push(path.display().to_string().into_bytes());
         owned.push(std::fs::read(path).unwrap_or_default());
     }
+    if let Ok(vendor) = std::env::var("RNX_VENDOR_DIR") {
+        if !vendor.is_empty() {
+            let vendor_root = std::path::Path::new(&vendor);
+            owned.push(vendor.as_bytes().to_vec());
+            owned.push(frontend::cache::hash_src_tree(vendor_root));
+        }
+    }
     owned.push(sysroot::Sysroot::discover(None).identity().into_bytes());
     let host = linker::host_triple().0;
     owned.extend(frontend::cache::toolchain_parts(
@@ -332,6 +339,9 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                         std::process::exit(1);
                     }
                 };
+                for warning in &built.warnings {
+                    eprintln!("{warning}");
+                }
                 if emit_obj {
                     let obj_path = profile_artifact(&root, release, &format!("lib{}.o", built.package));
                     if let Err(e) = std::fs::write(&obj_path, &built.object) {

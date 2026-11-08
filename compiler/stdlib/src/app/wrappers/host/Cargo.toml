@@ -13,7 +13,12 @@ wgpu = { version = "30", default-features = false, features = ["std", "vulkan", 
 pollster = "0.4"
 scene = { path = "../scene" }
 wayland-client = { version = "0.31", features = ["system"] }
-wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 raw-window-handle = "0.6"
+xkbcommon = "0.8"
+libc = "0.2"
+accesskit = "0.21"
+accesskit_unix = "0.17"
+wayland-cursor = "0.31"
 
 [workspace]

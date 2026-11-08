@@ -21,6 +21,15 @@ pub fn check_with_files_and_surface(
     files: &DeclFiles,
     cabi_surface: Option<&Path>,
 ) -> Vec<Diagnostic> {
+    check_with_files_surface_misuse(module, files, cabi_surface, false)
+}
+
+pub fn check_with_files_surface_misuse(
+    module: &Module,
+    files: &DeclFiles,
+    cabi_surface: Option<&Path>,
+    surface_misuse: bool,
+) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for decl in &module.decls {
         if let Decl::Class { name, members, .. } = &decl.node {
@@ -33,7 +42,7 @@ pub fn check_with_files_and_surface(
     check_w108(module, &mut diags, files);
     check_cyclic_defaults(module, &mut diags, files);
     check_scopes(module, &mut diags, files);
-    check_export_cabi(module, &mut diags, files, cabi_surface);
+    check_export_cabi(module, &mut diags, files, cabi_surface, surface_misuse);
     let taint_from = diags.len();
     diags.extend(crate::unsafe_taint::check_module(module));
     for d in &mut diags[taint_from..] {
@@ -809,11 +818,11 @@ fn check_export_cabi(
     diags: &mut Vec<Diagnostic>,
     files: &DeclFiles,
     cabi_surface: Option<&Path>,
+    surface_misuse: bool,
 ) {
     use crate::header::CABI;
     let mut seen = BTreeSet::new();
     let mut surface_fns = 0usize;
-    let mut surface_misuse = false;
     for decl in &module.decls {
         let file = decl_file(files, decl.span);
         let in_surface = match (cabi_surface, file.as_deref()) {
@@ -822,7 +831,6 @@ fn check_export_cabi(
         };
         if let Decl::ExportFrom(_) = &decl.node {
             if in_surface {
-                surface_misuse = true;
                 diags.push(
                     Diagnostic::new(
                         Code::E108,

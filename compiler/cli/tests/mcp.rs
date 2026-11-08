@@ -117,7 +117,7 @@ fn mcp_lists_expected_tools() {
     let mut expected: Vec<String> = [
         "check", "run", "fmt", "explain", "version", "rasmalai_lookup_symbol",
         "inspect_package_capabilities", "eval_code", "hot_reload", "get_diagnostics",
-        "build", "test", "lint", "doc", "doctor", "cache_status", "package_resolve",
+        "build", "test", "lint", "doc", "doctor", "cache_status", "package_resolve", "ui_drive",
     ]
     .iter()
     .map(|n| n.to_string())

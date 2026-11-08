@@ -5,6 +5,10 @@ target/
 **/.rnx-cache/
 *.coredump
 core*
+# Stray `rnx build` output at the repository root
+/main
+# Local example apps live outside the repository
+/examples/
 # ...but not the linker's own `core/` + `target/` module trees (source, not artifacts)
 !compiler/linker/src/core/
 !compiler/linker/src/target/

@@ -3,17 +3,25 @@ use crate::opt::{instr_dst, instr_reads, term_reads};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct DominatorTree {
-    dom: Vec<BTreeSet<BlockId>>,
+    dom: Vec<Vec<u64>>,
+    words: usize,
 }
 
 impl DominatorTree {
     pub fn dominates(&self, a: BlockId, b: BlockId) -> bool {
-        self.dom.get(b).map(|s| s.contains(&a)).unwrap_or(false)
+        match self.dom.get(b) {
+            Some(row) => {
+                let word = a / 64;
+                word < self.words && row[word] & (1u64 << (a % 64)) != 0
+            }
+            None => false,
+        }
     }
 }
 
 pub fn compute_dominators(func: &Function) -> DominatorTree {
     let n = func.blocks.len();
+    let words = (n + 63) / 64;
     let mut preds: Vec<Vec<BlockId>> = vec![Vec::new(); n];
     for (i, block) in func.blocks.iter().enumerate() {
         for t in term_targets(&block.term) {
@@ -22,31 +30,46 @@ pub fn compute_dominators(func: &Function) -> DominatorTree {
             }
         }
     }
-    let all: BTreeSet<BlockId> = (0..n).collect();
-    let mut dom: Vec<BTreeSet<BlockId>> = vec![all; n];
+    let mut dom: Vec<Vec<u64>> = vec![vec![!0u64; words]; n];
     if n > 0 {
-        dom[0] = BTreeSet::from([0]);
+        let mask = if n % 64 != 0 {
+            (1u64 << (n % 64)) - 1
+        } else {
+            !0u64
+        };
+        for row in dom.iter_mut() {
+            row[words - 1] &= mask;
+        }
+        dom[0].fill(0);
+        dom[0][0] = 1;
     }
+    let mut next = vec![0u64; words];
     let mut changed = true;
     while changed {
         changed = false;
         for b in 1..n {
-            let mut next: Option<BTreeSet<BlockId>> = None;
+            let mut first = true;
             for p in &preds[b] {
-                next = Some(match next {
-                    Some(acc) => acc.intersection(&dom[*p]).copied().collect(),
-                    None => dom[*p].clone(),
-                });
+                if first {
+                    next.copy_from_slice(&dom[*p]);
+                    first = false;
+                } else {
+                    for (word, other) in next.iter_mut().zip(&dom[*p]) {
+                        *word &= *other;
+                    }
+                }
             }
-            let mut next = next.unwrap_or_default();
-            next.insert(b);
+            if first {
+                next.fill(0);
+            }
+            next[b / 64] |= 1u64 << (b % 64);
             if next != dom[b] {
-                dom[b] = next;
+                dom[b].copy_from_slice(&next);
                 changed = true;
             }
         }
     }
-    DominatorTree { dom }
+    DominatorTree { dom, words }
 }
 
 fn term_targets(term: &Terminator) -> Vec<BlockId> {
@@ -226,6 +249,13 @@ fn is_invariant(
     match ins {
         Instr::Const { dst, ..} => defs.get(dst).copied().unwrap_or(0) == 1,
         Instr::Copy {  dst, src , ..} => {
+            // A copy that moves a heap reference performs a retain (and may
+            // release the old value), so hoisting it out of a loop changes
+            // retain counts while the balancing release stays behind. Only
+            // pure value copies are loop-invariant.
+            if copy_carries_ownership(func, *dst, *src) {
+                return false;
+            }
             defs.get(dst).copied().unwrap_or(0) <= 1
                 && operands_defined_outside(func, blocks, defs, marked, bi, ii, &[*src])
         }
@@ -241,6 +271,26 @@ fn is_invariant(
         }
         _ => false,
     }
+}
+
+fn copy_carries_ownership(func: &Function, dst: Local, src: Local) -> bool {
+    // Mirrors the backend Copy lowering: a retain (or release of the old
+    // value) happens exactly when either side can hold a heap reference.
+    fn heap(ty: Option<&LirType>) -> bool {
+        matches!(
+            ty,
+            Some(
+                LirType::Obj(_)
+                    | LirType::Str
+                    | LirType::Array(_)
+                    | LirType::Enum(_)
+                    | LirType::Any
+                    | LirType::Error
+                    | LirType::Closure
+            )
+        )
+    }
+    heap(func.locals.get(dst as usize)) || heap(func.locals.get(src as usize))
 }
 
 fn rewrite_target(term: &mut Terminator, from: BlockId, to: BlockId) -> bool {
@@ -457,7 +507,7 @@ mod tests {
                     term: Terminator::BrIf {span: UNKNOWN_SPAN,  cond: 5, then_bb: 2, else_bb: 3 },
                 },
                 Block {
-                    instrs: vec![Instr::Arith {span: UNKNOWN_SPAN, 
+                    instrs: vec![Instr::Arith {span: UNKNOWN_SPAN,
                         op: ArithOp::Add,
                         kind: NumKind::Int,
                         dst: 6,
@@ -499,7 +549,7 @@ mod tests {
     #[test]
     fn keeps_guarded_div_in_loop() {
         let mut f = loop_func();
-        f.blocks[2].instrs.push(Instr::Arith {span: UNKNOWN_SPAN, 
+        f.blocks[2].instrs.push(Instr::Arith {span: UNKNOWN_SPAN,
             op: ArithOp::Div,
             kind: NumKind::Int,
             dst: 7,
@@ -510,5 +560,75 @@ mod tests {
         assert!(f.blocks[2].instrs.iter().any(|i| {
             matches!(i, Instr::Arith {  op: ArithOp::Div , ..})
         }));
+    }
+
+    #[test]
+    fn keeps_heap_copy_in_loop() {
+        // A copy of a heap reference performs a retain, so hoisting it out
+        // of a loop changes retain counts while the balancing release stays
+        // behind (use-after-free / size-mismatch at runtime). Pure value
+        // copies remain hoistable.
+        let mut f = Function {
+            name: "Main".to_string(),
+            params: Vec::new(),
+            sig_params: Vec::new(),
+            ret: LirType::I64,
+            throws: false,
+            is_unsafe: false,
+            method_self: false,
+            is_pub: false,
+            is_closure: false,
+            locals: vec![
+                LirType::I64,
+                LirType::I64,
+                LirType::I64,
+                LirType::Obj("C".to_string()),
+                LirType::Obj("C".to_string()),
+                LirType::I64,
+                LirType::I64,
+            ],
+            blocks: vec![
+                Block {
+                    instrs: vec![
+                        Instr::Const {span: UNKNOWN_SPAN,  dst: 1, lit: Lit::Int(10) },
+                    ],
+                    term: Terminator::Br(1),
+                },
+                Block {
+                    instrs: vec![
+                        Instr::Const {span: UNKNOWN_SPAN,  dst: 2, lit: Lit::Int(0) },
+                    ],
+                    term: Terminator::BrIf {span: UNKNOWN_SPAN,  cond: 2, then_bb: 2, else_bb: 3 },
+                },
+                Block {
+                    instrs: vec![
+                        Instr::Copy {span: UNKNOWN_SPAN,  dst: 3, src: 4 },
+                        Instr::Copy {span: UNKNOWN_SPAN,  dst: 5, src: 1 },
+                        Instr::Arith {span: UNKNOWN_SPAN,
+                            op: ArithOp::Add,
+                            kind: NumKind::Int,
+                            dst: 6,
+                            lhs: 5,
+                            rhs: 1,
+                        },
+                    ],
+                    term: Terminator::Br(1),
+                },
+                Block { instrs: Vec::new(), term: Terminator::Ret(vec![]) },
+            ],
+        };
+        assert!(loop_invariant_code_motion(&mut f));
+        assert!(
+            f.blocks[2].instrs.iter().any(|i| {
+                matches!(i, Instr::Copy { dst: 3, src: 4 , ..})
+            }),
+            "heap copy was hoisted out of the loop"
+        );
+        assert!(
+            !f.blocks[2].instrs.iter().any(|i| {
+                matches!(i, Instr::Copy { dst: 5, ..})
+            }),
+            "pure int copy was not hoisted"
+        );
     }
 }

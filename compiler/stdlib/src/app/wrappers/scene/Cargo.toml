@@ -11,5 +11,8 @@ crate-type = ["rlib"]
 vello = { version = "0.11", default-features = false, features = ["wgpu"] }
 parley = "0.12"
 png = "0.18"
+zune-jpeg = "0.5"
+image-webp = "0.2"
+resvg = { version = "0.49", default-features = false }
 
 [workspace]

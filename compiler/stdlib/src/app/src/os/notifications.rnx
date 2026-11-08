@@ -1,0 +1,63 @@
+//! App-local notifications.
+
+/** One notification. */
+pub class Notice {
+    let id: Int
+    let title: String
+    let body: String
+
+    init(id: Int, title: String, body: String) {
+        this.id = id
+        this.title = title
+        this.body = body
+    }
+}
+
+/** A notification queue for one app. */
+pub class NotificationCenter {
+    let items: Array<Notice> = []
+    let nextId: Int = 1
+
+    pub fn post(title: String, body: String): Int {
+        let id = this.nextId
+        this.nextId += 1
+        this.items.push(new Notice(id, title, body))
+        return id
+    }
+
+    pub fn dismiss(id: Int): Bool {
+        let out: Array<Notice> = []
+        let found = false
+        let i = 0
+        while i < this.items.length() {
+            if this.items[i].id == id {
+                found = true
+            } else {
+                out.push(this.items[i])
+            }
+            i += 1
+        }
+        this.items = out
+        return found
+    }
+
+    pub fn clear() {
+        this.items = []
+    }
+
+    pub fn count(): Int {
+        return this.items.length()
+    }
+
+    pub fn at(i: Int): Notice {
+        return this.items[i]
+    }
+
+    pub fn title(i: Int): String {
+        return this.items[i].title
+    }
+
+    pub fn body(i: Int): String {
+        return this.items[i].body
+    }
+}

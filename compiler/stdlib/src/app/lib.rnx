@@ -10,29 +10,65 @@
 //! frame, damage, or present call reaches app code.
 
 import { ByteBuffer } from "@std/bytes"
-import { Build, Damage, Display, DisplayList, FrameClock, Key, Node, Painter, Role, Shortcuts, TextEngine, TextRow, Theme, Tree, rgba } from "@std/ui"
+import { Map } from "@std/collections"
+import { Build, Camera, Crossfade, Damage, Display, DisplayList, FontFace, FontRegistry, FrameClock, FramePacket, Key, Node, Page, Painter, Presence, Reactive, RichRows, Role, Shortcuts, Text, TextEngine, TextRow, TextRun, TextSpan, Theme, Transition, Tree, View, rgba } from "@std/ui"
 import { Clock } from "@std/time"
+import { Env } from "@std/env"
+import { Thread } from "@std/sync"
+import fs from "@std/fs"
 import {
     fn parley_layout(text: Pointer<Byte>, len: Int, size: Float, maxWidth: Float, maxLines: Int, wrap: Int, ellipsis: Int, out: Pointer<Byte>, cap: Int): Int as parleyLayout,
+    fn parley_layout_styled(text: Pointer<Byte>, len: Int, size: Float, maxWidth: Float, maxLines: Int, wrap: Int, ellipsis: Int, weight: Int, italic: Int, lineHeight: Float, tracking: Float, out: Pointer<Byte>, cap: Int): Int as parleyLayoutStyled,
+    fn parley_layout_rich(text: Pointer<Byte>, len: Int, size: Float, maxWidth: Float, maxLines: Int, wrap: Int, ellipsis: Int, lineHeight: Float, spans: Pointer<Byte>, spanCount: Int, out: Pointer<Byte>, cap: Int): Int as parleyLayoutRich,
     fn parley_grapheme_next(text: Pointer<Byte>, len: Int, at: Int): Int as parleyGraphemeNext,
     fn parley_grapheme_prev(text: Pointer<Byte>, len: Int, at: Int): Int as parleyGraphemePrev,
     fn parley_measure(text: Pointer<Byte>, len: Int, size: Float): Float as parleyMeasure,
+    fn parley_measure_styled(text: Pointer<Byte>, len: Int, size: Float, weight: Int, italic: Int, tracking: Float): Float as parleyMeasureStyled,
 } from native "parley_cabi"
 import {
     fn cpu_abi_version(): Int as cpuAbiVersion,
     fn cpu_render(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as cpuRender,
+    fn cpu_image_pending(): Int as cpuImagePending,
+    fn cpu_wait_images(timeoutMs: Int): Int as cpuWaitImages,
+    fn cpu_register_font(id: Int, name: Pointer<Byte>, nameLen: Int, data: Pointer<Byte>, dataLen: Int): Int as cpuRegisterFont,
 } from native "cpu_cabi"
 import {
+    fn host_a11y(h: Pointer<Byte>, data: Pointer<Byte>, len: Int): Int as hostA11y,
+    fn host_frame_packet(h: Pointer<Byte>, data: Pointer<Byte>, len: Int): Int as hostFramePacket,
+    fn host_open_window(h: Pointer<Byte>, title: Pointer<Byte>, len: Int, w: Int, hgt: Int): Int as hostOpenWindow,
+    fn host_window_count(h: Pointer<Byte>): Int as hostWindowCount,
+    fn host_window_width(h: Pointer<Byte>, id: Int): Int as hostWindowWidth,
+    fn host_window_height(h: Pointer<Byte>, id: Int): Int as hostWindowHeight,
+    fn host_window_generation(h: Pointer<Byte>, id: Int): Int as hostWindowGeneration,
+    fn host_event_window(h: Pointer<Byte>): Int as hostEventWindow,
+    fn host_present_window(h: Pointer<Byte>, id: Int, list: Pointer<Byte>, len: Int, damage: Pointer<Byte>, count: Int): Int as hostPresentWindow,
     fn host_abi_version(): Int as hostAbiVersion,
+    fn host_register_font(id: Int, name: Pointer<Byte>, nameLen: Int, data: Pointer<Byte>, dataLen: Int): Int as hostRegisterFont,
+    fn host_set_cursor(h: Pointer<Byte>, shape: Int): Int as hostSetCursor,
+    fn host_address(h: Pointer<Byte>): Int as hostAddress,
+    fn host_clipboard_get(h: Pointer<Byte>, out: Pointer<Byte>, cap: Int): Int as hostClipboardGet,
+    fn host_clipboard_set(h: Pointer<Byte>, text: Pointer<Byte>, len: Int): Int as hostClipboardSet,
     fn host_close(h: Pointer<Byte>) as hostClose,
     fn host_event_a(h: Pointer<Byte>): Int as hostEventA,
     fn host_generation(h: Pointer<Byte>): Int as hostGeneration,
     fn host_event_b(h: Pointer<Byte>): Int as hostEventB,
+    fn host_event_c(h: Pointer<Byte>): Int as hostEventC,
     fn host_height(h: Pointer<Byte>): Int as hostHeight,
+    fn host_ime_disable(h: Pointer<Byte>) as hostImeDisable,
+    fn host_ime_enable(h: Pointer<Byte>, x: Int, y: Int, w: Int, hgt: Int): Int as hostImeEnable,
+    fn host_pointer_capture(h: Pointer<Byte>, mode: Int): Int as hostPointerCapture,
+    fn host_surface_socket_open(path: Pointer<Byte>, len: Int, id: Int, w: Int, h: Int): Int as hostSurfaceSocketOpen,
+    fn host_surface_socket_commit(h: Pointer<Byte>, list: Pointer<Byte>, len: Int, packet: Pointer<Byte>, packetLen: Int, damage: Pointer<Byte>, count: Int): Int as hostSurfaceSocketCommit,
+    fn host_surface_socket_close(h: Pointer<Byte>) as hostSurfaceSocketClose,
     fn host_open(title: Pointer<Byte>, titleLen: Int, width: Int, height: Int, backend: Int): Pointer<Byte> as hostOpen,
     fn host_present(h: Pointer<Byte>, list: Pointer<Byte>, len: Int, damage: Pointer<Int>, count: Int): Int as hostPresent,
+    fn host_capture(h: Pointer<Byte>, out: Pointer<Byte>, cap: Int): Int as hostCapture,
     fn host_pump_timeout(h: Pointer<Byte>, block: Int): Int as hostPumpTimeout,
+    fn host_pump_for(h: Pointer<Byte>, ms: Int): Int as hostPumpFor,
+    fn host_request_frame(h: Pointer<Byte>): Int as hostRequestFrame,
+    fn host_wait_frame(h: Pointer<Byte>, ms: Int): Int as hostWaitFrame,
     fn host_render_offscreen(w: Int, h: Int, list: Pointer<Byte>, len: Int, out: Pointer<Byte>): Int as hostRenderOffscreen,
+    fn host_text_byte(h: Pointer<Byte>, index: Int): Int as hostTextByte,
     fn host_width(h: Pointer<Byte>): Int as hostWidth,
 } from native "host_cabi"
 
@@ -72,6 +108,54 @@ pub fn measureText(s: String, size: Float): Float {
         w = parleyMeasure(Pointer.fromAddress<Byte>(bytes.address()), bytes.length(), size)
     }
     return w
+}
+
+/**
+ * Register one named face with both renderers. The face id must be in the
+ * named range, and the name and data must be non-empty. Both calls happen under
+ * one `unsafe` block; true means both returned zero.
+ */
+fn registerFont(face: FontFace): Bool {
+    if face.id < 100 || face.id >= 116 {
+        return false
+    }
+    if face.name == "" || face.data.length() == 0 {
+        return false
+    }
+    let name = ByteBuffer.fromString(face.name)
+    let cpuRc = 0
+    let hostRc = 0
+    unsafe {
+        cpuRc = cpuRegisterFont(
+            face.id,
+            Pointer.fromAddress<Byte>(name.address()),
+            name.length(),
+            Pointer.fromAddress<Byte>(face.data.address()),
+            face.data.length(),
+        )
+        hostRc = hostRegisterFont(
+            face.id,
+            Pointer.fromAddress<Byte>(name.address()),
+            name.length(),
+            Pointer.fromAddress<Byte>(face.data.address()),
+            face.data.length(),
+        )
+    }
+    return cpuRc == 0 && hostRc == 0
+}
+
+/** Register every face in `reg`, returning how many both renderers accepted. */
+fn registerFonts(reg: FontRegistry): Int {
+    let ok = 0
+    let i = 0
+    while i < reg.len() {
+        let face = reg.at(i)
+        if face != null && registerFont(face) {
+            ok += 1
+        }
+        i += 1
+    }
+    return ok
 }
 
 /**
@@ -115,10 +199,29 @@ class ParleyText {
         if s == "" {
             return 0.0
         }
-        let bytes = ByteBuffer.fromString(s)
+        let bytes: ByteBuffer = ByteBuffer.fromString(s)
         let w = 0.0
         unsafe {
             w = parleyMeasure(Pointer.fromAddress<Byte>(bytes.address()), bytes.length(), size)
+        }
+        return w
+    }
+
+    fn measureStyled(s: String, size: Float, weight: Int, italic: Bool, tracking: Float): Float {
+        if s == "" {
+            return 0.0
+        }
+        if weight == 400 && !italic && tracking == 0.0 {
+            return this.measure(s, size)
+        }
+        let bytes: ByteBuffer = ByteBuffer.fromString(s)
+        let w = 0.0
+        let style = 0
+        if italic {
+            style = 1
+        }
+        unsafe {
+            w = parleyMeasureStyled(Pointer.fromAddress<Byte>(bytes.address()), bytes.length(), size, weight, style, tracking)
         }
         return w
     }
@@ -135,7 +238,7 @@ class ParleyText {
         if s == "" {
             return rows
         }
-        let bytes = ByteBuffer.fromString(s)
+        let bytes: ByteBuffer = ByteBuffer.fromString(s)
         let wf = 0
         if wrap {
             wf = 1
@@ -206,9 +309,244 @@ class ParleyText {
         }
         return rows
     }
+
+    fn rowsStyled(
+        s: String,
+        size: Float,
+        maxWidth: Float,
+        wrap: Bool,
+        maxLines: Int,
+        ellipsis: Bool,
+        weight: Int,
+        italic: Bool,
+        lineHeight: Float,
+        tracking: Float
+    ): Array<TextRow> {
+        let rows: Array<TextRow> = []
+        if s == "" {
+            return rows
+        }
+        if weight == 400 && !italic && lineHeight == 0.0 && tracking == 0.0 {
+            return this.rows(s, size, maxWidth, wrap, maxLines, ellipsis)
+        }
+        let bytes: ByteBuffer = ByteBuffer.fromString(s)
+        let wf = 0
+        if wrap {
+            wf = 1
+        }
+        let ef = 0
+        if ellipsis {
+            ef = 1
+        }
+        let style = 0
+        if italic {
+            style = 1
+        }
+        let n = 0
+        this.ensure(16 * 24)
+        unsafe {
+            n = parleyLayoutStyled(
+                Pointer.fromAddress<Byte>(bytes.address()),
+                bytes.length(),
+                size,
+                maxWidth,
+                maxLines,
+                wf,
+                ef,
+                weight,
+                style,
+                lineHeight,
+                tracking,
+                Pointer.fromAddress<Byte>(this.buf.address()),
+                this.buf.length(),
+            )
+        }
+        if n <= 0 {
+            return rows
+        }
+        if n * 24 > this.buf.length() {
+            this.ensure(n * 24)
+            unsafe {
+                n = parleyLayoutStyled(
+                    Pointer.fromAddress<Byte>(bytes.address()),
+                    bytes.length(),
+                    size,
+                    maxWidth,
+                    maxLines,
+                    wf,
+                    ef,
+                    weight,
+                    style,
+                    lineHeight,
+                    tracking,
+                    Pointer.fromAddress<Byte>(this.buf.address()),
+                    this.buf.length(),
+                )
+            }
+            if n <= 0 {
+                return rows
+            }
+        }
+        let i = 0
+        while i < n {
+            let o = i * 24
+            let start = this.buf.readUInt32LE(o)
+            let end = this.buf.readUInt32LE(o + 4)
+            let flags = this.buf.readUInt32LE(o + 8)
+            let width = this.buf.readFloat32LE(o + 12)
+            let height = this.buf.readFloat32LE(o + 16)
+            let baseline = this.buf.readFloat32LE(o + 20)
+            let text = s.slice(start, end)
+            let ellipsized = (flags & 1) != 0
+            if ellipsized {
+                text = text + "…"
+            }
+            rows.push(TextRow(
+                text: text,
+                width: width,
+                height: height,
+                baseline: baseline,
+                ellipsized: ellipsized,
+            ))
+            i += 1
+        }
+        return rows
+    }
+
+    fn richRows(
+        s: String,
+        size: Float,
+        maxWidth: Float,
+        wrap: Bool,
+        maxLines: Int,
+        ellipsis: Bool,
+        spans: Array<TextSpan>,
+        lineHeight: Float
+    ): RichRows {
+        let rows: Array<TextRow> = []
+        let runs: Array<TextRun> = []
+        if s == "" {
+            return new RichRows(rows, runs)
+        }
+        let bytes: ByteBuffer = ByteBuffer.fromString(s)
+        let spanCap = spans.length() * 32
+        if spanCap == 0 {
+            spanCap = 1
+        }
+        let spanBuf: ByteBuffer = ByteBuffer.allocate(spanCap)
+        let si = 0
+        while si < spans.length() {
+            let o = si * 32
+            spanBuf.writeUInt32LE(o, spans[si].start)
+            spanBuf.writeUInt32LE(o + 4, spans[si].end)
+            spanBuf.writeInt32LE(o + 8, spans[si].weight)
+            let italic = 0
+            if spans[si].italic {
+                italic = 1
+            }
+            spanBuf.writeUInt32LE(o + 12, italic)
+            spanBuf.writeFloat64LE(o + 16, spans[si].tracking)
+            let style = spans[si].fontFamilyId() + spans[si].decorationBits() * 256
+            spanBuf.writeUInt32LE(o + 24, style)
+            spanBuf.writeUInt32LE(o + 28, 0)
+            si += 1
+        }
+        let wf = 0
+        if wrap {
+            wf = 1
+        }
+        let ef = 0
+        if ellipsis {
+            ef = 1
+        }
+        let n = 0
+        this.ensure(16)
+        unsafe {
+            n = parleyLayoutRich(
+                Pointer.fromAddress<Byte>(bytes.address()),
+                bytes.length(),
+                size,
+                maxWidth,
+                maxLines,
+                wf,
+                ef,
+                lineHeight,
+                Pointer.fromAddress<Byte>(spanBuf.address()),
+                spans.length(),
+                Pointer.fromAddress<Byte>(this.buf.address()),
+                this.buf.length(),
+            )
+        }
+        if n <= 0 {
+            return new RichRows(rows, runs)
+        }
+        if n > this.buf.length() {
+            this.ensure(n)
+            unsafe {
+                n = parleyLayoutRich(
+                    Pointer.fromAddress<Byte>(bytes.address()),
+                    bytes.length(),
+                    size,
+                    maxWidth,
+                    maxLines,
+                    wf,
+                    ef,
+                    lineHeight,
+                    Pointer.fromAddress<Byte>(spanBuf.address()),
+                    spans.length(),
+                    Pointer.fromAddress<Byte>(this.buf.address()),
+                    this.buf.length(),
+                )
+            }
+            if n <= 0 {
+                return new RichRows(rows, runs)
+            }
+        }
+        let rowCount = this.buf.readUInt32LE(0)
+        let runCount = this.buf.readUInt32LE(4)
+        let ro = 16
+        let i = 0
+        while i < rowCount {
+            let o = ro + i * 24
+            let start = this.buf.readUInt32LE(o)
+            let end = this.buf.readUInt32LE(o + 4)
+            let flags = this.buf.readUInt32LE(o + 8)
+            let width = this.buf.readFloat32LE(o + 12)
+            let height = this.buf.readFloat32LE(o + 16)
+            let baseline = this.buf.readFloat32LE(o + 20)
+            let text = s.slice(start, end)
+            let ellipsized = (flags & 1) != 0
+            if ellipsized {
+                text = text + "…"
+            }
+            rows.push(TextRow(
+                text: text,
+                width: width,
+                height: height,
+                baseline: baseline,
+                ellipsized: ellipsized,
+            ))
+            i += 1
+        }
+        let runBase = 16 + rowCount * 24
+        let ri = 0
+        while ri < runCount {
+            let o = runBase + ri * 32
+            runs.push(new TextRun(
+                row: this.buf.readUInt32LE(o),
+                start: this.buf.readUInt32LE(o + 4),
+                end: this.buf.readUInt32LE(o + 8),
+                x: this.buf.readFloat32LE(o + 16),
+                advance: this.buf.readFloat32LE(o + 20),
+                flags: this.buf.readUInt32LE(o + 12),
+            ))
+            ri += 1
+        }
+        return new RichRows(rows, runs)
+    }
 }
 
-/** The app's one window. On runixOS Epiclese owns the surface, not the app. */
+/** The app's one window. On runixOS, the surface socket owns the surface, not the app. */
 pub class Window {
     let title: String
     let width: Int
@@ -227,12 +565,98 @@ pub class Frame {
     let list: ByteBuffer
     let snapshot: String
     let damageList: Damage
+    let packetBuf: ByteBuffer
+    let scaleV: Int
+    let colorV: Int
+    let droppedV: Int
+    let nodeCountV: Int
+    let recordCountV: Int
+    let byteCountV: Int
+    let buildNs: Int
+    let layoutNs: Int
+    let paintNs: Int
+    let totalNs: Int
 
-    init(index: Int, list: ByteBuffer, snapshot: String, damageList: Damage) {
+    init(index: Int, list: ByteBuffer, snapshot: String, damageList: Damage, packetBuf: ByteBuffer, scaleV: Int, colorV: Int, dropped: Int, buildTime: Int = 0, layoutTime: Int = 0, paintTime: Int = 0, totalTime: Int = 0) {
         this.index = index
         this.list = list
         this.snapshot = snapshot
         this.damageList = damageList
+        this.packetBuf = packetBuf
+        this.scaleV = scaleV
+        this.colorV = colorV
+        this.droppedV = dropped
+        this.nodeCountV = packetBuf.readUInt32LE(8)
+        this.recordCountV = list.readUInt32LE(8)
+        this.byteCountV = list.length()
+        this.buildNs = buildTime
+        this.layoutNs = layoutTime
+        this.paintNs = paintTime
+        this.totalNs = totalTime
+    }
+
+    /** The node layout and semantics packet for this frame. */
+    pub fn packet(): ByteBuffer {
+        return this.packetBuf
+    }
+
+    /** Decoded packet, for hosts and tests. */
+    pub fn nodes(): FramePacket {
+        return FramePacket.decode(this.packetBuf)
+    }
+
+    /** Output scale in thousandths: 1000 is 1x, 2000 is 2x. */
+    pub fn scale(): Int {
+        return this.scaleV
+    }
+
+    /** Color space wire id: 0 sRGB, 1 linear, 2 Display P3. */
+    pub fn colorSpace(): Int {
+        return this.colorV
+    }
+
+    /** Swap the theme before the next frame. */
+    pub fn setTheme(th: Theme) {
+        this.theme = th
+        this.forceFull = true
+    }
+
+    /** Device pixel ratio: tags the frame and exposes `Tree.dp` to the view. */
+    pub fn setDpi(d: Float) {
+        this.rootTree.setDensity(d)
+        this.scaleV = Int(d * 1000.0 + 0.5)
+        this.forceFull = true
+    }
+
+    pub fn setTextScale(f: Float) {
+        this.rootTree.setTextScale(f)
+        this.forceFull = true
+    }
+
+    pub fn setSafeArea(top: Int, right: Int, bottom: Int, left: Int) {
+        this.rootTree.setSafeArea(top, right, bottom, left)
+        this.forceFull = true
+    }
+
+    pub fn setKeyboardInset(bottom: Int) {
+        this.rootTree.setKeyboardInset(bottom)
+        this.forceFull = true
+    }
+
+    /** Apply a scene camera to presentation and hit testing. */
+    pub fn setCamera(c: Camera) {
+        this.cameraV = c
+        this.cameraOn = true
+        this.forceFull = true
+    }
+
+    pub fn clearCamera() {
+        this.cameraOn = false
+        this.forceFull = true
+    }
+
+    pub fn camera(): Camera {
+        return this.cameraV
     }
 
     pub fn damage(): Damage {
@@ -243,6 +667,21 @@ pub class Frame {
         return this.list.readUInt32LE(8)
     }
 
+    /** Records the display list refused because its 1024-record budget filled. */
+    pub fn dropped(): Int {
+        return this.droppedV
+    }
+
+    /** Per-frame phase timings in integer microseconds. */
+    pub fn timeline(): String {
+        return "build=" + (this.buildNs / 1000).toString() + " layout=" + (this.layoutNs / 1000).toString() + " paint=" + (this.paintNs / 1000).toString() + " total=" + (this.totalNs / 1000).toString()
+    }
+
+    /** One-line frame summary for devtools and AI tests. */
+    pub fn stats(): String {
+        return "nodes " + this.nodeCountV.toString() + " records " + this.recordCountV.toString() + " bytes " + this.byteCountV.toString() + " dropped " + this.droppedV.toString() + " " + this.timeline()
+    }
+
     /** The display list in text form, for tests and the inspector. */
     pub fn describe(): String {
         return Display.textOf(this.list)
@@ -251,9 +690,125 @@ pub class Frame {
     pub fn bytes(): Int {
         return this.list.length()
     }
+
+}
+
+fn pngCopy(dst: ByteBuffer, dAt: Int, src: ByteBuffer, sAt: Int, n: Int) {
+    let i = 0
+    while i < n {
+        dst.writeUInt8(dAt + i, src.readUInt8(sAt + i))
+        i += 1
+    }
+}
+
+fn pngCrc(buf: ByteBuffer, at: Int, len: Int): Int {
+    let c = 4294967295
+    let i = 0
+    while i < len {
+        c = c ^ buf.readUInt8(at + i)
+        let k = 0
+        while k < 8 {
+            if (c & 1) == 1 {
+                c = (c >> 1) ^ 3988292384
+            } else {
+                c = c >> 1
+            }
+            k += 1
+        }
+        i += 1
+    }
+    return c ^ 4294967295
+}
+
+fn pngAdler(buf: ByteBuffer, len: Int): Int {
+    let a = 1
+    let b = 0
+    let i = 0
+    while i < len {
+        let n = 0
+        while i < len && n < 5552 {
+            a += buf.readUInt8(i)
+            b += a
+            i += 1
+            n += 1
+        }
+        a = a % 65521
+        b = b % 65521
+    }
+    return (b << 16) | a
 }
 
 /** RGBA8 pixels owned by the app, plus the list that produced them. */
+/** Encode raw RGBA8 pixels as a PNG. Stored deflate keeps this dependency-free. */
+fn encodePngRgba(width: Int, height: Int, pixels: ByteBuffer): ByteBuffer {
+    let stride = 1 + width * 4
+    let n = height * stride
+    let raw = ByteBuffer.allocate(n)
+    let y = 0
+    while y < height {
+        let ro = y * stride
+        raw.writeUInt8(ro, 0)
+        pngCopy(raw, ro + 1, pixels, y * width * 4, width * 4)
+        y += 1
+    }
+    let blocks = (n + 65534) / 65535
+    let z = ByteBuffer.allocate(2 + n + blocks * 5 + 4)
+    z.writeUInt8(0, 120)
+    z.writeUInt8(1, 1)
+    let p = 2
+    let off = 0
+    while off < n {
+        let len = n - off
+        if len > 65535 { len = 65535 }
+        let final = off + len >= n
+        if final {
+            z.writeUInt8(p, 1)
+        } else {
+            z.writeUInt8(p, 0)
+        }
+        p += 1
+        z.writeUInt16LE(p, len)
+        p += 2
+        z.writeUInt16LE(p, 65535 - len)
+        p += 2
+        pngCopy(z, p, raw, off, len)
+        p += len
+        off += len
+    }
+    z.writeUInt32BE(p, pngAdler(raw, n))
+
+    let out = ByteBuffer.allocate(57 + z.length())
+    out.writeUInt8(0, 137)
+    out.writeUInt8(1, 80)
+    out.writeUInt8(2, 78)
+    out.writeUInt8(3, 71)
+    out.writeUInt8(4, 13)
+    out.writeUInt8(5, 10)
+    out.writeUInt8(6, 26)
+    out.writeUInt8(7, 10)
+    let at = 8
+    out.writeUInt32BE(at, 13)
+    out.writeString(at + 4, "IHDR")
+    out.writeUInt32BE(at + 8, width)
+    out.writeUInt32BE(at + 12, height)
+    out.writeUInt8(at + 16, 8)
+    out.writeUInt8(at + 17, 6)
+    out.writeUInt8(at + 18, 0)
+    out.writeUInt8(at + 19, 0)
+    out.writeUInt8(at + 20, 0)
+    out.writeUInt32BE(at + 21, pngCrc(out, at + 4, 17))
+    at += 25
+    out.writeUInt32BE(at, z.length())
+    out.writeString(at + 4, "IDAT")
+    pngCopy(out, at + 8, z, 0, z.length())
+    out.writeUInt32BE(at + 8 + z.length(), pngCrc(out, at + 4, 4 + z.length()))
+    at += 12 + z.length()
+    out.writeUInt32BE(at, 0)
+    out.writeString(at + 4, "IEND")
+    out.writeUInt32BE(at + 8, pngCrc(out, at + 4, 4))
+    return out
+}
+
 pub class Surface {
     let width: Int
     let height: Int
@@ -306,9 +861,37 @@ pub class Surface {
         return rc
     }
 
+    /** Number of images still decoding on the CPU worker. */
+    pub fn pendingImages(): Int {
+        let n = 0
+        unsafe {
+            n = cpuImagePending()
+        }
+        return n
+    }
+
+    /** Wait for CPU image decodes, returning the remaining count. */
+    pub fn waitImages(timeoutMs: Int): Int {
+        let n = 0
+        unsafe {
+            n = cpuWaitImages(timeoutMs)
+        }
+        return n
+    }
+
     /** Raw RGBA8 pixels, row-major. For dumps and tests. */
     pub fn pixels(): ByteBuffer {
         return this.pixels
+    }
+
+    /** Encode the pixels as a PNG. */
+    pub fn encodePng(): ByteBuffer {
+        return encodePngRgba(this.width, this.height, this.pixels)
+    }
+
+    /** Write the frame as a PNG. */
+    pub fn writePng(path: String): Bool {
+        return fs.writeBytes(path, this.encodePng(), .Overwrite).isOk()
     }
 
     /** 1 after a GPU draw, 2 after a CPU draw, 0 before any draw. */
@@ -346,17 +929,1533 @@ pub class Surface {
  * An app: a window, a theme, and a view function. The view runs again on every
  * frame, because the MVP tree is append-only and reconciliation is not here yet.
  */
+/** Per-window state for an app that owns more than one surface. */
+pub class WindowSet {
+    let ids: Array<Int> = []
+    let titles: Array<String> = []
+    let widths: Array<Int> = []
+    let heights: Array<Int> = []
+    let visible: Array<Bool> = []
+    let paused: Array<Bool> = []
+    let frames: Array<Int> = []
+    let nextId: Int = 1
+    let focusId: Int = -1
+
+    fn indexOf(id: Int): Int {
+        let i = 0
+        while i < this.ids.length() {
+            if this.ids[i] == id {
+                return i
+            }
+            i += 1
+        }
+        return -1
+    }
+
+    pub fn open(title: String, w: Int, h: Int): Int {
+        let id = this.nextId
+        this.nextId += 1
+        this.ids.push(id)
+        this.titles.push(title)
+        this.widths.push(w)
+        this.heights.push(h)
+        this.visible.push(true)
+        this.paused.push(false)
+        this.frames.push(0)
+        if this.focusId == -1 {
+            this.focusId = id
+        }
+        return id
+    }
+
+    pub fn close(id: Int): Bool {
+        let at = this.indexOf(id)
+        if at < 0 {
+            return false
+        }
+        let keepIds: Array<Int> = []
+        let keepTitles: Array<String> = []
+        let keepW: Array<Int> = []
+        let keepH: Array<Int> = []
+        let keepVisible: Array<Bool> = []
+        let keepPaused: Array<Bool> = []
+        let keepFrames: Array<Int> = []
+        let i = 0
+        while i < this.ids.length() {
+            if this.ids[i] != id {
+                keepIds.push(this.ids[i])
+                keepTitles.push(this.titles[i])
+                keepW.push(this.widths[i])
+                keepH.push(this.heights[i])
+                keepVisible.push(this.visible[i])
+                keepPaused.push(this.paused[i])
+                keepFrames.push(this.frames[i])
+            }
+            i += 1
+        }
+        this.ids = keepIds
+        this.titles = keepTitles
+        this.widths = keepW
+        this.heights = keepH
+        this.visible = keepVisible
+        this.paused = keepPaused
+        this.frames = keepFrames
+        if this.focusId == id {
+            this.focusId = -1
+            if this.ids.length() > 0 {
+                this.focusId = this.ids[0]
+            }
+        }
+        return true
+    }
+
+    pub fn focus(id: Int): Bool {
+        if this.indexOf(id) < 0 {
+            return false
+        }
+        this.focusId = id
+        return true
+    }
+
+    pub fn focused(): Int {
+        return this.focusId
+    }
+
+    pub fn route(id: Int): Bool {
+        return id == this.focusId
+    }
+
+    pub fn count(): Int {
+        return this.ids.length()
+    }
+
+    pub fn isOpen(id: Int): Bool {
+        return this.indexOf(id) >= 0
+    }
+
+    pub fn resize(id: Int, w: Int, h: Int): Bool {
+        let at = this.indexOf(id)
+        if at < 0 {
+            return false
+        }
+        this.widths[at] = w
+        this.heights[at] = h
+        return true
+    }
+
+    pub fn titleOf(id: Int): String {
+        let at = this.indexOf(id)
+        if at < 0 { return "" }
+        return this.titles[at]
+    }
+
+    pub fn widthOf(id: Int): Int {
+        let at = this.indexOf(id)
+        if at < 0 { return 0 }
+        return this.widths[at]
+    }
+
+    pub fn heightOf(id: Int): Int {
+        let at = this.indexOf(id)
+        if at < 0 { return 0 }
+        return this.heights[at]
+    }
+
+    pub fn setVisible(id: Int, on: Bool): Bool {
+        let at = this.indexOf(id)
+        if at < 0 {
+            return false
+        }
+        this.visible[at] = on
+        return true
+    }
+
+    pub fn visibleAt(id: Int): Bool {
+        let at = this.indexOf(id)
+        if at < 0 { return false }
+        return this.visible[at]
+    }
+
+    pub fn suspend(id: Int): Bool {
+        let at = this.indexOf(id)
+        if at < 0 {
+            return false
+        }
+        this.paused[at] = true
+        return true
+    }
+
+    pub fn resume(id: Int): Bool {
+        let at = this.indexOf(id)
+        if at < 0 {
+            return false
+        }
+        this.paused[at] = false
+        return true
+    }
+
+    pub fn suspendedAt(id: Int): Bool {
+        let at = this.indexOf(id)
+        if at < 0 { return true }
+        return this.paused[at]
+    }
+
+    /** Count a frame only when the window can draw. */
+    pub fn frame(id: Int): Bool {
+        let at = this.indexOf(id)
+        if at < 0 || !this.visible[at] || this.paused[at] {
+            return false
+        }
+        this.frames[at] += 1
+        return true
+    }
+
+    pub fn framesOf(id: Int): Int {
+        let at = this.indexOf(id)
+        if at < 0 { return 0 }
+        return this.frames[at]
+    }
+}
+
+/** Normalized gamepad state. Axes are -1..1; buttons are pressed. */
+pub class Gamepad {
+    let axes: Array<Float> = []
+    let buttons: Array<Bool> = []
+    let online: Bool = false
+
+    pub fn connected(): Bool {
+        return this.online
+    }
+
+    pub fn setConnected(on: Bool) {
+        this.online = on
+    }
+
+    pub fn setAxis(i: Int, raw: Int) {
+        if i < 0 {
+            return
+        }
+        while this.axes.length() <= i {
+            this.axes.push(0.0)
+        }
+        let v = Float(raw) / 32767.0
+        if v < -1.0 { v = -1.0 }
+        if v > 1.0 { v = 1.0 }
+        this.axes[i] = v
+    }
+
+    pub fn setButton(i: Int, down: Bool) {
+        if i < 0 {
+            return
+        }
+        while this.buttons.length() <= i {
+            this.buttons.push(false)
+        }
+        this.buttons[i] = down
+    }
+
+    pub fn axis(i: Int): Float {
+        if i < 0 || i >= this.axes.length() {
+            return 0.0
+        }
+        return this.axes[i]
+    }
+
+    pub fn pressed(i: Int): Bool {
+        if i < 0 || i >= this.buttons.length() {
+            return false
+        }
+        return this.buttons[i]
+    }
+
+    pub fn reset() {
+        this.axes = []
+        this.buttons = []
+        this.online = false
+    }
+}
+
+/** One frame's accessibility projection of a semantic node. */
+pub class A11yNode {
+    let id: Int
+    let parent: Int
+    let role: String
+    let roleId: Int
+    let name: String
+    let value: String
+    let x: Int
+    let y: Int
+    let w: Int
+    let h: Int
+    let actions: Int
+    let checked: Bool
+    let disabled: Bool
+    let focused: Bool
+    let inert: Bool
+    let selected: Bool
+    let expanded: Int
+    let busy: Bool
+    let required: Bool
+    let invalid: Int
+    let level: Int
+    let live: Int
+    let description: String
+    let valueMin: Float
+    let valueMax: Float
+    let valueStep: Float
+    let labelId: Int
+    let describedById: Int
+    let controlsId: Int
+    let announceSeq: Int
+
+    init(
+        nodeId: Int,
+        nodeParent: Int,
+        nodeRole: String,
+        nodeRoleId: Int,
+        nodeName: String,
+        nodeValue: String,
+        bx: Int,
+        by: Int,
+        bw: Int,
+        bh: Int,
+        mask: Int,
+        isChecked: Bool,
+        isDisabled: Bool,
+        isFocused: Bool,
+        isInert: Bool,
+        isSelected: Bool,
+        expandedValue: Int,
+        isBusy: Bool,
+        isRequired: Bool,
+        invalidValue: Int,
+        levelValue: Int,
+        liveValue: Int,
+        nodeDescription: String,
+        minValue: Float,
+        maxValue: Float,
+        stepValue: Float,
+        labelValue: Int = 0,
+        describedByValue: Int = 0,
+        controlsValue: Int = 0,
+        announceValue: Int = 0
+    ) {
+        this.id = nodeId
+        this.parent = nodeParent
+        this.role = nodeRole
+        this.roleId = nodeRoleId
+        this.name = nodeName
+        this.value = nodeValue
+        this.x = bx
+        this.y = by
+        this.w = bw
+        this.h = bh
+        this.actions = mask
+        this.checked = isChecked
+        this.disabled = isDisabled
+        this.focused = isFocused
+        this.inert = isInert
+        this.selected = isSelected
+        this.expanded = expandedValue
+        this.busy = isBusy
+        this.required = isRequired
+        this.invalid = invalidValue
+        this.level = levelValue
+        this.live = liveValue
+        this.description = nodeDescription
+        this.valueMin = minValue
+        this.valueMax = maxValue
+        this.valueStep = stepValue
+        this.labelId = labelValue
+        this.describedById = describedByValue
+        this.controlsId = controlsValue
+        this.announceSeq = announceValue
+    }
+
+    pub fn can(a: String): Bool {
+        if a == "tap" { return (this.actions & 1) != 0 }
+        if a == "toggle" { return (this.actions & 2) != 0 }
+        if a == "setValue" { return (this.actions & 4) != 0 }
+        if a == "dismiss" { return (this.actions & 8) != 0 }
+        return false
+    }
+
+    pub fn describe(): String {
+        let out = this.role + " \"" + this.name + "\" [" + this.x.toString() + "," + this.y.toString() + " " + this.w.toString() + "x" + this.h.toString() + "]"
+        if this.value != "" { out = out + " value=" + this.value }
+        if this.checked { out = out + " checked" }
+        if this.disabled { out = out + " disabled" }
+        if this.focused { out = out + " focused" }
+        if this.inert { out = out + " inert" }
+        if this.selected { out = out + " selected" }
+        if this.expanded >= 0 { out = out + " expanded=" + this.expanded.toString() }
+        if this.busy { out = out + " busy" }
+        if this.required { out = out + " required" }
+        if this.invalid != 0 { out = out + " invalid=" + this.invalid.toString() }
+        if this.level != 0 { out = out + " level=" + this.level.toString() }
+        if this.live != 0 { out = out + " live=" + this.live.toString() }
+        if this.description != "" { out = out + " description=" + this.description }
+        if this.valueMax > this.valueMin {
+            out = out + " range=" + this.valueMin.toString() + ".." + this.valueMax.toString() + "/" + this.valueStep.toString()
+        }
+        if this.can("tap") { out = out + " tap" }
+        if this.can("toggle") { out = out + " toggle" }
+        if this.can("setValue") { out = out + " setValue" }
+        return out
+    }
+}
+
+/** Bounds and step of a numeric control, as reported by `Driver.rangeOf`. */
+pub class A11yRange {
+    let min: Float
+    let max: Float
+    let step: Float
+
+    init(low: Float, high: Float, by: Float) {
+        this.min = low
+        this.max = high
+        this.step = by
+    }
+}
+
+/**
+ * Host accessibility packet, version 6.
+ *
+ * Header: magic 42394, version 6, node count, record stride 112. Each record
+ * starts with the version 5 layout and adds four lanes:
+ *
+ *   0 id u32, 4 parent i32, 8 role u32, 12 x i32, 16 y i32, 20 w i32,
+ *   24 h i32, 28 actions u32, 32 flags u32, 36 name offset u32,
+ *   40 name length u32, 44 value offset u32, 48 value length u32,
+ *   52 expanded i32, 56 invalid u32, 60 level u32, 64 live u32,
+ *   68 min f64, 76 max f64, 84 step f64, 92 description length u32,
+ *   96 label relation i32, 100 described-by relation i32,
+ *   104 controls relation i32, 108 announcement sequence u32.
+ *
+ * Flags: bit0 checked, bit1 disabled, bit2 focused, bit3 inert,
+ * bit4 selected, bit5 busy, bit6 required. Strings are packed per record as
+ * name, value, description, so the description starts at value offset plus
+ * value length and only its length needs a field of its own.
+ */
+fn a11yPacket(nodes: Array<A11yNode>): ByteBuffer {
+    let count = nodes.length()
+    let cap = 16 + count * 112 + 64
+    let i = 0
+    while i < count {
+        cap += nodes[i].name.length() * 4 + nodes[i].value.length() * 4 + nodes[i].description.length() * 4
+        i += 1
+    }
+    let buf: ByteBuffer = ByteBuffer.allocate(cap)
+    buf.writeUInt32LE(0, 42394)
+    buf.writeUInt32LE(4, 6)
+    buf.writeUInt32LE(8, count)
+    buf.writeUInt32LE(12, 112)
+    let at = 16 + count * 112
+    i = 0
+    while i < count {
+        let n = nodes[i]
+        let o = 16 + i * 112
+        buf.writeUInt32LE(o, n.id)
+        buf.writeUInt32LE(o + 4, n.parent)
+        buf.writeUInt32LE(o + 8, n.roleId)
+        buf.writeInt32LE(o + 12, n.x)
+        buf.writeInt32LE(o + 16, n.y)
+        buf.writeInt32LE(o + 20, n.w)
+        buf.writeInt32LE(o + 24, n.h)
+        buf.writeUInt32LE(o + 28, n.actions)
+        let flags = 0
+        if n.checked { flags += 1 }
+        if n.disabled { flags += 2 }
+        if n.focused { flags += 4 }
+        if n.inert { flags += 8 }
+        if n.selected { flags += 16 }
+        if n.busy { flags += 32 }
+        if n.required { flags += 64 }
+        buf.writeUInt32LE(o + 32, flags)
+        buf.writeUInt32LE(o + 36, at)
+        let nl = buf.writeString(at, n.name)
+        buf.writeUInt32LE(o + 40, nl)
+        buf.writeUInt32LE(o + 44, at + nl)
+        let vl = buf.writeString(at + nl, n.value)
+        buf.writeUInt32LE(o + 48, vl)
+        buf.writeInt32LE(o + 52, n.expanded)
+        buf.writeUInt32LE(o + 56, n.invalid)
+        buf.writeUInt32LE(o + 60, n.level)
+        buf.writeUInt32LE(o + 64, n.live)
+        buf.writeFloat64LE(o + 68, n.valueMin)
+        buf.writeFloat64LE(o + 76, n.valueMax)
+        buf.writeFloat64LE(o + 84, n.valueStep)
+        let dl = buf.writeString(at + nl + vl, n.description)
+        buf.writeUInt32LE(o + 92, dl)
+        buf.writeInt32LE(o + 96, n.labelId)
+        buf.writeInt32LE(o + 100, n.describedById)
+        buf.writeInt32LE(o + 104, n.controlsId)
+        buf.writeUInt32LE(o + 108, n.announceSeq)
+        at += nl + vl + dl
+        i += 1
+    }
+    return buf
+}
+
+/** The accessibility view of one frame, built from the semantic tree. */
+pub class Accessibility {
+    let nodes: Array<A11yNode> = []
+    let linkSeq: Int = 0
+
+    static fn build(t: Tree, cam: Camera, cameraOn: Bool): Accessibility {
+        let out = new Accessibility()
+        out.walk(t, t.rootId(), -1, cam, cameraOn)
+        return out
+    }
+
+    fn walk(t: Tree, id: Int, parent: Int, cam: Camera, cameraOn: Bool) {
+        if id < 0 || id >= t.role.length() || !t.live[id] {
+            return
+        }
+        let x = t.x[id]
+        let y = t.y[id]
+        let w = t.w[id]
+        let h = t.h[id]
+        if cameraOn && !t.inPortal(id) {
+            x = Int(cam.screenX(Float(x)))
+            y = Int(cam.screenY(Float(y)))
+            w = Int(Float(w) * cam.scale() + 0.5)
+            h = Int(Float(h) * cam.scale() + 0.5)
+        }
+        this.nodes.push(new A11yNode(
+            id,
+            parent,
+            t.roleNameOf(id),
+            t.role[id],
+            t.name[id],
+            t.value[id],
+            x,
+            y,
+            w,
+            h,
+            t.actions[id],
+            t.checked[id],
+            t.disabledV[id],
+            t.focus == id,
+            t.inertAt(id),
+            t.selectedV[id],
+            t.expandedV[id],
+            t.busyV[id],
+            t.requiredV[id],
+            t.invalidV[id],
+            t.levelV[id],
+            t.liveV[id],
+            t.descriptionV[id],
+            t.rangeMinV[id],
+            t.rangeMaxV[id],
+            t.rangeStepV[id],
+            t.labelIdOf(id),
+            t.describedByIdOf(id),
+            t.controlsIdOf(id),
+            0
+        ))
+        let role = t.role[id]
+        if role == 5 || role == 11 {
+            let rects = t.linkRects(id)
+            let i = 0
+            while i < rects.length() {
+                let r = rects[i]
+                let lx = r.x
+                let ly = r.y
+                let lw = r.w
+                let lh = r.h
+                if cameraOn && !t.inPortal(id) {
+                    lx = Int(cam.screenX(Float(lx)))
+                    ly = Int(cam.screenY(Float(ly)))
+                    lw = Int(Float(lw) * cam.scale() + 0.5)
+                    lh = Int(Float(lh) * cam.scale() + 0.5)
+                }
+                this.nodes.push(new A11yNode(
+                    2000000 + this.linkSeq,
+                    id,
+                    "link",
+                    29,
+                    r.text,
+                    r.url,
+                    lx,
+                    ly,
+                    lw,
+                    lh,
+                    1,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    -1,
+                    false,
+                    false,
+                    0,
+                    0,
+                    0,
+                    r.url,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0,
+                    0,
+                    0,
+                    0
+                ))
+                this.linkSeq += 1
+                i += 1
+            }
+        }
+        let c = t.first[id]
+        while c != -1 {
+            this.walk(t, c, id, cam, cameraOn)
+            c = t.next[c]
+        }
+    }
+
+    pub fn count(): Int {
+        return this.nodes.length()
+    }
+
+    pub fn at(i: Int): A11yNode {
+        if i < 0 || i >= this.nodes.length() {
+            return new A11yNode(-1, -1, "", 0, "", "", 0, 0, 0, 0, 0, false, false, false, false, false, -1, false, false, 0, 0, 0, "", 0.0, 0.0, 0.0, 0, 0, 0, 0)
+        }
+        return this.nodes[i]
+    }
+
+    pub fn find(role: String, name: String): Int {
+        let i = 0
+        while i < this.nodes.length() {
+            if this.nodes[i].role == role && this.nodes[i].name == name {
+                return i
+            }
+            i += 1
+        }
+        return -1
+    }
+
+    pub fn press(t: Tree, id: Int): Bool {
+        return t.tap(Node(tree: t, id: id))
+    }
+
+    pub fn increment(t: Tree, id: Int, delta: Float): Bool {
+        let role = t.roleNameOf(id)
+        if role == "slider" {
+            return t.adjust(Node(tree: t, id: id), delta)
+        }
+        if role == "checkbox" || role == "toggle" || role == "radio" {
+            return t.tap(Node(tree: t, id: id))
+        }
+        return false
+    }
+
+    pub fn setValue(t: Tree, id: Int, s: String): Bool {
+        return t.setTextValue(Node(tree: t, id: id), s)
+    }
+
+    /** Encode the projection as the host accessibility packet. */
+    pub fn encode(): ByteBuffer {
+        return a11yPacket(this.nodes)
+    }
+
+    pub fn dump(): String {
+        let out = ""
+        let i = 0
+        while i < this.nodes.length() {
+            out = out + this.nodes[i].describe() + "\n"
+            i += 1
+        }
+        return out
+    }
+}
+
+/** Light, dark, or follow the desktop. */
+pub enum Appearance {
+    system,
+    light,
+    dark,
+}
+
+/** Static app description, separate from the running window. */
+pub class AppConfig {
+    let title: String
+    let width: Int
+    let height: Int
+    let appearance: Appearance
+    let entry: String
+
+    init(title: String, width: Int, height: Int, appearance: Appearance, entry: String) {
+        this.title = title
+        this.width = width
+        this.height = height
+        this.appearance = appearance
+        this.entry = entry
+    }
+
+    static fn defaults(title: String): AppConfig {
+        return new AppConfig(title, 760, 560, Appearance.system, "src/main.rnx")
+    }
+
+    pub fn titleText(): String { return this.title }
+    pub fn widthValue(): Int { return this.width }
+    pub fn heightValue(): Int { return this.height }
+
+    /** Resolve the appearance against a desktop preference. */
+    pub fn theme(systemDark: Bool): Theme {
+        if this.appearance == Appearance.light {
+            return Theme.light()
+        }
+        if this.appearance == Appearance.dark {
+            return Theme.dark()
+        }
+        if systemDark {
+            return Theme.dark()
+        }
+        return Theme.light()
+    }
+}
+
+/** A route table with a back stack. */
+pub class Router {
+    let paths: Array<String> = []
+    let builders: Array<fn(): Node> = []
+    let current: String = ""
+    let stack: Array<String> = []
+
+    pub fn route(path: String, view: fn(): Node): Router {
+        let i = 0
+        while i < this.paths.length() {
+            if this.paths[i] == path {
+                this.builders[i] = view
+                if this.current == "" {
+                    this.current = path
+                }
+                return this
+            }
+            i += 1
+        }
+        this.paths.push(path)
+        this.builders.push(view)
+        if this.current == "" {
+            this.current = path
+        }
+        return this
+    }
+
+    pub fn navigate(path: String): Bool {
+        if !this.has(path) || path == this.current {
+            return false
+        }
+        if this.current != "" {
+            this.stack.push(this.current)
+        }
+        this.current = path
+        return true
+    }
+
+    pub fn replace(path: String): Bool {
+        if !this.has(path) {
+            return false
+        }
+        this.current = path
+        return true
+    }
+
+    pub fn back(): Bool {
+        if this.stack.length() == 0 {
+            return false
+        }
+        let last = this.stack.length() - 1
+        this.current = this.stack[last]
+        this.stack.pop()
+        return true
+    }
+
+    pub fn depth(): Int {
+        return this.stack.length()
+    }
+
+    pub fn currentPath(): String {
+        return this.current
+    }
+
+    pub fn has(path: String): Bool {
+        let i = 0
+        while i < this.paths.length() {
+            if this.paths[i] == path {
+                return true
+            }
+            i += 1
+        }
+        return false
+    }
+
+    pub fn view(): Node {
+        let i = 0
+        while i < this.paths.length() {
+            if this.paths[i] == this.current {
+                return this.builders[i]()
+            }
+            i += 1
+        }
+        return new Build(new Tree(TextEngine.fixed())).text("no route")
+    }
+}
+
+/** The view rendered when no route matches a path. */
+fn notFound(): View {
+    return Page(title: "Not found", children: [Text("Not found")])
+}
+
+fn viewRoutePath(path: String): String {
+    let q = path.indexOf("?")
+    if q == -1 {
+        return path
+    }
+    return path.slice(0, q)
+}
+
+fn viewRouteSegments(path: String): Array<String> {
+    let parts = viewRoutePath(path).split("/")
+    let out: Array<String> = []
+    let i = 0
+    while i < parts.length() {
+        if parts[i] != "" {
+            out.push(parts[i])
+        }
+        i += 1
+    }
+    return out
+}
+
+fn viewRouteWildcard(segments: Array<String>): Bool {
+    return segments.length() > 0 && segments[segments.length() - 1] == "*"
+}
+
+fn viewRouteFits(pattern: String, path: Array<String>): Bool {
+    let segments = viewRouteSegments(pattern)
+    let wildcard = viewRouteWildcard(segments)
+    let fixed = segments.length()
+    if wildcard {
+        fixed = segments.length() - 1
+        if path.length() < fixed {
+            return false
+        }
+    } else if path.length() != fixed {
+        return false
+    }
+    let i = 0
+    while i < fixed {
+        if !segments[i].startsWith(":") && segments[i] != path[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+fn viewRouteKind(pattern: String): Int {
+    let segments = viewRouteSegments(pattern)
+    if viewRouteWildcard(segments) {
+        return 2
+    }
+    let i = 0
+    while i < segments.length() {
+        if segments[i].startsWith(":") {
+            return 1
+        }
+        i += 1
+    }
+    return 0
+}
+
+fn viewRouteDepth(pattern: String): Int {
+    let segments = viewRouteSegments(pattern)
+    if viewRouteWildcard(segments) {
+        return segments.length() - 1
+    }
+    return segments.length()
+}
+
+fn viewRouteLiterals(pattern: String): Int {
+    let segments = viewRouteSegments(pattern)
+    let n = 0
+    let i = 0
+    while i < segments.length() {
+        if !segments[i].startsWith(":") && segments[i] != "*" {
+            n += 1
+        }
+        i += 1
+    }
+    return n
+}
+
+fn viewRouteApplyQuery(path: String, params: Map<String, String>) {
+    let q = path.indexOf("?")
+    if q == -1 {
+        return
+    }
+    let pairs = path.slice(q + 1, path.length()).split("&")
+    let i = 0
+    while i < pairs.length() {
+        if pairs[i] != "" {
+            let eq = pairs[i].indexOf("=")
+            if eq == -1 {
+                params.set(pairs[i], "")
+            } else {
+                params.set(pairs[i].slice(0, eq), pairs[i].slice(eq + 1, pairs[i].length()))
+            }
+        }
+        i += 1
+    }
+}
+
+fn viewRouteParams(pattern: String, path: String): Map<String, String> {
+    let params = new Map<String, String>()
+    let segments = viewRouteSegments(pattern)
+    let parts = viewRouteSegments(path)
+    let i = 0
+    while i < segments.length() && i < parts.length() {
+        if segments[i] == "*" {
+            break
+        }
+        if segments[i].startsWith(":") {
+            params.set(segments[i].slice(1, segments[i].length()), parts[i])
+        }
+        i += 1
+    }
+    viewRouteApplyQuery(path, params)
+    return params
+}
+
+/**
+ * One level of a resolved nested route. The route build receives it, reads
+ * `params()`, and places `outlet()` where the child view belongs.
+ */
+pub class RouteMatch {
+    let fullPathV: String
+    let paramMapV: Map<String, String>
+    let restV: Array<String>
+    let childrenV: Array<Route>
+    let buildV: fn(RouteMatch): View
+    let matchedV: Bool
+
+    init(
+        fullPath: String,
+        paramMap: Map<String, String>,
+        rest: Array<String>,
+        children: Array<Route>,
+        build: fn(RouteMatch): View,
+        matched: Bool
+    ) {
+        this.fullPathV = fullPath
+        this.paramMapV = paramMap
+        this.restV = rest
+        this.childrenV = children
+        this.buildV = build
+        this.matchedV = matched
+    }
+
+    /** The full requested path, query string included. */
+    pub fn path(): String {
+        return this.fullPathV
+    }
+
+    /** Merged parent and child params plus the parsed query string. */
+    pub fn params(): Map<String, String> {
+        return this.paramMapV
+    }
+
+    pub fn matched(): Bool {
+        return this.matchedV
+    }
+
+    /** The child view for the remaining path, or a not-found page. */
+    pub fn outlet(): View {
+        if !this.matchedV {
+            return notFound()
+        }
+        return viewRouteOutlet(this.childrenV, this.restV, this.fullPathV, this.paramMapV)
+    }
+
+    fn render(): View {
+        return this.buildV(this)
+    }
+}
+
+/** A route pattern relative to its parent, plus its own children. */
+pub class Route {
+    let pattern: String
+    let build: fn(RouteMatch): View
+    let children: Array<Route>
+
+    init(pattern: String, build: fn(RouteMatch): View, children: Array<Route> = []) {
+        this.pattern = pattern
+        this.build = build
+        this.children = children
+    }
+}
+
+fn viewRouteCloneParams(src: Map<String, String>): Map<String, String> {
+    let out = new Map<String, String>()
+    for k in src {
+        out.set(k, src.get(k) ?? "")
+    }
+    return out
+}
+
+fn viewRouteFitsPrefix(pattern: String, path: Array<String>): Bool {
+    let segments = viewRouteSegments(pattern)
+    let wildcard = viewRouteWildcard(segments)
+    let fixed = segments.length()
+    if wildcard {
+        fixed = segments.length() - 1
+    }
+    if path.length() < fixed {
+        return false
+    }
+    let i = 0
+    while i < fixed {
+        if !segments[i].startsWith(":") && segments[i] != path[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+fn viewRouteConsumed(pattern: String, remaining: Array<String>): Int {
+    if viewRouteWildcard(viewRouteSegments(pattern)) {
+        return remaining.length
+    }
+    return viewRouteSegments(pattern).length
+}
+
+fn viewRouteRest(remaining: Array<String>, consumed: Int): Array<String> {
+    let out: Array<String> = []
+    let i = consumed
+    while i < remaining.length() {
+        out.push(remaining[i])
+        i += 1
+    }
+    return out
+}
+
+fn viewRouteMatchParams(pattern: String, remaining: Array<String>, parent: Map<String, String>): Map<String, String> {
+    let out = viewRouteCloneParams(parent)
+    let segments = viewRouteSegments(pattern)
+    let i = 0
+    while i < segments.length() && i < remaining.length() {
+        if segments[i] == "*" {
+            break
+        }
+        if segments[i].startsWith(":") {
+            out.set(segments[i].slice(1, segments[i].length()), remaining[i])
+        }
+        i += 1
+    }
+    return out
+}
+
+fn viewRouteCanResolve(route: Route, remaining: Array<String>): Bool {
+    if !viewRouteFitsPrefix(route.pattern, remaining) {
+        return false
+    }
+    if viewRouteWildcard(viewRouteSegments(route.pattern)) {
+        return true
+    }
+    let consumed = viewRouteConsumed(route.pattern, remaining)
+    if consumed >= remaining.length() {
+        return true
+    }
+    let rest = viewRouteRest(remaining, consumed)
+    let i = 0
+    while i < route.children.length() {
+        if viewRouteCanResolve(route.children[i], rest) {
+            return true
+        }
+        i += 1
+    }
+    return false
+}
+
+fn viewRouteChildIndex(routes: Array<Route>, remaining: Array<String>): Int {
+    let best = -1
+    let bestKind = 3
+    let bestDepth = -1
+    let bestLiterals = -1
+    let i = 0
+    while i < routes.length() {
+        let route = routes[i]
+        if viewRouteCanResolve(route, remaining) {
+            let kind = viewRouteKind(route.pattern)
+            let depth = viewRouteDepth(route.pattern)
+            let literals = viewRouteLiterals(route.pattern)
+            let better = best == -1
+            if best != -1 {
+                if kind < bestKind {
+                    better = true
+                } else if kind == bestKind {
+                    if depth > bestDepth {
+                        better = true
+                    } else if depth == bestDepth && literals > bestLiterals {
+                        better = true
+                    }
+                }
+            }
+            if better {
+                best = i
+                bestKind = kind
+                bestDepth = depth
+                bestLiterals = literals
+            }
+        }
+        i += 1
+    }
+    return best
+}
+
+fn viewRouteMatchRoute(route: Route, remaining: Array<String>, fullPath: String, parent: Map<String, String>): RouteMatch? {
+    if !viewRouteFitsPrefix(route.pattern, remaining) {
+        return null
+    }
+    let merged = viewRouteMatchParams(route.pattern, remaining, parent)
+    let consumed = viewRouteConsumed(route.pattern, remaining)
+    let rest = viewRouteRest(remaining, consumed)
+    return new RouteMatch(fullPath, merged, rest, route.children, route.build, true)
+}
+
+fn viewRouteOutlet(children: Array<Route>, remaining: Array<String>, fullPath: String, parent: Map<String, String>): View {
+    let index = viewRouteChildIndex(children, remaining)
+    if index == -1 {
+        return notFound()
+    }
+    let match = viewRouteMatchRoute(children[index], remaining, fullPath, parent)
+    if match == null {
+        return notFound()
+    }
+    return match.render()
+}
+
+fn viewRouteRootMatch(root: Route, path: String): RouteMatch? {
+    let segments = viewRouteSegments(path)
+    let base = new Map<String, String>()
+    viewRouteApplyQuery(path, base)
+    return viewRouteMatchRoute(root, segments, path, base)
+}
+
+fn viewRouteDeepParams(children: Array<Route>, remaining: Array<String>, inherited: Map<String, String>): Map<String, String> {
+    let index = viewRouteChildIndex(children, remaining)
+    if index == -1 {
+        return inherited
+    }
+    let route = children[index]
+    let merged = viewRouteMatchParams(route.pattern, remaining, inherited)
+    let consumed = viewRouteConsumed(route.pattern, remaining)
+    let rest = viewRouteRest(remaining, consumed)
+    if rest.length() == 0 || route.children.length() == 0 {
+        return merged
+    }
+    return viewRouteDeepParams(route.children, rest, merged)
+}
+
+fn viewRouteParamsFor(root: Route, path: String): Map<String, String> {
+    let base = new Map<String, String>()
+    viewRouteApplyQuery(path, base)
+    let match = viewRouteRootMatch(root, path)
+    if match == null {
+        return base
+    }
+    return viewRouteDeepParams(match.childrenV, match.restV, match.paramMapV)
+}
+
+/**
+ * A route table over declarative `View` values. Patterns hold exact
+ * segments, `:name` parameters, and a final `*` wildcard. Each router owns
+ * its route list and history stack. A nested root adds parent layouts and
+ * outlets while the flat `route` surface keeps working.
+ */
+pub class ViewRouter {
+    let patterns: Array<String> = []
+    let builders: Array<fn(Map<String, String>): View> = []
+    let current: String = "/"
+    let stack: Array<String> = []
+    let nestedRootV: Route? = null
+    let transitionV: Transition? = null
+    let lastPath: String = ""
+    let lastKey: String = ""
+    let lastView: View? = null
+    let previousView: View? = null
+    let previousKey: String = ""
+    let navSeq: Int = 0
+
+    pub fn route(pattern: String, build: fn(Map<String, String>): View): ViewRouter {
+        let i = 0
+        while i < this.patterns.length() {
+            if this.patterns[i] == pattern {
+                this.builders[i] = build
+                return this
+            }
+            i += 1
+        }
+        this.patterns.push(pattern)
+        this.builders.push(build)
+        return this
+    }
+
+    /** Attach a nested root. Flat `route` entries stay in place. */
+    pub fn nested(root: Route): ViewRouter {
+        this.nestedRootV = root
+        return this
+    }
+
+    /** Build a router whose only route table is a nested root. */
+    static fn fromRoute(root: Route): ViewRouter {
+        let router = new ViewRouter()
+        router.nestedRootV = root
+        return router
+    }
+
+    /**
+     * Cross-fade a path change with `t`. The outgoing view stays mounted under
+     * its old key while it fades out, and the incoming view fades in over it.
+     * Once the fade reaches zero the outgoing view becomes a zero-height
+     * placeholder until the next path change replaces it.
+     */
+    pub fn withTransition(t: Transition): ViewRouter {
+        this.transitionV = t
+        return this
+    }
+
+    fn matchIndex(path: String): Int {
+        let segments = viewRouteSegments(path)
+        let best = -1
+        let bestKind = 3
+        let bestDepth = -1
+        let bestLiterals = -1
+        let i = 0
+        while i < this.patterns.length() {
+            let pattern = this.patterns[i]
+            if viewRouteFits(pattern, segments) {
+                let kind = viewRouteKind(pattern)
+                let depth = viewRouteDepth(pattern)
+                let literals = viewRouteLiterals(pattern)
+                let better = best == -1
+                if best != -1 {
+                    if kind < bestKind {
+                        better = true
+                    } else if kind == bestKind {
+                        if depth > bestDepth {
+                            better = true
+                        } else if depth == bestDepth && literals > bestLiterals {
+                            better = true
+                        }
+                    }
+                }
+                if better {
+                    best = i
+                    bestKind = kind
+                    bestDepth = depth
+                    bestLiterals = literals
+                }
+            }
+            i += 1
+        }
+        return best
+    }
+
+    pub fn navigate(path: String): Bool {
+        if path == this.current {
+            return false
+        }
+        this.stack.push(this.current)
+        this.current = path
+        return true
+    }
+
+    pub fn replace(path: String): Bool {
+        if path == this.current {
+            return false
+        }
+        this.current = path
+        return true
+    }
+
+    pub fn back(): Bool {
+        if this.stack.length() == 0 {
+            return false
+        }
+        let last = this.stack.length() - 1
+        this.current = this.stack[last]
+        this.stack.pop()
+        return true
+    }
+
+    pub fn depth(): Int {
+        return this.stack.length()
+    }
+
+    pub fn currentPath(): String {
+        return this.current
+    }
+
+    pub fn params(): Map<String, String> {
+        let root = this.nestedRootV
+        if root != null {
+            return viewRouteParamsFor(root, this.current)
+        }
+        let index = this.matchIndex(this.current)
+        if index == -1 {
+            return new Map<String, String>()
+        }
+        return viewRouteParams(this.patterns[index], this.current)
+    }
+
+    fn generationKey(path: String): String {
+        return path + "@" + this.navSeq.toString()
+    }
+
+    pub fn view(): View {
+        let resolved = this.resolve(this.current)
+        let t = this.transitionV
+        if t == null {
+            this.lastPath = ""
+            this.lastKey = ""
+            this.lastView = null
+            this.previousView = null
+            this.previousKey = ""
+            return resolved
+        }
+        if this.lastPath == "" || this.lastView == null {
+            this.navSeq += 1
+            this.lastPath = this.current
+            this.lastKey = this.generationKey(this.current)
+            this.lastView = resolved
+            this.previousView = null
+            this.previousKey = ""
+            return Crossfade([Presence(true, this.lastKey, t, [resolved])])
+        }
+        if this.current != this.lastPath {
+            this.navSeq += 1
+            this.previousView = this.lastView
+            this.previousKey = this.lastKey
+            this.lastPath = this.current
+            this.lastKey = this.generationKey(this.current)
+        }
+        this.lastView = resolved
+        let children: Array<View> = []
+        let prev = this.previousView
+        if prev != null && this.previousKey != "" {
+            children.push(Presence(false, this.previousKey, t, [prev]))
+        }
+        children.push(Presence(true, this.lastKey, t, [resolved]))
+        return Crossfade(children)
+    }
+
+    pub fn resolve(path: String): View {
+        let root = this.nestedRootV
+        if root != null {
+            let match = viewRouteRootMatch(root, path)
+            if match == null {
+                return notFound()
+            }
+            return match.render()
+        }
+        let index = this.matchIndex(path)
+        if index == -1 {
+            return notFound()
+        }
+        return this.builders[index](viewRouteParams(this.patterns[index], path))
+    }
+}
+
+
+/** One transient message. */
+pub class Notice {
+    let id: Int
+    let title: String
+    let body: String
+
+    init(id: Int, title: String, body: String) {
+        this.id = id
+        this.title = title
+        this.body = body
+    }
+}
+
+/** App-local notification queue. */
+pub class Notifications {
+    let items: Array<Notice> = []
+    let nextId: Int = 1
+
+    pub fn post(title: String, body: String): Int {
+        let id = this.nextId
+        this.nextId += 1
+        this.items.push(new Notice(id, title, body))
+        return id
+    }
+
+    pub fn dismiss(id: Int): Bool {
+        let out: Array<Notice> = []
+        let found = false
+        let i = 0
+        while i < this.items.length() {
+            if this.items[i].id == id {
+                found = true
+            } else {
+                out.push(this.items[i])
+            }
+            i += 1
+        }
+        this.items = out
+        return found
+    }
+
+    pub fn clear() {
+        this.items = []
+    }
+
+    pub fn count(): Int {
+        return this.items.length()
+    }
+
+    pub fn at(i: Int): Notice {
+        return this.items[i]
+    }
+
+    pub fn title(i: Int): String {
+        return this.items[i].title
+    }
+
+    pub fn body(i: Int): String {
+        return this.items[i].body
+    }
+
+    /** Build a toast stack for the current queue. */
+    pub fn view(b: Build): Node {
+        let col = b.column()
+        col.gap(8)
+        col.fixedWidth(300)
+        let i = 0
+        while i < this.items.length() {
+            let n = this.items[i]
+            let card = b.panel()
+            card.fixedWidth(300)
+            card.addChild(b.text(n.title))
+            card.addChild(b.text(n.body))
+            card.addChild(b.button("Dismiss", () => { this.dismiss(n.id) }))
+            col.addChild(card)
+            i += 1
+        }
+        return col
+    }
+}
+
+/** File helpers for app code. Paths are passed through untouched. */
+pub class AppFiles {
+    pub fn readText(path: String): String {
+        return fs.readText(path).unwrapOr("")
+    }
+
+    pub fn writeText(path: String, text: String): Bool {
+        let r = fs.writeText(path, text, .Overwrite)
+        return r.isOk()
+    }
+
+    pub fn exists(path: String): Bool {
+        return fs.exists(path)
+    }
+
+    pub fn join(dir: String, name: String): String {
+        return dir + "/" + name
+    }
+}
+
+/** A worker thread with a typed result. */
+pub class Worker {
+    let handle: Thread
+
+    init(handle: Thread) {
+        this.handle = handle
+    }
+
+    /** Wrap a thread the app spawned with `Thread.spawn(workerFn)`. */
+    static fn of(handle: Thread): Worker {
+        return new Worker(handle)
+    }
+
+    pub fn join(): Int {
+        return Int(this.handle.join().unwrapOr(0))
+    }
+}
+
+/** The packaging manifest for an app bundle. */
+pub class AppBundle {
+    let name: String
+    let version: String
+    let entry: String
+    let capabilities: Array<String>
+
+    init(name: String, version: String, entry: String, capabilities: Array<String>) {
+        this.name = name
+        this.version = version
+        this.entry = entry
+        this.capabilities = capabilities
+    }
+
+    fn quote(s: String): String {
+        let out = s.replaceAll("\\", "\\\\")
+        out = out.replaceAll("\"", "\\\"")
+        return "\"" + out + "\""
+    }
+
+    pub fn manifest(): String {
+        let caps = ""
+        let i = 0
+        while i < this.capabilities.length() {
+            if i > 0 {
+                caps = caps + ","
+            }
+            caps = caps + this.quote(this.capabilities[i])
+            i += 1
+        }
+        let lb = "\{"
+        let rb = "}"
+        let out = lb + "\"name\":" + this.quote(this.name)
+        out = out + ",\"version\":" + this.quote(this.version)
+        out = out + ",\"entry\":" + this.quote(this.entry)
+        out = out + ",\"capabilities\":[" + caps + "]" + rb
+        return out
+    }
+
+    /** Write the manifest to an exact path. */
+    pub fn writeTo(path: String): Bool {
+        return fs.writeText(path, this.manifest(), .Overwrite).isOk()
+    }
+}
+
 pub class App {
     let window: Window
     let theme: Theme
+    let themeRevV: Int = 0
     let view: fn(Build): Node
     let rootTree: Tree
     let frames: Int = 0
+    let fixedFrameNsV: Int = 0
+    let fakeNowV: Int = 0
+    let lastStatsV: String = ""
+    let lastTimelineV: String = ""
     let status: Int = 0
     let rendererChoice: Renderer
     let frameClock: FrameClock = new FrameClock()
     let animatingFlag: Bool = true
+    let explicitAnimating: Bool = false
+    let deferCommit: Bool = false
     let damageOverlay: Bool = false
+    let inspectorOn: Bool = false
+    let inspectorNodeV: Int = -1
+    let inspectorEnvRead: Bool = false
     let lastW: Int = 0
     let lastH: Int = 0
     let textEngine: TextEngine
@@ -366,12 +2465,42 @@ pub class App {
     let pointerY: Int = 0
     let forceFull: Bool = false
     let hostGenerationSeen: Int = -1
+    let textInput: Bool = false
+    let clipboard: String = ""
+    let clipboardStale: Bool = false
+    let clipboardGen: Int = 0
+    // A Pointer<Byte> field here confuses method resolution in dependent packages.
+    let hostAddr: Int = 0
+    let imeFocused: Int = -1
+    let scaleV: Int = 1000
+    let colorV: Int = 0
+    let cameraV: Camera = Camera.identity()
+    let cameraOn: Bool = false
+    let suspended: Bool = false
+    let resumeAnimating: Bool = true
+    let eventWindow: Int = 0
+    let extraWindows: Int = 0
+    let surfaceSocket: String = ""
+    let pointerMode: Int = 0
+    let pad: Gamepad = new Gamepad()
+    let gamepadHandler: fn(Gamepad): Void
+    let linkHandler: fn(String): Void
+    let linkHandlerSet: Bool = false
+    let reactiveV: Reactive? = null
+    let announceTextV: String = ""
+    let announcePriorityV: Int = 0
+    let announceSeqV: Int = 0
+    let hostFrameHook: fn(Int): Void
+    let closeRequested: Bool = false
 
     init(w: Window, th: Theme, v: fn(Build): Node) {
         this.window = w
         this.theme = th
         this.view = v
         this.rendererChoice = Renderer.auto
+        this.gamepadHandler = (p: Gamepad) => {}
+        this.hostFrameHook = (n: Int) => {}
+        this.linkHandler = (u: String) => {}
         let text = new ParleyText()
         this.textEngine = new TextEngine(
             (s: String, size: Float): Float => text.measure(s, size),
@@ -379,8 +2508,26 @@ pub class App {
             (s: String, at: Int): Int => text.nextGrapheme(s, at),
             (s: String, at: Int): Int => text.prevGrapheme(s, at),
         )
+        this.textEngine.setStyled(
+            (s: String, size: Float, weight: Int, italic: Bool, tracking: Float): Float => text.measureStyled(s, size, weight, italic, tracking),
+            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool, weight: Int, italic: Bool, lineHeight: Float, tracking: Float): Array<TextRow> => text.rowsStyled(s, size, width, wrap, lines, ell, weight, italic, lineHeight, tracking),
+        )
+        this.textEngine.setRich(
+            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool, spans: Array<TextSpan>, lineHeight: Float): RichRows => text.richRows(s, size, width, wrap, lines, ell, spans, lineHeight),
+        )
         this.rootTree = new Tree(this.textEngine)
+        this.rootTree.setTheme(th)
         let app = this
+        this.rootTree.setLinkHandler((url: String) => {
+            app.linkHandler(url)
+        })
+        this.rootTree.setCursorHandler((shape: Int) => {
+            if app.hostAddr != 0 {
+                unsafe {
+                    hostSetCursor(Pointer.fromAddress<Byte>(app.hostAddr), shape)
+                }
+            }
+        })
         this.shortcuts.bind("tab", () => { app.focusNext() })
         this.shortcuts.bind("shift+tab", () => {
             let prev = app.rootTree.focusPrev()
@@ -400,6 +2547,11 @@ pub class App {
         return app
     }
 
+    /** Launch from a declarative `View` value. */
+    static launchView(title: String, width: Int, height: Int, view: fn(): View): App {
+        return new App(new Window(title, width, height), Theme.dark(), (b: Build): Node => View.mount(b.handle(), view()))
+    }
+
     /** Change the backend before the first GPU call. One backend per process. */
     pub fn setRenderer(r: Renderer) {
         this.rendererChoice = r
@@ -415,15 +2567,40 @@ pub class App {
      * event and sleeps otherwise, and the frame clock stops advancing.
      */
     pub fn setAnimating(on: Bool) {
-        if this.animatingFlag == on {
+        this.explicitAnimating = on
+        this.setFrameAnimating(on)
+    }
+
+    fn setFrameAnimating(on: Bool) {
+        let effective = on || this.explicitAnimating
+        if this.animatingFlag == effective {
             return
         }
-        this.animatingFlag = on
-        this.frameClock.setPaused(!on)
+        this.animatingFlag = effective
+        this.frameClock.setPaused(!effective)
     }
 
     pub fn animating(): Bool {
         return this.animatingFlag
+    }
+
+    /**
+     * Bind the reactive graph the view reads. The app drains its queued
+     * effects at the start of a frame and folds its frame intent into
+     * `setAnimating`. One graph per app; none is created for you.
+     */
+    pub fn bindReactive(rx: Reactive) {
+        this.reactiveV = rx
+        this.forceFull = true
+    }
+
+    /** Use a fixed frame step instead of the real clock, for tests and captures. */
+    pub fn setFixedFrameNs(ns: Int) {
+        if ns > 0 {
+            this.fixedFrameNsV = ns
+        } else {
+            this.fixedFrameNsV = 0
+        }
     }
 
     /** Time source for the view. Ticked once per frame by `App.frame`. */
@@ -436,6 +2613,22 @@ pub class App {
         this.damageOverlay = on
     }
 
+    /** Draw node outlines and role labels over the frame for devtools. */
+    pub fn setInspector(on: Bool) {
+        this.inspectorOn = on
+        this.forceFull = true
+    }
+
+    pub fn inspector(): Bool {
+        return this.inspectorOn
+    }
+
+    /** Tint and thicken one node's outline. Pass -1 to clear the selection. */
+    pub fn setInspectorNode(id: Int) {
+        this.inspectorNodeV = id
+        this.forceFull = true
+    }
+
     /** Bind a named chord such as `ctrl+s` or `f1`. */
     pub fn bind(chord: String, run: fn(): Void) {
         this.shortcuts.bind(chord, run)
@@ -445,9 +2638,284 @@ pub class App {
         return this.shortcuts
     }
 
+    /** Observe normalized gamepad axis and button changes. */
+    pub fn onGamepad(handler: fn(Gamepad): Void) {
+        this.gamepadHandler = handler
+    }
+
+    /** Run after every host frame with the frame index, for automation and tracing. */
+    pub fn onHostFrame(handler: fn(Int): Void) {
+        this.hostFrameHook = handler
+    }
+
+    /** Ask the live host loop to close the window after the current frame. */
+    pub fn quit() {
+        this.closeRequested = true
+    }
+
+    /** Observe completed link clicks from any text node. */
+    pub fn onLink(h: fn(String): Void) {
+        this.linkHandler = h
+        this.linkHandlerSet = true
+        let app = this
+        this.rootTree.setLinkHandler((url: String) => {
+            app.linkHandler(url)
+        })
+    }
+
+    /** Run the link handler for `url`. False for an empty URL or no handler. */
+    pub fn openLink(url: String): Bool {
+        if url == "" || !this.linkHandlerSet {
+            return false
+        }
+        this.linkHandler(url)
+        return true
+    }
+
+    pub fn gamepad(): Gamepad {
+        return this.pad
+    }
+
+    /** The accessibility projection of the tree alone, without announcements. */
+    pub fn accessibilityTree(): Accessibility {
+        return Accessibility.build(this.rootTree, this.cameraV, this.cameraOn)
+    }
+
+    /**
+     * Announce a transient message to assistive technology. Priority 1 is
+     * polite and priority 2 is assertive. The message replaces the previous
+     * announcement and advances the sequence, so repeated calls do not stack.
+     */
+    pub fn announce(text: String, priority: Int) {
+        let p = priority
+        if p < 1 { p = 1 }
+        if p > 2 { p = 2 }
+        this.announceTextV = text
+        this.announcePriorityV = p
+        this.announceSeqV += 1
+    }
+
+    /** The accessibility projection of the current tree, plus any announcement. */
+    pub fn accessibility(): Accessibility {
+        let a = this.accessibilityTree()
+        if this.announceSeqV > 0 {
+            a.nodes.push(new A11yNode(
+                1000000,
+                this.rootTree.rootId(),
+                "heading",
+                4,
+                this.announceTextV,
+                "",
+                0,
+                0,
+                0,
+                0,
+                0,
+                false,
+                false,
+                false,
+                false,
+                false,
+                -1,
+                false,
+                false,
+                0,
+                0,
+                this.announcePriorityV,
+                "",
+                0.0,
+                0.0,
+                0.0,
+                -1,
+                -1,
+                -1,
+                this.announceSeqV
+            ))
+        }
+        return a
+    }
+
+    fn applyPointer(mode: Int) {
+        this.pointerMode = mode
+        if this.hostAddr == 0 {
+            return
+        }
+        unsafe {
+            hostPointerCapture(Pointer.fromAddress<Byte>(this.hostAddr), mode)
+        }
+    }
+
+    /** Lock the pointer to its current position. */
+    pub fn lockPointer() {
+        this.applyPointer(1)
+    }
+
+    /** Keep pointer motion inside the window. */
+    pub fn confinePointer() {
+        this.applyPointer(2)
+    }
+
+    pub fn releasePointer() {
+        this.applyPointer(0)
+    }
+
+    fn writeClipboard(s: String) {
+        this.clipboard = s
+        this.clipboardStale = false
+        if this.hostAddr == 0 {
+            return
+        }
+        let bytes: ByteBuffer = ByteBuffer.fromString(s)
+        unsafe {
+            hostClipboardSet(Pointer.fromAddress<Byte>(this.hostAddr), Pointer.fromAddress<Byte>(bytes.address()), bytes.length())
+        }
+    }
+
+    fn refreshClipboard() {
+        if !this.clipboardStale {
+            return
+        }
+        this.clipboardStale = false
+        if this.hostAddr == 0 {
+            return
+        }
+        let buf: ByteBuffer = ByteBuffer.allocate(65536)
+        let n = 0
+        unsafe {
+            n = hostClipboardGet(Pointer.fromAddress<Byte>(this.hostAddr), Pointer.fromAddress<Byte>(buf.address()), buf.length())
+        }
+        if n <= 0 {
+            this.clipboard = ""
+            return
+        }
+        this.clipboard = buf.readString(0, n)
+    }
+
+    /** Copy the focused text box's selection into the system clipboard. */
+    pub fn copy(): Bool {
+        let id = this.rootTree.focused()
+        if id < 0 {
+            return false
+        }
+        let s = this.rootTree.selectedText(Node(tree: this.rootTree, id: id))
+        if s == "" {
+            return false
+        }
+        this.writeClipboard(s)
+        return true
+    }
+
+    /** Cut the focused text box's selection. */
+    pub fn cut(): Bool {
+        if !this.copy() {
+            return false
+        }
+        let id = this.rootTree.focused()
+        if id < 0 {
+            return false
+        }
+        return this.rootTree.replaceSelection(Node(tree: this.rootTree, id: id), "")
+    }
+
+    /** Paste the system clipboard into the focused text box. */
+    pub fn paste(): Bool {
+        this.refreshClipboard()
+        if this.clipboard == "" {
+            return false
+        }
+        let id = this.rootTree.focused()
+        if id < 0 {
+            return false
+        }
+        return this.rootTree.replaceSelection(Node(tree: this.rootTree, id: id), this.clipboard)
+    }
+
+    /** The current clipboard text. Reads the host selection lazily. */
+    pub fn clipboardText(): String {
+        this.refreshClipboard()
+        return this.clipboard
+    }
+
+    pub fn setClipboard(s: String) {
+        this.writeClipboard(s)
+    }
+
+    fn readHostText(host: Pointer<Byte>, n: Int): String {
+        let bytes: ByteBuffer = ByteBuffer.allocate(n)
+        let i = 0
+        while i < n {
+            let b = 0
+            unsafe {
+                b = hostTextByte(host, i)
+            }
+            bytes.writeUInt8(i, b)
+            i += 1
+        }
+        return bytes.readString(0, n)
+    }
+
+    fn syncA11y() {
+        if this.hostAddr == 0 {
+            return
+        }
+        let packet = this.accessibility().encode()
+        unsafe {
+            hostA11y(Pointer.fromAddress<Byte>(this.hostAddr), Pointer.fromAddress<Byte>(packet.address()), packet.length())
+        }
+    }
+
+    fn syncIme() {
+        if this.hostAddr == 0 {
+            return
+        }
+        let id = this.rootTree.focused()
+        let active = id >= 0 && this.rootTree.role[id] == 11
+        if active {
+            let node = Node(tree: this.rootTree, id: id)
+            let cx = this.rootTree.x[id] + this.rootTree.caretX(node)
+            unsafe {
+                hostImeEnable(Pointer.fromAddress<Byte>(this.hostAddr), cx, this.rootTree.y[id], 1, this.rootTree.h[id])
+            }
+            this.imeFocused = id
+        } else if this.imeFocused != -1 {
+            unsafe {
+                hostImeDisable(Pointer.fromAddress<Byte>(this.hostAddr))
+            }
+            this.imeFocused = -1
+        }
+    }
+
     /** Build the tree, lay it out, and encode a full frame. */
+    pub fn lastStats(): String {
+        return this.lastStatsV
+    }
+
+    /** Phase timings of the last built frame, in integer microseconds. */
+    pub fn lastTimeline(): String {
+        return this.lastTimelineV
+    }
+
     pub fn frame(): Frame {
         return this.buildFrame(false)
+    }
+
+    /** Advance the virtual clock by `dtNs` and build one frame. Headless tests
+     * use this so animation state depends on the step count, not wall time. */
+    pub fn advance(dtNs: Int): Frame {
+        if dtNs > 0 {
+            this.fixedFrameNsV = dtNs
+        }
+        return this.buildFrame(false)
+    }
+
+    /** Width of one unwrapped line, using the app's shaping engine. */
+    pub fn measureText(s: String, size: Float): Float {
+        return this.textEngine.measure(s, size)
+    }
+
+    /** Width of one unwrapped line with weight, italic, and tracking applied. */
+    pub fn measureStyledText(s: String, size: Float, weight: Int, italic: Bool, tracking: Float): Float {
+        return this.textEngine.measureStyled(s, size, weight, italic, tracking)
     }
 
     /** Encode only the damaged regions. The host paints those into the target. */
@@ -456,16 +2924,45 @@ pub class App {
     }
 
     fn buildFrame(regions: Bool): Frame {
-        this.frameClock.tick(Clock.mono().nanos)
+        if !this.inspectorEnvRead {
+            this.inspectorEnvRead = true
+            this.inspectorFromEnv()
+        }
+        let now = Clock.mono().nanos
+        if this.fixedFrameNsV > 0 {
+            this.fakeNowV += this.fixedFrameNsV
+            now = this.fakeNowV
+        }
+        this.frameClock.tick(now)
+        this.rootTree.setFrameDt(this.frameClock.dt())
+        let scrolling = this.rootTree.stepScroll(this.frameClock.dt())
+        let rx = this.reactiveV
+        if rx != null {
+            rx.beginFrame()
+            rx.drain()
+        }
+        let t0 = Clock.mono().nanos
         this.rootTree.beginFrame()
         let b = new Build(this.rootTree)
         b.setClock(this.frameClock)
-        b.animate(this.animatingFlag)
+        b.animate(false)
         let root = this.view(b)
-        this.setAnimating(b.animating())
+        let pending = false
+        if rx != null {
+            rx.endFrame()
+            pending = rx.frameNeeded()
+        }
+        this.setFrameAnimating(b.animating() || scrolling || this.rootTree.presenceAnimating() || this.rootTree.longPressPending() || pending)
         this.rootTree.endFrame()
-        this.rootTree.layout(root, this.window.width)
+        let t1 = Clock.mono().nanos
+        this.rootTree.layoutIn(root, this.window.width, this.window.height)
+        this.syncIme()
+        this.syncA11y()
+        let t2 = Clock.mono().nanos
         let full = this.forceFull || this.frames == 0 || this.window.width != this.lastW || this.window.height != this.lastH
+        if this.rootTree.hasEffects() || this.rootTree.effectsChanged() {
+            full = true
+        }
         this.forceFull = false
         this.lastW = this.window.width
         this.lastH = this.window.height
@@ -474,22 +2971,96 @@ pub class App {
         let d = DisplayList.createDefault()
         if regions {
             d = Painter.paintRegions(this.rootTree, this.window.width, this.window.height, this.theme, damage)
+        } else if this.cameraOn {
+            d = Painter.paintCamera(this.rootTree, this.window.width, this.window.height, this.theme, this.cameraV)
         } else {
             d = Painter.paint(this.rootTree, this.window.width, this.window.height, this.theme)
         }
         if this.damageOverlay {
             Painter.paintDamage(d, damage, rgba(255, 0, 220, 255))
         }
+        if this.inspectorOn {
+            d.pushClip(0.0, 0.0, Float(this.window.width), Float(this.window.height))
+            Painter.paintInspector(this.rootTree, d, this.theme, this.inspectorNodeV)
+            d.popClip()
+        }
+        let dropped = d.dropped()
         let list = d.finish(this.window.width, this.window.height)
-        this.rootTree.commit()
-        return new Frame(this.frames, list, this.rootTree.snapshot(), damage)
+        if !this.deferCommit {
+            this.rootTree.commit()
+        }
+        let packet = FramePacket.encode(this.rootTree, this.window.width, this.window.height, this.scaleV, this.colorV)
+        if this.hostAddr != 0 {
+            unsafe {
+                hostFramePacket(Pointer.fromAddress<Byte>(this.hostAddr), Pointer.fromAddress<Byte>(packet.address()), packet.length())
+            }
+        }
+        let t3 = Clock.mono().nanos
+        let buildNs = t1 - t0
+        if buildNs < 0 { buildNs = 0 }
+        let layoutNs = t2 - t1
+        if layoutNs < 0 { layoutNs = 0 }
+        let paintNs = t3 - t2
+        if paintNs < 0 { paintNs = 0 }
+        let totalNs = t3 - t0
+        if totalNs < 0 { totalNs = 0 }
+        let snap = ""
+        if !regions {
+            snap = this.rootTree.snapshot()
+        }
+        let frame = new Frame(this.frames, list, snap, damage, packet, this.scaleV, this.colorV, dropped, buildNs, layoutNs, paintNs, totalNs)
+        this.lastStatsV = frame.stats()
+        this.lastTimelineV = frame.timeline()
+        return frame
     }
 
     /** Render an encoded frame into a new surface. */
     pub fn draw(f: Frame): Surface {
         let s = new Surface(this.window.width, this.window.height, f.list)
         this.status = s.draw()
+        if s.pendingImages() > 0 {
+            this.setAnimating(true)
+        }
         return s
+    }
+
+    /** Render the current frame on the CPU and return a PNG. */
+    pub fn screenshotBytes(): ByteBuffer {
+        let f = this.frame()
+        let s = new Surface(this.window.width, this.window.height, f.list)
+        s.drawCpu()
+        if s.pendingImages() > 0 {
+            s.waitImages(5000)
+            s.drawCpu()
+        }
+        return s.encodePng()
+    }
+
+    /** Render the current frame and write it as a PNG. */
+    pub fn screenshot(path: String): Bool {
+        return fs.writeBytes(path, this.screenshotBytes(), .Overwrite).isOk()
+    }
+
+    /** Write the last presented frame as a PNG. Uses the host surface in a window. */
+    pub fn capture(path: String): Bool {
+        if this.hostAddr != 0 {
+            unsafe {
+                let w = hostWidth(Pointer.fromAddress<Byte>(this.hostAddr))
+                let h = hostHeight(Pointer.fromAddress<Byte>(this.hostAddr))
+                if w > 0 && h > 0 {
+                    let pixels = ByteBuffer.allocate(w * h * 4)
+                    let n = hostCapture(
+                        Pointer.fromAddress<Byte>(this.hostAddr),
+                        Pointer.fromAddress<Byte>(pixels.address()),
+                        pixels.length(),
+                    )
+                    if n > 0 {
+                        return fs.writeBytes(path, encodePngRgba(w, h, pixels), .Overwrite).isOk()
+                    }
+                }
+            }
+        }
+        return this.screenshot(path)
     }
 
     /** Encode one frame and render it into a new surface. */
@@ -505,19 +3076,345 @@ pub class App {
         return this.status
     }
 
+    /** Send frames to a surface socket instead of the Wayland window. */
+    pub fn setSurfaceSocket(path: String) {
+        this.surfaceSocket = path
+    }
+
+    fn runSurfaceSocket(path: String, limit: Int): Int {
+        let bytes: ByteBuffer = ByteBuffer.fromString(path)
+        let addr = 0
+        unsafe {
+            addr = hostSurfaceSocketOpen(
+                Pointer.fromAddress<Byte>(bytes.address()),
+                bytes.length(),
+                1,
+                this.window.width,
+                this.window.height,
+            )
+        }
+        if addr == 0 {
+            return -2
+        }
+        let status = 0
+        let presented = 0
+        while true {
+            let f = this.framePresent()
+            let dn = f.damage().count()
+            let dmg: ByteBuffer = ByteBuffer.allocate(dn * 16)
+            let di = 0
+            while di < dn {
+                dmg.writeInt32LE(di * 16, f.damage().xAt(di))
+                dmg.writeInt32LE(di * 16 + 4, f.damage().yAt(di))
+                dmg.writeInt32LE(di * 16 + 8, f.damage().wAt(di))
+                dmg.writeInt32LE(di * 16 + 12, f.damage().hAt(di))
+                di += 1
+            }
+            let pkt = f.packet()
+            let rc = 0
+            unsafe {
+                rc = hostSurfaceSocketCommit(
+                    Pointer.fromAddress<Byte>(addr),
+                    Pointer.fromAddress<Byte>(f.list.address()),
+                    f.list.length(),
+                    Pointer.fromAddress<Byte>(pkt.address()),
+                    pkt.length(),
+                    Pointer.fromAddress<Byte>(dmg.address()),
+                    dn,
+                )
+            }
+            if rc < 0 {
+                status = rc
+                break
+            }
+            presented += 1
+            if limit > 0 && presented >= limit {
+                break
+            }
+            if limit <= 0 && !this.animatingFlag {
+                break
+            }
+        }
+        unsafe {
+            hostSurfaceSocketClose(Pointer.fromAddress<Byte>(addr))
+        }
+        return status
+    }
+
+    /** Open another toplevel; returns its window id or a negative status. */
+    pub fn openWindow(title: String, w: Int, h: Int): Int {
+        if this.hostAddr == 0 {
+            return -1
+        }
+        let bytes: ByteBuffer = ByteBuffer.fromString(title)
+        let id = 0
+        unsafe {
+            id = hostOpenWindow(Pointer.fromAddress<Byte>(this.hostAddr), Pointer.fromAddress<Byte>(bytes.address()), bytes.length(), w, h)
+        }
+        if id > 0 {
+            unsafe {
+                this.extraWindows = hostWindowCount(Pointer.fromAddress<Byte>(this.hostAddr)) - 1
+            }
+        }
+        return id
+    }
+
+    pub fn windowCount(): Int {
+        if this.hostAddr == 0 {
+            return 1
+        }
+        let count = 0
+        unsafe {
+            count = hostWindowCount(Pointer.fromAddress<Byte>(this.hostAddr))
+        }
+        return count
+    }
+
+    pub fn windowWidth(id: Int): Int {
+        if this.hostAddr == 0 {
+            return this.window.width
+        }
+        let w = 0
+        unsafe {
+            w = hostWindowWidth(Pointer.fromAddress<Byte>(this.hostAddr), id)
+        }
+        return w
+    }
+
+    pub fn windowHeight(id: Int): Int {
+        if this.hostAddr == 0 {
+            return this.window.height
+        }
+        let h = 0
+        unsafe {
+            h = hostWindowHeight(Pointer.fromAddress<Byte>(this.hostAddr), id)
+        }
+        return h
+    }
+
+    pub fn windowGeneration(id: Int): Int {
+        if this.hostAddr == 0 {
+            return 0
+        }
+        let gen = 0
+        unsafe {
+            gen = hostWindowGeneration(Pointer.fromAddress<Byte>(this.hostAddr), id)
+        }
+        return gen
+    }
+
+    /** The window that produced the last host event. */
+    pub fn eventWindowId(): Int {
+        return this.eventWindow
+    }
+
+    /** Present one frame to a specific toplevel. */
+    pub fn presentWindow(id: Int, f: Frame): Int {
+        if this.hostAddr == 0 {
+            return -1
+        }
+        let dn = f.damage().count()
+        let dmg: ByteBuffer = ByteBuffer.allocate(dn * 16)
+        let di = 0
+        while di < dn {
+            dmg.writeInt32LE(di * 16, f.damage().xAt(di))
+            dmg.writeInt32LE(di * 16 + 4, f.damage().yAt(di))
+            dmg.writeInt32LE(di * 16 + 8, f.damage().wAt(di))
+            dmg.writeInt32LE(di * 16 + 12, f.damage().hAt(di))
+            di += 1
+        }
+        let rc = 0
+        unsafe {
+            rc = hostPresentWindow(
+                Pointer.fromAddress<Byte>(this.hostAddr),
+                id,
+                Pointer.fromAddress<Byte>(f.list.address()),
+                f.list.length(),
+                Pointer.fromAddress<Byte>(dmg.address()),
+                dn,
+            )
+        }
+        return rc
+    }
+
+    /** Stop drawing and pause the frame clock, as a hidden surface does. */
+    pub fn suspend() {
+        if this.suspended {
+            return
+        }
+        this.suspended = true
+        this.resumeAnimating = this.animatingFlag
+        this.setAnimating(false)
+        this.frameClock.setPaused(true)
+    }
+
+    /** Resume drawing and restore the previous animation request. */
+    pub fn resume() {
+        if !this.suspended {
+            return
+        }
+        this.suspended = false
+        this.frameClock.setPaused(false)
+        this.setAnimating(this.resumeAnimating)
+        this.forceFull = true
+    }
+
+    pub fn isSuspended(): Bool {
+        return this.suspended
+    }
+
+    /** Output scale in thousandths. 2000 asks for a 2x buffer. */
+    pub fn setScale(s: Int) {
+        this.scaleV = s
+        this.forceFull = true
+    }
+
+    pub fn scale(): Int {
+        return this.scaleV
+    }
+
+    /** Color space wire id: 0 sRGB, 1 linear, 2 Display P3. */
+    pub fn setColorSpace(c: Int) {
+        this.colorV = c
+        this.forceFull = true
+    }
+
+    pub fn colorSpace(): Int {
+        return this.colorV
+    }
+
+    /** Swap the theme before the next frame and invalidate every cached paint. */
+    pub fn setTheme(th: Theme) {
+        this.theme = th
+        this.rootTree.setTheme(th)
+        this.themeRevV += 1
+        this.forceFull = true
+    }
+
+    /** Integer theme revision; increments on every `setTheme`. */
+    pub fn themeRevision(): Int {
+        return this.themeRevV
+    }
+
+    /** Device pixel ratio: tags the frame and exposes `Tree.dp` to the view. */
+    pub fn setDpi(d: Float) {
+        this.rootTree.setDensity(d)
+        this.scaleV = Int(d * 1000.0 + 0.5)
+        this.forceFull = true
+    }
+
+    pub fn setTextScale(f: Float) {
+        this.rootTree.setTextScale(f)
+        this.forceFull = true
+    }
+
+    pub fn setSafeArea(top: Int, right: Int, bottom: Int, left: Int) {
+        this.rootTree.setSafeArea(top, right, bottom, left)
+        this.forceFull = true
+    }
+
+    pub fn setKeyboardInset(bottom: Int) {
+        this.rootTree.setKeyboardInset(bottom)
+        this.forceFull = true
+    }
+
+    /** Apply a scene camera to presentation and hit testing. */
+    pub fn setCamera(c: Camera) {
+        this.cameraV = c
+        this.cameraOn = true
+        this.forceFull = true
+    }
+
+    pub fn clearCamera() {
+        this.cameraOn = false
+        this.forceFull = true
+    }
+
+    pub fn camera(): Camera {
+        return this.cameraV
+    }
+
     pub fn pointerDown(x: Int, y: Int): Bool {
-        return this.rootTree.pointerDown(x, y)
+        if this.suspended {
+            return false
+        }
+        let hit = false
+        if this.cameraOn {
+            hit = this.rootTree.pointerDownCamera(Float(x), Float(y), this.cameraV)
+        } else {
+            hit = this.rootTree.pointerDown(x, y)
+        }
+        if hit && this.rootTree.pressed >= 0 && this.rootTree.role[this.rootTree.pressed] == 7 {
+            this.confinePointer()
+        }
+        return hit
     }
 
     pub fn pointerMove(x: Int, y: Int): Bool {
+        if this.suspended {
+            return false
+        }
+        if this.cameraOn {
+            return this.rootTree.pointerMoveCamera(Float(x), Float(y), this.cameraV)
+        }
         return this.rootTree.pointerMove(x, y)
     }
 
+    pub fn pointerLeave(): Bool {
+        let out = this.rootTree.pointerLeave()
+        this.releasePointer()
+        return out
+    }
+
     pub fn pointerUp(x: Int, y: Int): Bool {
-        return this.rootTree.pointerUp(x, y)
+        if this.suspended {
+            return false
+        }
+        let out = this.rootTree.pointerUp(x, y)
+        this.releasePointer()
+        return out
+    }
+
+    /** Press one host touch id at screen coordinates. */
+    pub fn touchDown(id: Int, x: Int, y: Int): Bool {
+        if this.suspended {
+            return false
+        }
+        this.pointerX = x
+        this.pointerY = y
+        return this.rootTree.pointerDownId(id, x, y, 0)
+    }
+
+    /** Move one host touch id. */
+    pub fn touchMove(id: Int, x: Int, y: Int): Bool {
+        if this.suspended {
+            return false
+        }
+        this.pointerX = x
+        this.pointerY = y
+        return this.rootTree.pointerMoveId(id, x, y)
+    }
+
+    /** Release one host touch id. */
+    pub fn touchUp(id: Int, x: Int, y: Int): Bool {
+        if this.suspended {
+            return false
+        }
+        return this.rootTree.pointerUpId(id, x, y)
+    }
+
+    /** Cancel one host touch id. */
+    pub fn touchCancel(id: Int): Bool {
+        if this.suspended {
+            return false
+        }
+        return this.rootTree.pointerCancelId(id)
     }
 
     pub fn scrollAt(x: Int, y: Int, dy: Float): Bool {
+        if this.cameraOn {
+            return this.rootTree.scrollAtCamera(Float(x), Float(y), dy, this.cameraV)
+        }
         return this.rootTree.scrollAt(x, y, dy)
     }
 
@@ -693,6 +3590,24 @@ pub class App {
             return
         }
         let node = Node(tree: this.rootTree, id: id)
+        if (this.modifiers & 1) != 0 {
+            if code == 46 {
+                this.copy()
+                return
+            }
+            if code == 45 {
+                this.cut()
+                return
+            }
+            if code == 47 {
+                this.paste()
+                return
+            }
+            if code == 30 {
+                this.rootTree.selectAllText(node)
+                return
+            }
+        }
         if code == 14 {
             this.keyDown(Key.backspace)
             return
@@ -729,7 +3644,7 @@ pub class App {
             this.keyDown(Key.enter)
             return
         }
-        if (this.modifiers & (1 | 2 | 8)) == 0 {
+        if (this.modifiers & (1 | 2 | 8)) == 0 && !this.textInput {
             let ch = this.appKeyChar(code, (this.modifiers & 4) != 0)
             if ch != "" && this.rootTree.role[id] == 11 {
                 this.rootTree.typeText(node, ch)
@@ -747,6 +3662,13 @@ pub class App {
     }
 
     fn runHost(limit: Int): Int {
+        if this.surfaceSocket != "" {
+            return this.runSurfaceSocket(this.surfaceSocket, limit)
+        }
+        let envSocket = Env.get("RNX_SURFACE_SOCKET")
+        if envSocket != "" {
+            return this.runSurfaceSocket(envSocket, limit)
+        }
         let title = ByteBuffer.fromString(this.window.title)
         unsafe {
             let host = hostOpen(
@@ -759,19 +3681,27 @@ pub class App {
             if hostWidth(host) < 0 {
                 return -1
             }
+            this.hostAddr = hostAddress(host)
             this.hostGenerationSeen = hostGeneration(host)
+            this.deferCommit = true
             let done = false
             let count = 0
             let status = 0
             let dirty = true
             while !done {
+                if this.closeRequested {
+                    done = true
+                    continue
+                }
+                this.hostFrameHook(this.frames)
                 let gen = hostGeneration(host)
                 if gen != this.hostGenerationSeen {
                     this.hostGenerationSeen = gen
                     this.forceFull = true
                     dirty = true
                 }
-                if this.animatingFlag || dirty || limit > 0 {
+                let requested = false
+                if !this.suspended && (this.animatingFlag || dirty || limit > 0) {
                     let f = this.framePresent()
                     let dn = f.damage().count()
                     let dmg = ByteBuffer.allocate(dn * 16)
@@ -782,6 +3712,10 @@ pub class App {
                         dmg.writeInt32LE(di * 16 + 8, f.damage().wAt(di))
                         dmg.writeInt32LE(di * 16 + 12, f.damage().hAt(di))
                         di += 1
+                    }
+                    if (this.animatingFlag || limit > 0) && dn > 0 {
+                        hostRequestFrame(host)
+                        requested = true
                     }
                     let rc = hostPresent(
                         host,
@@ -795,8 +3729,10 @@ pub class App {
                         status = rc
                         done = true
                     } else if rc == 0 {
+                        this.rootTree.commit()
                         count += 1
                     } else if rc == -4 || rc == 1 {
+                        this.forceFull = true
                         dirty = true
                     }
                     if limit > 0 && count >= limit {
@@ -810,7 +3746,16 @@ pub class App {
                 if this.animatingFlag || limit > 0 {
                     wait = 0
                 }
-                let ev = hostPumpTimeout(host, wait)
+                let ev = 0
+                if wait == 0 {
+                    if requested {
+                        ev = hostWaitFrame(host, 20)
+                    } else {
+                        ev = hostPumpFor(host, 16)
+                    }
+                } else {
+                    ev = hostPumpTimeout(host, wait)
+                }
                 while ev != 0 && !done {
                     if ev == 1 {
                         done = true
@@ -852,11 +3797,126 @@ pub class App {
                     } else if ev == 7 {
                         this.keyEvent(hostEventA(host), false)
                     } else if ev == 10 {
-                        if this.rootTree.pointerLeave() {
+                        if this.pointerLeave() {
                             dirty = true
                         }
+                    } else if ev == 11 {
+                        let n = hostEventA(host)
+                        if n > 0 && (this.modifiers & (1 | 2 | 8)) == 0 {
+                            let id = this.rootTree.focused()
+                            if id >= 0 && this.rootTree.role[id] == 11 {
+                                this.rootTree.typeText(Node(tree: this.rootTree, id: id), this.readHostText(host, n))
+                                dirty = true
+                            }
+                        }
+                    } else if ev == 14 {
+                        let n = hostEventA(host)
+                        let id = this.rootTree.focused()
+                        if id >= 0 && this.rootTree.role[id] == 11 {
+                            let node = Node(tree: this.rootTree, id: id)
+                            if n > 0 {
+                                this.rootTree.setPreedit(node, this.readHostText(host, n))
+                            } else {
+                                this.rootTree.clearPreedit(node)
+                            }
+                            dirty = true
+                        }
+                    } else if ev == 15 {
+                        let n = hostEventA(host)
+                        let id = this.rootTree.focused()
+                        if n > 0 && id >= 0 && this.rootTree.role[id] == 11 {
+                            let node = Node(tree: this.rootTree, id: id)
+                            this.rootTree.typeText(node, this.readHostText(host, n))
+                            this.rootTree.clearPreedit(node)
+                            dirty = true
+                        }
+                    } else if ev == 16 {
+                        let id = this.rootTree.focused()
+                        if id >= 0 && this.rootTree.role[id] == 11 {
+                            if this.rootTree.deleteSurrounding(Node(tree: this.rootTree, id: id), hostEventA(host), hostEventB(host)) {
+                                dirty = true
+                            }
+                        }
+                    } else if ev == 17 {
+                        let id = this.rootTree.focused()
+                        if id >= 0 && this.rootTree.role[id] == 11 {
+                            this.rootTree.clearPreedit(Node(tree: this.rootTree, id: id))
+                            dirty = true
+                        }
+                    } else if ev == 18 {
+                        this.pad.setAxis(hostEventA(host), hostEventB(host))
+                        this.gamepadHandler(this.pad)
+                        dirty = true
+                    } else if ev == 19 {
+                        this.pad.setButton(hostEventA(host), hostEventB(host) != 0)
+                        this.gamepadHandler(this.pad)
+                        dirty = true
+                    } else if ev == 20 {
+                        this.pad.setConnected(hostEventA(host) != 0)
+                        this.gamepadHandler(this.pad)
+                        dirty = true
+                    } else if ev == 21 {
+                        let id = hostEventA(host)
+                        let act = hostEventB(host)
+                        if id >= 0 && id < this.rootTree.role.length() {
+                            let node = Node(tree: this.rootTree, id: id)
+                            if act == 0 {
+                                this.rootTree.tap(node)
+                            } else if act == 1 {
+                                this.rootTree.focusOn(node)
+                            } else if act == 2 {
+                                this.rootTree.adjust(node, 0.05)
+                            } else if act == 3 {
+                                this.rootTree.adjust(node, 0.0 - 0.05)
+                            }
+                            dirty = true
+                        }
+                    } else if ev == 22 {
+                        let id = hostEventA(host)
+                        let n = hostEventB(host)
+                        if id >= 0 && id < this.rootTree.role.length() && n > 0 {
+                            this.rootTree.setTextValue(Node(tree: this.rootTree, id: id), this.readHostText(host, n))
+                            dirty = true
+                        }
+                    } else if ev == 23 {
+                        this.suspend()
+                        dirty = true
+                    } else if ev == 24 {
+                        this.resume()
+                        dirty = true
+                    } else if ev == 25 {
+                        let id = hostEventA(host)
+                        let x = hostEventB(host)
+                        let y = hostEventC(host)
+                        if this.touchDown(id, x, y) {
+                            dirty = true
+                        }
+                    } else if ev == 26 {
+                        let id = hostEventA(host)
+                        let x = hostEventB(host)
+                        let y = hostEventC(host)
+                        if this.touchMove(id, x, y) {
+                            dirty = true
+                        }
+                    } else if ev == 27 {
+                        let id = hostEventA(host)
+                        let x = hostEventB(host)
+                        let y = hostEventC(host)
+                        if this.touchUp(id, x, y) {
+                            dirty = true
+                        }
+                    } else if ev == 28 {
+                        if this.touchCancel(hostEventA(host)) {
+                            dirty = true
+                        }
+                    } else if ev == 12 {
+                        this.textInput = true
+                    } else if ev == 13 {
+                        this.clipboardGen = hostEventA(host)
+                        this.clipboardStale = true
+                        dirty = true
                     } else if ev == 9 {
-                        if this.rootTree.scrollAt(this.pointerX, this.pointerY, Float(hostEventA(host)) * 40.0) {
+                        if this.rootTree.scrollAt(this.pointerX, this.pointerY, Float(hostEventA(host))) {
                             dirty = true
                         }
                     }
@@ -866,13 +3926,35 @@ pub class App {
                     ev = hostPumpTimeout(host, 0)
                 }
             }
+            this.releasePointer()
+            unsafe {
+                hostImeDisable(host)
+            }
             hostClose(host)
+            this.hostAddr = 0
+            this.imeFocused = -1
             return status
+        }
+    }
+
+    /** Run a semicolon-separated UI script headless. Returns 0 when every step passes. */
+    pub fn runScript(script: String): Int {
+        return Driver.on(this).runScript(script)
+    }
+
+    /** Turn the inspector on when `RNX_INSPECT=1` is set. */
+    fn inspectorFromEnv() {
+        if Env.get("RNX_INSPECT") == "1" {
+            this.setInspector(true)
         }
     }
 
     /** Open the window and render until it closes. */
     pub fn show(): Int {
+        let script = Env.get("RNX_UI_SCRIPT")
+        if script != "" {
+            return this.runScript(script)
+        }
         return this.runHost(-1)
     }
 
@@ -880,4 +3962,982 @@ pub class App {
     pub fn showFor(frames: Int): Int {
         return this.runHost(frames)
     }
+}
+
+/** One colon-delimited field of a UI script step. Field 0 is the verb. */
+fn uiField(step: String, which: Int): String {
+    let rest = step
+    let i = 0
+    while i < which {
+        let at = rest.indexOf(":")
+        if at == -1 {
+            return ""
+        }
+        rest = rest.slice(at + 1, rest.length())
+        i += 1
+    }
+    let end = rest.indexOf(":")
+    if end == -1 {
+        return rest.trim()
+    }
+    return rest.slice(0, end).trim()
+}
+
+/** Everything after `skip` colons, colons included, trimmed. */
+fn uiRest(step: String, skip: Int): String {
+    let rest = step
+    let i = 0
+    while i < skip {
+        let at = rest.indexOf(":")
+        if at == -1 {
+            return ""
+        }
+        rest = rest.slice(at + 1, rest.length())
+        i += 1
+    }
+    return rest.trim()
+}
+
+fn uiIntOf(text: String): Int {
+    let s = text.trim()
+    let sign = 1
+    let i = 0
+    if s.length() > 0 {
+        let c = s.charCodeAt(0)
+        if c == 45 {
+            sign = -1
+            i = 1
+        } else if c == 43 {
+            i = 1
+        }
+    }
+    let value = 0
+    while i < s.length() {
+        let c = s.charCodeAt(i)
+        if c < 48 || c > 57 {
+            break
+        }
+        value = value * 10 + (c - 48)
+        i += 1
+    }
+    return value * sign
+}
+
+fn uiFloatOf(text: String): Float {
+    let s = text.trim()
+    let sign = 1.0
+    let i = 0
+    if s.length() > 0 {
+        let c = s.charCodeAt(0)
+        if c == 45 {
+            sign = 0.0 - 1.0
+            i = 1
+        } else if c == 43 {
+            i = 1
+        }
+    }
+    let value = 0.0
+    while i < s.length() {
+        let c = s.charCodeAt(i)
+        if c < 48 || c > 57 {
+            break
+        }
+        value = value * 10.0 + Float(c - 48)
+        i += 1
+    }
+    if i < s.length() && s.charCodeAt(i) == 46 {
+        i += 1
+        let scale = 0.1
+        while i < s.length() {
+            let c = s.charCodeAt(i)
+            if c < 48 || c > 57 {
+                break
+            }
+            value = value + Float(c - 48) * scale
+            scale = scale * 0.1
+            i += 1
+        }
+    }
+    return value * sign
+}
+
+fn uiIsKey(name: String): Bool {
+    if name == "enter" { return true }
+    if name == "tab" { return true }
+    if name == "escape" { return true }
+    if name == "space" { return true }
+    if name == "up" { return true }
+    if name == "down" { return true }
+    if name == "left" { return true }
+    if name == "right" { return true }
+    if name == "backspace" { return true }
+    if name == "delete" { return true }
+    if name == "home" { return true }
+    if name == "end" { return true }
+    return false
+}
+
+fn uiKey(name: String): Key {
+    if name == "tab" { return Key.tab }
+    if name == "escape" { return Key.escape }
+    if name == "space" { return Key.space }
+    if name == "up" { return Key.up }
+    if name == "down" { return Key.down }
+    if name == "left" { return Key.left }
+    if name == "right" { return Key.right }
+    if name == "backspace" { return Key.backspace }
+    if name == "delete" { return Key.delete }
+    if name == "home" { return Key.home }
+    if name == "end" { return Key.end }
+    return Key.enter
+}
+
+/** Test-driver API over the accessibility projection. */
+pub class Driver {
+    let app: App
+    let pinchValueV: Float = 1.0
+    let pinchRotationV: Float = 0.0
+
+    init(a: App) {
+        this.app = a
+    }
+
+    static fn on(a: App): Driver {
+        return new Driver(a)
+    }
+
+    pub fn tree(): Tree {
+        return this.app.tree()
+    }
+
+    pub fn access(): Accessibility {
+        return this.app.accessibilityTree()
+    }
+
+    /** Announce a transient message; priority 1 is polite, 2 assertive. */
+    pub fn announce(text: String, priority: Int) {
+        this.app.announce(text, priority)
+    }
+
+    pub fn frame() {
+        this.app.frame()
+    }
+
+    /** Toggle the node inspector overlay. */
+    pub fn inspect(on: Bool) {
+        this.app.setInspector(on)
+    }
+
+    pub fn exists(role: String, name: String): Bool {
+        return this.access().find(role, name) >= 0
+    }
+
+    pub fn press(role: String, name: String): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let ok = a.press(this.app.tree(), a.at(i).id)
+        this.app.frame()
+        return ok
+    }
+
+    pub fn click(role: String, name: String): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let n = a.at(i)
+        let x = n.x + n.w / 2
+        let y = n.y + n.h / 2
+        let down = this.app.pointerDown(x, y)
+        this.app.pointerUp(x, y)
+        this.app.frame()
+        return down
+    }
+
+    pub fn increment(role: String, name: String, delta: Float): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let ok = a.increment(this.app.tree(), a.at(i).id, delta)
+        this.app.frame()
+        return ok
+    }
+
+    pub fn setValue(role: String, name: String, value: String): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let ok = a.setValue(this.app.tree(), a.at(i).id, value)
+        this.app.frame()
+        return ok
+    }
+
+    pub fn focus(role: String, name: String): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let n = a.at(i)
+        this.app.tree().focusOn(Node(tree: this.app.tree(), id: n.id))
+        this.app.frame()
+        return true
+    }
+
+    pub fn value(role: String, name: String): String {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return ""
+        }
+        return a.at(i).value
+    }
+
+    /** Open the link node with accessible name `name`. */
+    pub fn openLink(name: String): Bool {
+        let a = this.access()
+        let i = a.find("link", name)
+        if i < 0 {
+            return false
+        }
+        return this.app.openLink(a.at(i).value)
+    }
+
+    /** Open `url` through the app link handler. */
+    pub fn openLinkUrl(url: String): Bool {
+        return this.app.openLink(url)
+    }
+
+    /** Route a key to the named node after focusing it. */
+    pub fn key(role: String, name: String, key: Key): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let node = Node(tree: this.app.tree(), id: a.at(i).id)
+        this.app.tree().focusOn(node)
+        let ok = this.app.tree().keyDown(node, key)
+        this.app.frame()
+        return ok
+    }
+
+    /** Scroll at the center of the named node. */
+    pub fn scroll(role: String, name: String, dy: Float): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let n = a.at(i)
+        let ok = this.app.scrollAt(n.x + n.w / 2, n.y + n.h / 2, dy)
+        this.app.frame()
+        return ok
+    }
+
+    /** Start a fling on the scroll node containing the named node. */
+    pub fn fling(role: String, name: String, velocity: Float): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let t = this.app.tree()
+        let at = a.at(i).id
+        while at != -1 && t.scrollMax[at] <= 0.0 {
+            at = t.parent[at]
+        }
+        if at == -1 {
+            return false
+        }
+        let ok = t.scrollFling(Node(tree: t, id: at), velocity)
+        this.app.frame()
+        return ok
+    }
+
+    /**
+     * Press the center of the named node, move to `dx`/`dy` in timed steps,
+     * and release. Returns true when the press hit a node.
+     */
+    pub fn drag(role: String, name: String, dx: Float, dy: Float, steps: Int): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let n = a.at(i)
+        let x = n.x + n.w / 2
+        let y = n.y + n.h / 2
+        let t = this.app.tree()
+        if t.hitTest(x, y) == -1 {
+            return false
+        }
+        let total = steps
+        if total <= 0 {
+            total = 8
+        }
+        t.pointerDownId(0, x, y, 0)
+        let k = 1
+        while k <= total {
+            let mx = x + Int(dx * Float(k) / Float(total))
+            let my = y + Int(dy * Float(k) / Float(total))
+            t.pointerMoveTimed(0, mx, my, k * 16000000)
+            k += 1
+        }
+        t.pointerUpId(0, x + Int(dx), y + Int(dy))
+        this.app.frame()
+        this.app.frame()
+        return true
+    }
+
+    /**
+     * Press the center of the source, move to the center of the target in
+     * timed steps, and release. Returns true only when a drop occurred.
+     */
+    pub fn dragTo(sourceRole: String, sourceName: String, targetRole: String, targetName: String, steps: Int = 8): Bool {
+        let a = this.access()
+        let si = a.find(sourceRole, sourceName)
+        let ti = a.find(targetRole, targetName)
+        if si < 0 || ti < 0 {
+            return false
+        }
+        let s = a.at(si)
+        let d = a.at(ti)
+        let x0 = s.x + s.w / 2
+        let y0 = s.y + s.h / 2
+        let x1 = d.x + d.w / 2
+        let y1 = d.y + d.h / 2
+        let t = this.app.tree()
+        if t.hitTest(x0, y0) == -1 {
+            return false
+        }
+        t.clearDropResult()
+        let total = steps
+        if total <= 0 {
+            total = 8
+        }
+        t.pointerDownId(0, x0, y0, 0)
+        let k = 1
+        while k <= total {
+            let mx = x0 + (x1 - x0) * k / total
+            let my = y0 + (y1 - y0) * k / total
+            t.pointerMoveTimed(0, mx, my, k * 16000000)
+            k += 1
+        }
+        t.pointerUpId(0, x1, y1)
+        let dropped = t.lastDrop() != null
+        this.app.frame()
+        this.app.frame()
+        return dropped
+    }
+
+    /**
+     * Hold the center of the named node for about 0.55 s, then release.
+     * Returns true when both the press and the release reached a node.
+     */
+    pub fn longPress(role: String, name: String): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let n = a.at(i)
+        let x = n.x + n.w / 2
+        let y = n.y + n.h / 2
+        let t = this.app.tree()
+        if t.hitTest(x, y) == -1 {
+            return false
+        }
+        this.app.setFixedFrameNs(16000000)
+        this.app.frame()
+        t.pointerDownId(0, x, y, 0)
+        this.app.frame()
+        let held = 0
+        while held < 35 {
+            this.app.frame()
+            held += 1
+        }
+        t.pointerUpId(0, x, y)
+        this.app.frame()
+        return true
+    }
+
+    /**
+     * Two quick presses on the center of the named node. Returns true when the
+     * tree counted the pair as a double tap.
+     */
+    pub fn doubleTap(role: String, name: String): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let n = a.at(i)
+        let x = n.x + n.w / 2
+        let y = n.y + n.h / 2
+        let t = this.app.tree()
+        if t.hitTest(x, y) == -1 {
+            return false
+        }
+        this.app.setFixedFrameNs(16000000)
+        this.app.frame()
+        t.pointerDownId(0, x, y, 0)
+        this.app.frame()
+        t.pointerUpId(0, x, y)
+        this.app.frame()
+        let wait = 0
+        while wait < 4 {
+            this.app.frame()
+            wait += 1
+        }
+        t.pointerDownId(0, x, y, 0)
+        this.app.frame()
+        t.pointerUpId(0, x, y)
+        this.app.frame()
+        this.app.frame()
+        return t.tapCount() == 2
+    }
+
+    /**
+     * Put two pointers on either side of the named node's center and move them
+     * until the distance ratio reaches `scale`. The pre-release ratio stays
+     * readable through `pinchValue` and `pinchRotationValue`.
+     */
+    pub fn pinch(role: String, name: String, scale: Float): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        let n = a.at(i)
+        if n.w < 24 {
+            return false
+        }
+        let s = scale
+        if s < 0.1 {
+            s = 0.1
+        }
+        if s > 4.0 {
+            s = 4.0
+        }
+        let cx = n.x + n.w / 2
+        let cy = n.y + n.h / 2
+        let span = n.w / 2 - 2
+        if span < 10 {
+            return false
+        }
+        let startX = cx - span
+        let endX = cx + span
+        let t = this.app.tree()
+        if t.hitTest(startX, cy) == -1 || t.hitTest(endX, cy) == -1 {
+            return false
+        }
+        this.app.setFixedFrameNs(16000000)
+        this.app.frame()
+        t.pointerDownId(0, startX, cy, 0)
+        t.pointerDownId(1, endX, cy, 0)
+        this.app.frame()
+        let steps = 8
+        let k = 1
+        while k <= steps {
+            let half = Float(span) * (1.0 + 2.0 * (s - 1.0) * Float(k) / Float(steps))
+            t.pointerMoveId(1, cx + Int(half + 0.5), cy)
+            this.app.frame()
+            k += 1
+        }
+        this.pinchValueV = t.pinchScale()
+        this.pinchRotationV = t.pinchRotation()
+        let diff = this.pinchValueV - s
+        if diff < 0.0 {
+            diff = 0.0 - diff
+        }
+        let reached = diff <= 0.05
+        let final = Float(span) * (1.0 + 2.0 * (s - 1.0))
+        t.pointerUpId(0, startX, cy)
+        t.pointerUpId(1, cx + Int(final + 0.5), cy)
+        this.app.frame()
+        return reached
+    }
+
+    /** The pinch ratio measured just before the last driver pinch released. */
+    pub fn pinchValue(): Float {
+        return this.pinchValueV
+    }
+
+    /** The rotation in radians measured before the last driver pinch released. */
+    pub fn pinchRotationValue(): Float {
+        return this.pinchRotationV
+    }
+
+    /** Alias for `pinchValue` that matches the tree query. */
+    pub fn pinchScale(): Float {
+        return this.pinchValueV
+    }
+
+    /** Alias for `pinchRotationValue` that matches the tree query. */
+    pub fn pinchRotation(): Float {
+        return this.pinchRotationV
+    }
+
+    /** The current value of the named text box or slider. */
+    pub fn valueOf(role: String, name: String): String {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return ""
+        }
+        return this.app.tree().valueOf(Node(tree: this.app.tree(), id: a.at(i).id))
+    }
+
+    /** The checked state of the named toggle, checkbox, or radio. */
+    pub fn checked(role: String, name: String): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        return this.app.tree().isChecked(Node(tree: this.app.tree(), id: a.at(i).id))
+    }
+
+    /** Whether the named node is selected. */
+    pub fn selectedOf(role: String, name: String): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        return a.at(i).selected
+    }
+
+    /** Expansion state of the named node: -1 unknown, 0 collapsed, 1 expanded. */
+    pub fn expandedOf(role: String, name: String): Int {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return -1
+        }
+        return a.at(i).expanded
+    }
+
+    /** Whether the named node is busy. */
+    pub fn busyOf(role: String, name: String): Bool {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return false
+        }
+        return a.at(i).busy
+    }
+
+    /** The accessible description of the named node. */
+    pub fn descriptionOf(role: String, name: String): String {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return ""
+        }
+        return a.at(i).description
+    }
+
+    /** Bounds and step of the named numeric control. */
+    pub fn rangeOf(role: String, name: String): A11yRange {
+        let a = this.access()
+        let i = a.find(role, name)
+        if i < 0 {
+            return new A11yRange(0.0, 0.0, 0.0)
+        }
+        let n = a.at(i)
+        return new A11yRange(n.valueMin, n.valueMax, n.valueStep)
+    }
+
+    /**
+     * Run a semicolon-separated script of UI steps. Steps that change state
+     * build a frame before the next step so assertions see current state.
+     */
+    pub fn runScript(script: String): Int {
+        this.app.frame()
+        let steps = script.split(";")
+        let i = 0
+        while i < steps.length() {
+            let step = steps[i].trim()
+            if step == "" {
+                i += 1
+                continue
+            }
+            let ok = this.runStep(step)
+            let word = "fail"
+            if ok {
+                word = "ok"
+            }
+            print("ui.step " + i.toString() + " " + step + " " + word)
+            if !ok {
+                print("ui.result fail " + step)
+                return 1
+            }
+            i += 1
+        }
+        print("ui.result ok")
+        return 0
+    }
+
+    fn runStep(step: String): Bool {
+        let verb = uiField(step, 0)
+        if verb == "wait" {
+            let total = uiIntOf(uiField(step, 1))
+            let n = 0
+            while n < total {
+                this.app.frame()
+                n += 1
+            }
+            return true
+        }
+        if verb == "shot" {
+            let path = uiRest(step, 1)
+            if path == "" {
+                return false
+            }
+            return this.screenshot(path)
+        }
+        if verb == "stats" {
+            print("ui.stats", this.stats())
+            return true
+        }
+        if verb == "timeline" {
+            print("ui.timeline " + this.timeline())
+            return true
+        }
+        if verb == "announce" {
+            let text = uiField(step, 1)
+            if text == "" {
+                return false
+            }
+            let priority = 1
+            let level = uiField(step, 2)
+            if level == "1" {
+                priority = 1
+            } else if level == "2" {
+                priority = 2
+            } else if level != "" {
+                return false
+            }
+            this.announce(text, priority)
+            return true
+        }
+        if verb == "inspect" {
+            let mode = uiField(step, 1).toLowerCase()
+            if mode == "on" {
+                this.app.setInspector(true)
+                return true
+            }
+            if mode == "off" {
+                this.app.setInspector(false)
+                return true
+            }
+            return false
+        }
+        if verb == "drop" {
+            let sourceRole = uiField(step, 1)
+            let sourceName = uiField(step, 2)
+            let targetRole = uiField(step, 3)
+            let targetName = uiField(step, 4)
+            if sourceRole == "" || sourceName == "" || targetRole == "" || targetName == "" {
+                return false
+            }
+            return this.dragTo(sourceRole, sourceName, targetRole, targetName)
+        }
+        let role = uiField(step, 1)
+        let name = uiField(step, 2)
+        if role == "" || name == "" {
+            return false
+        }
+        if verb == "press" {
+            return this.press(role, name)
+        }
+        if verb == "click" {
+            return this.click(role, name)
+        }
+        if verb == "focus" {
+            return this.focus(role, name)
+        }
+        if verb == "set" {
+            return this.setValue(role, name, uiRest(step, 3))
+        }
+        if verb == "inc" {
+            return this.increment(role, name, uiFloatOf(uiField(step, 3)))
+        }
+        if verb == "key" {
+            let k = uiField(step, 3).toLowerCase()
+            if !uiIsKey(k) {
+                return false
+            }
+            return this.key(role, name, uiKey(k))
+        }
+        if verb == "scroll" {
+            return this.scroll(role, name, uiFloatOf(uiField(step, 3)))
+        }
+        if verb == "fling" {
+            return this.fling(role, name, uiFloatOf(uiField(step, 3)))
+        }
+        if verb == "drag" {
+            let steps = 8
+            let stepText = uiField(step, 5)
+            if stepText != "" {
+                steps = uiIntOf(stepText)
+            }
+            return this.drag(role, name, uiFloatOf(uiField(step, 3)), uiFloatOf(uiField(step, 4)), steps)
+        }
+        if verb == "longPress" {
+            return this.longPress(role, name)
+        }
+        if verb == "doubleTap" {
+            return this.doubleTap(role, name)
+        }
+        if verb == "pinch" {
+            let scale = uiFloatOf(uiField(step, 3))
+            if scale < 0.1 || scale > 4.0 {
+                return false
+            }
+            return this.pinch(role, name, scale)
+        }
+        if verb == "assert" {
+            return this.exists(role, name)
+        }
+        if verb == "assertValue" {
+            if !this.exists(role, name) {
+                return false
+            }
+            return this.valueOf(role, name) == uiRest(step, 3)
+        }
+        if verb == "assertChecked" {
+            if !this.exists(role, name) {
+                return false
+            }
+            return this.checked(role, name) == (uiField(step, 3).toLowerCase() == "true")
+        }
+        if verb == "assertSelected" {
+            if !this.exists(role, name) {
+                return false
+            }
+            return this.selectedOf(role, name) == (uiField(step, 3).toLowerCase() == "true")
+        }
+        if verb == "assertExpanded" {
+            if !this.exists(role, name) {
+                return false
+            }
+            return (this.expandedOf(role, name) > 0) == (uiField(step, 3).toLowerCase() == "true")
+        }
+        if verb == "assertBusy" {
+            if !this.exists(role, name) {
+                return false
+            }
+            return this.busyOf(role, name) == (uiField(step, 3).toLowerCase() == "true")
+        }
+        if verb == "assertDescription" {
+            if !this.exists(role, name) {
+                return false
+            }
+            return this.descriptionOf(role, name) == uiRest(step, 3)
+        }
+        if verb == "assertRange" {
+            if !this.exists(role, name) {
+                return false
+            }
+            let r = this.rangeOf(role, name)
+            return r.min == uiFloatOf(uiField(step, 3)) && r.max == uiFloatOf(uiField(step, 4))
+        }
+        if verb == "assertFocus" {
+            let a = this.access()
+            let i = a.find(role, name)
+            if i < 0 {
+                return false
+            }
+            return a.at(i).focused
+        }
+        return false
+    }
+
+    /** Render the current frame and write it as a PNG. */
+    pub fn screenshot(path: String): Bool {
+        return this.app.screenshot(path)
+    }
+
+    /** Counts from the last built frame. */
+    pub fn stats(): String {
+        return this.app.lastStats()
+    }
+
+    /** Phase timings of the last built frame, in integer microseconds. */
+    pub fn timeline(): String {
+        return this.app.lastTimeline()
+    }
+
+    /** Encode the projection, including announcements, as the host packet. */
+    pub fn encode(): ByteBuffer {
+        return this.app.accessibility().encode()
+    }
+
+    pub fn dump(): String {
+        return this.access().dump()
+    }
+}
+
+/** MCP tool projection over a Driver. Off unless an app builds it. */
+pub class Mcp {
+    let driver: Driver
+
+    init(d: Driver) {
+        this.driver = d
+    }
+
+    static fn on(d: Driver): Mcp {
+        return new Mcp(d)
+    }
+
+    fn quote(s: String): String {
+        let out = s.replaceAll("\\", "\\\\")
+        out = out.replaceAll("\"", "\\\"")
+        out = out.replaceAll("\n", "\\n")
+        return "\"" + out + "\""
+    }
+
+    fn braces(s: String): String {
+        let out = s.replaceAll("<<", "\{")
+        out = out.replaceAll(">>", "}")
+        return out
+    }
+
+    fn result(ok: Bool): String {
+        let err = "false"
+        let msg = "ok"
+        if !ok {
+            err = "true"
+            msg = "not handled"
+        }
+        return this.braces("<<\"isError\":" + err + ",\"content\":[<<\"type\":\"text\",\"text\":\"" + msg + "\">>]>>")
+    }
+
+    fn verdict(ok: Bool): String {
+        if ok {
+            return this.braces("<<\"isError\":false,\"content\":[<<\"type\":\"text\",\"text\":\"true\">>]>>")
+        }
+        return this.braces("<<\"isError\":true,\"content\":[<<\"type\":\"text\",\"text\":\"assertion failed\">>]>>")
+    }
+
+    /** One JSON object per projected node, with every state field. */
+    fn treeJson(): String {
+        let a = this.driver.access()
+        let out = "["
+        let i = 0
+        while i < a.count() {
+            let n = a.at(i)
+            if i > 0 {
+                out = out + ","
+            }
+            out = out + "\{\"id\":" + n.id.toString()
+            out = out + ",\"parent\":" + n.parent.toString()
+            out = out + ",\"role\":" + this.quote(n.role)
+            out = out + ",\"roleId\":" + n.roleId.toString()
+            out = out + ",\"name\":" + this.quote(n.name)
+            out = out + ",\"value\":" + this.quote(n.value)
+            out = out + ",\"x\":" + n.x.toString()
+            out = out + ",\"y\":" + n.y.toString()
+            out = out + ",\"w\":" + n.w.toString()
+            out = out + ",\"h\":" + n.h.toString()
+            out = out + ",\"actions\":" + n.actions.toString()
+            out = out + ",\"checked\":" + n.checked.toString()
+            out = out + ",\"disabled\":" + n.disabled.toString()
+            out = out + ",\"focused\":" + n.focused.toString()
+            out = out + ",\"inert\":" + n.inert.toString()
+            out = out + ",\"selected\":" + n.selected.toString()
+            out = out + ",\"expanded\":" + n.expanded.toString()
+            out = out + ",\"busy\":" + n.busy.toString()
+            out = out + ",\"required\":" + n.required.toString()
+            out = out + ",\"invalid\":" + n.invalid.toString()
+            out = out + ",\"level\":" + n.level.toString()
+            out = out + ",\"live\":" + n.live.toString()
+            out = out + ",\"description\":" + this.quote(n.description)
+            out = out + ",\"min\":" + n.valueMin.toString()
+            out = out + ",\"max\":" + n.valueMax.toString()
+            out = out + ",\"step\":" + n.valueStep.toString()
+            out = out + "}"
+            i += 1
+        }
+        return out + "]"
+    }
+
+    pub fn tools(): String {
+        return this.braces("[<<\"name\":\"ui.list\",\"description\":\"List accessible nodes\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<>>>>>>,<<\"name\":\"ui.press\",\"description\":\"Press a node\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"role\":<<\"type\":\"string\">>,\"name\":<<\"type\":\"string\">>>>>>>>,<<\"name\":\"ui.increment\",\"description\":\"Increment a slider or toggle\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"role\":<<\"type\":\"string\">>,\"name\":<<\"type\":\"string\">>,\"delta\":<<\"type\":\"number\">>>>>>>>,<<\"name\":\"ui.setValue\",\"description\":\"Set a text value\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"role\":<<\"type\":\"string\">>,\"name\":<<\"type\":\"string\">>,\"value\":<<\"type\":\"string\">>>>>>>>,<<\"name\":\"ui.screenshot\",\"description\":\"Write the current frame as a PNG\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"path\":<<\"type\":\"string\">>>>>>>>,<<\"name\":\"ui.tree\",\"description\":\"Dump every node with its state\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<>>>>>>,<<\"name\":\"ui.assertSelected\",\"description\":\"Assert a node is selected\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"role\":<<\"type\":\"string\">>,\"name\":<<\"type\":\"string\">>,\"value\":<<\"type\":\"string\">>>>>>>>,<<\"name\":\"ui.assertExpanded\",\"description\":\"Assert a node is expanded\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"role\":<<\"type\":\"string\">>,\"name\":<<\"type\":\"string\">>,\"value\":<<\"type\":\"string\">>>>>>>>,<<\"name\":\"ui.assertBusy\",\"description\":\"Assert a node is busy\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"role\":<<\"type\":\"string\">>,\"name\":<<\"type\":\"string\">>,\"value\":<<\"type\":\"string\">>>>>>>>,<<\"name\":\"ui.assertDescription\",\"description\":\"Assert a node description\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"role\":<<\"type\":\"string\">>,\"name\":<<\"type\":\"string\">>,\"value\":<<\"type\":\"string\">>>>>>>>,<<\"name\":\"ui.assertRange\",\"description\":\"Assert a node value range\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"role\":<<\"type\":\"string\">>,\"name\":<<\"type\":\"string\">>,\"value\":<<\"type\":\"string\",\"description\":\"min:max\">>>>>>>>,<<\"name\":\"ui.openLink\",\"description\":\"Open a link by accessible name or URL\",\"inputSchema\":<<\"type\":\"object\",\"properties\":<<\"name\":<<\"type\":\"string\">>,\"url\":<<\"type\":\"string\">>>>>>>>]")
+    }
+
+    pub fn call(tool: String, role: String, name: String, value: String, delta: Float): String {
+        if tool == "ui.list" {
+            return this.braces("<<\"isError\":false,\"content\":[<<\"type\":\"text\",\"text\":" + this.quote(this.driver.dump()) + ">>]>>")
+        }
+        if tool == "ui.press" {
+            return this.result(this.driver.press(role, name))
+        }
+        if tool == "ui.increment" {
+            return this.result(this.driver.increment(role, name, delta))
+        }
+        if tool == "ui.setValue" {
+            return this.result(this.driver.setValue(role, name, value))
+        }
+        if tool == "ui.screenshot" {
+            return this.result(this.driver.screenshot(value))
+        }
+        if tool == "ui.tree" {
+            return this.braces("<<\"isError\":false,\"content\":[<<\"type\":\"text\",\"text\":" + this.quote(this.treeJson()) + ">>]>>")
+        }
+        if tool == "ui.assertSelected" {
+            return this.verdict(this.driver.selectedOf(role, name) == (value.toLowerCase() == "true"))
+        }
+        if tool == "ui.assertExpanded" {
+            return this.verdict((this.driver.expandedOf(role, name) > 0) == (value.toLowerCase() == "true"))
+        }
+        if tool == "ui.assertBusy" {
+            return this.verdict(this.driver.busyOf(role, name) == (value.toLowerCase() == "true"))
+        }
+        if tool == "ui.assertDescription" {
+            return this.verdict(this.driver.descriptionOf(role, name) == value)
+        }
+        if tool == "ui.assertRange" {
+            let r = this.driver.rangeOf(role, name)
+            return this.verdict(r.min == uiFloatOf(uiField(value, 0)) && r.max == uiFloatOf(uiField(value, 1)))
+        }
+        if tool == "ui.openLink" {
+            if name != "" {
+                return this.result(this.driver.openLink(name))
+            }
+            if value != "" {
+                return this.result(this.driver.openLinkUrl(value))
+            }
+            return this.result(false)
+        }
+        return this.braces("<<\"isError\":true,\"content\":[<<\"type\":\"text\",\"text\":\"unknown tool\">>]>>")
+    }
+}
+
+test fn scriptStepsDriveAndAssert() {
+    let hits: Array<Int> = [0]
+    let name: Array<String> = [""]
+    let app = App.launch("Script", 240, 120, (b: Build): Node => {
+        b.animate(false)
+        let root = b.column()
+        root.addChild(b.button("Add", () => { hits[0] += 1 }))
+        root.addChild(b.textField(name[0], "name", (v: String) => { name[0] = v }))
+        return root
+    })
+    let ok = app.runScript("press:button:Add;key:button:Add:enter;wait:1;assert:button:Add;focus:button:Add;assertFocus:button:Add;set:textbox:name:hello;assertValue:textbox:name:hello;assertChecked:button:Add:false")
+    assert(ok == 0, "script passes")
+    assert(hits[0] == 2, "press and key ran the handler")
+    assert(Driver.on(app).valueOf("textbox", "name") == "hello", "set wrote the value")
+    assert(app.runScript("assert:button:Missing") != 0, "missing node fails the script")
 }

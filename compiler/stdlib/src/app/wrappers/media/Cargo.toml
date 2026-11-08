@@ -1,0 +1,16 @@
+[package]
+name = "media-cabi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "media_cabi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+alsa = "0.9"
+v4l = "0.14"
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
+ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+
+[workspace]

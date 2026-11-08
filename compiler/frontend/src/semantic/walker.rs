@@ -301,14 +301,36 @@ impl<'a> ScopeCheck<'a> {
         }
     }
 
-    fn check_class_method(&mut self, base_ty: &str, method: &str, args: &[CallArg], span: Span) {
+    fn block_fills_array(params: Option<&Vec<(String, Option<String>)>>) -> bool {
+        params
+            .and_then(|p| p.last())
+            .and_then(|(_, t)| t.as_ref())
+            .is_some_and(|t| t.contains("Array"))
+    }
+
+    fn check_class_method(
+        &mut self,
+        base_ty: &str,
+        method: &str,
+        args: &[CallArg],
+        span: Span,
+        has_block: bool,
+    ) {
         let base = crate::prelude::short_name(base_ty).to_string();
         if base == "Any" {
             return;
         }
         if let Some((mandatory, total)) = self.methods.get(&(base.clone(), method.to_string())).cloned()
         {
-            if args.len() < mandatory || args.len() > total {
+            let extra = if has_block
+                && Self::block_fills_array(self.method_params.get(&(base.clone(), method.to_string())))
+            {
+                1
+            } else {
+                0
+            };
+            let given = args.len() + extra;
+            if given < mandatory || given > total {
                 let what = if mandatory == total {
                     format!("`{base}.{method}` takes {mandatory} args")
                 } else {
@@ -323,7 +345,15 @@ impl<'a> ScopeCheck<'a> {
         if let Some((mandatory, total)) =
             self.extensions.get(&(base.clone(), method.to_string())).cloned()
         {
-            if args.len() < mandatory || args.len() > total {
+            let extra = if has_block
+                && Self::block_fills_array(self.ext_params.get(&(base.clone(), method.to_string())))
+            {
+                1
+            } else {
+                0
+            };
+            let given = args.len() + extra;
+            if given < mandatory || given > total {
                 self.diags.push(
                     Diagnostic::new(Code::E108, format!("`{base}.{method}` takes {mandatory}..{total} args"))
                         .with_span(self.span(span)),
@@ -345,11 +375,17 @@ impl<'a> ScopeCheck<'a> {
         }
     }
 
-    fn check_fn_arity(&mut self, name: &str, args: &[CallArg], span: Span) {
+    fn check_fn_arity(&mut self, name: &str, args: &[CallArg], span: Span, has_block: bool) {
         let Some((mandatory, total)) = self.fn_arity.get(name).cloned() else {
             return;
         };
-        if args.len() >= mandatory && args.len() <= total {
+        let extra = if has_block && Self::block_fills_array(self.fn_params.get(name)) {
+            1
+        } else {
+            0
+        };
+        let given = args.len() + extra;
+        if given >= mandatory && given <= total {
             return;
         }
         let what = if mandatory == total {
@@ -909,7 +945,7 @@ impl<'a> ScopeCheck<'a> {
                             }
                         }
                         if trailing.is_none() && !self.shadowed_local(n) && !self.classes.contains(n) {
-                            self.check_fn_arity(n, args, e.span);
+                            self.check_fn_arity(n, args, e.span, trailing.is_some());
                         }
                         if !self.shadowed_local(n) {
                             params = self.fn_params.get(n).cloned();
@@ -959,7 +995,7 @@ impl<'a> ScopeCheck<'a> {
                                 self.used_prelude.insert(short.to_string());
                                 self.check_builtin_method(&base_ty, field, args, callee.span);
                             } else {
-                                self.check_class_method(&base_ty, field, args, callee.span);
+                                self.check_class_method(&base_ty, field, args, callee.span, trailing.is_some());
                                 params = self
                                     .method_params
                                     .get(&(short.to_string(), field.clone()))
@@ -980,7 +1016,7 @@ impl<'a> ScopeCheck<'a> {
                                 let q = format!("{short}.{field}");
                                 if self.statics.contains(&key) || self.fn_arity.contains_key(&q) {
                                     if !self.shadowed_local(root) {
-                                        self.check_fn_arity(&q, args, e.span);
+                                        self.check_fn_arity(&q, args, e.span, trailing.is_some());
                                     }
                                     params = self
                                         .method_params
@@ -1097,7 +1133,7 @@ impl<'a> ScopeCheck<'a> {
                     if short == "String" || short == "Array" {
                         self.check_builtin_method(&base_ty, field, args, e.span);
                     } else {
-                        self.check_class_method(&base_ty, field, args, e.span);
+                        self.check_class_method(&base_ty, field, args, e.span, false);
                         oparams = self
                             .method_params
                             .get(&(short.to_string(), field.clone()))
@@ -1530,6 +1566,8 @@ impl<'a> ScopeCheck<'a> {
                 }
             }
             Stmt::UnsafeBlock(b) => self.walk_block(b),
+            Stmt::Slot { body, .. } => self.walk_block(body),
+            Stmt::Spread { value, .. } => self.walk_expr(value),
             Stmt::Break | Stmt::Continue | Stmt::Fallthrough | Stmt::Pass | Stmt::Empty => {}
         }
     }

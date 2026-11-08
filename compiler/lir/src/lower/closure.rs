@@ -297,6 +297,8 @@ pub(super) fn free_stmt(s: &A::Stmt, bound: &mut BTreeSet<String>, used: &mut BT
                 free_expr(&e.node, bound, used);
             }
         }
+        A::Stmt::Slot { body, .. } => free_block(body, bound, used),
+        A::Stmt::Spread { value, .. } => free_expr(&value.node, bound, used),
         A::Stmt::Break | A::Stmt::Continue | A::Stmt::Fallthrough | A::Stmt::Pass | A::Stmt::Empty => {}
     }
 }
@@ -490,6 +492,8 @@ pub(super) fn stmt_uses_this(s: &A::Stmt) -> bool {
             b.stmts.iter().any(|x| stmt_uses_this(&x.node))
         }
         A::Stmt::Try { body, .. } => body.stmts.iter().any(|x| stmt_uses_this(&x.node)),
+        A::Stmt::Slot { body, .. } => body.stmts.iter().any(|x| stmt_uses_this(&x.node)),
+        A::Stmt::Spread { value, .. } => expr_uses_this(&value.node),
     }
 }
 
@@ -539,6 +543,8 @@ pub(super) fn stmt_uses_super(s: &A::Stmt) -> bool {
             b.stmts.iter().any(|x| stmt_uses_super(&x.node))
         }
         A::Stmt::Try { body, .. } => body.stmts.iter().any(|x| stmt_uses_super(&x.node)),
+        A::Stmt::Slot { body, .. } => body.stmts.iter().any(|x| stmt_uses_super(&x.node)),
+        A::Stmt::Spread { value, .. } => expr_uses_super(&value.node),
     }
 }
 

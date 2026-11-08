@@ -24,6 +24,9 @@ import {
 import {
     JSON
 } from "@std/json";
+import {
+    ByteBuffer
+} from "@std/bytes";
 
 import {
     fn __rnx_int_to_str(v: Int): String,
@@ -2105,6 +2108,11 @@ class Response {
     * string.
     */
     let body: String;
+    /**
+    * Raw body bytes when the response came from a socket. Null for a
+    * response built by hand from text; `bytes()` encodes that body then.
+    */
+    let raw: ByteBuffer?;
 
     /**
     * Build a response from its parts. Nothing is validated here: the
@@ -2114,6 +2122,8 @@ class Response {
     * @param statusText reason phrase from the status line.
     * @param headers response headers; names are folded to lowercase.
     * @param body body text, already decoded from UTF-8 bytes.
+    * @param raw original body bytes for binary payloads; null when the
+    * response was built from text.
     * @example
     * import { Response, Headers } from "@std/web";
     *
@@ -2121,11 +2131,31 @@ class Response {
     * let r = new Response(204, "No Content", h, "");
     * print(r.status, r.text() == "");
     */
-    init(status: Int, statusText: String, headers: Headers, body: String) {
+    init(status: Int, statusText: String, headers: Headers, body: String, raw: ByteBuffer? = null) {
         this.status = status;
         this.statusText = statusText;
         this.headers = headers;
         this.body = body;
+        this.raw = raw;
+    }
+
+    /**
+    * Body as bytes. A socket response returns its exact bytes; a response
+    * built from text returns the UTF-8 encoding of `body`. Use this for
+    * fonts, images, and other binary payloads that `text()` would mangle.
+    * @returns response body bytes.
+    * @example
+    * import { Response, Headers } from "@std/web";
+    *
+    * let r = new Response(200, "OK", new Headers(), "hi");
+    * print(r.bytes().length());
+    */
+    fn bytes(): ByteBuffer {
+        let raw = this.raw
+        if raw != null {
+            return raw
+        }
+        return ByteBuffer.fromString(this.body)
     }
 
     /**
@@ -3029,7 +3059,7 @@ async fn fetchOverTcp(host: String, port: Int, req: String): Promise<Response> {
         throw "fetch: truncated body";
     }
     stream.close();
-    return new Response(status, reason, headers, bytesToString(bodyBytes));
+    return new Response(status, reason, headers, bytesToString(bodyBytes), ByteBuffer.fromArray(bodyBytes));
 }
 
 /**
@@ -3213,5 +3243,5 @@ async fn fetchOverTls(host: String, port: Int, req: String): Promise<Response> {
         throw "fetch: truncated body";
     }
     stream.close();
-    return new Response(status, reason, headers, bytesToString(bodyBytes));
+    return new Response(status, reason, headers, bytesToString(bodyBytes), ByteBuffer.fromArray(bodyBytes));
 }

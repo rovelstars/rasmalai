@@ -1,7 +1,7 @@
 use super::*;
 use diagnostics::{Code, Diagnostic, Span};
 use frontend::ast as A;
-use std::collections::{BTreeSet};
+use std::collections::{BTreeMap, BTreeSet};
 impl<'a> Builder<'a> {
     pub(super) fn lower_fn_body(&mut self, f: &A::FnDecl) -> Result<(), Diagnostic> {
         if self.enclosing.is_some() {
@@ -135,6 +135,123 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
+    pub(super) fn lower_collect_block(
+        &mut self,
+        b: &A::Block,
+        elem: LirType,
+        final_name: &str,
+        slot_types: &BTreeMap<String, LirType>,
+        span: Span,
+    ) -> Result<(Local, Vec<(String, Local)>), Diagnostic> {
+        let arr = self.local(LirType::Array(Box::new(elem.clone())));
+        self.fresh_arrays.insert(arr);
+        if b.stmts.is_empty() {
+            self.empty_arrays.insert(arr);
+        }
+        let es = elem_size(&elem);
+        self.emit(Instr::ArrayNew {
+            span,
+            dst: arr,
+            cap: b.stmts.len(),
+            elem_size: es,
+        });
+
+        let saved = self.collect_sink.clone();
+        let saved_floor = self.collect_loop_floor;
+        self.collect_sink = Some((arr, elem.clone()));
+        self.collect_loop_floor = Some(self.loop_stack.len());
+        self.push_scope();
+        let mut slots: Vec<(String, Local)> = Vec::new();
+
+        for st in &b.stmts {
+            match &st.node {
+                A::Stmt::Slot { name, body } => {
+                    if name == final_name {
+                        return self.fail(self.err(
+                            Code::E108,
+                            format!("`{name}` is already filled by the unnamed block"),
+                            st.span,
+                        ));
+                    }
+                    if slots.iter().any(|(n, _)| n == name) {
+                        return self.fail(self.err(
+                            Code::E108,
+                            format!("duplicate slot `{name}`"),
+                            st.span,
+                        ));
+                    }
+                    let Some(slot_elem) = slot_types.get(name).cloned() else {
+                        return self.fail(self.err(
+                            Code::E108,
+                            format!("slot `{name}` is not an array parameter"),
+                            st.span,
+                        ));
+                    };
+                    let slot_arr = self.local(LirType::Array(Box::new(slot_elem.clone())));
+                    self.fresh_arrays.insert(slot_arr);
+                    if body.stmts.is_empty() {
+                        self.empty_arrays.insert(slot_arr);
+                    }
+                    let slot_es = elem_size(&slot_elem);
+                    self.emit(Instr::ArrayNew {
+                        span: st.span,
+                        dst: slot_arr,
+                        cap: body.stmts.len(),
+                        elem_size: slot_es,
+                    });
+                    let prev = self.collect_sink.replace((slot_arr, slot_elem));
+                    let lowered = self.lower_block(body);
+                    self.collect_sink = prev;
+                    lowered?;
+                    slots.push((name.clone(), slot_arr));
+                }
+                _ => self.lower_stmt(&st.node, st.span)?,
+            }
+        }
+
+        self.pop_scope();
+        self.collect_sink = saved;
+        self.collect_loop_floor = saved_floor;
+        Ok((arr, slots))
+    }
+
+    fn collection_elem_ok(have: &LirType, want: &LirType) -> bool {
+        have == want || matches!(want, LirType::Any)
+    }
+
+    fn lower_spread(&mut self, value: &A::Spanned<A::Expr>) -> Result<(), Diagnostic> {
+        let Some((arr, elem)) = self.collect_sink.clone() else {
+            return self.fail(self.err(
+                Code::E108,
+                "spread `...` is only valid directly inside a collection block",
+                value.span,
+            ));
+        };
+        let (v, _) = self.lower_expr(&value.node, value.span)?;
+        let have = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
+        let LirType::Array(inner) = have else {
+            return self.fail(self.err(
+                Code::E108,
+                "spread `...` needs an Array value",
+                value.span,
+            ));
+        };
+        if *inner != elem {
+            return self.fail(self.err(
+                Code::E108,
+                format!(
+                    "spread element is `{}`, expected `{}`",
+                    super::calls::child_type_name(&inner),
+                    super::calls::child_type_name(&elem),
+                ),
+                value.span,
+            ));
+        }
+        let zero = self.const_int(0, value.span);
+        self.emit_array_extend(arr, v, &elem, zero, value.span)?;
+        Ok(())
+    }
+
     pub(super) fn lower_stmt(&mut self, st: &A::Stmt, span: Span) -> Result<(), Diagnostic> {
         match st {
             A::Stmt::Var {
@@ -166,6 +283,12 @@ impl<'a> Builder<'a> {
             A::Stmt::Try { body, catch, .. }  => self.lower_stmt_try(body, catch),
             A::Stmt::UnsafeBlock(b)  => self.lower_stmt_unsafe(b),
             A::Stmt::Throw(v)  => self.lower_stmt_throw(v, span),
+            A::Stmt::Slot { .. } => self.fail(self.err(
+                Code::E108,
+                "a slot is only valid directly inside a collection block",
+                span,
+            )),
+            A::Stmt::Spread { value } => self.lower_spread(value),
         }
     }
 
@@ -277,6 +400,9 @@ impl<'a> Builder<'a> {
             self.emit_copy(dst, v, span);
         }
         self.def(name.clone(), dst, if s == Simple::Other { simple } else { s }, t);
+        if let Some(throws) = self.closure_throws.get(&v).copied() {
+            self.closure_throws.insert(dst, throws);
+        }
         if let Some(arg) = ty.as_ref().and_then(option_arg) {
             let pt = self.resolve_here(arg);
             self.precise.insert(dst, pt);
@@ -919,10 +1045,64 @@ impl<'a> Builder<'a> {
 
     }
 
+    fn is_explicit_child_attach(&mut self, e: &A::Expr) -> bool {
+        let A::Expr::Call { callee, .. } = e else {
+            return false;
+        };
+        let A::Expr::Member { base, field } = &callee.node else {
+            return false;
+        };
+        if field != "addChild" {
+            return false;
+        }
+        let Some(LirType::Obj(name)) = self.base_type(base) else {
+            return false;
+        };
+        self.class_method_q(&name, field).is_some()
+    }
+
     pub(super) fn lower_stmt_expr(&mut self, e: &A::Spanned<A::Expr>) -> Result<(), Diagnostic> {
 
         let (v, _) = self.lower_expr(&e.node, e.span)?;
+        if let Some((arr, elem)) = self.collect_sink.clone() {
+            let have = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
+            if !Self::collection_elem_ok(&have, &elem) {
+                return self.fail(self.err(
+                    Code::E108,
+                    format!(
+                        "collection block element is `{}`, expected `{}`",
+                        super::calls::child_type_name(&have),
+                        super::calls::child_type_name(&elem),
+                    ),
+                    e.span,
+                ));
+            }
+            let before = v;
+            let v = self.coerce_to_slot(v, &elem, e.span);
+            let es = self.elem_size_of(arr);
+            self.emit(Instr::ArrayPush {
+                span: e.span,
+                arr,
+                value: v,
+                elem_size: es,
+            });
+            if v != before && matches!(elem, LirType::Any) {
+                self.emit(Instr::Release { span: e.span, obj: v });
+            }
+            return Ok(());
+        }
+        let ty = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Void);
+        if self.is_explicit_child_attach(&e.node) && matches!(ty, LirType::Void) {
+            return Ok(());
+        }
         if let Some(sink) = self.child_sink {
+            if matches!(ty, LirType::Void | LirType::Null) {
+                return Err(self.err(
+                    Code::E108,
+                    "a block statement must produce a Node; this call returns Void",
+                    e.span,
+                ));
+            }
             self.lower_add_child(sink, v, e.span)?;
         }
         Ok(())
@@ -1106,6 +1286,13 @@ impl<'a> Builder<'a> {
     }
 
     pub(super) fn lower_stmt_return(&mut self, v: &Option<A::Spanned<A::Expr>>, span: Span) -> Result<(), Diagnostic> {
+        if self.collect_sink.is_some() {
+            return self.fail(self.err(
+                Code::E108,
+                "`return` cannot leave a collection block",
+                span,
+            ));
+        }
 
         let vals = match v {
             Some(e) => {
@@ -1142,12 +1329,12 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        for (l, ii) in ifaces {
-            self.emit_iface_release(l, ii, span);
-            self.moved.insert(l);
+        for (l, ii) in ifaces.iter() {
+            self.emit_iface_release(*l, *ii, span);
+            self.moved.insert(*l);
         }
-        for l in nub_dead {
-            self.nub_release(l, span);
+        for l in nub_dead.iter() {
+            self.nub_release(*l, span);
         }
         if self.is_init {
             let slf = self.self_local.ok_or_else(|| {
@@ -1162,6 +1349,17 @@ impl<'a> Builder<'a> {
     }
 
     pub(super) fn lower_stmt_break(&mut self, span: Span) -> Result<(), Diagnostic> {
+        if self.collect_sink.is_some()
+            && self
+                .collect_loop_floor
+                .is_some_and(|floor| self.loop_stack.len() <= floor)
+        {
+            return self.fail(self.err(
+                Code::E108,
+                "`break` cannot leave a collection block",
+                span,
+            ));
+        }
 
         let (bb, depth) = match self.loop_stack.last() {
             Some(c) => (c.break_bb, c.defer_depth),
@@ -1174,6 +1372,17 @@ impl<'a> Builder<'a> {
     }
 
     pub(super) fn lower_stmt_continue(&mut self, span: Span) -> Result<(), Diagnostic> {
+        if self.collect_sink.is_some()
+            && self
+                .collect_loop_floor
+                .is_some_and(|floor| self.loop_stack.len() <= floor)
+        {
+            return self.fail(self.err(
+                Code::E108,
+                "`continue` cannot leave a collection block",
+                span,
+            ));
+        }
 
         let (bb, depth) = match self.loop_stack.last() {
             Some(c) => (c.cont_bb, c.defer_depth),
@@ -1209,6 +1418,13 @@ impl<'a> Builder<'a> {
     }
 
     pub(super) fn lower_stmt_defer(&mut self, b: &A::Block, span: Span) -> Result<(), Diagnostic> {
+        if self.collect_sink.is_some() {
+            return self.fail(self.err(
+                Code::E108,
+                "`defer` cannot appear in a collection block",
+                span,
+            ));
+        }
 
         let save_cur = self.current;
         let save_term = self.terminated;
@@ -1331,6 +1547,13 @@ impl<'a> Builder<'a> {
     }
 
     pub(super) fn lower_stmt_throw(&mut self, v: &Option<A::Spanned<A::Expr>>, span: Span) -> Result<(), Diagnostic> {
+        if self.collect_sink.is_some() {
+            return self.fail(self.err(
+                Code::E108,
+                "`throw` cannot appear in a collection block",
+                span,
+            ));
+        }
 
         match v {
             Some(e) => {

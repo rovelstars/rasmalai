@@ -25,32 +25,10 @@ impl<'a> Machine<'a> {
                 let ss = self.local_ty(fr, *src);
                 match (sd, ss) {
                     (LirType::Obj(_), LirType::Obj(_)) => {
-                        let alias = heap_alias(
-                            &fr.locals[*dst as usize],
-                            &fr.locals[*src as usize],
-                        );
-                        if fr.owned.contains(dst) && !alias {
-                            self.drop_local(fr, *dst)?;
-                        }
-                        let v = fr.locals[*src as usize].clone();
-                        fr.locals[*dst as usize] = v;
-                        fr.owned.remove(src);
-                        fr.ever_owned.remove(src);
-                        self.own(fr, *dst);
+                        self.copy_heap(fr, *dst, *src)?;
                     }
                     (LirType::Array(_), LirType::Array(_)) => {
-                        let alias = heap_alias(
-                            &fr.locals[*dst as usize],
-                            &fr.locals[*src as usize],
-                        );
-                        if fr.owned.contains(dst) && !alias {
-                            self.drop_local(fr, *dst)?;
-                        }
-                        let v = fr.locals[*src as usize].clone();
-                        fr.locals[*dst as usize] = v;
-                        fr.owned.remove(src);
-                        fr.ever_owned.remove(src);
-                        self.own(fr, *dst);
+                        self.copy_heap(fr, *dst, *src)?;
                     }
                     (LirType::Obj(_), LirType::Null) | (LirType::Null, LirType::Obj(_)) => {
                         let v = fr.locals[*src as usize].clone();
@@ -63,18 +41,7 @@ impl<'a> Machine<'a> {
                         self.own(fr, *dst);
                     }
                     (LirType::Enum(_), LirType::Enum(_)) => {
-                        let alias = heap_alias(
-                            &fr.locals[*dst as usize],
-                            &fr.locals[*src as usize],
-                        );
-                        if fr.owned.contains(dst) && !alias {
-                            self.drop_local(fr, *dst)?;
-                        }
-                        let v = fr.locals[*src as usize].clone();
-                        fr.locals[*dst as usize] = v;
-                        fr.owned.remove(src);
-                        fr.ever_owned.remove(src);
-                        self.own(fr, *dst);
+                        self.copy_heap(fr, *dst, *src)?;
                     }
                     (LirType::Enum(_), LirType::Null) | (LirType::Null, LirType::Enum(_)) => {
                         let v = fr.locals[*src as usize].clone();

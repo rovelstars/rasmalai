@@ -264,7 +264,7 @@ describe('stdlib capability baseline', () => {
 			if (name === 'fs') assert.deepEqual(heads, ['unsafe'], name);
 			else if (name === 'io') assert.deepEqual(heads, ['env', 'term'], name);
 			else if (name === 'process') assert.deepEqual(heads, ['env'], name);
-			else if (name === 'app') assert.deepEqual(heads, ['unsafe'], name);
+			else if (name === 'app') assert.deepEqual(heads, ['env', 'fs', 'term', 'unsafe'], name);
 			else assert.deepEqual(heads, [], name);
 		}
 	});

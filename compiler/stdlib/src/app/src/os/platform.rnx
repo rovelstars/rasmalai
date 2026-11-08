@@ -1,0 +1,46 @@
+//! Platform identity for app code.
+
+import { OS } from "@std/os"
+
+/** The host platform, with the checks an app usually branches on. */
+pub class Platform {
+    static name(): String {
+        return OS.platform()
+    }
+
+    static arch(): String {
+        return OS.arch()
+    }
+
+    static isLinux(): Bool {
+        return OS.platform() == "linux"
+    }
+
+    static isMac(): Bool {
+        return OS.platform() == "macos"
+    }
+
+    static isWindows(): Bool {
+        return OS.platform() == "windows"
+    }
+
+    /** The native path separator. */
+    static separator(): String {
+        if OS.platform() == "windows" {
+            return "\\"
+        }
+        return "/"
+    }
+
+    static home(): String {
+        return OS.homedir()
+    }
+
+    static tmp(): String {
+        return OS.tmpdir()
+    }
+
+    static cpus(): Int {
+        return OS.cpuCount()
+    }
+}

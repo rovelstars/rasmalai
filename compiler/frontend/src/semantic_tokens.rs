@@ -216,6 +216,8 @@ fn stmt_nodes(stmt: &Stmt) -> usize {
             }
         }
         Stmt::Throw(Some(e)) => n += expr_nodes(&e.node),
+        Stmt::Slot { body, .. } => n += block_nodes(body),
+        Stmt::Spread { value, .. } => n += expr_nodes(&value.node),
         Stmt::Return(None) | Stmt::Throw(None) | Stmt::Break | Stmt::Continue
         | Stmt::Fallthrough | Stmt::Pass | Stmt::Empty => {}
     }

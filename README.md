@@ -101,6 +101,24 @@ curl -fsSL https://rasmalai.rovelstars.com/install.sh | sh
 irm https://rasmalai.rovelstars.com/install.ps1 | iex
 ```
 
+## Platform support
+
+The compiler, CLI, and language runtime install on Linux, macOS, and Windows.
+Native UI apps are Linux/Wayland only. `@std/app`, the window host, the
+accessibility bridge (AccessKit), audio, video, camera, and the file picker are
+implemented for Linux. Other platforms keep the language, compiler, and
+headless image/scene paths, but there is no window host or accessibility
+bridge yet. `rnx build` links native Linux executables; non-Linux link targets
+return `UnsupportedTarget`.
+
+The accessibility packet is platform neutral. Windows UIA and macOS
+NSAccessibility bridges wait on native window hosts; the packet already carries
+the roles, names, values, bounds, actions, state, relations, and announcements
+they need. The approved order is: complete the sysroot implementation, then the
+in-house linker for the other operating systems and CPU architectures, then the
+Windows/macOS UI hosts and their accessibility and media backends. The full
+matrix and porting contract are in `requirements_UI/72-platform-support.md`.
+
 ## Use
 
 Run a script (JIT, dev mode):
@@ -121,11 +139,18 @@ Program arguments go after `--`:
 rnx run path/to/main.rnx -- arg1 arg2
 ```
 
-Run the test suite:
+Run the test suite with the pinned runner:
 
 ```bash
-cargo test --workspace
+cargo nextest run --release --profile ci --workspace
 ```
+
+Nextest runs every test binary in parallel, so this finishes in seconds instead
+of waiting for one suite at a time. Release is the supported test profile:
+debug builds are much slower, and a few runtime paths only show their real
+behavior when optimized. `rnx test` uses `target/release/rnx` when it exists,
+and `compiler/stdlib/src/app/tools/ci-wrappers.sh` selects the release binary
+automatically.
 
 Try it without installing anything: the
 [playground](https://rasmalai.rovelstars.com/playground) runs the
@@ -152,7 +177,6 @@ change needs tests; every user-facing change needs docs.
 - `compiler/` — the language itself: lexer, parser, semantic analysis,
   LIR lowering and optimization, interpreter, Cranelift JIT, LLVM AOT,
   native C-ABI runtime, and the `rnx` CLI.
-- `examples/` — reserved for language samples (currently empty).
 - `tools/rnx-bindgen/` — C-header binding generator written in pure
   `.rnx`. Turns system headers (zlib, sqlite3) into Rasmalai modules.
 - `benches/` — performance and scaling benchmarks.

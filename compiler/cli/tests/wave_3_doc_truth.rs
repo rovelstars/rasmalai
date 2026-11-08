@@ -127,6 +127,7 @@ const EXPECTED_TOOLS: &[&str] = &[
     "doctor",
     "cache_status",
     "package_resolve",
+    "ui_drive",
 ];
 
 #[test]

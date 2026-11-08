@@ -3,13 +3,19 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 app=$(dirname "$here")
 repo=$(cd "$app/../../../.." && pwd)
-rnx=${RNX_BIN:-$repo/target/debug/rnx}
+if [ -n "${RNX_BIN:-}" ]; then
+    rnx=$RNX_BIN
+elif [ -x "$repo/target/release/rnx" ]; then
+    rnx=$repo/target/release/rnx
+else
+    rnx=$repo/target/debug/rnx
+fi
 stage=${1:-${RNX_STAGE_DIR:-$repo/.rnx-cache/std-vendor}}
 
 rm -rf "$stage"
 mkdir -p "$stage"
 
-"$rnx" vendor @std/prelude @std/bytes @std/env --dir "$stage" >/dev/null
+"$rnx" vendor @std/prelude @std/bytes @std/env @std/os @std/fs @std/sync --dir "$stage" >/dev/null
 
 for name in ui app; do
     package="$repo/compiler/stdlib/src/$name"
@@ -18,5 +24,8 @@ for name in ui app; do
     cp "$package/lib.rnx" "$stage/@std/$name/"
     if [ -d "$package/docs" ]; then
         cp -R "$package/docs" "$stage/@std/$name/"
+    fi
+    if [ -d "$package/src" ]; then
+        cp -R "$package/src" "$stage/@std/$name/"
     fi
 done

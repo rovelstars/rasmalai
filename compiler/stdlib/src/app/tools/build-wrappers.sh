@@ -6,11 +6,19 @@ repo=$(cd "$app/../../../.." && pwd)
 prefix=${WRAPPER_PREFIX:-$repo/.rnx-cache/wrappers}
 target=${CARGO_TARGET_DIR:-$repo/.rnx-cache/wrapper-target}
 
+case "$(uname -s)" in
+    Linux) ;;
+    *)
+        echo "the UI and media wrappers are Linux-only; see requirements_UI/72-platform-support.md" >&2
+        exit 1
+        ;;
+esac
+
 export CARGO_TARGET_DIR="$target"
 
 mkdir -p "$prefix"
 
-for w in wgpu parley taffy scene vello cpu host; do
+for w in wgpu parley taffy scene vello cpu host media; do
     cargo build --release --manifest-path "$app/wrappers/$w/Cargo.toml"
 done
 
@@ -22,14 +30,14 @@ prefix=$prefix
 libdir=\${prefix}
 includedir=\${prefix}
 Name: $lib
-Description: runix app wrapper
+Description: rnx app wrapper
 Version: 0.1.0
 Libs: -L\${libdir} -l$lib
 Cflags:
 PC
 }
 
-for lib in wgpu_cabi parley_cabi taffy_cabi vello_cabi cpu_cabi host_cabi; do
+for lib in wgpu_cabi parley_cabi taffy_cabi vello_cabi cpu_cabi host_cabi media_cabi; do
     install_lib "$lib"
 done
 

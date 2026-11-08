@@ -662,6 +662,8 @@ impl<'a> Collector<'a> {
                     self.collect_block(block);
                 }
             }
+            A::Stmt::Slot { body, .. } => self.collect_block(body),
+            A::Stmt::Spread { value, .. } => self.collect_expr(value),
             A::Stmt::Break | A::Stmt::Continue | A::Stmt::Fallthrough | A::Stmt::Pass | A::Stmt::Empty => {}
         }
     }

@@ -767,6 +767,7 @@ pub struct IfaceMethod {
     pub name: String,
     pub params: Vec<LirType>,
     pub ret: LirType,
+    pub throws: bool,
 }
 
 #[derive(Clone, Debug)]

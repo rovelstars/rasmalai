@@ -43,11 +43,25 @@ export default {
         physics: { git: "https://github.com/org/physics", tag: "v1.2.0" },
         zstd: { version: "1.5.5", url: "https://example.com/zstd.tar.gz", checksum: "sha256:..." },
         zlib: { native: "z", system: true }
+    },
+    i18n: {
+        base: "en-US",
+        dir: "locales",
+        format: "arb",
+        missing: "fallback",
+        embed: "auto"
     }
 }
 ```
 
-`entries.cabi` names the file whose `export fn` declarations form the C surface for `rnx build --lib`. The rest of the package keeps `export` as package API, so a class or struct export outside that file does not need a C signature. `rnx check` reads the cabi file as a second root even when nothing imports it. Without a cabi entry, `rnx build --lib` uses `entries.lib`, then `entries.main`, and validates every export reachable from that entry, which is the behavior projects had before the cabi entry existed. See [Hardware and FFI](/manual/13-hardware-and-ffi) for the signature rules.
+The optional `i18n` key declares the base locale, catalog directory, source
+format, missing policy, and embedding mode. Locales are discovered from the
+directory and filenames; there is no supported-locales array and no
+import/export configuration. Tasks fetch and place catalogs, and the build
+parses ARB, PO, XLIFF, ICU JSON, or CSV directly. There is no `rnx i18n`
+subcommand. See `requirements/26_I18N.md` for the contract.
+
+`entries.cabi` names the file whose `export fn` declarations form the C surface for `rnx build --lib`. Plain `fn` declarations and non-function declarations are package-visible and need no C signature; `export fn` is the C-ABI surface and is validated as such. `rnx check` reads the cabi file as a second root even when nothing imports it. Without a cabi entry, `rnx build --lib` uses `entries.lib`, then `entries.main`, and validates every export reachable from that entry, which is the behavior projects had before the cabi entry existed. See [Hardware and FFI](/manual/13-hardware-and-ffi) for the signature rules.
 
 Manifests evaluate in a sandbox: top-level `const`, object and array spreads (`...deps`), ternaries, `switch` over the ambient `target` object (`target.os`, `target.arch`, `target.env`), and member access. Functions, loops, imports, and I/O are rejected with `E108`. The exact allowed-versus-forbidden list lives in [Packages and Registries](/manual/18-packages-and-registries). A conditional native dependency looks like this:
 
@@ -117,7 +131,7 @@ print("hello,", "world");
 
 ## Modules and imports
 
-Each file is its own namespace. Between files in one project, default and `public` items import freely in any direction (`A -> B -> C -> A` included); locals shadow imports. Only `private` items are file-locked. Importing one is an `E203` error.
+Each file is its own namespace. Plain `fn` and non-function declarations are package-visible across files and packages; there is no `public` keyword in the final surface. `export` marks the C-ABI surface, not ordinary visibility. Only `private` items are file-locked. Importing one is an `E203` error.
 
 ```text
 import { add } from "./math";
@@ -186,6 +200,32 @@ export default {
 Any deduced capability outside `allowed`, counting the package's own code plus every dependency, fails the build as `S102`, on `rnx check` and `rnx build` alike, with or without a `Project.deplock`. Bare `rnx run` executes without enforcing the ceiling; `rnx run --locked` enforces it. `Project.deplock` records the approved ledger: each entry stores its `tier` and `capabilities`, written by `rnx lock` and re-verified by `--locked` builds. Hand-editing the ledger does not grant anything; the next `rnx lock` overwrites it from the scan, and the next `--locked` build fails on the difference (`S101`). Adding a dependency whose surface reaches the ambient or hazard tiers requires explicit approval through `rnx add --accept-caps <list>` or `--accept-all-caps`.
 
 ## Testing and benchmarking
+
+For repeated local runs, build `rnx` with `cargo build --release -p cli` and use
+`target/release/rnx`. A debug compiler spends most of its time in the
+single-threaded front end: a stdlib test suite that takes about six seconds with
+the release binary can take over two minutes in debug. The staging and CI
+scripts pick the release binary automatically when it exists.
+
+`App.setSurfaceSocket(path)` or `RNX_SURFACE_SOCKET` makes `App.show` send frames
+to a surface socket instead of the Wayland window. `App.runHost` commits the
+display list, frame packet, damage, and window id, then waits for the ack.
+
+The surface socket seam is also part of `host_cabi`: `host_surface_socket_open`,
+`host_surface_socket_commit`, `host_surface_socket_id`, and `host_surface_socket_close` speak a
+small Unix-socket protocol carrying the display list, optional frame packet,
+damage rectangles, and window id. The compositor itself is a separate project;
+`App.show` still uses the Wayland window.
+
+`entries.lib` is the legacy alias: it keeps the graph-wide surface and warns
+`W205` for every emitted symbol. With neither `cabi` nor `lib`, `rnx build
+--lib` emits the main entry's exports and warns `W206` once.
+
+`entries.cabi` names the C surface file. `rnx check` loads it as a second
+root, so its declarations are type-checked even when no C artifact is produced.
+The surface is exactly the `export fn` declarations physically in that file: a
+surface with no `export fn`, a re-export, or a non-C-representable signature is
+`E108`. A manifest that names a missing file is also `E108`.
 
 A `test fn` takes no parameters and returns nothing. The runner discovers every one in `src/**/*.rnx` and `tests/**/*.rnx`, times each, and reports one line apiece. `assert` takes a `Bool` condition and a `String` message; on false it prints the message and marks that test failed without aborting it. `test fn` blocks are stripped from normal `run`/`build` pipelines. Tests run on the Cranelift JIT by default; pass `--backend interpreter` or `--backend llvm` to exercise the interpreter or AOT codegen. Filter by substring, pass `--exact` for full names. Output captures per test; `--nocapture` streams live.
 
@@ -497,9 +537,83 @@ All sysroot lookups sort directory entries and hash bytes, never mtimes; the ove
 
 All preset files are validated by `crates/cli/tests/editor_configs_test.rs`, `grammar_test.rs` (TextMate JSON syntax, root keys, keyword coverage over real `.rnx` sources), and `tree_sitter_test.rs` (file presence, S-expression balance, keyword consistency against the compiler lexer).
 
+## Environment variables
+
+Flags win when a variable and a flag set the same option. The tables list the
+variables the toolchain and the app host read. Internal and test-only names are
+listed at the end and are not part of the public contract.
+
+### Toolchain, registry, and linking
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `RNX_CACHE_HOME` | `$XDG_CACHE_HOME/rnx` or `~/.cache/rnx` (`%LOCALAPPDATA%\rnx` on Windows) | Global cache root for packages and downloads. |
+| `RNX_REGISTRY` | built-in registry | Registry endpoint for resolve, download, audit, and publish. `--registry` wins. |
+| `RNX_VENDOR_DIR` | unset | Extra local source tree consulted before caches and the registry. |
+| `RNX_ADVISORY_KEY` | unset | Expected advisory-feed key id or public key. |
+| `RNX_SYSROOT` | host probe | Sysroot for the linker. `--sysroot` wins. |
+| `RNX_LIB_DIRS` | unset | Colon-separated extra link library directories. |
+| `RNX_NATIVE_LINK` | automatic on x86_64 Linux | `1` forces the in-house linker, `0` forces the C driver. |
+| `RNX_PREFER_NATIVE` | manifest pins | `system` or `bundled` default for native dependencies. The `--prefer-*` flags win. |
+| `RNX_CC` | `CC`, then `cc` | C compiler driver for linking and sysroot probes. |
+| `RNX_TARGET_ENV` | host ABI | Target environment (`gnu`, `msvc`, and so on) used when computing the host triple. |
+| `RNX_JOBS` | available parallelism | Parallel worker count. |
+| `RNX_MEMORY_CAP` | min(50% RAM, 8 GB) | Build memory cap. Accepts bytes or `KB`/`MB`/`GB` suffixes. |
+| `RNX_SHOW_PERF_NOTES` | off | `1` shows P101/P102 performance notes. |
+| `RNX_DENY_PERF_LINTS` | unset | Comma list of P-codes to promote to errors. `--deny-perf-lints` wins. |
+| `RNX_LINK_TIME` | off | Any non-empty value prints linker phase timings to stderr. |
+| `RNX_INSTALLATION_MANAGED` | unset | Build-time reason shown after `install: managed:`. Distributors only. |
+| `RNX_INSTALLATION_NO_TIMESTAMP` | unset | Build-time: leave the timestamp at `built: unknown`. |
+| `RNX_OCI_PUSH_URL` | unset | OCI registry endpoint used by `rnx publish`. |
+| `RNX_OCI_PUSH_TOKEN` | unset | Token for the OCI endpoint. |
+
+`token_env` in `Project.config` names the variable that carries a registry
+token. `RNX_TOKEN` is the convention, not a reserved name.
+
+### App and UI host
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `RNX_TRACE` | off | Host trace lines for present damage and timing, input, scroll, accessibility, clipboard, and gamepads. |
+| `RNX_INSPECT` | off | `1` enables the inspector overlay. |
+| `RNX_UI_SCRIPT` | unset | Semicolon-separated headless UI script. Steps include `press`, `focus`, `set`, `scroll`, `drag`, `wait`, `shot`, and `assert`. |
+| `RNX_SURFACE_SOCKET` | unset | Send frames to a surface socket instead of opening a Wayland window. `runixOS` provides the other end. |
+| `RNX_HEADLESS` | unset | Keep the media picker from opening the XDG portal. |
+| `RNX_PICK_FILE` | unset | Picker result used in headless runs. |
+| `RNX_CAMERA` | real device | `stub` generates moving frames without V4L2. |
+| `RNX_AUDIO` | real sink | `fast` drains the audio queue without pacing; `null` discards it. |
+| `RNX_TEST_VIDEO` | unset | Video file used by media tests. |
+
+### MCP server
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `RNX_MCP_RUN_TIMEOUT_SECS` | 30 | Timeout for one `run` call. |
+| `RNX_MCP_JOB_TIMEOUT_SECS` | 180 | Timeout for a background MCP job. |
+
+### Installer
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `RNX_PREFIX` | `$HOME/.local` (XDG and Windows equivalents apply) | Install prefix. `--prefix` wins. |
+| `RNX_VERSION` | `latest` | Release version to install. A positional version wins. |
+
+### Internal and test-only
+
+These names are not public. They exist for the repository's own scripts and
+tests and can change or disappear.
+
+- `RNX_BIN`, `RNX_STAGE_DIR`, `RNX_BACKEND`: CI wrapper scripts.
+- `RNX_DEP_CACHE`, `RNX_STDLIB_API`: repository and MCP internals.
+- `RNX_TASK`, `RNX_TARGET`, `RNX_TASK_DIR`, `RNX_TASK_ORIGIN`,
+  `RNX_TASK_PACKAGE_DIR`, `RNX_ALLOW_TASKS`: set by `rnx task` for its child
+  steps.
+- `RNX_CPU_TIER`, `RNX_TASK_STALL_MS`, `RNX_TEST_TLS_CA_DER`, `RNX_BENCH_SCALE`,
+  `RNX_TOUR`, `RNX_DEBUG_LIR`: test, benchmark, or regression sentinels.
+
 ## MCP server
 
-`rnx mcp` serves the toolchain over the Model Context Protocol on stdio. Stdout carries protocol frames only; log lines go to stderr. Seventeen tools: `check` (project-aware typecheck, structured JSON by default, `pretty` opt-in), `run` (interpreter, 30s cap, structured output; a timed-out worker is abandoned and blocks further runs until it exits), `fmt` (plus read-only `check`/`diff` modes), `explain`, `rasmalai_lookup_symbol` (`@std/*` signature search, cheaper than reading the catalog), `version`, `inspect_package_capabilities` (package tier classification, capability flags, source-to-sink provenance chains, plus lockfile drift, licenses, and fail-soft advisory verdicts), `eval_code` (persistent JIT session with `:type` and `reset`), `get_diagnostics` (structured JSON diagnostics), `hot_reload` (reports an error without an attached `rnx dev --mcp` watcher), `build` (LLVM object kept in memory, release opt-in), `test` (project test runner, capped output), `lint` (read-only), `doc` (`--json` API docs), `doctor` (read-only cache health), `cache_status` (read-only pool sizes), and `package_resolve` (offline cache verdicts). Four spec resources expose the language (`rasmalai://spec/grammar`, `rasmalai://spec/architecture`, `rasmalai://spec/manifest`, `rasmalai://spec/packages`), plus per-module `rasmalai://stdlib/<module>.json` catalogs and the full `rasmalai://stdlib/api.json` for opt-in reads; two prompts bootstrap agents (`rasmalai-expert`, `convert-to-rasmalai`). Harness setup and protocol notes are specified in [AI Assistants](/guide/10-ai-assistants). The server is local-trust software: it executes received code with user privileges.
+`rnx mcp` serves the toolchain over the Model Context Protocol on stdio. Stdout carries protocol frames only; log lines go to stderr. Eighteen tools: `check` (project-aware typecheck, structured JSON by default, `pretty` opt-in), `run` (interpreter, 30s cap, structured output; a timed-out worker is abandoned and blocks further runs until it exits), `fmt` (plus read-only `check`/`diff` modes), `explain`, `rasmalai_lookup_symbol` (`@std/*` signature search, cheaper than reading the catalog), `version`, `inspect_package_capabilities` (package tier classification, capability flags, source-to-sink provenance chains, plus lockfile drift, licenses, and fail-soft advisory verdicts), `eval_code` (persistent JIT session with `:type` and `reset`), `get_diagnostics` (structured JSON diagnostics), `hot_reload` (reports an error without an attached `rnx dev --mcp` watcher), `build` (LLVM object kept in memory, release opt-in), `test` (project test runner, capped output), `lint` (read-only), `doc` (`--json` API docs), `doctor` (read-only cache health), `cache_status` (read-only pool sizes), and `package_resolve` (offline cache verdicts), and `ui_drive` (run a semicolon UI script against an app, assert controls, drag/fling/scroll through real controls, return a `shot:` PNG as an inline image block, and compare it against a `golden` baseline with a tolerance and diff ratio). Four spec resources expose the language (`rasmalai://spec/grammar`, `rasmalai://spec/architecture`, `rasmalai://spec/manifest`, `rasmalai://spec/packages`), plus per-module `rasmalai://stdlib/<module>.json` catalogs and the full `rasmalai://stdlib/api.json` for opt-in reads; two prompts bootstrap agents (`rasmalai-expert`, `convert-to-rasmalai`). Harness setup and protocol notes are specified in [AI Assistants](/guide/10-ai-assistants). The server is local-trust software: it executes received code with user privileges.
 
 ## Summary
 

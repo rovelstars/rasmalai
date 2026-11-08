@@ -1,0 +1,21 @@
+//! Background work for app code.
+
+import { Thread } from "@std/sync"
+
+/** A joinable background result. */
+pub class Worker {
+    let handle: Thread
+
+    init(handle: Thread) {
+        this.handle = handle
+    }
+
+    /** Wrap a handle the app spawned with `Thread.spawn(workerFn)`. */
+    static wrap(handle: Thread): Worker {
+        return new Worker(handle)
+    }
+
+    pub fn join(): Int {
+        return Int(this.handle.join().unwrapOr(0))
+    }
+}

@@ -29,20 +29,22 @@ npm run dev
 npm run dev -- --open
 ```
 
-### Playground registry origin
+### Playground stdlib origin
 
-The playground resolves `@std/*` against a registry. Without
-configuration it uses the page origin, which is correct in production
-(same-origin, zero config). A local dev server has no chunk store, so
-point it at a live registry instead:
+In production the playground reads `@std/*` from the same origin. Under
+`npm run dev`, the local server serves `compiler/stdlib/src` from the
+checkout and the browser skips its stdlib cache, so a local edit is
+visible on the next run. No registry or published package is involved.
+
+To test a published registry instead, set the override explicitly:
 
 ```sh
 VITE_RNX_REGISTRY=https://rasmalai.rovelstars.com npm run dev
 ```
 
-`VITE_RNX_REGISTRY` is an override with highest priority: when set, it
-is used exclusively and no fallback applies. Any http(s) origin works,
-including preview deployments. Production builds leave it unset.
+The override has highest priority and disables the local checkout path.
+It also disables the production fallback. Production builds leave it
+unset and use the page origin.
 
 ## Building
 

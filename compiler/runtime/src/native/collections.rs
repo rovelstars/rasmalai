@@ -963,6 +963,8 @@ unsafe fn tape_release_elem(bits: u64) -> bool {
     true
 }
 
+static JSON_PROXY_MARKER: u8 = 0;
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rnx_json_release_elem(slot: *mut u8) {    if slot.is_null() {
         return;
@@ -973,6 +975,10 @@ pub unsafe extern "C" fn rnx_json_release_elem(slot: *mut u8) {    if slot.is_nu
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rnx_json_proxy_release(slot: *mut u8) {
+    // Keep this dtor address distinct from rnx_json_release_elem. Release
+    // builds can otherwise fold identical functions and defeat the proxy
+    // array tag checked by json_write_native.
+    unsafe { core::ptr::read_volatile(&JSON_PROXY_MARKER) };
     if slot.is_null() {
         return;
     }
@@ -2591,6 +2597,10 @@ pub unsafe extern "C" fn rnx_heap_track(ptr: *mut u8, kind: u64, aux1: u64, aux2
         .insert(ptr as usize, TrackInfo { kind, aux1, aux2 });
 }
 
+pub(crate) fn heap_track_len() -> usize {
+    HEAP_TRACK.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
+
 pub(crate) fn heap_untrack(ptr: *mut u8) {
     if ptr.is_null() {
         return;
@@ -4018,6 +4028,15 @@ mod jit_residency_tests {
             .collect();
         assert_eq!(spans, vec![(0x300_0000, 0x500_0000, epoch)]);
         rnx_jit_module_retire(epoch);
+    }
+
+    #[test]
+    fn json_proxy_dtor_stays_distinct_from_elem_dtor() {
+        assert_ne!(
+            super::json_elem_dtor_addr(),
+            super::json_proxy_dtor_addr(),
+            "ICF must not fold the JSON proxy and element dtors"
+        );
     }
 
     #[test]

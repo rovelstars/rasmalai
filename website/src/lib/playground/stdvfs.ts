@@ -397,12 +397,15 @@ export async function ensureStdModule(
 	fetchImpl: typeof fetch = fetch,
 	fallbackOrigin?: string
 ): Promise<string> {
-	if (db) {
+	// Local dev serves the working copy instead of a pinned registry
+	// package. Skip IndexedDB so a stdlib edit is visible on the next run.
+	const dev = isDevOrigin(origin);
+	if (db && !dev) {
 		const cached = await readStdCache(db, version, rest);
 		if (cached !== null) return cached;
 	}
 	const source = await fetchStdModule(rest, version, origin, fetchImpl, fallbackOrigin);
-	if (db) await writeStdCache(db, version, rest, source);
+	if (db && !dev) await writeStdCache(db, version, rest, source);
 	return source;
 }
 

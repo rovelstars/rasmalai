@@ -275,10 +275,7 @@ fn map_ty(t: &A::Type) -> LirType {
             LirType::Pointer(Box::new(inner))
         }
         Some("Void") => LirType::Void,
-        Some(_) => {
-            let last = t.path.last().cloned().unwrap_or_default();
-            LirType::Obj(last)
-        }
+        Some(_) => LirType::Obj(t.path.join(".")),
         None => LirType::Any,
     };
     let _ = t.nullable;
@@ -555,7 +552,11 @@ struct Builder<'a> {
     closure_prefix: String,
     closure_hints: Vec<Vec<LirType>>,
     closure_ret: BTreeMap<Local, LirType>,
+    closure_captures: BTreeSet<Local>,
     child_sink: Option<Local>,
+    collect_sink: Option<(Local, LirType)>,
+    closure_throws: BTreeMap<Local, bool>,
+    collect_loop_floor: Option<usize>,
     synth_seq: usize,
     pending: Vec<PendingClosure>,
     patches: Vec<(BlockId, usize, String)>,
@@ -571,6 +572,20 @@ fn scope_ty_of(scopes: &[std::collections::BTreeMap<String, (Local, Simple, LirT
     }
     None
 }
+
+fn heap_type(t: &LirType) -> bool {
+    matches!(
+        t,
+        LirType::Obj(_)
+            | LirType::Str
+            | LirType::Array(_)
+            | LirType::Enum(_)
+            | LirType::Any
+            | LirType::Error
+            | LirType::Closure
+    )
+}
+
 
 
 fn body_can_throw(body: &A::FnBody) -> bool {
@@ -1748,7 +1763,14 @@ impl<'a> Builder<'a> {
             }
         }
         let v = self.nub_use(v, span);
-        Ok(vec![self.coerce_to_slot(v, &rt, span)])
+        let out = self.coerce_to_slot(v, &rt, span);
+        if out == v && self.closure_captures.contains(&v) {
+            let ty = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
+            if heap_type(&ty) {
+                self.emit(Instr::Retain { span, obj: v });
+            }
+        }
+        Ok(vec![out])
     }
 
     fn resolve_here(&self, t: &A::Type) -> LirType {

@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
-    Implementation, ListPromptsResult, ListResourcesResult, PaginatedRequestParams, Prompt,
-    PromptArgument, PromptMessage, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
+    ImageContent, Implementation, ListPromptsResult, ListResourcesResult, PaginatedRequestParams,
+    Prompt, PromptArgument, PromptMessage, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities,
+    ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer};
@@ -608,6 +609,22 @@ struct RunInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct UiDriveInput {
+    /// Path to the app entry file (`.rnx`), resolved project-aware.
+    path: String,
+    /// Semicolon-separated UI steps, e.g. `press:button:Add;wait:2;assert:button:Add`.
+    steps: String,
+    /// Kill the app after this many seconds. Defaults to the shared run timeout.
+    timeout_secs: Option<u64>,
+    /// Baseline PNG to compare against the last `shot:` step.
+    golden: Option<String>,
+    /// Per-channel difference allowed when comparing against `golden` (0-255).
+    golden_tolerance: Option<u32>,
+    /// Fraction of pixels allowed to differ, from 0.0 to 1.0.
+    golden_max_diff_ratio: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct FmtInput {
     /// Rasmalai source text. Exactly one of `source` or `path` is required.
     source: Option<String>,
@@ -759,6 +776,7 @@ pub struct RnxMcp {
     session: Arc<Mutex<ReplSession>>,
     dev: Option<DevLink>,
     exec: Arc<ExecSlot>,
+    child_env: Vec<(String, String)>,
 }
 
 impl RnxMcp {
@@ -767,6 +785,7 @@ impl RnxMcp {
             session: Arc::new(Mutex::new(ReplSession::new())),
             dev: None,
             exec: Arc::new(ExecSlot::default()),
+            child_env: captured_child_env(),
         }
     }
 
@@ -775,8 +794,25 @@ impl RnxMcp {
             session: Arc::new(Mutex::new(ReplSession::new())),
             dev: Some(link),
             exec: Arc::new(ExecSlot::default()),
+            child_env: captured_child_env(),
         }
     }
+}
+
+fn captured_child_env() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for key in [
+        "RNX_VENDOR_DIR",
+        "RNX_CACHE_HOME",
+        "RNX_SYSROOT",
+        "PKG_CONFIG_PATH",
+        "LD_LIBRARY_PATH",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            out.push((key.to_string(), value));
+        }
+    }
+    out
 }
 
 impl Default for RnxMcp {
@@ -999,6 +1035,215 @@ fn run_path_program(path: String, entry: String, timeout: Duration, slot: Arc<Ex
     }
 }
 
+fn run_ui_script(
+    path: &str,
+    steps: &str,
+    timeout: Duration,
+    child_env: &[(String, String)],
+) -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate rnx binary: {e}"))?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("run").arg(path);
+    for (key, value) in child_env {
+        cmd.env(key, value);
+    }
+    let mut child = cmd
+        .env("RNX_UI_SCRIPT", steps)
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot spawn app worker: {e}"))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait().map_err(|e| format!("cannot poll app worker: {e}"))? {
+            Some(_) => break,
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(format!(
+                        "exit status: timeout\n\napp exceeded the {}s limit and was killed",
+                        timeout.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("cannot read app output: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let (stdout, stdout_cut) = truncate_text(&stdout, TEXT_CAP);
+    let (stderr, stderr_cut) = truncate_text(&stderr, TEXT_CAP);
+    let code = output
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "signal".to_string());
+    let mut text = format!("exit status: {code}\n\nstdout:\n{stdout}\nstderr:\n{stderr}");
+    if stdout_cut || stderr_cut {
+        text.push_str("\n[output truncated]");
+    }
+    Ok(text)
+}
+
+struct GoldenReport {
+    width: u32,
+    height: u32,
+    differing: u64,
+    total: u64,
+    max_delta: u32,
+    ratio: f64,
+    matched: bool,
+}
+
+impl GoldenReport {
+    fn render(&self) -> String {
+        format!(
+            "golden: {} {}x{} differing {}/{} max-delta {} ratio {:.6}",
+            if self.matched { "match" } else { "mismatch" },
+            self.width,
+            self.height,
+            self.differing,
+            self.total,
+            self.max_delta,
+            self.ratio
+        )
+    }
+}
+
+fn decode_rgba(path: &str) -> Result<(u32, u32, Vec<u8>), String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_transformations(
+        png::Transformations::EXPAND
+            | png::Transformations::STRIP_16
+            | png::Transformations::ALPHA,
+    );
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| format!("cannot decode {path}: {e}"))?;
+    let size = reader
+        .output_buffer_size()
+        .ok_or_else(|| format!("{path}: image is too large to compare"))?;
+    let mut buf = vec![0u8; size];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("cannot decode {path}: {e}"))?;
+    let data = &buf[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => data.to_vec(),
+        png::ColorType::Rgb => {
+            let mut out = Vec::with_capacity(data.len() / 3 * 4);
+            for px in data.chunks_exact(3) {
+                out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+            }
+            out
+        }
+        png::ColorType::GrayscaleAlpha => {
+            let mut out = Vec::with_capacity(data.len() * 2);
+            for px in data.chunks_exact(2) {
+                out.extend_from_slice(&[px[0], px[0], px[0], px[1]]);
+            }
+            out
+        }
+        png::ColorType::Grayscale => {
+            let mut out = Vec::with_capacity(data.len() * 4);
+            for &g in data {
+                out.extend_from_slice(&[g, g, g, 255]);
+            }
+            out
+        }
+        png::ColorType::Indexed => {
+            return Err(format!("{path}: indexed PNG was not expanded"));
+        }
+    };
+    Ok((info.width, info.height, rgba))
+}
+
+fn compare_png(
+    shot: &str,
+    golden: &str,
+    tolerance: u32,
+    max_ratio: f64,
+) -> Result<GoldenReport, String> {
+    let (sw, sh, sp) = decode_rgba(shot)?;
+    let (gw, gh, gp) = decode_rgba(golden)?;
+    if sw != gw || sh != gh {
+        return Ok(GoldenReport {
+            width: sw,
+            height: sh,
+            differing: 0,
+            total: 0,
+            max_delta: 255,
+            ratio: 1.0,
+            matched: false,
+        });
+    }
+    let total = u64::from(sw) * u64::from(sh);
+    let mut differing = 0u64;
+    let mut max_delta = 0u32;
+    for (a, b) in sp.chunks_exact(4).zip(gp.chunks_exact(4)) {
+        let mut delta = 0u32;
+        for i in 0..4 {
+            let d = u32::from(a[i].abs_diff(b[i]));
+            if d > delta {
+                delta = d;
+            }
+        }
+        if delta > max_delta {
+            max_delta = delta;
+        }
+        if delta > tolerance {
+            differing += 1;
+        }
+    }
+    let ratio = if total == 0 {
+        0.0
+    } else {
+        differing as f64 / total as f64
+    };
+    Ok(GoldenReport {
+        width: sw,
+        height: sh,
+        differing,
+        total,
+        max_delta,
+        ratio,
+        matched: ratio <= max_ratio,
+    })
+}
+
+fn last_shot_path(steps: &str) -> Option<String> {
+    let mut found = None;
+    for step in steps.split(';') {
+        if let Some(path) = step.trim().strip_prefix("shot:") {
+            let path = path.trim();
+            if !path.is_empty() {
+                found = Some(path.to_string());
+            }
+        }
+    }
+    found
+}
+
+fn read_shot_image(path: &str) -> Option<ImageContent> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < 8 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    if bytes.len() > 16 * 1024 * 1024 {
+        return None;
+    }
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some(ImageContent::new(data, "image/png"))
+}
+
 #[tool_router]
 impl RnxMcp {
     #[tool(
@@ -1051,6 +1296,65 @@ impl RnxMcp {
             Ok(run_pretty(result))
         } else {
             Ok(run_value_json(result, cap, abandoned).to_string())
+        }
+    }
+
+    #[tool(
+        name = "ui_drive",
+        description = "Drive a running app through its UI script transport headless. Runs `rnx run <path>` with `RNX_UI_SCRIPT=<steps>` and returns the exit status plus captured stdout and stderr. Steps are semicolon-separated: press:role:name, click:role:name, focus:role:name, set:role:name:value, inc:role:name:delta, key:role:name:enter|tab|escape|space|up|down|left|right|backspace|home|end, scroll:role:name:dy, fling:role:name:velocity, drag:role:name:dx:dy, wait:N, shot:/path.png, assert:role:name, assertValue:role:name:value, assertChecked:role:name:true|false, assertFocus:role:name, inspect:on|off. When a step writes a PNG, the tool also returns that image as an image content block so an AI client can inspect the frame directly. Pass `golden` with a baseline PNG to run a pixel comparison; the result reports dimensions, differing pixels, and the maximum channel delta."
+    )]
+    async fn ui_drive(&self, params: Parameters<UiDriveInput>) -> Result<CallToolResult, String> {
+        let path = params.0.path.trim().to_string();
+        if path.is_empty() {
+            return Err("pass `path` to the app entry `.rnx` file".to_string());
+        }
+        if !Path::new(&path).exists() {
+            return Err(format!("cannot run `{path}`: no such file or directory"));
+        }
+        if params.0.steps.trim().is_empty() {
+            return Err("pass `steps` with at least one UI step".to_string());
+        }
+        let timeout = params
+            .0
+            .timeout_secs
+            .map(|s| Duration::from_secs(s.max(1)))
+            .unwrap_or_else(run_timeout);
+        let steps = params.0.steps.clone();
+        let child_env = self.child_env.clone();
+        let shot = last_shot_path(&steps);
+        let mut text =
+            blocking_task(move || run_ui_script(&path, &steps, timeout, &child_env)).await??;
+        let mut content = Vec::new();
+        let mut golden_failed = false;
+        if let Some(golden) = params.0.golden.as_deref() {
+            let Some(shot) = shot.as_deref() else {
+                return Err("pass a `shot:` step when comparing against `golden`".to_string());
+            };
+            let tolerance = params.0.golden_tolerance.unwrap_or(0).min(255);
+            let ratio = params.0.golden_max_diff_ratio.unwrap_or(0.0).clamp(0.0, 1.0);
+            match compare_png(shot, golden, tolerance, ratio) {
+                Ok(report) => {
+                    text.push_str("\n\n");
+                    text.push_str(&report.render());
+                    golden_failed = !report.matched;
+                }
+                Err(e) => {
+                    text.push_str("\n\ngolden: error ");
+                    text.push_str(&e);
+                    golden_failed = true;
+                }
+            }
+        }
+        content.push(ContentBlock::text(text));
+        if let Some(shot) = shot {
+            if let Some(image) = read_shot_image(&shot) {
+                content.push(ContentBlock::Image(image));
+            }
+        }
+        if golden_failed {
+            Ok(CallToolResult::error(content))
+        } else {
+            Ok(CallToolResult::success(content))
         }
     }
 
@@ -1927,4 +2231,91 @@ async fn serve_with(server: RnxMcp) -> Result<(), String> {
         .await
         .map_err(|e| format!("mcp server exited: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod shot_tests {
+    use super::{compare_png, last_shot_path, read_shot_image};
+
+    #[test]
+    fn last_shot_wins() {
+        let steps = "press:button:Add;shot:/tmp/a.png;wait:2;shot:/tmp/b.png";
+        assert_eq!(last_shot_path(steps).as_deref(), Some("/tmp/b.png"));
+        assert_eq!(last_shot_path("wait:2"), None);
+    }
+
+    #[test]
+    fn png_shots_become_image_blocks() {
+        use base64::Engine;
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+            .unwrap();
+        let dir = std::env::temp_dir().join("rnx-mcp-shot-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("one.png");
+        std::fs::write(&path, &png).unwrap();
+        let image = read_shot_image(path.to_str().unwrap()).expect("png image");
+        assert_eq!(image.mime_type, "image/png");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.decode(&image.data).unwrap(),
+            png
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn identical_pngs_match() {
+        use base64::Engine;
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+            .unwrap();
+        let dir = std::env::temp_dir().join("rnx-mcp-shot-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.png");
+        let b = dir.join("b.png");
+        std::fs::write(&a, &png).unwrap();
+        std::fs::write(&b, &png).unwrap();
+        let report = compare_png(a.to_str().unwrap(), b.to_str().unwrap(), 0, 0.0).unwrap();
+        assert!(report.matched);
+        assert_eq!(report.differing, 0);
+        std::fs::remove_file(&a).ok();
+        std::fs::remove_file(&b).ok();
+    }
+
+    fn write_pixel(path: &std::path::Path, rgba: [u8; 4]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&rgba).unwrap();
+    }
+
+    #[test]
+    fn different_pngs_report_a_mismatch() {
+        let dir = std::env::temp_dir().join("rnx-mcp-shot-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("red.png");
+        let b = dir.join("blue.png");
+        write_pixel(&a, [255, 0, 0, 255]);
+        write_pixel(&b, [0, 0, 255, 255]);
+        let report = compare_png(a.to_str().unwrap(), b.to_str().unwrap(), 0, 0.0).unwrap();
+        assert!(!report.matched);
+        assert_eq!(report.differing, 1);
+        assert_eq!(report.max_delta, 255);
+        let lenient = compare_png(a.to_str().unwrap(), b.to_str().unwrap(), 255, 0.0).unwrap();
+        assert!(lenient.matched);
+        std::fs::remove_file(&a).ok();
+        std::fs::remove_file(&b).ok();
+    }
+
+    #[test]
+    fn non_png_files_are_ignored() {
+        let dir = std::env::temp_dir().join("rnx-mcp-shot-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("not.png");
+        std::fs::write(&path, b"not a png").unwrap();
+        assert!(read_shot_image(path.to_str().unwrap()).is_none());
+        std::fs::remove_file(&path).ok();
+    }
 }

@@ -57,6 +57,8 @@ pub enum Code {
     W201,
     W202,
     W204,
+    W205,
+    W206,
     P101,
     P102,
     P201,
@@ -116,6 +118,8 @@ impl Code {
             Code::W201 => "W201",
             Code::W202 => "W202",
             Code::W204 => "W204",
+            Code::W205 => "W205",
+            Code::W206 => "W206",
             Code::P101 => "P101",
             Code::P102 => "P102",
             Code::P201 => "P201",
@@ -125,7 +129,7 @@ impl Code {
     }
 
     pub fn is_warning(self) -> bool {
-        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W202 | Code::W204 | Code::P201 | Code::P202 | Code::P203)
+        matches!(self, Code::W104 | Code::W108 | Code::W109 | Code::W201 | Code::W202 | Code::W204 | Code::W205 | Code::W206 | Code::P201 | Code::P202 | Code::P203)
     }
 
     pub fn is_perf_note(self) -> bool {
@@ -181,6 +185,8 @@ impl Code {
             Code::W201 => "unrecognized manifest section or field",
             Code::W202 => "unneeded unsafe block",
             Code::W204 => "deprecated `pub` visibility",
+            Code::W205 => "legacy entries.lib C surface",
+            Code::W206 => "implicit C surface fallback",
             Code::P101 => "compiler-restructured reduction nest",
             Code::P102 => "compiler-versioned bounds checks",
             Code::P201 => "missed reduction restructure",
@@ -234,6 +240,8 @@ impl Code {
             "W201" => Code::W201,
             "W202" => Code::W202,
             "W204" => Code::W204,
+            "W205" => Code::W205,
+            "W206" => Code::W206,
             "P101" => Code::P101,
             "P102" => Code::P102,
             "P201" => Code::P201,
@@ -294,6 +302,8 @@ pub const ALL: &[Code] = &[
     Code::W201,
     Code::W202,
     Code::W204,
+    Code::W205,
+    Code::W206,
     Code::P101,
     Code::P102,
     Code::P201,
@@ -358,7 +368,10 @@ impl fmt::Display for Diagnostic {
 }
 
 pub fn line_col(src: &str, offset: u32) -> (usize, usize) {
-    let off = (offset as usize).min(src.len());
+    let mut off = (offset as usize).min(src.len());
+    while off > 0 && !src.is_char_boundary(off) {
+        off -= 1;
+    }
     let head = &src[..off];
     let line = head.bytes().filter(|&b| b == b'\n').count() + 1;
     let col = off - head.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
@@ -432,4 +445,25 @@ pub fn diagnostics_to_json(items: &[JsonDiagnostic]) -> String {
     }
     out.push(']');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::line_col;
+
+    #[test]
+    fn line_col_clamps_to_a_char_boundary() {
+        let src = "a×b";
+        let (line, col) = line_col(src, 2);
+        assert_eq!(line, 1);
+        assert_eq!(col, 2);
+    }
+
+    #[test]
+    fn line_col_counts_lines_after_newlines() {
+        let src = "one\ntwo";
+        let (line, col) = line_col(src, 6);
+        assert_eq!(line, 2);
+        assert_eq!(col, 3);
+    }
 }

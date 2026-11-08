@@ -324,6 +324,8 @@ fn walk_stmt(
             walk_block(facts, uses, owner, b, depth);
             depth.pop();
         }
+        Stmt::Slot { body, .. } => walk_block(facts, uses, owner, body, depth),
+        Stmt::Spread { value, .. } => walk_expr(facts, uses, owner, value, depth),
         Stmt::Break | Stmt::Continue | Stmt::Fallthrough | Stmt::Pass | Stmt::Empty => {}
     }
 }

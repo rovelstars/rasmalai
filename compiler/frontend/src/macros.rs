@@ -403,6 +403,8 @@ fn rewrite_stmt_a(stmt: &mut A::Stmt, ctx: &mut PassCtx) {
                 rewrite_expr_a(&mut e.node, e.span, ctx);
             }
         }
+        A::Stmt::Slot { body, .. } => rewrite_block_a(body, ctx),
+        A::Stmt::Spread { value, .. } => rewrite_expr_a(&mut value.node, value.span, ctx),
         A::Stmt::Break | A::Stmt::Continue | A::Stmt::Fallthrough | A::Stmt::Pass | A::Stmt::Empty => {}
     }
 }

@@ -2,7 +2,7 @@ use crate::desugar::desugar;
 use crate::modules::ModuleGraph;
 use crate::parser::Parser;
 use crate::semantic;
-use diagnostics::Diagnostic;
+use diagnostics::{Code, Diagnostic};
 use std::path::Path;
 
 fn sort_diags(diags: &mut [Diagnostic]) {
@@ -74,6 +74,12 @@ pub fn check_package(root: &Path) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     check_package_with_dump(root, None)
 }
 
+fn same_file(a: &Path, b: &Path) -> bool {
+    let ca = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
+    let cb = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
+    ca == cb
+}
+
 fn cabi_surface(root: &Path) -> Option<std::path::PathBuf> {
     let dir = crate::project::find_project_root(root)?;
     let cfg = crate::project::ProjectConfig::load_from_dir(&dir).ok().flatten()?;
@@ -112,8 +118,46 @@ pub fn check_package_with_dump(
         return split(diags);
     }
     diags.extend(crate::macros::expand_phase_b(&mut module, &mut opts, None));
+    let mut surface_misuse = false;
+    if let Some(surface) = cabi.as_deref() {
+        for f in &graph.files {
+            if !same_file(&f.path, surface) {
+                continue;
+            }
+            for decl in &f.module.decls {
+                let message = match &decl.node {
+                    crate::ast::Decl::ExportFrom(_) => {
+                        Some("an `export { ... } from` re-export writes no C symbol")
+                    }
+                    crate::ast::Decl::ExportList(_) => {
+                        Some("an `export { ... }` list writes no C symbol")
+                    }
+                    crate::ast::Decl::ExportDefault(_) => {
+                        Some("an `export default` writes no C symbol")
+                    }
+                    _ => None,
+                };
+                if let Some(message) = message {
+                    surface_misuse = true;
+                    diags.push(
+                        Diagnostic::new(Code::E108, message)
+                            .with_span(decl.span)
+                            .with_file(f.path.clone())
+                            .with_hint(
+                                "declare a wrapper with a C-representable signature in the cabi file; the surface is declarations, not re-exports",
+                            ),
+                    );
+                }
+            }
+        }
+    }
     diags.extend(crate::desugar::desugar_with_files(&mut module, &files));
-    diags.extend(semantic::check_with_files_and_surface(&module, &files, cabi.as_deref()));
+    diags.extend(semantic::check_with_files_surface_misuse(
+        &module,
+        &files,
+        cabi.as_deref(),
+        surface_misuse,
+    ));
     diags.extend(crate::security::verify_runtime_imports(&graph));
     if diags.iter().all(|d| d.code.is_warning()) {
         diags.extend(graph.isolation_errors());

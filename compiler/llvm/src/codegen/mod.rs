@@ -2058,12 +2058,15 @@ fn fast_flags(_cx: &FnCx, v: FloatValue, fast: bool) -> Result<(), Diagnostic> {
 
 fn store(cx: &FnCx, dst: Local, v: BasicValueEnum) -> Result<(), Diagnostic> {
     cx.builder.build_store(cx.locals[dst as usize], v).map_err(err)?;
-    cx.last_write.borrow_mut().insert(dst, cx.cur_block);
+    cx.writes.borrow_mut().entry(dst).or_default().push(cx.cur_block);
     Ok(())
 }
 
 fn write_dominates(cx: &FnCx, dst: Local) -> bool {
-    cx.last_write.borrow().get(&dst).is_some_and(|w| cx.dom.dominates(*w, cx.cur_block))
+    cx.writes
+        .borrow()
+        .get(&dst)
+        .is_some_and(|blocks| blocks.iter().any(|b| cx.dom.dominates(*b, cx.cur_block)))
 }
 
 fn obj_size(lir: &Module, cx: &FnCx, l: Local) -> Result<u64, Diagnostic> {
@@ -2319,6 +2322,13 @@ fn llvm_array_capturable(inner: &LirType) -> bool {
 
 fn array_elem_dtor<'a>(cx: &FnCx<'a>, lir: &Module, elem: &LirType) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
     let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
+    if let Some(fid) = lir.array_dtors.get(&lir::instr::type_key(elem)) {
+        let fname = &lir.functions[*fid].name;
+        let fv = cx.funcs.get(fname).copied().ok_or_else(|| {
+            Diagnostic::new(Code::E108, format!("llvm subset: unknown array dtor `{fname}`"))
+        })?;
+        return Ok(fv.as_global_value().as_pointer_value());
+    }
     match elem {
         LirType::Obj(name) => match lir.class_index.get(name) {
             Some(fci) => match lir.classes[*fci].dtor {

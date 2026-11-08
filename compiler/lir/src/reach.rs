@@ -536,7 +536,7 @@ mod tests {
         module.interfaces.push(InterfaceDesc {
             name: "Drawable".to_string(),
             type_params: Vec::new(),
-            methods: vec![IfaceMethod { name: "render".to_string(), params: Vec::new(), ret: LirType::I64 }],
+            methods: vec![IfaceMethod { name: "render".to_string(), params: Vec::new(), ret: LirType::I64, throws: false }],
             method_index: BTreeMap::from([("render".to_string(), 0)]),
         });
         module.interface_index.insert("Drawable".to_string(), 0);
