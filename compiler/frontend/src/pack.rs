@@ -844,6 +844,7 @@ mod tests {
             artifacts: None,
             license: None,
             native_pins: Default::default(),
+            patch: None,
             tasks: Default::default(),
             bindgen: None,
         };

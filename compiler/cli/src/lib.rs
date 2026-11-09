@@ -1347,6 +1347,9 @@ pub fn run_files_cfg(
             };
         }
     };
+    if let Some(dir) = frontend::patch::active_wrappers() {
+        runtime::native::set_native_search_paths(vec![dir]);
+    }
     let mut cmdline = vec![path.to_string()];
     cmdline.extend(args.iter().map(|v| v.display()));
     runtime::native::rnx_set_args(&cmdline);
@@ -1708,6 +1711,7 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
             artifacts: None,
             license: None,
             native_pins: std::collections::BTreeMap::new(),
+            patch: None,
             tasks: std::collections::BTreeMap::new(),
             bindgen: None,
         }),

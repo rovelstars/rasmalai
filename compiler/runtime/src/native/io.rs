@@ -1879,6 +1879,20 @@ mod env_tests {
 pub(crate) static DL_HANDLES: LazyLock<Mutex<HashMap<String, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(not(target_arch = "wasm32"))]
+static NATIVE_SEARCH_PATHS: LazyLock<Mutex<Vec<std::path::PathBuf>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_native_search_paths(paths: Vec<std::path::PathBuf>) {
+    if let Ok(mut guard) = NATIVE_SEARCH_PATHS.lock() {
+        *guard = paths;
+    }
+    if let Ok(mut handles) = DL_HANDLES.lock() {
+        handles.clear();
+    }
+}
+
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 fn dl_handle(lib: &str) -> Option<*mut libc::c_void> {
     if lib == "c" {
@@ -1890,7 +1904,16 @@ fn dl_handle(lib: &str) -> Option<*mut libc::c_void> {
             return Some(*h as *mut libc::c_void);
         }
     }
-    let cands = [format!("lib{lib}.so"), format!("lib{lib}.so.1"), lib.to_string()];
+    let mut cands: Vec<String> = Vec::new();
+    if let Ok(paths) = NATIVE_SEARCH_PATHS.lock() {
+        for dir in paths.iter() {
+            cands.push(dir.join(format!("lib{lib}.so")).to_string_lossy().into_owned());
+            cands.push(dir.join(format!("{lib}.so")).to_string_lossy().into_owned());
+        }
+    }
+    cands.push(format!("lib{lib}.so"));
+    cands.push(format!("lib{lib}.so.1"));
+    cands.push(lib.to_string());
     for cand in &cands {
         let Ok(path) = std::ffi::CString::new(cand.as_str()) else {
             continue;

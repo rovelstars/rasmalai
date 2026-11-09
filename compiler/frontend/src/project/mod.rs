@@ -25,6 +25,19 @@ pub struct NativePin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchSource {
+    Path { path: PathBuf, subdir: Option<PathBuf> },
+    Git { git: String, rev: String, subdir: Option<PathBuf> },
+    Oci { oci: String, subdir: Option<PathBuf> },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PatchConfig {
+    pub vendor: Option<PatchSource>,
+    pub wrappers: Option<PatchSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStep {
     Shell(String),
     Invoke(TaskRef),
@@ -201,6 +214,7 @@ pub struct ProjectConfig {
     pub artifacts: Option<String>,
     pub license: Option<String>,
     pub native_pins: BTreeMap<String, NativePin>,
+    pub patch: Option<PatchConfig>,
     pub tasks: BTreeMap<String, TaskDef>,
     pub bindgen: Option<BindgenDriver>,
 }
@@ -627,6 +641,90 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
             "dependency `{name}`: expected a version string, path string, or inline object"
         )),
     }
+}
+
+fn parse_patch(val: &ConfigValue) -> Result<PatchConfig, String> {
+    let ConfigValue::Object(entries) = val else {
+        return Err("field `patch` must be an object".to_string());
+    };
+    let mut patch = PatchConfig::default();
+    for (name, source) in entries {
+        if name != "vendor" && name != "wrappers" {
+            return Err(format!(
+                "field `patch.{name}` is not a patch target (expected `vendor` or `wrappers`)"
+            ));
+        }
+        let source = parse_patch_source(name, source)?;
+        match name.as_str() {
+            "vendor" => patch.vendor = Some(source),
+            "wrappers" => patch.wrappers = Some(source),
+            _ => unreachable!(),
+        }
+    }
+    Ok(patch)
+}
+
+fn parse_patch_source(name: &str, val: &ConfigValue) -> Result<PatchSource, String> {
+    let ConfigValue::Object(fields) = val else {
+        return Err(format!("field `patch.{name}` must be an object"));
+    };
+    for (key, _) in fields {
+        if !["path", "git", "rev", "tag", "branch", "oci", "subdir"].contains(&key.as_str()) {
+            return Err(format!(
+                "field `patch.{name}.{key}` is not a patch field (expected `path`, `git`, `rev`, `tag`, `branch`, `oci`, or `subdir`)"
+            ));
+        }
+    }
+    let get = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+    let subdir = match get("subdir") {
+        Some(ConfigValue::String(s)) if !s.trim().is_empty() => Some(PathBuf::from(s)),
+        Some(_) => return Err(format!("field `patch.{name}.subdir` must be a non-empty string")),
+        None => None,
+    };
+    let has_path = get("path").is_some();
+    let has_git = get("git").is_some();
+    let has_oci = get("oci").is_some();
+    if usize::from(has_path) + usize::from(has_git) + usize::from(has_oci) != 1 {
+        return Err(format!(
+            "field `patch.{name}` needs exactly one of `path`, `git`, or `oci`"
+        ));
+    }
+    if has_path {
+        let path = match get("path") {
+            Some(ConfigValue::String(s)) if !s.trim().is_empty() => PathBuf::from(s),
+            _ => return Err(format!("field `patch.{name}.path` must be a non-empty string")),
+        };
+        return Ok(PatchSource::Path { path, subdir });
+    }
+    if has_oci {
+        let oci = match get("oci") {
+            Some(ConfigValue::String(s)) if !s.trim().is_empty() && !s.chars().any(char::is_whitespace) => s.clone(),
+            _ => return Err(format!("field `patch.{name}.oci` must be a non-empty OCI reference")),
+        };
+        return Ok(PatchSource::Oci { oci, subdir });
+    }
+    let git = match get("git") {
+        Some(ConfigValue::String(s)) if !s.trim().is_empty() => s.clone(),
+        _ => return Err(format!("field `patch.{name}.git` must be a non-empty URL")),
+    };
+    let mut rev = None;
+    for key in ["rev", "tag", "branch"] {
+        if let Some(v) = get(key) {
+            if rev.is_some() {
+                return Err(format!(
+                    "field `patch.{name}` needs exactly one of `rev`, `tag`, or `branch`"
+                ));
+            }
+            match v {
+                ConfigValue::String(s) if !s.trim().is_empty() => rev = Some(s.clone()),
+                _ => return Err(format!("field `patch.{name}.{key}` must be a non-empty string")),
+            }
+        }
+    }
+    let rev = rev.ok_or_else(|| {
+        format!("field `patch.{name}` git source needs one of `rev`, `tag`, or `branch`")
+    })?;
+    Ok(PatchSource::Git { git, rev, subdir })
 }
 
 fn parse_native_pin(name: &str, val: &ConfigValue) -> Result<NativePin, String> {
@@ -1303,6 +1401,10 @@ pub(crate) fn parse_manifest_with(
             } else if obj_get(top, "native").is_some() {
                 return Err("field `native` must be an object".to_string());
             }
+            let patch = match obj_get(top, "patch") {
+                Some(v) => Some(parse_patch(v)?),
+                None => None,
+            };
             let mut tasks = BTreeMap::new();
             if let Some(ConfigValue::Object(entries)) = obj_get(top, "tasks") {
                 for (k, v) in entries {
@@ -1345,6 +1447,7 @@ pub(crate) fn parse_manifest_with(
                 artifacts,
                 license,
                 native_pins,
+                patch,
                 tasks,
                 bindgen,
             })
@@ -1383,7 +1486,7 @@ const ENTRIES_KEYS: &[&str] = &["main", "lib", "cabi", "docs", "bins"];
 const REGISTRY_KEYS: &[&str] = &["url", "token_env", "ca_cert"];
 const WORKSPACE_KEYS: &[&str] = &["members"];
 const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system", "from", "link"];
-const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts", "native", "tasks", "bindgen", "license"];
+const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts", "native", "patch", "tasks", "bindgen", "license"];
 
 fn span_line(text: &str, offset: u32) -> usize {
     let off = (offset as usize).min(text.len());
@@ -3584,5 +3687,60 @@ mod tests {
                 "{issues:?} for {text}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    fn cfg(patch: &str) -> String {
+        format!(
+            "export default {{\n    project: {{ name: \"p\", version: \"0.1.0\" }},\n    patch: {patch}\n}}\n"
+        )
+    }
+
+    #[test]
+    fn parses_path_git_and_oci_sources() {
+        let c = parse_config(&cfg(
+            "{ vendor: { path: \"vendor\" }, wrappers: { oci: \"ttl.sh/rnx-wrappers:1h\" } }",
+        ))
+        .unwrap();
+        let patch = c.patch.unwrap();
+        assert!(matches!(
+            patch.vendor,
+            Some(PatchSource::Path { path, subdir: None }) if path == PathBuf::from("vendor")
+        ));
+        assert!(matches!(
+            patch.wrappers,
+            Some(PatchSource::Oci { oci, subdir: None }) if oci == "ttl.sh/rnx-wrappers:1h"
+        ));
+
+        let c = parse_config(&cfg(
+            "{ vendor: { git: \"https://example.com/vendor\", rev: \"abc\", subdir: \"tree\" } }",
+        ))
+        .unwrap();
+        let patch = c.patch.unwrap();
+        assert!(matches!(
+            patch.vendor,
+            Some(PatchSource::Git { git, rev, subdir: Some(subdir) })
+                if git == "https://example.com/vendor" && rev == "abc" && subdir == PathBuf::from("tree")
+        ));
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_incomplete_sources() {
+        let e = parse_config(&cfg(
+            "{ vendor: { path: \"vendor\", git: \"https://example.com/vendor\", rev: \"abc\" } }",
+        ))
+        .unwrap_err();
+        assert!(e.contains("exactly one of `path`, `git`, or `oci`"), "{e}");
+
+        let e = parse_config(&cfg("{ wrappers: { git: \"https://example.com/wrappers\" } }"))
+            .unwrap_err();
+        assert!(e.contains("needs one of `rev`, `tag`, or `branch`"), "{e}");
+
+        let e = parse_config(&cfg("{ vendor: { path: \"vendor\", wat: \"no\" } }")).unwrap_err();
+        assert!(e.contains("not a patch field"), "{e}");
     }
 }

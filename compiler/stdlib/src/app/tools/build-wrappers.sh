@@ -26,7 +26,7 @@ install_lib() {
     lib=$1
     cp "$target/release/lib$lib.so" "$prefix/lib$lib.so"
     cat > "$prefix/$lib.pc" <<PC
-prefix=$prefix
+prefix=\${pcfiledir}
 libdir=\${prefix}
 includedir=\${prefix}
 Name: $lib

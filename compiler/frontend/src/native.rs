@@ -332,8 +332,26 @@ pub fn resolve_native_links(
     Ok(out)
 }
 
+fn pkg_config_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new("pkg-config");
+    if let Some(dir) = crate::patch::active_wrappers() {
+        let mut parts = vec![dir];
+        if let Some(current) = std::env::var_os("PKG_CONFIG_PATH") {
+            for part in std::env::split_paths(&current) {
+                if !part.as_os_str().is_empty() && part != parts[0] {
+                    parts.push(part);
+                }
+            }
+        }
+        if let Ok(joined) = std::env::join_paths(parts) {
+            cmd.env("PKG_CONFIG_PATH", joined);
+        }
+    }
+    cmd
+}
+
 fn pkg_config_lib_dirs(lib: &str) -> Vec<std::path::PathBuf> {
-    let Ok(out) = std::process::Command::new("pkg-config")
+    let Ok(out) = pkg_config_command()
         .args(["--libs-only-L", lib])
         .output()
     else {
@@ -357,7 +375,7 @@ fn valid_probe_name(lib: &str) -> bool {
 }
 
 fn pkg_config_version(lib: &str) -> Option<String> {
-    let out = std::process::Command::new("pkg-config")
+    let out = pkg_config_command()
         .arg("--modversion")
         .arg(lib)
         .output()

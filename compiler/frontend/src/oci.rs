@@ -1,8 +1,10 @@
 use crate::checksum::Sha256;
 use crate::fetch::{parse_json, JsonValue};
 use diagnostics::{Code, Diagnostic};
+use flate2::read::GzDecoder;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::io::{Cursor, Read};
+use std::path::{Component, Path, PathBuf};
 
 pub const OCI_INDEX_CAP: usize = 1024 * 1024;
 pub const OCI_MANIFEST_CAP: usize = 1024 * 1024;
@@ -423,6 +425,160 @@ fn manifest_layer_digests(manifest: &JsonValue) -> Result<Vec<String>, Diagnosti
         }
     }
     Ok(out)
+}
+
+pub fn fetch_manifest_ref(bare: &str, reference: &str) -> Result<(Vec<u8>, String), Diagnostic> {
+    let (url, _) = manifest_url(bare, reference)?;
+    let bytes = http_get(
+        &url,
+        "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json",
+        OCI_MANIFEST_CAP,
+        "manifest",
+    )?;
+    let digest = format!("sha256:{}", Sha256::hexdigest(&bytes));
+    Ok((bytes, digest))
+}
+
+fn split_patch_ref(reference: &str) -> Result<(String, String), Diagnostic> {
+    if reference.trim().is_empty() {
+        return Err(Diagnostic::new(Code::E108, "patch OCI reference is empty"));
+    }
+    let (bare, tag) = if let Some((bare, digest)) = reference.rsplit_once('@') {
+        (bare, digest.to_string())
+    } else if let Some(pos) = reference.rfind(':') {
+        let slash = reference.rfind('/').unwrap_or(0);
+        if pos > slash {
+            (&reference[..pos], reference[pos + 1..].to_string())
+        } else {
+            (reference, "latest".to_string())
+        }
+    } else {
+        (reference, "latest".to_string())
+    };
+    split_bare(bare)?;
+    Ok((bare.to_string(), tag))
+}
+
+fn extract_patch_layer(bytes: &[u8], dest: &Path) -> Result<(), Diagnostic> {
+    let reader: Box<dyn Read> = if bytes.starts_with(&[0x1f, 0x8b]) {
+        Box::new(GzDecoder::new(Cursor::new(bytes)))
+    } else {
+        Box::new(Cursor::new(bytes))
+    };
+    let mut archive = tar::Archive::new(reader);
+    let entries = archive.entries().map_err(|e| {
+        Diagnostic::new(Code::E108, format!("patch OCI layer is not a tar archive: {e}"))
+    })?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| {
+            Diagnostic::new(Code::E108, format!("patch OCI layer is unreadable: {e}"))
+        })?;
+        let path = entry.path().map_err(|e| {
+            Diagnostic::new(Code::E108, format!("patch OCI layer has a bad entry path: {e}"))
+        })?;
+        if path.components().any(|c| {
+            matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_))
+        }) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("patch OCI layer entry `{}` escapes the extraction root", path.display()),
+            ));
+        }
+        entry.unpack_in(dest).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot extract patch OCI layer: {e}"))
+        })?;
+    }
+    Ok(())
+}
+
+pub fn fetch_patch_artifact(
+    reference: &str,
+    cache: &Path,
+    kind: &str,
+) -> Result<PathBuf, Diagnostic> {
+    let (bare, tag) = split_patch_ref(reference)?;
+    let (bytes, digest) = fetch_manifest_ref(&bare, &tag)?;
+    let hex = digest.strip_prefix("sha256:").unwrap_or(&digest);
+    let dest = cache.join(format!(
+        "{kind}-{hex}-{}-{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
+    if dest.is_dir() {
+        return Ok(dest);
+    }
+    let doc = parse_json(&bytes).map_err(|_| {
+        Diagnostic::new(Code::E108, format!("patch manifest for `{reference}` is not valid JSON"))
+    })?;
+    let mut layers = Vec::new();
+    if let Some(items) = doc.get("manifests").and_then(|m| m.as_array()) {
+        let host_os = canonical_os(std::env::consts::OS);
+        let host_arch = canonical_arch(std::env::consts::ARCH);
+        let mut selected = Vec::new();
+        for item in items {
+            let platform = item.get("platform");
+            let os = platform.and_then(|p| p.get("os")).and_then(|v| v.as_str());
+            let arch = platform
+                .and_then(|p| p.get("architecture"))
+                .and_then(|v| v.as_str());
+            let matches = match (os, arch) {
+                (None, None) => true,
+                (Some(os), Some(arch)) => os == host_os && arch == host_arch,
+                _ => false,
+            };
+            if matches
+                && let Some(digest) = item.get("digest").and_then(|v| v.as_str())
+            {
+                selected.push(digest.to_string());
+            }
+        }
+        if selected.is_empty() {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "patch OCI artifact `{reference}` has no manifest for {host_os}/{host_arch}"
+                ),
+            ));
+        }
+        for digest in selected {
+            let manifest = fetch_manifest(&bare, &digest)?;
+            layers.extend(manifest_layer_digests(&manifest)?);
+        }
+    } else {
+        layers = manifest_layer_digests(&doc)?;
+    }
+    if layers.is_empty() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("patch OCI artifact `{reference}` carries no layers"),
+        ));
+    }
+    let tmp = cache.join(format!(".tmp-{hex}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", tmp.display()))
+    })?;
+    for layer in layers {
+        let bytes = fetch_blob(&bare, &layer)?;
+        if let Err(e) = extract_patch_layer(&bytes, &tmp) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+    }
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot replace `{}`: {e}", dest.display()))
+        })?;
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
+        })?;
+    }
+    std::fs::rename(&tmp, &dest).map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot move patch artifact into `{}`: {e}", dest.display()))
+    })?;
+    Ok(dest)
 }
 
 pub fn fetch_blob(bare: &str, digest: &str) -> Result<Vec<u8>, Diagnostic> {
@@ -1264,4 +1420,36 @@ mod tests {
         );
         assert!(platform_for_triple("nope").is_none());
     }
+    #[test]
+    fn patch_oci_pulls_and_extracts_a_tar_layer() {
+        let mut builder = tar::Builder::new(Vec::new());
+        let data = b"hello patch";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "hello.txt", &data[..])
+            .unwrap();
+        let layer = builder.into_inner().unwrap();
+        let layer_hash = Sha256::hexdigest(&layer);
+        let manifest = format!(
+            "{{\"schemaVersion\":2,\"layers\":[{{\"digest\":\"sha256:{layer_hash}\"}}]}}"
+        );
+        let manifest_hash = Sha256::hexdigest(manifest.as_bytes());
+        let index = format!(
+            "{{\"schemaVersion\":2,\"manifests\":[{{\"digest\":\"sha256:{manifest_hash}\",\"platform\":{{\"os\":\"linux\",\"architecture\":\"amd64\"}}}}]}}"
+        );
+        let mut files = BTreeMap::new();
+        files.insert(format!("sha256:{manifest_hash}"), manifest.into_bytes());
+        files.insert(format!("sha256:{layer_hash}"), layer);
+        let origin = start_origin(index.into_bytes(), files);
+        let dir = std::env::temp_dir().join(format!("rnx-oci-patch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = fetch_patch_artifact(&format!("{}:latest", origin.bare), &dir, "vendor")
+            .unwrap();
+        assert_eq!(std::fs::read(out.join("hello.txt")).unwrap(), data);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

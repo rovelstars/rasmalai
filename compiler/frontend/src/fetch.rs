@@ -45,6 +45,18 @@ pub fn local_override_used(full: &str) -> bool {
 }
 
 pub fn local_override_dir(pkg: &str, anchor: &Path) -> Option<PathBuf> {
+    if let Some(root) = crate::patch::vendor_root(anchor) {
+        let candidate = root.join(pkg);
+        if candidate.join(crate::project::MANIFEST_FILE).is_file() {
+            return Some(candidate);
+        }
+        if let Some(short) = pkg.strip_prefix("@std/") {
+            let flat = root.join(short);
+            if flat.join(crate::project::MANIFEST_FILE).is_file() {
+                return Some(flat);
+            }
+        }
+    }
     if let Some(dir) = std::env::var(LOCAL_VENDOR_ENV)
         .ok()
         .filter(|s| !s.trim().is_empty())
@@ -260,6 +272,40 @@ pub fn fetch_git_dependency(
         ));
     }
     write_marker(&dir, git_url, rev)?;
+    Ok(dir)
+}
+
+pub fn fetch_git_tree(
+    git_url: &str,
+    rev: &str,
+    cache_dir: &Path,
+    key: &str,
+) -> Result<PathBuf, Diagnostic> {
+    let dir = cache_dir.join(format!("{key}-{}", short_rev(rev)));
+    if dir.join(".git").is_dir() {
+        return Ok(dir);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("cannot create `{}`: {e}", parent.display()))
+        })?;
+    }
+    let shallow = std::process::Command::new("git")
+        .args(["clone", "--depth", "1", "--branch", rev, git_url])
+        .arg(&dir)
+        .output()
+        .map_err(|_| Diagnostic::new(Code::E108, "git is not installed or not in PATH"))?;
+    if !shallow.status.success() {
+        let _ = std::fs::remove_dir_all(&dir);
+        git_cmd(&["clone", git_url, &dir.to_string_lossy()], cache_dir)?;
+        git_cmd(&["checkout", rev], &dir).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot reach revision `{rev}` of `{git_url}`: {}", e.message),
+            )
+        })?;
+    }
     Ok(dir)
 }
 

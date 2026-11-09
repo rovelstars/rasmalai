@@ -82,6 +82,49 @@ export default {
 }
 ```
 
+### Patching sources and wrappers
+
+`patch` overrides package sources and native wrapper libraries for a project. It is the
+manifest equivalent of `RNX_VENDOR_DIR`, `PKG_CONFIG_PATH`, and `LD_LIBRARY_PATH`, so a
+checkout or an example can point at local or remote builds without exports.
+
+```rnx
+export default {
+    project: { name: "demo", version: "0.1.0" },
+    entries: { main: "src/main.rnx" },
+    patch: {
+        vendor: { path: "../../compiler/stdlib/src" },
+        wrappers: { path: "../../.rnx-cache/wrappers" }
+    }
+}
+```
+
+`patch.vendor` is a package tree. It accepts `path`, `git`, or `oci`:
+
+- `path` resolves relative to the project root and accepts either
+  `<root>/@std/<name>` or `<root>/<name>`.
+- `git` needs exactly one of `rev`, `tag`, or `branch`. The checkout is cached
+  under `.rnx-cache/patches/git/`.
+- `oci` pulls an OCI artifact whose layer is a tar archive of the package tree.
+  It is cached under `.rnx-cache/patches/oci/`.
+
+`patch.wrappers` is a directory of native wrapper artifacts: `lib<name>.so` (or
+`.a`) plus `<name>.pc`. It accepts `path`, `git`, or `oci`. The git form expects a
+repository that already contains the built artifacts, because a wrapper is a
+platform-specific binary. The OCI form is the natural remote form for prebuilt
+wrappers and is selected by host OS and architecture. The generated `.pc` files
+use `${pcfiledir}`, so a copied or extracted wrapper directory remains
+relocatable.
+
+`patch.vendor` wins over `RNX_VENDOR_DIR`, the project cache, the global cache,
+and the registry. `patch.wrappers` adds the directory to `pkg-config` discovery
+and to the AOT binary's runpath; `rnx run` also adds it to the runtime native
+library search path. `RNX_VENDOR_DIR`, `PKG_CONFIG_PATH`, and
+`LD_LIBRARY_PATH` remain explicit overrides.
+
+Prefer relative paths in a committed manifest. A machine-specific absolute path
+belongs in a local copy of `Project.config`, not in the published package.
+
 ## SemVer comparators
 
 Version requirements follow SemVer 2.0: `^1.2.0` permits compatible minor and patch changes; `~1.2.0` permits patch-level changes only; a bare version pins exactly; ranges combine comparators. A git dependency pins exactly one of `rev`, `tag`, or `branch` (`rev` holding a branch name is rejected). A `path` entry is a local checkout; git checkouts cache under `.rnx-cache/cache/git/`; a `.vendor/<pkg>/` directory wins over the network, for git and registry dependencies alike (see [Packages and Registries](/manual/18-packages-and-registries)). `RNX_VENDOR_DIR` adds one extra override lookup directory. The token never lives in the manifest: `token_env` names the environment variable, and `ca_cert` pins a corporate root CA.

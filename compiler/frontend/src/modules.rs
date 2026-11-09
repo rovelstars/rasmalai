@@ -243,9 +243,11 @@ impl ModuleGraph {
     ) -> Result<ModuleGraph, Vec<Diagnostic>> {
         let root = canonical(root).map_err(|e| vec![e])?;
         let base = root.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
-        let entry_root = package_ctx_of(&root)
-            .map_err(|e| vec![e])?
-            .map(|(r, _)| r);
+        let entry_ctx = package_ctx_of(&root).map_err(|e| vec![e])?;
+        if let Some((r, cfg)) = &entry_ctx {
+            crate::patch::apply(r, cfg).map_err(|e| vec![e])?;
+        }
+        let entry_root = entry_ctx.map(|(r, _)| r);
         let mut order: Vec<ModuleFile> = Vec::new();
         let mut state: BTreeMap<PathBuf, u8> = BTreeMap::new();
         let mut stack: Vec<PathBuf> = Vec::new();
@@ -345,9 +347,11 @@ impl ModuleGraph {
         };
         let root = canonical(root).map_err(|e| vec![e])?;
         let base = root.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
-        let entry_root = package_ctx_of(&root)
-            .map_err(|e| vec![e])?
-            .map(|(r, _)| r);
+        let entry_ctx = package_ctx_of(&root).map_err(|e| vec![e])?;
+        if let Some((r, cfg)) = &entry_ctx {
+            crate::patch::apply(r, cfg).map_err(|e| vec![e])?;
+        }
+        let entry_root = entry_ctx.map(|(r, _)| r);
         let dep_gen = crate::depcache::begin_build();
         if let Some(build_gen) = dep_gen {
             dep_restore_for_entry(entry_root.as_ref(), build_gen);

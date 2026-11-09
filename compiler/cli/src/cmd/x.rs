@@ -227,6 +227,7 @@ mod tests {
             artifacts: None,
             license: None,
             native_pins: BTreeMap::new(),
+            patch: None,
             tasks: BTreeMap::new(),
             bindgen: None,
         }

@@ -9,6 +9,8 @@ stdlib = { path = "../stdlib" }
 sha2 = "0.10"
 sysroot = { path = "../sysroot" }
 rayon = "1.12"
+flate2 = "1"
+tar = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
