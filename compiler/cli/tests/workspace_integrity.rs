@@ -49,7 +49,10 @@ fn test_zero_external_dependencies_in_core() {
     //   (native targets only; getrandom has no wasm32 build, so ring is
     //   target-gated in frontend/Cargo.toml. No hand-rolled crypto; the
     //   exact version was already locked in the tree).
-    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2"), ("frontend", "rayon"), ("frontend", "libc"), ("lir", "rayon"), ("lir", "sha2"), ("frontend", "tempfile"), ("lir", "tempfile"), ("runtime", "tempfile"), ("frontend", "ring")];
+    // - frontend/flate2 + frontend/tar: OCI patch layers are gzip-compressed
+    //   tar archives. They are extracted in-process with traversal checks;
+    //   both crates are pure Rust and compile for wasm32.
+    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2"), ("frontend", "rayon"), ("frontend", "libc"), ("lir", "rayon"), ("lir", "sha2"), ("frontend", "tempfile"), ("lir", "tempfile"), ("runtime", "tempfile"), ("frontend", "ring"), ("frontend", "flate2"), ("frontend", "tar")];
     for krate in ["frontend", "lir", "runtime", "diagnostics", "stdlib"] {
         let path = root.join(krate).join("Cargo.toml");
         assert!(path.is_file(), "missing {}", path.display());
