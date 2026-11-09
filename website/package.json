@@ -13,6 +13,7 @@
 		"test": "tsx --test \"tests/*.test.ts\"",
 		"check:registry": "node scripts/operator-check.mjs",
 		"build:wasm": "wasm-pack build ../compiler/wasm_playground --target web --out-dir ../../website/src/lib/wasm",
+		"build:wasm:ci": "wasm-pack build ../compiler/wasm_playground --target web --out-dir ../../website/src/lib/wasm --no-opt",
 		"build:docs": "node scripts/build-docs.mjs",
 		"check:content": "node scripts/check-content.mjs",
 		"db:seed": "tsx scripts/seed-turso.ts",
