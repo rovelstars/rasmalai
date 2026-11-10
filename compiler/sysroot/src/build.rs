@@ -115,11 +115,12 @@ pub fn build(target: &Target, out: &Path, options: &BuildOptions) -> Result<Buil
         };
         libs.insert(name.clone(), staged);
     }
-    if target.libc == Libc::Musl
-        && !libs.contains_key("gcc_s")
-        && let Some(path) = find(&candidates, &["libgcc_eh.a".to_string()])
-    {
-        libs.insert("gcc_s".to_string(), Some(stager.stage(&path)?));
+    if target.libc == Libc::Musl && !libs.contains_key("gcc_s") {
+        let unwinder = find(&candidates, &["libunwind.a".to_string()])
+            .or_else(|| find(&candidates, &["libgcc_eh.a".to_string()]));
+        if let Some(path) = unwinder {
+            libs.insert("gcc_s".to_string(), Some(stager.stage(&path)?));
+        }
     }
 
     let (crt, crt_end) = discover_crt(&candidates, target, &mut stager)?;
@@ -312,52 +313,116 @@ fn discover_crt(
     target: &Target,
     stager: &mut Stager,
 ) -> Result<(CrtModes, CrtModes), Diagnostic> {
-    let modes: &[(&str, &[&str], &[&str])] = match target.object {
-        ObjectFormat::Elf => &[
-            (
-                "static",
-                &["crt1.o", "crti.o", "crtbeginT.o"],
-                &["crtend.o", "crtn.o"],
-            ),
-            (
-                "dynpie",
-                &["Scrt1.o", "crti.o", "crtbeginS.o"],
-                &["crtendS.o", "crtn.o"],
-            ),
-            (
-                "staticpie",
-                &["rcrt1.o", "crti.o", "crtbeginS.o"],
-                &["crtendS.o", "crtn.o"],
-            ),
-        ],
-        ObjectFormat::Coff => &[("static", &["crt2.o", "crtbegin.o"], &["crtend.o"])],
-        ObjectFormat::MachO => &[("static", &["crt1.o"], &[])],
-        ObjectFormat::Wasm => &[],
-    };
-
     let mut crt = BTreeMap::new();
     let mut crt_end = BTreeMap::new();
-    for (mode, start_names, end_names) in modes {
-        let start = longest_prefix(candidates, start_names);
-        if start.is_empty() {
-            continue;
-        }
-        let mut staged = Vec::with_capacity(start.len());
-        for path in &start {
-            staged.push(stager.stage(path)?);
-        }
-        crt.insert((*mode).to_string(), staged);
 
-        let end = longest_end(candidates, end_names);
-        if !end.is_empty() {
-            let mut staged = Vec::with_capacity(end.len());
-            for path in end {
-                staged.push(stager.stage(&path)?);
-            }
-            crt_end.insert((*mode).to_string(), staged);
+    let static_start = if target.libc == Libc::Musl {
+        longest_any(
+            candidates,
+            &[&["crt1.o", "crti.o", "crtbegin.o"], &["crt1.o", "crti.o"]],
+        )
+    } else {
+        longest_any(
+            candidates,
+            &[
+                &["crt1.o", "crti.o", "crtbeginT.o"],
+                &["crt1.o", "crti.o", "crtbegin.o"],
+                &["crt1.o", "crti.o"],
+            ],
+        )
+    };
+
+    match target.object {
+        ObjectFormat::Elf => {
+            stage_crt(
+                &mut crt,
+                &mut crt_end,
+                stager,
+                "static",
+                candidates,
+                static_start,
+                &["crtend.o", "crtn.o"],
+            )?;
+            stage_crt(
+                &mut crt,
+                &mut crt_end,
+                stager,
+                "dynpie",
+                candidates,
+                longest_prefix(candidates, &["Scrt1.o", "crti.o", "crtbeginS.o"]),
+                &["crtendS.o", "crtn.o"],
+            )?;
+            stage_crt(
+                &mut crt,
+                &mut crt_end,
+                stager,
+                "staticpie",
+                candidates,
+                longest_prefix(candidates, &["rcrt1.o", "crti.o", "crtbeginS.o"]),
+                &["crtendS.o", "crtn.o"],
+            )?;
         }
+        ObjectFormat::Coff => stage_crt(
+            &mut crt,
+            &mut crt_end,
+            stager,
+            "static",
+            candidates,
+            longest_prefix(candidates, &["crt2.o", "crtbegin.o"]),
+            &["crtend.o"],
+        )?,
+        ObjectFormat::MachO => stage_crt(
+            &mut crt,
+            &mut crt_end,
+            stager,
+            "static",
+            candidates,
+            longest_prefix(candidates, &["crt1.o"]),
+            &[],
+        )?,
+        ObjectFormat::Wasm => {}
     }
     Ok((crt, crt_end))
+}
+
+fn stage_crt(
+    crt: &mut CrtModes,
+    crt_end: &mut CrtModes,
+    stager: &mut Stager,
+    mode: &str,
+    candidates: &[PathBuf],
+    start: Vec<PathBuf>,
+    end_names: &[&str],
+) -> Result<(), Diagnostic> {
+    if start.is_empty() {
+        return Ok(());
+    }
+    let mut staged = Vec::with_capacity(start.len());
+    for path in &start {
+        staged.push(stager.stage(path)?);
+    }
+    crt.insert(mode.to_string(), staged);
+
+    let end = longest_end(candidates, end_names);
+    if !end.is_empty() {
+        let mut staged = Vec::with_capacity(end.len());
+        for path in end {
+            staged.push(stager.stage(&path)?);
+        }
+        crt_end.insert(mode.to_string(), staged);
+    }
+    Ok(())
+}
+
+fn longest_any(candidates: &[PathBuf], sets: &[&[&str]]) -> Vec<PathBuf> {
+    let mut best = Vec::new();
+    for names in sets {
+        let prefix = longest_prefix(candidates, names);
+        if prefix.len() > best.len() {
+            best = prefix;
+        }
+    }
+    best
 }
 
 fn longest_end(candidates: &[PathBuf], names: &[&str]) -> Vec<PathBuf> {
@@ -438,6 +503,7 @@ mod tests {
             "crtn.o",
             "libc.a",
             "libruntime_native.a",
+            "libunwind.a",
             "libgcc_eh.a",
         ] {
             touch(&source, name, name.as_bytes());
@@ -482,7 +548,7 @@ mod tests {
         );
         assert_eq!(
             pack.manifest.link.libs.get("gcc_s").unwrap().as_deref(),
-            Some("libgcc_eh.a")
+            Some("libunwind.a")
         );
         assert_eq!(
             pack.manifest.runtime.sha256.as_deref(),
