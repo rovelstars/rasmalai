@@ -55,8 +55,16 @@ fn grand_tour_interpreter_and_native_binary() {
         .map(|d| d.join("libruntime_native.so").is_file())
         .unwrap_or(false);
     if shared {
-        let meta = std::fs::metadata(&bin).unwrap();
-        assert!(meta.len() < 1_000_000, "dev binary links the runtime dynamically, not the archive");
+        let deps = std::process::Command::new("readelf")
+            .arg("-d")
+            .arg(&bin)
+            .output()
+            .expect("readelf");
+        let text = String::from_utf8_lossy(&deps.stdout);
+        assert!(
+            text.contains("libruntime_native.so"),
+            "dev binary does not depend on the shared runtime: {text}"
+        );
     }
     let run = std::process::Command::new(&bin).current_dir(&dir).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
