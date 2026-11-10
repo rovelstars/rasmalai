@@ -72,13 +72,13 @@ caching). One-time setup in the Cloudflare dashboard:
 - Environment: Node 22.
 
 Benchmark data flow: the monthly `Monthly benchmarks` workflow re-runs
-`python3 benches/harness/runner.py` and force-pushes the result to an
-orphan `benchmarks` branch (single `benchmarks.json`, no history, nothing
-lands on main). The homepage chart fetches that file in the visitor's
-browser, so a build carries no snapshot and the published numbers are always
-the latest measurement. Until the first run publishes a file, the chart
-renders an empty state. Point it at another host by editing the
-`benchmarksUrl` export in `src/lib/components/ParetoScatter.svelte`.
+`python3 benches/harness/runner.py` and POSTs the result to
+`/api/benchmarks`, which stores it as one row in the Turso `benchmark_runs`
+table. The homepage chart fetches `/api/benchmarks` in the visitor's
+browser from the Cloudflare Pages Function, which caches the response for an
+hour at the edge, so no snapshot is committed to the repository. Until the
+first run ingests a snapshot, the chart renders an empty state. The fetch
+lives in `src/lib/components/ParetoScatter.svelte`.
 `static/_headers` gives
 content-hashed assets (`/_app/immutable/*`, fonts) a year of edge cache; HTML
 and data revalidate every deploy.
