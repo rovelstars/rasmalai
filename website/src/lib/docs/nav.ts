@@ -179,6 +179,7 @@ export const GUIDES: GuideMeta[] = [
 
 export const STDLIB = [
 	'prelude',
+	'foundation',
 	'async',
 	'simd',
 	'collections',
@@ -193,9 +194,12 @@ export const STDLIB = [
 	'os',
 	'testing',
 	'web',
-	'json',
 	'net',
-	'io'
+	'json',
+	'io',
+	'log',
+	'uefi',
+	'wasi'
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

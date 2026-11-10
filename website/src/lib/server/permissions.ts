@@ -114,8 +114,9 @@ export interface CapabilityEvidence {
 }
 
 // Dotted stdlib paths from the compiler `sink_for` table, grouped by the
-// domain head a declaration must cover. Bare globals (`fetch`, `print`)
-// only count as calls, never as declarations or type names.
+// domain head a declaration must cover. Bare globals (`fetch`) and call
+// macros (`print!`) only count as calls, never as declarations or type
+// names.
 const DOTTED_SINKS: Array<{ head: CapabilityHead; names: string[] }> = [
 	{
 		head: 'fs',
@@ -148,7 +149,7 @@ const DOTTED_SINKS: Array<{ head: CapabilityHead; names: string[] }> = [
 
 const BARE_SINKS: Array<{ head: CapabilityHead; names: string[] }> = [
 	{ head: 'net', names: ['fetch', 'Request', 'WebSocket'] },
-	{ head: 'term', names: ['print'] }
+	{ head: 'term', names: ['print!', 'println!', 'eprint!', 'eprintln!'] }
 ];
 
 // Suffix fallback from `sink_for`: any `.writeText`/`.writeBytes` call

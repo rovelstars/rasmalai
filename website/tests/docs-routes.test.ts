@@ -18,25 +18,11 @@ import { load as twoSegServerLoad } from '../src/routes/docs/[scope]/[name]/+pag
 
 const ROOT = join(import.meta.dirname, '..');
 const ROUTES = join(ROOT, 'src', 'routes');
-const STDLIB = [
-	'prelude',
-	'simd',
-	'collections',
-	'math',
-	'fs',
-	'bytes',
-	'time',
-	'random',
-	'sync',
-	'env',
-	'process',
-	'os',
-	'testing',
-	'web',
-	'net',
-	'json',
-	'io'
-];
+const LIB_RS = readFileSync(
+	join(ROOT, '..', 'compiler', 'stdlib', 'src', 'lib.rs'),
+	'utf8'
+);
+const STDLIB = [...LIB_RS.matchAll(/^    "([a-z]+)",$/gm)].map((m) => m[1]);
 
 function collect(dir: string, out: string[] = []): string[] {
 	for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -108,6 +94,8 @@ describe('docs link integrity', () => {
 	});
 
 	it('keeps the @std module list in sync across the stack', () => {
+		assert.ok(STDLIB.length > 0, 'stdlib::MODULES must not be empty');
+		assert.ok(STDLIB.includes('prelude'), 'stdlib::MODULES must list prelude');
 		const server = readFileSync(
 			join(ROUTES, 'docs', '[scope]', '[name]', '[page]', '+page.server.ts'),
 			'utf8'
@@ -117,12 +105,6 @@ describe('docs link integrity', () => {
 		const nav = readFileSync(join(ROOT, 'src', 'lib', 'docs', 'nav.ts'), 'utf8');
 		const navList = [...nav.matchAll(/^\t'([a-z]+)',?$/gm)].map((m) => m[1]).sort();
 		assert.deepEqual(navList, [...STDLIB].sort());
-		const libRs = readFileSync(
-			join(ROOT, '..', 'compiler', 'stdlib', 'src', 'lib.rs'),
-			'utf8'
-		);
-		const tops = [...libRs.matchAll(/^    "([a-z]+)",$/gm)].map((m) => m[1]);
-		assert.deepEqual([...tops].sort(), [...STDLIB].sort());
 	});
 
 	it('keeps every sitemap docs URL on a live shape', () => {
