@@ -62,11 +62,11 @@ fn decl<M: Module>(
 }
 
 fn void_sig() -> Signature {
-    Signature::new(CallConv::SystemV)
+    Signature::new(host_call_conv())
 }
 
 fn i64_sig(nparams: usize) -> Signature {
-    let mut sig = Signature::new(CallConv::SystemV);
+    let mut sig = Signature::new(host_call_conv());
     for _ in 0..nparams {
         sig.params.push(AbiParam::new(types::I64));
     }
@@ -86,7 +86,7 @@ fn define_entry_wrapper<M: Module>(
     entry_sig: &Signature,
     ctx: &mut FunctionBuilderContext,
 ) -> Result<FuncId, Diagnostic> {
-    let mut sig = Signature::new(CallConv::SystemV);
+    let mut sig = Signature::new(host_call_conv());
     sig.returns.clone_from(&entry_sig.returns);
     let id = decl(module, "rnx_entry_main", Linkage::Export, &sig)?;
     let mut codegen_ctx = module.make_context();
@@ -161,7 +161,7 @@ fn define_main<M: Module>(
     report_id: FuncId,
     ctx: &mut FunctionBuilderContext,
 ) -> Result<FuncId, Diagnostic> {
-    let mut sig = Signature::new(CallConv::SystemV);
+    let mut sig = Signature::new(host_call_conv());
     sig.params.push(AbiParam::new(types::I32));
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I32));
@@ -245,19 +245,19 @@ fn define_glue<M: Module>(
     let entry_sig = sigs.get(&entry_id).cloned().ok_or_else(|| {
         Diagnostic::new(Code::E108, format!("build: no signature for `{entry}`"))
     })?;
-    let mut init_sig = Signature::new(CallConv::SystemV);
+    let mut init_sig = Signature::new(host_call_conv());
     init_sig.params.push(AbiParam::new(types::I32));
     init_sig.params.push(AbiParam::new(types::I64));
     let init_id = decl(module, "rnx_init", Linkage::Import, &init_sig)?;
     let reg_id = decl(module, "rnx_closure_register", Linkage::Import, &i64_sig(2))?;
-    let mut strict_sig = Signature::new(CallConv::SystemV);
+    let mut strict_sig = Signature::new(host_call_conv());
     strict_sig.params.push(AbiParam::new(types::I8));
     let strict_id = decl(module, "rnx_set_assert_strict", Linkage::Import, &strict_sig)?;
-    let mut report_sig = Signature::new(CallConv::SystemV);
+    let mut report_sig = Signature::new(host_call_conv());
     report_sig.params.push(AbiParam::new(types::I64));
     report_sig.returns.push(AbiParam::new(types::I32));
     let report_id = decl(module, "rnx_report_uncaught", Linkage::Import, &report_sig)?;
-    let mut fatal_sig = Signature::new(CallConv::SystemV);
+    let mut fatal_sig = Signature::new(host_call_conv());
     fatal_sig.returns.push(AbiParam::new(types::I32));
     let fatal_id = decl(module, "rnx_report_fatal", Linkage::Import, &fatal_sig)?;
     let wrap_id = define_entry_wrapper(module, entry_id, &entry_sig, ctx)?;

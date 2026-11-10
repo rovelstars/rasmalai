@@ -456,133 +456,133 @@ impl Jit {
             ids.insert(f.name.clone(), id);
             sigs.insert(id, sig);
         }
-        let mut alloc_sig = Signature::new(CallConv::SystemV);
+        let mut alloc_sig = Signature::new(host_call_conv());
         alloc_sig.params.push(AbiParam::new(types::I64));
         alloc_sig.params.push(AbiParam::new(types::I64));
         alloc_sig.returns.push(AbiParam::new(types::I64));
         let alloc = module
             .declare_function("rnx_alloc", Linkage::Import, &alloc_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_alloc: {e}")))?;
-        let mut release_sig = Signature::new(CallConv::SystemV);
+        let mut release_sig = Signature::new(host_call_conv());
         release_sig.params.push(AbiParam::new(types::I64));
         release_sig.params.push(AbiParam::new(types::I64));
         release_sig.params.push(AbiParam::new(types::I64));
         let release = module
             .declare_function("rnx_release", Linkage::Import, &release_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_release: {e}")))?;
-        let mut genref_create_sig = Signature::new(CallConv::SystemV);
+        let mut genref_create_sig = Signature::new(host_call_conv());
         genref_create_sig.params.push(AbiParam::new(types::I64));
         genref_create_sig.returns.push(AbiParam::new(types::I64));
         let genref_create = module
             .declare_function("rnx_genref_create", Linkage::Import, &genref_create_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_genref_create: {e}")))?;
-        let mut genref_get_sig = Signature::new(CallConv::SystemV);
+        let mut genref_get_sig = Signature::new(host_call_conv());
         genref_get_sig.params.push(AbiParam::new(types::I64));
         genref_get_sig.returns.push(AbiParam::new(types::I64));
         let genref_get = module
             .declare_function("rnx_genref_get", Linkage::Import, &genref_get_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_genref_get: {e}")))?;
-        let mut genref_inv_sig = Signature::new(CallConv::SystemV);
+        let mut genref_inv_sig = Signature::new(host_call_conv());
         genref_inv_sig.params.push(AbiParam::new(types::I64));
         let genref_invalidate = module
             .declare_function("rnx_genref_invalidate", Linkage::Import, &genref_inv_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_genref_invalidate: {e}")))?;
-        let mut retain_sig = Signature::new(CallConv::SystemV);
+        let mut retain_sig = Signature::new(host_call_conv());
         retain_sig.params.push(AbiParam::new(types::I64));
         let retain = module
             .declare_function("rnx_retain", Linkage::Import, &retain_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_retain: {e}")))?;
-        let mut concat_sig = Signature::new(CallConv::SystemV);
+        let mut concat_sig = Signature::new(host_call_conv());
         concat_sig.params.push(AbiParam::new(types::I64));
         concat_sig.params.push(AbiParam::new(types::I64));
         concat_sig.returns.push(AbiParam::new(types::I64));
         let concat = module
             .declare_function("rnx_string_concat", Linkage::Import, &concat_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_string_concat: {e}")))?;
-        let mut eq_sig = Signature::new(CallConv::SystemV);
+        let mut eq_sig = Signature::new(host_call_conv());
         eq_sig.params.push(AbiParam::new(types::I64));
         eq_sig.params.push(AbiParam::new(types::I64));
         eq_sig.returns.push(AbiParam::new(types::I8));
         let streq = module
             .declare_function("rnx_string_eq", Linkage::Import, &eq_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_string_eq: {e}")))?;
-        let mut cmp_sig = Signature::new(CallConv::SystemV);
+        let mut cmp_sig = Signature::new(host_call_conv());
         cmp_sig.params.push(AbiParam::new(types::I64));
         cmp_sig.params.push(AbiParam::new(types::I64));
         cmp_sig.returns.push(AbiParam::new(types::I64));
         let strcmp = module
             .declare_function("rnx_string_cmp", Linkage::Import, &cmp_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_string_cmp: {e}")))?;
-        let mut print_val_sig = Signature::new(CallConv::SystemV);
+        let mut print_val_sig = Signature::new(host_call_conv());
         print_val_sig.params.push(AbiParam::new(types::I64));
         print_val_sig.params.push(AbiParam::new(types::I32));
         let print_val = module
             .declare_function("rnx_print_val", Linkage::Import, &print_val_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_print_val: {e}")))?;
-        let mut print_str_sig = Signature::new(CallConv::SystemV);
+        let mut print_str_sig = Signature::new(host_call_conv());
         print_str_sig.params.push(AbiParam::new(types::I64));
         print_str_sig.params.push(AbiParam::new(types::I64));
         let print_str = module
             .declare_function("rnx_print_str", Linkage::Import, &print_str_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_print_str: {e}")))?;
-        let mut int_to_str_sig = Signature::new(CallConv::SystemV);
+        let mut int_to_str_sig = Signature::new(host_call_conv());
         int_to_str_sig.params.push(AbiParam::new(types::I64));
         int_to_str_sig.returns.push(AbiParam::new(types::I64));
         let int_to_str = module
             .declare_function("rnx_int_to_str", Linkage::Import, &int_to_str_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_int_to_str: {e}")))?;
-        let mut float_to_str_sig = Signature::new(CallConv::SystemV);
+        let mut float_to_str_sig = Signature::new(host_call_conv());
         float_to_str_sig.params.push(AbiParam::new(types::I64));
         float_to_str_sig.returns.push(AbiParam::new(types::I64));
         let float_to_str = module
             .declare_function("rnx_float_to_str", Linkage::Import, &float_to_str_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_float_to_str: {e}")))?;
-        let mut bool_to_str_sig = Signature::new(CallConv::SystemV);
+        let mut bool_to_str_sig = Signature::new(host_call_conv());
         bool_to_str_sig.params.push(AbiParam::new(types::I64));
         bool_to_str_sig.returns.push(AbiParam::new(types::I64));
         let bool_to_str = module
             .declare_function("rnx_bool_to_str", Linkage::Import, &bool_to_str_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_bool_to_str: {e}")))?;
-        let mut any_to_str_sig = Signature::new(CallConv::SystemV);
+        let mut any_to_str_sig = Signature::new(host_call_conv());
         any_to_str_sig.params.push(AbiParam::new(types::I64));
         any_to_str_sig.returns.push(AbiParam::new(types::I64));
         let any_to_str = module
             .declare_function("rnx_any_to_str", Linkage::Import, &any_to_str_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_any_to_str: {e}")))?;
-        let mut eq_any_str_sig = Signature::new(CallConv::SystemV);
+        let mut eq_any_str_sig = Signature::new(host_call_conv());
         eq_any_str_sig.params.push(AbiParam::new(types::I64));
         eq_any_str_sig.params.push(AbiParam::new(types::I64));
         eq_any_str_sig.returns.push(AbiParam::new(types::I64));
         let eq_any_str = module
             .declare_function("rnx_eq_any_str", Linkage::Import, &eq_any_str_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_eq_any_str: {e}")))?;
-        let mut eq_any_sig = Signature::new(CallConv::SystemV);
+        let mut eq_any_sig = Signature::new(host_call_conv());
         eq_any_sig.params.push(AbiParam::new(types::I64));
         eq_any_sig.params.push(AbiParam::new(types::I64));
         eq_any_sig.returns.push(AbiParam::new(types::I64));
         let eq_any = module
             .declare_function("rnx_eq_any", Linkage::Import, &eq_any_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_eq_any: {e}")))?;
-        let mut release_str_sig = Signature::new(CallConv::SystemV);
+        let mut release_str_sig = Signature::new(host_call_conv());
         release_str_sig.params.push(AbiParam::new(types::I64));
         let release_str = module
             .declare_function("rnx_release_str", Linkage::Import, &release_str_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_release_str: {e}")))?;
-        let mut array_new_sig = Signature::new(CallConv::SystemV);
+        let mut array_new_sig = Signature::new(host_call_conv());
         array_new_sig.params.push(AbiParam::new(types::I64));
         array_new_sig.params.push(AbiParam::new(types::I64));
         array_new_sig.returns.push(AbiParam::new(types::I64));
         let array_new = module
             .declare_function("rnx_array_new", Linkage::Import, &array_new_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_array_new: {e}")))?;
-        let mut array_push_sig = Signature::new(CallConv::SystemV);
+        let mut array_push_sig = Signature::new(host_call_conv());
         array_push_sig.params.push(AbiParam::new(types::I64));
         array_push_sig.params.push(AbiParam::new(types::I64));
         array_push_sig.params.push(AbiParam::new(types::I64));
         let array_push = module
             .declare_function("rnx_array_push", Linkage::Import, &array_push_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_array_push: {e}")))?;
-        let mut array_get_sig = Signature::new(CallConv::SystemV);
+        let mut array_get_sig = Signature::new(host_call_conv());
         array_get_sig.params.push(AbiParam::new(types::I64));
         array_get_sig.params.push(AbiParam::new(types::I64));
         array_get_sig.params.push(AbiParam::new(types::I64));
@@ -590,7 +590,7 @@ impl Jit {
         let array_get = module
             .declare_function("rnx_array_get", Linkage::Import, &array_get_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_array_get: {e}")))?;
-        let mut array_set_sig = Signature::new(CallConv::SystemV);
+        let mut array_set_sig = Signature::new(host_call_conv());
         array_set_sig.params.push(AbiParam::new(types::I64));
         array_set_sig.params.push(AbiParam::new(types::I64));
         array_set_sig.params.push(AbiParam::new(types::I64));
@@ -604,21 +604,21 @@ impl Jit {
         let array_set_unchecked = module
             .declare_function("rnx_array_set_unchecked", Linkage::Import, &array_set_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_array_set_unchecked: {e}")))?;
-        let mut array_len_sig = Signature::new(CallConv::SystemV);
+        let mut array_len_sig = Signature::new(host_call_conv());
         array_len_sig.params.push(AbiParam::new(types::I64));
         array_len_sig.returns.push(AbiParam::new(types::I64));
         let array_len = module
             .declare_function("rnx_array_len", Linkage::Import, &array_len_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_array_len: {e}")))?;
 
-        let mut str1_sig = Signature::new(CallConv::SystemV);
+        let mut str1_sig = Signature::new(host_call_conv());
         str1_sig.params.push(AbiParam::new(types::I64));
         str1_sig.returns.push(AbiParam::new(types::I64));
-        let mut str2_sig = Signature::new(CallConv::SystemV);
+        let mut str2_sig = Signature::new(host_call_conv());
         str2_sig.params.push(AbiParam::new(types::I64));
         str2_sig.params.push(AbiParam::new(types::I64));
         str2_sig.returns.push(AbiParam::new(types::I64));
-        let mut str3_sig = Signature::new(CallConv::SystemV);
+        let mut str3_sig = Signature::new(host_call_conv());
         str3_sig.params.push(AbiParam::new(types::I64));
         str3_sig.params.push(AbiParam::new(types::I64));
         str3_sig.params.push(AbiParam::new(types::I64));
@@ -641,19 +641,19 @@ impl Jit {
         let any_box = decl_isig(&mut *module, "rnx_any_box", &str2_sig)?;
         let any_unbox = decl_isig(&mut *module, "rnx_any_unbox", &str1_sig)?;
         let any_unbox_heap = decl_isig(&mut *module, "rnx_any_unbox_heap", &str1_sig)?;
-        let mut void1_sig = Signature::new(CallConv::SystemV);
+        let mut void1_sig = Signature::new(host_call_conv());
         void1_sig.params.push(AbiParam::new(types::I64));
         let any_retain = decl_isig(&mut *module, "rnx_any_retain", &void1_sig)?;
         let any_release_box = decl_isig(&mut *module, "rnx_any_release_box", &void1_sig)?;
         let any_release = decl_isig(&mut *module, "rnx_any_release", &void1_sig)?;
-        let mut heap_track_sig = Signature::new(CallConv::SystemV);
+        let mut heap_track_sig = Signature::new(host_call_conv());
         for _ in 0..4 {
             heap_track_sig.params.push(AbiParam::new(types::I64));
         }
         let heap_track = decl_isig(&mut *module, "rnx_heap_track", &heap_track_sig)?;
         let closure_new = decl_isig(&mut *module, "rnx_closure_new", &str2_sig)?;
         let closure_set = {
-            let mut sig = Signature::new(CallConv::SystemV);
+            let mut sig = Signature::new(host_call_conv());
             for _ in 0..8 {
                 sig.params.push(AbiParam::new(types::I64));
             }
@@ -662,14 +662,14 @@ impl Jit {
         let closure_release = decl_isig(&mut *module, "rnx_closure_release", &str1_sig)?;
         let panic_str = decl_isig(&mut *module, "rnx_panic_str", &str1_sig)?;
         let fatal_span = {
-            let mut sig = Signature::new(CallConv::SystemV);
+            let mut sig = Signature::new(host_call_conv());
             for _ in 0..3 {
                 sig.params.push(AbiParam::new(types::I64));
             }
             decl_isig(&mut *module, "rnx_fatal_span", &sig)?
         };
         let spawn_closure = {
-            let mut sig = Signature::new(CallConv::SystemV);
+            let mut sig = Signature::new(host_call_conv());
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
@@ -681,7 +681,7 @@ impl Jit {
         let task_err = decl_isig(&mut *module, "rnx_task_await_err", &str1_sig)?;
         let pool_new = decl_isig(&mut *module, "rnx_pool_new", &str1_sig)?;
         let submit_handle = {
-            let mut sig = Signature::new(CallConv::SystemV);
+            let mut sig = Signature::new(host_call_conv());
             for _ in 0..5 {
                 sig.params.push(AbiParam::new(types::I64));
             }
@@ -689,7 +689,7 @@ impl Jit {
             decl_isig(&mut *module, "rnx_thread_pool_submit_handle", &sig)?
         };
         let submit_closure = {
-            let mut sig = Signature::new(CallConv::SystemV);
+            let mut sig = Signature::new(host_call_conv());
             for _ in 0..5 {
                 sig.params.push(AbiParam::new(types::I64));
             }
@@ -697,98 +697,98 @@ impl Jit {
             decl_isig(&mut *module, "rnx_thread_pool_submit_closure", &sig)?
         };
         let parallel_closure = {
-            let mut sig = Signature::new(CallConv::SystemV);
+            let mut sig = Signature::new(host_call_conv());
             for _ in 0..5 {
                 sig.params.push(AbiParam::new(types::I64));
             }
             decl_isig(&mut *module, "rnx_thread_pool_parallel_closure", &sig)?
         };
-        let mut release_array_sig = Signature::new(CallConv::SystemV);
+        let mut release_array_sig = Signature::new(host_call_conv());
         release_array_sig.params.push(AbiParam::new(types::I64));
         release_array_sig.params.push(AbiParam::new(types::I64));
         release_array_sig.params.push(AbiParam::new(types::I64));
         let release_array = module
             .declare_function("rnx_release_array", Linkage::Import, &release_array_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_release_array: {e}")))?;
-        let mut thread_spawn_sig = Signature::new(CallConv::SystemV);
+        let mut thread_spawn_sig = Signature::new(host_call_conv());
         thread_spawn_sig.params.push(AbiParam::new(types::I64));
         thread_spawn_sig.params.push(AbiParam::new(types::I64));
         thread_spawn_sig.returns.push(AbiParam::new(types::I64));
         let thread_spawn = module
             .declare_function("rnx_thread_spawn", Linkage::Import, &thread_spawn_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_thread_spawn: {e}")))?;
-        let mut thread_join_sig = Signature::new(CallConv::SystemV);
+        let mut thread_join_sig = Signature::new(host_call_conv());
         thread_join_sig.params.push(AbiParam::new(types::I64));
         thread_join_sig.returns.push(AbiParam::new(types::I64));
         let thread_join = module
             .declare_function("rnx_thread_join", Linkage::Import, &thread_join_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_thread_join: {e}")))?;
-        let mut clock_mono_sig = Signature::new(CallConv::SystemV);
+        let mut clock_mono_sig = Signature::new(host_call_conv());
         clock_mono_sig.returns.push(AbiParam::new(types::I64));
         let clock_mono = module
             .declare_function("rnx_clock_monotonic_nanos", Linkage::Import, &clock_mono_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_clock_monotonic_nanos: {e}")))?;
-        let mut crypto_random_sig = Signature::new(CallConv::SystemV);
+        let mut crypto_random_sig = Signature::new(host_call_conv());
         crypto_random_sig.returns.push(AbiParam::new(types::I64));
         let crypto_random = module
             .declare_function("rnx_crypto_random_u64", Linkage::Import, &crypto_random_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_crypto_random_u64: {e}")))?;
-        let mut prng_seed_sig = Signature::new(CallConv::SystemV);
+        let mut prng_seed_sig = Signature::new(host_call_conv());
         prng_seed_sig.params.push(AbiParam::new(types::I64));
         prng_seed_sig.params.push(AbiParam::new(types::I64));
         let prng_seed = module
             .declare_function("rnx_prng_seed", Linkage::Import, &prng_seed_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_prng_seed: {e}")))?;
-        let mut prng_next_sig = Signature::new(CallConv::SystemV);
+        let mut prng_next_sig = Signature::new(host_call_conv());
         prng_next_sig.params.push(AbiParam::new(types::I64));
         prng_next_sig.returns.push(AbiParam::new(types::I64));
         let prng_next = module
             .declare_function("rnx_prng_next", Linkage::Import, &prng_next_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_prng_next: {e}")))?;
-        let mut file_open_sig = Signature::new(CallConv::SystemV);
+        let mut file_open_sig = Signature::new(host_call_conv());
         file_open_sig.params.push(AbiParam::new(types::I64));
         file_open_sig.params.push(AbiParam::new(types::I64));
         file_open_sig.returns.push(AbiParam::new(types::I64));
         let file_open = module
             .declare_function("rnx_file_open", Linkage::Import, &file_open_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_file_open: {e}")))?;
-        let mut file_close_sig = Signature::new(CallConv::SystemV);
+        let mut file_close_sig = Signature::new(host_call_conv());
         file_close_sig.params.push(AbiParam::new(types::I64));
         let file_close = module
             .declare_function("rnx_file_close", Linkage::Import, &file_close_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_file_close: {e}")))?;
-        let mut file_read_sig = Signature::new(CallConv::SystemV);
+        let mut file_read_sig = Signature::new(host_call_conv());
         file_read_sig.params.push(AbiParam::new(types::I64));
         file_read_sig.returns.push(AbiParam::new(types::I64));
         let file_read = module
             .declare_function("rnx_file_read_text", Linkage::Import, &file_read_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_file_read_text: {e}")))?;
-        let mut file_write_sig = Signature::new(CallConv::SystemV);
+        let mut file_write_sig = Signature::new(host_call_conv());
         file_write_sig.params.push(AbiParam::new(types::I64));
         file_write_sig.params.push(AbiParam::new(types::I64));
         file_write_sig.returns.push(AbiParam::new(types::I64));
         let file_write = module
             .declare_function("rnx_file_write_text", Linkage::Import, &file_write_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_file_write_text: {e}")))?;
-        let mut file_flush_sig = Signature::new(CallConv::SystemV);
+        let mut file_flush_sig = Signature::new(host_call_conv());
         file_flush_sig.params.push(AbiParam::new(types::I64));
         let file_flush = module
             .declare_function("rnx_file_flush", Linkage::Import, &file_flush_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_file_flush: {e}")))?;
-        let mut file_seek_sig = Signature::new(CallConv::SystemV);
+        let mut file_seek_sig = Signature::new(host_call_conv());
         file_seek_sig.params.push(AbiParam::new(types::I64));
         file_seek_sig.params.push(AbiParam::new(types::I64));
         file_seek_sig.returns.push(AbiParam::new(types::I64));
         let file_seek = module
             .declare_function("rnx_file_seek", Linkage::Import, &file_seek_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_file_seek: {e}")))?;
-        let mut file_tell_sig = Signature::new(CallConv::SystemV);
+        let mut file_tell_sig = Signature::new(host_call_conv());
         file_tell_sig.params.push(AbiParam::new(types::I64));
         file_tell_sig.returns.push(AbiParam::new(types::I64));
         let file_tell = module
             .declare_function("rnx_file_tell", Linkage::Import, &file_tell_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_file_tell: {e}")))?;
-        let mut file_from_handle_sig = Signature::new(CallConv::SystemV);
+        let mut file_from_handle_sig = Signature::new(host_call_conv());
         file_from_handle_sig.params.push(AbiParam::new(types::I64));
         file_from_handle_sig.params.push(AbiParam::new(types::I64));
         file_from_handle_sig.params.push(AbiParam::new(types::I64));
@@ -796,38 +796,38 @@ impl Jit {
         let file_from_handle = module
             .declare_function("rnx_file_from_handle", Linkage::Import, &file_from_handle_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_file_from_handle: {e}")))?;
-        let mut io_is_tty_sig = Signature::new(CallConv::SystemV);
+        let mut io_is_tty_sig = Signature::new(host_call_conv());
         io_is_tty_sig.params.push(AbiParam::new(types::I64));
         io_is_tty_sig.returns.push(AbiParam::new(types::I8));
         let io_is_tty = module
             .declare_function("rnx_io_is_tty", Linkage::Import, &io_is_tty_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_io_is_tty: {e}")))?;
-        let mut io_winsize_sig = Signature::new(CallConv::SystemV);
+        let mut io_winsize_sig = Signature::new(host_call_conv());
         io_winsize_sig.returns.push(AbiParam::new(types::I64));
         let io_winsize = module
             .declare_function("rnx_io_winsize", Linkage::Import, &io_winsize_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_io_winsize: {e}")))?;
-        let mut io_set_raw_sig = Signature::new(CallConv::SystemV);
+        let mut io_set_raw_sig = Signature::new(host_call_conv());
         io_set_raw_sig.params.push(AbiParam::new(types::I64));
         io_set_raw_sig.params.push(AbiParam::new(types::I64));
         io_set_raw_sig.returns.push(AbiParam::new(types::I64));
         let io_set_raw = module
             .declare_function("rnx_io_set_raw", Linkage::Import, &io_set_raw_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_io_set_raw: {e}")))?;
-        let io_warn_missing_arg_sig = Signature::new(CallConv::SystemV);
-        let mut gmap_new_sig = Signature::new(CallConv::SystemV);
+        let io_warn_missing_arg_sig = Signature::new(host_call_conv());
+        let mut gmap_new_sig = Signature::new(host_call_conv());
         gmap_new_sig.returns.push(AbiParam::new(types::I64));
-        let mut gmap_bool2_sig = Signature::new(CallConv::SystemV);
+        let mut gmap_bool2_sig = Signature::new(host_call_conv());
         gmap_bool2_sig.params.push(AbiParam::new(types::I64));
         gmap_bool2_sig.params.push(AbiParam::new(types::I64));
         gmap_bool2_sig.returns.push(AbiParam::new(types::I8));
         let mut bytes_fns: BTreeMap<String, FuncId> = BTreeMap::new();
-        let mut bytes4_sig = Signature::new(CallConv::SystemV);
+        let mut bytes4_sig = Signature::new(host_call_conv());
         bytes4_sig.params.push(AbiParam::new(types::I64));
         bytes4_sig.params.push(AbiParam::new(types::I64));
         bytes4_sig.params.push(AbiParam::new(types::I64));
         bytes4_sig.params.push(AbiParam::new(types::I64));
-        let mut bytes4r_sig = Signature::new(CallConv::SystemV);
+        let mut bytes4r_sig = Signature::new(host_call_conv());
         bytes4r_sig.params.push(AbiParam::new(types::I64));
         bytes4r_sig.params.push(AbiParam::new(types::I64));
         bytes4r_sig.params.push(AbiParam::new(types::I64));
@@ -936,7 +936,7 @@ impl Jit {
                 .map_err(|e| Diagnostic::new(Code::E108, format!("declare {name}: {e}")))?;
             bytes_fns.insert(name.to_string(), fid);
         }
-        let mut path_bool_sig = Signature::new(CallConv::SystemV);
+        let mut path_bool_sig = Signature::new(host_call_conv());
         path_bool_sig.params.push(AbiParam::new(types::I64));
         path_bool_sig.returns.push(AbiParam::new(types::I8));
         let path_exists = module
@@ -951,51 +951,51 @@ impl Jit {
                 .map_err(|e| Diagnostic::new(Code::E108, format!("declare {name}: {e}")))?;
             bytes_fns.insert(name.to_string(), fid);
         }
-        let mut test_assert_sig = Signature::new(CallConv::SystemV);
+        let mut test_assert_sig = Signature::new(host_call_conv());
         test_assert_sig.params.push(AbiParam::new(types::I64));
         test_assert_sig.params.push(AbiParam::new(types::I64));
         let test_assert = module
             .declare_function("rnx_assert", Linkage::Import, &test_assert_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_assert: {e}")))?;
-        let mut test_check_sig = Signature::new(CallConv::SystemV);
+        let mut test_check_sig = Signature::new(host_call_conv());
         test_check_sig.returns.push(AbiParam::new(types::I8));
         let test_check = module
             .declare_function("rnx_test_check", Linkage::Import, &test_check_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_test_check: {e}")))?;
-        let mut env_count_sig = Signature::new(CallConv::SystemV);
+        let mut env_count_sig = Signature::new(host_call_conv());
         env_count_sig.returns.push(AbiParam::new(types::I64));
         let env_count = module
             .declare_function("rnx_env_args_count", Linkage::Import, &env_count_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_env_args_count: {e}")))?;
-        let mut env_get_arg_sig = Signature::new(CallConv::SystemV);
+        let mut env_get_arg_sig = Signature::new(host_call_conv());
         env_get_arg_sig.params.push(AbiParam::new(types::I64));
         env_get_arg_sig.returns.push(AbiParam::new(types::I64));
         let env_args_get = module
             .declare_function("rnx_env_args_get", Linkage::Import, &env_get_arg_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_env_args_get: {e}")))?;
-        let mut env_str_sig = Signature::new(CallConv::SystemV);
+        let mut env_str_sig = Signature::new(host_call_conv());
         env_str_sig.params.push(AbiParam::new(types::I64));
         env_str_sig.returns.push(AbiParam::new(types::I64));
         let env_get = module
             .declare_function("rnx_env_get", Linkage::Import, &env_str_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_env_get: {e}")))?;
-        let mut env_set_sig = Signature::new(CallConv::SystemV);
+        let mut env_set_sig = Signature::new(host_call_conv());
         env_set_sig.params.push(AbiParam::new(types::I64));
         env_set_sig.params.push(AbiParam::new(types::I64));
         let env_set = module
             .declare_function("rnx_env_set", Linkage::Import, &env_set_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_env_set: {e}")))?;
-        let mut env_cwd_sig = Signature::new(CallConv::SystemV);
+        let mut env_cwd_sig = Signature::new(host_call_conv());
         env_cwd_sig.returns.push(AbiParam::new(types::I64));
         let env_cwd = module
             .declare_function("rnx_env_cwd", Linkage::Import, &env_cwd_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_env_cwd: {e}")))?;
-        let mut host_version_sig = Signature::new(CallConv::SystemV);
+        let mut host_version_sig = Signature::new(host_call_conv());
         host_version_sig.returns.push(AbiParam::new(types::I64));
         let host_version = module
             .declare_function("rnx_host_version", Linkage::Import, &host_version_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_host_version: {e}")))?;
-        let mut env_exit_sig = Signature::new(CallConv::SystemV);
+        let mut env_exit_sig = Signature::new(host_call_conv());
         env_exit_sig.params.push(AbiParam::new(types::I64));
         let env_exit = module
             .declare_function("rnx_env_exit", Linkage::Import, &env_exit_sig)
@@ -1003,7 +1003,7 @@ impl Jit {
         let net_connect = module
             .declare_function("rnx_net_connect_start", Linkage::Import, &file_open_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_net_connect_start: {e}")))?;
-        let mut net_i64_sig = Signature::new(CallConv::SystemV);
+        let mut net_i64_sig = Signature::new(host_call_conv());
         net_i64_sig.params.push(AbiParam::new(types::I64));
         net_i64_sig.returns.push(AbiParam::new(types::I64));
         let net_take_error = module
@@ -1066,14 +1066,14 @@ impl Jit {
         let tls_close = module
             .declare_function("rnx_tls_close", Linkage::Import, &net_i64_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_tls_close: {e}")))?;
-        let mut proc0_sig = Signature::new(CallConv::SystemV);
+        let mut proc0_sig = Signature::new(host_call_conv());
         proc0_sig.returns.push(AbiParam::new(types::I64));
-        let mut proc4_sig = Signature::new(CallConv::SystemV);
+        let mut proc4_sig = Signature::new(host_call_conv());
         for _ in 0..4 {
             proc4_sig.params.push(AbiParam::new(types::I64));
         }
         proc4_sig.returns.push(AbiParam::new(types::I64));
-        let mut proc7_sig = Signature::new(CallConv::SystemV);
+        let mut proc7_sig = Signature::new(host_call_conv());
         for _ in 0..7 {
             proc7_sig.params.push(AbiParam::new(types::I64));
         }
@@ -1109,26 +1109,26 @@ impl Jit {
         let os_homedir = proc_decl(&mut *module, "rnx_os_homedir", &proc0_sig)?;
         let os_cpu_count = proc_decl(&mut *module, "rnx_os_cpu_count", &proc0_sig)?;
         let os_uptime = proc_decl(&mut *module, "rnx_os_uptime", &proc0_sig)?;
-        let mut map_new_sig = Signature::new(CallConv::SystemV);
+        let mut map_new_sig = Signature::new(host_call_conv());
         map_new_sig.returns.push(AbiParam::new(types::I64));
         let map_new = module
             .declare_function("rnx_map_new", Linkage::Import, &map_new_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_map_new: {e}")))?;
-        let mut map_set_sig = Signature::new(CallConv::SystemV);
+        let mut map_set_sig = Signature::new(host_call_conv());
         map_set_sig.params.push(AbiParam::new(types::I64));
         map_set_sig.params.push(AbiParam::new(types::I64));
         map_set_sig.params.push(AbiParam::new(types::I64));
         let map_set = module
             .declare_function("rnx_map_set", Linkage::Import, &map_set_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_map_set: {e}")))?;
-        let mut map_get_sig = Signature::new(CallConv::SystemV);
+        let mut map_get_sig = Signature::new(host_call_conv());
         map_get_sig.params.push(AbiParam::new(types::I64));
         map_get_sig.params.push(AbiParam::new(types::I64));
         map_get_sig.returns.push(AbiParam::new(types::I64));
         let map_get = module
             .declare_function("rnx_map_get", Linkage::Import, &map_get_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_map_get: {e}")))?;
-        let mut map_bool_sig = Signature::new(CallConv::SystemV);
+        let mut map_bool_sig = Signature::new(host_call_conv());
         map_bool_sig.params.push(AbiParam::new(types::I64));
         map_bool_sig.params.push(AbiParam::new(types::I64));
         map_bool_sig.returns.push(AbiParam::new(types::I8));
@@ -1138,18 +1138,18 @@ impl Jit {
         let map_delete = module
             .declare_function("rnx_map_delete", Linkage::Import, &map_bool_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_map_delete: {e}")))?;
-        let mut map_len_sig = Signature::new(CallConv::SystemV);
+        let mut map_len_sig = Signature::new(host_call_conv());
         map_len_sig.params.push(AbiParam::new(types::I64));
         map_len_sig.returns.push(AbiParam::new(types::I64));
         let map_len = module
             .declare_function("rnx_map_len", Linkage::Import, &map_len_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_map_len: {e}")))?;
-        let mut map_clear_sig = Signature::new(CallConv::SystemV);
+        let mut map_clear_sig = Signature::new(host_call_conv());
         map_clear_sig.params.push(AbiParam::new(types::I64));
         let map_clear = module
             .declare_function("rnx_map_clear", Linkage::Import, &map_clear_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_map_clear: {e}")))?;
-        let mut map_arr_sig = Signature::new(CallConv::SystemV);
+        let mut map_arr_sig = Signature::new(host_call_conv());
         map_arr_sig.params.push(AbiParam::new(types::I64));
         map_arr_sig.returns.push(AbiParam::new(types::I64));
         let map_keys = module
@@ -1158,7 +1158,7 @@ impl Jit {
         let map_values = module
             .declare_function("rnx_map_values", Linkage::Import, &map_arr_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_map_values: {e}")))?;
-        let mut sync_i64_sig = Signature::new(CallConv::SystemV);
+        let mut sync_i64_sig = Signature::new(host_call_conv());
         sync_i64_sig.params.push(AbiParam::new(types::I64));
         sync_i64_sig.returns.push(AbiParam::new(types::I64));
         let sync_atomic_get = module
@@ -1179,14 +1179,14 @@ impl Jit {
         let fs_pool_depth = module
             .declare_function("rnx_fs_pool_depth", Linkage::Import, &sync_i64_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_fs_pool_depth: {e}")))?;
-        let mut sync_i64_i64_sig = Signature::new(CallConv::SystemV);
+        let mut sync_i64_i64_sig = Signature::new(host_call_conv());
         sync_i64_i64_sig.params.push(AbiParam::new(types::I64));
         sync_i64_i64_sig.params.push(AbiParam::new(types::I64));
         sync_i64_i64_sig.returns.push(AbiParam::new(types::I64));
         let sync_atomic_fetch_add = module
             .declare_function("rnx_sync_atomic_fetch_add", Linkage::Import, &sync_i64_i64_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_sync_atomic_fetch_add: {e}")))?;
-        let mut sync_void_sig = Signature::new(CallConv::SystemV);
+        let mut sync_void_sig = Signature::new(host_call_conv());
         sync_void_sig.params.push(AbiParam::new(types::I64));
         sync_void_sig.params.push(AbiParam::new(types::I64));
         let sync_atomic_set = module
@@ -1195,7 +1195,7 @@ impl Jit {
         let sync_channel_send = module
             .declare_function("rnx_sync_channel_send", Linkage::Import, &sync_void_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_sync_channel_send: {e}")))?;
-        let mut sync_void1_sig = Signature::new(CallConv::SystemV);
+        let mut sync_void1_sig = Signature::new(host_call_conv());
         sync_void1_sig.params.push(AbiParam::new(types::I64));
         let sync_channel_drop = module
             .declare_function("rnx_sync_channel_drop", Linkage::Import, &sync_void1_sig)
@@ -1218,7 +1218,7 @@ impl Jit {
         let rwlock_write_unlock = module
             .declare_function("rnx_rwlock_write_unlock", Linkage::Import, &sync_void1_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_rwlock_write_unlock: {e}")))?;
-        let mut sync_bool_sig = Signature::new(CallConv::SystemV);
+        let mut sync_bool_sig = Signature::new(host_call_conv());
         sync_bool_sig.params.push(AbiParam::new(types::I64));
         sync_bool_sig.returns.push(AbiParam::new(types::I8));
         let mutex_try_lock = module
@@ -1239,14 +1239,14 @@ impl Jit {
         let condvar_notify_all = module
             .declare_function("rnx_condvar_notify_all", Linkage::Import, &sync_void1_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_condvar_notify_all: {e}")))?;
-        let mut sync_bool2_sig = Signature::new(CallConv::SystemV);
+        let mut sync_bool2_sig = Signature::new(host_call_conv());
         sync_bool2_sig.params.push(AbiParam::new(types::I64));
         sync_bool2_sig.params.push(AbiParam::new(types::I64));
         sync_bool2_sig.returns.push(AbiParam::new(types::I8));
         let barrier_wait = module
             .declare_function("rnx_barrier_wait", Linkage::Import, &sync_bool2_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_barrier_wait: {e}")))?;
-        let mut sync_bool3_sig = Signature::new(CallConv::SystemV);
+        let mut sync_bool3_sig = Signature::new(host_call_conv());
         sync_bool3_sig.params.push(AbiParam::new(types::I64));
         sync_bool3_sig.params.push(AbiParam::new(types::I64));
         sync_bool3_sig.params.push(AbiParam::new(types::I64));
@@ -1254,7 +1254,7 @@ impl Jit {
         let condvar_wait_timeout = module
             .declare_function("rnx_condvar_wait_timeout", Linkage::Import, &sync_bool3_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_condvar_wait_timeout: {e}")))?;
-        let mut pool_void2_sig = Signature::new(CallConv::SystemV);
+        let mut pool_void2_sig = Signature::new(host_call_conv());
         pool_void2_sig.params.push(AbiParam::new(types::I64));
         pool_void2_sig.params.push(AbiParam::new(types::I64));
         let pool_init = module
@@ -1266,7 +1266,7 @@ impl Jit {
         let pool_shutdown = module
             .declare_function("rnx_thread_pool_shutdown", Linkage::Import, &sync_void1_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_thread_pool_shutdown: {e}")))?;
-        let mut pool_for_sig = Signature::new(CallConv::SystemV);
+        let mut pool_for_sig = Signature::new(host_call_conv());
         pool_for_sig.params.push(AbiParam::new(types::I64));
         pool_for_sig.params.push(AbiParam::new(types::I64));
         pool_for_sig.params.push(AbiParam::new(types::I64));
@@ -1275,27 +1275,27 @@ impl Jit {
         let pool_parallel_for = module
             .declare_function("rnx_thread_pool_parallel_for", Linkage::Import, &pool_for_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_thread_pool_parallel_for: {e}")))?;
-        let mut debug_sig = Signature::new(CallConv::SystemV);
+        let mut debug_sig = Signature::new(host_call_conv());
         debug_sig.returns.push(AbiParam::new(types::I64));
         let debug_live = module
             .declare_function("rnx_debug_live_count", Linkage::Import, &debug_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_debug_live_count: {e}")))?;
-        let mut defer_push_sig = Signature::new(CallConv::SystemV);
+        let mut defer_push_sig = Signature::new(host_call_conv());
         defer_push_sig.params.push(AbiParam::new(types::I64));
         let defer_push = module
             .declare_function("rnx_defer_push", Linkage::Import, &defer_push_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_defer_push: {e}")))?;
-        let mut defer_pop_sig = Signature::new(CallConv::SystemV);
+        let mut defer_pop_sig = Signature::new(host_call_conv());
         defer_pop_sig.returns.push(AbiParam::new(types::I64));
         let defer_pop = module
             .declare_function("rnx_defer_pop", Linkage::Import, &defer_pop_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_defer_pop: {e}")))?;
-        let mut defer_len_sig = Signature::new(CallConv::SystemV);
+        let mut defer_len_sig = Signature::new(host_call_conv());
         defer_len_sig.returns.push(AbiParam::new(types::I64));
         let defer_len = module
             .declare_function("rnx_defer_len", Linkage::Import, &defer_len_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_defer_len: {e}")))?;
-        let mut u64_fn_sig = Signature::new(CallConv::SystemV);
+        let mut u64_fn_sig = Signature::new(host_call_conv());
         u64_fn_sig.params.push(AbiParam::new(types::I64));
         u64_fn_sig.returns.push(AbiParam::new(types::I64));
         let any_tag = module
@@ -1307,7 +1307,7 @@ impl Jit {
         let error_set = module
             .declare_function("rnx_error_set", Linkage::Import, &void1_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_error_set: {e}")))?;
-        let mut take_sig = Signature::new(CallConv::SystemV);
+        let mut take_sig = Signature::new(host_call_conv());
         take_sig.returns.push(AbiParam::new(types::I64));
         let error_take = module
             .declare_function("rnx_error_take", Linkage::Import, &take_sig)
@@ -1330,20 +1330,20 @@ impl Jit {
         let typeof_any = module
             .declare_function("rnx_typeof_any", Linkage::Import, &u64_fn_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_typeof_any: {e}")))?;
-        let mut note_sig = Signature::new(CallConv::SystemV);
+        let mut note_sig = Signature::new(host_call_conv());
         note_sig.params.push(AbiParam::new(types::I64));
         note_sig.params.push(AbiParam::new(types::I64));
         let note_type = module
             .declare_function("rnx_note_type", Linkage::Import, &note_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_note_type: {e}")))?;
-        let mut pretty_sig = Signature::new(CallConv::SystemV);
+        let mut pretty_sig = Signature::new(host_call_conv());
         pretty_sig.params.push(AbiParam::new(types::I64));
         pretty_sig.params.push(AbiParam::new(types::I64));
         pretty_sig.returns.push(AbiParam::new(types::I64));
         let io_pretty = module
             .declare_function("rnx_io_pretty", Linkage::Import, &pretty_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_io_pretty: {e}")))?;
-        let mut note3_sig = Signature::new(CallConv::SystemV);
+        let mut note3_sig = Signature::new(host_call_conv());
         note3_sig.params.push(AbiParam::new(types::I64));
         note3_sig.params.push(AbiParam::new(types::I64));
         note3_sig.params.push(AbiParam::new(types::I64));
@@ -1353,7 +1353,7 @@ impl Jit {
         let note_fields = module
             .declare_function("rnx_note_fields", Linkage::Import, &note_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_note_fields: {e}")))?;
-        let mut note4_sig = Signature::new(CallConv::SystemV);
+        let mut note4_sig = Signature::new(host_call_conv());
         note4_sig.params.push(AbiParam::new(types::I64));
         note4_sig.params.push(AbiParam::new(types::I64));
         note4_sig.params.push(AbiParam::new(types::I64));
@@ -1361,7 +1361,7 @@ impl Jit {
         let note_enum = module
             .declare_function("rnx_note_enum", Linkage::Import, &note4_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_note_enum: {e}")))?;
-        let mut slice_sig = Signature::new(CallConv::SystemV);
+        let mut slice_sig = Signature::new(host_call_conv());
         for _ in 0..6 {
             slice_sig.params.push(AbiParam::new(types::I64));
         }
@@ -1369,7 +1369,7 @@ impl Jit {
         let array_slice = module
             .declare_function("rnx_array_slice", Linkage::Import, &slice_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_array_slice: {e}")))?;
-        let mut sync_obj_sig = Signature::new(CallConv::SystemV);
+        let mut sync_obj_sig = Signature::new(host_call_conv());
         sync_obj_sig.params.push(AbiParam::new(types::I64));
         sync_obj_sig.params.push(AbiParam::new(types::I64));
         sync_obj_sig.params.push(AbiParam::new(types::I64));
@@ -1384,7 +1384,7 @@ impl Jit {
             .declare_function("rnx_sync_channel_send_array", Linkage::Import, &sync_obj_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_sync_channel_send_array: {e}")))?;
 
-        let mut sync_cas_sig = Signature::new(CallConv::SystemV);
+        let mut sync_cas_sig = Signature::new(host_call_conv());
         sync_cas_sig.params.push(AbiParam::new(types::I64));
         sync_cas_sig.params.push(AbiParam::new(types::I64));
         sync_cas_sig.params.push(AbiParam::new(types::I64));
@@ -1392,63 +1392,63 @@ impl Jit {
         let sync_atomic_cas = module
             .declare_function("rnx_sync_atomic_cas", Linkage::Import, &sync_cas_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_sync_atomic_cas: {e}")))?;
-        let mut math_sqrt_sig = Signature::new(CallConv::SystemV);
+        let mut math_sqrt_sig = Signature::new(host_call_conv());
         math_sqrt_sig.params.push(AbiParam::new(types::I64));
         math_sqrt_sig.returns.push(AbiParam::new(types::I64));
         let math_sqrt = module
             .declare_function("rnx_math_sqrt", Linkage::Import, &math_sqrt_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_math_sqrt: {e}")))?;
-        let mut math_sin_sig = Signature::new(CallConv::SystemV);
+        let mut math_sin_sig = Signature::new(host_call_conv());
         math_sin_sig.params.push(AbiParam::new(types::I64));
         math_sin_sig.returns.push(AbiParam::new(types::I64));
         let math_sin = module
             .declare_function("rnx_math_sin", Linkage::Import, &math_sin_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_math_sin: {e}")))?;
-        let mut math_cos_sig = Signature::new(CallConv::SystemV);
+        let mut math_cos_sig = Signature::new(host_call_conv());
         math_cos_sig.params.push(AbiParam::new(types::I64));
         math_cos_sig.returns.push(AbiParam::new(types::I64));
         let math_cos = module
             .declare_function("rnx_math_cos", Linkage::Import, &math_cos_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_math_cos: {e}")))?;
-        let mut math_tan_sig = Signature::new(CallConv::SystemV);
+        let mut math_tan_sig = Signature::new(host_call_conv());
         math_tan_sig.params.push(AbiParam::new(types::I64));
         math_tan_sig.returns.push(AbiParam::new(types::I64));
         let math_tan = module
             .declare_function("rnx_math_tan", Linkage::Import, &math_tan_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_math_tan: {e}")))?;
-        let mut math_atan2_sig = Signature::new(CallConv::SystemV);
+        let mut math_atan2_sig = Signature::new(host_call_conv());
         math_atan2_sig.params.push(AbiParam::new(types::I64));
         math_atan2_sig.params.push(AbiParam::new(types::I64));
         math_atan2_sig.returns.push(AbiParam::new(types::I64));
         let math_atan2 = module
             .declare_function("rnx_math_atan2", Linkage::Import, &math_atan2_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_math_atan2: {e}")))?;
-        let mut math_pow_sig = Signature::new(CallConv::SystemV);
+        let mut math_pow_sig = Signature::new(host_call_conv());
         math_pow_sig.params.push(AbiParam::new(types::I64));
         math_pow_sig.params.push(AbiParam::new(types::I64));
         math_pow_sig.returns.push(AbiParam::new(types::I64));
         let math_pow = module
             .declare_function("rnx_math_pow", Linkage::Import, &math_pow_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_math_pow: {e}")))?;
-        let mut math_floor_sig = Signature::new(CallConv::SystemV);
+        let mut math_floor_sig = Signature::new(host_call_conv());
         math_floor_sig.params.push(AbiParam::new(types::I64));
         math_floor_sig.returns.push(AbiParam::new(types::I64));
         let math_floor = module
             .declare_function("rnx_math_floor", Linkage::Import, &math_floor_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_math_floor: {e}")))?;
-        let mut math_ceil_sig = Signature::new(CallConv::SystemV);
+        let mut math_ceil_sig = Signature::new(host_call_conv());
         math_ceil_sig.params.push(AbiParam::new(types::I64));
         math_ceil_sig.returns.push(AbiParam::new(types::I64));
         let math_ceil = module
             .declare_function("rnx_math_ceil", Linkage::Import, &math_ceil_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_math_ceil: {e}")))?;
-        let mut math_round_sig = Signature::new(CallConv::SystemV);
+        let mut math_round_sig = Signature::new(host_call_conv());
         math_round_sig.params.push(AbiParam::new(types::I64));
         math_round_sig.returns.push(AbiParam::new(types::I64));
         let math_round = module
             .declare_function("rnx_math_round", Linkage::Import, &math_round_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_math_round: {e}")))?;
-        let mut math_log_sig = Signature::new(CallConv::SystemV);
+        let mut math_log_sig = Signature::new(host_call_conv());
         math_log_sig.params.push(AbiParam::new(types::I64));
         math_log_sig.returns.push(AbiParam::new(types::I64));
         let math_log = module

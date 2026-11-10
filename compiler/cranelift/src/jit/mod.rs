@@ -20,6 +20,19 @@ use self::compile::{check_supported, lower_fn};
 
 use self::instr::FnLower;
 
+// JIT calls go to extern "C" symbols in the host process, so signatures
+// must use the host ABI. SystemV is only correct on System V targets:
+// Windows x64/ARM use fastcall, and Apple ARM has its own tweaks.
+pub(super) const fn host_call_conv() -> CallConv {
+    if cfg!(windows) {
+        CallConv::WindowsFastcall
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        CallConv::AppleAarch64
+    } else {
+        CallConv::SystemV
+    }
+}
+
 pub type FunctionSlotId = u32;
 pub type JitError = diagnostics::Diagnostic;
 
@@ -275,7 +288,7 @@ impl Drop for Jit {
 }
 
 fn fn_sig(f: &LirFunction) -> Signature {
-    let mut sig = Signature::new(CallConv::SystemV);
+    let mut sig = Signature::new(host_call_conv());
     for t in &f.params {
         sig.params.push(AbiParam::new(match t {
             LirType::Vec4f => types::F32X4,
@@ -294,7 +307,7 @@ fn fn_sig(f: &LirFunction) -> Signature {
 }
 
 fn foreign_sig(f: &ForeignFn) -> Signature {
-    let mut sig = Signature::new(CallConv::SystemV);
+    let mut sig = Signature::new(host_call_conv());
     for t in &f.params {
         sig.params.push(AbiParam::new(match t {
             LirType::I8 | LirType::Bool => types::I8,
@@ -662,6 +675,21 @@ pub fn try_register_prebuilt_stdlib_in(
 pub fn try_register_prebuilt_stdlib(builder: &mut JITBuilder, lir: &LirModule) -> PrebuiltStatus {
     try_register_prebuilt_stdlib_in(builder, lir, &frontend::cache::global_cache_dir())
 }
+#[cfg(test)]
+mod abi_tests {
+    use super::*;
+
+    #[test]
+    fn host_call_conv_matches_the_host_abi() {
+        #[cfg(windows)]
+        assert_eq!(host_call_conv(), CallConv::WindowsFastcall);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(host_call_conv(), CallConv::AppleAarch64);
+        #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+        assert_eq!(host_call_conv(), CallConv::SystemV);
+    }
+}
+
 #[cfg(test)]
 mod prebuilt_tests {
     use super::*;
