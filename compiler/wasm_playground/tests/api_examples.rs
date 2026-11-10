@@ -3,6 +3,27 @@ fn api_path() -> std::path::PathBuf {
         .join("../../website/static/data/api.json")
 }
 
+fn host_skip(module: &str) -> Option<String> {
+    let top = module.split('/').next().unwrap_or(module);
+    let spec = format!("@std/{top}");
+    let active = sysroot::target::active_target();
+    if active.prelude != spec
+        && sysroot::target::Target::all()
+            .iter()
+            .any(|t| t.prelude == spec)
+    {
+        return Some(format!(
+            "`{spec}` is the prelude for another target, not `{}`",
+            active.triple
+        ));
+    }
+    match frontend::modules::load_std_module_source(module) {
+        Ok(_) => None,
+        Err(e) if e.message.contains("requires capability") => Some(e.message),
+        Err(e) => panic!("@std/{module} source did not load: {}", e.message),
+    }
+}
+
 fn examples() -> Vec<(String, String)> {
     let text = match std::fs::read_to_string(api_path()) {
         Ok(t) => t,
@@ -28,6 +49,13 @@ fn examples() -> Vec<(String, String)> {
             for it in methods {
                 items.push((format!("{mname}.{cname}"), it));
             }
+        }
+        if items.is_empty() {
+            continue;
+        }
+        if let Some(reason) = host_skip(mname) {
+            eprintln!("skipping @std/{mname} examples: {reason}");
+            continue;
         }
         for (ctx, it) in &items {
             let name = it.get("name").and_then(|n| n.as_str()).unwrap_or("?");
