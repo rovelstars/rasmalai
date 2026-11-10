@@ -597,6 +597,64 @@ pub enum TargetAction {
 /// Target pack management
 #[derive(Subcommand, Debug, Clone)]
 pub enum SysrootAction {
+    /// Build a sealed target pack from a source sysroot and a runtime archive
+    Build {
+        /// Target triple
+        triple: String,
+        /// Source sysroot root (repeatable)
+        #[arg(long = "from")]
+        from: Vec<PathBuf>,
+        /// Runtime archive (defaults to a file in the source sysroot)
+        #[arg(long)]
+        runtime: Option<PathBuf>,
+        /// compiler-rt builtins archive
+        #[arg(long)]
+        builtins: Option<PathBuf>,
+        /// Output pack directory
+        #[arg(long)]
+        out: PathBuf,
+        /// Runtime ABI recorded in the manifest (default 1)
+        #[arg(long)]
+        abi: Option<u32>,
+        /// Dynamic loader path recorded in the manifest
+        #[arg(long)]
+        loader: Option<String>,
+        /// Minimum kernel version recorded in the manifest
+        #[arg(long)]
+        kernel_min: Option<String>,
+        /// glibc baseline recorded in the manifest
+        #[arg(long)]
+        glibc_baseline: Option<String>,
+        /// Prelude package recorded in the manifest
+        #[arg(long)]
+        prelude: Option<String>,
+        /// Replace an existing output directory
+        #[arg(long)]
+        force: bool,
+    },
+    /// Push a sealed target pack to an OCI registry
+    Publish {
+        /// Pack directory (defaults to the current directory)
+        dir: Option<PathBuf>,
+        /// OCI repository (defaults to RNX_SYSROOT_OCI)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Toolchain version used in the default tag
+        #[arg(long)]
+        version: Option<String>,
+        /// Exact tag, overriding --version
+        #[arg(long)]
+        tag: Option<String>,
+        /// Registry push base URL (defaults to the repository's scheme and host)
+        #[arg(long)]
+        push_url: Option<String>,
+        /// Bearer token (defaults to RNX_OCI_PUSH_TOKEN)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry username for the token exchange (defaults to RNX_OCI_PUSH_USERNAME)
+        #[arg(long)]
+        username: Option<String>,
+    },
     /// Install a target pack from OCI, or from a local directory with --local
     Add {
         /// Target triple, optionally versioned (`<triple>@<version>`)
