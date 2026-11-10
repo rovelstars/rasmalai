@@ -188,7 +188,7 @@ describe('publish quota order', () => {
 			'@acme/overquota',
 			'1.0.0',
 			frameOf('@acme/overquota', '1.0.0', [
-				{ path: 'src/main.rnx', content: 'export fn main(): Void {\n  print("hi");\n}\n' }
+				{ path: 'src/main.rnx', content: 'export fn main(): Void {\n  print!("hi");\n}\n' }
 			]),
 			{ ...fake.env, QUOTA_R2_BYTES: '100' }
 		);
@@ -221,7 +221,7 @@ describe('publish quota order', () => {
 			'1.0.0',
 			frameOf('@acme/unreached', '1.0.0', [
 				{ path: 'src/main.rnx', content: 'export fn main(): Void {}\n' },
-				{ path: 'src/dead.rnx', content: 'export fn dead(): Void {\n  print("hi");\n}\n' }
+				{ path: 'src/dead.rnx', content: 'export fn dead(): Void {\n  print!("hi");\n}\n' }
 			]),
 			{ ...fake.env, QUOTA_R2_BYTES: String(10 * 1024 * 1024) }
 		);
@@ -254,7 +254,7 @@ describe('publish quota order', () => {
 	});
 
 	it('does not count a refused publish against the budget', async () => {
-		const content = 'export fn main(): Void {\n  print("hi");\n}';
+		const content = 'export fn main(): Void {\n  print!("hi");\n}';
 		const frame = frameOf('@acme/budget3', '1.0.0', [{ path: 'src/main.rnx', content }]);
 		const stored = Number(
 			(fake.db.prepare('SELECT sum(size_bytes) AS n FROM chunks').get() as { n: number }).n ?? 0
@@ -353,7 +353,7 @@ describe('identical tree skips analysis', () => {
 describe('cross-file capability analysis', () => {
 	it('rejects a sink reachable only through another file', async () => {
 		const main = 'import { helper } from "./util";\nfn Main(): Int { return helper(); }\n';
-		const util = 'export fn helper(): Int { print(41); return 41; }\n';
+		const util = 'export fn helper(): Int { print!(41); return 41; }\n';
 		const frame = frameWithConfig(
 			'@acme/xfile',
 			'1.0.0',
@@ -373,7 +373,7 @@ describe('cross-file capability analysis', () => {
 
 	it('accepts the same tree when the ceiling covers the cross-file use', async () => {
 		const main = 'import { helper } from "./util";\nfn Main(): Int { return helper(); }\n';
-		const util = 'export fn helper(): Int { print(41); return 41; }\n';
+		const util = 'export fn helper(): Int { print!(41); return 41; }\n';
 		const frame = frameWithConfig(
 			'@acme/xfileok',
 			'1.0.0',

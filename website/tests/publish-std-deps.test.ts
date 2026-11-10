@@ -51,7 +51,7 @@ function publish(name: string, version: string, frame: Record<string, unknown>):
 }
 
 const PRELUDE = 'export fn ident(x: Int): Int {\n  return x;\n}\n';
-const USES = 'import { ident } from "@std/prelude";\nexport fn main(): Void {\n  let y = ident(1);\n}\n';
+const USES = 'import { ident } from "@std/json";\nexport fn main(): Void {\n  let y = ident(1);\n}\n';
 
 before(async () => {
 	fake = await startFakeLibsql();
@@ -67,7 +67,7 @@ beforeEach(() => {
 
 describe('publish cross-package analysis', () => {
 	it('analyses a tree importing a published @std/* dep', async () => {
-		const dep = await publish('@std/prelude', '0.1.0', frameOf('@std/prelude', '0.1.0', [
+		const dep = await publish('@std/json', '0.1.0', frameOf('@std/json', '0.1.0', [
 			{ path: 'src/lib.rnx', content: PRELUDE }
 		]));
 		assert.equal(dep.status, 201);

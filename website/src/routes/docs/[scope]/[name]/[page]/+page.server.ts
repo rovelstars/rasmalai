@@ -12,9 +12,11 @@ const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 // Top-level @std modules with module-doc pages. Mirrors STDLIB in
 // $lib/docs/nav and the tops of MODULES in compiler/stdlib/src/lib.rs;
-// docs-routes.test.ts pins the three lists together.
+// docs-routes.test.ts pins them together.
 const STD_TOPS = [
 	'prelude',
+	'foundation',
+	'async',
 	'simd',
 	'collections',
 	'math',
@@ -30,7 +32,10 @@ const STD_TOPS = [
 	'web',
 	'net',
 	'json',
-	'io'
+	'io',
+	'log',
+	'uefi',
+	'wasi'
 ];
 
 interface GuideOut {

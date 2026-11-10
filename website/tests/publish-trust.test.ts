@@ -158,7 +158,7 @@ describe('detectCapabilityUse', () => {
 		const out = detectCapabilityUse([
 			{ name: 'src/a.rnx', text: 'let t = fs.readText("f");\nlet h = await fetch("https://x");' },
 			{ name: 'src/b.rnx', text: 'let c = Process.spawn("ffmpeg", []);\nlet e = Env.get("HOME") ?? "";' },
-			{ name: 'src/c.rnx', text: 'print("hi");\nunsafe {\n  let p = 1;\n}' },
+			{ name: 'src/c.rnx', text: 'print!("hi");\nunsafe {\n  let p = 1;\n}' },
 			{ name: 'src/d.rnx', text: 'import z from "native";\nlet q = from native "z";' }
 		]);
 		const heads = new Set(out.map((e) => `${e.file}:${e.head}`));
@@ -206,7 +206,7 @@ describe('checkCapabilityCoverage', () => {
 			JSON.stringify({ permissions: ['term:write', { perm: 'fs:read:/data', reason: 'seed' }] })
 		);
 		const used = detectCapabilityUse([
-			{ name: 'src/lib.rnx', text: 'print("hi");\nlet t = fs.readText("f");' }
+			{ name: 'src/lib.rnx', text: 'print!("hi");\nlet t = fs.readText("f");' }
 		]);
 		assert.equal(checkCapabilityCoverage(declared, used).ok, true);
 	});
@@ -232,7 +232,7 @@ describe('scanCanonicalCapabilities', () => {
 	it('scans canonical files, skipping non-rnx entries', () => {
 		const enc = new TextEncoder();
 		const out = scanCanonicalCapabilities([
-			{ name: 'src/lib.rnx', bytes: enc.encode('export fn main(): Void {\n  print("hi");\n}') },
+			{ name: 'src/lib.rnx', bytes: enc.encode('export fn main(): Void {\n  print!("hi");\n}') },
 			{ name: 'README.md', bytes: enc.encode('fetch("https://x");') }
 		]);
 		assert.deepEqual(out.map((e) => `${e.file}:${e.head}`), ['src/lib.rnx:term']);
@@ -249,7 +249,7 @@ describe('scanCanonicalCapabilities', () => {
 describe('stdlib capability baseline', () => {
 	const STD = join(import.meta.dirname, '..', '..', 'compiler', 'stdlib', 'src');
 
-	it('only fs, io, and process use observable sinks', () => {
+	it('pins the observable sink map across the stdlib', () => {
 		const got = new Map<string, string[]>();
 		for (const e of readdirSync(STD, { withFileTypes: true })) {
 			if (!e.isDirectory() || !existsSync(join(STD, e.name, 'lib.rnx'))) continue;
@@ -263,6 +263,7 @@ describe('stdlib capability baseline', () => {
 		for (const [name, heads] of got) {
 			if (name === 'fs') assert.deepEqual(heads, ['unsafe'], name);
 			else if (name === 'io') assert.deepEqual(heads, ['env', 'term'], name);
+			else if (name === 'log') assert.deepEqual(heads, ['env', 'term'], name);
 			else if (name === 'process') assert.deepEqual(heads, ['env'], name);
 			else if (name === 'app') assert.deepEqual(heads, ['env', 'fs', 'term', 'unsafe'], name);
 			else assert.deepEqual(heads, [], name);

@@ -44,7 +44,7 @@ const DOTTED_SINKS: Array<{ head: Head; names: string[] }> = [
 
 const BARE_SINKS: Array<{ head: Head; names: string[] }> = [
 	{ head: 'net', names: ['fetch', 'Request', 'WebSocket'] },
-	{ head: 'term', names: ['print'] }
+	{ head: 'term', names: ['print!', 'println!', 'eprint!', 'eprintln!'] }
 ];
 
 const TERM_SUFFIX_RE = /\.\s*(writeText|writeBytes|readText|readBytes)\s*\(/g;
@@ -130,11 +130,11 @@ describe('capability scan equivalence', () => {
 			// A declaration is not a call.
 			{ name: 'src/decl.rnx', text: 'fn fetch(url: String): String { throw "no"; }' },
 			// A sink name in a string or a comment is not a sink.
-			{ name: 'src/comment.rnx', text: '// print("x");\n/* File.open("y"); */\nlet s = "fetch(u)";' },
+			{ name: 'src/comment.rnx', text: '// print!("x");\n/* File.open("y"); */\nlet s = "fetch(u)";' },
 			// The bare sinks.
-			{ name: 'src/bare.rnx', text: 'print("hi");\nlet r = await fetch("https://x");' },
+			{ name: 'src/bare.rnx', text: 'print!("hi");\nlet r = await fetch("https://x");' },
 			// Two heads in one file.
-			{ name: 'src/two.rnx', text: 'print("hi");\nlet t = fs.readText("f");\nlet e = Env.get("HOME") ?? "";' },
+			{ name: 'src/two.rnx', text: 'print!("hi");\nlet t = fs.readText("f");\nlet e = Env.get("HOME") ?? "";' },
 			// The unsafe markers.
 			{ name: 'src/unsafe.rnx', text: 'import z from "native";\nunsafe { let p = 1; }' },
 			// The suffix fallback, with and without a receiver.
@@ -147,9 +147,9 @@ describe('capability scan equivalence', () => {
 			// A name that ends on an identifier character.
 			{ name: 'src/adjacent.rnx', text: 'let t = myFile.open("f");' },
 			// The term group and the bare term sink in one file.
-			{ name: 'src/term.rnx', text: 'io.write("x");\nprint("y");' },
+			{ name: 'src/term.rnx', text: 'io.write("x");\nprint!("y");' },
 			// A file that is not rnx.
-			{ name: 'README.md', text: 'print("hi");' }
+			{ name: 'README.md', text: 'print!("hi");' }
 		];
 		assert.deepEqual(detectCapabilityUse(cases), legacyDetect(cases));
 	});
