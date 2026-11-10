@@ -382,6 +382,8 @@ println!(quote(2.0));
 | `rnx pack` | deterministic ustar plus SHA-256 | `-p`, `--out-dir`, `--gzip/-z` |
 | `rnx unpack` | verify and extract archive | `--out-dir <dir>` |
 | `rnx target list` | show built-in target triples, tiers, object formats, capabilities, and pack status | `--json`, `--tier <1\|2\|3>` |
+| `rnx sysroot build` | seal a target pack from a source sysroot and a runtime archive | `<triple>`, `--from <dir>`, `--runtime <archive>`, `--out <dir>`, `--builtins <archive>`, `--force` |
+| `rnx sysroot publish` | push a sealed pack to an OCI registry | `[<dir>]`, `--repo <bare>`, `--tag <tag>`, `--version <version>`, `--push-url <url>` |
 | `rnx sysroot add` | install a target pack from OCI or from a local directory | `<triple>[@<version>]`, `--local <dir>`, `--digest <sha256>` |
 | `rnx sysroot list/path/verify` | list installed packs, print the current directory, or rehash a pack | `[--json]`, `<triple>` |
 | `rnx sysroot remove/prune` | remove one triple's packs or every non-current digest | `<triple>`, `--keep <n>` |
@@ -625,6 +627,33 @@ rnx sysroot prune --keep 2
 
 `add` fetches `ghcr.io/rovelstars/rnx-sysroot:rnx-<toolchain-version>-<triple>` and verifies the index digest, the manifest digest, the blob digest, the `sysroot` kind and role annotations, the target annotation, and the pack `integrity.digest` before installing. A version suffix uses that version in the tag. `--local <dir>` installs a hand-built pack after the same validation, and `--digest sha256:<hex>` asserts the expected digest. `RNX_SYSROOT_OCI` overrides the repository for a mirror. `list` shows the triple, digest, tier, and current marker; `prune` never removes the digest named by `current`.
 
+### Building a target pack
+
+`rnx sysroot build` turns a source sysroot and a runtime archive into a sealed pack. It discovers the CRT objects, C library archives, compiler-rt builtins, and runtime archive from any number of `--from` roots, writes the version 2 manifest from the target descriptor, copies only the selected files into `lib/rustlib/<triple>/lib`, computes `integrity.digest` with the same code that verifies an installed pack, and reloads the result before it reports success.
+
+```sh
+rnx sysroot build x86_64-unknown-linux-musl \
+  --from /usr/lib/x86_64-linux-musl \
+  --from /usr/lib/gcc/x86_64-linux-gnu/13 \
+  --runtime compiler/runtime/bundle/target/x86_64-unknown-linux-musl/release/libruntime_native.a \
+  --builtins /usr/lib/llvm-22/lib/clang/22/lib/linux/libclang_rt.builtins-x86_64.a \
+  --out /tmp/musl-pack
+rnx sysroot add --local /tmp/musl-pack
+rnx sysroot verify x86_64-unknown-linux-musl
+```
+
+The source root can be a distro sysroot (`/usr`), a cross toolchain root, a GCC directory that carries `crtbeginT.o` and `crtend.o`, or an already staged `lib/rustlib/<triple>/lib` tree. The builder looks in the conventional `lib`, `lib64`, `usr/lib`, `usr/lib/<triple>`, `usr/lib/<arch>-linux-<env>`, MinGW, and Clang directories under each root. A runtime-only target such as UEFI or WASI needs only `--runtime`. `--builtins`, `--loader`, `--kernel-min`, `--glibc-baseline`, `--prelude`, and `--abi` override the descriptor when a toolchain needs it. The output directory is replaced only with `--force`, and two different inputs that want the same pack filename fail instead of overwriting each other.
+
+A pack is published with the same digest it was sealed with:
+
+```sh
+RNX_OCI_PUSH_USERNAME="$GITHUB_ACTOR" \
+RNX_OCI_PUSH_TOKEN="$GITHUB_TOKEN" \
+rnx sysroot publish /tmp/musl-pack
+```
+
+The default repository is `ghcr.io/rovelstars/rnx-sysroot` and the default tag is `rnx-<toolchain-version>-<triple>`. `--repo`, `--tag`, `--version`, and `--push-url` override them. The pushed index and manifest carry `org.opencontainers.image.source=https://github.com/rovelstars/rasmalai`, so GHCR links the package to this repository. `rnx sysroot add` uses the same bearer-token exchange, which means a private package works when `RNX_OCI_PUSH_USERNAME` and `RNX_OCI_PUSH_TOKEN` are set.
+
 `rnx lock` pins the installed pack for every triple in `project.targets` and for an explicit `--target`. The lockfile is version 3 and carries a sorted `sysroots` map:
 
 ```rnx
@@ -683,7 +712,7 @@ cargo build --manifest-path compiler/runtime/uefi/Cargo.toml \
   --target x86_64-unknown-uefi --release
 ```
 
-It supplies `efi_main`, a Boot Services allocator, strings, arrays, `Any` boxing, integer and float rendering, a ConOut writer, a COM1 writer for captures, and a panic handler. `@std/uefi` is the console package: `println!` renders its arguments and writes one line to ConOut and COM1. `@uefi/prelude` re-exports the foundation catalog, `Date`, and that console surface.
+It supplies `efi_main`, a Boot Services allocator, strings, arrays, `Any` boxing, integer and float rendering, a ConOut writer, a COM1 writer for captures, and a panic handler. `@std/uefi` is the prelude and console package for the triple: `println!` renders its arguments and writes one line to ConOut and COM1, and the package re-exports the foundation catalog and `Date`.
 
 The boot gate runs the image under qemu with OVMF:
 
@@ -692,7 +721,7 @@ qemu-system-x86_64 -machine q35 -m 256 -bios /usr/share/edk2/x64/OVMF.4m.fd \
   -drive format=raw,file=fat:rw:esp -display none -serial stdio -no-reboot
 ```
 
-Place the PE at `EFI/BOOT/BOOTX64.EFI` inside the `esp` directory. Stage a pack from a locally built archive with `cargo run -p sysroot --example uefi_pack -- --runtime <archive> --out <dir>`, then install it with `rnx sysroot add --local <dir>`. `compiler/cli/tests/uefi_boot.rs` builds the runtime archive, stages and installs a pack, checks the PE headers with `llvm-readobj`, and asserts the serial capture contains the expected line. The test skips when `qemu-system-x86_64`, OVMF, or the Rust target is absent.
+Place the PE at `EFI/BOOT/BOOTX64.EFI` inside the `esp` directory. Stage a pack from a locally built archive with `rnx sysroot build x86_64-unknown-uefi --runtime <archive> --out <dir>`, then install it with `rnx sysroot add --local <dir>`. `compiler/cli/tests/uefi_boot.rs` builds the runtime archive, stages and installs a pack, checks the PE headers with `llvm-readobj`, and asserts the serial capture contains the expected line. The test skips when `qemu-system-x86_64`, OVMF, or the Rust target is absent.
 
 Limits: maps, sets, JSON, files, sockets, threads, and the event loop are not implemented by the UEFI runtime, and a program that uses them fails at link with the missing symbol. `println!` renders `Int`, `Bool`, `Float`, `String`, and `null`; arrays and objects render as placeholders. The entry must be named `Main`.
 
@@ -714,7 +743,7 @@ The target is `wasm32-unknown-unknown` with explicit preview 1 imports, not `was
 Stage a pack from a locally built archive, install it, and build:
 
 ```sh
-cargo run -p sysroot --example wasi_pack -- \
+rnx sysroot build wasm32-unknown-wasi \
   --runtime compiler/runtime/wasi/target/wasm32-unknown-unknown/release/libruntime_native.a \
   --out /tmp/wasi-pack
 rnx sysroot add --local /tmp/wasi-pack wasm32-unknown-wasi
@@ -823,7 +852,10 @@ listed at the end and are not part of the public contract.
 | `RNX_VENDOR_DIR` | unset | Extra local source tree consulted before caches and the registry. |
 | `RNX_ADVISORY_KEY` | unset | Expected advisory-feed key id or public key. |
 | `RNX_SYSROOT` | host probe | Custom sysroot for the linker. `--sysroot` wins. The root is validated but not pinned. |
-| `RNX_SYSROOT_OCI` | `ghcr.io/rovelstars/rnx-sysroot` | OCI repository used by `rnx sysroot add`. |
+| `RNX_SYSROOT_OCI` | `ghcr.io/rovelstars/rnx-sysroot` | OCI repository used by `rnx sysroot add` and `rnx sysroot publish`. |
+| `RNX_OCI_PUSH_TOKEN` | unset | Registry token for `rnx sysroot publish`, and for pulling a private pack. |
+| `RNX_OCI_PUSH_USERNAME` | unset | Registry username for the bearer-token exchange. GitHub Actions uses `${{ github.actor }}`. |
+| `RNX_OCI_PUSH_URL` | repository scheme and host | Push base URL. `https://ghcr.io` for GHCR. |
 | `RNX_OFFLINE` | unset | Any non-empty, non-zero value disables automatic target pack fetch. `--offline` sets it. |
 | `CI` | unset | A non-empty, non-zero value also disables automatic target pack fetch. |
 | `RNX_LIB_DIRS` | unset | Colon-separated extra link library directories. |

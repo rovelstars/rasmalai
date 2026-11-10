@@ -308,11 +308,11 @@ export const STD_MODULES: StdModuleMeta[] = [
 	},
 	{
 		name: 'uefi',
-		tagline: 'Console output for x86_64-unknown-uefi applications.',
+		tagline: 'Prelude and console output for x86_64-unknown-uefi applications.',
 		primaryExport: 'println',
 		whenToUse:
-			'Reach for @std/uefi in a firmware application built with rnx build --target x86_64-unknown-uefi. println! renders its arguments and writes one line to ConOut and to COM1, so a qemu serial capture sees the same text the screen shows.',
-		capabilities: ['println! call macro', 'ConOut UTF-16 writes', 'COM1 capture fallback']
+			'@std/uefi is the prelude for a firmware application built with rnx build --target x86_64-unknown-uefi. It re-exports the foundation catalog and Date, and println! renders its arguments and writes one line to ConOut and to COM1, so a qemu serial capture sees the same text the screen shows.',
+		capabilities: ['Foundation and Date re-exports', 'println! call macro', 'ConOut UTF-16 writes', 'COM1 capture fallback']
 	},
 	{
 		name: 'wasi',
