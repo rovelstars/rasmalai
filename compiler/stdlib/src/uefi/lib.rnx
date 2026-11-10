@@ -28,6 +28,27 @@ import {
     fn __rnx_uefi_write(text: String): Void
 } from runtime "uefi";
 
+export {
+    Int,
+    Float,
+    FastFloat,
+    Bool,
+    String,
+    Char,
+    Array,
+    Map,
+    Set,
+    Error,
+    Any,
+    Void,
+    GenRef,
+    Result,
+    Iterator,
+    Iterable,
+    ArrayIter
+} from "@std/foundation";
+export { Date } from "@std/time";
+
 /** Print the argument values as one line on the UEFI console.
  *
  * Arguments are joined with a single space. The line also goes to COM1

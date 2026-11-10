@@ -1,6 +1,6 @@
 # @std/uefi
 
-Console output for `x86_64-unknown-uefi` applications.
+Prelude and console output for `x86_64-unknown-uefi` applications.
 
 A UEFI application has no operating system underneath it. There is no
 stdout file descriptor, no `@std/io`, and no `@std/fs`. The firmware hands
@@ -19,18 +19,19 @@ fn Main(): Int {
 
 ## What is inside
 
+- the foundation catalog and `Date` re-exports, so a UEFI program needs no
+  stock prelude import
 - `println!`, the call macro that renders its arguments as one line
 - `uefi_println!`, the same macro under a distinct name
 - `printLine(text)` and `printText(text)` for a `String` you already hold
 
 ## When to use
 
-Use @std/uefi in a program built with `rnx build --target x86_64-unknown-uefi`.
-The package declares the `console` and `firmware` capabilities, which the
-UEFI descriptor provides and a Linux, macOS, or Windows descriptor satisfies
-only through `console`. Importing it on a host target is allowed by the
-capability gate but fails to link, because only the UEFI runtime archive
-defines `__rnx_uefi_println`.
+`@std/uefi` is the prelude for `x86_64-unknown-uefi`. The package declares
+the `console`, `clock`, and `firmware` capabilities, which the UEFI
+descriptor provides. Importing it on a host target passes the capability
+gate but fails to link, because only the UEFI runtime archive defines
+`__rnx_uefi_println`.
 
 Every line is written twice: once through ConOut, which the firmware draws,
 and once to the serial port when the platform exposes one. qemu with
