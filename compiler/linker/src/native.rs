@@ -838,6 +838,17 @@ fn static_link_inner(
                 &mut seen_files,
             )?;
         }
+        if let Some(link) = pack.as_ref()
+            && let Some(Some(file)) = link.declared_lib("gcc_s")
+        {
+            let path = link.resolve(sysroot, &opts.target, &file)?;
+            if seen_files.insert(path.display().to_string()) {
+                archives.extend(tphase!(
+                    "link-archread",
+                    load_archive_path_in(sysroot, &opts.target, family, &path)?
+                ));
+            }
+        }
     } else {
         push_builtins(
             &mut archives,

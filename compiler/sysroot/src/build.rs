@@ -115,6 +115,12 @@ pub fn build(target: &Target, out: &Path, options: &BuildOptions) -> Result<Buil
         };
         libs.insert(name.clone(), staged);
     }
+    if target.libc == Libc::Musl
+        && !libs.contains_key("gcc_s")
+        && let Some(path) = find(&candidates, &["libgcc_eh.a".to_string()])
+    {
+        libs.insert("gcc_s".to_string(), Some(stager.stage(&path)?));
+    }
 
     let (crt, crt_end) = discover_crt(&candidates, target, &mut stager)?;
 
@@ -432,6 +438,7 @@ mod tests {
             "crtn.o",
             "libc.a",
             "libruntime_native.a",
+            "libgcc_eh.a",
         ] {
             touch(&source, name, name.as_bytes());
         }
@@ -472,6 +479,10 @@ mod tests {
         assert_eq!(
             pack.manifest.link.libs.get("m").unwrap().as_deref(),
             Some("libc.a")
+        );
+        assert_eq!(
+            pack.manifest.link.libs.get("gcc_s").unwrap().as_deref(),
+            Some("libgcc_eh.a")
         );
         assert_eq!(
             pack.manifest.runtime.sha256.as_deref(),
