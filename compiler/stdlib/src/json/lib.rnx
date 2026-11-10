@@ -61,7 +61,7 @@ import {
 * import { JSON } from "@std/json";
 *
 * let data: Any = JSON.parse("[1, true, null]");
-* print(JSON.stringify(data));
+* println!(JSON.stringify(data));
 */
 class JSON {
     /**
@@ -100,9 +100,9 @@ class JSON {
     * }
     *
     * let doc: Any = JSON.parse("\{\"b\": 2, \"a\": 1}");
-    * print(JSON.stringify(doc));
+    * println!(JSON.stringify(doc));
     * let p = JSON.parse<Point>("\{\"y\": 7, \"x\": 3}");
-    * print(p.x);
+    * println!(p.x);
     */
     static fn parse(text: String): Any {
         return __rnx_json_parse(text);
@@ -123,7 +123,7 @@ class JSON {
     * import { JSON } from "@std/json";
     *
     * let doc: Any = JSON.parse("\{\"q\": \"a\\\"b\", \"t\": \"x\\ty\"}");
-    * print(JSON.stringify(doc));
+    * println!(JSON.stringify(doc));
     */
     static fn stringify(value: Any): String {
         return __rnx_json_stringify(value);
@@ -146,7 +146,7 @@ class JSON {
     *
     * let buf = ByteBuffer.allocate(32);
     * let n = JSON.stringifyInto(JSON.parse("\{\"a\": 1}"), buf, 0);
-    * print(buf.readString(0, n));
+    * println!(buf.readString(0, n));
     */
     static fn stringifyInto(value: Any, buf: ByteBuffer, pos: Int): Int {
         return __rnx_json_stringify_into(value, buf.handle, pos);
@@ -166,8 +166,8 @@ class JSON {
     * import { JSON } from "@std/json";
     *
     * let m = JSON.parseObject("\{\"count\": 42, \"name\": \"rasmalai\"}");
-    * print(m.get("name"));
-    * print(m.len());
+    * println!(m.get("name"));
+    * println!(m.len());
     */
     static fn parseObject(text: String): Map<String, Any> {
         let m = new Map<String, Any>();
@@ -192,7 +192,7 @@ class JSON {
     *
     * let doc: Any = JSON.parse("\{\"ok\": true}");
     * let view = JSON.asMap(doc);
-    * print(view.get("ok"));
+    * println!(view.get("ok"));
     */
     static fn asMap(value: Any): Map<String, Any> {
         let m = new Map<String, Any>();

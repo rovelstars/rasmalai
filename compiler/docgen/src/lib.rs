@@ -54,9 +54,18 @@ pub fn generate_stdlib_docs_json(
     out_dir: &std::path::Path,
 ) -> Result<std::path::PathBuf, diagnostics::Diagnostic> {
     ensure_stdlib_seeded()?;
+    generate_stdlib_docs_json_local(out_dir)
+}
+
+pub fn generate_stdlib_docs_json_local(
+    out_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, diagnostics::Diagnostic> {
     let mut all = Vec::new();
     for name in stdlib::MODULES {
-        let src = frontend::modules::load_std_module_source(name)?;
+        // Documentation parses every package and compiles none of them, so
+        // the active target's capability gate must not apply: @std/uefi and
+        // @std/wasi are documented on a host.
+        let src = frontend::modules::load_std_module_source_ungated(name)?;
         let module = frontend::parser::Parser::parse_module(&src).map_err(|mut e| {
             e.message = format!("@std/{name}: {}", e.message);
             e
@@ -467,5 +476,28 @@ mod tests {
         assert!(path.is_file());
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("hello") || body.contains("fs"));
+    }
+
+    #[test]
+    fn local_generation_never_seeds_from_the_registry() {
+        let (_guard, dir) = isolate("local");
+        let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib/src");
+        let vendor = crate::scratch::dir("docgen-local-vendor");
+        frontend::stdlib_seed::stage_std_checkout_tree(&src, vendor.path())
+            .expect("stage checkout stdlib");
+        unsafe {
+            std::env::set_var(frontend::fetch::LOCAL_VENDOR_ENV, vendor.path());
+            std::env::set_var("RNX_REGISTRY", "http://127.0.0.1:9");
+        }
+        let path = crate::generate_stdlib_docs_json_local(&dir.join("out"))
+            .expect("local docs generate with no registry");
+        let body = std::fs::read_to_string(&path).unwrap();
+        for name in stdlib::MODULES {
+            assert!(body.contains(&format!("\"name\":\"{name}\"")), "missing @std/{name}");
+        }
+        assert!(
+            !frontend::stdlib_seed::missing_std_packages().is_empty(),
+            "the local path must not seed the cache"
+        );
     }
 }

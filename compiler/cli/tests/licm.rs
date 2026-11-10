@@ -4,8 +4,22 @@ mod scratch;
 
 use lir::instr::{ArithOp, Instr, NumKind};
 
+static LOWER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn lower_src(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
+    let _guard = LOWER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = if src.contains("println!") || src.contains("print!") {
+        let mut m = frontend::modules::ModuleGraph::from_source(src)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut opts = frontend::macros::MacroOptions::new(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        );
+        let expanded = frontend::macros::expand_syntax(&mut m, &mut opts);
+        assert!(expanded.iter().all(|d| d.code.is_warning()), "{expanded:?}");
+        m
+    } else {
+        frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"))
+    };
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"))
@@ -96,12 +110,12 @@ fn test_licm_preserves_variant_expressions() {
     }
 }
 
-const NESTED_SRC: &str = "fn Main(): Int {\n    let total = 2;\n    let i = 0;\n    let k = 8;\n    while i < 2 {\n        let j = 0;\n        while j < 2 {\n            let inv = k + 1;\n            total = total + inv + i + j;\n            j = j + 1;\n        }\n        i = i + 1;\n    }\n    print(\"licm success:\", total);\n    return total;\n}\n";
+const NESTED_SRC: &str = "fn Main(): Int {\n    let total = 2;\n    let i = 0;\n    let k = 8;\n    while i < 2 {\n        let j = 0;\n        while j < 2 {\n            let inv = k + 1;\n            total = total + inv + i + j;\n            j = j + 1;\n        }\n        i = i + 1;\n    }\n    println!(\"licm success:\", total);\n    return total;\n}\n";
 
 #[test]
 fn test_cross_backend_licm_execution() {
     let out = cli::run_source(NESTED_SRC, "Main", vec![]);
-    assert_eq!(out.output, vec!["licm success: 42".to_string()]);
+    assert_eq!(out.output, vec!["licm success: 42\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(42)) => {}
         other => panic!("{other:?}"),
@@ -136,9 +150,9 @@ fn test_opt_0_skips_licm() {
     assert!(adds_in(main, &body) >= 3);
 }
 
-const ZERO_TRIP_SRC: &str = "fn fInt(n: Int): Int {\n    let a = 5;\n    let i = 0;\n    while i < n {\n        if i == 99 { a = 7; }\n        i = i + 1;\n    }\n    return a;\n}\nfn fBool(n: Int): Bool {\n    let a = true;\n    let i = 0;\n    while i < n {\n        if i == 99 { a = false; }\n        i = i + 1;\n    }\n    return a;\n}\nfn fStr(n: Int): String {\n    let a = \"keep\";\n    let i = 0;\n    while i < n {\n        if i == 99 { a = \"leak\"; }\n        i = i + 1;\n    }\n    return a;\n}\nfn Main(): Int {\n    print(fInt(0));\n    print(fBool(0));\n    print(fStr(0));\n    print(fInt(200));\n    return 0;\n}\n";
+const ZERO_TRIP_SRC: &str = "fn fInt(n: Int): Int {\n    let a = 5;\n    let i = 0;\n    while i < n {\n        if i == 99 { a = 7; }\n        i = i + 1;\n    }\n    return a;\n}\nfn fBool(n: Int): Bool {\n    let a = true;\n    let i = 0;\n    while i < n {\n        if i == 99 { a = false; }\n        i = i + 1;\n    }\n    return a;\n}\nfn fStr(n: Int): String {\n    let a = \"keep\";\n    let i = 0;\n    while i < n {\n        if i == 99 { a = \"leak\"; }\n        i = i + 1;\n    }\n    return a;\n}\nfn Main(): Int {\n    println!(fInt(0));\n    println!(fBool(0));\n    println!(fStr(0));\n    println!(fInt(200));\n    return 0;\n}\n";
 
-const ZERO_TRIP_WANT: [&str; 4] = ["5", "true", "keep", "7"];
+const ZERO_TRIP_WANT: [&str; 4] = ["5\n", "true\n", "keep\n", "7\n"];
 
 #[test]
 fn test_licm_does_not_hoist_outer_defined_stores() {

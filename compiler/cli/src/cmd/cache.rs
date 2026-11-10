@@ -83,7 +83,7 @@ pub(super) fn run_clean(package: Option<String>) {
         match cli::resolve_member(&ws_root, pkg) {
             Ok((dir, _)) => dir,
             Err(e) => {
-                println!("{e}");
+                eprintln!("{e}");
                 std::process::exit(1);
             }
         }

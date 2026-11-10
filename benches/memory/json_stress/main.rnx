@@ -48,7 +48,7 @@ fn checksumWindow(buf: ByteBuffer, n: Int, charsum: Int): Int {
 
 fn Main(): Int {
     let doc = buildDoc(20000);
-    print("RESULT doclen", doc.length());
+    println!("RESULT doclen", doc.length());
     let cbuf = ByteBuffer.allocate(doc.length());
     let rounds = 0;
     let charsum = 0;
@@ -58,6 +58,6 @@ fn Main(): Int {
         charsum = checksumWindow(cbuf, n, charsum);
         rounds = rounds + 1;
     }
-    print("RESULT checksum", charsum);
+    println!("RESULT checksum", charsum);
     return 0;
 }

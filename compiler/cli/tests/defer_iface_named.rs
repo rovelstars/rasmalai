@@ -42,7 +42,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -106,16 +106,16 @@ fn iface_dispatch_and_rtti() {
         fn Main(): Int {{\n\
             let u = new User(\"Alice\", 28);\n\
             let s: Summarizable = u;\n\
-            print(s.summary());\n\
-            print(typeOf(s));\n\
+            println!(s.summary());\n\
+            println!(typeOf(s));\n\
             let any_u: Any = u;\n\
-            print(any_u is Summarizable);\n\
-            print(any_u is User);\n\
+            println!(any_u is Summarizable);\n\
+            println!(any_u is User);\n\
             let cfg: Any = new SystemConfig(1);\n\
-            print(cfg is Summarizable);\n\
-            print(s is Summarizable);\n\
-            print(s is User);\n\
-            print(s is SystemConfig);\n\
+            println!(cfg is Summarizable);\n\
+            println!(s is Summarizable);\n\
+            println!(s is User);\n\
+            println!(s is SystemConfig);\n\
             return 0;\n\
         }}\n"),
         "Alice (28)\nUser\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\n",
@@ -138,15 +138,15 @@ fn iface_switch_and_narrowing() {
         }}\n\
         fn Main(): Int {{\n\
             let u = new User(\"Bo\", 7);\n\
-            print(label(u));\n\
-            print(label(42));\n\
-            print(show(u));\n\
+            println!(label(u));\n\
+            println!(label(42));\n\
+            println!(show(u));\n\
             let a: Any = u;\n\
             if (a is Summarizable) {{\n\
-                print(show(a));\n\
+                println!(show(a));\n\
             }}\n\
             if (u is Summarizable) {{\n\
-                print(show(u));\n\
+                println!(show(u));\n\
             }}\n\
             return 0;\n\
         }}\n"),
@@ -166,10 +166,10 @@ fn named_and_default_args() {
         return \"${sec}://${host}:${port}\";\n\
         }\n\
         fn Main(): Int {\n\
-            print(configure(\"api.dev\"));\n\
-            print(configure(\"api.dev\", secure: true));\n\
-            print(configure(\"api.dev\", port: 9000, secure: true));\n\
-            print(configure(\"api.dev\", 9000));\n\
+            println!(configure(\"api.dev\"));\n\
+            println!(configure(\"api.dev\", secure: true));\n\
+            println!(configure(\"api.dev\", port: 9000, secure: true));\n\
+            println!(configure(\"api.dev\", 9000));\n\
             return 0;\n\
         }\n",
         "http://api.dev:8080\nhttps://api.dev:8080\nhttps://api.dev:9000\nhttp://api.dev:9000\n",
@@ -197,17 +197,17 @@ fn defer_throw_catch_unwind() {
         }\n\
         fn Main(): Int {\n\
             let log: Array<String> = [];\n\
-            print(fallible(true, log));\n\
-            print(log.length());\n\
-            print(log[0]);\n\
-            print(log[1]);\n\
-            print(log[2]);\n\
-            print(log[3]);\n\
+            println!(fallible(true, log));\n\
+            println!(log.length());\n\
+            println!(log[0]);\n\
+            println!(log[1]);\n\
+            println!(log[2]);\n\
+            println!(log[3]);\n\
             let log2: Array<String> = [];\n\
-            print(fallible(false, log2));\n\
-            print(log2.length());\n\
-            print(log2[0]);\n\
-            print(log2[1]);\n\
+            println!(fallible(false, log2));\n\
+            println!(log2.length());\n\
+            println!(log2[0]);\n\
+            println!(log2[1]);\n\
             return 0;\n\
         }\n",
         "500\n4\ndefer_inner_2\ndefer_inner_1\ncaught: database_down\ndefer_outer\n200\n4\ndefer_never_reached\ndefer_inner_2\n",
@@ -260,7 +260,7 @@ fn task_program_assert_style() {
             assert(log[1] == \"defer_inner_1\", \"lifo1\");\n\
             assert(log[2] == \"caught: database_down\", \"caught\");\n\
             assert(log[3] == \"defer_outer\", \"outer\");\n\
-            print(\"ok\");\n\
+            println!(\"ok\");\n\
             return 0;\n\
         }}\n"),
         "ok\n",
@@ -271,7 +271,7 @@ fn task_program_assert_style() {
 #[test]
 fn err_unknown_named_param() {
     check_fails_with(
-        "fn f(a: Int, b: Int = 1): Int { return a + b; }\nfn Main(): Int { print(f(1, c: 2)); return 0; }\n",
+        "fn f(a: Int, b: Int = 1): Int { return a + b; }\nfn Main(): Int { println!(f(1, c: 2)); return 0; }\n",
         &["unknown parameter `c`"],
         "unknown_param",
     );
@@ -280,7 +280,7 @@ fn err_unknown_named_param() {
 #[test]
 fn err_duplicate_named_param() {
     check_fails_with(
-        "fn f(a: Int, b: Int = 1): Int { return a + b; }\nfn Main(): Int { print(f(a: 1, a: 2)); return 0; }\n",
+        "fn f(a: Int, b: Int = 1): Int { return a + b; }\nfn Main(): Int { println!(f(a: 1, a: 2)); return 0; }\n",
         &["duplicate argument"],
         "dup_param",
     );

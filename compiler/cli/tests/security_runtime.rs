@@ -165,7 +165,7 @@ fn child_env_isolated_but_forwarding_works() {
     write(
         &main,
         &format!(
-            "{PROC_PRELUDE}fn Main(): Int {{\n    let probe = Process.run(\"sh\", [\"-c\", \"echo MARKER:$SECRET_CREDENTIAL:END\"]);\n    print(probe.stdoutText());\n    let env_map = new Map<String, String>();\n    env_map.set(\"RNX_KID_VAR\", \"kid_42\");\n    let opts = new SpawnOptions(null, env_map, Stdio.Piped, Stdio.Piped, Stdio.Piped);\n    let fwd = Process.run(\"sh\", [\"-c\", \"echo $RNX_KID_VAR\"], opts);\n    print(fwd.stdoutText());\n    return 0;\n}}\n"
+            "{PROC_PRELUDE}fn Main(): Int {{\n    let probe = Process.run(\"sh\", [\"-c\", \"echo MARKER:$SECRET_CREDENTIAL:END\"]);\n    println!(probe.stdoutText());\n    let env_map = new Map<String, String>();\n    env_map.set(\"RNX_KID_VAR\", \"kid_42\");\n    let opts = new SpawnOptions(null, env_map, Stdio.Piped, Stdio.Piped, Stdio.Piped);\n    let fwd = Process.run(\"sh\", [\"-c\", \"echo $RNX_KID_VAR\"], opts);\n    println!(fwd.stdoutText());\n    return 0;\n}}\n"
         ),
     );
     let out = Command::new(rnx())
@@ -270,7 +270,7 @@ fn open_fds_do_not_leak_into_child() {
     write(
         &main,
         &format!(
-            "{FILE_PRELUDE}{PROC_PRELUDE}fn Main(): Int {{\n    let f = File.open(\"marker_fd_test.txt\", OpenMode.Write);\n    f.writeText(\"x\");\n    let out = Process.run(\"ls\", [\"-l\", \"/proc/self/fd\"]);\n    print(out.stdoutText());\n    f.close();\n    return 0;\n}}\n"
+            "{FILE_PRELUDE}{PROC_PRELUDE}fn Main(): Int {{\n    let f = File.open(\"marker_fd_test.txt\", OpenMode.Write);\n    f.writeText(\"x\");\n    let out = Process.run(\"ls\", [\"-l\", \"/proc/self/fd\"]);\n    println!(out.stdoutText());\n    f.close();\n    return 0;\n}}\n"
         ),
     );
     let out = Command::new(rnx())

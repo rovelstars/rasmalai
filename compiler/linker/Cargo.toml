@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 memmap2 = "0.9"
 rayon = "1.12"
+sha2 = "0.10"
 sysroot = { path = "../sysroot" }
 
 [dev-dependencies]

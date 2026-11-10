@@ -218,6 +218,8 @@ mod tests {
             version: "1.2.3".to_string(),
             description: String::new(),
             engine: "*".to_string(),
+            targets: Vec::new(),
+            capabilities: Vec::new(),
             entries,
             registry: None,
             registries: BTreeMap::new(),

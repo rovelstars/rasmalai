@@ -40,30 +40,6 @@ pub fn validation_error() -> Option<String> {
     sysroot.validate().err()
 }
 
-pub fn has_std_source(rest: &str) -> bool {
-    active_sysroot().has_std_source(rest)
-}
-
-pub fn std_source(rest: &str) -> Option<String> {
-    active_sysroot().std_source(rest)
-}
-
-pub fn manifest_std_version() -> Option<String> {
-    let sysroot = active_sysroot();
-    if sysroot.is_host() {
-        return None;
-    }
-    sysroot.std_version()
-}
-
-pub fn overlay_digest() -> Option<Vec<u8>> {
-    let sysroot = active_sysroot();
-    if sysroot.is_host() {
-        return None;
-    }
-    sysroot.std_overlay_digest()
-}
-
 pub struct TestRootGuard;
 
 impl TestRootGuard {
@@ -111,44 +87,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&explicit);
     }
 
-    fn checkout_prelude() -> String {
-        let path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib/src/prelude/lib.rnx");
-        std::fs::read_to_string(&path).expect("checkout prelude must exist")
-    }
-
-    #[test]
-    fn overlay_serves_custom_prelude_and_extra_modules() {
-        let _serial = crate::fetch::testkit::serial_env();
-        let _lock = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let root = scratch("overlay");
-        let std_dir = root.join("share").join("rnx").join("std");
-        std::fs::create_dir_all(&std_dir).unwrap();
-        let cli_version = env!("CARGO_PKG_VERSION");
-        std::fs::write(
-            root.join("sysroot.json"),
-            format!("{{\"version\": 1, \"std_version\": \"{cli_version}\"}}"),
-        )
-        .unwrap();
-        let mut custom = checkout_prelude();
-        custom.push_str("\nexport fn sysrootMarker(): Int {\n    return 1;\n}\n");
-        std::fs::write(std_dir.join("prelude.rnx"), &custom).unwrap();
-        std::fs::write(
-            std_dir.join("bareonly.rnx"),
-            "export fn bareValue(): Int {\n    return 7;\n}\n",
-        )
-        .unwrap();
-        let _guard = TestRootGuard::set(root.clone());
-        assert_eq!(crate::stdvfs::std_source("prelude").unwrap(), custom);
-        assert!(crate::stdvfs::std_source("bareonly").unwrap().contains("bareValue"));
-        assert!(crate::stdvfs::is_known_module("bareonly"));
-        assert!(!crate::stdvfs::is_known_module("nope"));
-        assert_eq!(crate::stdvfs::pin_version(), cli_version.to_string());
-        assert!(crate::prelude::provides("sysrootMarker"));
-        assert!(crate::prelude::provides("Int"));
-        assert!(!crate::prelude::provides("Ghost"));
-        drop(_guard);
-        assert!(!has_std_source("bareonly"));
-        let _ = std::fs::remove_dir_all(&root);
-    }
 }

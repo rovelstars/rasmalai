@@ -119,9 +119,9 @@ fn block_appends_children_in_source_order() {
         leaf("a")
         leaf("b")
     }
-    print(c.count())
-    print(c.at(0).text())
-    print(c.at(1).text())
+    println!(c.count())
+    println!(c.at(0).text())
+    println!(c.at(1).text())
 "#,
         "2\na\nb\n",
     );
@@ -138,10 +138,10 @@ fn nested_blocks_attach_to_their_own_result() {
         }
         leaf("y")
     }
-    print(outer.count())
-    print(outer.at(0).count())
-    print(outer.at(1).text())
-    print(outer.at(0).at(0).text())
+    println!(outer.count())
+    println!(outer.at(0).count())
+    println!(outer.at(1).text())
+    println!(outer.at(0).at(0).text())
 "#,
         "2\n1\ny\nx\n",
     );
@@ -163,8 +163,8 @@ fn if_flattens_only_the_taken_branch() {
             leaf("also-skipped")
         }
     }
-    print(c.count())
-    print(c.at(0).text())
+    println!(c.count())
+    println!(c.at(0).text())
 "#,
         "1\ntaken\n",
     );
@@ -180,9 +180,9 @@ fn for_flattens_every_body_statement() {
             leaf("n${i}")
         }
     }
-    print(c.count())
-    print(c.at(0).text())
-    print(c.at(2).text())
+    println!(c.count())
+    println!(c.at(0).text())
+    println!(c.at(2).text())
 "#,
         "3\nn0\nn2\n",
     );
@@ -200,9 +200,9 @@ fn while_flattens_each_iteration() {
             i += 1
         }
     }
-    print(c.count())
-    print(c.at(0).text())
-    print(c.at(1).text())
+    println!(c.count())
+    println!(c.at(0).text())
+    println!(c.at(1).text())
 "#,
         "2\nw0\nw1\n",
     );
@@ -221,8 +221,8 @@ fn switch_flattens_only_the_taken_case() {
             default: leaf("D"); pass;
         }
     }
-    print(c.count())
-    print(c.at(0).text())
+    println!(c.count())
+    println!(c.at(0).text())
 "#,
         "1\nB\n",
     );
@@ -238,8 +238,8 @@ fn let_inside_a_block_stays_inside() {
         leaf(t)
         leaf(t + "!")
     }
-    print(c.count())
-    print(c.at(1).text())
+    println!(c.count())
+    println!(c.at(1).text())
 "#,
         "2\nin!\n",
     );
@@ -251,7 +251,7 @@ fn block_yields_the_callee_value() {
         "result",
         r#"
     let c = column() { leaf("a") }
-    print(c.count())
+    println!(c.count())
 "#,
         "1\n",
     );
@@ -261,8 +261,8 @@ fn block_yields_the_callee_value() {
 fn a_receiver_without_add_child_is_e108() {
     let src = program(
         r#"
-    let n = Count() { print("x") }
-    print(n)
+    let n = Count() { println!("x") }
+    println!(n)
 "#,
     );
     let text = reject(&src, "e108");

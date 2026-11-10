@@ -31,7 +31,7 @@ fn run_backend(file: &std::path::Path, backend: &str) -> std::process::Output {
 }
 
 const LOWER_FAIL_SRC: &str =
-    "fn Main(): Int {\n    for (a, b) in 0 .. 3 {\n        print(a);\n    }\n    return 0;\n}\n";
+    "fn Main(): Int {\n    for (a, b) in 0 .. 3 {\n        println!(a);\n    }\n    return 0;\n}\n";
 
 #[test]
 fn check_matches_run_on_lowering_failure() {
@@ -56,7 +56,7 @@ fn check_matches_run_on_lowering_failure() {
 }
 
 const RECURSE_SRC: &str =
-    "fn loop_rec(): Int {\n    return loop_rec();\n}\nfn Main(): Int {\n    print(loop_rec());\n    return 0;\n}\n";
+    "fn loop_rec(): Int {\n    return loop_rec();\n}\nfn Main(): Int {\n    println!(loop_rec());\n    return 0;\n}\n";
 
 #[test]
 fn recursion_traps_cleanly_on_all_backends() {
@@ -78,7 +78,7 @@ fn recursion_traps_cleanly_on_all_backends() {
     }
 }
 
-const THROW_SRC: &str = "fn boom(): String throws {\n    throw \"fatal error\";\n}\nfn Main(): Int {\n    print(\"before\");\n    boom();\n    print(\"after\");\n    return 0;\n}\n";
+const THROW_SRC: &str = "fn boom(): String throws {\n    throw \"fatal error\";\n}\nfn Main(): Int {\n    println!(\"before\");\n    boom();\n    println!(\"after\");\n    return 0;\n}\n";
 
 fn assert_uncaught_shape(out: &std::process::Output, backend: &str) {
     assert_eq!(out.status.code(), Some(1), "{backend}: exit code");

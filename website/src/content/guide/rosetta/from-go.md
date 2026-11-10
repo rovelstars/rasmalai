@@ -35,7 +35,7 @@ while i < 1000 {
     served = served + 1;
     i = i + 1;
 }
-print(served);
+println!(served);
 ```
 
 `defer` stacks exactly like Go's, and `print` takes multiple arguments like `fmt.Println` without the format-string ceremony.
@@ -67,7 +67,7 @@ struct Meter {
 }
 
 let m = Meter("heat", 21);
-print(m.name, m.reading);
+println!(m.name, m.reading);
 ```
 
 ## Real SIMD instead of assembly shims
@@ -95,7 +95,7 @@ import { Vec4f } from "@std/simd";
 let a = new Vec4f(1.0, 2.0, 3.0, 4.0);
 let b = Vec4f.splat(2.0);
 let c = a * b;
-print(c.get(3));
+println!(c.get(3));
 ```
 
 ## Errors without if err != nil
@@ -134,9 +134,9 @@ fn load(ok: Bool): Int throws {
 }
 
 try {
-    print(load(true));
+    println!(load(true));
 } catch (err) {
-    print("unreachable");
+    println!("unreachable");
 }
 ```
 

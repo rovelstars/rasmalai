@@ -4,8 +4,22 @@ mod scratch;
 
 use lir::instr::{Instr, Lit, Terminator};
 
+static LOWER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn lower_src(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
+    let _guard = LOWER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = if src.contains("println!") || src.contains("print!") {
+        let mut m = frontend::modules::ModuleGraph::from_source(src)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut opts = frontend::macros::MacroOptions::new(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        );
+        let expanded = frontend::macros::expand_syntax(&mut m, &mut opts);
+        assert!(expanded.iter().all(|d| d.code.is_warning()), "{expanded:?}");
+        m
+    } else {
+        frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"))
+    };
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"))
@@ -74,12 +88,12 @@ fn test_dead_branch_elimination() {
     }
 }
 
-const WORKLOAD: &str = "fn Main(): Int {\n    let x = 10 * 4 + (5 - 3);\n    if x == 42 {\n        print(\"opt success:\", x);\n        return x;\n    }\n    return 0;\n}\n";
+const WORKLOAD: &str = "fn Main(): Int {\n    let x = 10 * 4 + (5 - 3);\n    if x == 42 {\n        println!(\"opt success:\", x);\n        return x;\n    }\n    return 0;\n}\n";
 
 #[test]
 fn test_opt_all_backends() {
     let out = cli::run_source(WORKLOAD, "Main", vec![]);
-    assert_eq!(out.output, vec!["opt success: 42".to_string()]);
+    assert_eq!(out.output, vec!["opt success: 42\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(42)) => {}
         other => panic!("{other:?}"),
@@ -211,12 +225,12 @@ fn test_opt_0_preserves_calls() {
     assert!(count_calls(fn_by_name(&module, "Main")) > 0);
 }
 
-const INLINE_WORKLOAD: &str = "fn pick(x: Int): Int {\n    if x == 0 {\n        return 7;\n    }\n    return x * 6;\n}\nfn Main(): Int {\n    let a = pick(0);\n    let b = pick(7);\n    print(\"inline success:\", a, b);\n    return b;\n}\n";
+const INLINE_WORKLOAD: &str = "fn pick(x: Int): Int {\n    if x == 0 {\n        return 7;\n    }\n    return x * 6;\n}\nfn Main(): Int {\n    let a = pick(0);\n    let b = pick(7);\n    println!(\"inline success:\", a, b);\n    return b;\n}\n";
 
 #[test]
 fn test_cross_backend_inlining_run() {
     let out = cli::run_source(INLINE_WORKLOAD, "Main", vec![]);
-    assert_eq!(out.output, vec!["inline success: 7 42".to_string()]);
+    assert_eq!(out.output, vec!["inline success: 7 42\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(42)) => {}
         other => panic!("{other:?}"),
@@ -224,7 +238,7 @@ fn test_cross_backend_inlining_run() {
     let mut for_jit = lower_src(INLINE_WORKLOAD);
     lir::opt::optimize_lir(&mut for_jit, 1, "Main");
     let main = fn_by_name(&for_jit, "Main");
-    assert_eq!(count_fn_calls(main), 0);
+    assert_eq!(count_fn_calls(main), 1);
     let mut jit = cranelift::jit::Jit::compile(&for_jit).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
     assert_eq!(llvm::codegen::execute(&for_jit, "Main").unwrap(), 42);
@@ -284,7 +298,7 @@ fn test_opt_0_preserves_dead_functions() {
 
 #[test]
 fn test_indirect_call_reachability() {
-    let src = "fn makeC(): Int { print(\"c\"); return 3; }\nfn makeB(): Int { return makeC() * 2; }\nfn makeA(): Int { return makeB() * 7; }\nfn Main(): Int { return makeA(); }\n";
+    let src = "fn makeC(): Int { println!(\"c\"); return 3; }\nfn makeB(): Int { return makeC() * 2; }\nfn makeA(): Int { return makeB() * 7; }\nfn Main(): Int { return makeA(); }\n";
     let mut module = lower_src(src);
     lir::opt::optimize_lir(&mut module, 1, "Main");
     let names = fn_names(&module);
@@ -298,12 +312,12 @@ fn test_indirect_call_reachability() {
     }
 }
 
-const DEAD_ELIM_WORKLOAD: &str = "fn unused(): Int { return 999; }\nfn double(x: Int): Int { return x * 2; }\nfn Main(): Int {\n    let v = double(21);\n    print(\"dead elim success:\", v);\n    return v;\n}\n";
+const DEAD_ELIM_WORKLOAD: &str = "fn unused(): Int { return 999; }\nfn double(x: Int): Int { return x * 2; }\nfn Main(): Int {\n    let v = double(21);\n    println!(\"dead elim success:\", v);\n    return v;\n}\n";
 
 #[test]
 fn test_cross_backend_compilation_and_execution() {
     let out = cli::run_source(DEAD_ELIM_WORKLOAD, "Main", vec![]);
-    assert_eq!(out.output, vec!["dead elim success: 42".to_string()]);
+    assert_eq!(out.output, vec!["dead elim success: 42\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(42)) => {}
         other => panic!("{other:?}"),

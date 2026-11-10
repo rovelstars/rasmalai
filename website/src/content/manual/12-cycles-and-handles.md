@@ -27,8 +27,8 @@ Cross-thread and cross-scope sharing uses the same idea through the standard lib
 import { AtomicInt } from "@std/sync";
 
 AtomicInt.byId(1).set(40);
-print(AtomicInt.byId(1).fetchAdd(2));
-print(AtomicInt.byId(1).get());
+println!(AtomicInt.byId(1).fetchAdd(2));
+println!(AtomicInt.byId(1).get());
 ```
 
 `Mutex`, `Channel`, `Barrier`, and `ThreadPool.byId` follow the same pattern: the id is the rendezvous, the registry owns the cell, and dropping your handle never drops the shared state out from under another holder. Full rules are in [Concurrency and Threads](/manual/14-concurrency-and-threads).
@@ -126,7 +126,7 @@ class Meter {
     }
 
     deinit {
-        print("meter dropped");
+        println!("meter dropped");
     }
 
     fn bump(amount: Int): Int {
@@ -136,7 +136,7 @@ class Meter {
 }
 
 let m = new Meter(20);
-print(m.bump(22));
+println!(m.bump(22));
 ```
 
 `new Meter(20)` calls `init`. You never write `.init()`. When `m` goes out of scope, `deinit` runs, then fields release recursively.

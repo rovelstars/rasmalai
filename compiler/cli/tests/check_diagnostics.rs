@@ -169,10 +169,10 @@ fn test_coalesce_mismatched_fallback_reports_e108() {
         &[("main.rnx", "fn Main(): Int {\nlet o: Int? = null;\nlet y = o ?? \"s\";\nreturn 0;\n}\n")],
     );
     let out = run_build(&dir);
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-    let stderr = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(stderr.contains("E108"), "{stderr}");
-    assert!(stderr.contains("`??` fallback must match"), "{stderr}");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(text.contains("E108"), "{text}");
+    assert!(text.contains("`??` fallback must match"), "{text}");
 }
 
 #[test]
@@ -184,9 +184,9 @@ fn test_optchain_non_option_method_reports_e108() {
         &[("main.rnx", "fn Main(): Int {\nlet x = 5;\nlet y = x?.foo;\nreturn 0;\n}\n")],
     );
     let out = run_build(&dir);
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-    let stderr = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(stderr.contains("E108"), "{stderr}");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(text.contains("E108"), "{text}");
 }
 
 #[test]
@@ -198,10 +198,10 @@ fn test_operator_undefined_reports_e108() {
         &[("main.rnx", "struct P {\nlet x: Int;\n}\nfn Main(): Int {\nlet a = P(1);\nlet b = P(2);\nlet c = a + b;\nreturn 0;\n}\n")],
     );
     let out = run_build(&dir);
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(stdout.contains("E108"), "{stdout}");
-    assert!(stdout.contains("operator `+` is not defined for type `P`"), "{stdout}");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(text.contains("E108"), "{text}");
+    assert!(text.contains("operator `+` is not defined for type `P`"), "{text}");
 }
 
 #[test]
@@ -213,10 +213,10 @@ fn test_for_non_iterable_reports_e108() {
         &[("main.rnx", "class C {\nlet x: Int;\n}\nfn Main(): Int {\nlet c = new C();\nfor (v in c) {\n}\nreturn 0;\n}\n")],
     );
     let out = run_build(&dir);
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(stdout.contains("E108"), "{stdout}");
-    assert!(stdout.contains("must implement `Iterable`"), "{stdout}");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(text.contains("E108"), "{text}");
+    assert!(text.contains("must implement `Iterable`"), "{text}");
 }
 
 #[test]
@@ -226,13 +226,13 @@ fn test_indexof_arity_reports_e108() {
         write_package(
             &dir,
             "idxpkg",
-            &[("main.rnx", &format!("fn Main(): Int {{\nprint({call});\nreturn 0;\n}}\n"))],
+            &[("main.rnx", &format!("fn Main(): Int {{\nprintln!({call});\nreturn 0;\n}}\n"))],
         );
         let out = run_build(&dir);
-        assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        assert!(stdout.contains("E108"), "{stdout}");
-        assert!(stdout.contains("takes 1..2 args"), "{stdout}");
+        assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(text.contains("E108"), "{text}");
+        assert!(text.contains("takes 1..2 args"), "{text}");
     }
 }
 
@@ -245,11 +245,11 @@ fn test_switch_arms_type_mismatch_reports_e108() {
         &[("main.rnx", "fn Main(): Int {\nlet x = switch 1 {\ncase 1: 10\ndefault: \"s\"\n};\nreturn 0;\n}\n")],
     );
     let out = run_build(&dir);
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(stdout.contains("E108"), "{stdout}");
-    assert!(stdout.contains("`switch` arms yield `Int` and `String`"), "{stdout}");
-    assert!(stdout.contains("2:"), "{stdout}");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(text.contains("E108"), "{text}");
+    assert!(text.contains("`switch` arms yield `Int` and `String`"), "{text}");
+    assert!(text.contains("2:"), "{text}");
 }
 
 #[test]
@@ -261,11 +261,11 @@ fn test_string_sub_reports_e108() {
         &[("main.rnx", "fn Main(): Int {\nlet s = \"a\" - \"b\";\nreturn 0;\n}\n")],
     );
     let out = run_build(&dir);
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(stdout.contains("E108"), "{stdout}");
-    assert!(stdout.contains("strings support `+` only"), "{stdout}");
-    assert!(stdout.contains("2:"), "{stdout}");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(text.contains("E108"), "{text}");
+    assert!(text.contains("strings support `+` only"), "{text}");
+    assert!(text.contains("2:"), "{text}");
 }
 
 #[test]
@@ -277,11 +277,11 @@ fn test_bitwise_float_reports_e108() {
         &[("main.rnx", "fn Main(): Int {\nlet b = 1.5 & 2;\nreturn 0;\n}\n")],
     );
     let out = run_build(&dir);
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(stdout.contains("E108"), "{stdout}");
-    assert!(stdout.contains("bitwise operations need `Int` operands"), "{stdout}");
-    assert!(stdout.contains("2:"), "{stdout}");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(text.contains("E108"), "{text}");
+    assert!(text.contains("bitwise operations need `Int` operands"), "{text}");
+    assert!(text.contains("2:"), "{text}");
 }
 
 #[test]
@@ -293,9 +293,9 @@ fn test_unreachable_statement_reports_e108() {
         &[("main.rnx", "fn Main(): Int {\nreturn 0;\nlet z = 1;\nreturn z;\n}\n")],
     );
     let out = run_build(&dir);
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(stdout.contains("E108"), "{stdout}");
-    assert!(stdout.contains("unreachable statement"), "{stdout}");
-    assert!(stdout.contains("3:"), "{stdout}");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(text.contains("E108"), "{text}");
+    assert!(text.contains("unreachable statement"), "{text}");
+    assert!(text.contains("3:"), "{text}");
 }

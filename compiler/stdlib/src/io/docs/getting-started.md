@@ -14,8 +14,8 @@ Paste it into a file or run it straight in the playground:
 import io, { ColorLevel } from "@std/io";
 
 io.write("hello");
-print(io.colorProfile() == ColorLevel.Ascii);
-print(io.width() > 0);
+println!(io.colorProfile() == ColorLevel.Ascii);
+println!(io.width() > 0);
 ```
 
 ## Keep going

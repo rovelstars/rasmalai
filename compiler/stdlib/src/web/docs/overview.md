@@ -14,7 +14,7 @@ requirements 12_STDLIB).
 import { URL } from "@std/web";
 
 let u = new URL("https://example.com/a?x=1");
-print(u.hostname(), u.pathname());
+println!(u.hostname(), u.pathname());
 ```
 
 ## What is inside

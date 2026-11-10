@@ -179,6 +179,7 @@ export const GUIDES: GuideMeta[] = [
 
 export const STDLIB = [
 	'prelude',
+	'async',
 	'simd',
 	'collections',
 	'math',
@@ -200,6 +201,7 @@ export const STDLIB = [
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const STDLIB_ICONS: Record<string, any> = {
 	prelude: Sparkles,
+	async: Zap,
 	simd: Cpu,
 	collections: Boxes,
 	math: Sigma,

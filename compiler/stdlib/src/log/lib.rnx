@@ -1,0 +1,82 @@
+//! Leveled logging macros that write one line to stderr.
+//!
+//! `log!` and `info!` write at the info threshold, `debug!` below it,
+//! and `warn!` / `error!` above it. `RNX_LOG` selects the threshold:
+//! `error`, `warn`, `info`, `debug`, or `off`. The default is `info`.
+//! Formatting follows `@std/io`: `{}` placeholders, `{{` and `}}` for
+//! literal braces, and space-joined arguments without a placeholder.
+//!
+//! ```rnx
+//! info!("starting");
+//! warn!("low disk: {}", 3);
+//! error!("failed: {}", reason);
+//! ```
+import io from "@std/io";
+import { Env } from "@std/env";
+
+fn logThreshold(): Int {
+    let raw = Env.get("RNX_LOG");
+    if raw == "off" {
+        return 0;
+    }
+    if raw == "error" {
+        return 1;
+    }
+    if raw == "warn" {
+        return 2;
+    }
+    if raw == "debug" {
+        return 4;
+    }
+    return 3;
+}
+
+fn logLevelName(level: Int): String {
+    if level == 1 {
+        return "ERROR";
+    }
+    if level == 2 {
+        return "WARN";
+    }
+    if level == 4 {
+        return "DEBUG";
+    }
+    return "INFO";
+}
+
+fn logEmit(level: Int, args: Array<Any>) {
+    if level > logThreshold() {
+        return;
+    }
+    let line = logLevelName(level) + " " + io.formatArgs(args, 2) + "\n";
+    let err = io.stderr();
+    if err.isOpen {
+        err.writeText(line);
+    }
+    err.close();
+}
+
+#[Macro]
+export fn log(args: Array<Any>) {
+    logEmit(3, args);
+}
+
+#[Macro]
+export fn debug(args: Array<Any>) {
+    logEmit(4, args);
+}
+
+#[Macro]
+export fn info(args: Array<Any>) {
+    logEmit(3, args);
+}
+
+#[Macro]
+export fn warn(args: Array<Any>) {
+    logEmit(2, args);
+}
+
+#[Macro]
+export fn error(args: Array<Any>) {
+    logEmit(1, args);
+}

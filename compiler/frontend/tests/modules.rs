@@ -26,6 +26,10 @@ fn fn_names(m: &frontend::ast::Module) -> Vec<String> {
         .collect()
 }
 
+fn non_std_files(g: &ModuleGraph) -> usize {
+    g.files.iter().filter(|f| !f.key.starts_with("std.")).count()
+}
+
 #[test]
 fn graph_orders_deps_first() {
     let dir = tree("order", &[
@@ -33,7 +37,7 @@ fn graph_orders_deps_first() {
         ("math.rnx", "public fn add(a: Int, b: Int): Int { return a + b; }\n"),
     ]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
-    assert_eq!(g.files.len(), 3);
+    assert_eq!(non_std_files(&g), 2);
     assert_eq!(g.files[0].key, "math");
     assert!(g.files[1].path.ends_with("main.rnx"));
 }
@@ -234,7 +238,7 @@ fn packages_resolve_entry_and_submodule() {
         ]),
     ]);
     let g = ModuleGraph::build(&dir.join("app").join("src").join("main.rnx")).unwrap();
-    assert_eq!(g.files.len(), 4);
+    assert_eq!(non_std_files(&g), 3);
     let m = g.resolve().unwrap();
     let names = fn_names(&m);
     assert!(names.contains(&"dep_math.src.lib.add".to_string()), "{names:?}");
@@ -278,7 +282,7 @@ fn packages_transitive_resolution() {
         ]),
     ]);
     let g = ModuleGraph::build(&dir.join("app").join("src").join("main.rnx")).unwrap();
-    assert_eq!(g.files.len(), 4);
+    assert_eq!(non_std_files(&g), 3);
     let m = g.resolve().unwrap();
     assert!(fn_names(&m).contains(&"leaf.src.lib.base".to_string()));
 }
@@ -327,7 +331,7 @@ fn packages_workspace_sibling_needs_no_explicit_path() {
         ]),
     ]);
     let g = ModuleGraph::build(&dir.join("ws").join("player").join("src").join("main.rnx")).unwrap();
-    assert_eq!(g.files.len(), 3);
+    assert_eq!(non_std_files(&g), 2);
     let m = g.resolve().unwrap();
     assert!(fn_names(&m).contains(&"calc.src.lib.score".to_string()));
 }
@@ -361,7 +365,7 @@ fn relative_probes_mod_and_index() {
         ("dir_b/index.rnx", "fn b(): Int { return 22; }\n"),
     ]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();
-    assert_eq!(g.files.len(), 4);
+    assert_eq!(non_std_files(&g), 3);
     let m = g.resolve().unwrap();
     assert!(fn_names(&m).contains(&"Main".to_string()));
 }
@@ -404,7 +408,7 @@ fn scoped_package_submodule_resolves() {
         ]),
     ]);
     let g = ModuleGraph::build(&dir.join("app").join("src").join("main.rnx")).unwrap();
-    assert_eq!(g.files.len(), 4);
+    assert_eq!(non_std_files(&g), 3);
     let m = g.resolve().unwrap();
     let names = fn_names(&m);
     assert!(names.iter().any(|n| n.ends_with("render")), "{names:?}");
@@ -433,7 +437,7 @@ fn resolve_renames_module_const_used_in_own_fn() {
 #[test]
 fn namespace_as_value_becomes_new() {
     let dir = tree("nsval", &[
-        ("main.rnx", "import ns from \"./lib\";\nfn Main(): Int { print(ns); return 0; }\n"),
+        ("main.rnx", "import ns from \"./lib\";\nfn Main(): Int { println!(ns); return 0; }\n"),
         ("lib.rnx", "const K: Int = 5;\nfn helper(): Int { return K; }\n"),
     ]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap();

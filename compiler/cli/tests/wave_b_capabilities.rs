@@ -85,7 +85,7 @@ fn lock_records_scanned_capabilities() {
     let dir = lock_project(
         "clean",
         "dep: { path: \"../dep\" }\n",
-        "import { loadData } from \"dep\";\n\nfn Main(): Int {\n    print(loadData(\"/tmp/x\"));\n    return 0;\n}\n",
+        "import { loadData } from \"dep\";\n\nfn Main(): Int {\n    println!(loadData(\"/tmp/x\"));\n    return 0;\n}\n",
         PASS_LIB,
     );
     let out = Command::new(rnx())
@@ -104,7 +104,7 @@ fn lock_rejects_s201_dependency() {
     let dir = lock_project(
         "reject",
         "dep: { path: \"../dep\" }\n",
-        "import { loadData } from \"dep\";\n\nfn Main(): Int {\n    print(loadData(\"/tmp/x\"));\n    return 0;\n}\n",
+        "import { loadData } from \"dep\";\n\nfn Main(): Int {\n    println!(loadData(\"/tmp/x\"));\n    return 0;\n}\n",
         MUTATING_LIB,
     );
     let out = Command::new(rnx())

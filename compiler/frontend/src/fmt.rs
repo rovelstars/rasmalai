@@ -643,6 +643,25 @@ impl<'a> Emitter<'a> {
         !((i + 1)..next).any(|k| matches!(self.toks[k].kind, Fk::Line | Fk::Block))
     }
 
+    fn is_macro_bang(&self, i: usize) -> bool {
+        if self.toks[i].kind != Fk::Op || self.toks[i].text != "!" {
+            return false;
+        }
+        let Some(prev) = self.prev_sig(i) else {
+            return false;
+        };
+        match self.toks[prev].kind {
+            Fk::Word if is_control_keyword(self.toks[prev].text.as_str()) => return false,
+            Fk::Word | Fk::RParen | Fk::RBrack => {}
+            _ => return false,
+        }
+        let Some(next) = self.next_sig(i) else {
+            return false;
+        };
+        matches!(self.toks[next].kind, Fk::LParen | Fk::LBrack)
+            && !self.has_newline_between(i, next)
+    }
+
     fn emit_wordlike(&mut self, i: usize) {
         let text = self.toks[i].text.clone();
         if !self.start {
@@ -817,11 +836,24 @@ impl<'a> Emitter<'a> {
                 }
                 Fk::LBrack => {
                     if !self.start {
-                        match self.prev_sig(i).map(|j| self.toks[j].kind) {
-                            Some(Fk::LParen) | Some(Fk::LBrack) | Some(Fk::Word)
-                            | Some(Fk::Num) | Some(Fk::Str) | Some(Fk::RParen)
-                            | Some(Fk::RBrack) | Some(Fk::RBrace) => {}
-                            _ => self.sp(),
+                        let tight = match self.prev_sig(i) {
+                            Some(j) => {
+                                matches!(
+                                    self.toks[j].kind,
+                                    Fk::LParen
+                                        | Fk::LBrack
+                                        | Fk::Word
+                                        | Fk::Num
+                                        | Fk::Str
+                                        | Fk::RParen
+                                        | Fk::RBrack
+                                        | Fk::RBrace
+                                ) || self.is_macro_bang(j)
+                            }
+                            None => true,
+                        };
+                        if !tight {
+                            self.sp();
                         }
                     }
                     self.ensure_indent();
@@ -929,6 +961,12 @@ impl<'a> Emitter<'a> {
                     i += 1;
                 }
                 Fk::Op => {
+                    if self.is_macro_bang(i) {
+                        self.ensure_indent();
+                        self.out.push('!');
+                        i += 1;
+                        continue;
+                    }
                     if (text == "<" || text == ">" || text == ">>" || text == ">>>")
                         && self.generic[i]
                     {

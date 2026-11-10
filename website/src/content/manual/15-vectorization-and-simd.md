@@ -22,7 +22,7 @@ fn dbl(v: Vec4f): Vec4f {
     return v * Vec4f.splat(2.0);
 }
 
-print(dbl(new Vec4f(1.0, 2.0, 3.0, 4.0)).get(2));
+println!(dbl(new Vec4f(1.0, 2.0, 3.0, 4.0)).get(2));
 ```
 
 `Vec4i` mirrors the shape for 32-bit integer lanes (`new Vec4i(1, 2, 3, 4)`,
@@ -45,7 +45,7 @@ import { Vec4f } from "@std/simd";
 let a = new Vec4f(1.0, 2.0, 3.0, 4.0);
 let b = Vec4f.splat(10.0);
 let c = a + b;
-print(c.get(0), c.get(3));
+println!(c.get(0), c.get(3));
 ```
 
 Reductions collapse lanes to scalars: `dot` sums pairwise products,
@@ -56,7 +56,7 @@ lanes yield NaN per IEEE-754):
 import { Vec4f } from "@std/simd";
 
 let v = new Vec4f(4.0, 9.0, 16.0, 25.0);
-print(v.sqrt().get(3), v.dot(Vec4f.splat(1.0)));
+println!(v.sqrt().get(3), v.dot(Vec4f.splat(1.0)));
 ```
 
 ## Portability contract

@@ -22,10 +22,10 @@ fn expanded(dir: &crate::scratch::Scratch, entry: &str) -> frontend::ast::Module
     let graph = frontend::modules::ModuleGraph::build(&dir.join(entry)).unwrap_or_else(|e| panic!("{e}"));
     let mut m = graph.resolve().unwrap_or_else(|e| panic!("{e}"));
     let mut opts = frontend::macros::MacroOptions::new(dir.to_path_buf());
-    let a = frontend::macros::expand_phase_a(&mut m, &mut opts);
+    let a = frontend::macros::expand_syntax(&mut m, &mut opts);
     assert!(a.iter().all(|d| d.code.is_warning()), "{a:?}");
     let runner = InterpComptime::build(&m).unwrap_or_else(|e| panic!("{e}"));
-    let b = frontend::macros::expand_phase_b(
+    let b = frontend::macros::expand_comptime(
         &mut m,
         &mut opts,
         runner.as_ref().map(|r| r as &dyn frontend::macros::ComptimeRunner),
@@ -60,9 +60,9 @@ fn expand_errs(dir: &crate::scratch::Scratch, entry: &str) -> Vec<diagnostics::D
     let graph = frontend::modules::ModuleGraph::build(&dir.join(entry)).unwrap_or_else(|e| panic!("{e}"));
     let mut m = graph.resolve().unwrap_or_else(|e| panic!("{e}"));
     let mut opts = frontend::macros::MacroOptions::new(dir.to_path_buf());
-    let mut all = frontend::macros::expand_phase_a(&mut m, &mut opts);
+    let mut all = frontend::macros::expand_syntax(&mut m, &mut opts);
     let runner = InterpComptime::build(&m).unwrap_or_else(|e| panic!("{e}"));
-    all.extend(frontend::macros::expand_phase_b(
+    all.extend(frontend::macros::expand_comptime(
         &mut m,
         &mut opts,
         runner.as_ref().map(|r| r as &dyn frontend::macros::ComptimeRunner),
@@ -179,7 +179,7 @@ fn sandbox_denies_io_in_comptime() {
         "sandbox",
         &[(
             "main.rnx",
-            "#[CompTime]\nfn Loud(): Int { print(\"hi\"); return 1; }\nconst N: Int = CompTime!(Loud());\nfn Main(): Int { return N; }\n",
+            "#[CompTime]\nfn Loud(): Int { return __rnx_file_write_text(1, \"hi\"); }\nconst N: Int = CompTime!(Loud());\nfn Main(): Int { return N; }\n",
         )],
     );
     let errs = expand_errs(&dir, "main.rnx");

@@ -4,8 +4,22 @@ mod scratch;
 
 use lir::instr::Instr;
 
+static LOWER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn lower_src(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
+    let _guard = LOWER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = if src.contains("println!") || src.contains("print!") {
+        let mut m = frontend::modules::ModuleGraph::from_source(src)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut opts = frontend::macros::MacroOptions::new(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        );
+        let expanded = frontend::macros::expand_syntax(&mut m, &mut opts);
+        assert!(expanded.iter().all(|d| d.code.is_warning()), "{expanded:?}");
+        m
+    } else {
+        frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"))
+    };
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"))
@@ -67,7 +81,7 @@ fn test_bce_disqualified_on_mutation() {
 fn big_array_src() -> String {
     let elems: Vec<String> = (0..100).map(|n| n.to_string()).collect();
     format!(
-        "fn Main(): Int {{\n    let arr = [{}];\n    let sum = 0;\n    let i = 0;\n    while i < arr.length {{\n        sum = sum + arr[i];\n        i = i + 1;\n    }}\n    print(\"bce success:\", sum);\n    if sum == 4950 {{\n        return 42;\n    }}\n    return 0;\n}}\n",
+        "fn Main(): Int {{\n    let arr = [{}];\n    let sum = 0;\n    let i = 0;\n    while i < arr.length {{\n        sum = sum + arr[i];\n        i = i + 1;\n    }}\n    println!(\"bce success:\", sum);\n    if sum == 4950 {{\n        return 42;\n    }}\n    return 0;\n}}\n",
         elems.join(", ")
     )
 }
@@ -76,7 +90,7 @@ fn big_array_src() -> String {
 fn test_bce_cross_backend_execution() {
     let src = big_array_src();
     let out = cli::run_source(&src, "Main", vec![]);
-    assert_eq!(out.output, vec!["bce success: 4950".to_string()]);
+    assert_eq!(out.output, vec!["bce success: 4950\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(42)) => {}
         other => panic!("{other:?}"),

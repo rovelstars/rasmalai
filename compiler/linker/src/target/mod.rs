@@ -46,8 +46,11 @@ pub trait Target: Sync {
     fn is_static(&self) -> bool;
     fn plan(&self, kind: u32, sym: SymClass) -> Result<Plan, LinkError>;
     fn apply(&self, kind: u32, plan: Plan, ctx: &ApplyCtx, bytes: &mut [u8], field: usize) -> Result<(), LinkError>;
+    fn plt0_entry(&self, plt_addr: u64, got_plt_addr: u64) -> [u8; 16];
     fn plt_entry(&self, entry_addr: u64, slot_addr: u64, index: u32, plt0_addr: u64) -> [u8; 16];
     fn iplt_entry(&self, entry_addr: u64, slot_addr: u64) -> [u8; 16];
+    fn abs_width(&self, kind: u32) -> Option<u8>;
+    fn tls_tp_offset(&self, dtpoff: u64, tls_size: u64) -> i64;
     fn rel_jmpslot(&self) -> u32;
     fn rel_globdat(&self) -> u32;
     fn rel_relative(&self) -> u32;

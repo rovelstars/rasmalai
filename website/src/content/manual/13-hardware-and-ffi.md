@@ -14,7 +14,7 @@ Safe Rasmalai covers applications, servers, simulations, and tooling. The remain
 ```rnx
 unsafe fn Raw(x: Int): Int { return x * 2 }
 
-unsafe { print(Raw(21)); }
+unsafe { println!(Raw(21)); }
 ```
 
 Calling an `unsafe fn` or a foreign function outside an `unsafe` block is an `E201` error; address-of or `Pointer` arithmetic outside one is `E202`. An `unsafe` block that reaches no foreign or raw-memory authority at all is a `W202` warning. As an expression, `unsafe { ... }` runs the block and yields `null`, so it slots into statement position without affecting surrounding code.
@@ -119,7 +119,7 @@ let buf = ByteBuffer.allocate(8);
 buf.writeInt32BE(0, 42);
 unsafe {
     let p = Pointer.fromAddress<Byte>(buf.address());
-    print(p.read());
+    println!(p.read());
 }
 ```
 
@@ -174,7 +174,7 @@ let g = File.open("/tmp/rnx-notes.txt", OpenMode.Read);
 let buf = ByteBuffer.allocate(32);
 let n = g.readBytes(buf, 0, 11).unwrapOr(-1);
 g.close();
-print(n, buf.readString(0, n));
+println!(n, buf.readString(0, n));
 ```
 
 Reads on a closed handle answer `Err`, and a refused open reads as `isOpen == false`. One-shot work lives on the `fs` namespace, and every fallible call answers `Result`. Only `File.open`/`File.create` keep the `isOpen` sentinel for a refused open:
@@ -201,7 +201,7 @@ import fs from "@std/fs";
 
 fs.writeText("/tmp/rnx-hello.txt", "hello", .Overwrite);
 let back: Result<String, String> = await fs.readTextAsync("/tmp/rnx-hello.txt");
-print(back.unwrapOr("missing"));
+println!(back.unwrapOr("missing"));
 ```
 
 That prints `hello`. Every `Async` twin (`readTextAsync`, `writeBytesAsync`, `statAsync`, `readDirAsync`, `globAsync`, `copyAsync`, `moveAsync`, `renameAsync`) settles with the same `Result` its sync original returns.
@@ -219,7 +219,7 @@ unsafe {
     m.flush();
     m.close();
 }
-print(fs.readText("/tmp/rnx-map.bin").unwrapOr("?"));
+println!(fs.readText("/tmp/rnx-map.bin").unwrapOr("?"));
 ```
 
 That prints `Hxxxxxxx`. The lifetime rule is load-bearing: `close()` unmaps the region, so every address taken from it must be forgotten first. Using one afterwards reads freed memory. And when another process truncates the file below a mapped page, the next touch faults in a way nothing can catch: the OS delivers SIGBUS on POSIX (an access violation on Windows), which no `Result` and no `catch` can cover. Size the file before mapping it and never truncate a mapped file.
@@ -232,7 +232,7 @@ Terminal work lives in `@std/io`: `import io, { ColorLevel } from "@std/io";`. T
 import io from "@std/io";
 
 let inn = io.stdin();
-print(inn.isOpen);
+println!(inn.isOpen);
 inn.close();
 ```
 
@@ -259,7 +259,7 @@ m.set("ore", 7);
 io.write(m);
 io.write(Result.Ok<Int, String>(42));
 io.write(Result.Err<Int, String>("boom"));
-print([1, 2], "x");
+println!([1, 2], "x");
 ```
 
 That prints `{ore: 7}`, `Ok(42)`, `Err(boom)`, and `[1, 2] x`. A `Point(1, 2)` struct would render as `Point{x: 1, y: 2}`.
@@ -270,14 +270,14 @@ Input answers `Result`: `read` reads stdin to EOF, while `readLine` writes its p
 import io from "@std/io";
 
 let r = io.read();
-print(r.isOk());
+println!(r.isOk());
 ```
 
 ```rnx
 import io from "@std/io";
 
 let line = io.readLine("> ");
-print(line.isOk());
+println!(line.isOk());
 ```
 
 Size and color queries adapt to the terminal: `isTTY` reports whether stdin is a terminal, `width` and `height` fall back to 80 by 24 when the size cannot be read, and `colorProfile` derives the `ColorLevel` tier from `NO_COLOR`, `COLORTERM`, `TERM`, and the TTY state:
@@ -285,10 +285,10 @@ Size and color queries adapt to the terminal: `isTTY` reports whether stdin is a
 ```rnx
 import io, { ColorLevel } from "@std/io";
 
-print(io.isTTY() == true || io.isTTY() == false);
-print(io.width() > 0);
-print(io.height() > 0);
-print(io.colorProfile() == ColorLevel.Ascii || true);
+println!(io.isTTY() == true || io.isTTY() == false);
+println!(io.width() > 0);
+println!(io.height() > 0);
+println!(io.colorProfile() == ColorLevel.Ascii || true);
 ```
 
 `setRawMode` toggles character-at-a-time, no-echo input and answers `Result` rather than throwing. `Ok(true)` reports success and `Err(message)` reports stdin that is not a TTY. Callers restore with `setRawMode(false)`; the runtime also restores the saved mode automatically at process exit. `clear` homes the cursor with TTY-guarding: a no-op returning normally when stdout is not a TTY, never an error:
@@ -297,7 +297,7 @@ print(io.colorProfile() == ColorLevel.Ascii || true);
 import io from "@std/io";
 
 let r = io.setRawMode(false);
-print(r.isOk() || r.isErr());
+println!(r.isOk() || r.isErr());
 io.clear();
 ```
 
@@ -311,8 +311,8 @@ Child-process I/O uses `ByteBuffer` on both ends. `Process.spawn` returns a `Chi
 import { Process } from "@std/process";
 
 let out = Process.run("echo", ["hello"]);
-print(out.exitCode);
-print(out.stdoutText().contains("hello"));
+println!(out.exitCode);
+println!(out.stdoutText().contains("hello"));
 ```
 
 For interactive children, `writeStdin`/`readStdout` move `ByteBuffer` contents, `tryWait` polls (`null` while running, the code after exit), `wait` reaps and returns the exit code, and `kill(signal)` defaults to `15` (SIGTERM). Dropping a child detaches it; spawned children require `wait()`.

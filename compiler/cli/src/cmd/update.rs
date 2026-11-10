@@ -20,7 +20,7 @@ pub(super) fn run_update(
             }
         }
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }

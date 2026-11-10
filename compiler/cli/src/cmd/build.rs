@@ -1,4 +1,5 @@
 use super::*;
+use sysroot::target::{Arch as TargetArch, Libc as TargetLibc, Os as TargetOs};
 
 fn profile_name(release: bool) -> &'static str {
     if release { "release" } else { "dev" }
@@ -16,6 +17,9 @@ fn build_key(
     memory_cap: u64,
     prefer: frontend::native::NativePrefer,
     bundled: &[std::path::PathBuf],
+    pack_digest: Option<&str>,
+    runtime_sha256: &str,
+    runtime_abi: u32,
 ) -> String {
     // Path-dep manifests and path-dep src trees (src/**/*.rnx, skipping
     // target/, .git/, .rnx-cache/) feed the fingerprint. Files outside a
@@ -43,7 +47,26 @@ fn build_key(
             owned.push(std::fs::read(root.join(cabi)).unwrap_or_default());
         }
         for (name, spec) in &cfg.dependencies {
-            if let frontend::project::DependencySpec::Path { path, .. } = spec {
+            let path = match spec {
+                frontend::project::DependencySpec::Path { path, .. } => Some(path.clone()),
+                frontend::project::DependencySpec::Alias { .. } => {
+                    let scope = frontend::project::find_workspace_root(root)
+                        .unwrap_or_else(|| root.to_path_buf());
+                    match frontend::modules::resolve_alias_spec(
+                        &scope,
+                        cfg,
+                        name,
+                        &mut Vec::new(),
+                    ) {
+                        Ok((_, frontend::project::DependencySpec::Path { path, .. })) => {
+                            Some(path)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(path) = path {
                 owned.push(name.as_bytes().to_vec());
                 let dep_root = root.join(path);
                 owned.push(
@@ -71,6 +94,11 @@ fn build_key(
         }
     }
     owned.push(sysroot::Sysroot::discover(None).identity().into_bytes());
+    if let Some(digest) = pack_digest {
+        owned.push(format!("target-pack={digest}").into_bytes());
+    }
+    owned.push(format!("runtime-sha256={runtime_sha256}").into_bytes());
+    owned.push(format!("runtime-abi={runtime_abi}").into_bytes());
     let host = linker::host_triple().0;
     owned.extend(frontend::cache::toolchain_parts(
         release,
@@ -118,7 +146,12 @@ fn validate_project_name(root: &std::path::Path) {
     }
 }
 
-fn default_out_path(input: &str, root: &std::path::Path, release: bool) -> std::path::PathBuf {
+fn default_out_path(
+    input: &str,
+    root: &std::path::Path,
+    release: bool,
+    suffix: &str,
+) -> std::path::PathBuf {
     let stem = frontend::project::load_manifest(root)
         .ok()
         .flatten()
@@ -134,7 +167,7 @@ fn default_out_path(input: &str, root: &std::path::Path, release: bool) -> std::
     frontend::cache::project_cache_dir(root)
         .join("build")
         .join(profile_name(release))
-        .join(stem)
+        .join(format!("{stem}{suffix}"))
 }
 
 fn profile_artifact(root: &std::path::Path, release: bool, filename: &str) -> std::path::PathBuf {
@@ -232,19 +265,49 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 eprint!("{}", cli::report::render_security_issues(&security_issues));
                 std::process::exit(1);
             }
-            if let Some(ref t) = target_triple {
-                if let Err(e) = cli::validate_target(t) {
-                    println!("{e}");
-                    std::process::exit(1);
-                }
-            }
-            let host = linker::host_triple().0;
-            let effective = target_triple.as_deref().unwrap_or(&host);
+            let (selected_target, project_targets) =
+                match super::activate_target(&root, target_triple.as_deref()) {
+                    Ok(target) => target,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                };
+            let compile_target_owned = (target_triple.is_some() || !project_targets.is_empty())
+                .then(|| selected_target.triple.clone());
+            let compile_target = compile_target_owned.as_deref();
+            let host_target = linker::host_target().ok();
+            let host = host_target
+                .as_ref()
+                .map(|target| target.triple.clone())
+                .unwrap_or_else(|| linker::host_triple().0);
+            let effective = selected_target.triple.as_str();
             let cross = effective != host;
-            let host_linkable_musl =
-                effective == "x86_64-unknown-linux-musl" && host == "x86_64-unknown-linux-gnu";
-            if cross && !host_linkable_musl && !emit_obj {
-                println!(
+            let host_linkable_musl = selected_target.libc == TargetLibc::Musl
+                && selected_target.arch == TargetArch::X86_64
+                && host_target.as_ref().is_some_and(|target| {
+                    target.arch == TargetArch::X86_64 && target.os == TargetOs::Linux
+                });
+            let object_coff = selected_target.object == sysroot::target::ObjectFormat::Coff;
+            let object_macho = selected_target.object == sysroot::target::ObjectFormat::MachO;
+            let object_wasm = selected_target.object == sysroot::target::ObjectFormat::Wasm;
+            if lib && object_wasm {
+                eprintln!(
+                    "{}",
+                    diagnostics::Diagnostic::new(
+                        diagnostics::Code::E108,
+                        "`--lib` is not supported for wasm targets; build a command module instead",
+                    )
+                );
+                std::process::exit(1);
+            }
+            let native_cross = (selected_target.arch == TargetArch::Aarch64
+                && selected_target.os == TargetOs::Linux)
+                || object_coff
+                || object_macho
+                || object_wasm;
+            if cross && !host_linkable_musl && !native_cross && !emit_obj {
+                eprintln!(
                     "{}",
                     diagnostics::Diagnostic::new(
                         diagnostics::Code::E108,
@@ -253,13 +316,55 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 );
                 std::process::exit(1);
             }
+            let resolved_pack = if emit_obj && (object_macho || object_coff || object_wasm) {
+                None
+            } else {
+                match super::resolve_target_pack(&root, &selected_target, &host) {
+                    Ok(pack) => pack,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+            };
+            let resolved_runtime = match super::resolve_runtime(resolved_pack.as_ref()) {
+                Ok(runtime) => runtime,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            let link_sysroot = match &resolved_pack {
+                Some(pack) => sysroot::Sysroot::custom(pack.path.clone()),
+                None => sysroot::Sysroot::discover(None),
+            };
+            let pack_selected = resolved_pack
+                .as_ref()
+                .is_some_and(|pack| pack.pack.is_some());
+            let runtime_abi = resolved_pack
+                .as_ref()
+                .and_then(|pack| pack.pack.as_ref())
+                .map(|pack| pack.manifest.runtime.abi)
+                .unwrap_or(runtime::archive::ABI);
+            if let Some(pack) = &resolved_pack {
+                if verbose {
+                    eprintln!("rnx: target pack {}", pack.path.display());
+                }
+                unsafe {
+                    std::env::set_var("RNX_TARGET_PACK", &pack.path);
+                    match pack.digest.as_deref() {
+                        Some(digest) => std::env::set_var("RNX_TARGET_PACK_DIGEST", digest),
+                        None => std::env::remove_var("RNX_TARGET_PACK_DIGEST"),
+                    }
+                }
+            }
             if locked {
                 let locked_ok = match &target.scope_root {
                     Some(root) => cli::enforce_locked_at_with(root, prefer),
                     None => Err(cli::missing_lock()),
                 };
                 if let Err(e) = locked_ok {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             }
@@ -316,7 +421,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 if let Some(prefix) = lib_prefix.as_deref()
                     && !frontend::header::is_valid_prefix(prefix)
                 {
-                    println!(
+                    eprintln!(
                         "{}",
                         diagnostics::Diagnostic::new(
                             diagnostics::Code::E108,
@@ -325,10 +430,10 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     );
                     std::process::exit(1);
                 }
-                let built = match cli::build_lib_files_cfg(&input, release, opt_level, target_triple.as_deref(), lib_prefix.as_deref().unwrap_or(""), &cfg) {
+                let built = match cli::build_lib_files_cfg(&input, release, opt_level, compile_target, lib_prefix.as_deref().unwrap_or(""), &cfg) {
                     Ok(b) => b,
                     Err(errs) => {
-                        print!(
+                        eprint!(
                             "{}",
                             cli::report::render_compile_errors(
                                 &theme,
@@ -380,12 +485,12 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     &entry,
                     release,
                     opt_level,
-                    target_triple.as_deref(),
+                    compile_target,
                     &cfg,
                 ) {
                     Ok(b) => b,
                     Err(errs) => {
-                        print!(
+                        eprint!(
                             "{}",
                             cli::report::render_compile_errors(
                                 &theme,
@@ -406,10 +511,10 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             }
             let wall = std::time::Instant::now();
             let theme = diagnostics::theme::AuraTheme::active();
-            let built = match cli::build_files_staged_cfg(&input, &entry, release, opt_level, target_triple.as_deref(), &cfg) {
+            let built = match cli::build_files_staged_cfg(&input, &entry, release, opt_level, compile_target, &cfg) {
                 Ok(b) => b,
                 Err(errs) => {
-                    print!(
+                    eprint!(
                         "{}",
                         cli::report::render_compile_errors(
                             &theme,
@@ -456,7 +561,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             let link_plan = match frontend::native::resolve_native_links(&scope_root, prefer, &built.native_libs) {
                 Ok(plan) => plan,
                 Err(e) => {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             };
@@ -465,14 +570,19 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 .filter_map(|n| n.archive.clone())
                 .collect();
             let (out_path, pending_stamp) = {
-                    let path = default_out_path(&input, &root, release);
+                    let path = default_out_path(
+                        &input,
+                        &root,
+                        release,
+                        if object_wasm { ".wasm" } else { "" },
+                    );
                     if let Some(parent) = path.parent() {
                         if let Err(e) = std::fs::create_dir_all(parent) {
                             eprintln!("error: cannot create {}: {e}", parent.display());
                             std::process::exit(1);
                         }
                     }
-                    let key = build_key(&input, &root, &entry, release, opt_level, target_triple.as_deref(), debug, cfg.jobs, cfg.memory_cap, prefer, &bundled_paths);
+                    let key = build_key(&input, &root, &entry, release, opt_level, compile_target, debug, cfg.jobs, cfg.memory_cap, prefer, &bundled_paths, resolved_pack.as_ref().and_then(|pack| pack.digest.as_deref()), &resolved_runtime.sha256, runtime_abi);
                     let stamp = match path.file_name().map(|s| s.to_string_lossy().into_owned()) {
                         Some(stem) => path.with_file_name(format!("{stem}.fingerprint")),
                         None => path.with_file_name(".fingerprint"),
@@ -484,8 +594,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     }
                     (path.display().to_string(), Some((stamp, key)))
             };
-            let target =
-                target_triple.clone().map(linker::TargetTriple).unwrap_or_else(linker::host_triple);
+            let target = linker::TargetTriple(effective.to_string());
             let link_start = std::time::Instant::now();
             let foreign_libs: Vec<linker::LinkInput> = link_plan
                 .iter()
@@ -521,22 +630,25 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 Some(_) => Some(false),
                 None => None,
             };
-            let native_x86 = target.0.starts_with("x86_64-") && sysroot::family_of(&target.0).is_some();
+            let native_x86 = selected_target.arch == TargetArch::X86_64
+                && selected_target.os == TargetOs::Linux;
+            let native_arm = selected_target.arch == TargetArch::Aarch64
+                && selected_target.os == TargetOs::Linux;
             let native = match native_requested {
                 Some(forced) => {
-                    if forced && !native_x86 {
-                        eprintln!("error: RNX_NATIVE_LINK=1 needs target x86_64-unknown-linux-gnu or x86_64-unknown-linux-musl");
+                    if forced && !native_x86 && !native_arm && !object_coff && !object_macho && !object_wasm {
+                        eprintln!("error: RNX_NATIVE_LINK=1 needs a target with a native backend");
                         std::process::exit(1);
                     }
-                    forced
+                    forced || native_arm || object_coff || object_macho || object_wasm
                 }
-                None => native_x86,
+                None => native_x86 || native_arm || object_coff || object_macho || object_wasm,
             };
-            if native && !native_x86 {
-                eprintln!("error: native link needs target x86_64-unknown-linux-gnu or x86_64-unknown-linux-musl");
+            if native && !native_x86 && !native_arm && !object_coff && !object_macho && !object_wasm {
+                eprintln!("error: native link needs a target with a native backend");
                 std::process::exit(1);
             }
-            let musl = matches!(sysroot::family_of(&target.0), Some(sysroot::Family::Musl));
+            let musl = selected_target.libc == TargetLibc::Musl;
             // Incremental-link cache: project-local memo of the archive
             // pull order. Cold builds (no plan file yet) take the exact
             // uncached path; the plan only ever accelerates rebuilds.
@@ -547,24 +659,73 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     .join("link")
                     .join(profile_name(release)),
                 toolchain: format!(
-                    "rnx={} llvm={} rt={} release={} opt={} target={} debug={} sysroot={}",
+                    "rnx={} llvm={} rt={} release={} opt={} target={} debug={} sysroot={} pack={} abi={}",
                     env!("CARGO_PKG_VERSION"),
                     llvm::LLVM_VERSION,
                     cli::runtime_archive_hash(),
                     release,
                     opt_level,
-                    target_triple.as_deref().unwrap_or(target.0.as_str()),
+                    effective,
                     debug,
-                    sysroot::Sysroot::discover(None).identity(),
+                    link_sysroot.identity(),
+                    resolved_pack
+                        .as_ref()
+                        .and_then(|pack| pack.digest.as_deref())
+                        .unwrap_or("none"),
+                    resolved_runtime.abi,
                 ),
                 allow_write: std::path::Path::new(&out_path).is_file(),
             };
-            let link_result = if musl {
+            let link_result = if object_macho {
+                let mut user_objects = user_objects;
+                user_objects.extend(foreign_libs);
+                let inputs = match super::macho_link_inputs(
+                    resolved_pack.as_ref(),
+                    &resolved_runtime,
+                    user_objects,
+                ) {
+                    Ok(inputs) => inputs,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                };
+                linker::macho::link(&inputs, std::path::Path::new(&out_path), "start").map(|_| ())
+            } else if object_wasm {
+                let inputs = match super::wasm_link_inputs(
+                    resolved_pack.as_ref(),
+                    &resolved_runtime,
+                    user_objects,
+                ) {
+                    Ok(inputs) => inputs,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                };
+                linker::wasm::link(&inputs, std::path::Path::new(&out_path))
+            } else if object_coff {
+                let inputs = match super::pe_link_inputs(
+                    resolved_pack.as_ref(),
+                    &resolved_runtime,
+                    user_objects,
+                ) {
+                    Ok(inputs) => inputs,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                };
+                linker::pe::link(
+                    &inputs,
+                    std::path::Path::new(&out_path),
+                    selected_target.pe_entry(),
+                    selected_target.pe_subsystem(),
+                )
+                .map(|_| ())
+            } else if musl {
                 let mut inputs = user_objects;
-                inputs.push(linker::LinkInput::ArchiveRefKnown {
-                    bytes: runtime::archive::BYTES,
-                    sha256: runtime::archive::SHA256,
-                });
+                inputs.push(resolved_runtime.archive_input());
                 inputs.extend(foreign_libs);
                 linker::native::native_link_fully_static_in(
                     &inputs,
@@ -577,19 +738,16 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                         lib_dirs: system_lib_dirs.clone(),
                         runpath: Some(system_lib_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":")),
                     },
-                    &sysroot::Sysroot::discover(None),
+                    &link_sysroot,
                 )
                 .map(|_| ())
             } else if native {
                 if release {
                     let mut inputs = user_objects;
-                    inputs.push(linker::LinkInput::ArchiveRefKnown {
-                        bytes: runtime::archive::BYTES,
-                        sha256: runtime::archive::SHA256,
-                    });
+                    inputs.push(resolved_runtime.archive_input());
                     inputs.extend(foreign_libs);
                     let cache = link_cache();
-                    linker::native::native_link_static_cached(
+                    linker::native::native_link_static_cached_in(
                         &inputs,
                         std::path::Path::new(&out_path),
                         &linker::native::StaticOpts {
@@ -601,10 +759,11 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                             runpath: Some(system_lib_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":")),
                         },
                         &cache,
+                        &link_sysroot,
                     )
                     .map(|_| ())
                 } else {
-                    match linker::find_shared_runtime_dir() {
+                    match linker::find_shared_runtime_dir().filter(|_| !pack_selected) {
                         Some(lib_dir) => {
                             let mut dyn_libs = vec!["runtime_native".to_string()];
                             dyn_libs.extend(system_lib_names.iter().cloned());
@@ -614,7 +773,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                             runpath.extend(system_lib_dirs.iter().map(|d| d.display().to_string()));
                             let mut dyn_objects = user_objects;
                             dyn_objects.extend(bundled_archives);
-                            linker::native::native_link_dynamic(
+                            linker::native::native_link_dynamic_in(
                                 &dyn_objects,
                                 std::path::Path::new(&out_path),
                                 &linker::native::DynamicOpts {
@@ -626,18 +785,16 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                                     runpath: Some(runpath.join(":")),
                                     strip: false,
                                 },
+                                &link_sysroot,
                             )
                             .map(|_| ())
                         }
                         None => {
                             let mut inputs = user_objects;
-                            inputs.push(linker::LinkInput::ArchiveRefKnown {
-                                bytes: runtime::archive::BYTES,
-                                sha256: runtime::archive::SHA256,
-                            });
+                            inputs.push(resolved_runtime.archive_input());
                             inputs.extend(foreign_libs);
                             let cache = link_cache();
-                            linker::native::native_link_static_cached(
+                            linker::native::native_link_static_cached_in(
                                 &inputs,
                                 std::path::Path::new(&out_path),
                                 &linker::native::StaticOpts {
@@ -649,6 +806,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                                     runpath: Some(system_lib_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":")),
                                 },
                                 &cache,
+                                &link_sysroot,
                             )
                             .map(|_| ())
                         }
@@ -656,11 +814,11 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 }
             } else if release {
                 let mut inputs = user_objects;
-                inputs.push(linker::LinkInput::ArchiveRef(runtime::archive::BYTES));
+                inputs.push(resolved_runtime.external_input());
                 inputs.extend(foreign_libs);
                 linker::link_executable(&inputs, std::path::Path::new(&out_path), &target, true)
             } else {
-                match linker::find_shared_runtime_dir() {
+                match linker::find_shared_runtime_dir().filter(|_| !pack_selected) {
                     Some(lib_dir) => {
                         let mut dyn_libs = vec!["runtime_native".to_string()];
                         dyn_libs.extend(system_lib_names.iter().cloned());
@@ -679,14 +837,24 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     }
                     None => {
                         let mut inputs = user_objects;
-                        inputs.push(linker::LinkInput::ArchiveRef(runtime::archive::BYTES));
+                        inputs.push(resolved_runtime.external_input());
                         inputs.extend(foreign_libs);
                         linker::link_executable(&inputs, std::path::Path::new(&out_path), &target, false)
                     }
                 }
             };
             if let Err(e) = link_result {
-                eprintln!("error: {e}");
+                match &e {
+                    linker::LinkError::Pack(_) => eprintln!(
+                        "{}",
+                        diagnostics::Diagnostic::new(diagnostics::Code::E124, e.to_string())
+                    ),
+                    linker::LinkError::Unsupported(_) => eprintln!(
+                        "{}",
+                        diagnostics::Diagnostic::new(diagnostics::Code::E108, e.to_string())
+                    ),
+                    _ => eprintln!("error: {e}"),
+                }
                 std::process::exit(1);
             }
             if let Some((stamp, key)) = pending_stamp {
@@ -728,7 +896,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             let title = format!(
                 "build: {} [{mode}] ({})",
                 cli::package_name_for(&input),
-                target_triple.as_deref().unwrap_or(target.0.as_str())
+                effective
             );
             if quiet {
                 println!("artifact: {out_path}");
@@ -772,11 +940,12 @@ mod tests {
     }
 
     #[test]
-    fn musl_and_gnu_targets_validate() {
-        assert!(cli::validate_target("x86_64-unknown-linux-gnu").is_ok());
-        assert!(cli::validate_target("aarch64-unknown-linux-gnu").is_ok());
-        assert!(cli::validate_target("x86_64-unknown-linux-musl").is_ok());
+    fn built_in_targets_validate() {
+        for triple in sysroot::target::accepted_triples() {
+            assert!(cli::validate_target(triple).is_ok(), "{triple}");
+        }
         assert!(cli::validate_target("x86_64-pc-windows-msvc").is_err());
+        assert!(cli::validate_target("riscv64gc-unknown-linux-gnu").is_err());
     }
 
     fn write_manifest(dir: &std::path::Path, name: &str, deps: &str) {
@@ -803,10 +972,10 @@ mod tests {
         let dep_src = dep.join("src").join("lib.rnx");
         std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 1;\n}\n").unwrap();
         let input = main.to_string_lossy().into_owned();
-        let key_before = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[]);
-        assert_eq!(key_before, build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[]));
+        let key_before = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[], None, runtime::archive::SHA256, runtime::archive::ABI);
+        assert_eq!(key_before, build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[], None, runtime::archive::SHA256, runtime::archive::ABI));
         std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 2;\n}\n").unwrap();
-        let key_after = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[]);
+        let key_after = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[], None, runtime::archive::SHA256, runtime::archive::ABI);
         assert_ne!(key_before, key_after);
     }
 }

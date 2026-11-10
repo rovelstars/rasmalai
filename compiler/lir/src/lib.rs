@@ -2,6 +2,9 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub mod accum;
 pub mod arc_opt;
 pub mod bce;

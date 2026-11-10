@@ -17,11 +17,11 @@ fn add(a: Int, b: Int): Int {
 }
 
 fn greet(name: String) {
-    print("hello,", name);
+    println!("hello,", name);
 }
 
 greet("ore");
-print(add(20, 22));
+println!(add(20, 22));
 ```
 
 Return type inference applies where the body determines the type; explicit annotations are required on `pub` signatures and recommended everywhere a mismatch would otherwise surface at a distance.
@@ -39,9 +39,9 @@ fn configure(host: String, port: Int = 8080, secure: Bool = false): String {
     return "${sec}://${host}:${port}";
 }
 
-print(configure("api.dev"));
-print(configure("api.dev", secure: true));
-print(configure("api.dev", port: 9000, secure: true));
+println!(configure("api.dev"));
+println!(configure("api.dev", secure: true));
+println!(configure("api.dev", port: 9000, secure: true));
 ```
 
 ## Generic functions
@@ -53,8 +53,8 @@ fn identity<T>(val: T): T {
     return val;
 }
 
-print(identity(42));
-print(identity("hi"));
+println!(identity(42));
+println!(identity("hi"));
 ```
 
 ## Lambdas and closures
@@ -113,7 +113,7 @@ class Meter {
 }
 
 let m = new Meter(20);
-print(m.bump(22));
+println!(m.bump(22));
 ```
 
 ## throws and try..catch
@@ -127,9 +127,9 @@ fn load(ok: Bool): Int throws {
 }
 
 try {
-    print(load(true));
+    println!(load(true));
 } catch (err) {
-    print("failed");
+    println!("failed");
 }
 ```
 
@@ -146,8 +146,8 @@ fn Main(): Int {
     } catch (err) {
         log.push("caught: " + err);
     }
-    print(log[0]);
-    print(log[1]);
+    println!(log[0]);
+    println!(log[1]);
     return 0;
 }
 ```
@@ -171,17 +171,17 @@ fn first(): String throws {
 
 fn Main(): Int {
     try {
-        print(first());
+        println!(first());
     } catch (err) {
         switch err {
             case is IoError:
-                print("caught io");
+                println!("caught io");
                 pass;
             case is ParseError:
-                print("caught parse");
+                println!("caught parse");
                 pass;
             default:
-                print("caught other");
+                println!("caught other");
                 pass;
         }
     }
@@ -202,7 +202,7 @@ fn popIt(): Result<Int, String> {
     return Result.Ok(v + 1);
 }
 
-print(popIt().unwrap());
+println!(popIt().unwrap());
 ```
 
 `lhs ?? rhs` yields `lhs` when it is not `null` and evaluates `rhs` otherwise; `rhs` never runs when `lhs` is present. Either side may be nullable, so fallbacks chain.

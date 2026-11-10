@@ -89,8 +89,8 @@ fn run_interpreter(src: &str, want_out: &[String], tag: &str) {
         Value::Int(0) => {}
         other => panic!("interpreter {tag} returned {other:?}, output: {:?}", machine.output),
     }
-    let got: Vec<String> = machine.output.clone();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    let got = machine.output.concat();
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 }
 
 fn run_all_backends(src: &str, want_out: &[String], tag: &str) {
@@ -163,8 +163,8 @@ while q < results.length() {
     }
     q = q + 1;
 }
-print(ok);
-print(total);
+println!(ok);
+println!(total);
 "#;
 
 #[test]
@@ -206,10 +206,10 @@ let msg: Array<Int> = [104, 105];
 let sent: Int = await s.write(msg);
 let back: Array<Int> = await drain(s, 2, []);
 s.close();
-print(sent);
-print(back.length());
-print(back[0]);
-print(back[1]);
+println!(sent);
+println!(back.length());
+println!(back[0]);
+println!(back[1]);
 "#;
 
 #[test]
@@ -270,8 +270,8 @@ while q < results.length() {
     total = total + results[q];
     q = q + 1;
 }
-print(sum);
-print(total);
+println!(sum);
+println!(total);
 "#;
 
 #[test]
@@ -295,7 +295,7 @@ fn refused_connection_rejects() {
     let _guard = serial();
     let port = closed_loopback_port();
     let src = format!(
-        "import {{ TcpStream }} from \"@std/net\";\n\nasync fn probe(): Promise<Int> {{\n    let s: TcpStream = await TcpStream.connect(\"127.0.0.1\", {port});\n    s.close();\n    return 1;\n}}\n\nlet r: Int = await probe().catchReject<Int>((e: String): Int => {{ print(\"rejected\"); return 0; }});\nprint(r);\n"
+        "import {{ TcpStream }} from \"@std/net\";\n\nasync fn probe(): Promise<Int> {{\n    let s: TcpStream = await TcpStream.connect(\"127.0.0.1\", {port});\n    s.close();\n    return 1;\n}}\n\nlet r: Int = await probe().catchReject<Int>((e: String): Int => {{ println!(\"rejected\"); return 0; }});\nprintln!(r);\n"
     );
     // NOTE: the catch handler runs on the rejecting worker thread, so its
     // print lands in that worker's output buffer, not the main one.

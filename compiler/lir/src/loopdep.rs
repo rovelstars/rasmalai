@@ -505,8 +505,7 @@ mod tests {
     use super::*;
 
     fn lower_entry(src: &str, entry: &str) -> crate::instr::Function {
-        let mut m = frontend::parser::Parser::parse_module(src).expect("parse");
-        assert!(frontend::desugar::desugar(&mut m).is_empty());
+        let m = crate::test_support::resolve_for_lowering(src);
         let module = crate::lower::lower(&m).expect("lower");
         module.functions.iter().find(|f| f.name == entry).expect("entry").clone()
     }
@@ -540,7 +539,7 @@ mod tests {
 
     #[test]
     fn call_in_body_yields_no_facts() {
-        let src = "fn Main(): Int {\n    let n = 4;\n    let a: Array<Int> = [];\n    let s = 0;\n    let i = 0;\n    while i < n {\n        let j = 0;\n        while j < n {\n            s = s + a[j];\n            print(\"x\", s);\n            j = j + 1;\n        }\n        i = i + 1;\n    }\n    return s;\n}\n";
+        let src = "fn Main(): Int {\n    let n = 4;\n    let a: Array<Int> = [];\n    let s = 0;\n    let i = 0;\n    while i < n {\n        let j = 0;\n        while j < n {\n            s = s + a[j];\n            println!(\"x\", s);\n            j = j + 1;\n        }\n        i = i + 1;\n    }\n    return s;\n}\n";
         assert!(facts_of(src, "Main").is_empty());
     }
 

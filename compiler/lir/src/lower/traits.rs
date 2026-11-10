@@ -162,16 +162,27 @@ impl Lower {
     pub(super) fn expand_inheritance(&mut self, m: &A::Module) -> A::Module {
         let mut members_of: BTreeMap<String, Vec<A::Spanned<A::ClassMember>>> = BTreeMap::new();
         let mut extends_of: BTreeMap<String, String> = BTreeMap::new();
+        let mut owner: BTreeMap<String, String> = BTreeMap::new();
+        let mut ambiguous: BTreeSet<String> = BTreeSet::new();
         for decl in &m.decls {
             if let A::Decl::Class { name, extends, members, .. } = &decl.node {
-                members_of.insert(short_name(name).to_string(), members.clone());
+                let short = short_name(name).to_string();
+                match owner.get(&short) {
+                    Some(prev) if prev != name => {
+                        ambiguous.insert(short.clone());
+                    }
+                    _ => {
+                        owner.insert(short.clone(), name.clone());
+                    }
+                }
+                members_of.insert(short.clone(), members.clone());
                 if let Some(t) = extends {
                     let base = t
                         .path
                         .last()
                         .map(|s| short_name(s).to_string())
                         .unwrap_or_default();
-                    extends_of.insert(short_name(name).to_string(), base);
+                    extends_of.insert(short, base);
                 }
             }
         }
@@ -186,9 +197,15 @@ impl Lower {
         }
         let mut grown = members_of.clone();
         for name in &order {
+            if ambiguous.contains(name) {
+                continue;
+            }
             let Some(base) = extends_of.get(name).cloned() else {
                 continue;
             };
+            if ambiguous.contains(&base) {
+                continue;
+            }
             let Some(pmembers) = grown.get(&base).cloned() else {
                 continue;
             };
@@ -212,7 +229,11 @@ impl Lower {
         let mut out = m.clone();
         for decl in out.decls.iter_mut() {
             if let A::Decl::Class { name, members, .. } = &mut decl.node {
-                if let Some(expanded) = grown.get(short_name(name)) {
+                let short = short_name(name);
+                if ambiguous.contains(short) {
+                    continue;
+                }
+                if let Some(expanded) = grown.get(short) {
                     *members = expanded.clone();
                 }
             }

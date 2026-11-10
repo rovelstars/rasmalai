@@ -4,6 +4,7 @@ mod scratch;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use sysroot::target::{Libc, Os, Target as TargetDescriptor};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TargetTriple(pub String);
@@ -26,6 +27,8 @@ pub enum LinkError {
     Io(String),
     LinkFailed(String),
     Native(String),
+    Unsupported(String),
+    Pack(String),
 }
 
 impl std::fmt::Display for LinkError {
@@ -36,6 +39,8 @@ impl std::fmt::Display for LinkError {
             LinkError::Io(m) => write!(f, "linker io: {m}"),
             LinkError::LinkFailed(m) => write!(f, "link failed: {m}"),
             LinkError::Native(m) => write!(f, "linker: {m}"),
+            LinkError::Unsupported(m) => write!(f, "unsupported object input: {m}"),
+            LinkError::Pack(m) => write!(f, "{m}"),
         }
     }
 }
@@ -43,22 +48,41 @@ impl std::fmt::Display for LinkError {
 impl std::error::Error for LinkError {}
 
 pub mod core;
+pub mod macho;
 pub mod native;
+pub mod pe;
 pub mod plan;
 pub mod target;
+pub mod wasm;
+
+pub fn host_target() -> Result<TargetDescriptor, sysroot::target::TargetError> {
+    TargetDescriptor::host()
+}
 
 pub fn host_triple() -> TargetTriple {
-    TargetTriple(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
+    match host_target() {
+        Ok(target) => TargetTriple(target.triple),
+        Err(_) => TargetTriple(format!("{}-unknown-linux-gnu", std::env::consts::ARCH)),
+    }
 }
 
 fn musl_cc_rejection(target: &TargetTriple) -> Option<LinkError> {
-    if matches!(sysroot::family_of(&target.0), Some(sysroot::Family::Musl)) {
+    if let Ok(descriptor) = TargetDescriptor::parse(&target.0)
+        && descriptor.libc == Libc::Musl
+    {
         return Some(LinkError::UnsupportedTarget(format!(
             "target `{}` needs the native static link (musl links fully static, no C driver); unset RNX_NATIVE_LINK=0",
             target.0
         )));
     }
     None
+}
+
+fn require_linux(target: &TargetTriple) -> Result<(), LinkError> {
+    match TargetDescriptor::parse(&target.0) {
+        Ok(descriptor) if descriptor.os == Os::Linux => Ok(()),
+        _ => Err(LinkError::UnsupportedTarget(target.0.clone())),
+    }
 }
 
 pub fn link_executable(
@@ -70,9 +94,7 @@ pub fn link_executable(
     if let Some(err) = musl_cc_rejection(target) {
         return Err(err);
     }
-    if !target.0.contains("linux") {
-        return Err(LinkError::UnsupportedTarget(target.0.clone()));
-    }
+    require_linux(target)?;
     let dir = std::env::temp_dir().join(format!("rnx-link-{}-{}", std::process::id(), output_name(output_path)));
     std::fs::create_dir_all(&dir).map_err(|e| LinkError::Io(e.to_string()))?;
     let staged = stage_inputs(inputs, &dir)?;
@@ -146,9 +168,7 @@ pub fn link_executable_dynamic(
     if let Some(err) = musl_cc_rejection(target) {
         return Err(err);
     }
-    if !target.0.contains("linux") {
-        return Err(LinkError::UnsupportedTarget(target.0.clone()));
-    }
+    require_linux(target)?;
     let dir = std::env::temp_dir().join(format!("rnx-link-{}-{}", std::process::id(), output_name(output_path)));
     std::fs::create_dir_all(&dir).map_err(|e| LinkError::Io(e.to_string()))?;
     let staged = stage_inputs(objects, &dir)?;

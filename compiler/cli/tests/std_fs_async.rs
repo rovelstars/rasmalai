@@ -26,9 +26,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -130,7 +130,7 @@ fn Main(): Int {
     if out.isErr() { return 29; }
     let done: String = out.unwrap();
     if done != "wval|hello-async" { return 30; }
-    print("@std/fs async verification success");
+    println!("@std/fs async verification success");
     return 0;
 }
 "#;

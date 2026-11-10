@@ -41,7 +41,7 @@ fn Main(): Int {
     let x = "" + m.get("b");
     let y = "" + m.get("a");
     if !(y < x) {
-        print("cmp-broken");
+        println!("cmp-broken");
         return 1;
     }
     let fns: Array<FnDecl> = [];
@@ -49,10 +49,10 @@ fn Main(): Int {
     fns.push(FnDecl(y, "Int", []));
     let s = sortFns(fns);
     if s[0].name != "compress2" || s[1].name != "compressBound" {
-        print("sort-broken");
+        println!("sort-broken");
         return 1;
     }
-    print("sort-ok");
+    println!("sort-ok");
     return 0;
 }
 "#;

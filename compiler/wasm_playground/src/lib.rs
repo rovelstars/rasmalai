@@ -6,18 +6,39 @@ use frontend::token::TokenKind;
 use runtime::machine::{ExecError, Machine};
 use wasm_bindgen::prelude::*;
 
+fn expand_macros(module: &mut A::Module) -> Vec<Diagnostic> {
+    let base = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    frontend::macros::expand_module(module, base)
+}
+
 fn prepare(source: &str) -> Result<A::Module, Diagnostic> {
-    frontend::modules::ModuleGraph::from_source(source)
+    let mut module = frontend::modules::ModuleGraph::from_source(source)?;
+    if let Some(diag) = expand_macros(&mut module)
+        .into_iter()
+        .find(|d| !d.code.is_warning())
+    {
+        return Err(diag);
+    }
+    Ok(module)
 }
 fn check_merged(source: &str) -> Result<(Vec<Diagnostic>, Vec<Diagnostic>), Diagnostic> {
     let graph = frontend::modules::ModuleGraph::from_source_graph(source)?;
     let mut module = graph.resolve()?;
-    let mut diags = frontend::desugar::desugar(&mut module);
+    let mut diags = expand_macros(&mut module);
+    if diags.iter().any(|d| !d.code.is_warning()) {
+        let (warnings, errors) = split_diags(diags);
+        return Ok((warnings, errors));
+    }
+    diags.extend(frontend::desugar::desugar(&mut module));
     diags.extend(frontend::semantic::check_with_files(
         &module,
         &frontend::modules::merged_decl_files(&graph),
     ));
     diags.extend(frontend::security::verify_runtime_imports(&graph));
+    Ok(split_diags(diags))
+}
+
+fn split_diags(diags: Vec<Diagnostic>) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     for d in diags {
@@ -27,7 +48,7 @@ fn check_merged(source: &str) -> Result<(Vec<Diagnostic>, Vec<Diagnostic>), Diag
             errors.push(d);
         }
     }
-    Ok((warnings, errors))
+    (warnings, errors)
 }
 
 fn role_of(kind: &TokenKind) -> &'static str {
@@ -226,10 +247,7 @@ pub fn run(source: &str) -> String {
     let mut out = String::new();
     match machine.call(entry, Vec::new()) {
         Ok(v) => {
-            for line in &machine.output {
-                out.push_str(line);
-                out.push('\n');
-            }
+            out.push_str(&machine.output.concat());
             out.push_str(&format!("=> {}", v.display()));
         }
         Err(ExecError::Throw(v)) => {
@@ -614,11 +632,14 @@ fn project_merged(
             .map_err(|diag| project_hook(files, entry_fallback, &diag))?;
         let files_map = frontend::modules::merged_decl_files(&graph);
         let mut diags = merged.warnings.clone();
-        diags.extend(frontend::desugar::desugar_with_files(&mut merged, &files_map));
-        diags.extend(frontend::semantic::check_with_files(&merged, &files_map));
-        diags.extend(frontend::security::verify_runtime_imports(&graph));
+        diags.extend(expand_macros(&mut merged));
         if diags.iter().all(|d| d.code.is_warning()) {
-            diags.extend(graph.isolation_errors());
+            diags.extend(frontend::desugar::desugar_with_files(&mut merged, &files_map));
+            diags.extend(frontend::semantic::check_with_files(&merged, &files_map));
+            diags.extend(frontend::security::verify_runtime_imports(&graph));
+            if diags.iter().all(|d| d.code.is_warning()) {
+                diags.extend(graph.isolation_errors());
+            }
         }
         Ok((merged, diags))
     })();
@@ -778,10 +799,7 @@ pub fn run_project(files_json: &str, entry: &str) -> String {
     let mut out = String::new();
     match machine.call(entry_fn, Vec::new()) {
         Ok(v) => {
-            for line in &machine.output {
-                out.push_str(line);
-                out.push('\n');
-            }
+            out.push_str(&machine.output.concat());
             out.push_str(&format!("=> {}", v.display()));
         }
         Err(ExecError::Throw(v)) => {
@@ -1294,7 +1312,7 @@ mod tests {
 
     #[test]
     fn run_executes_recursive_class_tree() {
-        let out = run("class TreeNode { let value: Int; let left: TreeNode?; let right: TreeNode?; fn count(): Int { let total = 1; if (this.left != null) { total = total + this.left.count(); } if (this.right != null) { total = total + this.right.count(); } return total; } } fn Main(): Int { let root = new TreeNode(); root.value = 10; let l = new TreeNode(); l.value = 5; root.left = l; assert(root.count() == 2, \"count\"); print(\"wasm-tree-ok\"); return 0; }");
+        let out = run("class TreeNode { let value: Int; let left: TreeNode?; let right: TreeNode?; fn count(): Int { let total = 1; if (this.left != null) { total = total + this.left.count(); } if (this.right != null) { total = total + this.right.count(); } return total; } } fn Main(): Int { let root = new TreeNode(); root.value = 10; let l = new TreeNode(); l.value = 5; root.left = l; assert(root.count() == 2, \"count\"); println!(\"wasm-tree-ok\"); return 0; }");
         assert!(out.contains("wasm-tree-ok"), "{out}");
         assert!(out.contains("=> 0"), "{out}");
     }
@@ -1309,21 +1327,21 @@ mod tests {
 
     #[test]
     fn run_executes_enum_payload_match() {
-        let out = run("enum Expr { Num(Int), Add(Expr, Expr) } fn eval(e: Expr): Int { switch (e) { case .Num(n): return n; case .Add(l, r): return eval(l) + eval(r); } } fn Main(): Int { let s = Expr.Add(Expr.Num(1), Expr.Num(2)); assert(eval(s) == 3, \"eval\"); print(\"wasm-enum-ok\"); return 0; }");
+        let out = run("enum Expr { Num(Int), Add(Expr, Expr) } fn eval(e: Expr): Int { switch (e) { case .Num(n): return n; case .Add(l, r): return eval(l) + eval(r); } } fn Main(): Int { let s = Expr.Add(Expr.Num(1), Expr.Num(2)); assert(eval(s) == 3, \"eval\"); println!(\"wasm-enum-ok\"); return 0; }");
         assert!(out.contains("wasm-enum-ok"), "{out}");
         assert!(out.contains("=> 0"), "{out}");
     }
 
     #[test]
     fn run_executes_qualified_variant_pattern() {
-        let out = run("enum E { A(Int), B } fn f(e: E): Int { switch (e) { case E.A(x): return x; default: return -1; } } fn Main(): Int { print(f(E.A(5))); return 0; }");
+        let out = run("enum E { A(Int), B } fn f(e: E): Int { switch (e) { case E.A(x): return x; default: return -1; } } fn Main(): Int { println!(f(E.A(5))); return 0; }");
         assert!(out.contains("5"), "{out}");
         assert!(out.contains("=> 0"), "{out}");
     }
 
     #[test]
     fn run_executes_pointer_read_write() {
-        let out = run("import { ByteBuffer } from \"@std/bytes\"; fn Main(): Int { let buf = ByteBuffer.allocate(16); unsafe { let ptr: Pointer<Int> = Pointer.fromAddress<Int>(buf.address()); ptr.write(42); assert(ptr.read() == 42, \"rw\"); *ptr = 7; assert(*ptr == 7, \"sugar\"); print(\"wasm-ptr-ok\"); } return 0; }");
+        let out = run("import { ByteBuffer } from \"@std/bytes\"; fn Main(): Int { let buf = ByteBuffer.allocate(16); unsafe { let ptr: Pointer<Int> = Pointer.fromAddress<Int>(buf.address()); ptr.write(42); assert(ptr.read() == 42, \"rw\"); *ptr = 7; assert(*ptr == 7, \"sugar\"); println!(\"wasm-ptr-ok\"); } return 0; }");
         assert!(out.contains("wasm-ptr-ok"), "{out}");
         assert!(out.contains("=> 0"), "{out}");
     }
@@ -1561,7 +1579,7 @@ mod tests {
     fn analyze_reports_direct_sink_and_imports() {
         let _serial = serial();
         let files = serde_json::json!({
-            "main.rnx": "import { helper } from \"./util\";\nfn Main(): Int { print(helper()); return 0; }\n",
+            "main.rnx": "import { helper } from \"./util\";\nfn Main(): Int { println!(helper()); return 0; }\n",
             "util.rnx": "export fn helper(): Int { return 1; }\n",
         })
         .to_string();
@@ -1579,7 +1597,7 @@ mod tests {
         let _serial = serial();
         let files = serde_json::json!({
             "main.rnx": "import { helper } from \"./util\";\nfn Main(): Int { return helper(); }\n",
-            "util.rnx": "export fn helper(): Int { print(41); return 41; }\n",
+            "util.rnx": "export fn helper(): Int { println!(41); return 41; }\n",
         })
         .to_string();
         let entries = "{\"main\": \"main.rnx\", \"bins\": {}}";

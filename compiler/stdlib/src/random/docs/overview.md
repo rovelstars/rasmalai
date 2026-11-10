@@ -6,7 +6,7 @@ Deterministic seeded random streams and OS entropy.
 import { Rng } from "@std/random";
 
 let r = Rng.seeded(7);
-print(r.next());
+println!(r.next());
 ```
 
 ## What is inside

@@ -80,7 +80,7 @@ pub(super) fn run_download(packages: Vec<String>, local: bool, registry: Option<
                             println!("pinned {} packages to {}", report.packages.len(), report.pin_path.display());
                         }
                         Err(e) => {
-                            println!("{e}");
+                            eprintln!("{e}");
                             std::process::exit(1);
                         }
                     }
@@ -91,7 +91,7 @@ pub(super) fn run_download(packages: Vec<String>, local: bool, registry: Option<
             }
         }
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }
@@ -129,7 +129,7 @@ fn run_stdlib_seed(
                 finish_local_seed(&scope, &report);
             }
             Err(e) => {
-                println!("{e}");
+                eprintln!("{e}");
                 std::process::exit(1);
             }
         }
@@ -143,7 +143,7 @@ fn run_stdlib_seed(
             finish_global_seed(&report);
         }
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }
@@ -239,7 +239,7 @@ pub(super) fn repair_stdlib(registry: Option<String>) {
             }
         }
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }

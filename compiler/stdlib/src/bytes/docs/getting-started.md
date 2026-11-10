@@ -15,9 +15,9 @@ import { ByteBuffer } from "@std/bytes";
 
 let buf = ByteBuffer.allocate(16);
 buf.writeInt32BE(0, 0x01020304);
-print(buf.readInt32BE(0));
-print(buf.writeString(4, "Rasmalai"));
-print(buf.readString(4, 8));
+println!(buf.readInt32BE(0));
+println!(buf.writeString(4, "Rasmalai"));
+println!(buf.readString(4, 8));
 ```
 
 ## Keep going

@@ -43,7 +43,7 @@ let total = 0;
 for e in edges {
     total = total + e.weight;
 }
-print(total);
+println!(total);
 ```
 
 Shared structure that would cycle in Rust uses `GenRef<T>` handles here: copying one never touches atomics, and `.get()` yields `null` once the owner frees, with no annotations and no borrow checker fight.
@@ -79,9 +79,9 @@ fn main() {
 ```
 
 ```rnx
-defer { print("conn closed"); }
-defer { print("txn committed"); }
-print("query ran");
+defer { println!("conn closed"); }
+defer { println!("txn committed"); }
+println!("query ran");
 ```
 
 Output order is `query ran`, `txn committed`, `conn closed`: last-in, first-out, exactly like stacked guards.
@@ -114,9 +114,9 @@ fn risky(ok: Bool): Int throws {
 }
 
 try {
-    print(risky(true));
+    println!(risky(true));
 } catch (err) {
-    print("failed");
+    println!("failed");
 }
 ```
 

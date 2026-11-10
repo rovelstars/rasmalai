@@ -1,14 +1,49 @@
 #[cfg(test)]
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
+#[path = "../../testkit/pack.rs"]
+mod pack_fixture;
 
 fn rnx() -> String {
     env!("CARGO_BIN_EXE_rnx").to_string()
 }
 
 fn run(args: &[&str], dir: &std::path::Path, sysroot: Option<&std::path::Path>) -> (i32, String, String) {
+    run_inner(args, dir, sysroot, true, None)
+}
+
+fn run_with_cache(
+    args: &[&str],
+    dir: &std::path::Path,
+    cache: &std::path::Path,
+) -> (i32, String, String) {
+    run_inner(args, dir, None, true, Some(cache))
+}
+
+fn run_without_vendor(
+    args: &[&str],
+    dir: &std::path::Path,
+    sysroot: Option<&std::path::Path>,
+) -> (i32, String, String) {
+    run_inner(args, dir, sysroot, false, None)
+}
+
+fn run_inner(
+    args: &[&str],
+    dir: &std::path::Path,
+    sysroot: Option<&std::path::Path>,
+    vendor: bool,
+    cache: Option<&std::path::Path>,
+) -> (i32, String, String) {
     let mut cmd = std::process::Command::new(rnx());
     cmd.args(args).current_dir(dir);
+    if let Some(cache) = cache {
+        cmd.env("RNX_CACHE_HOME", cache);
+        cmd.env(
+            "RNX_VENDOR_DIR",
+            format!("{}/../stdlib/src", env!("CARGO_MANIFEST_DIR")),
+        );
+    }
     match sysroot {
         Some(root) => {
             cmd.env("RNX_SYSROOT", root);
@@ -17,7 +52,9 @@ fn run(args: &[&str], dir: &std::path::Path, sysroot: Option<&std::path::Path>) 
             cmd.env_remove("RNX_SYSROOT");
         }
     }
-    cmd.env_remove("RNX_VENDOR_DIR");
+    if !vendor {
+        cmd.env_remove("RNX_VENDOR_DIR");
+    }
     cmd.env("RNX_REGISTRY", "http://127.0.0.1:9");
     let out = cmd.output().unwrap();
     (
@@ -27,32 +64,11 @@ fn run(args: &[&str], dir: &std::path::Path, sysroot: Option<&std::path::Path>) 
     )
 }
 
-fn sysroot_with_prelude(tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf, String) {
+fn manifest_root(tag: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
     let dir = crate::scratch::dir(&format!("sysroot-{tag}"));
     let root: std::path::PathBuf = dir.as_ref().to_path_buf();
-    let std_dir = dir.join("share").join("rnx").join("std");
-    std::fs::create_dir_all(&std_dir).unwrap();
-    let version = env!("CARGO_PKG_VERSION");
-    std::fs::write(
-        dir.join("sysroot.json"),
-        format!("{{\"version\": 1, \"std_version\": \"{version}\"}}"),
-    )
-    .unwrap();
-    let mut checkout = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    checkout.pop();
-    checkout.push("stdlib");
-    checkout.push("src");
-    checkout.push("prelude");
-    checkout.push("lib.rnx");
-    let mut custom = std::fs::read_to_string(&checkout).expect("checkout prelude must exist");
-    custom.push_str("\nexport fn sysrootMarker(): Int {\n    return 42;\n}\n");
-    std::fs::write(std_dir.join("prelude.rnx"), &custom).unwrap();
-    std::fs::write(
-        std_dir.join("bareonly.rnx"),
-        "export fn bareValue(): Int {\n    return 7;\n}\n",
-    )
-    .unwrap();
-    (dir, root, custom)
+    std::fs::write(root.join("sysroot.json"), "{\"version\": 1}\n").unwrap();
+    (dir, root)
 }
 
 fn proj(tag: &str, main: &str) -> (crate::scratch::Scratch, std::path::PathBuf) {
@@ -84,7 +100,7 @@ fn test_print_sysroot_reports_host_and_custom() {
     let (code, stdout, _) = run(&["--print", "sysroot"], &dir, None);
     assert_eq!(code, 0, "{stdout}");
     assert!(!stdout.trim().is_empty(), "host sysroot must print a root");
-    let (_sys, root, _) = sysroot_with_prelude("print");
+    let (_sys, root) = manifest_root("print");
     let (code, stdout, _) = run(&["--print", "sysroot"], &dir, Some(&root));
     assert_eq!(code, 0, "{stdout}");
     assert_eq!(stdout.trim(), root.to_string_lossy().as_ref());
@@ -98,32 +114,47 @@ fn test_print_sysroot_reports_host_and_custom() {
 }
 
 #[test]
-fn test_custom_prelude_builds_and_runs() {
-    let (_sys, root, _) = sysroot_with_prelude("e2e");
-    let (_proj, main) = proj(
-        "prelude",
-        "import { sysrootMarker } from \"@std/prelude\";\n\nfn Main(): Int {\n    return sysrootMarker();\n}\n",
-    );
+fn test_custom_sysroot_validates_and_provides_link_inputs() {
+    let (_sys, root) = manifest_root("links");
+    std::fs::create_dir_all(
+        root.join("lib")
+            .join("rustlib")
+            .join("x86_64-unknown-linux-gnu")
+            .join("lib"),
+    )
+    .unwrap();
+    let (_proj, main) = proj("links", "fn Main(): Int {\n    return 7;\n}\n");
     let (code, stdout, stderr) = run(&["build", main.to_str().unwrap()], &_proj, Some(&root));
-    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(code, 0, "stdout: {stdout}stderr: {stderr}");
     let bin = artifact_of(&stdout);
-    assert!(bin.is_file(), "artifact missing: {}", bin.display());
     let exec = std::process::Command::new(&bin).output().unwrap();
-    assert_eq!(exec.status.code(), Some(42), "custom prelude marker must run");
+    assert_eq!(exec.status.code(), Some(7), "custom sysroot build must run");
 }
 
 #[test]
-fn test_sysroot_only_module_builds_and_runs() {
-    let (_sys, root, _) = sysroot_with_prelude("bare");
+fn test_share_rnx_std_is_ignored() {
+    let (_sys, root) = manifest_root("overlay");
+    let std_dir = root.join("share").join("rnx").join("std");
+    std::fs::create_dir_all(&std_dir).unwrap();
+    std::fs::write(
+        std_dir.join("prelude.rnx"),
+        "export fn sysrootMarker(): Int {\n    return 42;\n}\n",
+    )
+    .unwrap();
     let (_proj, main) = proj(
-        "bareonly",
-        "import { bareValue } from \"@std/bareonly\";\n\nfn Main(): Int {\n    return bareValue();\n}\n",
+        "overlay",
+        "import { sysrootMarker } from \"@std/prelude\";\n\nfn Main(): Int {\n    return sysrootMarker();\n}\n",
     );
-    let (code, stdout, stderr) = run(&["build", main.to_str().unwrap()], &_proj, Some(&root));
-    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
-    let bin = artifact_of(&stdout);
-    let exec = std::process::Command::new(&bin).output().unwrap();
-    assert_eq!(exec.status.code(), Some(7), "sysroot-only module must run");
+    let (code, stdout, stderr) =
+        run_without_vendor(&["build", main.to_str().unwrap()], &_proj, Some(&root));
+    assert_ne!(code, 0, "the custom sysroot must not serve std sources");
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("E108")
+            || combined.contains("registry")
+            || combined.contains("cannot resolve"),
+        "{combined}"
+    );
 }
 
 #[test]
@@ -142,26 +173,34 @@ fn test_broken_sysroot_fails_closed() {
 #[test]
 fn test_musl_emit_obj_and_link_gate() {
     let dir = crate::scratch::dir("sysroot-musl-cli");
+    let cache = crate::scratch::dir("sysroot-musl-cache");
+    let fixture = crate::scratch::dir("sysroot-musl-pack");
+    crate::pack_fixture::write_pack(&fixture, "x86_64-unknown-linux-musl", "musl");
+    let (code, stdout, stderr) = run_with_cache(
+        &["sysroot", "add", "--local", fixture.to_str().unwrap()],
+        &dir,
+        &cache,
+    );
+    assert_eq!(code, 0, "stdout: {stdout}stderr: {stderr}");
     let (_proj, main) = proj("musl", "fn Main(): Int {\n    return 42;\n}\n");
-    let (code, stdout, stderr) = run(
+    let (code, stdout, stderr) = run_with_cache(
         &["build", main.to_str().unwrap(), "--emit-obj", "--target", "x86_64-unknown-linux-musl"],
         &_proj,
-        None,
+        &cache,
     );
-    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(code, 0, "stdout: {stdout}stderr: {stderr}");
     let obj = artifact_of(&stdout);
     let bytes = std::fs::read(&obj).unwrap();
     assert_eq!(&bytes[0..4], b"\x7fELF", "not an ELF object");
     assert_eq!(u16::from_le_bytes([bytes[18], bytes[19]]), 62, "expected EM_X86_64");
-    let (code, _, stderr) = run(
+    let (code, _, stderr) = run_with_cache(
         &["build", main.to_str().unwrap(), "--target", "x86_64-unknown-linux-musl"],
         &_proj,
-        None,
+        &cache,
     );
     assert_ne!(code, 0, "musl link without musl libraries must fail");
     assert!(
         stderr.contains("x86_64-unknown-linux-musl"),
         "link failure must name the target: {stderr}"
     );
-    let _ = dir;
 }

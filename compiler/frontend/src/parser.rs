@@ -500,7 +500,7 @@ impl Parser {
                 }
             }
         }
-        Ok(Module { inner_attrs, decls, docs: module_docs, warnings: Vec::new() })
+        Ok(Module { inner_attrs, decls, docs: module_docs, warnings: Vec::new(), explicit_std_collections: false })
     }
 
     fn take_warnings(&mut self) -> Vec<Diagnostic> {
@@ -870,6 +870,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                                     is_static: false,
                                     is_test: false,
                                     is_bench: false,
+                                    is_macro: false,
                                     body: FnBody::Block(Block { stmts: Vec::new() }),
                                     attrs: Vec::new(),
                                 }),
@@ -1008,6 +1009,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                     is_static: false,
                     is_test: false,
                     is_bench: true,
+                    is_macro: false,
                     body,
                     attrs,
                 }))
@@ -1671,6 +1673,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                     is_static,
                     is_test: false,
                     is_bench: false,
+                    is_macro: false,
                     body,
                     attrs,
                 }))
@@ -1754,6 +1757,7 @@ fn attach_member_docs(m: &mut ClassMember, docs: &str) {
                     is_static: false,
             is_test: false,
             is_bench: false,
+            is_macro: attrs.iter().any(|a| a.name == "Macro"),
             body,
             attrs,
         })

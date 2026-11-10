@@ -17,7 +17,7 @@ fn Main(): Int {
     })
     let frame = app.frame()
     let surface = app.draw(frame)
-    print(surface.rgbaAt(2, 2))
+    println!(surface.rgbaAt(2, 2))
     return 0
 }
 ```

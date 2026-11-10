@@ -2,6 +2,6 @@ import { computeScore } from "calc";
 
 fn Main(): Int {
     let score = computeScore();
-    print("Workspace run success:", score);
+    println!("Workspace run success:", score);
     return score;
 }

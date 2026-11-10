@@ -1,20 +1,20 @@
-const ASYNC_MAIN_CALLS_ASYNC_FN: &str = "async fn test(): Int {\n    return 40 + 2;\n}\nasync fn main(): Int {\n    let v = await test();\n    print(v);\n    return 0;\n}";
+const ASYNC_MAIN_CALLS_ASYNC_FN: &str = "async fn test(): Int {\n    return 40 + 2;\n}\nasync fn main(): Int {\n    let v = await test();\n    println!(v);\n    return 0;\n}";
 
-const ASYNC_CHAIN: &str = "async fn one(): Int {\n    return 1;\n}\nasync fn two(): Int {\n    let a = await one();\n    let b = await one();\n    return a + b;\n}\nasync fn main(): Int {\n    print(await two());\n    return 0;\n}";
+const ASYNC_CHAIN: &str = "async fn one(): Int {\n    return 1;\n}\nasync fn two(): Int {\n    let a = await one();\n    let b = await one();\n    return a + b;\n}\nasync fn main(): Int {\n    println!(await two());\n    return 0;\n}";
 
-const ASYNC_DEEP_RECURSION: &str = "async fn depth(n: Int): Int {\n    if n <= 0 {\n        return 0;\n    }\n    return (await depth(n - 1)) + 1;\n}\nasync fn main(): Int {\n    print(await depth(20));\n    return 0;\n}";
+const ASYNC_DEEP_RECURSION: &str = "async fn depth(n: Int): Int {\n    if n <= 0 {\n        return 0;\n    }\n    return (await depth(n - 1)) + 1;\n}\nasync fn main(): Int {\n    println!(await depth(20));\n    return 0;\n}";
 
-const ASYNC_LOOP_AWAITS: &str = "async fn tick(n: Int): Int {\n    return n * 10;\n}\nasync fn main(): Int {\n    let a = await tick(1);\n    let b = (await tick(2)) + a;\n    print(a + b);\n    return 0;\n}";
+const ASYNC_LOOP_AWAITS: &str = "async fn tick(n: Int): Int {\n    return n * 10;\n}\nasync fn main(): Int {\n    let a = await tick(1);\n    let b = (await tick(2)) + a;\n    println!(a + b);\n    return 0;\n}";
 
-const ASYNC_LAMBDA_IIFE: &str = "async fn main(): Int {\n    let v = await (async() => 42)();\n    print(v);\n    return 0;\n}";
+const ASYNC_LAMBDA_IIFE: &str = "async fn main(): Int {\n    let v = await (async() => 42)();\n    println!(v);\n    return 0;\n}";
 
-const ASYNC_LAMBDA_CAPTURE: &str = "async fn main(): Int {\n    let base = 100;\n    let get = async () => base + 23;\n    let add = async (x) => x + 1;\n    print(await get());\n    print(await add(41));\n    return 0;\n}";
+const ASYNC_LAMBDA_CAPTURE: &str = "async fn main(): Int {\n    let base = 100;\n    let get = async () => base + 23;\n    let add = async (x) => x + 1;\n    println!(await get());\n    println!(await add(41));\n    return 0;\n}";
 
-const ASYNC_LAMBDA_AWAITS_INNER: &str = "async fn fetch(n: Int): Int {\n    return n * 2;\n}\nasync fn main(): Int {\n    let v = await (async() => await fetch(21))();\n    print(v);\n    return 0;\n}";
+const ASYNC_LAMBDA_AWAITS_INNER: &str = "async fn fetch(n: Int): Int {\n    return n * 2;\n}\nasync fn main(): Int {\n    let v = await (async() => await fetch(21))();\n    println!(v);\n    return 0;\n}";
 
-const AWAIT_LOCAL_CLOSURE_CALL: &str = "async fn main(): Int {\n    let f = async () => 7;\n    let v = await f();\n    print(v);\n    return 0;\n}";
+const AWAIT_LOCAL_CLOSURE_CALL: &str = "async fn main(): Int {\n    let f = async () => 7;\n    let v = await f();\n    println!(v);\n    return 0;\n}";
 
-const SYNC_MAIN_UNAFFECTED: &str = "fn main(): Int {\n    print(6 * 7);\n    return 0;\n}";
+const SYNC_MAIN_UNAFFECTED: &str = "fn main(): Int {\n    println!(6 * 7);\n    return 0;\n}";
 
 #[test]
 fn async_main_calling_async_fn_resolves_value() {
@@ -99,17 +99,17 @@ fn async_sources_check_clean() {
 
 #[test]
 fn async_lambda_returning_non_int_resolves() {
-    let out = wasm_playground::run("fn main(): Int {\n    let f = (async(): String => \"s\")();\n    switch f.wait() {\n    case .Ok(v): print(v); pass;\n    case .Err(e): print(e); pass;\n    }\n    return 0;\n}\n");
+    let out = wasm_playground::run("fn main(): Int {\n    let f = (async(): String => \"s\")();\n    switch f.wait() {\n    case .Ok(v): println!(v); pass;\n    case .Err(e): println!(e); pass;\n    }\n    return 0;\n}\n");
     assert!(out.contains("s\n=> 0"), "{out}");
 }
 
 #[test]
 fn await_inside_loop_body_allowed() {
-    let out = wasm_playground::check("async fn tick(n: Int): Int {\n    return n;\n}\nasync fn main(): Int {\n    let i = 0;\n    while i < 1 {\n        print(await tick(i));\n        i = i + 1;\n    }\n    return 0;\n}\n");
+    let out = wasm_playground::check("async fn tick(n: Int): Int {\n    return n;\n}\nasync fn main(): Int {\n    let i = 0;\n    while i < 1 {\n        println!(await tick(i));\n        i = i + 1;\n    }\n    return 0;\n}\n");
     assert_eq!(out, String::new(), "{out}");
 }
 
-const ASYNC_MAIN_NO_RETURN_NO_AWAIT: &str = "async fn main(){\nprint(\"hello\")\n}";
+const ASYNC_MAIN_NO_RETURN_NO_AWAIT: &str = "async fn main(){\nprintln!(\"hello\")\n}";
 
 #[test]
 fn async_main_without_return_terminates() {

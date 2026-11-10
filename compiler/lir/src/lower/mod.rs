@@ -33,6 +33,15 @@ pub fn lower(m: &A::Module) -> Result<Module, Diagnostic> {
         ext_self: BTreeMap::new(),
         mod_consts: BTreeMap::new(),
         runtime_alias: BTreeMap::new(),
+        explicit_std_collections: m.explicit_std_collections,
+        macro_fns: m
+            .decls
+            .iter()
+            .filter_map(|d| match &d.node {
+                A::Decl::Fn(f) if f.is_macro => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect(),
         diags: Vec::new(),
     };
     let expanded = l.expand_traits(m);
@@ -66,6 +75,8 @@ struct Lower {
     ext_self: BTreeMap<String, A::Type>,
     mod_consts: BTreeMap<String, (Lit, LirType, Simple)>,
     runtime_alias: BTreeMap<String, String>,
+    explicit_std_collections: bool,
+    macro_fns: BTreeSet<String>,
     diags: Vec<Diagnostic>,
 }
 
@@ -524,6 +535,8 @@ struct Builder<'a> {
     ext_self: &'a BTreeMap<String, A::Type>,
     mod_consts: &'a BTreeMap<String, (Lit, LirType, Simple)>,
     runtime_alias: &'a BTreeMap<String, String>,
+    explicit_std_collections: bool,
+    macro_fns: &'a BTreeSet<String>,
     func: Function,
     blocks: Vec<Vec<Instr>>,
     terms: Vec<Option<Terminator>>,
@@ -545,6 +558,7 @@ struct Builder<'a> {
     moved: BTreeSet<Local>,
     fresh_arrays: BTreeSet<Local>,
     empty_arrays: BTreeSet<Local>,
+    array_elem_hint: Option<LirType>,
     tuples: BTreeMap<Local, Vec<Local>>,
     records: BTreeMap<Local, Vec<(String, Local)>>,
     ranges: BTreeMap<Local, (Local, Local, Local, Local)>,
@@ -1296,7 +1310,7 @@ impl Lower {
             head += 1;
             let module = std::mem::replace(&mut self.out, Module::default());
             let prefix = module.functions.get(id).map(|f| format!("{}::", f.name)).unwrap_or_default();
-            let mut b = Builder::new(&module, &self.defaults, &self.param_info, &self.param_tys, &self.field_opt, &self.field_targs, &self.ret_tys, &self.nub_fields, &self.generic_fns, &self.extensions, &self.ext_self, &self.mod_consts, &self.runtime_alias, id, prefix);
+            let mut b = Builder::new(&module, &self.defaults, &self.param_info, &self.param_tys, &self.field_opt, &self.field_targs, &self.ret_tys, &self.nub_fields, &self.generic_fns, &self.extensions, &self.ext_self, &self.mod_consts, &self.runtime_alias, self.explicit_std_collections, &self.macro_fns, id, prefix);
             b.implicit_super = implicit_super.get(&id).copied();
             let is_closure_body = matches!(src, BodySrc::Closure(_));
             if let BodySrc::Fn(f) = &src {
@@ -1401,7 +1415,8 @@ impl<'a> Builder<'a> {
         found
     }
 
-    fn variant_of_path(&self, path: &[String]) -> Option<(usize, usize)> {        let vname = path.last()?;
+    fn variant_of_path(&self, path: &[String]) -> Option<(usize, usize)> {
+        let vname = path.last()?;
         for (id, e) in self.module.enums.iter().enumerate() {
             if let Some(vi) = e.variant_index.get(vname) {
                 if path.len() > 1 && short_name(&e.name) != path[path.len() - 2] {
@@ -1411,6 +1426,19 @@ impl<'a> Builder<'a> {
             }
         }
         None
+    }
+
+    fn variant_of_path_typed(&self, path: &[String], ty: &LirType) -> Option<(usize, usize)> {
+        if path.len() == 1 {
+            if let LirType::Enum(enu) = ty {
+                if let Some(vname) = path.last() {
+                    if let Some(vi) = self.module.enums[*enu].variant_index.get(vname) {
+                        return Some((*enu, *vi));
+                    }
+                }
+            }
+        }
+        self.variant_of_path(path)
     }
 
     fn current_class(&self) -> Option<&str> {

@@ -3,7 +3,9 @@
 //! `io` owns the terminal: standard streams, color-aware pretty-printing,
 //! line input, size queries, and raw mode. File I/O stays in `@std/fs`.
 //! Every item uses the `export` keyword. There is no ambient `Console`
-//! class. `print` stays in the prelude as a shim over `io.write`.
+//! class. The `print!`, `println!`, `eprint!`, and `eprintln!` macros are
+//! `#[Macro]` functions in this package, and the stock prelude re-exports
+//! them. There is no ordinary `print` function.
 //!
 //! ```rnx
 //! import io, { ColorLevel } from "@std/io";
@@ -16,12 +18,11 @@
 //! `write` targets a single value, pretty-printed by the shared renderer
 //! (arrays as `[a, b]`, maps as `{k: v}`, class instances as
 //! `Name{field: value}`, depth cap 3, cycles as `<cycle>`, colors when
-//! stdout is a terminal). `print` forwards each argument through the same
-//! renderer and joins with spaces. `colorProfile` reads `NO_COLOR`
+//! stdout is a terminal). The print macros forward each argument through
+//! the same renderer and join with spaces. `colorProfile` reads `NO_COLOR`
 //! through `Env.get`, which cannot tell an empty value
 //! from an unset one, so an explicitly empty `NO_COLOR` is treated as
 //! unset until a presence check exists.
-import { Result } from "@std/prelude";
 import { Env } from "@std/env";
 import { ByteBuffer } from "@std/bytes";
 import {
@@ -34,6 +35,7 @@ import {
     fn __rnx_io_is_tty(fd: Int): Bool,
     fn __rnx_io_pretty(value: Any, fd: Int): String,
     fn __rnx_io_set_raw(fd: Int, enabled: Int): String,
+    fn __rnx_io_warn_missing_arg(): Void,
     fn __rnx_io_winsize(): Array<Int>,
 } from runtime "io";
 
@@ -48,7 +50,7 @@ import {
 * import { ColorLevel } from "@std/io";
 *
 * let level = ColorLevel.Ascii;
-* print(level == ColorLevel.Ascii);
+* println!(level == ColorLevel.Ascii);
 */
 export enum ColorLevel {
     /** 24-bit RGB output. */
@@ -69,7 +71,7 @@ export enum ColorLevel {
 * import io from "@std/io";
 *
 * let inn = io.stdin();
-* print(inn.isOpen);
+* println!(inn.isOpen);
 * inn.close();
 */
 fn stdin(): File {
@@ -84,7 +86,7 @@ fn stdin(): File {
 * import io from "@std/io";
 *
 * let out = io.stdout();
-* print(out.isOpen);
+* println!(out.isOpen);
 * out.close();
 */
 fn stdout(): File {
@@ -99,7 +101,7 @@ fn stdout(): File {
 * import io from "@std/io";
 *
 * let err = io.stderr();
-* print(err.isOpen);
+* println!(err.isOpen);
 * err.close();
 */
 fn stderr(): File {
@@ -117,8 +119,9 @@ fn stderr(): File {
 * Strings print as-is, never quoted and never re-escaped. Colors follow
 * `colorProfile()` when stdout is a terminal and stay out otherwise.
 * Only fields render for class instances; methods are not listed.
-* `print` forwards each of its arguments through this same renderer and
-* joins them with spaces, so `print([1, 2], "x")` prints `[1, 2] x`.
+* The print macros forward each of their arguments through this same
+* renderer and join them with spaces, so `println!([1, 2], "x")` prints
+* `[1, 2] x`.
 *
 * @param value value to print.
 * @example
@@ -211,7 +214,7 @@ fn clear() {
 * import io from "@std/io";
 *
 * let r = io.read();
-* print(r.isOk());
+* println!(r.isOk());
 */
 fn read(): Result<String, String> {
     let inn = stdin();
@@ -238,7 +241,7 @@ fn read(): Result<String, String> {
 * import io from "@std/io";
 *
 * let r = io.readLine("> ");
-* print(r.isOk());
+* println!(r.isOk());
 */
 fn readLine(prompt: String = ""): Result<String, String> {
     if prompt.len() != 0 {
@@ -297,7 +300,7 @@ fn readLine(prompt: String = ""): Result<String, String> {
 * @example
 * import io from "@std/io";
 *
-* print(io.isTTY() == true || io.isTTY() == false);
+* println!(io.isTTY() == true || io.isTTY() == false);
 */
 fn isTTY(): Bool {
     return __rnx_io_is_tty(0);
@@ -313,7 +316,7 @@ fn isTTY(): Bool {
 * @example
 * import io from "@std/io";
 *
-* print(io.width() > 0);
+* println!(io.width() > 0);
 */
 fn width(): Int {
     let s = __rnx_io_winsize();
@@ -330,7 +333,7 @@ fn width(): Int {
 * @example
 * import io from "@std/io";
 *
-* print(io.height() > 0);
+* println!(io.height() > 0);
 */
 fn height(): Int {
     let s = __rnx_io_winsize();
@@ -351,7 +354,7 @@ fn height(): Int {
 * @example
 * import io, { ColorLevel } from "@std/io";
 *
-* print(io.colorProfile() == ColorLevel.Ascii || true);
+* println!(io.colorProfile() == ColorLevel.Ascii || true);
 */
 fn colorProfile(): ColorLevel {
     if Env.get("NO_COLOR").len() != 0 {
@@ -395,7 +398,7 @@ fn colorProfile(): ColorLevel {
 * import io from "@std/io";
 *
 * let r = io.setRawMode(false);
-* print(r.isOk() || r.isErr());
+* println!(r.isOk() || r.isErr());
 */
 fn setRawMode(enabled: Bool): Result<Bool, String> {
     let flag = 0;
@@ -407,4 +410,137 @@ fn setRawMode(enabled: Bool): Result<Bool, String> {
         return Result.Err<Bool, String>(e);
     }
     return Result.Ok<Bool, String>(true);
+}
+
+fn ioFormatHasPlaceholder(text: String): Bool {
+    let i = 0;
+    while i < text.len() {
+        let c = text.charCodeAt(i);
+        if c == 123 {
+            if i + 1 < text.len() && text.charCodeAt(i + 1) == 123 {
+                return true;
+            }
+            if i + 1 < text.len() && text.charCodeAt(i + 1) == 125 {
+                return true;
+            }
+        } else if c == 125 && i + 1 < text.len() && text.charCodeAt(i + 1) == 125 {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn ioFormatJoin(args: Array<Any>, start: Int, fd: Int): String {
+    let out = "";
+    let i = start;
+    while i < args.len() {
+        if i > start {
+            out = out + " ";
+        }
+        out = out + __rnx_io_pretty(args[i], fd);
+        i = i + 1;
+    }
+    return out;
+}
+
+fn ioFormatFill(fmt: String, args: Array<Any>, start: Int, fd: Int): String {
+    let out = "";
+    let i = 0;
+    let next = start;
+    let missing = false;
+    while i < fmt.len() {
+        let c = fmt.charCodeAt(i);
+        if c == 123 {
+            if i + 1 < fmt.len() && fmt.charCodeAt(i + 1) == 123 {
+                out = out + "\{";
+                i = i + 2;
+                continue;
+            }
+            if i + 1 < fmt.len() && fmt.charCodeAt(i + 1) == 125 {
+                if next < args.len() {
+                    out = out + __rnx_io_pretty(args[next], fd);
+                    next = next + 1;
+                } else {
+                    out = out + "\{}";
+                    missing = true;
+                }
+                i = i + 2;
+                continue;
+            }
+        }
+        if c == 125 && i + 1 < fmt.len() && fmt.charCodeAt(i + 1) == 125 {
+            out = out + "}";
+            i = i + 2;
+            continue;
+        }
+        out = out + fmt.slice(i, i + 1);
+        i = i + 1;
+    }
+    if missing {
+        __rnx_io_warn_missing_arg();
+    }
+    while next < args.len() {
+        out = out + " " + __rnx_io_pretty(args[next], fd);
+        next = next + 1;
+    }
+    return out;
+}
+
+fn ioFormat(args: Array<Any>, fd: Int): String {
+    if args.len() == 0 {
+        return "";
+    }
+    let first = args[0];
+    if typeOf(first) == "String" {
+        let fmt = first as String;
+        if ioFormatHasPlaceholder(fmt) {
+            return ioFormatFill(fmt, args, 1, fd);
+        }
+    }
+    return ioFormatJoin(args, 0, fd);
+}
+
+fn formatArgs(args: Array<Any>, fd: Int): String {
+    return ioFormat(args, fd);
+}
+
+fn ioWriteArgs(args: Array<Any>, newline: Bool, fd: Int) {
+    let text = formatArgs(args, fd);
+    if newline {
+        text = text + "\n";
+    }
+    if fd == 2 {
+        let err = stderr();
+        if err.isOpen {
+            err.writeText(text);
+        }
+        err.close();
+        return;
+    }
+    let out = stdout();
+    if out.isOpen {
+        out.writeText(text);
+    }
+    out.close();
+}
+
+#[Macro]
+export fn print(args: Array<Any>) {
+    ioWriteArgs(args, false, 1);
+}
+
+#[Macro]
+export fn println(args: Array<Any>) {
+    ioWriteArgs(args, true, 1);
+}
+
+#[Macro]
+export fn eprint(args: Array<Any>) {
+    ioWriteArgs(args, false, 2);
+}
+
+#[Macro]
+export fn eprintln(args: Array<Any>) {
+    ioWriteArgs(args, true, 2);
 }

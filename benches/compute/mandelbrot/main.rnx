@@ -40,6 +40,6 @@ fn Main(): Int {
         }
         py = py + 1;
     }
-    print("RESULT checksum", total);
+    println!("RESULT checksum", total);
     return 0;
 }

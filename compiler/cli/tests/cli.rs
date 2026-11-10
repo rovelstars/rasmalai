@@ -44,9 +44,9 @@ fn run_fib_e2e() {
 
 #[test]
 fn run_print_and_throw() {
-    let src = "fn Main(): Int { print(\"hi\") throw 3 }";
+    let src = "fn Main(): Int { println!(\"hi\") throw 3 }";
     let out = run_source(src, "Main", vec![]);
-    assert_eq!(out.output, vec!["hi".to_string()]);
+    assert_eq!(out.output, vec!["hi\n".to_string()]);
     assert!(matches!(out.outcome, RunOutcome::Thrown(_)));
 }
 
@@ -62,7 +62,7 @@ fn run_arrays_task_program() {
 
 #[test]
 fn run_float_task_program() {
-    let src = "fn Main(): Int { let a: Float = 10.5; let b: Float = 20.25; let c = a * 2.0 + b; let fast_c = c.asFast(); let scaled = fast_c * 2.0.asFast(); let result = Int(scaled.asStrict()) / 2; if result == 41 { print(\"Float math verified:\", c); return 42; } return 0; }";
+    let src = "fn Main(): Int { let a: Float = 10.5; let b: Float = 20.25; let c = a * 2.0 + b; let fast_c = c.asFast(); let scaled = fast_c * 2.0.asFast(); let result = Int(scaled.asStrict()) / 2; if result == 41 { println!(\"Float math verified:\", c); return 42; } return 0; }";
     let out = run_source(src, "Main", vec![]);
     match out.outcome {
         RunOutcome::Value(Value::Int(42)) => {}
@@ -78,7 +78,7 @@ fn check_rejects_float_fast_mix() {
     assert!(rep.errors.iter().any(|d| d.code == diagnostics::Code::E305));
 }
 
-const BINARY_SRC: &str = "fn Main(): Int { let arr = [10, 20, 12]; let sum = 0; for x in arr { sum = sum + x; } print(\"Binary execution success:\", sum); return sum; }";
+const BINARY_SRC: &str = "fn Main(): Int { let arr = [10, 20, 12]; let sum = 0; for x in arr { sum = sum + x; } println!(\"Binary execution success:\", sum); return sum; }";
 
 fn build_and_run(release: bool, tag: &str) -> (i32, String) {
     let dir = crate::scratch::dir(&format!("build-{tag}"));
@@ -123,7 +123,7 @@ fn write_mod_tree(tag: &str) -> crate::scratch::Scratch {
     .unwrap();
     std::fs::write(
         dir.join("src").join("main.rnx"),
-        "import { add } from \"./math\";\n\nfn Main(): Int {\n    let val = add(20, 22);\n    print(\"Module import success:\", val);\n    return val;\n}\n",
+        "import { add } from \"./math\";\n\nfn Main(): Int {\n    let val = add(20, 22);\n    println!(\"Module import success:\", val);\n    return val;\n}\n",
     )
     .unwrap();
     dir
@@ -187,7 +187,7 @@ fn own_class_private_field_across_files_runs() {
     .unwrap();
     std::fs::write(
         src.join("main.rnx"),
-        "import { Vault } from \"./vault\";\n\nlet v = new Vault();\nv.add(32);\nprint(v.total());\n",
+        "import { Vault } from \"./vault\";\n\nlet v = new Vault();\nv.add(32);\nprintln!(v.total());\n",
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -217,7 +217,7 @@ fn build_mutual_imports_binary() {
     .unwrap();
     std::fs::write(
         src.join("main.rnx"),
-        "import { Scene } from \"./scene\";\n\nfn Main(): Int {\n    let world = new Scene(\"MainScene\");\n    let ent = world.spawn();\n    print(\"Mutual import success:\", ent.parent.name, ent.id);\n    return ent.id;\n}\n",
+        "import { Scene } from \"./scene\";\n\nfn Main(): Int {\n    let world = new Scene(\"MainScene\");\n    let ent = world.spawn();\n    println!(\"Mutual import success:\", ent.parent.name, ent.id);\n    return ent.id;\n}\n",
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -254,7 +254,7 @@ fn write_nway_tree(tag: &str) -> crate::scratch::Scratch {
     .unwrap();
     std::fs::write(
         src.join("main.rnx"),
-        "import { NodeA } from \"./node_a\";\n\nfn Main(): Int {\n    let a = new NodeA(0);\n    let b = a.createNext();\n    let c = b.createNext();\n    let a2 = c.createNext();\n    print(\"N-way cyclic import success:\", a2.val);\n    return a2.val;\n}\n",
+        "import { NodeA } from \"./node_a\";\n\nfn Main(): Int {\n    let a = new NodeA(0);\n    let b = a.createNext();\n    let c = b.createNext();\n    let a2 = c.createNext();\n    println!(\"N-way cyclic import success:\", a2.val);\n    return a2.val;\n}\n",
     )
     .unwrap();
     dir
@@ -315,7 +315,7 @@ fn write_vecbox_tree(tag: &str) -> crate::scratch::Scratch {
     .unwrap();
     std::fs::write(
         src.join("main.rnx"),
-        "import { originScale } from \"./geo\";\n\nfn Main(): Int {\n    let val = originScale();\n    print(\"record enum cross-cycle success:\", val);\n    return 0;\n}\n",
+        "import { originScale } from \"./geo\";\n\nfn Main(): Int {\n    let val = originScale();\n    println!(\"record enum cross-cycle success:\", val);\n    return 0;\n}\n",
     )
     .unwrap();
     dir
@@ -339,7 +339,7 @@ fn build_enum_native_binary() {
     let dir = crate::scratch::dir("enum");
     std::fs::write(
         dir.join("main.rnx"),
-        "record Vec2(x: Float, y: Float)\n\nenum Shape {\n    None,\n    Circle(Vec2),\n    Box(Vec2)\n}\n\nfn evaluate(s: Shape): Int {\n    switch s {\n        case .None: return 0;\n        case .Circle(v): return Int(v.x + v.y);\n        case .Box(v): return Int(v.x * v.y);\n    }\n}\n\nfn Main(): Int {\n    let s = Shape.Circle(Vec2(20.0, 22.0));\n    let res = evaluate(s);\n    print(\"Enum native binary success:\", res);\n    return res;\n}\n",
+        "record Vec2(x: Float, y: Float)\n\nenum Shape {\n    None,\n    Circle(Vec2),\n    Box(Vec2)\n}\n\nfn evaluate(s: Shape): Int {\n    switch s {\n        case .None: return 0;\n        case .Circle(v): return Int(v.x + v.y);\n        case .Box(v): return Int(v.x * v.y);\n    }\n}\n\nfn Main(): Int {\n    let s = Shape.Circle(Vec2(20.0, 22.0));\n    let res = evaluate(s);\n    println!(\"Enum native binary success:\", res);\n    return res;\n}\n",
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -360,7 +360,7 @@ fn build_thread_native_binary() {
     let dir = crate::scratch::dir("thread");
     std::fs::write(
         dir.join("main.rnx"),
-        "fn worker(): Int {\n    let sum = 0;\n    let i = 0;\n    while i < 1000 {\n        sum = sum + 1;\n        i = i + 1;\n    }\n    return sum;\n}\n\nfn Main(): Int {\n    let handle = Thread.spawn(worker);\n    let res: Int = handle.join().unwrap();\n    if res == 1000 {\n        print(\"Thread execution success:\", res);\n        return 42;\n    }\n    return 0;\n}\n",
+        "fn worker(): Int {\n    let sum = 0;\n    let i = 0;\n    while i < 1000 {\n        sum = sum + 1;\n        i = i + 1;\n    }\n    return sum;\n}\n\nfn Main(): Int {\n    let handle = Thread.spawn(worker);\n    let res: Int = handle.join().unwrap();\n    if res == 1000 {\n        println!(\"Thread execution success:\", res);\n        return 42;\n    }\n    return 0;\n}\n",
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -381,7 +381,7 @@ fn build_async_native_binary() {
     let dir = crate::scratch::dir("async");
     std::fs::write(
         dir.join("main.rnx"),
-        "async fn subtask(x: Int): Int {\n    return x + 10;\n}\n\nasync fn compute(): Int {\n    let a = 12;\n    let b = await subtask(20);\n    return a + b;\n}\n\nfn Main(): Int {\n    let result: Int = compute().wait().unwrap();\n    print(\"Async promise success:\", result);\n    return result;\n}\n",
+        "async fn subtask(x: Int): Int {\n    return x + 10;\n}\n\nasync fn compute(): Int {\n    let a = 12;\n    let b = await subtask(20);\n    return a + b;\n}\n\nfn Main(): Int {\n    let result: Int = compute().wait().unwrap();\n    println!(\"Async promise success:\", result);\n    return result;\n}\n",
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -402,7 +402,7 @@ fn build_async_main_native_binary() {
     let dir = crate::scratch::dir("asyncmain");
     std::fs::write(
         dir.join("main.rnx"),
-        "async fn worker(depth: Int): Int {\n    if depth <= 0 {\n        return 1;\n    }\n    let next = await worker(depth - 1);\n    return next + 10;\n}\n\nasync fn Main(): Int {\n    let res = await worker(4);\n    let finalVal = res + 1;\n    print(\"Top-level async main success:\", finalVal);\n    return finalVal;\n}\n",
+        "async fn worker(depth: Int): Int {\n    if depth <= 0 {\n        return 1;\n    }\n    let next = await worker(depth - 1);\n    return next + 10;\n}\n\nasync fn Main(): Int {\n    let res = await worker(4);\n    let finalVal = res + 1;\n    println!(\"Top-level async main success:\", finalVal);\n    return finalVal;\n}\n",
     )
     .unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
@@ -418,7 +418,7 @@ fn build_async_main_native_binary() {
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Top-level async main success: 42\n");
 }
 
-const STD_TIME_SRC: &str = "import { Clock } from \"@std/time\";\n\nfn Main(): Int {\n    let vclock = Clock.virtual(1000000);\n    vclock.tick(500000);\n    let d1 = vclock.now();\n    let ms = d1.toMillis();\n    let t0 = Clock.mono();\n    let t1 = Clock.mono();\n    if d1.nanos == 1500000 && ms == 1 && t1.nanos >= t0.nanos {\n        print(\"@std/time verification success:\", d1.nanos);\n        return 0;\n    }\n    return 0;\n}\n";
+const STD_TIME_SRC: &str = "import { Clock } from \"@std/time\";\n\nfn Main(): Int {\n    let vclock = Clock.virtual(1000000);\n    vclock.tick(500000);\n    let d1 = vclock.now();\n    let ms = d1.toMillis();\n    let t0 = Clock.mono();\n    let t1 = Clock.mono();\n    if d1.nanos == 1500000 && ms == 1 && t1.nanos >= t0.nanos {\n        println!(\"@std/time verification success:\", d1.nanos);\n        return 0;\n    }\n    return 0;\n}\n";
 
 #[test]
 fn build_std_time_native_binary() {
@@ -458,7 +458,7 @@ fn unknown_std_module_is_e108() {
     assert!(text.contains("unknown standard library module"), "{text}");
 }
 
-const STD_RANDOM_SRC: &str = "import { Rng, CryptoRng } from \"@std/random\";\n\nfn Main(): Int {\n    let rng1 = Rng.seeded(1337);\n    let rng2 = Rng.seeded(1337);\n    let a1 = rng1.next();\n    let a2 = rng1.next();\n    let b1 = rng2.next();\n    let b2 = rng2.next();\n    let bounded = rng1.int(10, 20);\n    let inRange = bounded >= 10 && bounded <= 20;\n    let c = CryptoRng.int();\n    if a1 == b1 && a2 == b2 && inRange {\n        print(\"@std/random verification success:\", bounded);\n        return 0;\n    }\n    return 0;\n}\n";
+const STD_RANDOM_SRC: &str = "import { Rng, CryptoRng } from \"@std/random\";\n\nfn Main(): Int {\n    let rng1 = Rng.seeded(1337);\n    let rng2 = Rng.seeded(1337);\n    let a1 = rng1.next();\n    let a2 = rng1.next();\n    let b1 = rng2.next();\n    let b2 = rng2.next();\n    let bounded = rng1.int(10, 20);\n    let inRange = bounded >= 10 && bounded <= 20;\n    let c = CryptoRng.int();\n    if a1 == b1 && a2 == b2 && inRange {\n        println!(\"@std/random verification success:\", bounded);\n        return 0;\n    }\n    return 0;\n}\n";
 
 #[test]
 fn build_std_random_native_binary() {
@@ -490,7 +490,7 @@ fn run_std_random_interpreter() {
 }
 
 fn std_fs_src(path: &str) -> String {
-    format!("import fs, {{ File, OpenMode, Path }} from \"@std/fs\";\n\nfn Main(): Int {{\n    let testPath = \"{path}\";\n    if Path.exists(testPath) {{\n        fs.remove(testPath);\n    }}\n    let fileOut = File.open(testPath, OpenMode.Write);\n    fileOut.writeText(\"Rasmalai IO 42\");\n    fileOut.close();\n    let existsAfterWrite = Path.exists(testPath);\n    let fileIn = File.open(testPath, OpenMode.Read);\n    let content = fileIn.readText().unwrapOr(\"\");\n    fileIn.close();\n    let removed = fs.remove(testPath).unwrapOr(false);\n    let existsAfterRemove = Path.exists(testPath);\n    if existsAfterWrite && content == \"Rasmalai IO 42\" && removed && !existsAfterRemove {{\n        print(\"@std/fs verification success:\", content);\n        return 0;\n    }}\n    return 0;\n}}\n")
+    format!("import fs, {{ File, OpenMode, Path }} from \"@std/fs\";\n\nfn Main(): Int {{\n    let testPath = \"{path}\";\n    if Path.exists(testPath) {{\n        fs.remove(testPath);\n    }}\n    let fileOut = File.open(testPath, OpenMode.Write);\n    fileOut.writeText(\"Rasmalai IO 42\");\n    fileOut.close();\n    let existsAfterWrite = Path.exists(testPath);\n    let fileIn = File.open(testPath, OpenMode.Read);\n    let content = fileIn.readText().unwrapOr(\"\");\n    fileIn.close();\n    let removed = fs.remove(testPath).unwrapOr(false);\n    let existsAfterRemove = Path.exists(testPath);\n    if existsAfterWrite && content == \"Rasmalai IO 42\" && removed && !existsAfterRemove {{\n        println!(\"@std/fs verification success:\", content);\n        return 0;\n    }}\n    return 0;\n}}\n")
 }
 
 #[test]
@@ -526,7 +526,7 @@ fn run_std_fs_interpreter() {
     assert!(stdout.contains("@std/fs verification success: Rasmalai IO 42"), "{stdout}");
 }
 
-const STD_ENV_SRC: &str = "import { Env } from \"@std/env\";\n\nfn Main(): Int {\n    Env.set(\"RNX_TEST_KEY\", \"42_VALUE\");\n    let val = Env.get(\"RNX_TEST_KEY\");\n    let cwd = Env.cwd();\n    let args = Env.args();\n    if val == \"42_VALUE\" && cwd != \"\" && args.length >= 1 {\n        print(\"@std/env verification success:\", val);\n        return 0;\n    }\n    return 0;\n}\n";
+const STD_ENV_SRC: &str = "import { Env } from \"@std/env\";\n\nfn Main(): Int {\n    Env.set(\"RNX_TEST_KEY\", \"42_VALUE\");\n    let val = Env.get(\"RNX_TEST_KEY\");\n    let cwd = Env.cwd();\n    let args = Env.args();\n    if val == \"42_VALUE\" && cwd != \"\" && args.length >= 1 {\n        println!(\"@std/env verification success:\", val);\n        return 0;\n    }\n    return 0;\n}\n";
 
 #[test]
 fn build_std_env_native_binary() {
@@ -559,7 +559,7 @@ fn run_std_env_interpreter() {
     assert!(stdout.contains("@std/env verification success: 42_VALUE"), "{stdout}");
 }
 
-const STD_MATH_SRC: &str = "import { Math, Vec2 } from \"@std/math\";\n\nfn Main(): Int {\n    let root = Math.sqrt(16.0);\n    let clamped = Math.clamp(10.0, 0.0, 5.0);\n    let p = Math.pow(2.0, 3.0);\n    let v1 = new Vec2(3.0, 4.0);\n    let len = v1.length();\n    let dotProd = v1.dot(new Vec2(2.0, 3.0));\n    let sum = Int(root + clamped + p + len + dotProd);\n    let finalVal = sum + 2;\n    if finalVal == 42 {\n        print(\"@std/math verification success:\", finalVal);\n        return 0;\n    }\n    return 0;\n}\n";
+const STD_MATH_SRC: &str = "import { Math, Vec2 } from \"@std/math\";\n\nfn Main(): Int {\n    let root = Math.sqrt(16.0);\n    let clamped = Math.clamp(10.0, 0.0, 5.0);\n    let p = Math.pow(2.0, 3.0);\n    let v1 = new Vec2(3.0, 4.0);\n    let len = v1.length();\n    let dotProd = v1.dot(new Vec2(2.0, 3.0));\n    let sum = Int(root + clamped + p + len + dotProd);\n    let finalVal = sum + 2;\n    if finalVal == 42 {\n        println!(\"@std/math verification success:\", finalVal);\n        return 0;\n    }\n    return 0;\n}\n";
 
 #[test]
 fn build_std_math_native_binary() {
@@ -592,7 +592,7 @@ fn run_std_math_interpreter() {
     assert!(stdout.contains("@std/math verification success: 42"), "{stdout}");
 }
 
-const STD_COLLECTIONS_SRC: &str = "import { Map, Set } from \"@std/collections\";\n\nfn Main(): Int {\n    let m = new Map();\n    m.set(\"alpha\", 10);\n    m.set(\"beta\", 20);\n    m.set(\"gamma\", 30);\n    let hasBeta = m.has(\"beta\");\n    let valGamma = m.get(\"gamma\") ?? -1;\n    m.delete(\"beta\");\n    let hasBetaAfter = m.has(\"beta\");\n    let mapLen = m.len();\n    let keys = m.keys();\n    let orderOk = keys.length == 2 && keys[0] == \"alpha\" && keys[1] == \"gamma\";\n    let s = new Set();\n    s.add(\"entity_1\");\n    s.add(\"entity_2\");\n    let setOk = s.has(\"entity_1\") && !s.has(\"entity_3\") && s.len() == 2;\n    if hasBeta && !hasBetaAfter && valGamma == 30 && mapLen == 2 && orderOk && setOk {\n        print(\"@std/collections verification success:\", valGamma + 12);\n        return 0;\n    }\n    return 0;\n}\n";
+const STD_COLLECTIONS_SRC: &str = "import { Map, Set } from \"@std/collections\";\n\nfn Main(): Int {\n    let m = new Map();\n    m.set(\"alpha\", 10);\n    m.set(\"beta\", 20);\n    m.set(\"gamma\", 30);\n    let hasBeta = m.has(\"beta\");\n    let valGamma = m.get(\"gamma\") ?? -1;\n    m.delete(\"beta\");\n    let hasBetaAfter = m.has(\"beta\");\n    let mapLen = m.len();\n    let keys = m.keys();\n    let orderOk = keys.length == 2 && keys[0] == \"alpha\" && keys[1] == \"gamma\";\n    let s = new Set();\n    s.add(\"entity_1\");\n    s.add(\"entity_2\");\n    let setOk = s.has(\"entity_1\") && !s.has(\"entity_3\") && s.len() == 2;\n    if hasBeta && !hasBetaAfter && valGamma == 30 && mapLen == 2 && orderOk && setOk {\n        println!(\"@std/collections verification success:\", valGamma + 12);\n        return 0;\n    }\n    return 0;\n}\n";
 
 #[test]
 fn build_std_collections_native_binary() {
@@ -625,7 +625,7 @@ fn run_std_collections_interpreter() {
     assert!(stdout.contains("@std/collections verification success: 42"), "{stdout}");
 }
 
-const STD_SYNC_SRC: &str = "import { AtomicInt, Channel } from \"@std/sync\";\n\nfn worker(): Int {\n    let counter = AtomicInt.byId(1);\n    let chan = Channel.byId(1);\n    counter.fetchAdd(10);\n    chan.send(32);\n    return 0;\n}\n\nfn Main(): Int {\n    let counter = AtomicInt.byId(1);\n    counter.set(0);\n    let chan = Channel.byId(1);\n    let emptyCheck = chan.tryRecv();\n    let handle = Thread.spawn(worker);\n    let received = chan.recv();\n    handle.join();\n    let countVal = counter.get();\n    let total = received + countVal;\n    if emptyCheck == -1 && total == 42 {\n        print(\"@std/sync verification success:\", total);\n        return 0;\n    }\n    return 0;\n}\n";
+const STD_SYNC_SRC: &str = "import { AtomicInt, Channel } from \"@std/sync\";\n\nfn worker(): Int {\n    let counter = AtomicInt.byId(1);\n    let chan = Channel.byId(1);\n    counter.fetchAdd(10);\n    chan.send(32);\n    return 0;\n}\n\nfn Main(): Int {\n    let counter = AtomicInt.byId(1);\n    counter.set(0);\n    let chan = Channel.byId(1);\n    let emptyCheck = chan.tryRecv();\n    let handle = Thread.spawn(worker);\n    let received = chan.recv();\n    handle.join();\n    let countVal = counter.get();\n    let total = received + countVal;\n    if emptyCheck == -1 && total == 42 {\n        println!(\"@std/sync verification success:\", total);\n        return 0;\n    }\n    return 0;\n}\n";
 
 #[test]
 fn build_std_sync_native_binary() {

@@ -14,7 +14,7 @@ Paste it into a file or run it straight in the playground:
 import { TcpListener } from "@std/net";
 
 let listener = TcpListener.bind("127.0.0.1", 0);
-print(listener.port() > 0);
+println!(listener.port() > 0);
 listener.close();
 ```
 

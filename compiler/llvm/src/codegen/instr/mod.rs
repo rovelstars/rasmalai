@@ -62,6 +62,7 @@ pub(super) struct FnCx<'ctx> {
     pub(super) any_retain: FunctionValue<'ctx>,
     pub(super) any_release_box: FunctionValue<'ctx>,
     pub(super) any_release: FunctionValue<'ctx>,
+    pub(super) any_release_ptr: FunctionValue<'ctx>,
     pub(super) heap_track: FunctionValue<'ctx>,
     pub(super) closure_new: FunctionValue<'ctx>,
     pub(super) closure_set: FunctionValue<'ctx>,
@@ -96,6 +97,13 @@ pub(super) struct FnCx<'ctx> {
     pub(super) io_is_tty: FunctionValue<'ctx>,
     pub(super) io_winsize: FunctionValue<'ctx>,
     pub(super) io_set_raw: FunctionValue<'ctx>,
+    pub(super) io_warn_missing_arg: FunctionValue<'ctx>,
+    pub(super) uefi_println: FunctionValue<'ctx>,
+    pub(super) uefi_write: FunctionValue<'ctx>,
+    pub(super) wasi_println: FunctionValue<'ctx>,
+    pub(super) wasi_eprintln: FunctionValue<'ctx>,
+    pub(super) wasi_write: FunctionValue<'ctx>,
+    pub(super) wasi_ewrite: FunctionValue<'ctx>,
     pub(super) path_exists: FunctionValue<'ctx>,
     pub(super) path_remove: FunctionValue<'ctx>,
     pub(super) fs_exists: FunctionValue<'ctx>,
@@ -309,7 +317,12 @@ pub(super) struct FnCx<'ctx> {
     pub(super) defer_base: Option<inkwell::values::PointerValue<'ctx>>,
 }
 
-pub(super) fn lower_instr(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str) -> Result<(), Diagnostic> {
+pub(super) fn lower_instr(
+    cx: &mut FnCx,
+    lir: &Module,
+    ins: &Instr,
+    fname: &str,
+) -> Result<(), Diagnostic> {
     let _ = fname;
     match ins {
         Instr::Const { .. } => casts::lower_casts(cx, lir, ins, fname)?,
@@ -365,7 +378,12 @@ pub(super) fn lower_instr(cx: &mut FnCx, lir: &Module, ins: &Instr, fname: &str)
         Instr::Call { .. } => calls::lower_calls(cx, lir, ins, fname)?,
         Instr::Defer { .. } => control::lower_control(cx, lir, ins, fname)?,
         Instr::RunDefers { .. } => control::lower_control(cx, lir, ins, fname)?,
-        _ => return Err(Diagnostic::new(Code::E108, "llvm subset: unsupported instr")),
+        _ => {
+            return Err(Diagnostic::new(
+                Code::E108,
+                "llvm subset: unsupported instr",
+            ));
+        }
     }
     Ok(())
 }

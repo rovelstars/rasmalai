@@ -13,7 +13,7 @@ pub(super) fn run_unpack(archive: Option<String>, out_dir: Option<String>) {
                     println!("Extracted {n} files ({bytes} bytes) into {dest}");
                 }
                 Err(e) => {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             }

@@ -29,7 +29,7 @@ fn runConfig(tag: Int, workers: Int, n: Int, chunk: Int): Int {
         sum = sum + AtomicInt.byId(5000 + j).get();
         j = j + 1;
     }
-    print("RESULT workers", workers, (t1 - t0) / 1000000, sum);
+    println!("RESULT workers", workers, (t1 - t0) / 1000000, sum);
     return sum;
 }
 
@@ -46,11 +46,11 @@ fn Main(): Int {
     let c2 = runConfig(620, 2, n, 500);
     let c4 = runConfig(630, 4, n, 500);
     let c8 = runConfig(640, 8, n, 500);
-    print("RESULT checksums", c1, c2, c4, c8);
+    println!("RESULT checksums", c1, c2, c4, c8);
     if c1 == c2 && c2 == c4 && c4 == c8 {
-        print("RESULT scaling_ok", 1);
+        println!("RESULT scaling_ok", 1);
     } else {
-        print("RESULT scaling_ok", 0);
+        println!("RESULT scaling_ok", 0);
     }
     return 0;
 }

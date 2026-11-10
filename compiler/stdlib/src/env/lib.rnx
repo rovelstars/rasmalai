@@ -9,10 +9,13 @@
 //! import { Env } from "@std/env";
 //!
 //! Env.set("GREETING", "hi");
-//! print(Env.get("GREETING"));
-//! print(Env.get("NOT_SET_ANYWHERE") == "");
-//! print(Env.cwd().len() > 0);
+//! println!(Env.get("GREETING"));
+//! println!(Env.get("NOT_SET_ANYWHERE") == "");
+//! println!(Env.cwd().len() > 0);
 //! ```
+import {
+    fn __rnx_host_version(): String,
+} from runtime "core";
 import {
     fn __rnx_env_args_count(): Int,
     fn __rnx_env_args_get(i: Int): String,
@@ -54,8 +57,8 @@ class Env {
     * import { Env } from "@std/env";
     *
     * let a = Env.args();
-    * print(a.len() > 0);
-    * print(a[0].len() > 0);
+    * println!(a.len() > 0);
+    * println!(a[0].len() > 0);
     */
     static args(): Array<String> {
         let count = __rnx_env_args_count();
@@ -82,8 +85,8 @@ class Env {
     * @example
     * import { Env } from "@std/env";
     *
-    * print(Env.get("PATH").len() > 0);
-    * print(Env.get("NOT_SET_ANYWHERE") == "");
+    * println!(Env.get("PATH").len() > 0);
+    * println!(Env.get("NOT_SET_ANYWHERE") == "");
     */
     static get(key: String): String {
         return __rnx_env_get(key);
@@ -105,7 +108,7 @@ class Env {
     * import { Env } from "@std/env";
     *
     * Env.set("GREETING", "hi");
-    * print(Env.get("GREETING"));
+    * println!(Env.get("GREETING"));
     */
     static set(key: String, val: String) {
         __rnx_env_set(key, val);
@@ -123,7 +126,7 @@ class Env {
     * @example
     * import { Env } from "@std/env";
     *
-    * print(Env.cwd().len() > 0);
+    * println!(Env.cwd().len() > 0);
     */
     static cwd(): String {
         return __rnx_env_cwd();
@@ -142,10 +145,63 @@ class Env {
     * @param code exit code; only the low 8 bits reach the host.
     *
     * Never returns, so there is no runnable example: any program running
-    * `Env.exit(0)` after `print("closing down")` prints the line and
+    * `Env.exit(0)` after `println!("closing down")` prints the line and
     * leaves with code 0.
     */
     static exit(code: Int) {
+        __rnx_env_exit(code);
+    }
+}
+
+/**
+ * Host metadata: `rnx` is ambient in every module with no import.
+ * `version` is the compiler version string, `args` holds the CLI
+ * arguments after the script path, `cwd()` reads the working
+ * directory, and `exit(code)` terminates immediately.
+ * @example
+ * println!(rnx.version);
+ * println!(rnx.args.length());
+ * println!(rnx.cwd().length() > 0);
+ */
+pub class RnxHost {
+    /** Version of the compiler that built this program. */
+    let version: String;
+    /** CLI arguments after the script path, so `args[0]` is the first
+    *  one the caller passed. */
+    let args: Array<String>;
+
+    /** Read the host version and arguments once, at startup. */
+    init() {
+        this.version = __rnx_host_version();
+        let count = __rnx_env_args_count();
+        let collected: Array<String> = [];
+        let i = 1;
+        while i < count {
+            collected.push(__rnx_env_args_get(i));
+            i = i + 1;
+        }
+        this.args = collected;
+    }
+
+    /**
+    * Read the working directory of the process.
+    * @returns the path the process was started in.
+    * @example
+    * println!(new RnxHost().cwd().len() > 0);
+    */
+    fn cwd(): String {
+        return __rnx_env_cwd();
+    }
+
+    /**
+    * Stop the process now. Nothing after the call runs and the exit
+    * status is the code given.
+    * @param code exit status handed to the host.
+    *
+    * Never returns, so there is no runnable example: any program reaching
+    * exit(0) leaves with the given status and runs nothing after the call.
+    */
+    fn exit(code: Int) {
         __rnx_env_exit(code);
     }
 }

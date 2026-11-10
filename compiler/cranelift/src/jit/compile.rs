@@ -190,6 +190,10 @@ impl Jit {
         builder.symbol("rnx_note_enum", runtime::native::rnx_note_enum as *const u8);
         builder.symbol("rnx_io_winsize", runtime::native::rnx_io_winsize as *const u8);
         builder.symbol("rnx_io_set_raw", runtime::native::rnx_io_set_raw as *const u8);
+        builder.symbol(
+            "rnx_io_warn_missing_arg",
+            runtime::native::rnx_io_warn_missing_arg as *const u8,
+        );
         for (name, fptr) in [
             ("rnx_gmap_new", runtime::native::rnx_gmap_new as *const u8),
             ("rnx_gmap_free", runtime::native::rnx_gmap_free as *const u8),
@@ -810,6 +814,7 @@ impl Jit {
         let io_set_raw = module
             .declare_function("rnx_io_set_raw", Linkage::Import, &io_set_raw_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_io_set_raw: {e}")))?;
+        let io_warn_missing_arg_sig = Signature::new(CallConv::SystemV);
         let mut gmap_new_sig = Signature::new(CallConv::SystemV);
         gmap_new_sig.returns.push(AbiParam::new(types::I64));
         let mut gmap_bool2_sig = Signature::new(CallConv::SystemV);
@@ -829,6 +834,7 @@ impl Jit {
         bytes4r_sig.params.push(AbiParam::new(types::I64));
         bytes4r_sig.returns.push(AbiParam::new(types::I64));
         for (name, sig) in [
+            ("rnx_io_warn_missing_arg", &io_warn_missing_arg_sig),
             ("rnx_bytes_alloc", &str1_sig),
             ("rnx_bytes_len", &str1_sig),
             ("rnx_bytes_cap", &str1_sig),
@@ -1968,7 +1974,7 @@ pub(super) fn check_supported(lir: &LirModule, f: &LirFunction) -> Result<(), Di
                     let supported = matches!(target, CallTarget::Fn(_))
                         || matches!(target, CallTarget::Foreign { .. })
                         || matches!(target, CallTarget::Value(_))
-                        || matches!(target, CallTarget::Builtin(n) if n == "print" || n == "streq" || n == "strcmp" || n == "assert" || n == "__testCheck" || frontend::runtime::is_runtime_symbol(n));
+                        || matches!(target, CallTarget::Builtin(n) if n == "streq" || n == "strcmp" || n == "assert" || n == "__testCheck" || frontend::runtime::is_runtime_symbol(n));
                     if !supported {
                         return Err(match target {
                             CallTarget::Dyn { method, .. } => Diagnostic::new(

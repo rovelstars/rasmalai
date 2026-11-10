@@ -69,7 +69,7 @@ impl Lower {
                 A::Decl::Fn(f) => {
                     let id = self.out.functions.len();
                     self.out.functions.push(shell(&self.out, &f.name, &f.params, f.ret.as_ref(), f.throws, f.is_unsafe, None, &f.type_params));
-                    if f.access == A::Access::Export {
+                    if f.access == A::Access::Export && !f.is_macro {
                         self.out.functions[id].is_pub = true;
                     }
                     self.out.fn_index.insert(f.name.clone(), id);

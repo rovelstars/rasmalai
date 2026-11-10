@@ -18,7 +18,7 @@ fn runClangAst(header: String, includes: Array<String>, rawFlags: String): Strin
     args.push(header);
     let out = Process.run("clang", args);
     if out.exitCode != 0 {
-        print("rnx-bindgen: clang failed: " + out.stderrText());
+        println!("rnx-bindgen: clang failed: " + out.stderrText());
         return "";
     }
     return out.stdoutText();

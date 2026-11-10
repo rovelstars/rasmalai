@@ -296,21 +296,7 @@ impl<'a> Builder<'a> {
 
         if let Some(t) = ty.as_ref() {
             if let LirType::Enum(ei) = self.resolve_here(t) {
-                let implicit = match &value.node {
-                    A::Expr::Call { callee, args, .. } => match &callee.node {
-                        A::Expr::ImplicitMember(path) => Some((path.clone(), args.clone())),
-                        _ => None,
-                    },
-                    A::Expr::ImplicitMember(path) => Some((path.clone(), Vec::new())),
-                    _ => None,
-                };
-                if let Some((path, args)) = implicit {
-                    let vname = path.last().cloned().unwrap_or_default();
-                    let vi = self.module.enums[ei].variant_index.get(&vname).copied()
-                        .ok_or_else(|| {
-                            self.unknown_variant(&vname, value.span)
-                        })?;
-                    let (v, simple) = self.lower_enum_construct(ei, vi, &args, value.span)?;
+                if let Some((v, simple)) = self.try_lower_expected_enum(ei, value)? {
                     let t = LirType::Enum(ei);
                     let s = simple_of(&t);
                     let dst = self.local(t.clone());
@@ -1296,8 +1282,14 @@ impl<'a> Builder<'a> {
 
         let vals = match v {
             Some(e) => {
-                let (r, _) = self.lower_expr(&e.node, e.span)?;
                 let rt = self.func.ret.clone();
+                let (r, _) = match &rt {
+                    LirType::Enum(ei) => match self.try_lower_expected_enum(*ei, e)? {
+                        Some(v) => v,
+                        None => self.lower_expr(&e.node, e.span)?,
+                    },
+                    _ => self.lower_expr(&e.node, e.span)?,
+                };
                 let rvt = self.func.locals.get(r as usize).cloned().unwrap_or(LirType::Any);
                 let fresh = matches!(e.node, A::Expr::Array(_));
                 self.check_array_view(&rvt, &rt, fresh, e.span, "return value")?;
@@ -1964,7 +1956,7 @@ impl<'a> Builder<'a> {
             }
             if let A::Pattern::Enum { path, args } = &c.pattern {
                 let payload_tys = self
-                    .variant_of_path(path)
+                    .variant_of_path_typed(path, &scrut_ty)
                     .map(|(enu, vi)| self.module.enums[enu].variants[vi].payload.clone())
                     .unwrap_or_default();
                 for (i, a) in args.iter().enumerate() {
@@ -2039,6 +2031,7 @@ impl<'a> Builder<'a> {
         guard: Option<&A::Spanned<A::Expr>>,
         body: &A::SwitchExprBody,
         sv: Local,
+        scrut_ty: &LirType,
         scrut_span: Span,
         case_bb: BlockId,
         gnext: BlockId,
@@ -2057,7 +2050,7 @@ impl<'a> Builder<'a> {
             }
         }
         if let Some(A::Pattern::Enum { path, args }) = pattern {
-            let (payload_tys, precise_ok) = match self.variant_of_path(path) {
+            let (payload_tys, precise_ok) = match self.variant_of_path_typed(path, scrut_ty) {
                 Some((enu, vi)) => {
                     let desc = &self.module.enums[enu];
                     let ok_payload = desc.name == "std.prelude.Result"
@@ -2239,6 +2232,7 @@ impl<'a> Builder<'a> {
                 c.guard.as_ref(),
                 &c.body,
                 sv,
+                &scrut_ty,
                 scrut_span,
                 case_bbs[i],
                 gnext,
@@ -2257,7 +2251,7 @@ impl<'a> Builder<'a> {
         }
         if let Some(d) = default {
             self.lower_switch_arm_value(
-                scrut, None, None, d, sv, scrut_span, default_bb, default_bb, merge,
+                scrut, None, None, d, sv, &scrut_ty, scrut_span, default_bb, default_bb, merge,
                 &mut dst, &mut dst_ty, precise.as_ref(), span,
             )?;
             if self.failed {
@@ -2328,7 +2322,7 @@ impl<'a> Builder<'a> {
                 let vname = path.last().ok_or_else(|| {
                     self.err(Code::E108, "empty enum pattern", Span { start: 0, end: 0 })
                 })?;
-                let (enu, vi) = self.variant_of_path(path).ok_or_else(|| {
+                let (enu, vi) = self.variant_of_path_typed(path, scrut_ty).ok_or_else(|| {
                     if path.len() > 1 {
                         if let Some((oenu, _)) = self.variant_of(vname) {
                             let owner = short_name(&self.module.enums[oenu].name).to_string();

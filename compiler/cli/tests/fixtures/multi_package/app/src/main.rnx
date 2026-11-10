@@ -4,6 +4,6 @@ import { double } from "dep_math/util";
 fn Main(): Int {
     let sum = add(10, 11);
     let res = double(sum);
-    print("Multi-package resolution success:", res);
+    println!("Multi-package resolution success:", res);
     return res;
 }

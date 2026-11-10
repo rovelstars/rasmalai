@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -88,7 +88,7 @@ fn recursive_eval_with_payloads() {
         let sum = Expr.Add(one, two);\n\
         let res = eval(sum);\n\
         assert(res == 3, \"eval\");\n\
-        print(\"eval-ok\");\n\
+        println!(\"eval-ok\");\n\
         return 0;\n\
         }}\n"
     );
@@ -112,7 +112,7 @@ fn qualified_variant_patterns() {
         fn Main(): Int {\n\
         let sum = Expr.Add(Expr.Num(1), Expr.Num(2));\n\
         assert(eval(sum) == 3, \"qualified\");\n\
-        print(\"qual-ok\");\n\
+        println!(\"qual-ok\");\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["qual-ok".to_string()], "qualified");
@@ -137,7 +137,7 @@ fn same_variant_name_in_two_enums() {
         };\n\
         assert(fa == 3, \"a\");\n\
         assert(fb == 7, \"b\");\n\
-        print(\"ambig-ok\");\n\
+        println!(\"ambig-ok\");\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["ambig-ok".to_string()], "ambig");
@@ -167,7 +167,7 @@ fn unit_and_payload_variants_coexist() {
         default: -1,\n\
         };\n\
         assert(a == 0 && b == 42 && c == 1, \"tokens\");\n\
-        print(\"token-ok\");\n\
+        println!(\"token-ok\");\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["token-ok".to_string()], "token");
@@ -185,7 +185,7 @@ fn payload_churn_stress() {
         i = i + 1;\n\
         }}\n\
         assert(total == 199990000, \"stress\");\n\
-        print(\"stress-ok\");\n\
+        println!(\"stress-ok\");\n\
         return 0;\n\
         }}\n"
     );
@@ -287,7 +287,7 @@ fn contextual_member_literals_in_call_args() {
         assert(File.open(\"p\", .Read) == 11, \"static2\");\n\
         assert(show(.Ok(41)) == 41, \"payload\");\n\
         assert(show(.Err(\"x\")) == 0 - 1, \"payload2\");\n\
-        print(\"implicit-args-ok\");\n\
+        println!(\"implicit-args-ok\");\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["implicit-args-ok".to_string()], "implicit-args");

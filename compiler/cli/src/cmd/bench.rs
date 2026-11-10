@@ -46,11 +46,7 @@ pub(super) fn run_bench(package: Option<String>, filter: Option<String>, backend
                 match cli::run_test_harness_cfg(lowered, backend, &cfg, &mut profiler) {
                     cli::TestOutcome::Completed { output, failed } => {
                         for line in &output {
-                            if line.ends_with('\n') {
-                                print!("{line}");
-                            } else {
-                                println!("{line}");
-                            }
+                            print!("{line}");
                         }
                         if failed != 0 {
                             code = 1;

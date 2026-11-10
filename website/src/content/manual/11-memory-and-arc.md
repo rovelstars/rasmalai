@@ -21,7 +21,7 @@ while i < 3 {
     total = total + bonus;
     i = i + 1;
 }
-print(total);
+println!(total);
 ```
 
 `bonus` dies at the end of each iteration; `total` dies when `main` returns. There is no background thread tracing garbage, so there are no pauses.
@@ -39,7 +39,7 @@ The working rule: small fixed-size values (`Int`, `Float`, `Bool`, `Vec4f`) live
 ```rnx
 let arr = [1, 2, 3];
 let same = arr;
-print(same.length());
+println!(same.length());
 ```
 
 `same` and `arr` point at one array. When the last owner goes away, the array drops immediately, deterministically, on the thread that released it, with no pause and no finalizer queue.
@@ -57,7 +57,7 @@ while i < 3 {
     acc = i % 2 == 0 ? acc + "e" : acc + "o";
     i = i + 1;
 }
-print(acc);
+println!(acc);
 ```
 
 Each iteration's copy of `acc` releases exactly the value the previous iteration (or the initializer) provably wrote. Moved-from slots are never re-read for release; suppression of a release only delays a free, it never introduces one.

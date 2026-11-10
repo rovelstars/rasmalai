@@ -66,7 +66,7 @@ fn parses_generic_enum() {
 
 #[test]
 fn parses_unsafe_fn_and_block() {
-    let src = "unsafe fn Raw(): Int { return 1 } fn F(): Int { unsafe { print(\"u\") } return Raw2() } unsafe fn Raw2(): Int { return 2 }";
+    let src = "unsafe fn Raw(): Int { return 1 } fn F(): Int { unsafe { println!(\"u\") } return Raw2() } unsafe fn Raw2(): Int { return 2 }";
     Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
 }
 
@@ -90,7 +90,7 @@ fn parses_enum_pattern() {
 
 #[test]
 fn parses_tuple_for() {
-    Parser::parse_module("fn F(p: Array): Int { for (a, b) in p { print(\"x\") } return 0 }")
+    Parser::parse_module("fn F(p: Array): Int { for (a, b) in p { println!(\"x\") } return 0 }")
         .unwrap_or_else(|e| panic!("{e}"));
 }
 
@@ -324,7 +324,7 @@ fn uninit_let_in_block_parses_clean() {
 
 #[test]
 fn uninit_let_parses_following_line() {
-    let src = "let a;\nprint(a);\n";
+    let src = "let a;\nprintln!(a);\n";
     assert!(Parser::parse_module_all(src).is_ok());
 }
 

@@ -10,7 +10,7 @@ pub(super) fn run_fetch(package: Option<String>) {
                     }
                 }
                 Err(e) => {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             }
@@ -21,7 +21,7 @@ pub(super) fn run_fetch(package: Option<String>) {
                     }
                 }
                 Err(e) => {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             }

@@ -16,6 +16,10 @@ pub struct Module {
     pub decls: Vec<Spanned<Decl>>,
     pub docs: String,
     pub warnings: Vec<Diagnostic>,
+    // The prelude re-exports @std/io, so std.collections can be in the
+    // merged module without an explicit import. Map literals keep their
+    // explicit-import contract through this flag.
+    pub explicit_std_collections: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +227,7 @@ pub struct FnDecl {
     pub is_static: bool,
     pub is_test: bool,
     pub is_bench: bool,
+    pub is_macro: bool,
     pub body: FnBody,
     pub attrs: Vec<Attr>,
     pub docs: String,

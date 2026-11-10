@@ -423,18 +423,18 @@ const MATH: &str = "fn Main(): Int {\n  let a = 40;\n  let b = 2;\n  let c = a +
 const STRINGS: &str = "fn Main(): Int {\n\
     let numbers = [10, 20, 30, 40, 50];\n\
     let sum = numbers.reduce(0, (acc, n) => acc + n);\n\
-    print(sum);\n\
+    println!(sum);\n\
     let words = [\"hello\", \"world\", \"rasmalai\"];\n\
-    print(words.join(\" \"));\n\
+    println!(words.join(\" \"));\n\
     let greeting = \"hello world from rasmalai\";\n\
-    print(greeting.toUpperCase());\n\
+    println!(greeting.toUpperCase());\n\
     return sum - 150;\n\
 }\n";
 
 fn multi_src() -> String {
     let mut src = String::new();
     for i in 0..70 {
-        src.push_str(&format!("fn F{i}(): Int {{ print({i}); return {i}; }}\n"));
+        src.push_str(&format!("fn F{i}(): Int {{ println!({i}); return {i}; }}\n"));
     }
     src.push_str("fn Main(): Int {\n");
     for i in 0..70 {
@@ -704,7 +704,7 @@ fn native_rejects_cross_target() {
     let objects = build_objects(&path, true, 1);
     let inputs: Vec<LinkInput> = objects.iter().map(|b| LinkInput::ObjectBytes(b.clone())).collect();
     let mut opts = native::StaticOpts::default();
-    opts.target = "aarch64-unknown-linux-gnu".to_string();
+    opts.target = "riscv64gc-unknown-linux-gnu".to_string();
     let err = native::native_link_static(&inputs, &dir.join("out"), &opts).unwrap_err();
     assert!(err.to_string().contains("native backend not yet implemented"), "{err}");
     let dopts = native::DynamicOpts {

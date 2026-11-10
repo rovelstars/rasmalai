@@ -41,7 +41,7 @@ import {
     * }
     *
     * fn Main(): Int {
-    *     print(blackBox(2) + blackBox(3));
+    *     println!(blackBox(2) + blackBox(3));
     *     return 0;
     * }
     */

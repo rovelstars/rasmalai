@@ -45,7 +45,7 @@ fn check_all(src: &str, want: &str) {
 #[test]
 fn plus_assign_concatenates_a_string_binding() {
     check_all(
-        "fn Main(): Int {\n    let s = \"\"\n    s += \"a\"\n    s += \"b\"\n    let n = 1\n    n += 2\n    print(s, n)\n    return 0\n}\n",
+        "fn Main(): Int {\n    let s = \"\"\n    s += \"a\"\n    s += \"b\"\n    let n = 1\n    n += 2\n    println!(s, n)\n    return 0\n}\n",
         "ab 3",
     );
 }
@@ -53,7 +53,7 @@ fn plus_assign_concatenates_a_string_binding() {
 #[test]
 fn plus_assign_concatenates_a_string_field() {
     check_all(
-        "class P { let s: String = \"\" }\nfn Main(): Int {\n    let p = new P()\n    p.s += \"a\"\n    p.s += \"b\"\n    print(p.s)\n    return 0\n}\n",
+        "class P { let s: String = \"\" }\nfn Main(): Int {\n    let p = new P()\n    p.s += \"a\"\n    p.s += \"b\"\n    println!(p.s)\n    return 0\n}\n",
         "ab",
     );
 }
@@ -61,7 +61,7 @@ fn plus_assign_concatenates_a_string_field() {
 #[test]
 fn plus_assign_concatenates_a_string_element() {
     check_all(
-        "fn Main(): Int {\n    let a: Array<String> = []\n    a.push(\"x\")\n    a[0] += \"y\"\n    a[0] += \"z\"\n    print(a[0])\n    return 0\n}\n",
+        "fn Main(): Int {\n    let a: Array<String> = []\n    a.push(\"x\")\n    a[0] += \"y\"\n    a[0] += \"z\"\n    println!(a[0])\n    return 0\n}\n",
         "xyz",
     );
 }

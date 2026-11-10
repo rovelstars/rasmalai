@@ -2,10 +2,10 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
-const FLOAT_TO_INT: &str = "fn Main(): Int { let i = 2.5 as Int print(\"i={i}\") return 0 }\n";
-const INT_TO_FLOAT: &str = "fn Main(): Int { let i = 1 as Float print(\"i={i}\") return 0 }\n";
-const BOOL_TO_INT: &str = "fn Main(): Int { let i = true as Int print(\"i={i}\") return 0 }\n";
-const BYTE_PRINT: &str = "fn Main(): Int {\n    let b = 65 as Byte\n    print(b)\n    let s = \"b={b}\"\n    print(s)\n    if s == \"b=65\" { return 42 }\n    return 0\n}\n";
+const FLOAT_TO_INT: &str = "fn Main(): Int { let i = 2.5 as Int println!(\"i={i}\") return 0 }\n";
+const INT_TO_FLOAT: &str = "fn Main(): Int { let i = 1 as Float println!(\"i={i}\") return 0 }\n";
+const BOOL_TO_INT: &str = "fn Main(): Int { let i = true as Int println!(\"i={i}\") return 0 }\n";
+const BYTE_PRINT: &str = "fn Main(): Int {\n    let b = 65 as Byte\n    println!(b)\n    let s = \"b={b}\"\n    println!(s)\n    if s == \"b=65\" { return 42 }\n    return 0\n}\n";
 
 fn write_src(tag: &str, src: &str) -> crate::scratch::Scratch {
     let dir = crate::scratch::dir(tag);

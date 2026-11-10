@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -57,21 +57,21 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     );
 }
 
-const CAST_CHAIN_SRC: &str = "import { Channel } from \"@std/sync\";\nconst CH_ID: Int = 6201;\nfn Main(): Int {\n    let ch = Channel.byId(CH_ID);\n    ch.send(7);\n    let v = Channel.byId(CH_ID).recv() as Int;\n    print(v);\n    return 0;\n}\n";
+const CAST_CHAIN_SRC: &str = "import { Channel } from \"@std/sync\";\nconst CH_ID: Int = 6201;\nfn Main(): Int {\n    let ch = Channel.byId(CH_ID);\n    ch.send(7);\n    let v = Channel.byId(CH_ID).recv() as Int;\n    println!(v);\n    return 0;\n}\n";
 
 #[test]
 fn test_cast_on_imported_static_call_chain() {
     check_all_backends(CAST_CHAIN_SRC, 0, &["7".to_string()], "castchain");
 }
 
-const INDEX_CALL_SRC: &str = "class Task {\n    let id: Int;\n    init(id: Int) { this.id = id; }\n    run(): Int { return this.id; }\n}\nfn makeTask(id: Int): Task { return new Task(id); }\nfn Main(): Int {\n    let tasks: Array<Task> = [makeTask(1), makeTask(2)];\n    let r = tasks[0].run() + tasks[1].run();\n    print(r);\n    return 0;\n}\n";
+const INDEX_CALL_SRC: &str = "class Task {\n    let id: Int;\n    init(id: Int) { this.id = id; }\n    run(): Int { return this.id; }\n}\nfn makeTask(id: Int): Task { return new Task(id); }\nfn Main(): Int {\n    let tasks: Array<Task> = [makeTask(1), makeTask(2)];\n    let r = tasks[0].run() + tasks[1].run();\n    println!(r);\n    return 0;\n}\n";
 
 #[test]
 fn test_method_call_on_array_element() {
     check_all_backends(INDEX_CALL_SRC, 0, &["3".to_string()], "indexcall");
 }
 
-const ANY_INDEX_SRC: &str = "class Task {\n    let id: Int;\n    init(id: Int) { this.id = id; }\n    run(): Int { return this.id; }\n}\nfn makeTask(id: Int): Task { return new Task(id); }\nfn Main(): Int {\n    let hs = [];\n    hs.push(makeTask(1));\n    let r = hs[0].run();\n    print(r);\n    return 0;\n}\n";
+const ANY_INDEX_SRC: &str = "class Task {\n    let id: Int;\n    init(id: Int) { this.id = id; }\n    run(): Int { return this.id; }\n}\nfn makeTask(id: Int): Task { return new Task(id); }\nfn Main(): Int {\n    let hs = [];\n    hs.push(makeTask(1));\n    let r = hs[0].run();\n    println!(r);\n    return 0;\n}\n";
 
 #[test]
 fn test_untyped_array_element_call_reports_true_span() {

@@ -36,7 +36,7 @@ fn run_backend(file: &std::path::Path, backend: &str, args: &[&str]) -> std::pro
     cmd.output().unwrap()
 }
 
-const ARGS_SRC: &str = "import { Process } from \"@std/process\";\nfn Main(): Int {\n    let a = Process.args();\n    print(a.length());\n    for x in a {\n        print(x);\n    }\n    return 0;\n}\n";
+const ARGS_SRC: &str = "import { Process } from \"@std/process\";\nfn Main(): Int {\n    let a = Process.args();\n    println!(a.length());\n    for x in a {\n        println!(x);\n    }\n    return 0;\n}\n";
 
 const USER_ARGS: &[&str] = &["first arg", "second", "third with spaces", "--flag", ""];
 
@@ -94,7 +94,7 @@ fn argv_forwards_identically_on_all_backends() {
     assert_eq!(user, USER_ARGS, "aot: user argv must match jit/interpreter");
 }
 
-const EXIT_SRC: &str = "import { Process } from \"@std/process\";\nfn Main(): Int {\n    print(\"before exit\");\n    Process.exit(3);\n    print(\"after exit\");\n    return 0;\n}\n";
+const EXIT_SRC: &str = "import { Process } from \"@std/process\";\nfn Main(): Int {\n    println!(\"before exit\");\n    Process.exit(3);\n    println!(\"after exit\");\n    return 0;\n}\n";
 
 #[test]
 fn process_exit_flushes_stdout_on_all_backends() {
@@ -125,7 +125,7 @@ fn process_exit_flushes_stdout_on_all_backends() {
 
 const CEILING_CONFIG: &str = "export default {\n    project: {\n        name: \"t3\",\n        version: \"0.1.0\"\n    },\n    permissions: [\"fs:read:/data\"]\n}\n";
 const CEILING_SRC: &str =
-    "unsafe fn Raw(x: Int): Int { return x * 2 }\n\nunsafe { print(Raw(21)); }\n";
+    "unsafe fn Raw(x: Int): Int { return x * 2 }\n\nunsafe { println!(Raw(21)); }\n";
 
 #[test]
 fn permissions_ceiling_enforced_without_lockfile() {
@@ -159,7 +159,7 @@ fn permissions_ceiling_enforced_without_lockfile() {
     );
 }
 
-const TOPLEVEL_FS_SRC: &str = "import { File, OpenMode } from \"@std/fs\";\nfn Main(): Int {\n    let f = File.open(\"/tmp/rnx-notes.txt\", OpenMode.Read);\n    let t = f.readText().unwrapOr(\"\");\n    f.close();\n    print(t.length());\n    return 0;\n}\n";
+const TOPLEVEL_FS_SRC: &str = "import { File, OpenMode } from \"@std/fs\";\nfn Main(): Int {\n    let f = File.open(\"/tmp/rnx-notes.txt\", OpenMode.Read);\n    let t = f.readText().unwrapOr(\"\");\n    f.close();\n    println!(t.length());\n    return 0;\n}\n";
 
 #[test]
 fn audit_attributes_file_capability_and_exports_manifest() {
@@ -196,7 +196,7 @@ fn audit_attributes_file_capability_and_exports_manifest() {
     );
 }
 
-const TOPLEVEL_STMT_SRC: &str = "import { File, OpenMode } from \"@std/fs\";\nlet f = File.open(\"/tmp/rnx-notes.txt\", OpenMode.Read);\nlet t = f.readText().unwrapOr(\"\");\nf.close();\nprint(t.length());\n";
+const TOPLEVEL_STMT_SRC: &str = "import { File, OpenMode } from \"@std/fs\";\nlet f = File.open(\"/tmp/rnx-notes.txt\", OpenMode.Read);\nlet t = f.readText().unwrapOr(\"\");\nf.close();\nprintln!(t.length());\n";
 
 #[test]
 fn audit_sees_top_level_statements() {

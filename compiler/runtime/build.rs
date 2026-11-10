@@ -314,4 +314,5 @@ fn main() {
         digest.push(char::from_digit((b & 0xf) as u32, 16).unwrap_or('0'));
     }
     println!("cargo:rustc-env=RNX_RUNTIME_ARCHIVE_SHA256={digest}");
+    println!("cargo:rustc-env=RNX_RUNTIME_ARCHIVE_ABI=1");
 }

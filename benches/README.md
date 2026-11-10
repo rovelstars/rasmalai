@@ -47,7 +47,7 @@ benches/
     measure.sh   # standalone wall-time + peak-RSS wrapper for one command
   data/
     benchmarks.json  # generated, gitignored: {system, versions, benchmarks[]}
-                     # (monthly CI publishes it to the orphan `benchmarks` branch)
+                     # (monthly CI POSTs it to /api/benchmarks, stored in Turso)
   compute/
     fib/ mandelbrot/ nbody/ spectral/ matmul/
   memory/

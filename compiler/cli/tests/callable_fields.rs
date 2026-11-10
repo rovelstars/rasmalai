@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -62,7 +62,7 @@ fn record_closure_field_direct_call() {
         assert(worker.id == 1, \"field\");\n\
         let r = worker.run;\n\
         assert(r() == 42, \"extracted\");\n\
-        print(\"call-ok\");\n\
+        println!(\"call-ok\");\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["call-ok".to_string()], "direct");
@@ -79,7 +79,7 @@ fn class_closure_field_direct_call() {
         let w = new Worker(() => { return 7; });\n\
         assert(w.run() == 7, \"field call\");\n\
         assert(w.id() == 1, \"method\");\n\
-        print(\"class-ok\");\n\
+        println!(\"class-ok\");\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["class-ok".to_string()], "class");
@@ -89,7 +89,7 @@ fn class_closure_field_direct_call() {
 fn record_pretty_print() {
     let src = "fn Main(): Int {\n\
         let worker = { id: 1, name: \"worker\" };\n\
-        print(worker);\n\
+        println!(worker);\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["{ id: 1, name: \"worker\" }".to_string()], "pretty");
@@ -99,9 +99,9 @@ fn record_pretty_print() {
 fn record_pretty_print_nested_and_fn() {
     let src = "fn Main(): Int {\n\
         let worker = { id: 1, name: \"reactor-1\", run: () => { return 42; } };\n\
-        print(worker);\n\
+        println!(worker);\n\
         let nested = { a: { b: 42 }, flag: true };\n\
-        print(nested);\n\
+        println!(nested);\n\
         return 0;\n\
         }\n";
     check_all_backends(

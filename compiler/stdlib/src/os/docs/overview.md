@@ -10,7 +10,7 @@ you need once and keep the value.
 ```rnx
 import { OS } from "@std/os";
 
-print(OS.platform(), OS.arch());
+println!(OS.platform(), OS.arch());
 ```
 
 ## What is inside

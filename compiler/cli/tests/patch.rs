@@ -19,7 +19,7 @@ fn repo() -> PathBuf {
 
 fn stage_prelude(dest: &Path) {
     let out = Command::new(rnx())
-        .args(["vendor", "@std/prelude", "--dir"])
+        .args(["vendor", "@std/prelude", "@std/foundation", "@std/time", "@std/async", "@std/env", "@std/io", "@std/bytes", "@std/fs", "@std/collections", "@std/sync", "@std/log", "--dir"])
         .arg(dest)
         .current_dir(repo())
         .env("RNX_VENDOR_DIR", repo().join("compiler/stdlib/src"))
@@ -76,7 +76,7 @@ fn path_vendor_patch_resolves_offline() {
     .unwrap();
     std::fs::write(
         dir.join("src").join("main.rnx"),
-        "import { hi } from \"hello\"\n\nfn Main(): Int {\n    print(\"patch-path-ok\", hi())\n    return 0\n}\n",
+        "import { hi } from \"hello\"\n\nfn Main(): Int {\n    println!(\"patch-path-ok\", hi())\n    return 0\n}\n",
     )
     .unwrap();
     let (ok, stdout, stderr) = run_project(&dir, None);
@@ -142,7 +142,7 @@ fn git_vendor_patch_resolves_offline() {
     .unwrap();
     std::fs::write(
         dir.join("src").join("main.rnx"),
-        "import { hi } from \"hello\"\n\nfn Main(): Int {\n    print(\"patch-git-ok\", hi())\n    return 0\n}\n",
+        "import { hi } from \"hello\"\n\nfn Main(): Int {\n    println!(\"patch-git-ok\", hi())\n    return 0\n}\n",
     )
     .unwrap();
     let (ok, stdout, stderr) = run_project(&dir, Some(&prelude));

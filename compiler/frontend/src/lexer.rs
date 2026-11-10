@@ -52,10 +52,24 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                     i += 1;
                 }
                 '{' => {
-                    flush_text(&mut toks, &mut text, text_start, i);
-                    push(&mut toks, TokenKind::InterpOpen, i, i + 1);
-                    frames.push(Frame::Interp(0));
-                    i += 1;
+                    if let Some(&next) = bytes.get(i + 1)
+                        && matches!(next, b'{' | b'}')
+                    {
+                        // `{{`, `}}`, and `{}` are format text, not
+                        // interpolation starts. `{}` would be an empty
+                        // interpolation and can never be valid code.
+                        if text.is_empty() {
+                            text_start = i;
+                        }
+                        text.push('{');
+                        text.push(next as char);
+                        i += 2;
+                    } else {
+                        flush_text(&mut toks, &mut text, text_start, i);
+                        push(&mut toks, TokenKind::InterpOpen, i, i + 1);
+                        frames.push(Frame::Interp(0));
+                        i += 1;
+                    }
                 }
                 '$' => {
                     if bytes.get(i + 1) == Some(&b'{') {

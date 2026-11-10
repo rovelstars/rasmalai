@@ -58,7 +58,7 @@ fn run_bin(path: &str) -> (i32, Vec<u8>) {
     (out.status.code().unwrap(), out.stdout)
 }
 
-const BASE: &str = "fn Main(): Int {\n    let n = 16;\n    let a: Array<Int> = [];\n    let b: Array<Int> = [];\n    let c: Array<Int> = [];\n    let i = 0;\n    while i < n * n {\n        a.push(0);\n        b.push(0);\n        @@C@@\n        i = i + 1;\n    }\n    let r = 0;\n    while r < n {\n        let k = 0;\n        while k < n {\n            a[r * n + k] = (r + k) % 64;\n            b[r * n + k] = (r * k) % 64;\n            k = k + 1;\n        }\n        r = r + 1;\n    }\n    @@EXTRA@@let x = 0;\n    while x < n {\n        let y = 0;\n        while y < n {\n            let s = 0;\n            let z = 0;\n            while z < n {\n                s = s + a[x * n + z] * b[z * n + y];\n                z = z + 1;\n            }\n            @@STORE@@\n            y = y + 1;\n        }\n        x = x + 1;\n    }\n    let total = 0;\n    let t = 0;\n    while t < n * n {\n        total = total + c[t];\n        t = t + 1;\n    }\n    print(\"RESULT checksum\", total);\n    return 0;\n}\n";
+const BASE: &str = "fn Main(): Int {\n    let n = 16;\n    let a: Array<Int> = [];\n    let b: Array<Int> = [];\n    let c: Array<Int> = [];\n    let i = 0;\n    while i < n * n {\n        a.push(0);\n        b.push(0);\n        @@C@@\n        i = i + 1;\n    }\n    let r = 0;\n    while r < n {\n        let k = 0;\n        while k < n {\n            a[r * n + k] = (r + k) % 64;\n            b[r * n + k] = (r * k) % 64;\n            k = k + 1;\n        }\n        r = r + 1;\n    }\n    @@EXTRA@@let x = 0;\n    while x < n {\n        let y = 0;\n        while y < n {\n            let s = 0;\n            let z = 0;\n            while z < n {\n                s = s + a[x * n + z] * b[z * n + y];\n                z = z + 1;\n            }\n            @@STORE@@\n            y = y + 1;\n        }\n        x = x + 1;\n    }\n    let total = 0;\n    let t = 0;\n    while t < n * n {\n        total = total + c[t];\n        t = t + 1;\n    }\n    println!(\"RESULT checksum\", total);\n    return 0;\n}\n";
 
 fn garbage() -> String {
     BASE.replace("@@C@@", "c.push(7);")
@@ -97,9 +97,9 @@ fn rollback_case() -> String {
 
 const SEARCH: &str = "fn Main(): Int {\n    let n = 64;\n    let m = 32;\n    let keys: Array<Int> = [];\n    let table: Array<Int> = [];\n    let out: Array<Int> = [];\n    let i = 0;\n    while i < 2048 {\n        keys.push(i % 97);\n        table.push((i * 3) % 101);\n        out.push(0);\n        i = i + 1;\n    }\n    let o = 0;\n    while o < n {\n        let needle = keys[o];\n        let found = -1;\n        let k = 0;\n        while k < m {\n            if table[k] == needle {\n                found = k;\n                break;\n            }\n            k = k + 1;\n        }\n        out[o] = found;\n        o = o + 1;\n    }\n    return out[0] + out[1];\n}\n";
 
-const CONCAT: &str = "fn Main(): Int {\n    let s = \"\";\n    let i = 0;\n    while i < 64 {\n        s = s + \"x\";\n        i = i + 1;\n    }\n    print(\"built\", s);\n    return 0;\n}\n";
+const CONCAT: &str = "fn Main(): Int {\n    let s = \"\";\n    let i = 0;\n    while i < 64 {\n        s = s + \"x\";\n        i = i + 1;\n    }\n    println!(\"built\", s);\n    return 0;\n}\n";
 
-const HELLO: &str = "fn Main(): Int {\n    print(\"hello\");\n    return 0;\n}\n";
+const HELLO: &str = "fn Main(): Int {\n    println!(\"hello\");\n    return 0;\n}\n";
 
 #[test]
 fn fix_converts_garbage_fill_to_zero_fill() {

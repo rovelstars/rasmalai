@@ -47,7 +47,7 @@ fn error_of(src: &str) -> String {
 #[test]
 fn struct_fields_bind_by_name_not_position() {
     let out = stdout_of(
-        "struct P { let a: Int let b: Int }\nfn Main(): Int { let p = P(b: 1, a: 2) print(p.a, p.b) return 0 }\n",
+        "struct P { let a: Int let b: Int }\nfn Main(): Int { let p = P(b: 1, a: 2) println!(p.a, p.b) return 0 }\n",
     );
     assert_eq!(out, "2 1");
 }
@@ -55,7 +55,7 @@ fn struct_fields_bind_by_name_not_position() {
 #[test]
 fn class_fields_bind_by_name_through_new() {
     let out = stdout_of(
-        "class C { let a: Int let b: Int }\nfn Main(): Int { let c = new C(b: 1, a: 2) print(c.a, c.b) return 0 }\n",
+        "class C { let a: Int let b: Int }\nfn Main(): Int { let c = new C(b: 1, a: 2) println!(c.a, c.b) return 0 }\n",
     );
     assert_eq!(out, "2 1");
 }
@@ -63,7 +63,7 @@ fn class_fields_bind_by_name_through_new() {
 #[test]
 fn positional_then_named_still_maps_by_field() {
     let out = stdout_of(
-        "struct P { let a: Int let b: Int let c: Int }\nfn Main(): Int { let p = P(1, c: 3, b: 2) print(p.a, p.b, p.c) return 0 }\n",
+        "struct P { let a: Int let b: Int let c: Int }\nfn Main(): Int { let p = P(1, c: 3, b: 2) println!(p.a, p.b, p.c) return 0 }\n",
     );
     assert_eq!(out, "1 2 3");
 }

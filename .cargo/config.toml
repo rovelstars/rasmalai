@@ -1,0 +1,2 @@
+[env]
+RNX_VENDOR_DIR = { value = "compiler/stdlib/src", relative = true }

@@ -16,11 +16,11 @@ import { Map, Set } from "@std/collections";
 let m = new Map<String, Int>();
 m.set("a", 1);
 m.set("b", 2);
-print(m.keys().join(","));
-print(m.get("a") ?? -1);
+println!(m.keys().join(","));
+println!(m.get("a") ?? -1);
 let s = new Set<String>();
 s.add("x");
-print(s.has("x"));
+println!(s.has("x"));
 ```
 
 ## Keep going

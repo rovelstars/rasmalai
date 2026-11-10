@@ -40,7 +40,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -84,7 +84,7 @@ fn closure_spawn_atomic_rounds_complete() {
                 if round(16) != 16 { return 1; }\n\
                 i++;\n\
             }\n\
-            print(\"done\");\n\
+            println!(\"done\");\n\
             return 0;\n\
         }\n",
         "done\n",

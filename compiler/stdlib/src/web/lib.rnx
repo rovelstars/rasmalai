@@ -8,11 +8,6 @@
 //! `WebSocket` is out of scope until the network RFC lands (see
 //! requirements 12_STDLIB).
 import {
-    ArrayIter,
-    Iterable,
-    Iterator
-} from "@std/prelude";
-import {
     Map
 } from "@std/collections";
 import {
@@ -42,8 +37,8 @@ import {
 * @example
 * import { HttpStatus, statusCode, statusReason } from "@std/web";
 *
-* print(statusCode(HttpStatus.NotFound), statusReason(HttpStatus.NotFound));
-* print(statusReason(HttpStatus.Ok), statusReason(HttpStatus.NoContent));
+* println!(statusCode(HttpStatus.NotFound), statusReason(HttpStatus.NotFound));
+* println!(statusReason(HttpStatus.Ok), statusReason(HttpStatus.NoContent));
 */
 enum HttpStatus {
     /**
@@ -124,8 +119,8 @@ enum HttpStatus {
 * @example
 * import { HttpStatus, statusCode } from "@std/web";
 *
-* print(statusCode(HttpStatus.NotFound));
-* print(statusCode(HttpStatus.Ok));
+* println!(statusCode(HttpStatus.NotFound));
+* println!(statusCode(HttpStatus.Ok));
 */
 fn statusCode(s: HttpStatus): Int {
     if s == HttpStatus.Ok {
@@ -188,8 +183,8 @@ fn statusCode(s: HttpStatus): Int {
 * @example
 * import { HttpStatus, statusReason } from "@std/web";
 *
-* print(statusReason(HttpStatus.NoContent));
-* print(statusReason(HttpStatus.ServiceUnavailable));
+* println!(statusReason(HttpStatus.NoContent));
+* println!(statusReason(HttpStatus.ServiceUnavailable));
 */
 fn statusReason(s: HttpStatus): String {
     if s == HttpStatus.Ok {
@@ -252,8 +247,8 @@ fn statusReason(s: HttpStatus): String {
 * @example
 * import { HttpStatus, statusCode, statusFromCode } from "@std/web";
 *
-* print(statusCode(statusFromCode(201) ?? HttpStatus.Ok));
-* print(statusFromCode(999) == null);
+* println!(statusCode(statusFromCode(201) ?? HttpStatus.Ok));
+* println!(statusFromCode(999) == null);
 */
 fn statusFromCode(code: Int): HttpStatus? {
     if code == 200 {
@@ -318,7 +313,7 @@ fn statusFromCode(code: Int): HttpStatus? {
 * @example
 * import { isSuccess } from "@std/web";
 *
-* print(isSuccess(204), isSuccess(301), isSuccess(199));
+* println!(isSuccess(204), isSuccess(301), isSuccess(199));
 */
 fn isSuccess(code: Int): Bool {
     return code >= 200 && code < 300;
@@ -332,7 +327,7 @@ fn isSuccess(code: Int): Bool {
 * @example
 * import { isClientError } from "@std/web";
 *
-* print(isClientError(404), isClientError(500), isClientError(399));
+* println!(isClientError(404), isClientError(500), isClientError(399));
 */
 fn isClientError(code: Int): Bool {
     return code >= 400 && code < 500;
@@ -346,7 +341,7 @@ fn isClientError(code: Int): Bool {
 * @example
 * import { isServerError } from "@std/web";
 *
-* print(isServerError(503), isServerError(404), isServerError(600));
+* println!(isServerError(503), isServerError(404), isServerError(600));
 */
 fn isServerError(code: Int): Bool {
     return code >= 500 && code < 600;
@@ -360,8 +355,8 @@ fn isServerError(code: Int): Bool {
 * @example
 * import { lowerAscii } from "@std/web";
 *
-* print(lowerAscii("Content-Type"));
-* print(lowerAscii("ABC123-_."));
+* println!(lowerAscii("Content-Type"));
+* println!(lowerAscii("ABC123-_."));
 */
 fn lowerAscii(s: String): String {
     let out = "";
@@ -385,7 +380,7 @@ fn lowerAscii(s: String): String {
 * @example
 * import { isDigitCode } from "@std/web";
 *
-* print(isDigitCode("7".charCodeAt(0)), isDigitCode("a".charCodeAt(0)));
+* println!(isDigitCode("7".charCodeAt(0)), isDigitCode("a".charCodeAt(0)));
 */
 fn isDigitCode(code: Int): Bool {
     return code >= 48 && code <= 57;
@@ -400,7 +395,7 @@ fn isDigitCode(code: Int): Bool {
 * @example
 * import { isAllDigits } from "@std/web";
 *
-* print(isAllDigits("8080"), isAllDigits(""), isAllDigits("80a"));
+* println!(isAllDigits("8080"), isAllDigits(""), isAllDigits("80a"));
 */
 fn isAllDigits(s: String): Bool {
     if s == "" {
@@ -424,7 +419,7 @@ fn isAllDigits(s: String): Bool {
 * @example
 * import { hexVal } from "@std/web";
 *
-* print(hexVal("f".charCodeAt(0)), hexVal("A".charCodeAt(0)), hexVal("z".charCodeAt(0)));
+* println!(hexVal("f".charCodeAt(0)), hexVal("A".charCodeAt(0)), hexVal("z".charCodeAt(0)));
 */
 fn hexVal(code: Int): Int {
     if code >= 48 && code <= 57 {
@@ -448,7 +443,7 @@ fn hexVal(code: Int): Int {
 * @example
 * import { hexPair } from "@std/web";
 *
-* print(hexPair("4", "1"), hexPair("f", "F"), hexPair("z", "0"));
+* println!(hexPair("4", "1"), hexPair("f", "F"), hexPair("z", "0"));
 */
 fn hexPair(hi: String, lo: String): Int {
     let h = hexVal(hi.charCodeAt(0));
@@ -467,7 +462,7 @@ fn hexPair(hi: String, lo: String): Int {
 * @example
 * import { hexDigit } from "@std/web";
 *
-* print(hexDigit(0), hexDigit(9), hexDigit(15));
+* println!(hexDigit(0), hexDigit(9), hexDigit(15));
 */
 fn hexDigit(v: Int): String {
     return "0123456789ABCDEF".slice(v, v + 1);
@@ -482,8 +477,8 @@ fn hexDigit(v: Int): String {
 * @example
 * import { isUnreserved } from "@std/web";
 *
-* print(isUnreserved("A".charCodeAt(0)), isUnreserved("~".charCodeAt(0)));
-* print(isUnreserved("/".charCodeAt(0)), isUnreserved(" ".charCodeAt(0)));
+* println!(isUnreserved("A".charCodeAt(0)), isUnreserved("~".charCodeAt(0)));
+* println!(isUnreserved("/".charCodeAt(0)), isUnreserved(" ".charCodeAt(0)));
 */
 fn isUnreserved(code: Int): Bool {
     if code >= 48 && code <= 57 {
@@ -509,8 +504,8 @@ fn isUnreserved(code: Int): Bool {
 * @example
 * import { appendByte } from "@std/web";
 *
-* print(appendByte("%", 65));
-* print(appendByte(appendByte("", 0), 255));
+* println!(appendByte("%", 65));
+* println!(appendByte(appendByte("", 0), 255));
 */
 fn appendByte(out: String, b: Int): String {
     return out + "%" + hexDigit(b / 16) + hexDigit(b - (b / 16) * 16);
@@ -527,9 +522,9 @@ fn appendByte(out: String, b: Int): String {
 * @example
 * import { encodeComponent } from "@std/web";
 *
-* print(encodeComponent("a b&c=d", false));
-* print(encodeComponent("a b&c=d", true));
-* print(encodeComponent("safe-._~", true));
+* println!(encodeComponent("a b&c=d", false));
+* println!(encodeComponent("a b&c=d", true));
+* println!(encodeComponent("safe-._~", true));
 */
 fn encodeComponent(s: String, form: Bool): String {
     let out = "";
@@ -581,10 +576,10 @@ fn encodeComponent(s: String, form: Bool): String {
 * @example
 * import { decodeComponent, encodeComponent } from "@std/web";
 *
-* print(decodeComponent("a+b%20c", true));
-* print(encodeComponent("a b", true));
-* print(decodeComponent("%E2%9C%93", false));
-* print(decodeComponent("a+b", false));
+* println!(decodeComponent("a+b%20c", true));
+* println!(encodeComponent("a b", true));
+* println!(decodeComponent("%E2%9C%93", false));
+* println!(decodeComponent("a+b", false));
 */
 fn decodeComponent(s: String, plus: Bool): String {
     let out = "";
@@ -683,8 +678,8 @@ fn decodeComponent(s: String, plus: Bool): String {
 * let h = new Headers();
 * h.set("Content-Type", "text/plain");
 * h.set("X-Request-Id", "abc");
-* print(h.len(), h.keys().join(","));
-* print(h.get("content-type") ?? "", h.has("x-request-id"));
+* println!(h.len(), h.keys().join(","));
+* println!(h.get("content-type") ?? "", h.has("x-request-id"));
 */
 class Headers {
     /** Lowercased names to values. */
@@ -697,7 +692,7 @@ class Headers {
     * import { Headers } from "@std/web";
     *
     * let h = new Headers();
-    * print(h.len(), h.keys().length);
+    * println!(h.len(), h.keys().length);
     */
     init() {
         this.table = new Map<String, String>();
@@ -716,7 +711,7 @@ class Headers {
     * m.set("Accept", "text/plain");
     * m.set("X-Trace", "abc");
     * let h = Headers.fromMap(m);
-    * print(h.len(), h.get("accept") ?? "");
+    * println!(h.len(), h.get("accept") ?? "");
     */
     static fromMap(m: Map<String, String>): Headers {
         let h = new Headers();
@@ -740,7 +735,7 @@ class Headers {
     * import { Headers } from "@std/web";
     *
     * let h = Headers.fromPairs([["Content-Type", "text/plain"], ["X-N", "1"]]);
-    * print(h.get("content-type") ?? "", h.len());
+    * println!(h.get("content-type") ?? "", h.len());
     */
     static fromPairs(pairs: Array<Array<String>>): Headers {
         let h = new Headers();
@@ -765,7 +760,7 @@ class Headers {
     *
     * let h = new Headers();
     * h.set("Content-Type", "text/plain");
-    * print(h.get("CONTENT-TYPE") ?? "none", h.get("missing") ?? "none");
+    * println!(h.get("CONTENT-TYPE") ?? "none", h.get("missing") ?? "none");
     */
     get(name: String): String? {
         let k = lowerAscii(name);
@@ -787,7 +782,7 @@ class Headers {
     * let h = new Headers();
     * h.set("Accept", "text/plain");
     * h.set("accept", "text/html");
-    * print(h.len(), h.get("Accept") ?? "");
+    * println!(h.len(), h.get("Accept") ?? "");
     */
     set(name: String, value: String) {
         this.table.set(lowerAscii(name), value);
@@ -802,7 +797,7 @@ class Headers {
     *
     * let h = new Headers();
     * h.set("X-Key", "v");
-    * print(h.has("x-key"), h.has("X-Other"));
+    * println!(h.has("x-key"), h.has("X-Other"));
     */
     has(name: String): Bool {
         return this.table.has(lowerAscii(name));
@@ -816,8 +811,8 @@ class Headers {
     * import { Headers } from "@std/web";
     *
     * let h = Headers.fromPairs([["X-Key", "v"]]);
-    * print(h.delete("x-key"), h.len());
-    * print(h.delete("x-key"));
+    * println!(h.delete("x-key"), h.len());
+    * println!(h.delete("x-key"));
     */
     delete(name: String): Bool {
         return this.table.delete(lowerAscii(name));
@@ -830,9 +825,9 @@ class Headers {
     * import { Headers } from "@std/web";
     *
     * let h = Headers.fromPairs([["A", "1"], ["B", "2"]]);
-    * print(h.len());
+    * println!(h.len());
     * h.clear();
-    * print(h.len());
+    * println!(h.len());
     */
     len(): Int {
         return this.table.len();
@@ -846,7 +841,7 @@ class Headers {
     *
     * let h = Headers.fromPairs([["A", "1"], ["B", "2"]]);
     * h.clear();
-    * print(h.len(), h.keys().length);
+    * println!(h.len(), h.keys().length);
     */
     clear() {
         this.table.clear();
@@ -859,7 +854,7 @@ class Headers {
     * import { Headers } from "@std/web";
     *
     * let h = Headers.fromPairs([["Content-Type", "text/plain"], ["X-N", "1"]]);
-    * print(h.keys().join(","));
+    * println!(h.keys().join(","));
     */
     keys(): Array<String> {
         let raw = this.table.keys();
@@ -881,8 +876,8 @@ class Headers {
     * import { Headers } from "@std/web";
     *
     * let h = Headers.fromPairs([["A", "1"], ["B", "2"]]);
-    * print(h.values().join(","));
-    * print(h.keys()[0], h.values()[0]);
+    * println!(h.values().join(","));
+    * println!(h.keys()[0], h.values()[0]);
     */
     values(): Array<String> {
         let raw = this.table.values();
@@ -907,8 +902,8 @@ class Headers {
 * import { UrlParts, parseAbsolute } from "@std/web";
 *
 * let p = new UrlParts();
-* print(parseAbsolute("https://a.com:8080/x?y=1#f", p));
-* print(p.scheme, p.host, p.port, p.path, p.query, p.fragment);
+* println!(parseAbsolute("https://a.com:8080/x?y=1#f", p));
+* println!(p.scheme, p.host, p.port, p.path, p.query, p.fragment);
 */
 class UrlParts {
     /**
@@ -941,7 +936,7 @@ class UrlParts {
     * import { UrlParts } from "@std/web";
     *
     * let p = new UrlParts();
-    * print(p.scheme == "", p.host == "", p.path == "");
+    * println!(p.scheme == "", p.host == "", p.path == "");
     */
     init() {
         this.scheme = "";
@@ -962,8 +957,8 @@ class UrlParts {
 * @example
 * import { isSchemeCode } from "@std/web";
 *
-* print(isSchemeCode("h".charCodeAt(0), true), isSchemeCode("1".charCodeAt(0), true));
-* print(isSchemeCode("1".charCodeAt(0), false), isSchemeCode("+".charCodeAt(0), true));
+* println!(isSchemeCode("h".charCodeAt(0), true), isSchemeCode("1".charCodeAt(0), true));
+* println!(isSchemeCode("1".charCodeAt(0), false), isSchemeCode("+".charCodeAt(0), true));
 */
 fn isSchemeCode(code: Int, first: Bool): Bool {
     if code >= 48 && code <= 57 {
@@ -992,7 +987,7 @@ fn isSchemeCode(code: Int, first: Bool): Bool {
 * import { splitFragQuery, UrlParts } from "@std/web";
 *
 * let p = new UrlParts();
-* print(splitFragQuery("/a/b?x=1#f", p), p.query, p.fragment);
+* println!(splitFragQuery("/a/b?x=1#f", p), p.query, p.fragment);
 */
 fn splitFragQuery(rest: String, parts: UrlParts): String {
     let out = rest;
@@ -1021,7 +1016,7 @@ fn splitFragQuery(rest: String, parts: UrlParts): String {
 *
 * let p = new UrlParts();
 * parseAuthority("Example.COM:8080", p);
-* print(p.host, p.port);
+* println!(p.host, p.port);
 */
 fn parseAuthority(auth: String, parts: UrlParts) {
     let colon = auth.indexOf(":");
@@ -1053,8 +1048,8 @@ fn parseAuthority(auth: String, parts: UrlParts) {
 * import { parseAbsolute, UrlParts } from "@std/web";
 *
 * let p = new UrlParts();
-* print(parseAbsolute("https://a.com/x?y=1#f", p), p.scheme, p.host, p.path);
-* print(parseAbsolute("/no/scheme", p));
+* println!(parseAbsolute("https://a.com/x?y=1#f", p), p.scheme, p.host, p.path);
+* println!(parseAbsolute("/no/scheme", p));
 */
 fn parseAbsolute(s: String, parts: UrlParts): Bool {
     let t = s.trim();
@@ -1110,7 +1105,7 @@ fn parseAbsolute(s: String, parts: UrlParts): Bool {
 * @example
 * import { defaultPort } from "@std/web";
 *
-* print(defaultPort("https"), defaultPort("http"), defaultPort("ftp"));
+* println!(defaultPort("https"), defaultPort("http"), defaultPort("ftp"));
 */
 fn defaultPort(scheme: String): String {
     if scheme == "http" || scheme == "ws" {
@@ -1135,9 +1130,9 @@ fn defaultPort(scheme: String): String {
 * @example
 * import { removeDotSegments } from "@std/web";
 *
-* print(removeDotSegments("/a/b/../c"));
-* print(removeDotSegments("/a/./b/"));
-* print(removeDotSegments("/a/../../b"));
+* println!(removeDotSegments("/a/b/../c"));
+* println!(removeDotSegments("/a/./b/"));
+* println!(removeDotSegments("/a/../../b"));
 */
 fn removeDotSegments(path: String): String {
     let segs = path.split("/");
@@ -1175,8 +1170,8 @@ fn removeDotSegments(path: String): String {
 * @example
 * import { mergePaths } from "@std/web";
 *
-* print(mergePaths("/a/b/", "c"));
-* print(mergePaths("", "c"), mergePaths("/a", "c"));
+* println!(mergePaths("/a/b/", "c"));
+* println!(mergePaths("", "c"), mergePaths("/a", "c"));
 */
 fn mergePaths(basePath: String, refPath: String): String {
     if basePath == "" {
@@ -1208,7 +1203,7 @@ fn mergePaths(basePath: String, refPath: String): String {
 * @example
 * import { lessThan } from "@std/web";
 *
-* print(lessThan("abc", "abd"), lessThan("ab", "abc"), lessThan("abc", "abc"));
+* println!(lessThan("abc", "abd"), lessThan("ab", "abc"), lessThan("abc", "abc"));
 */
 fn lessThan(a: String, b: String): Bool {
     let i = 0;
@@ -1245,8 +1240,8 @@ fn lessThan(a: String, b: String): Bool {
 * import { URL } from "@std/web";
 *
 * let u = new URL("../x?y=1", "https://a.com/b/c/d");
-* print(u.href());
-* print(new URL("//cdn.a.com/lib", "https://a.com").href());
+* println!(u.href());
+* println!(new URL("//cdn.a.com/lib", "https://a.com").href());
 */
 class URL {
     /**
@@ -1290,9 +1285,9 @@ class URL {
     * @example
     * import { URL } from "@std/web";
     *
-    * print(new URL("https://a.com/x").href());
-    * print(new URL("../y", "https://a.com/b/c/d").href());
-    * print(new URL("/only/path").href());
+    * println!(new URL("https://a.com/x").href());
+    * println!(new URL("../y", "https://a.com/b/c/d").href());
+    * println!(new URL("/only/path").href());
     */
     init(url: String, base: String = "") {
         this.scheme = "";
@@ -1394,8 +1389,8 @@ class URL {
     * import { URL } from "@std/web";
     *
     * let u = new URL("https://example.com:8080/a/b?x=1#frag");
-    * print(u.href());
-    * print(u.hostname(), u.port(), u.pathname());
+    * println!(u.href());
+    * println!(u.hostname(), u.port(), u.pathname());
     */
     href(): String {
         return this.toString();
@@ -1410,8 +1405,8 @@ class URL {
     * @example
     * import { URL } from "@std/web";
     *
-    * print(new URL("https://a.com:443/x").href());
-    * print(new URL("/only/a/path?x=1").href());
+    * println!(new URL("https://a.com:443/x").href());
+    * println!(new URL("/only/a/path?x=1").href());
     */
     toString(): String {
         if this.scheme == "" {
@@ -1448,8 +1443,8 @@ class URL {
     * @example
     * import { URL } from "@std/web";
     *
-    * print(new URL("https://a.com/").protocol());
-    * print(new URL("/rel").protocol() == "");
+    * println!(new URL("https://a.com/").protocol());
+    * println!(new URL("/rel").protocol() == "");
     */
     protocol(): String {
         if this.scheme == "" {
@@ -1465,8 +1460,8 @@ class URL {
     * @example
     * import { URL } from "@std/web";
     *
-    * print(new URL("https://a.com:8443/x").host());
-    * print(new URL("https://a.com:443/x").host());
+    * println!(new URL("https://a.com:8443/x").host());
+    * println!(new URL("https://a.com:443/x").host());
     */
     host(): String {
         if this.port != "" && this.port != defaultPort(this.scheme) {
@@ -1481,7 +1476,7 @@ class URL {
     * @example
     * import { URL } from "@std/web";
     *
-    * print(new URL("http://A.com:8080/x").hostname());
+    * println!(new URL("http://A.com:8080/x").hostname());
     */
     hostname(): String {
         return this.host;
@@ -1496,7 +1491,7 @@ class URL {
     * import { URL, defaultPort } from "@std/web";
     *
     * let u = new URL("https://a.com/x");
-    * print(u.port() == "", defaultPort(u.scheme));
+    * println!(u.port() == "", defaultPort(u.scheme));
     */
     port(): String {
         return this.port;
@@ -1509,7 +1504,7 @@ class URL {
     * @example
     * import { URL } from "@std/web";
     *
-    * print(new URL("https://a.com/a/b%20c").pathname());
+    * println!(new URL("https://a.com/a/b%20c").pathname());
     */
     pathname(): String {
         return this.path;
@@ -1521,7 +1516,7 @@ class URL {
     * @example
     * import { URL } from "@std/web";
     *
-    * print(new URL("https://a.com/?x=1&y=2").search());
+    * println!(new URL("https://a.com/?x=1&y=2").search());
     */
     search(): String {
         if this.query == "" {
@@ -1538,8 +1533,8 @@ class URL {
     * @example
     * import { URL } from "@std/web";
     *
-    * print(new URL("https://a.com/x#top").hash());
-    * print(new URL("?q=1", "https://a.com/x#top").hash() == "");
+    * println!(new URL("https://a.com/x#top").hash());
+    * println!(new URL("?q=1", "https://a.com/x#top").hash() == "");
     */
     hash(): String {
         if this.fragment == "" {
@@ -1556,8 +1551,8 @@ class URL {
     * @example
     * import { URL } from "@std/web";
     *
-    * print(new URL("https://a.com:8443/x").origin());
-    * print(new URL("/rel").origin());
+    * println!(new URL("https://a.com:8443/x").origin());
+    * println!(new URL("/rel").origin());
     */
     origin(): String {
         if this.scheme == "" || this.host == "" {
@@ -1582,10 +1577,10 @@ class URL {
     *
     * let u = new URL("https://a.com/?q=a+b&tag=x%20y");
     * let p = u.searchParams();
-    * print(p.get("q") ?? "", p.get("tag") ?? "");
+    * println!(p.get("q") ?? "", p.get("tag") ?? "");
     * p.set("q", "c+d");
     * u.setSearch(p.toString());
-    * print(u.search());
+    * println!(u.search());
     */
     searchParams(): URLSearchParams {
         return new URLSearchParams(this.query);
@@ -1602,7 +1597,7 @@ class URL {
     *
     * let u = new URL("https://a.com/old");
     * u.setPathname("new");
-    * print(u.href());
+    * println!(u.href());
     */
     setPathname(p: String) {
         if this.host != "" {
@@ -1628,7 +1623,7 @@ class URL {
     *
     * let u = new URL("https://a.com/x?old=1");
     * u.setSearch("?a=1&b=2");
-    * print(u.href());
+    * println!(u.href());
     */
     setSearch(q: String) {
         if q.startsWith("?") {
@@ -1647,9 +1642,9 @@ class URL {
     *
     * let u = new URL("https://a.com/x");
     * u.setHash("#top");
-    * print(u.hash());
+    * println!(u.hash());
     * u.setHash("");
-    * print(u.href());
+    * println!(u.href());
     */
     setHash(h: String) {
         if h.startsWith("#") {
@@ -1676,9 +1671,9 @@ class URL {
 * import { URLSearchParams } from "@std/web";
 *
 * let p = new URLSearchParams("?a=1&a=2&b=x+y");
-* print(p.size(), p.getAll("a").length(), p.get("b") ?? "");
+* println!(p.size(), p.getAll("a").length(), p.get("b") ?? "");
 * p.append("c", "a b");
-* print(p.toString());
+* println!(p.toString());
 */
 class URLSearchParams with Iterable<Array<String>> {
     /**
@@ -1702,9 +1697,9 @@ class URLSearchParams with Iterable<Array<String>> {
     * import { URLSearchParams } from "@std/web";
     *
     * let p = new URLSearchParams();
-    * print(p.size(), p.toString() == "");
+    * println!(p.size(), p.toString() == "");
     * p.append("a", "1");
-    * print(p.toString());
+    * println!(p.toString());
     */
     init(query: String = "") {
         this.names = [];
@@ -1726,7 +1721,7 @@ class URLSearchParams with Iterable<Array<String>> {
     * let m = new Map<String, String>();
     * m.set("q", "rasmalai");
     * m.set("page", "2");
-    * print(URLSearchParams.fromMap(m).toString());
+    * println!(URLSearchParams.fromMap(m).toString());
     */
     static fromMap(m: Map<String, String>): URLSearchParams {
         let p = new URLSearchParams();
@@ -1750,7 +1745,7 @@ class URLSearchParams with Iterable<Array<String>> {
     *
     * let p = new URLSearchParams("a=1");
     * p.parse("b=2&c");
-    * print(p.size(), p.toString());
+    * println!(p.size(), p.toString());
     */
     parse(query: String) {
         let q = query;
@@ -1786,7 +1781,7 @@ class URLSearchParams with Iterable<Array<String>> {
     * import { URLSearchParams } from "@std/web";
     *
     * let p = new URLSearchParams("a=1&a=2&flag");
-    * print(p.get("a") ?? "none", p.get("flag") ?? "none", p.get("zz") ?? "none");
+    * println!(p.get("a") ?? "none", p.get("flag") ?? "none", p.get("zz") ?? "none");
     */
     get(name: String): String? {
         let i = 0;
@@ -1809,7 +1804,7 @@ class URLSearchParams with Iterable<Array<String>> {
     * import { URLSearchParams } from "@std/web";
     *
     * let p = new URLSearchParams("a=1&a=2&b=3");
-    * print(p.getAll("a").length(), p.get("b") ?? "");
+    * println!(p.getAll("a").length(), p.get("b") ?? "");
     */
     getAll(name: String): Array<String> {
         let out: Array<String> = [];
@@ -1834,7 +1829,7 @@ class URLSearchParams with Iterable<Array<String>> {
     *
     * let p = new URLSearchParams("a=1&b=2&a=3");
     * p.set("a", "9");
-    * print(p.toString());
+    * println!(p.toString());
     */
     set(name: String, value: String) {
         let nn: Array<String> = [];
@@ -1864,7 +1859,7 @@ class URLSearchParams with Iterable<Array<String>> {
     *
     * let p = new URLSearchParams("tag=x");
     * p.append("tag", "y");
-    * print(p.getAll("tag").join(","), p.size());
+    * println!(p.getAll("tag").join(","), p.size());
     */
     append(name: String, value: String) {
         this.names.push(name);
@@ -1880,8 +1875,8 @@ class URLSearchParams with Iterable<Array<String>> {
     * import { URLSearchParams } from "@std/web";
     *
     * let p = new URLSearchParams("a=1&b=2&a=3");
-    * print(p.delete("a"), p.toString());
-    * print(p.size());
+    * println!(p.delete("a"), p.toString());
+    * println!(p.size());
     */
     delete(name: String): Bool {
         let nn: Array<String> = [];
@@ -1911,7 +1906,7 @@ class URLSearchParams with Iterable<Array<String>> {
     * import { URLSearchParams } from "@std/web";
     *
     * let p = new URLSearchParams("flag&a=1");
-    * print(p.has("flag"), p.has("a"), p.has("b"));
+    * println!(p.has("flag"), p.has("a"), p.has("b"));
     */
     has(name: String): Bool {
         return this.get(name) != null;
@@ -1923,7 +1918,7 @@ class URLSearchParams with Iterable<Array<String>> {
     * @example
     * import { URLSearchParams } from "@std/web";
     *
-    * print(new URLSearchParams("a=1&a=2").size());
+    * println!(new URLSearchParams("a=1&a=2").size());
     */
     size(): Int {
         return this.names.length();
@@ -1935,7 +1930,7 @@ class URLSearchParams with Iterable<Array<String>> {
     * @example
     * import { URLSearchParams } from "@std/web";
     *
-    * print(new URLSearchParams("a=1&b=2&a=3").keys().join(","));
+    * println!(new URLSearchParams("a=1&b=2&a=3").keys().join(","));
     */
     keys(): Array<String> {
         let out: Array<String> = [];
@@ -1954,7 +1949,7 @@ class URLSearchParams with Iterable<Array<String>> {
     * @example
     * import { URLSearchParams } from "@std/web";
     *
-    * print(new URLSearchParams("a=1&flag&b=2").values().join("|"));
+    * println!(new URLSearchParams("a=1&flag&b=2").values().join("|"));
     */
     values(): Array<String> {
         let out: Array<String> = [];
@@ -1975,7 +1970,7 @@ class URLSearchParams with Iterable<Array<String>> {
     *
     * let p = new URLSearchParams("a=1&b=2");
     * for pair in p.entries() {
-    *     print(pair[0], pair[1]);
+    *     println!(pair[0], pair[1]);
     * }
     */
     entries(): Array<Array<String>> {
@@ -1997,7 +1992,7 @@ class URLSearchParams with Iterable<Array<String>> {
     *
     * let p = new URLSearchParams("c=3&a=1&a=2");
     * p.sort();
-    * print(p.toString());
+    * println!(p.toString());
     */
     sort() {
         let i = 1;
@@ -2028,7 +2023,7 @@ class URLSearchParams with Iterable<Array<String>> {
     *
     * let p = new URLSearchParams();
     * p.append("q", "a b&c");
-    * print(p.toString());
+    * println!(p.toString());
     */
     toString(): String {
         let out = "";
@@ -2054,7 +2049,7 @@ class URLSearchParams with Iterable<Array<String>> {
     *
     * let p = new URLSearchParams("x=1&y=2");
     * for pair in p {
-    *     print(pair[0], pair[1]);
+    *     println!(pair[0], pair[1]);
     * }
     */
     iterator(): Iterator<Array<String>> {
@@ -2082,8 +2077,8 @@ class URLSearchParams with Iterable<Array<String>> {
 * import { JSON } from "@std/json";
 *
 * let r = new Response(404, "Not Found", Headers.fromPairs([["Content-Type", "text/plain"]]), "no such page");
-* print(r.status, r.statusText, isSuccess(r.status));
-* print(r.headers.get("content-type") ?? "", r.text());
+* println!(r.status, r.statusText, isSuccess(r.status));
+* println!(r.headers.get("content-type") ?? "", r.text());
 */
 class Response {
     /**
@@ -2129,7 +2124,7 @@ class Response {
     *
     * let h = Headers.fromPairs([["Content-Type", "text/plain"]]);
     * let r = new Response(204, "No Content", h, "");
-    * print(r.status, r.text() == "");
+    * println!(r.status, r.text() == "");
     */
     init(status: Int, statusText: String, headers: Headers, body: String, raw: ByteBuffer? = null) {
         this.status = status;
@@ -2148,7 +2143,7 @@ class Response {
     * import { Response, Headers } from "@std/web";
     *
     * let r = new Response(200, "OK", new Headers(), "hi");
-    * print(r.bytes().length());
+    * println!(r.bytes().length());
     */
     fn bytes(): ByteBuffer {
         let raw = this.raw
@@ -2165,7 +2160,7 @@ class Response {
     * @example
     * import { Response, Headers } from "@std/web";
     *
-    * print(new Response(200, "OK", new Headers(), "hello").text());
+    * println!(new Response(200, "OK", new Headers(), "hello").text());
     */
     fn text(): String {
         return this.body;
@@ -2183,7 +2178,7 @@ class Response {
     * import { JSON } from "@std/json";
     *
     * let r = new Response(200, "OK", new Headers(), "\{\"n\":7,\"ok\":true}");
-    * print(JSON.stringify(r.json()));
+    * println!(JSON.stringify(r.json()));
     */
     fn json(): Any {
         return JSON.parse(this.body);
@@ -2210,7 +2205,7 @@ class Response {
 * let o = new RequestOptions("POST");
 * o.headers.set("Content-Type", "application/json");
 * o.body = "\{\"name\":\"ada\"}";
-* print(o.methodName(), o.bodyText(), o.extraHeaders().get("content-type") ?? "");
+* println!(o.methodName(), o.bodyText(), o.extraHeaders().get("content-type") ?? "");
 */
 class RequestOptions {
     /**
@@ -2239,7 +2234,7 @@ class RequestOptions {
     * import { RequestOptions } from "@std/web";
     *
     * let o = new RequestOptions();
-    * print(o.methodName(), o.bodyText() == "", o.extraHeaders().len());
+    * println!(o.methodName(), o.bodyText() == "", o.extraHeaders().len());
     */
     init(method: String = "GET") {
         this.method = method;
@@ -2254,7 +2249,7 @@ class RequestOptions {
     * import { RequestOptions } from "@std/web";
     *
     * let o = new RequestOptions("PATCH");
-    * print(o.methodName());
+    * println!(o.methodName());
     */
     fn methodName(): String {
         return this.method;
@@ -2269,7 +2264,7 @@ class RequestOptions {
     *
     * let o = new RequestOptions();
     * o.extraHeaders().set("Accept-Language", "en");
-    * print(o.extraHeaders().len());
+    * println!(o.extraHeaders().len());
     */
     fn extraHeaders(): Headers {
         return this.headers;
@@ -2285,7 +2280,7 @@ class RequestOptions {
     *
     * let o = new RequestOptions("POST");
     * o.body = "name=ada";
-    * print(o.bodyText().length);
+    * println!(o.bodyText().length);
     */
     fn bodyText(): String {
         return this.body;
@@ -2300,7 +2295,7 @@ class RequestOptions {
 * @example
 * import { parseDec } from "@std/web";
 *
-* print(parseDec("404"), parseDec(""), parseDec("4a"));
+* println!(parseDec("404"), parseDec(""), parseDec("4a"));
 */
 fn parseDec(s: String): Int {
     if s == "" {
@@ -2329,7 +2324,7 @@ fn parseDec(s: String): Int {
 * import { strBytes } from "@std/web";
 *
 * let b = strBytes("Hi");
-* print(b.length, b[0], b[1]);
+* println!(b.length, b[0], b[1]);
 */
 fn strBytes(s: String): Array<Int> {
     let out: Array<Int> = [];
@@ -2351,7 +2346,7 @@ fn strBytes(s: String): Array<Int> {
 * import { strBytes, sliceBytes } from "@std/web";
 *
 * let b = strBytes("abcdef");
-* print(sliceBytes(b, 1, 4).length, sliceBytes(b, 4, 2).length);
+* println!(sliceBytes(b, 1, 4).length, sliceBytes(b, 4, 2).length);
 */
 fn sliceBytes(buf: Array<Int>, start: Int, to: Int): Array<Int> {
     let out: Array<Int> = [];
@@ -2374,9 +2369,9 @@ fn sliceBytes(buf: Array<Int>, start: Int, to: Int): Array<Int> {
 * @example
 * import { strBytes, bytesToString } from "@std/web";
 *
-* print(bytesToString(strBytes("ok")));
-* print(bytesToString(strBytes("a\u{E9}b")));
-* print(bytesToString([]));
+* println!(bytesToString(strBytes("ok")));
+* println!(bytesToString(strBytes("a\u{E9}b")));
+* println!(bytesToString([]));
 */
 fn bytesToString(data: Array<Int>): String {
     let out = "";
@@ -2407,7 +2402,7 @@ fn bytesToString(data: Array<Int>): String {
 * import { strBytes, isAsciiRange } from "@std/web";
 *
 * let b = strBytes("ok");
-* print(isAsciiRange(b, 0, b.length), isAsciiRange(strBytes("a\u{E9}b"), 0, 1));
+* println!(isAsciiRange(b, 0, b.length), isAsciiRange(strBytes("a\u{E9}b"), 0, 1));
 */
 fn isAsciiRange(data: Array<Int>, start: Int, to: Int): Bool {
     let i = start;
@@ -2431,7 +2426,7 @@ fn isAsciiRange(data: Array<Int>, start: Int, to: Int): Bool {
 * import { strBytes, asciiBlock } from "@std/web";
 *
 * let b = strBytes("abcdef");
-* print(asciiBlock(b, 1, 4));
+* println!(asciiBlock(b, 1, 4));
 */
 fn asciiBlock(data: Array<Int>, start: Int, to: Int): String {
     let out = "";
@@ -2459,7 +2454,7 @@ fn asciiBlock(data: Array<Int>, start: Int, to: Int): String {
 * import { strBytes, asciiChunk } from "@std/web";
 *
 * let b = strBytes("abcdef");
-* print(asciiChunk(b, 0, 3));
+* println!(asciiChunk(b, 0, 3));
 */
 fn asciiChunk(data: Array<Int>, start: Int, to: Int): String {
     let out = "";
@@ -2483,8 +2478,8 @@ fn asciiChunk(data: Array<Int>, start: Int, to: Int): String {
 * @example
 * import { strBytes, completePrefix } from "@std/web";
 *
-* print(completePrefix(strBytes("abc"), 0, 3));
-* print(completePrefix(strBytes("a\u{E9}"), 0, 2));
+* println!(completePrefix(strBytes("abc"), 0, 3));
+* println!(completePrefix(strBytes("a\u{E9}"), 0, 2));
 */
 fn completePrefix(data: Array<Int>, start: Int, to: Int): Int {
     let i = to - 1;
@@ -2527,7 +2522,7 @@ fn completePrefix(data: Array<Int>, start: Int, to: Int): Int {
 * import { strBytes, decodeBlock } from "@std/web";
 *
 * let b = strBytes("a\u{C3}\u{A9}b");
-* print(decodeBlock(b, 0, b.length));
+* println!(decodeBlock(b, 0, b.length));
 */
 fn decodeBlock(data: Array<Int>, start: Int, to: Int): String {
     let enc = "";
@@ -2552,8 +2547,8 @@ fn decodeBlock(data: Array<Int>, start: Int, to: Int): String {
 *
 * let eol = "\u{D}\u{A}";
 * let raw = strBytes("HTTP/1.1 200 OK" + eol + eol);
-* print(findHeadersEnd(raw));
-* print(findHeadersEnd(strBytes("no blank line yet")));
+* println!(findHeadersEnd(raw));
+* println!(findHeadersEnd(strBytes("no blank line yet")));
 */
 fn findHeadersEnd(data: Array<Int>): Int {
     let i = 0;
@@ -2578,9 +2573,9 @@ fn findHeadersEnd(data: Array<Int>): Int {
 * let listener = TcpListener.bind("127.0.0.1", 0);
 * let client = await TcpStream.connect("127.0.0.1", listener.port());
 * let server = await listener.accept();
-* print(await client.write([104, 105]));
+* println!(await client.write([104, 105]));
 * let buf: Array<Int> = [];
-* print(await readMore(server, buf));
+* println!(await readMore(server, buf));
 */
 async fn readMore(s: TcpStream, buf: Array<Int>): Promise<Int> {
     let chunk: Array<Int> = await s.read(4096);
@@ -2607,7 +2602,7 @@ async fn readMore(s: TcpStream, buf: Array<Int>): Promise<Int> {
 * let client = await TcpStream.connect("127.0.0.1", listener.port());
 * let server = await listener.accept();
 * let buf = strBytes("HTTP/1.1 200 OK\u{D}\u{A}\u{D}\u{A}");
-* print(await readHeaders(server, buf));
+* println!(await readHeaders(server, buf));
 */
 async fn readHeaders(s: TcpStream, buf: Array<Int>): Promise<Int> {
     let end = findHeadersEnd(buf);
@@ -2640,7 +2635,7 @@ async fn readHeaders(s: TcpStream, buf: Array<Int>): Promise<Int> {
 * let server = await listener.accept();
 * let buf = strBytes("HTTP/1.1 200 OK\u{D}\u{A}Content-Length: 2\u{D}\u{A}\u{D}\u{A}hi");
 * let hend = await readHeaders(server, buf);
-* print(await readBodyInto(server, buf, hend, 1, 2));
+* println!(await readBodyInto(server, buf, hend, 1, 2));
 */
 async fn readBodyInto(s: TcpStream, buf: Array<Int>, hend: Int, mode: Int, want: Int): Promise<Array<Int>> {
     let done = bodyDone(buf, hend, mode, want);
@@ -2665,7 +2660,7 @@ async fn readBodyInto(s: TcpStream, buf: Array<Int>, hend: Int, mode: Int, want:
 *
 * let eol = "\u{D}\u{A}";
 * let raw = strBytes("4" + eol + "Wiki");
-* print(chunkLineEnd(raw, 0));
+* println!(chunkLineEnd(raw, 0));
 */
 fn chunkLineEnd(buf: Array<Int>, pos: Int): Int {
     let i = pos;
@@ -2692,7 +2687,7 @@ fn chunkLineEnd(buf: Array<Int>, pos: Int): Int {
 *
 * let eol = "\u{D}\u{A}";
 * let raw = strBytes("1A" + eol + "payload" + eol);
-* print(chunkLineValue(raw, 0, chunkLineEnd(raw, 0)));
+* println!(chunkLineValue(raw, 0, chunkLineEnd(raw, 0)));
 */
 fn chunkLineValue(buf: Array<Int>, pos: Int, end: Int): Int {
     let v = 0;
@@ -2732,8 +2727,8 @@ fn chunkLineValue(buf: Array<Int>, pos: Int, end: Int): Int {
 * let eol = "\u{D}\u{A}";
 * let raw = strBytes("HTTP/1.1 200 OK" + eol + eol + "4" + eol + "Wiki" + eol + "0" + eol + eol);
 * let h = findHeadersEnd(raw);
-* print(chunkTerminalEnd(raw, h));
-* print(chunkTerminalEnd(strBytes("zz"), 0));
+* println!(chunkTerminalEnd(raw, h));
+* println!(chunkTerminalEnd(strBytes("zz"), 0));
 */
 fn chunkTerminalEnd(buf: Array<Int>, pos: Int): Int {
     let end = chunkLineEnd(buf, pos);
@@ -2769,7 +2764,7 @@ fn chunkTerminalEnd(buf: Array<Int>, pos: Int): Int {
 * let h = findHeadersEnd(raw);
 * let body: Array<Int> = [];
 * appendChunks(raw, h, chunkTerminalEnd(raw, h), body);
-* print(bytesToString(body));
+* println!(bytesToString(body));
 */
 fn appendChunks(buf: Array<Int>, pos: Int, stop: Int, out: Array<Int>) {
     if pos < stop {
@@ -2802,7 +2797,7 @@ fn appendChunks(buf: Array<Int>, pos: Int, stop: Int, out: Array<Int>) {
 * let eol = "\u{D}\u{A}";
 * let raw = strBytes("HTTP/1.1 200 OK" + eol + eol + "hello");
 * let h = findHeadersEnd(raw);
-* print(bodyDone(raw, h, 1, 5), bodyDone(raw, h, 1, 9), bodyDone(raw, h, 0, 0));
+* println!(bodyDone(raw, h, 1, 5), bodyDone(raw, h, 1, 9), bodyDone(raw, h, 0, 0));
 */
 fn bodyDone(buf: Array<Int>, hend: Int, mode: Int, want: Int): Bool {
     if mode == 1 {
@@ -2828,7 +2823,7 @@ fn bodyDone(buf: Array<Int>, hend: Int, mode: Int, want: Int): Bool {
 *
 * let eol = "\u{D}\u{A}";
 * let raw = strBytes("HTTP/1.1 200 OK" + eol + eol + "hello");
-* print(bytesToString(sliceBody(raw, findHeadersEnd(raw), 1, 5)));
+* println!(bytesToString(sliceBody(raw, findHeadersEnd(raw), 1, 5)));
 */
 fn sliceBody(buf: Array<Int>, hend: Int, mode: Int, want: Int): Array<Int> {
     if mode == 1 {
@@ -2875,7 +2870,7 @@ fn sliceBody(buf: Array<Int>, hend: Int, mode: Int, want: Int): Array<Int> {
 * import { fetch } from "@std/web";
 *
 * let r = await fetch("http://example.com/", null);
-* print(r.status);
+* println!(r.status);
 */
 async fn fetch(url: String, options: RequestOptions = null): Promise<Response> {
     let method = "GET";
@@ -2905,7 +2900,7 @@ async fn fetch(url: String, options: RequestOptions = null): Promise<Response> {
 * import { fetchInner, Headers } from "@std/web";
 *
 * let r = await fetchInner("http://example.com/", "GET", new Headers(), "");
-* print(r.status);
+* println!(r.status);
 */
 async fn fetchInner(url: String, method: String, extra: Headers, body: String): Promise<Response> {
     let u = new URL(url);
@@ -2979,7 +2974,7 @@ async fn fetchInner(url: String, method: String, extra: Headers, body: String): 
 *
 * let req = "GET / HTTP/1.1\u{D}\u{A}Host: example.com\u{D}\u{A}Connection: close\u{D}\u{A}\u{D}\u{A}";
 * let r = await fetchOverTcp("example.com", 80, req);
-* print(r.status);
+* println!(r.status);
 */
 async fn fetchOverTcp(host: String, port: Int, req: String): Promise<Response> {
     let stream: TcpStream = await TcpStream.connect(host, port);
@@ -3073,7 +3068,7 @@ async fn fetchOverTcp(host: String, port: Int, req: String): Promise<Response> {
 * let stream = await TcpStream.connect("example.com", 443);
 * let tls = await TlsStream.connect(stream, "example.com");
 * let buf: Array<Int> = [];
-* print(await readMoreTls(tls, buf));
+* println!(await readMoreTls(tls, buf));
 */
 async fn readMoreTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
     let chunk: Array<Int> = await s.read(4096);
@@ -3098,7 +3093,7 @@ async fn readMoreTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
 * let stream = await TcpStream.connect("example.com", 443);
 * let tls = await TlsStream.connect(stream, "example.com");
 * let buf = strBytes("HTTP/1.1 200 OK\u{D}\u{A}\u{D}\u{A}");
-* print(await readHeadersTls(tls, buf));
+* println!(await readHeadersTls(tls, buf));
 */
 async fn readHeadersTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
     let end = findHeadersEnd(buf);
@@ -3130,7 +3125,7 @@ async fn readHeadersTls(s: TlsStream, buf: Array<Int>): Promise<Int> {
 * let tls = await TlsStream.connect(stream, "example.com");
 * let buf = strBytes("HTTP/1.1 200 OK\u{D}\u{A}Content-Length: 2\u{D}\u{A}\u{D}\u{A}hi");
 * let hend = await readHeadersTls(tls, buf);
-* print(await readBodyIntoTls(tls, buf, hend, 1, 2));
+* println!(await readBodyIntoTls(tls, buf, hend, 1, 2));
 */
 async fn readBodyIntoTls(s: TlsStream, buf: Array<Int>, hend: Int, mode: Int, want: Int): Promise<Array<Int>> {
     let done = bodyDone(buf, hend, mode, want);
@@ -3162,7 +3157,7 @@ async fn readBodyIntoTls(s: TlsStream, buf: Array<Int>, hend: Int, mode: Int, wa
 *
 * let req = "GET / HTTP/1.1\u{D}\u{A}Host: example.com\u{D}\u{A}Connection: close\u{D}\u{A}\u{D}\u{A}";
 * let r = await fetchOverTls("example.com", 443, req);
-* print(r.status);
+* println!(r.status);
 */
 async fn fetchOverTls(host: String, port: Int, req: String): Promise<Response> {
     let raw: TcpStream = await TcpStream.connect(host, port);

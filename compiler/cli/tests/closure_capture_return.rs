@@ -64,9 +64,9 @@ fn Main(): Int {
     if a == null || b == null { return 1 }
     let av: ByteBuffer = a
     let bv: ByteBuffer = b
-    print(av.length(), bv.length(), call(f), call(f))
+    println!(av.length(), bv.length(), call(f), call(f))
     let after = ByteBuffer.fromString(data.readString(0, data.length()))
-    print(after.length())
+    println!(after.length())
     return 0
 }
 "#;
@@ -83,8 +83,8 @@ fn Main(): Int {
     let h = (): Box => box
     let x: Box = h()
     let y: Box = h()
-    print(g(), g(), x.name, y.name)
-    print(s, box.name)
+    println!(g(), g(), x.name, y.name)
+    println!(s, box.name)
     return 0
 }
 "#;

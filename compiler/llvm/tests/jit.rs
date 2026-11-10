@@ -2,6 +2,10 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
+#[cfg(test)]
+#[path = "../../testkit/source.rs"]
+mod source;
+
 use inkwell::context::Context;
 
 use llvm::codegen::Jit;
@@ -16,10 +20,7 @@ fn scratch_dir(tag: &str) -> crate::scratch::Scratch {
 fn module_of(src: &str, tag: &str) -> lir::instr::Module {
     let dir = crate::scratch::dir(&format!("harness-{tag}"));
     std::fs::write(dir.join("main.rnx"), src).unwrap();
-    let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
-    let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
-    let d = frontend::desugar::desugar(&mut m);
-    assert!(d.is_empty(), "{d:?}");
+    let m = crate::source::resolve_file(&dir.join("main.rnx"));
     let out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     out
 }
@@ -78,7 +79,7 @@ fn llvm_array_len_call_form() {
 #[test]
 fn llvm_print_i64_via_runtime_symbol() {
     let context = Context::create();
-    let lir = lir_of("fn Main(): Int { print(42) return 7 }");
+    let lir = lir_of("fn Main(): Int { println!(42) return 7 }");
     let jit = Jit::compile(&context, &lir, "print_test").unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 7);
 }
@@ -93,7 +94,7 @@ fn llvm_class_point() {
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
 }
 
-const POINT_PROG: &str = "class Point { let x: Int; let y: Int; init(x: Int, y: Int) { this.x = x; this.y = y; } } fn Main(): Int { let pt = new Point(10, 32); print(pt.x + pt.y); return pt.x + pt.y; }";
+const POINT_PROG: &str = "class Point { let x: Int; let y: Int; init(x: Int, y: Int) { this.x = x; this.y = y; } } fn Main(): Int { let pt = new Point(10, 32); println!(pt.x + pt.y); return pt.x + pt.y; }";
 
 #[test]
 fn llvm_point_print_and_return() {
@@ -134,7 +135,7 @@ fn llvm_genref_expires() {
 #[test]
 fn llvm_strings_concat_eq_print() {
     let context = Context::create();
-    let lir = lir_of(r#"fn Main(): Int { let greeting = "Hello"; let target = "World"; let msg = greeting + ", " + target + "!"; print(msg, 42); if msg == "Hello, World!" { return 42; } return 0; }"#);
+    let lir = lir_of(r#"fn Main(): Int { let greeting = "Hello"; let target = "World"; let msg = greeting + ", " + target + "!"; println!(msg, 42); if msg == "Hello, World!" { return 42; } return 0; }"#);
     let jit = Jit::compile(&context, &lir, "str_test").unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
 }
@@ -142,7 +143,7 @@ fn llvm_strings_concat_eq_print() {
 #[test]
 fn llvm_string_interp_int() {
     let context = Context::create();
-    let lir = lir_of(r#"fn Main(): Int { let s = "n={40 + 2}!"; print(s); if s == "n=42!" { return 42; } return 0; }"#);
+    let lir = lir_of(r#"fn Main(): Int { let s = "n={40 + 2}!"; println!(s); if s == "n=42!" { return 42; } return 0; }"#);
     let jit = Jit::compile(&context, &lir, "interp_test").unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
 }
@@ -158,7 +159,7 @@ fn llvm_string_neq() {
 #[test]
 fn llvm_string_inner_scope() {
     let context = Context::create();
-    let lir = lir_of(r#"fn Main(): Int { let t = 0; if t == 0 { let s = "a" + "b"; print(s); } return 7; }"#);
+    let lir = lir_of(r#"fn Main(): Int { let t = 0; if t == 0 { let s = "a" + "b"; println!(s); } return 7; }"#);
     let jit = Jit::compile(&context, &lir, "inner_test").unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 7);
 }
@@ -166,7 +167,7 @@ fn llvm_string_inner_scope() {
 #[test]
 fn llvm_string_field() {
     let context = Context::create();
-    let lir = lir_of(r#"class C { let s: String; init(s: String) { this.s = s; } fn get(): String { return this.s; } } fn Main(): Int { let c = new C("xy"); print(c.get()); if c.get() == "xy" { return 9; } return 0; }"#);
+    let lir = lir_of(r#"class C { let s: String; init(s: String) { this.s = s; } fn get(): String { return this.s; } } fn Main(): Int { let c = new C("xy"); println!(c.get()); if c.get() == "xy" { return 9; } return 0; }"#);
     let jit = Jit::compile(&context, &lir, "field_test").unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 9);
 }
@@ -174,7 +175,7 @@ fn llvm_string_field() {
 #[test]
 fn llvm_bool_interp() {
     let context = Context::create();
-    let lir = lir_of(r#"fn Main(): Int { let s = "v={1 == 1}!"; print(s); if s == "v=true!" { return 5; } return 0; }"#);
+    let lir = lir_of(r#"fn Main(): Int { let s = "v={1 == 1}!"; println!(s); if s == "v=true!" { return 5; } return 0; }"#);
     let jit = Jit::compile(&context, &lir, "bool_test").unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 5);
 }
@@ -432,11 +433,9 @@ fn llvm_multi_package_deps() {
 fn llvm_namespace_print() {
     let dir = crate::scratch::dir("llvm");
     std::fs::write(dir.join("lib.rnx"), "const K: Int = 7;\nfn helper(x: Int): Int { return x * 6; }\n").unwrap();
-    std::fs::write(dir.join("main.rnx"), "import ns from \"./lib\";\nfn Main(): Int { print(ns); let alias = ns; print(alias.K); return alias.helper(7); }\n").unwrap();
+    std::fs::write(dir.join("main.rnx"), "import ns from \"./lib\";\nfn Main(): Int { println!(ns); let alias = ns; println!(alias.K); return alias.helper(7); }\n").unwrap();
     let context = Context::create();
-    let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap();
-    let mut m = g.resolve().unwrap();
-    assert!(frontend::desugar::desugar(&mut m).is_empty());
+    let m = crate::source::resolve_file(&dir.join("main.rnx"));
     let lir = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     let jit = Jit::compile(&context, &lir, "ns_print").unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);

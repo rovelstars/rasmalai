@@ -17,7 +17,7 @@
 //!
 //! let clock = Clock.virtual(0);
 //! clock.tick(2500000);
-//! print(clock.now().toMillis());
+//! println!(clock.now().toMillis());
 //! ```
 import {
     fn __rnx_clock_mono(): Int,
@@ -39,7 +39,7 @@ import {
 * import { Duration } from "@std/time";
 *
 * let half_second = new Duration(500000000);
-* print(half_second.toMillis());
+* println!(half_second.toMillis());
 */
 class Duration {
     /**
@@ -69,7 +69,7 @@ class Duration {
     *
     * let c = Clock.virtual(0);
     * c.tick(2500000);
-    * print(c.now().toMillis());
+    * println!(c.now().toMillis());
     */
     toMillis(): Int {
         return this.nanos / 1000000;
@@ -89,7 +89,7 @@ class Duration {
     *
     * let c = Clock.virtual(0);
     * c.tick(2500000);
-    * print(c.now().toSeconds());
+    * println!(c.now().toSeconds());
     */
     toSeconds(): Float {
         return Float(this.nanos) / 1000000000.0;
@@ -117,7 +117,7 @@ class Duration {
 *
 * let c = Clock.virtual(0);
 * c.tick(60_000_000_000);
-* print(c.now().toSeconds());
+* println!(c.now().toSeconds());
 */
 class VirtualClock {
     /**
@@ -149,7 +149,7 @@ class VirtualClock {
     * import { Clock } from "@std/time";
     *
     * let c = Clock.virtual(0);
-    * print(c.now().nanos == c.now().nanos);
+    * println!(c.now().nanos == c.now().nanos);
     */
     now(): Duration {
         return new Duration(this.currentNanos);
@@ -169,7 +169,7 @@ class VirtualClock {
     *
     * let c = Clock.virtual(0);
     * c.tick(2000000);
-    * print(c.now().toMillis());
+    * println!(c.now().toMillis());
     */
     tick(deltaNanos: Int) {
         this.currentNanos = this.currentNanos + deltaNanos;
@@ -190,7 +190,7 @@ class VirtualClock {
     * let c = Clock.virtual(0);
     * c.tick(1500000000);
     * c.reset(0);
-    * print(c.now().nanos);
+    * println!(c.now().nanos);
     */
     reset(nanos: Int) {
         this.currentNanos = nanos;
@@ -213,7 +213,7 @@ class VirtualClock {
 *
 * let start = Clock.mono();
 * let timeout = Clock.virtual(start.nanos + 30_000_000_000);
-* print(timeout.now().nanos - start.nanos);
+* println!(timeout.now().nanos - start.nanos);
 */
 class Clock {
     /**
@@ -229,7 +229,7 @@ class Clock {
     * import { Clock } from "@std/time";
     *
     * let c = Clock.virtual(1_000_000_000);
-    * print(c.now().toSeconds());
+    * println!(c.now().toSeconds());
     */
     static virtual(startNanos: Int): VirtualClock {
         return new VirtualClock(startNanos);
@@ -258,9 +258,13 @@ class Clock {
     *
     * let a = Clock.mono();
     * let b = Clock.mono();
-    * print(b.nanos >= a.nanos);
+    * println!(b.nanos >= a.nanos);
     */
     static mono(): Duration {
         return new Duration(__rnx_clock_mono());
     }
 }
+
+/** Calendar view over the wall clock. Catalog stub: the clocks in this
+ * package do not report calendar dates. */
+pub class Date {}

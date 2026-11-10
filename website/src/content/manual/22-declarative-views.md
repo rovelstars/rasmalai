@@ -337,7 +337,7 @@ let count = rx.signal(0)
 let doubled = rx.computed<Int>(() => count.get() * 2)
 
 rx.effect(() => {
-    print("count", count.get())
+    println!("count", count.get())
 })
 
 count.set(2)

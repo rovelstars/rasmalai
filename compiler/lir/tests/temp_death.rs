@@ -1,10 +1,11 @@
 use lir::instr::{Instr, Local};
 
+#[path = "../src/test_support.rs"]
+mod support;
+
 fn compile(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
-    let d = frontend::desugar::desugar(&mut m);
-    assert!(d.is_empty(), "{d:?}");
-    let out = lir::lower::lower(&mut m).unwrap_or_else(|e| panic!("{e}"));
+    let m = support::resolve_for_lowering(src);
+    let out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     let v = lir::verify::verify(&out);
     assert!(v.is_empty(), "{v:?}");
     out
@@ -113,16 +114,16 @@ fn nested_inner_temp_gets_a_release() {
 
 const RETURNED: &str = r#"class Outer {
     let a: Int = 1
-    deinit { print("outer-drop") }
+    deinit { println!("outer-drop") }
 }
 fn makeOuter(): Outer {
-    print("making")
+    println!("making")
     return new Outer()
 }
 fn Main(): Int {
     let o = makeOuter()
     let r = o.a
-    print("out")
+    println!("out")
     return r
 }
 "#;
@@ -149,10 +150,10 @@ fn returned_temp_has_no_early_release() {
 const PINNED: &str = r#"class Buf {
     let handle: Int = 7
     fn address(): Int {
-        print("addr")
+        println!("addr")
         return this.handle
     }
-    deinit { print("buf-drop") }
+    deinit { println!("buf-drop") }
 }
 fn sink(k: Int): Int { return k }
 fn Main(): Int {

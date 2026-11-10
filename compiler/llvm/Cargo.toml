@@ -8,6 +8,7 @@ diagnostics = { path = "../diagnostics" }
 frontend = { path = "../frontend" }
 lir = { path = "../lir" }
 runtime = { path = "../runtime" }
+sysroot = { path = "../sysroot" }
 inkwell = { version = "=0.10.0", features = ["llvm22-1"] }
 llvm-sys = "=221.1.0"
 

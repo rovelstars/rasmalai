@@ -14,8 +14,8 @@ Paste it into a file or run it straight in the playground:
 import { Process } from "@std/process";
 
 let out = Process.run("echo", ["hello"]);
-print(out.exitCode);
-print(out.stdoutText().contains("hello"));
+println!(out.exitCode);
+println!(out.stdoutText().contains("hello"));
 ```
 
 ## Keep going

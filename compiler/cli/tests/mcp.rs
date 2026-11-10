@@ -163,7 +163,7 @@ fn mcp_run_returns_value() {
     handshake(&mut s);
     let resp = s.call(
         "run",
-        serde_json::json!({ "source": "fn Main(): Int {\n    print(40 + 2);\n    return 0;\n}\n" }),
+        serde_json::json!({ "source": "fn Main(): Int {\n    println!(40 + 2);\n    return 0;\n}\n" }),
     );
     let text = Session::content_text(&resp);
     let out: serde_json::Value = serde_json::from_str(&text).expect("run returns JSON");
@@ -174,14 +174,14 @@ fn mcp_run_returns_value() {
     assert_eq!(out["truncated_stdout"], false, "{text:?}");
     let pretty = s.call(
         "run",
-        serde_json::json!({ "source": "fn Main(): Int {\n    print(40 + 2);\n    return 0;\n}\n", "pretty": true }),
+        serde_json::json!({ "source": "fn Main(): Int {\n    println!(40 + 2);\n    return 0;\n}\n", "pretty": true }),
     );
     let pretty_text = Session::content_text(&pretty);
     assert!(pretty_text.contains("42"), "{pretty_text:?}");
     assert!(pretty_text.contains("=> 0"), "{pretty_text:?}");
     let capped = s.call(
         "run",
-        serde_json::json!({ "source": "fn Main(): Int {\n    print(40 + 2);\n    return 0;\n}\n", "max_output_bytes": 2 }),
+        serde_json::json!({ "source": "fn Main(): Int {\n    println!(40 + 2);\n    return 0;\n}\n", "max_output_bytes": 2 }),
     );
     let capped_text = Session::content_text(&capped);
     let capped_json: serde_json::Value = serde_json::from_str(&capped_text).expect("run returns JSON");
@@ -256,7 +256,30 @@ fn mcp_resources_list_and_read() {
     );
     let api_text = api["result"]["contents"][0]["text"].as_str().unwrap_or("");
     let parsed: serde_json::Value = serde_json::from_str(api_text).expect("api.json parses");
-    assert!(parsed.get("modules").is_some(), "{api_text:?}");
+    let mut modules: Vec<String> = parsed["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .map(|m| m["name"].as_str().expect("module name").to_string())
+        .collect();
+    modules.sort();
+    let mut expected: Vec<String> =
+        stdlib::MODULES.iter().map(|m| m.to_string()).collect();
+    expected.sort();
+    assert_eq!(modules, expected, "catalog must cover every @std module");
+    for want in ["foundation", "async", "log", "uefi", "wasi"] {
+        assert!(modules.contains(&want.to_string()), "catalog is missing @std/{want}: {modules:?}");
+    }
+    let module_resource = s.request(
+        "resources/read",
+        serde_json::json!({ "uri": "rasmalai://stdlib/foundation.json" }),
+    );
+    let module_text = module_resource["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("module catalog text");
+    let module_json: serde_json::Value =
+        serde_json::from_str(module_text).expect("module catalog parses");
+    assert_eq!(module_json["modules"][0]["name"], "foundation", "{module_text:?}");
     let missing = s.request(
         "resources/read",
         serde_json::json!({ "uri": "rasmalai://spec/nope" }),

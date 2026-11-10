@@ -14,7 +14,7 @@ Paste it into a file or run it straight in the playground:
 import { blackBox } from "@std/testing";
 
 let x = blackBox(40 + 2);
-print(x);
+println!(x);
 ```
 
 ## Keep going

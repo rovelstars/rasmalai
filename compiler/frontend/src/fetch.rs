@@ -391,7 +391,17 @@ pub fn fetch_all_git_deps(scope_root: &Path) -> Result<Vec<(String, String, Stri
     let mut seen: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut stack: Vec<(PathBuf, ProjectConfig)> = starts;
     while let Some((pkg_root, cfg)) = stack.pop() {
-        for (dep_name, spec) in &cfg.dependencies {
+        for (dep_key, raw_spec) in &cfg.dependencies {
+            let rewritten = match raw_spec {
+                crate::project::DependencySpec::Alias { .. } => Some(
+                    crate::modules::resolve_alias_spec(scope_root, &cfg, dep_key, &mut Vec::new())?,
+                ),
+                _ => None,
+            };
+            let (dep_name, spec) = match &rewritten {
+                Some((name, spec)) => (name.as_str(), spec),
+                None => (dep_key.as_str(), raw_spec),
+            };
             let crate::project::DependencySpec::Git { git, rev, .. } = spec else {
                 continue;
             };
@@ -406,7 +416,7 @@ pub fn fetch_all_git_deps(scope_root: &Path) -> Result<Vec<(String, String, Stri
             }
             let anchor = cache_anchor(&pkg_root);
             let dir = resolve_git_dep(&anchor, dep_name, git, rev)?;
-            seen.insert(dep_name.clone(), (git.clone(), rev.clone()));
+            seen.insert(dep_name.to_string(), (git.clone(), rev.clone()));
             let dep_cfg = ProjectConfig::load_from_dir(&dir)?.ok_or_else(|| {
                 Diagnostic::new(Code::E108, format!("package `{dep_name}` has no Project.config"))
             })?;
@@ -464,6 +474,27 @@ fn scope_dep_spec(scope_root: &Path, name: &str) -> Option<crate::project::Depen
         }
         None => manifest.project?.dependencies.get(name).cloned(),
     }
+}
+
+fn scope_alias_target(
+    scope_root: &Path,
+    name: &str,
+) -> Option<(String, crate::project::DependencySpec)> {
+    let manifest = project::load_manifest(scope_root).ok()??;
+    let cfgs: Vec<ProjectConfig> = match manifest.workspace {
+        Some(ws) => project::resolve_workspace_members(scope_root, &ws)
+            .ok()?
+            .into_values()
+            .map(|(_, cfg)| cfg)
+            .collect(),
+        None => vec![manifest.project?],
+    };
+    for cfg in cfgs {
+        if cfg.dependencies.contains_key(name) {
+            return crate::modules::resolve_alias_spec(scope_root, &cfg, name, &mut Vec::new()).ok();
+        }
+    }
+    None
 }
 
 pub fn find_stdlib_checkout(start: &Path) -> Option<PathBuf> {
@@ -664,6 +695,45 @@ pub fn vendor_packages(
                     let src = resolve_git_dep(scope_root, &name, &git, &rev)?;
                     vendor_copy(&src, dest, &name)?;
                     done.push(format!("{name}#{rev}"));
+                    continue;
+                }
+                crate::project::DependencySpec::Alias { .. } => {
+                    let Some((real, resolved)) = scope_alias_target(scope_root, &name) else {
+                        continue;
+                    };
+                    match resolved {
+                        crate::project::DependencySpec::Path { path, .. } => {
+                            let dir = if path.is_absolute() {
+                                path
+                            } else {
+                                scope_root.join(path)
+                            };
+                            let cfg = ProjectConfig::load_from_dir(&dir)?.ok_or_else(|| {
+                                Diagnostic::new(
+                                    Code::E108,
+                                    format!("local source for `{real}` at `{}` has no Project.config", dir.display()),
+                                )
+                            })?;
+                            vendor_copy(&dir, dest, &real)?;
+                            done.push(format!("{real}@{}", cfg.version));
+                        }
+                        crate::project::DependencySpec::Git { git, rev, .. } => {
+                            let src = resolve_git_dep(scope_root, &real, &git, &rev)?;
+                            vendor_copy(&src, dest, &real)?;
+                            done.push(format!("{real}#{rev}"));
+                        }
+                        crate::project::DependencySpec::Semver { version, .. } => {
+                            done.push(vendor_registry_package(
+                                scope_root,
+                                dest,
+                                &real,
+                                &version,
+                                default_registry,
+                                overrides,
+                            )?);
+                        }
+                        _ => {}
+                    }
                     continue;
                 }
                 _ => {}
@@ -4316,9 +4386,19 @@ pub fn fetch_all_registry_deps(
     let mut out: BTreeMap<String, String> = BTreeMap::new();
     for (_, cfg) in &cfgs {
         let mut reqs: BTreeMap<String, String> = BTreeMap::new();
-        for (dep_name, spec) in &cfg.dependencies {
+        for (dep_key, raw_spec) in &cfg.dependencies {
+            let rewritten = match raw_spec {
+                crate::project::DependencySpec::Alias { .. } => Some(
+                    crate::modules::resolve_alias_spec(scope_root, cfg, dep_key, &mut Vec::new())?,
+                ),
+                _ => None,
+            };
+            let (dep_name, spec) = match &rewritten {
+                Some((name, spec)) => (name.as_str(), spec),
+                None => (dep_key.as_str(), raw_spec),
+            };
             if let crate::project::DependencySpec::Semver { version, .. } = spec {
-                reqs.insert(dep_name.clone(), version.clone());
+                reqs.insert(dep_name.to_string(), version.clone());
             }
         }
         if reqs.is_empty() {
@@ -5211,6 +5291,26 @@ pub(crate) mod testkit {
 
     pub fn registry_cfg(url: &str) -> RegistryConfig {
         RegistryConfig { url: url.to_string(), token_env: None, ca_cert: None }
+    }
+
+    pub fn minimal_prelude_source() -> &'static str {
+        "export fn hello(): Int { return 1; }\n\
+         pub class Int {}\n\
+         pub class Float {}\n\
+         pub class FastFloat {}\n\
+         pub class Bool {}\n\
+         pub class String {}\n\
+         pub class Char {}\n\
+         pub class Array {}\n\
+         pub class Map {}\n\
+         pub class Set {}\n\
+         pub class Date {}\n\
+         pub class Error {}\n\
+         pub class Any {}\n\
+         pub class Void {}\n\
+         pub class GenRef {}\n\
+         pub enum Result<T, E> { Ok(T), Err(E) }\n\
+         pub interface Iterator<T> { fn next(): T?; }\n"
     }
 
     pub fn plant_store_package(

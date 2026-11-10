@@ -28,7 +28,7 @@ fn messages(src: &str) -> Vec<(String, String)> {
 #[test]
 fn extra_arg_on_fn_is_e108() {
     let got = messages(
-        "fn add(a: Int, b: Int): Int { return a + b; } fn Main(): Int { print(add(1, 2, 3)); return 0; }",
+        "fn add(a: Int, b: Int): Int { return a + b; } fn Main(): Int { println!(add(1, 2, 3)); return 0; }",
     );
     assert!(
         got.iter()
@@ -40,7 +40,7 @@ fn extra_arg_on_fn_is_e108() {
 #[test]
 fn missing_arg_on_fn_is_e108() {
     let got = messages(
-        "fn add(a: Int, b: Int): Int { return a + b; } fn Main(): Int { print(add(1)); return 0; }",
+        "fn add(a: Int, b: Int): Int { return a + b; } fn Main(): Int { println!(add(1)); return 0; }",
     );
     assert!(
         got.iter()
@@ -52,7 +52,7 @@ fn missing_arg_on_fn_is_e108() {
 #[test]
 fn exact_arity_is_clean() {
     let got = codes(
-        "fn add(a: Int, b: Int): Int { return a + b; } fn Main(): Int { print(add(1, 2)); return 0; }",
+        "fn add(a: Int, b: Int): Int { return a + b; } fn Main(): Int { println!(add(1, 2)); return 0; }",
     );
     assert!(got.is_empty(), "{got:?}");
 }
@@ -60,7 +60,7 @@ fn exact_arity_is_clean() {
 #[test]
 fn omitted_trailing_default_is_clean() {
     let got = codes(
-        "fn configure(host: String, port: Int = 8080): String { return host; } fn Main(): Int { print(configure(\"api.dev\")); return 0; }",
+        "fn configure(host: String, port: Int = 8080): String { return host; } fn Main(): Int { println!(configure(\"api.dev\")); return 0; }",
     );
     assert!(got.is_empty(), "{got:?}");
 }
@@ -68,7 +68,7 @@ fn omitted_trailing_default_is_clean() {
 #[test]
 fn extra_arg_beyond_defaults_is_e108() {
     let got = messages(
-        "fn configure(host: String, port: Int = 8080): String { return host; } fn Main(): Int { print(configure(\"a\", 1, 2)); return 0; }",
+        "fn configure(host: String, port: Int = 8080): String { return host; } fn Main(): Int { println!(configure(\"a\", 1, 2)); return 0; }",
     );
     assert!(
         got.iter()
@@ -111,7 +111,7 @@ fn exact_init_arity_is_clean() {
 
 #[test]
 fn arity_error_points_at_call_site() {
-    let src = "fn add(a: Int, b: Int): Int { return a + b; } fn Main(): Int { print(add(1)); return 0; }";
+    let src = "fn add(a: Int, b: Int): Int { return a + b; } fn Main(): Int { println!(add(1)); return 0; }";
     let mut m = parse(src);
     let _ = desugar(&mut m);
     let diags = check(&m);

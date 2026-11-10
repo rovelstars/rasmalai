@@ -10,7 +10,7 @@ opaque value and hands it straight back, so the work stays in the timing.
 ```rnx
 import { blackBox } from "@std/testing";
 
-print(blackBox(40 + 2));
+println!(blackBox(40 + 2));
 ```
 
 ## What is inside

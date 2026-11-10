@@ -1,5 +1,5 @@
 use super::lower_fn::{build_module, check_supported};
-use super::{finish_object, OptLevel};
+use super::{OptLevel, finish_object};
 use diagnostics::{Code, Diagnostic};
 use inkwell::context::Context;
 use std::path::{Path, PathBuf};
@@ -89,7 +89,10 @@ fn build_stdlib_object() -> Result<Vec<u8>, Diagnostic> {
     }
     let verrs = runtime::lir_pipeline::optimize_for_release(&mut lowered, "Main");
     if !verrs.is_empty() {
-        return Err(first_diag(verrs, "prebuilt stdlib: release opt broke verification"));
+        return Err(first_diag(
+            verrs,
+            "prebuilt stdlib: release opt broke verification",
+        ));
     }
     for func in &lowered.functions {
         check_supported(&lowered, func)?;

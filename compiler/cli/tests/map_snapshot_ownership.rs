@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -71,7 +71,7 @@ fn string_keys_survive_map_deinit() {
         assert(ks.length() == 2, \"len\");\n\
         assert(ks[0].len() == 5, \"element len\");\n\
         assert(ks[0] == \"alpha\" && ks[1] == \"beta\", \"element eq\");\n\
-        print(ks.join(\",\"));\n\
+        println!(ks.join(\",\"));\n\
         return 0;\n\
         }}\n"),
         0,
@@ -94,7 +94,7 @@ fn int_keys_are_real_ints_after_map_deinit() {
         assert(ks.length() == 2, \"len\");\n\
         assert(ks[0] == 7 && ks[1] == 9, \"element eq\");\n\
         assert(ks[0] + 1 == 8, \"element arithmetic\");\n\
-        print(ks[0].toString() + \":\" + ks[1].toString());\n\
+        println!(ks[0].toString() + \":\" + ks[1].toString());\n\
         return 0;\n\
         }}\n"),
         0,
@@ -117,7 +117,7 @@ fn string_values_survive_map_deinit() {
         assert(vs.length() == 2, \"len\");\n\
         assert(vs[0] == \"one\" && vs[1] == \"two\", \"element eq\");\n\
         assert(vs[1].len() == 3, \"element len\");\n\
-        print(vs.join(\",\"));\n\
+        println!(vs.join(\",\"));\n\
         return 0;\n\
         }}\n"),
         0,
@@ -141,11 +141,11 @@ fn headers_snapshots_survive_headers_deinit() {
         let ks = names();\n\
         assert(ks.length() == 2, \"key len\");\n\
         assert(ks[0] == \"x-alpha\" && ks[1] == \"x-beta\", \"key eq\");\n\
-        print(ks[0], ks[1]);\n\
+        println!(ks[0], ks[1]);\n\
         let vs = values();\n\
         assert(vs.length() == 2, \"value len\");\n\
         assert(vs[0] == \"1\" && vs[1] == \"2\", \"value eq\");\n\
-        print(vs[0], vs[1]);\n\
+        println!(vs[0], vs[1]);\n\
         return 0;\n\
         }}\n"),
         0,
@@ -168,7 +168,7 @@ fn boxed_values_stay_boxed_for_any_maps() {
         assert(vs.length() == 2, \"len\");\n\
         assert((vs[0] as Int) + 1 == 42, \"boxed int\");\n\
         assert((vs[1] as String) == \"text\", \"boxed string\");\n\
-        print(\"any-ok\");\n\
+        println!(\"any-ok\");\n\
         return 0;\n\
         }}\n"),
         0,

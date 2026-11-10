@@ -40,7 +40,7 @@ fn run(src: &str, backend: &str) -> String {
 
 const CLEANUP: &str = r#"class Inner {
     let n: Int = 1
-    deinit { print("inner") }
+    deinit { println!("inner") }
 }
 
 class Outer {
@@ -50,7 +50,7 @@ class Outer {
         this.a = new Inner()
         this.b = makeInner()
     }
-    deinit { print("outer") }
+    deinit { println!("outer") }
 }
 
 fn makeInner(): Inner {
@@ -67,13 +67,13 @@ fn Main(): Int {
         let o = new Outer()
         i += 1
     }
-    print("pass1")
+    println!("pass1")
     i = 0
     while i < 2 {
         makeOuter()
         i += 1
     }
-    print("pass2")
+    println!("pass2")
     return 0
 }
 "#;
@@ -93,7 +93,7 @@ fn stored_and_ignored_heap_values_are_released() {
 const RECEIVER_TEMP: &str = r#"class Leaf {
     let n: Int = 0
     fn value(): Int { return this.n }
-    deinit { print("leaf-drop") }
+    deinit { println!("leaf-drop") }
 }
 
 class Holder {
@@ -102,7 +102,7 @@ class Holder {
         let l = new Leaf()
         this.leaf = l
     }
-    deinit { print("holder-drop") }
+    deinit { println!("holder-drop") }
 }
 
 fn Main(): Int {
@@ -118,7 +118,7 @@ fn Main(): Int {
         }
         i += 1
     }
-    print("done")
+    println!("done")
     return 0
 }
 "#;
@@ -141,13 +141,13 @@ fn inlined_receiver_temp_is_released() {
 // object while the outer one was freed.
 const NESTED_NEW: &str = r#"class D {
     let x: Int = 1
-    deinit { print("d-drop") }
+    deinit { println!("d-drop") }
 }
 
 class F {
     let d: D
     init(d: D) { this.d = d }
-    deinit { print("f-drop") }
+    deinit { println!("f-drop") }
 }
 
 fn Main(): Int {
@@ -156,7 +156,7 @@ fn Main(): Int {
         new F(new D())
         i += 1
     }
-    print("done")
+    println!("done")
     return 0
 }
 "#;
@@ -182,14 +182,14 @@ const FIELD_RETURN: &str = r#"class Damage {
         this.ys.push(y)
     }
     fn count(): Int { return this.xs.length() }
-    deinit { print("damage-drop") }
+    deinit { println!("damage-drop") }
 }
 
 class F {
     let d: Damage
     init(d: Damage) { this.d = d }
     fn damage(): Damage { return this.d }
-    deinit { print("f-drop") }
+    deinit { println!("f-drop") }
 }
 
 fn Main(): Int {
@@ -199,11 +199,11 @@ fn Main(): Int {
         let d = f.damage()
         d.add(i, i)
         if d.count() < 0 {
-            print("unreachable")
+            println!("unreachable")
         }
         i += 1
     }
-    print("done")
+    println!("done")
     return 0
 }
 "#;
@@ -234,13 +234,13 @@ const DAMAGE_LOOP: &str = r#"class Damage {
         this.hs.push(h)
     }
     fn count(): Int { return this.xs.length() }
-    deinit { print("damage-drop") }
+    deinit { println!("damage-drop") }
 }
 
 class Holder {
     let d: Damage
     init(d: Damage) { this.d = d }
-    deinit { print("holder-drop") }
+    deinit { println!("holder-drop") }
 }
 
 fn Main(): Int {
@@ -252,12 +252,12 @@ fn Main(): Int {
         } else {
             let h = new Holder(new Damage())
             if h.d.count() < 0 {
-                print("bad count")
+                println!("bad count")
             }
         }
         i += 1
     }
-    print("done")
+    println!("done")
     return 0
 }
 "#;
@@ -291,7 +291,7 @@ fn Main(): Int {
         }
         i += 1
     }
-    print(total)
+    println!(total)
     return 0
 }
 "#;
@@ -342,8 +342,8 @@ fn Main(): Int {
         s.bind("k", i)
         i += 1
     }
-    print(s.get("k"))
-    print(s.get("missing"))
+    println!(s.get("k"))
+    println!(s.get("missing"))
     return 0
 }
 "#;
@@ -373,7 +373,7 @@ const LOOP_FORWARDED_RECEIVER: &str = r#"class Damage {
     fn count(): Int { return this.xs.length() }
     fn xAt(i: Int): Int { return this.xs[i] }
     fn yAt(i: Int): Int { return this.ys[i] }
-    deinit { print("damage-drop") }
+    deinit { println!("damage-drop") }
 }
 
 fn hits(dm: Damage): Bool {
@@ -407,11 +407,11 @@ fn Main(): Int {
         let d = new Damage()
         d.add(i, i)
         if outer(d) {
-            print("bad")
+            println!("bad")
         }
         i += 1
     }
-    print("done")
+    println!("done")
     return 0
 }
 "#;
@@ -429,16 +429,16 @@ fn loop_forwarded_receiver_is_released_once_per_trip() {
 const DISCARDED_BORROWED_RETURN: &str = r#"class C {
     let x: Int = 1
     fn bump(): C {
-        print("touch")
+        println!("touch")
         return this
     }
-    deinit { print("drop") }
+    deinit { println!("drop") }
 }
 
 fn Main(): Int {
     let c = new C()
     c.bump()
-    print("alive", c.x)
+    println!("alive", c.x)
     return 0
 }
 "#;

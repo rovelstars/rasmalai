@@ -73,13 +73,13 @@ fn multi_unit_objects_are_valid_elf() {
     let lir = lowered(&src);
     assert!(lir.functions.len() >= 64);
     let names: Vec<String> = lir.functions.iter().map(|f| f.name.clone()).collect();
-    let chunk = names.len().div_ceil(2);
+    let chunk = names.len().div_ceil(4);
     let main_unit = index_of(&lir, "Main") / chunk;
     let low_unit = index_of(&lir, "CguH000") / chunk;
     assert_ne!(low_unit, main_unit, "test needs Main and CguH000 in different units");
 
-    let first = emit_objects(&lir, "cgu_multi", "Main", OptLevel::Dev, None, None, 2).unwrap();
-    assert_eq!(first.len(), 2);
+    let first = emit_objects(&lir, "cgu_multi", "Main", OptLevel::Dev, None, None, 4).unwrap();
+    assert_eq!(first.len(), 4);
     for obj in &first {
         assert!(!obj.is_empty());
         assert!(is_elf(obj));
@@ -93,7 +93,7 @@ fn multi_unit_objects_are_valid_elf() {
     assert!(contains(&first[main_unit], "CguH000"));
     assert!(contains(&first[main_unit], "CguH199"));
 
-    let second = emit_objects(&lir, "cgu_multi", "Main", OptLevel::Dev, None, None, 2).unwrap();
+    let second = emit_objects(&lir, "cgu_multi", "Main", OptLevel::Dev, None, None, 4).unwrap();
     assert_eq!(first, second);
 
     let wide = emit_objects(&lir, "cgu_multi", "Main", OptLevel::Dev, None, None, 8).unwrap();
@@ -113,12 +113,12 @@ fn multi_unit_main_entry_renamed_everywhere() {
     src.push_str("fn main(): Int { return CguH199(); } ");
     let lir = lowered(&src);
     assert!(lir.functions.len() >= 64);
-    let chunk = lir.functions.len().div_ceil(2);
+    let chunk = lir.functions.len().div_ceil(4);
     let def_unit = index_of(&lir, "main") / chunk;
     assert_ne!(def_unit, 0, "test needs user main outside unit 0");
 
-    let out = emit_objects(&lir, "cgu_main", "main", OptLevel::Dev, None, None, 2).unwrap();
-    assert_eq!(out.len(), 2);
+    let out = emit_objects(&lir, "cgu_main", "main", OptLevel::Dev, None, None, 4).unwrap();
+    assert_eq!(out.len(), 4);
     for obj in &out {
         assert!(!obj.is_empty());
         assert!(is_elf(obj));

@@ -11,7 +11,7 @@ write with `Env.set` after that.
 import { Env } from "@std/env";
 
 Env.set("GREETING", "hi");
-print(Env.get("GREETING"));
+println!(Env.get("GREETING"));
 ```
 
 ## What is inside

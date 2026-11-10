@@ -26,7 +26,7 @@ class Meter {
 }
 
 let m = new Meter(20);
-print(m.bump(22));
+println!(m.bump(22));
 ```
 
 Construction uses `new`: `new Meter(20)` allocates the object and runs `init`. Calling the class directly (`Meter(20)`) is an `E204` error.
@@ -48,8 +48,8 @@ class Child extends Base {
 }
 
 let c = new Child(20, 22);
-print(c.get());
-print(c.y);
+println!(c.get());
+println!(c.y);
 ```
 
 Method definitions in the child replace the parent's when signatures match; a mismatched signature is an `E108` error. An inherited method's `this.` self-call resolves to the child's override, so template-method shapes behave the same through `extends` as through `with`. `super.method()` reaches the parent implementation. `private` members stay invisible to the child (`E203` outside the defining class), and redefining an inherited field name is an `E108` error. The base must be a class (not a struct, enum, or interface) and cycles are rejected. A child without its own `init` constructs positionally over all fields, inherited first, then runs the parent `init` when it takes no parameters.
@@ -75,7 +75,7 @@ class Clock {
 }
 
 let c = Clock.virtual(0);
-print(c.seconds);
+println!(c.seconds);
 ```
 
 That prints `60`. A static calling a sibling static qualifies the name the same way (`Clock.base()`, not the bare `base()`, which is an `E303` error), and a static body has no receiver to name: `this` is an `E108` error there, as it is in any plain function.
@@ -108,7 +108,7 @@ let total = 0;
 for x in new Counter(3) {
     total = total + x;
 }
-print(total);
+println!(total);
 ```
 
 ## Destruction order

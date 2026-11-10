@@ -8,7 +8,7 @@ pub(super) fn run_add(package: String, path: Option<std::path::PathBuf>, accept_
         ) {
             cli::AddResult::Added(msg) => println!("{msg}"),
             cli::AddResult::Failed(e) => {
-                println!("{e}");
+                eprintln!("{e}");
                 std::process::exit(1);
             }
             cli::AddResult::Headless(msg) => {

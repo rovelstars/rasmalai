@@ -19,7 +19,7 @@ import { AtomicInt } from "@std/sync";
 let scores = new Map<String, Int>();
 scores.set("ore", 7);
 AtomicInt.byId(1).set(scores.len());
-print(scores.get("ore"));
+println!(scores.get("ore"));
 ```
 
 That prints `7`. Relative imports (`./math`, `./shapes`) wire up multi-file projects, and two files can each define a helper with the same name without colliding. Names live in their file's namespace. Imports are per file: if `lib.rnx` names something it never imported, it fails, even when the entry file imports it. Dependencies travel with the file that declares them, never with the program around them.
@@ -29,7 +29,7 @@ An imported namespace is also a value. Passing it to `print` lists its exports, 
 ```rnx
 import io from "@std/io";
 
-print(io);
+println!(io);
 ```
 
 That prints the module listing (`[Module io] { clear: ..., write: ..., ... }`, the exact set grows with the stdlib). Assigning to a namespace field is an error. Namespaces are snapshots, not objects.
@@ -46,7 +46,7 @@ import { Map } from "@std/collections";
 let scores = new Map<String, Int>();
 scores.set("ore", 7);
 let total = await Promise.resolve(scores.len());
-print("entries:", total);
+println!("entries:", total);
 if total == 0 {
     return 1;
 }
@@ -69,11 +69,13 @@ import { fn __rnx_clock_mono(): Int } from runtime "time";
 
 ## The standard library is seeded, not embedded
 
-`@std/` imports resolve from a global cache the installer seeds. Nothing to install by hand, versions pinned automatically. Seventeen modules ship with the compiler:
+`@std/` imports resolve from a global cache the installer seeds. Nothing to install by hand, versions pinned automatically. Twenty-one modules ship with the compiler:
 
 | Module | What it holds |
 |---|---|
+| `@std/foundation` | Foundation types and Array/String extensions, with no io or log dependency |
 | `@std/collections` | Generic `Map<K, V>` and `Set<T>` |
+| `@std/async` | `Promise`, `PromiseWithResolvers`, `PromiseResult` |
 | `@std/sync` | `AtomicInt`, `Mutex`, `Channel`, `Barrier` |
 | `@std/fs` | `File` and `Path` with text and binary I/O, one-shot operations with `*Async` pool twins, and `mmap` |
 | `@std/bytes` | `ByteBuffer` fixed-size raw byte buffers |
@@ -81,14 +83,16 @@ import { fn __rnx_clock_mono(): Int } from runtime "time";
 | `@std/os` | Platform queries (`OS.platform()`, `OS.cpuCount()`, ...) |
 | `@std/simd` | `Vec4f` lanes and reductions |
 | `@std/math` | Trig, `Vec2`, and numeric helpers |
-| `@std/time` | Clocks and durations |
+| `@std/time` | Clocks, durations, and the `Date` catalog stub |
 | `@std/random` | Seeded random generation |
-| `@std/env` | Environment variables |
+| `@std/env` | Environment variables and `RnxHost` |
 | `@std/testing` | Test helpers |
 | `@std/web` | `URL`, `Headers`, status codes, query strings |
 | `@std/json` | `JSON` parsing and stringification |
 | `@std/net` | `TcpStream`, `TcpListener`, TLS, DNS |
 | `@std/io` | Terminal streams with pretty-printing, line input, size queries, and raw mode |
+| `@std/log` | Leveled logging macros writing to stderr, filtered by `RNX_LOG` |
+| `@std/uefi` | Console output for `x86_64-unknown-uefi` firmware applications |
 | `@std/prelude` | Foundation types (auto-imported) |
 
 Each module has a generated reference page under [its module docs](/docs/@std/simd/overview), rendered from the same `/** */` doc comments you write with `rnx doc`. Every registry package gets the same treatment: `/docs/@scope/name/overview` serves the overview, getting-started, and API reference for any published scoped package, std included, and unscoped packages serve the same pages at `/docs/<name>/overview`. Standard library packages also ship `docs/` guides with each release, readable on the same pages and on the package's Guides tab.
@@ -105,9 +109,9 @@ A taste of the platform side: child processes and OS queries compose like everyt
 import { Process } from "@std/process";
 import { OS } from "@std/os";
 
-print(OS.platform(), OS.cpuCount());
+println!(OS.platform(), OS.cpuCount());
 let out = Process.run("echo", ["hello"]);
-print(out.exitCode, out.stdoutText().contains("hello"));
+println!(out.exitCode, out.stdoutText().contains("hello"));
 ```
 
 On a Linux box that prints something like `linux 16` followed by `0 true`. That is exit code zero, and yes, the output contained "hello".
@@ -147,7 +151,7 @@ test fn addsUp() {
     assert(add(20, 22) == 42, "addition");
 }
 
-print(add(20, 22));
+println!(add(20, 22));
 ```
 
 ```sh

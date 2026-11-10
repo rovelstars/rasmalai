@@ -47,6 +47,9 @@ fn main() {
             std::process::exit(1);
         }
     }
+    if args.offline {
+        unsafe { std::env::set_var("RNX_OFFLINE", "1") };
+    }
     let quiet = args.quiet;
     let verbose = args.verbose;
     let no_color = args.no_color;
@@ -61,6 +64,12 @@ fn main() {
             }
         }
     };
+    if let Some((root, requested)) = cmd::target_selection_input(&command)
+        && let Err(e) = cmd::activate_target(&root, requested.as_deref())
+    {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
     cmd::fetch::install_registry_transport();
     let prefer = frontend::native::NativePrefer::resolve(args.prefer_system, args.prefer_bundled);
     cmd::dispatch(command, verbose, quiet, no_color, prefer);

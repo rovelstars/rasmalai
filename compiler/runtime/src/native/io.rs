@@ -1,6 +1,9 @@
 use super::common::*;
 use super::guard;
 use super::collections::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static MISSING_ARG_WARNED: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rnx_print_str(ptr: *const u8, len: usize) {
@@ -58,6 +61,17 @@ pub unsafe extern "C" fn rnx_print_val(bits: u64, tag: u32) {
     };
     let _ = write!(std::io::stdout(), "{text}");
     let _ = std::io::stdout().flush();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rnx_io_warn_missing_arg() {
+    if MISSING_ARG_WARNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "rnx: format string has more `{{}}` placeholders than arguments"
+    );
 }
 
 #[unsafe(no_mangle)]

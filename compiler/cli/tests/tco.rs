@@ -4,8 +4,22 @@ mod scratch;
 
 use lir::instr::{CallTarget, Instr, Terminator};
 
+static LOWER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn lower_src(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
+    let _guard = LOWER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = if src.contains("println!") || src.contains("print!") {
+        let mut m = frontend::modules::ModuleGraph::from_source(src)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut opts = frontend::macros::MacroOptions::new(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        );
+        let expanded = frontend::macros::expand_syntax(&mut m, &mut opts);
+        assert!(expanded.iter().all(|d| d.code.is_warning()), "{expanded:?}");
+        m
+    } else {
+        frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"))
+    };
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"))
@@ -72,12 +86,12 @@ fn test_tco_eliminates_self_call() {
     }
 }
 
-const DEEP_SRC: &str = "fn sumDown(n: Int, acc: Int): Int {\n    if n <= 0 {\n        return acc;\n    }\n    return sumDown(n - 1, acc + n);\n}\nfn Main(): Int {\n    let total = sumDown(50000, 0);\n    print(\"tco deep:\", total);\n    if total == 1250025000 {\n        return 0;\n    }\n    return 1;\n}\n";
+const DEEP_SRC: &str = "fn sumDown(n: Int, acc: Int): Int {\n    if n <= 0 {\n        return acc;\n    }\n    return sumDown(n - 1, acc + n);\n}\nfn Main(): Int {\n    let total = sumDown(50000, 0);\n    println!(\"tco deep:\", total);\n    if total == 1250025000 {\n        return 0;\n    }\n    return 1;\n}\n";
 
 #[test]
 fn test_deep_recursion_no_stack_overflow() {
     let out = cli::run_source(DEEP_SRC, "Main", vec![]);
-    assert_eq!(out.output, vec!["tco deep: 1250025000".to_string()]);
+    assert_eq!(out.output, vec!["tco deep: 1250025000\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(0)) => {}
         other => panic!("{other:?}"),

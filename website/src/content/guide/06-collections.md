@@ -14,10 +14,10 @@ Array literals use square brackets. Indexing starts at zero, out-of-bounds acces
 
 ```rnx
 let nums = [10, 20, 30];
-print(nums[0], nums[2], nums.length());
+println!(nums[0], nums[2], nums.length());
 nums.push(40);
-print(nums);
-print(nums.join(", "));
+println!(nums);
+println!(nums.join(", "));
 ```
 
 That prints:
@@ -37,22 +37,22 @@ Arrays ship a full functional toolkit. `map` builds a new array, `filter` keeps 
 
 ```rnx
 let nums = [1, 2, 3, 4, 5];
-print(nums.map((n) => n * 2));
-print(nums.filter((n) => n % 2 == 0));
-print(nums.reduce(0, (acc, n) => acc + n));
-print(nums.some((n) => n > 4));
-print(nums.every((n) => n > 0));
+println!(nums.map((n) => n * 2));
+println!(nums.filter((n) => n % 2 == 0));
+println!(nums.reduce(0, (acc, n) => acc + n));
+println!(nums.some((n) => n > 4));
+println!(nums.every((n) => n > 0));
 ```
 
 That prints `[2, 4, 6, 8, 10]`, `[2, 4]`, `15`, `true`, `true`. `find` pairs naturally with `??` for defaults, and `reversed()` returns a reversed copy:
 
 ```rnx
 let words = ["write", "it", "once"];
-print(words.join(" "));
+println!(words.join(" "));
 let nums = [1, 2, 3, 4];
 let big = nums.find((n) => n > 10) ?? -1;
-print(big);
-print(nums.reversed());
+println!(big);
+println!(nums.reversed());
 ```
 
 That prints `write it once`, `-1` (nothing matched, so the fallback kicked in), and `[4, 3, 2, 1]`.
@@ -64,9 +64,9 @@ That prints `write it once`, `-1` (nothing matched, so the fallback kicked in), 
 ```rnx
 let line = "player:ore:level:7";
 let parts = line.split(":");
-print(parts.join(","));
-print(line.contains("ore"));
-print("ab".repeat(3));
+println!(parts.join(","));
+println!(line.contains("ore"));
+println!("ab".repeat(3));
 ```
 
 That prints `player,ore,level,7`, `true`, and `ababab`. String indexes count characters, not bytes. A multi-byte character is one step like any other.
@@ -81,10 +81,10 @@ import { Map } from "@std/collections";
 let scores = new Map<String, Int>();
 scores.set("ore", 7);
 scores.set("al", 12);
-print(scores.get("ore"));
-print(scores.get("nobody") ?? 0);
-print(scores.keys().join(","));
-print(scores.len());
+println!(scores.get("ore"));
+println!(scores.get("nobody") ?? 0);
+println!(scores.keys().join(","));
+println!(scores.len());
 ```
 
 That prints `7`, `0`, `ore,al`, and `2`. `keys()` and `values()` return arrays in insertion order; `for k in m` walks the keys, and `m.get(k)` fetches each value. A few rules worth knowing now: keys must be `Int`, `Float`, `Bool`, `String`, or a heap object compared by identity. Two class instances with equal fields are different keys. `Int` and `Float` never mix as keys, and `Array` or `null` keys abort.
@@ -99,9 +99,9 @@ import { Set } from "@std/collections";
 let seen = new Set<String>();
 seen.add("ore");
 seen.add("ore");
-print(seen.has("ore"), seen.len());
+println!(seen.has("ore"), seen.len());
 for member in seen {
-    print(member);
+    println!(member);
 }
 ```
 

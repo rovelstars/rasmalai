@@ -256,6 +256,30 @@ impl Target for X86_64 {
         5
     }
 
+    fn tls_tp_offset(&self, dtpoff: u64, tls_size: u64) -> i64 {
+        dtpoff as i64 - tls_size as i64
+    }
+
+    fn abs_width(&self, kind: u32) -> Option<u8> {
+        match kind {
+            R_64 => Some(8),
+            R_32 | R_32S => Some(4),
+            _ => None,
+        }
+    }
+
+    fn plt0_entry(&self, plt_addr: u64, got_plt_addr: u64) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out[0] = 0xff;
+        out[1] = 0x35;
+        out[2..6].copy_from_slice(&((got_plt_addr as i64 + 8 - (plt_addr as i64 + 6)) as i32).to_le_bytes());
+        out[6] = 0xff;
+        out[7] = 0x25;
+        out[8..12].copy_from_slice(&((got_plt_addr as i64 + 16 - (plt_addr as i64 + 12)) as i32).to_le_bytes());
+        out[12..16].copy_from_slice(&[0x0f, 0x1f, 0x40, 0x00]);
+        out
+    }
+
     fn plt_entry(&self, entry_addr: u64, slot_addr: u64, index: u32, plt0_addr: u64) -> [u8; 16] {
         let mut out = [0u8; 16];
         out[0] = 0xff;

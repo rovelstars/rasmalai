@@ -1281,8 +1281,7 @@ mod tests {
     use std::time::Duration;
 
     fn lower_module(src: &str) -> Module {
-        let mut m = frontend::parser::Parser::parse_module(src).expect("parse");
-        assert!(frontend::desugar::desugar(&mut m).is_empty());
+        let m = crate::test_support::resolve_for_lowering(src);
         crate::lower::lower(&m).expect("lower")
     }
 
@@ -1417,7 +1416,7 @@ mod tests {
 
     const FLOAT_MM: &str = "fn Main(): Float {\n    let n = 32;\n    let a: Array<Float> = [];\n    let b: Array<Float> = [];\n    let c: Array<Float> = [];\n    let i = 0;\n    while i < n * n {\n        a.push(0.0);\n        b.push(0.0);\n        c.push(0.0);\n        i = i + 1;\n    }\n    let x = 0;\n    while x < n {\n        let y = 0;\n        while y < n {\n            let s = 0.0;\n            let z = 0;\n            while z < n {\n                s = s + a[x * n + z] * b[z * n + y];\n                z = z + 1;\n            }\n            c[x * n + y] = s;\n            y = y + 1;\n        }\n        x = x + 1;\n    }\n    return c[0];\n}\n";
 
-    const NEST_CALL: &str = "fn Main(): Int {\n    let n = 32;\n    let a: Array<Int> = [];\n    let b: Array<Int> = [];\n    let c: Array<Int> = [];\n    let i = 0;\n    while i < n * n {\n        a.push(0);\n        b.push(0);\n        c.push(0);\n        i = i + 1;\n    }\n    let x = 0;\n    while x < n {\n        let y = 0;\n        while y < n {\n            let s = 0;\n            let z = 0;\n            while z < n {\n                s = s + a[x * n + z] * b[z * n + y];\n                print(\"z:\", z);\n                z = z + 1;\n            }\n            c[x * n + y] = s;\n            y = y + 1;\n        }\n        x = x + 1;\n    }\n    return c[0];\n}\n";
+    const NEST_CALL: &str = "fn Main(): Int {\n    let n = 32;\n    let a: Array<Int> = [];\n    let b: Array<Int> = [];\n    let c: Array<Int> = [];\n    let i = 0;\n    while i < n * n {\n        a.push(0);\n        b.push(0);\n        c.push(0);\n        i = i + 1;\n    }\n    let x = 0;\n    while x < n {\n        let y = 0;\n        while y < n {\n            let s = 0;\n            let z = 0;\n            while z < n {\n                s = s + a[x * n + z] * b[z * n + y];\n                println!(\"z:\", z);\n                z = z + 1;\n            }\n            c[x * n + y] = s;\n            y = y + 1;\n        }\n        x = x + 1;\n    }\n    return c[0];\n}\n";
 
     const NEST_EXIT: &str = "fn Main(): Int {\n    let n = 32;\n    let a: Array<Int> = [];\n    let b: Array<Int> = [];\n    let c: Array<Int> = [];\n    let i = 0;\n    while i < n * n {\n        a.push(0);\n        b.push(0);\n        c.push(0);\n        i = i + 1;\n    }\n    let x = 0;\n    while x < n {\n        let y = 0;\n        while y < n {\n            let s = 0;\n            let z = 0;\n            while z < n {\n                s = s + a[x * n + z] * b[z * n + y];\n                if s > 1000000 {\n                    return s;\n                }\n                z = z + 1;\n            }\n            c[x * n + y] = s;\n            y = y + 1;\n        }\n        x = x + 1;\n    }\n    return c[0];\n}\n";
 
@@ -1450,9 +1449,9 @@ mod tests {
 
     const INDEXOF_NEST: &str = "fn Main(): Int {\n    let n = 64;\n    let hay = \"abcdefghijklmnopqrstuvwxyz0123456789\";\n    let needles: Array<String> = [];\n    let outs: Array<Int> = [];\n    let q = 0;\n    while q < 32 {\n        needles.push(\"zz\");\n        outs.push(0);\n        q = q + 1;\n    }\n    let o = 0;\n    while o < n {\n        outs[o] = hay.indexOf(needles[o]);\n        o = o + 1;\n    }\n    return outs[0] + outs[1];\n}\n";
 
-    const CONCAT_ACCUM: &str = "fn Main(): Int {\n    let n = 64;\n    let s = \"\";\n    let i = 0;\n    while i < n {\n        s = s + \"ab\";\n        i = i + 1;\n    }\n    print(\"RESULT\", s);\n    return 0;\n}\n";
+    const CONCAT_ACCUM: &str = "fn Main(): Int {\n    let n = 64;\n    let s = \"\";\n    let i = 0;\n    while i < n {\n        s = s + \"ab\";\n        i = i + 1;\n    }\n    println!(\"RESULT\", s);\n    return 0;\n}\n";
 
-    const CONCAT_METHOD_ACCUM: &str = "fn Main(): Int {\n    let n = 64;\n    let s = \"\";\n    let i = 0;\n    while i < n {\n        s = s.concat(\"ab\");\n        i = i + 1;\n    }\n    print(\"RESULT\", s);\n    return 0;\n}\n";
+    const CONCAT_METHOD_ACCUM: &str = "fn Main(): Int {\n    let n = 64;\n    let s = \"\";\n    let i = 0;\n    while i < n {\n        s = s.concat(\"ab\");\n        i = i + 1;\n    }\n    println!(\"RESULT\", s);\n    return 0;\n}\n";
 
     const INNER_ALLOC: &str = "fn Main(): Int {\n    let n = 64;\n    let out: Array<Int> = [];\n    let buf: Array<Int> = [];\n    let i = 0;\n    while i < n {\n        buf = [];\n        buf.push(i);\n        buf.push(i * 2);\n        out.push(buf[0] + buf[1]);\n        i = i + 1;\n    }\n    return buf[0] + out[0];\n}\n";
 
@@ -1468,11 +1467,11 @@ mod tests {
 
     const INDEXOF_CONST: &str = "fn Main(): Int {\n    let hay = \"abcdefghijklmnopqrstuvwxyz\";\n    let at = hay.indexOf(\"mn\");\n    return at;\n}\n";
 
-    const CONCAT_SMALL: &str = "fn Main(): Int {\n    let s = \"\";\n    let i = 0;\n    while i < 3 {\n        s = s + \"ab\";\n        i = i + 1;\n    }\n    print(\"RESULT\", s);\n    return 0;\n}\n";
+    const CONCAT_SMALL: &str = "fn Main(): Int {\n    let s = \"\";\n    let i = 0;\n    while i < 3 {\n        s = s + \"ab\";\n        i = i + 1;\n    }\n    println!(\"RESULT\", s);\n    return 0;\n}\n";
 
     const CONCAT_DEAD: &str = "fn Main(): Int {\n    let n = 64;\n    let s = \"\";\n    let i = 0;\n    while i < n {\n        s = s + \"ab\";\n        i = i + 1;\n    }\n    return n;\n}\n";
 
-    const CONCAT_FRESH: &str = "fn Main(): Int {\n    let n = 64;\n    let total = 0;\n    let i = 0;\n    while i < n {\n        let t = \"x\" + \"y\";\n        total = total + 1;\n        i = i + 1;\n    }\n    print(\"RESULT\", total);\n    return 0;\n}\n";
+    const CONCAT_FRESH: &str = "fn Main(): Int {\n    let n = 64;\n    let total = 0;\n    let i = 0;\n    while i < n {\n        let t = \"x\" + \"y\";\n        total = total + 1;\n        i = i + 1;\n    }\n    println!(\"RESULT\", total);\n    return 0;\n}\n";
 
     fn p202_lints(module: &Module) -> Vec<&PerfLint> {
         module.perf_lints.iter().filter(|l| l.code == PerfCode::P202).collect()

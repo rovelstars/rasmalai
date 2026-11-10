@@ -7,9 +7,9 @@ use std::process::Command;
 
 const FOO_C: &str = "long foo_add(long a, long b) { return a + b; }\n";
 
-const CONSUMER_MAIN: &str = "import { fn foo_add(a: Int, b: Int): Int } from native \"foo\"\nfn Main(): Int {\n    unsafe {\n        let r = foo_add(20, 22);\n        print(r);\n        assert(r == 42, \"add\");\n    }\n    return 0;\n}\n";
+const CONSUMER_MAIN: &str = "import { fn foo_add(a: Int, b: Int): Int } from native \"foo\"\nfn Main(): Int {\n    unsafe {\n        let r = foo_add(20, 22);\n        println!(r);\n        assert(r == 42, \"add\");\n    }\n    return 0;\n}\n";
 
-const ZLIB_MAIN: &str = "import {\n    fn compressBound(sourceLen: Int): Int\n} from native \"z\"\nfn Main(): Int {\n    unsafe {\n        let bound = compressBound(100);\n        print(bound);\n        assert(bound > 100, \"bound grows\");\n    }\n    return 0;\n}\n";
+const ZLIB_MAIN: &str = "import {\n    fn compressBound(sourceLen: Int): Int\n} from native \"z\"\nfn Main(): Int {\n    unsafe {\n        let bound = compressBound(100);\n        println!(bound);\n        assert(bound > 100, \"bound grows\");\n    }\n    return 0;\n}\n";
 
 fn rnx() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_rnx"))

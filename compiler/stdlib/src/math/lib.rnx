@@ -5,8 +5,8 @@
 //! import { Math, Vec2 } from "@std/math";
 //!
 //! let v = new Vec2(3.0, 4.0);
-//! print(v.length());
-//! print(Math.sin(Math.PI() / 2.0));
+//! println!(v.length());
+//! println!(Math.sin(Math.PI() / 2.0));
 //! ```
 import {
     fn __rnx_math_atan2(x: Float, y: Float): Float,
@@ -42,7 +42,7 @@ import {
 * import { Math } from "@std/math";
 *
 * let deg = 90.0;
-* print(Math.sin(deg * Math.PI() / 180.0));
+* println!(Math.sin(deg * Math.PI() / 180.0));
 */
 class Math {
     /**
@@ -52,7 +52,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.PI());
+    * println!(Math.PI());
     */
     static PI(): Float {
         return 3.141592653589793;
@@ -64,7 +64,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.TAU());
+    * println!(Math.TAU());
     */
     static TAU(): Float {
         return 6.283185307179586;
@@ -75,7 +75,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.E());
+    * println!(Math.E());
     */
     static E(): Float {
         return 2.718281828459045;
@@ -89,7 +89,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.abs(0.0 - 3.5));
+    * println!(Math.abs(0.0 - 3.5));
     */
     static abs(x: Float): Float {
         if x < 0.0 {
@@ -107,7 +107,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.min(3.0, 7.0));
+    * println!(Math.min(3.0, 7.0));
     */
     static min(a: Float, b: Float): Float {
         if a < b {
@@ -125,7 +125,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.max(3.0, 7.0));
+    * println!(Math.max(3.0, 7.0));
     */
     static max(a: Float, b: Float): Float {
         if a > b {
@@ -145,7 +145,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.clamp(9.0, 0.0, 1.0));
+    * println!(Math.clamp(9.0, 0.0, 1.0));
     */
     static clamp(v: Float, minVal: Float, maxVal: Float): Float {
         if v < minVal {
@@ -165,7 +165,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.sqrt(9.0));
+    * println!(Math.sqrt(9.0));
     */
     static sqrt(x: Float): Float {
         return __rnx_math_sqrt(x);
@@ -177,7 +177,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.sin(Math.PI() / 2.0));
+    * println!(Math.sin(Math.PI() / 2.0));
     */
     static sin(x: Float): Float {
         return __rnx_math_sin(x);
@@ -189,7 +189,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.cos(Math.PI()));
+    * println!(Math.cos(Math.PI()));
     */
     static cos(x: Float): Float {
         return __rnx_math_cos(x);
@@ -202,7 +202,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.round(Math.tan(Math.PI() / 4.0) * 1000.0) / 1000.0);
+    * println!(Math.round(Math.tan(Math.PI() / 4.0) * 1000.0) / 1000.0);
     */
     static tan(x: Float): Float {
         return __rnx_math_tan(x);
@@ -217,7 +217,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.atan2(1.0, 1.0) * 180.0 / Math.PI());
+    * println!(Math.atan2(1.0, 1.0) * 180.0 / Math.PI());
     */
     static atan2(y: Float, x: Float): Float {
         return __rnx_math_atan2(y, x);
@@ -232,7 +232,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.pow(2.0, 10.0));
+    * println!(Math.pow(2.0, 10.0));
     */
     static pow(base: Float, exp: Float): Float {
         return __rnx_math_pow(base, exp);
@@ -244,7 +244,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.floor(0.0 - 2.5));
+    * println!(Math.floor(0.0 - 2.5));
     */
     static floor(x: Float): Float {
         return __rnx_math_floor(x);
@@ -256,7 +256,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.ceil(2.1));
+    * println!(Math.ceil(2.1));
     */
     static ceil(x: Float): Float {
         return __rnx_math_ceil(x);
@@ -269,8 +269,8 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.round(2.5));
-    * print(Math.round(0.0 - 2.5));
+    * println!(Math.round(2.5));
+    * println!(Math.round(0.0 - 2.5));
     */
     static round(x: Float): Float {
         return __rnx_math_round(x);
@@ -283,7 +283,7 @@ class Math {
     * @example
     * import { Math } from "@std/math";
     *
-    * print(Math.log(Math.E()));
+    * println!(Math.log(Math.E()));
     */
     static log(x: Float): Float {
         return __rnx_math_log(x);
@@ -299,7 +299,7 @@ class Math {
 * import { Vec2 } from "@std/math";
 *
 * let v = new Vec2(3.0, 4.0);
-* print(v.length());
+* println!(v.length());
 */
 class Vec2 {
     /** Horizontal component. */
@@ -327,7 +327,7 @@ class Vec2 {
     * @example
     * import { Vec2 } from "@std/math";
     *
-    * print(new Vec2(1.0, 2.0).dot(new Vec2(3.0, 4.0)));
+    * println!(new Vec2(1.0, 2.0).dot(new Vec2(3.0, 4.0)));
     */
     dot(other: Vec2): Float {
         return this.x * other.x + this.y * other.y;
@@ -341,7 +341,7 @@ class Vec2 {
     * @example
     * import { Vec2 } from "@std/math";
     *
-    * print(new Vec2(3.0, 4.0).lengthSq());
+    * println!(new Vec2(3.0, 4.0).lengthSq());
     */
     lengthSq(): Float {
         return this.dot(this);
@@ -354,7 +354,7 @@ class Vec2 {
     * import { Vec2 } from "@std/math";
     *
     * let v = new Vec2(3.0, 4.0);
-    * print(v.length());
+    * println!(v.length());
     */
     length(): Float {
         return Math.sqrt(this.lengthSq());

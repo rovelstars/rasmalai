@@ -1,14 +1,25 @@
 use std::path::{Path, PathBuf};
 
+pub mod pack;
+pub mod store;
+pub mod target;
+
+pub use target::{select_target, Target, TargetError};
+
 pub const ENV_VAR: &str = "RNX_SYSROOT";
 pub const MANIFEST_FILE: &str = "sysroot.json";
 pub const MANIFEST_VERSION: u64 = 1;
-pub const MAX_STD_MODULE_BYTES: usize = 1024 * 1024;
-
+pub const PACK_MANIFEST_VERSION: u64 = pack::PACK_VERSION;
 pub const SUPPORTED_TARGETS: &[&str] = &[
-    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
     "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "wasm32-unknown-wasi",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-gnu",
+    "x86_64-unknown-linux-gnu",
     "x86_64-unknown-linux-musl",
+    "x86_64-unknown-uefi",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -18,26 +29,23 @@ pub enum Family {
 }
 
 pub fn family_of(triple: &str) -> Option<Family> {
-    if triple.ends_with("-unknown-linux-musl") {
-        return Some(Family::Musl);
+    match Target::parse(triple).ok()?.libc {
+        target::Libc::Glibc => Some(Family::Gnu),
+        target::Libc::Musl => Some(Family::Musl),
+        _ => None,
     }
-    if triple.ends_with("-unknown-linux-gnu") {
-        return Some(Family::Gnu);
-    }
-    None
 }
 
 pub fn is_supported_target(triple: &str) -> bool {
-    SUPPORTED_TARGETS.contains(&triple)
+    Target::parse(triple).is_ok()
 }
 
 pub fn interp_for(triple: &str) -> Option<&'static str> {
-    match triple {
-        "x86_64-unknown-linux-gnu" => Some("/lib64/ld-linux-x86-64.so.2"),
-        "aarch64-unknown-linux-gnu" => Some("/lib/ld-linux-aarch64.so.1"),
-        "x86_64-unknown-linux-musl" => Some("/lib/ld-musl-x86_64.so.1"),
-        _ => None,
-    }
+    Target::all()
+        .iter()
+        .find(|target| target.triple == triple)?
+        .loader
+        .as_deref()
 }
 
 pub fn sys_lib_file(family: Family, lib: &str) -> Option<&'static str> {
@@ -72,8 +80,6 @@ pub fn compiler_runtime_archives(family: Family, fully_static: bool) -> &'static
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Manifest {
     pub version: u64,
-    pub std_version: Option<String>,
-    pub targets: Vec<String>,
     pub content_hash: Option<String>,
 }
 
@@ -84,33 +90,16 @@ pub fn parse_manifest(body: &[u8]) -> Result<Manifest, String> {
         .get("version")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| format!("{MANIFEST_FILE}: missing numeric `version`"))?;
-    if version != MANIFEST_VERSION {
+    if version != MANIFEST_VERSION && version != PACK_MANIFEST_VERSION {
         return Err(format!(
-            "{MANIFEST_FILE}: unsupported version {version}; expected {MANIFEST_VERSION}"
+            "{MANIFEST_FILE}: unsupported version {version}; expected {MANIFEST_VERSION} or {PACK_MANIFEST_VERSION}"
         ));
     }
-    let std_version = value
-        .get("std_version")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let mut targets = Vec::new();
-    if let Some(list) = value.get("targets").and_then(|v| v.as_array()) {
-        for entry in list {
-            match entry.as_str() {
-                Some(t) => targets.push(t.to_string()),
-                None => {
-                    return Err(format!("{MANIFEST_FILE}: `targets` entries must be strings"));
-                }
-            }
-        }
-    }
-    targets.sort();
-    targets.dedup();
     let content_hash = value
         .get("content_hash")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    Ok(Manifest { version, std_version, targets, content_hash })
+    Ok(Manifest { version, content_hash })
 }
 
 fn host_driver() -> String {
@@ -141,13 +130,6 @@ fn host_root_uncached() -> PathBuf {
 fn host_root_cached() -> PathBuf {
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     ROOT.get_or_init(host_root_uncached).clone()
-}
-
-pub fn normalize_std_rest(name: &str) -> String {
-    name.strip_prefix("@std/")
-        .or_else(|| name.strip_prefix("std/"))
-        .unwrap_or(name)
-        .to_string()
 }
 
 pub fn content_hash(root: &Path) -> String {
@@ -255,17 +237,28 @@ impl Sysroot {
         match &self.root {
             None => Ok(Manifest {
                 version: MANIFEST_VERSION,
-                std_version: None,
-                targets: SUPPORTED_TARGETS.iter().map(|s| s.to_string()).collect(),
                 content_hash: None,
             }),
             Some(root) => {
                 let body = std::fs::read(root.join(MANIFEST_FILE)).map_err(|e| {
                     format!("sysroot `{}` has no {MANIFEST_FILE}: {e}", root.display())
                 })?;
-                parse_manifest(&body)
+                let manifest = parse_manifest(&body)?;
+                if manifest.version == PACK_MANIFEST_VERSION {
+                    let pack = pack::Pack::load(root).map_err(|e| e.to_string())?;
+                    return Ok(Manifest {
+                        version: manifest.version,
+                        content_hash: Some(pack.manifest.integrity.digest.clone()),
+                    });
+                }
+                Ok(manifest)
             }
         }
+    }
+
+    pub fn pack_manifest(&self) -> Option<pack::PackManifest> {
+        let root = self.root.as_ref()?;
+        pack::read_manifest(root).ok()
     }
 
     pub fn target_lib_dir(&self, triple: &str) -> Option<PathBuf> {
@@ -277,72 +270,20 @@ impl Sysroot {
         }
     }
 
-    fn std_candidates(&self, rest: &str) -> Vec<PathBuf> {
-        let rest = normalize_std_rest(rest);
-        let base = self.base_dir().join("share").join("rnx").join("std");
-        vec![base.join(format!("{rest}.rnx")), base.join(&rest).join("lib.rnx")]
-    }
-
-    pub fn has_std_source(&self, rest: &str) -> bool {
-        if self.root.is_none() {
-            return false;
-        }
-        self.std_candidates(rest).iter().any(|p| p.is_file())
-    }
-
-    pub fn std_source(&self, rest: &str) -> Option<String> {
-        if self.root.is_none() {
-            return None;
-        }
-        for path in self.std_candidates(rest) {
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            if bytes.is_empty() || bytes.len() > MAX_STD_MODULE_BYTES {
-                continue;
-            }
-            if let Ok(text) = String::from_utf8(bytes) {
-                return Some(text);
-            }
-        }
-        None
-    }
-
-    pub fn std_version(&self) -> Option<String> {
-        if self.root.is_none() {
-            return None;
-        }
-        self.validate().ok().and_then(|m| m.std_version)
-    }
-
     pub fn identity(&self) -> String {
         match &self.root {
-            Some(root) => content_hash(root),
+            Some(root) => {
+                if let Ok(body) = std::fs::read(root.join(MANIFEST_FILE))
+                    && let Ok(manifest) = parse_manifest(&body)
+                    && manifest.version == PACK_MANIFEST_VERSION
+                    && let Ok(pack) = pack::read_manifest(root)
+                {
+                    return pack.integrity.digest;
+                }
+                content_hash(root)
+            }
             None => "host".to_string(),
         }
-    }
-
-    pub fn std_overlay_digest(&self) -> Option<Vec<u8>> {
-        if self.root.is_none() {
-            return None;
-        }
-        use sha2::{Digest, Sha256};
-        let base = self.base_dir().join("share").join("rnx").join("std");
-        if !base.is_dir() {
-            return None;
-        }
-        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-        collect_payload(&base, &base, &mut files);
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut hasher = Sha256::new();
-        hasher.update(&(files.len() as u64).to_le_bytes());
-        for (rel, bytes) in &files {
-            hasher.update(&(rel.len() as u64).to_le_bytes());
-            hasher.update(rel.as_bytes());
-            hasher.update(&(bytes.len() as u64).to_le_bytes());
-            hasher.update(bytes);
-        }
-        Some(hasher.finalize().to_vec())
     }
 }
 
@@ -369,6 +310,15 @@ mod tests {
         assert_eq!(family_of("x86_64-unknown-linux-musl"), Some(Family::Musl));
         assert_eq!(family_of("x86_64-pc-windows-msvc"), None);
         assert_eq!(family_of("wasm32-unknown-unknown"), None);
+    }
+
+    #[test]
+    fn supported_targets_match_the_descriptor_table() {
+        let builtins: Vec<&str> = Target::all().iter().map(|t| t.triple.as_str()).collect();
+        assert_eq!(SUPPORTED_TARGETS, builtins.as_slice());
+        for triple in SUPPORTED_TARGETS {
+            assert!(is_supported_target(triple));
+        }
     }
 
     #[test]
@@ -423,8 +373,8 @@ mod tests {
         )
         .unwrap();
         let manifest = bad.validate().unwrap();
-        assert_eq!(manifest.std_version.as_deref(), Some("9.9.9"));
-        assert_eq!(manifest.targets, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(manifest.version, MANIFEST_VERSION);
+        assert!(manifest.content_hash.is_none());
         assert!(bad.target_lib_dir("x86_64-unknown-linux-musl").is_none());
         std::fs::create_dir_all(
             root.join("lib").join("rustlib").join("x86_64-unknown-linux-musl").join("lib"),
@@ -456,21 +406,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[test]
-    fn std_overlay_reads_file_then_directory_form() {
-        let root = scratch("stdoverlay");
-        write_manifest(&root, "");
-        let sysroot = Sysroot::custom(root.clone());
-        assert!(!sysroot.has_std_source("prelude"));
-        let base = root.join("share").join("rnx").join("std");
-        std::fs::create_dir_all(&base).unwrap();
-        std::fs::write(base.join("prelude.rnx"), "export fn custom(): Int { return 1; }\n").unwrap();
-        assert!(sysroot.has_std_source("@std/prelude"));
-        assert!(sysroot.std_source("prelude").unwrap().contains("custom"));
-        std::fs::create_dir_all(base.join("time")).unwrap();
-        std::fs::write(base.join("time").join("lib.rnx"), "export fn t(): Int { return 2; }\n").unwrap();
-        assert!(sysroot.std_source("@std/time").unwrap().contains("fn t"));
-        assert!(Sysroot::host().std_source("prelude").is_none());
-        let _ = std::fs::remove_dir_all(&root);
-    }
 }

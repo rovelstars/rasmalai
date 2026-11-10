@@ -15,7 +15,7 @@ import { Rng } from "@std/random";
 
 let a = Rng.seeded(7);
 let b = Rng.seeded(7);
-print(a.next() == b.next());
+println!(a.next() == b.next());
 ```
 
 ## Keep going

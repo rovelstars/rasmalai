@@ -113,11 +113,11 @@ pub fn check_package_with_dump(
     let mut opts = crate::macros::MacroOptions::new(base);
     opts.dump_dir = dump;
     let mut diags = module.warnings.clone();
-    diags.extend(crate::macros::expand_phase_a(&mut module, &mut opts));
+    diags.extend(crate::macros::expand_syntax(&mut module, &mut opts));
     if diags.iter().any(|d| !d.code.is_warning()) {
         return split(diags);
     }
-    diags.extend(crate::macros::expand_phase_b(&mut module, &mut opts, None));
+    diags.extend(crate::macros::expand_comptime(&mut module, &mut opts, None));
     let mut surface_misuse = false;
     if let Some(surface) = cabi.as_deref() {
         for f in &graph.files {

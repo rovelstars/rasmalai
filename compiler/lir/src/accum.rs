@@ -2307,8 +2307,7 @@ mod tests {
     use super::*;
 
     fn lower_src(src: &str) -> Function {
-        let mut m = frontend::parser::Parser::parse_module(src).expect("parse");
-        assert!(frontend::desugar::desugar(&mut m).is_empty());
+        let m = crate::test_support::resolve_for_lowering(src);
         let module = crate::lower::lower(&m).expect("lower");
         module.functions.iter().find(|f| f.name == "Main").expect("Main").clone()
     }

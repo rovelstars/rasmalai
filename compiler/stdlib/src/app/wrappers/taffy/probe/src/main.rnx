@@ -24,15 +24,15 @@ fn Main(): Int {
     unsafe {
         rc = taffyLayout(Pointer.fromAddress<Byte>(nodes.address()), 3, 640.0, 480.0, Pointer.fromAddress<Byte>(out.address()))
     }
-    print("rc:", rc)
+    println!("rc:", rc)
     let i = 0
     while i < 3 {
         let o = i * 32
-        print("node", i, "xywh:", out.readFloat64LE(o), out.readFloat64LE(o + 8), out.readFloat64LE(o + 16), out.readFloat64LE(o + 24))
+        println!("node", i, "xywh:", out.readFloat64LE(o), out.readFloat64LE(o + 8), out.readFloat64LE(o + 16), out.readFloat64LE(o + 24))
         i += 1
     }
     unsafe {
-        print("abi:", taffyAbiVersion())
+        println!("abi:", taffyAbiVersion())
     }
     return 0
 }

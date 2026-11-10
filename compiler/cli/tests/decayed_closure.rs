@@ -54,7 +54,7 @@ fn Main(): Int {
     c.install()
     c.fire()
     c.fire()
-    print(c.n)
+    println!(c.n)
     return 0
 }
 "#;
@@ -75,7 +75,7 @@ fn Main(): Int {
     a.fire()
     a.fire()
     b.fire()
-    print(a.n, b.n)
+    println!(a.n, b.n)
     return 0
 }
 "#;
@@ -93,7 +93,7 @@ fn Main(): Int {
     let f = c.make()
     f()
     f()
-    print(c.n)
+    println!(c.n)
     return 0
 }
 "#;
@@ -101,9 +101,9 @@ fn Main(): Int {
 const WEAK_AFTER_DROP: &str = r#"class Counter {
     let n: Int = 0
     fn inc() { this.n += 1 }
-    deinit { print("destroyed") }
+    deinit { println!("destroyed") }
     fn make(): fn(): Void {
-        return fn decay(this) { print("ran"); this.inc() }
+        return fn decay(this) { println!("ran"); this.inc() }
     }
 }
 
@@ -114,9 +114,9 @@ fn take(): fn(): Void {
 
 fn Main(): Int {
     let f = take()
-    print("after take")
+    println!("after take")
     f()
-    print("after call")
+    println!("after call")
     return 0
 }
 "#;
@@ -139,10 +139,10 @@ class Build {
 }
 
 fn screen(b: Build, s: Appearance) {
-    b.button(() => { print("tag-system"); s.scheme = "system" })
-    b.button(() => { print("tag-light"); s.scheme = "light" })
-    b.button(() => { print("tag-dark"); s.scheme = "dark" })
-    b.button(() => { print("tag-reset"); s.scheme = "system"; s.resets += 1 })
+    b.button(() => { println!("tag-system"); s.scheme = "system" })
+    b.button(() => { println!("tag-light"); s.scheme = "light" })
+    b.button(() => { println!("tag-dark"); s.scheme = "dark" })
+    b.button(() => { println!("tag-reset"); s.scheme = "system"; s.resets += 1 })
 }
 
 fn Main(): Int {
@@ -154,7 +154,7 @@ fn Main(): Int {
     t.fire(1)
     t.fire(2)
     t.fire(3)
-    print(s.scheme, s.resets)
+    println!(s.scheme, s.resets)
     return 0
 }
 "#;
@@ -184,7 +184,7 @@ fn Main(): Int {
     b.fire(0)
     b.fire(1)
     b.fire(2)
-    print(s.count, s.name)
+    println!(s.count, s.name)
     return 0
 }
 "#;

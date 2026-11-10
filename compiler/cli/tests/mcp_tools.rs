@@ -167,7 +167,7 @@ fn mcp_run_structured_and_timeout_abandonment() {
     handshake(&mut s);
     let resp = s.call(
         "run",
-        serde_json::json!({ "source": "fn Main(): Int {\n    print(40 + 2);\n    return 0;\n}\n" }),
+        serde_json::json!({ "source": "fn Main(): Int {\n    println!(40 + 2);\n    return 0;\n}\n" }),
     );
     let out = Session::content_json(&resp);
     assert_eq!(out["status"], "value", "{out:?}");
@@ -423,6 +423,10 @@ fn mcp_lookup_limit_and_resources_sharded() {
     assert!(uris.contains(&"rasmalai://spec/packages".to_string()), "{uris:?}");
     assert!(uris.contains(&"rasmalai://stdlib/bytes.json".to_string()), "{uris:?}");
     assert!(uris.contains(&"rasmalai://stdlib/api.json".to_string()), "{uris:?}");
+    for want in ["foundation", "async", "log", "uefi", "wasi"] {
+        let uri = format!("rasmalai://stdlib/{want}.json");
+        assert!(uris.contains(&uri), "missing {uri}: {uris:?}");
+    }
     assert!(uris.len() >= 20, "{uris:?}");
     let shard = s.request("resources/read", serde_json::json!({ "uri": "rasmalai://stdlib/bytes.json" }));
     let shard_text = shard["result"]["contents"][0]["text"].as_str().expect("text");
@@ -431,6 +435,25 @@ fn mcp_lookup_limit_and_resources_sharded() {
     assert!(shard_text.len() < full_text.len(), "shard must be smaller than the full catalog");
     let parsed: serde_json::Value = serde_json::from_str(shard_text).expect("shard parses");
     assert_eq!(parsed["modules"].as_array().expect("modules").len(), 1, "{parsed:?}");
+    let full_json: serde_json::Value = serde_json::from_str(full_text).expect("catalog parses");
+    let modules: Vec<&str> = full_json["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .filter_map(|m| m["name"].as_str())
+        .collect();
+    assert_eq!(modules.len(), stdlib::MODULES.len(), "catalog modules: {modules:?}");
+    for want in ["foundation", "async", "log", "uefi", "wasi"] {
+        assert!(modules.contains(&want), "catalog is missing @std/{want}: {modules:?}");
+    }
+    let wasi = s.request("resources/read", serde_json::json!({ "uri": "rasmalai://stdlib/wasi.json" }));
+    let wasi_text = wasi["result"]["contents"][0]["text"].as_str().expect("text");
+    let wasi_json: serde_json::Value = serde_json::from_str(wasi_text).expect("wasi parses");
+    assert_eq!(wasi_json["modules"][0]["name"], "wasi", "{wasi_text:?}");
+    assert!(
+        wasi_json["modules"][0]["functions"].as_array().is_some_and(|f| !f.is_empty()),
+        "wasi catalog must carry symbols: {wasi_text:?}"
+    );
     let unknown = s.request("resources/read", serde_json::json!({ "uri": "rasmalai://stdlib/nope.json" }));
     assert!(unknown.get("error").is_some(), "{unknown:?}");
 }
@@ -443,7 +466,7 @@ fn mcp_cold_start_walkthrough_uses_only_mcp_tools() {
         "coldstart",
         &[(
             "main.rnx",
-            "import { double } from \"./math\";\nimport { Vec2 } from \"@std/math\";\n\nfn Main(): Int {\n    let v = new Vec2(3.0, 4.0);\n    print(v.length());\n    return double(21);\n}\n",
+            "import { double } from \"./math\";\nimport { Vec2 } from \"@std/math\";\n\nfn Main(): Int {\n    let v = new Vec2(3.0, 4.0);\n    println!(v.length());\n    return double(21);\n}\n",
         ), ("math.rnx", MATH_LIB)],
     );
     let tests = dir.join("tests");

@@ -241,6 +241,13 @@ pub enum Sink {
     TermReadWrite,
 }
 
+fn macro_sink(name: &str) -> Option<Capability> {
+    match name.rsplit('.').next().unwrap_or(name) {
+        "print" | "println" | "eprint" | "eprintln" => Some(Capability::TermWrite),
+        _ => None,
+    }
+}
+
 fn sink_for(dotted: &str) -> Option<Sink> {
     Some(match dotted {
         "File.open" => Sink::FsOpen,
@@ -262,7 +269,7 @@ fn sink_for(dotted: &str) -> Option<Sink> {
         "Process.spawn" | "Process.run" => Sink::SysExecArg(0),
         "Env.get" | "Env.has" | "env.get" | "env.has" => Sink::EnvReadArg(0),
         "Env.all" | "Env.allEnv" | "env.all" => Sink::EnvDump,
-        "io.write" | "io.writeRaw" | "io.writeError" | "io.clear" | "io.stdout" | "io.stderr" | "print" | "__rnx_io_pretty" => Sink::TermWrite,
+        "io.write" | "io.writeRaw" | "io.writeError" | "io.clear" | "io.stdout" | "io.stderr" | "__rnx_io_pretty" | "__rnx_io_warn_missing_arg" => Sink::TermWrite,
         "io.read" | "io.readLine" | "io.stdin" | "io.isTTY" | "io.width" | "io.height" | "io.colorProfile" => Sink::TermRead,
         "io.setRawMode" => Sink::TermRaw,
         "File.fromHandle" => Sink::TermReadWrite,
@@ -1445,10 +1452,15 @@ fn walk_expr(
         Expr::Cast { expr: inner, .. } | Expr::Is { base: inner, .. } => {
             walk_expr(an, f, inner, params, env, nodes, stack)?;
         }
-        Expr::Macro { args, .. } => {
+        Expr::Macro { name, args, .. } => {
             for a in args {
                 an.burn()?;
                 walk_expr(an, f, a, params, env, nodes, stack)?;
+            }
+            if let Some(cap) = macro_sink(name) {
+                let mut full = nodes.to_vec();
+                full.push(an.node(f, name, expr.span));
+                an.record(f, cap, false, full, expr.span);
             }
         }
         Expr::Closure {

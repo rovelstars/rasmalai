@@ -18,7 +18,7 @@ nothing at runtime because the space is reclaimed the moment the scope ends.
 ```rnx
 let score = 0;
 score = score + 10;
-print(score);
+println!(score);
 ```
 
 Larger or longer-lived values live on the **heap**: memory requested at
@@ -33,7 +33,7 @@ widening surprises. `Float` is always an IEEE-754 double:
 ```rnx
 let count: Int = 41;
 let ratio: Float = 3.0;
-print(count + 1, Int(ratio));
+println!(count + 1, Int(ratio));
 ```
 
 ## Why no garbage collector
@@ -51,7 +51,7 @@ while i < 3 {
     total = total + bonus;
     i = i + 1;
 }
-print(total);
+println!(total);
 ```
 
 `bonus` dies at the end of each loop iteration. `total` dies when `main`
@@ -63,8 +63,8 @@ Resources that are not memory (files, locks, timers) release with `defer`.
 Deferred blocks run when the scope exits, last-in first-out:
 
 ```rnx
-defer { print("closed"); }
-print("working");
+defer { println!("closed"); }
+println!("working");
 ```
 
 ## Grouping data
@@ -78,7 +78,7 @@ struct Meter {
 }
 
 let m = Meter("heat", 21);
-print(m.name, m.reading);
+println!(m.name, m.reading);
 ```
 
 Next: run these samples in the [playground](/playground), then read the

@@ -26,9 +26,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -87,7 +87,7 @@ fn test_thread_pool_shutdown_and_reuse() {
     }
 }
 
-const MATRIX_SRC: &str = "import { AtomicInt } from \"@std/sync\";\n\nfn doubleInto(i: Int) {\n    AtomicInt.byId(3000 + i).set(i * 2);\n}\n\nfn Main(): Int {\n    let pool = ThreadPool.byId(704, 4);\n    pool.parallelFor(0, 50, 10, doubleInto);\n    pool.join();\n    let s = 0;\n    let j = 0;\n    while j < 50 {\n        s = s + AtomicInt.byId(3000 + j).get();\n        j = j + 1;\n    }\n    pool.shutdown();\n    print(\"pool matrix:\", s);\n    if s == 2450 {\n        return 42;\n    }\n    return 1;\n}\n";
+const MATRIX_SRC: &str = "import { AtomicInt } from \"@std/sync\";\n\nfn doubleInto(i: Int) {\n    AtomicInt.byId(3000 + i).set(i * 2);\n}\n\nfn Main(): Int {\n    let pool = ThreadPool.byId(704, 4);\n    pool.parallelFor(0, 50, 10, doubleInto);\n    pool.join();\n    let s = 0;\n    let j = 0;\n    while j < 50 {\n        s = s + AtomicInt.byId(3000 + j).get();\n        j = j + 1;\n    }\n    pool.shutdown();\n    println!(\"pool matrix:\", s);\n    if s == 2450 {\n        return 42;\n    }\n    return 1;\n}\n";
 
 #[test]
 fn test_cross_backend_pool_matrix() {

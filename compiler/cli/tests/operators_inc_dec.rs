@@ -43,9 +43,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let suffix = if want_out.is_empty() { "" } else { "\n" };
@@ -107,7 +107,7 @@ fn prefix_postfix_values() {
         assert(x == 4, \"postdec store\");\n\
         assert(--x == 3, \"predec new\");\n\
         assert(x == 3, \"predec store\");\n\
-        print(\"incdec-ok\");\n\
+        println!(\"incdec-ok\");\n\
         return 0;\n\
         }\n",
         0,
@@ -125,7 +125,7 @@ fn compound_assign_int() {
         assert(x == 25, \"pluseq\");\n\
         x -= 10;\n\
         assert(x == 15, \"minuseq\");\n\
-        print(\"compound-ok\");\n\
+        println!(\"compound-ok\");\n\
         return 0;\n\
         }\n",
         0,
@@ -147,7 +147,7 @@ fn float_incdec_compound() {
         assert(f == 3.0, \"float minuseq\");\n\
         --f;\n\
         assert(f == 2.0, \"float predec\");\n\
-        print(\"float-ok\");\n\
+        println!(\"float-ok\");\n\
         return 0;\n\
         }\n",
         0,
@@ -183,7 +183,7 @@ fn index_member_single_eval() {
         let old = b.v++;\n\
         assert(old == 14, \"member post yields old\");\n\
         assert(b.v == 15, \"member post stores new\");\n\
-        print(\"targets-ok\");\n\
+        println!(\"targets-ok\");\n\
         return 0;\n\
         }\n",
         0,
@@ -208,7 +208,7 @@ fn deref_incdec() {
         ++(*ptr);\n\
         assert(*ptr == 13, \"deref pre\");\n\
         }\n\
-        print(\"deref-ok\");\n\
+        println!(\"deref-ok\");\n\
         return 0;\n\
         }\n",
         0,

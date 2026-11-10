@@ -1,5 +1,25 @@
-use super::*;
 use super::instr::{FnCx, lower_instr};
+use super::*;
+
+fn is_macho() -> bool {
+    sysroot::target::active_target().object == sysroot::target::ObjectFormat::MachO
+}
+
+fn text_section(name: &str) -> String {
+    if is_macho() {
+        "__TEXT,__text".to_string()
+    } else {
+        format!(".text.{name}")
+    }
+}
+
+fn rodata_section(index: usize) -> String {
+    if is_macho() {
+        "__TEXT,__const".to_string()
+    } else {
+        format!(".rodata.rnx_str_{index}")
+    }
+}
 
 pub(super) fn build_module<'ctx>(
     context: &'ctx Context,
@@ -69,7 +89,7 @@ pub(super) fn build_module_subset<'ctx>(
         let contract = context.create_string_attribute("fp-contract", "off");
         fv.add_attribute(inkwell::attributes::AttributeLoc::Function, contract);
         if release {
-            fv.set_section(Some(&format!(".text.{}", f.name)));
+            fv.set_section(Some(&text_section(&f.name)));
         }
         funcs.insert(f.name.clone(), fv);
         if tiered && version::candidate(f) {
@@ -93,7 +113,7 @@ pub(super) fn build_module_subset<'ctx>(
                 );
                 vfv.add_attribute(inkwell::attributes::AttributeLoc::Function, noinline);
                 if release {
-                    vfv.set_section(Some(&format!(".text.{}", f.name)));
+                    vfv.set_section(Some(&text_section(&f.name)));
                 }
                 versioned.insert(vname, vfv);
             }
@@ -144,11 +164,27 @@ pub(super) fn build_module_subset<'ctx>(
     let ptr_t = context.ptr_type(inkwell::AddressSpace::default());
     let i64t = context.i64_type();
     let void_t = context.void_type();
-    module.add_function("rnx_alloc", ptr_t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_free", void_t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_print_str", void_t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
+    module.add_function(
+        "rnx_alloc",
+        ptr_t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_free",
+        void_t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_print_str",
+        void_t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_print_i64", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_panic", void_t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
+    module.add_function(
+        "rnx_panic",
+        void_t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_retain", void_t.fn_type(&[ptr_t.into()], false), None);
     module.add_function(
         "rnx_string_concat",
@@ -162,7 +198,9 @@ pub(super) fn build_module_subset<'ctx>(
     );
     module.add_function(
         "rnx_string_eq",
-        context.bool_type().fn_type(&[ptr_t.into(), ptr_t.into()], false),
+        context
+            .bool_type()
+            .fn_type(&[ptr_t.into(), ptr_t.into()], false),
         None,
     );
     module.add_function(
@@ -175,14 +213,38 @@ pub(super) fn build_module_subset<'ctx>(
         void_t.fn_type(&[i64t.into(), context.i32_type().into()], false),
         None,
     );
-    module.add_function("rnx_print_str", void_t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
+    module.add_function(
+        "rnx_print_str",
+        void_t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_int_to_str", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_float_to_str", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_bool_to_str", ptr_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_float_to_str",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_bool_to_str",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_any_to_str", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_eq_any_str", i64t.fn_type(&[i64t.into(), ptr_t.into()], false), None);
-    module.add_function("rnx_eq_any", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_release_str", void_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_eq_any_str",
+        i64t.fn_type(&[i64t.into(), ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_eq_any",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_release_str",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_array_new",
         ptr_t.fn_type(&[i64t.into(), i64t.into()], false),
@@ -205,12 +267,18 @@ pub(super) fn build_module_subset<'ctx>(
     );
     module.add_function(
         "rnx_array_set_unchecked",
-        void_t.fn_type(&[ptr_t.into(), i64t.into(), i64t.into(), i64t.into()], false),
+        void_t.fn_type(
+            &[ptr_t.into(), i64t.into(), i64t.into(), i64t.into()],
+            false,
+        ),
         None,
     );
     module.add_function(
         "rnx_array_set",
-        void_t.fn_type(&[ptr_t.into(), i64t.into(), i64t.into(), i64t.into()], false),
+        void_t.fn_type(
+            &[ptr_t.into(), i64t.into(), i64t.into(), i64t.into()],
+            false,
+        ),
         None,
     );
     module.add_function("rnx_array_len", i64t.fn_type(&[ptr_t.into()], false), None);
@@ -230,13 +298,21 @@ pub(super) fn build_module_subset<'ctx>(
         i64t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_string_trim", ptr_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_string_trim",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_string_char_code_at",
         i64t.fn_type(&[ptr_t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_string_from_char_code", ptr_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_string_from_char_code",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_array_pop",
         i64t.fn_type(&[ptr_t.into(), i64t.into()], false),
@@ -247,11 +323,7 @@ pub(super) fn build_module_subset<'ctx>(
         i64t.fn_type(&[i64t.into(), i64t.into()], false),
         None,
     );
-    module.add_function(
-        "rnx_any_unbox",
-        i64t.fn_type(&[i64t.into()], false),
-        None,
-    );
+    module.add_function("rnx_any_unbox", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function(
         "rnx_any_unbox_heap",
         i64t.fn_type(&[i64t.into()], false),
@@ -270,6 +342,11 @@ pub(super) fn build_module_subset<'ctx>(
     module.add_function(
         "rnx_any_release",
         void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_any_release_ptr",
+        void_t.fn_type(&[ptr_t.into()], false),
         None,
     );
     module.add_function(
@@ -299,30 +376,77 @@ pub(super) fn build_module_subset<'ctx>(
         ),
         None,
     );
-    module.add_function("rnx_closure_release", void_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_closure_release",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_thread_spawn_closure",
         i64t.fn_type(&[ptr_t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_thread_join_val", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_thread_join_err", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_task_await_val", i64t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_task_await_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_thread_join_val",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_thread_join_err",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_task_await_val",
+        i64t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_task_await_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function("rnx_pool_new", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function(
         "rnx_thread_pool_submit_handle",
-        ptr_t.fn_type(&[i64t.into(), i64t.into(), i64t.into(), i64t.into(), i64t.into()], false),
+        ptr_t.fn_type(
+            &[
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+            ],
+            false,
+        ),
         None,
     );
     module.add_function(
         "rnx_thread_pool_submit_closure",
-        ptr_t.fn_type(&[i64t.into(), i64t.into(), i64t.into(), i64t.into(), i64t.into()], false),
+        ptr_t.fn_type(
+            &[
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+            ],
+            false,
+        ),
         None,
     );
     module.add_function(
         "rnx_thread_pool_parallel_closure",
-        void_t.fn_type(&[i64t.into(), ptr_t.into(), i64t.into(), i64t.into(), i64t.into()], false),
+        void_t.fn_type(
+            &[
+                i64t.into(),
+                ptr_t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+            ],
+            false,
+        ),
         None,
     );
     module.add_function(
@@ -330,7 +454,11 @@ pub(super) fn build_module_subset<'ctx>(
         void_t.fn_type(&[i64t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_panic_str", void_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_panic_str",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_fatal_span",
         void_t.fn_type(&[ptr_t.into(), i64t.into(), i64t.into()], false),
@@ -351,17 +479,13 @@ pub(super) fn build_module_subset<'ctx>(
         i64t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
         None,
     );
+    module.add_function("rnx_thread_join", i64t.fn_type(&[i64t.into()], false), None);
+    module.add_function("rnx_clock_monotonic_nanos", i64t.fn_type(&[], false), None);
     module.add_function(
-        "rnx_thread_join",
-        i64t.fn_type(&[i64t.into()], false),
+        "rnx_sleep_nanos",
+        void_t.fn_type(&[i64t.into()], false),
         None,
     );
-    module.add_function(
-        "rnx_clock_monotonic_nanos",
-        i64t.fn_type(&[], false),
-        None,
-    );
-    module.add_function("rnx_sleep_nanos", void_t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_crypto_random_u64", i64t.fn_type(&[], false), None);
     module.add_function(
         "rnx_prng_seed",
@@ -374,15 +498,31 @@ pub(super) fn build_module_subset<'ctx>(
         ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_file_close", void_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_file_read_text", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_file_read_text_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_file_close",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_file_read_text",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_file_read_text_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_file_write_text",
         i64t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
         None,
     );
-    module.add_function("rnx_file_flush", void_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_file_flush",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_file_seek",
         i64t.fn_type(&[ptr_t.into(), i64t.into()], false),
@@ -394,13 +534,36 @@ pub(super) fn build_module_subset<'ctx>(
         i64t.fn_type(&[i64t.into(), i64t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_io_is_tty", context.bool_type().fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_io_is_tty",
+        context.bool_type().fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_io_winsize", ptr_t.fn_type(&[], false), None);
     module.add_function(
         "rnx_io_set_raw",
         ptr_t.fn_type(&[i64t.into(), i64t.into()], false),
         None,
     );
+    module.add_function("rnx_io_warn_missing_arg", void_t.fn_type(&[], false), None);
+    module.add_function(
+        "rnx_uefi_println",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_uefi_write",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    for name in [
+        "rnx_wasi_println",
+        "rnx_wasi_eprintln",
+        "rnx_wasi_write",
+        "rnx_wasi_ewrite",
+    ] {
+        module.add_function(name, void_t.fn_type(&[ptr_t.into()], false), None);
+    }
     let bytes_2i = i64t.fn_type(&[ptr_t.into(), i64t.into()], false);
     let bytes_3i = void_t.fn_type(&[ptr_t.into(), i64t.into(), i64t.into()], false);
     for name in BYTES_READS {
@@ -409,14 +572,29 @@ pub(super) fn build_module_subset<'ctx>(
     for name in BYTES_WRITES {
         module.add_function(name, bytes_3i, None);
     }
-    module.add_function("rnx_bytes_alloc", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_bytes_free", void_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_bytes_alloc",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_bytes_free",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function("rnx_bytes_len", i64t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_bytes_data", ptr_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_bytes_data",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function("rnx_bytes_cap", i64t.fn_type(&[ptr_t.into()], false), None);
     module.add_function(
         "rnx_bytes_copy_within",
-        void_t.fn_type(&[ptr_t.into(), i64t.into(), i64t.into(), i64t.into()], false),
+        void_t.fn_type(
+            &[ptr_t.into(), i64t.into(), i64t.into(), i64t.into()],
+            false,
+        ),
         None,
     );
     module.add_function(
@@ -431,59 +609,233 @@ pub(super) fn build_module_subset<'ctx>(
     );
     module.add_function(
         "rnx_file_read_bytes",
-        i64t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into(), i64t.into()], false),
+        i64t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64t.into(), i64t.into()],
+            false,
+        ),
         None,
     );
     module.add_function(
         "rnx_file_write_bytes",
-        i64t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into(), i64t.into()], false),
+        i64t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64t.into(), i64t.into()],
+            false,
+        ),
         None,
     );
-    module.add_function("rnx_path_exists", context.bool_type().fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_path_remove", context.bool_type().fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_exists", context.bool_type().fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_is_file", context.bool_type().fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_is_dir", context.bool_type().fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_path_exists",
+        context.bool_type().fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_path_remove",
+        context.bool_type().fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_exists",
+        context.bool_type().fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_is_file",
+        context.bool_type().fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_is_dir",
+        context.bool_type().fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function("rnx_fs_stat", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_stat_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_read_dir", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_read_dir_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_fs_stat_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_read_dir",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_read_dir_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function("rnx_fs_glob", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_glob_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_read_link", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_read_link_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_remove", context.bool_type().fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_remove_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_remove_all", context.bool_type().fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_remove_all_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_mkdir_err", ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_copy_err", ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_move_err", ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
-    module.add_function("rnx_fs_rename_err", ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
-    module.add_function("rnx_fs_truncate_err", ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_chmod_err", ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_symlink_err", ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
-    module.add_function("rnx_fs_fsync_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_read_text", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_read_text_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_write_text", i64t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_write_text_err", ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_read_bytes", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_read_bytes_err", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_write_bytes", i64t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_write_bytes_err", ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_mmap", ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_mmap_err", ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_fs_mmap_anon", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_fs_mmap_anon_err", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_fs_mmap_addr", i64t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_mmap_len", i64t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_mmap_flush", void_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_fs_mmap_close", void_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_assert", void_t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_test_check", context.bool_type().fn_type(&[], false), None);
+    module.add_function(
+        "rnx_fs_glob_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_read_link",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_read_link_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_remove",
+        context.bool_type().fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_remove_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_remove_all",
+        context.bool_type().fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_remove_all_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_mkdir_err",
+        ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_copy_err",
+        ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_move_err",
+        ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_rename_err",
+        ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_truncate_err",
+        ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_chmod_err",
+        ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_symlink_err",
+        ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_fsync_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_read_text",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_read_text_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_write_text",
+        i64t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_write_text_err",
+        ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_read_bytes",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_read_bytes_err",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_write_bytes",
+        i64t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_write_bytes_err",
+        ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_mmap",
+        ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_mmap_err",
+        ptr_t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_mmap_anon",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_mmap_anon_err",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_mmap_addr",
+        i64t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_mmap_len",
+        i64t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_mmap_flush",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_mmap_close",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_assert",
+        void_t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_test_check",
+        context.bool_type().fn_type(&[], false),
+        None,
+    );
     module.add_function("rnx_env_args_count", i64t.fn_type(&[], false), None);
-    module.add_function("rnx_env_args_get", ptr_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_env_args_get",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_env_get", ptr_t.fn_type(&[ptr_t.into()], false), None);
     module.add_function(
         "rnx_env_set",
@@ -493,66 +845,221 @@ pub(super) fn build_module_subset<'ctx>(
     module.add_function("rnx_env_cwd", ptr_t.fn_type(&[], false), None);
     module.add_function("rnx_host_version", ptr_t.fn_type(&[], false), None);
     module.add_function("rnx_env_exit", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_net_connect_start", i64t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_net_take_error", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_net_connect_wait", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_net_recv_or_wait", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_net_send_or_wait", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_net_recv_get", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_net_error_text", ptr_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_net_connect_start",
+        i64t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_take_error",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_connect_wait",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_recv_or_wait",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_send_or_wait",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_recv_get",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_error_text",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_net_close", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_net_listener_bind", i64t.fn_type(&[ptr_t.into(), i64t.into()], false), None);
-    module.add_function("rnx_net_listener_port", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_net_listener_accept_start", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_net_listener_accept_wait", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_net_listener_close", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_tls_connect_start", i64t.fn_type(&[i64t.into(), ptr_t.into()], false), None);
-    module.add_function("rnx_tls_handshake_start", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_tls_handshake_wait", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_tls_recv_or_wait", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_tls_send_or_wait", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_tls_recv_get", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_tls_error_text", ptr_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_net_listener_bind",
+        i64t.fn_type(&[ptr_t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_listener_port",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_listener_accept_start",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_listener_accept_wait",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_net_listener_close",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_tls_connect_start",
+        i64t.fn_type(&[i64t.into(), ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_tls_handshake_start",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_tls_handshake_wait",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_tls_recv_or_wait",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_tls_send_or_wait",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_tls_recv_get",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_tls_error_text",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_tls_close", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_process_pid", i64t.fn_type(&[], false), None);
-    module.add_function("rnx_process_remove_env", void_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_process_remove_env",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function("rnx_process_all_env_count", i64t.fn_type(&[], false), None);
-    module.add_function("rnx_process_all_env_get", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_process_chdir", i64t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_process_all_env_get",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_process_chdir",
+        i64t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_process_spawn",
-        i64t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into(), i64t.into(), i64t.into(), i64t.into()], false),
+        i64t.fn_type(
+            &[
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+            ],
+            false,
+        ),
         None,
     );
     module.add_function(
         "rnx_process_run",
-        i64t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into(), i64t.into(), i64t.into(), i64t.into()], false),
+        i64t.fn_type(
+            &[
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+            ],
+            false,
+        ),
         None,
     );
-    module.add_function("rnx_process_pid_of", i64t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_process_pid_of",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_process_write_stdin",
-        i64t.fn_type(&[i64t.into(), ptr_t.into(), i64t.into(), i64t.into()], false),
+        i64t.fn_type(
+            &[i64t.into(), ptr_t.into(), i64t.into(), i64t.into()],
+            false,
+        ),
         None,
     );
     module.add_function(
         "rnx_process_read_stdout",
-        i64t.fn_type(&[i64t.into(), ptr_t.into(), i64t.into(), i64t.into()], false),
+        i64t.fn_type(
+            &[i64t.into(), ptr_t.into(), i64t.into(), i64t.into()],
+            false,
+        ),
         None,
     );
     module.add_function(
         "rnx_process_read_stderr",
-        i64t.fn_type(&[i64t.into(), ptr_t.into(), i64t.into(), i64t.into()], false),
+        i64t.fn_type(
+            &[i64t.into(), ptr_t.into(), i64t.into(), i64t.into()],
+            false,
+        ),
         None,
     );
-    module.add_function("rnx_process_close_stdin", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_process_wait", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_process_try_wait", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_process_kill", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_process_take_stdout", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_process_take_stderr", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_process_exit_code", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_process_forget", void_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_process_close_stdin",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_process_wait",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_process_try_wait",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_process_kill",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_process_take_stdout",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_process_take_stderr",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_process_exit_code",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_process_forget",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_os_platform", ptr_t.fn_type(&[], false), None);
     module.add_function("rnx_os_arch", ptr_t.fn_type(&[], false), None);
     module.add_function("rnx_os_hostname", ptr_t.fn_type(&[], false), None);
@@ -566,21 +1073,37 @@ pub(super) fn build_module_subset<'ctx>(
         void_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_map_get", i64t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_map_get",
+        i64t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_map_has",
-        context.bool_type().fn_type(&[ptr_t.into(), ptr_t.into()], false),
+        context
+            .bool_type()
+            .fn_type(&[ptr_t.into(), ptr_t.into()], false),
         None,
     );
     module.add_function(
         "rnx_map_delete",
-        context.bool_type().fn_type(&[ptr_t.into(), ptr_t.into()], false),
+        context
+            .bool_type()
+            .fn_type(&[ptr_t.into(), ptr_t.into()], false),
         None,
     );
     module.add_function("rnx_map_len", i64t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_map_clear", void_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_map_clear",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function("rnx_map_keys", ptr_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_map_values", ptr_t.fn_type(&[ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_map_values",
+        ptr_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
     module.add_function("rnx_gmap_new", ptr_t.fn_type(&[], false), None);
     module.add_function("rnx_gmap_free", void_t.fn_type(&[i64t.into()], false), None);
     module.add_function(
@@ -595,18 +1118,30 @@ pub(super) fn build_module_subset<'ctx>(
     );
     module.add_function(
         "rnx_gmap_has",
-        context.bool_type().fn_type(&[i64t.into(), i64t.into()], false),
+        context
+            .bool_type()
+            .fn_type(&[i64t.into(), i64t.into()], false),
         None,
     );
     module.add_function(
         "rnx_gmap_delete",
-        context.bool_type().fn_type(&[i64t.into(), i64t.into()], false),
+        context
+            .bool_type()
+            .fn_type(&[i64t.into(), i64t.into()], false),
         None,
     );
     module.add_function("rnx_gmap_len", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_gmap_clear", void_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_gmap_clear",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_gmap_keys", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_gmap_values", ptr_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_gmap_values",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_json_parse", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function(
         "rnx_json_parse_typed",
@@ -618,15 +1153,47 @@ pub(super) fn build_module_subset<'ctx>(
         i64t.fn_type(&[i64t.into(), i64t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_json_stringify", ptr_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_json_stringify",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_json_unwrap", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_dns_lookup_start", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_dns_lookup_wait", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_dns_lookup_get", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_dns_lookup_error", ptr_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_release_map", void_t.fn_type(&[ptr_t.into()], false), None);
-    module.add_function("rnx_sync_atomic_get", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_black_box_i64", i64t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_dns_lookup_start",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_dns_lookup_wait",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_dns_lookup_get",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_dns_lookup_error",
+        ptr_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_release_map",
+        void_t.fn_type(&[ptr_t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_sync_atomic_get",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_black_box_i64",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_sync_atomic_set",
         void_t.fn_type(&[i64t.into(), i64t.into()], false),
@@ -639,7 +1206,9 @@ pub(super) fn build_module_subset<'ctx>(
     );
     module.add_function(
         "rnx_sync_atomic_cas",
-        context.bool_type().fn_type(&[i64t.into(), i64t.into(), i64t.into()], false),
+        context
+            .bool_type()
+            .fn_type(&[i64t.into(), i64t.into(), i64t.into()], false),
         None,
     );
     module.add_function(
@@ -647,13 +1216,37 @@ pub(super) fn build_module_subset<'ctx>(
         void_t.fn_type(&[i64t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_sync_channel_recv", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_sync_channel_try_recv", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_sync_channel_len", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_fs_pool_depth", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_sync_channel_drop", void_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_sync_channel_recv",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_sync_channel_try_recv",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_sync_channel_len",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_fs_pool_depth",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_sync_channel_drop",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_debug_live_count", i64t.fn_type(&[], false), None);
-    module.add_function("rnx_defer_push", void_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_defer_push",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_defer_pop", i64t.fn_type(&[], false), None);
     module.add_function("rnx_defer_len", i64t.fn_type(&[], false), None);
     module.add_function("rnx_any_tag", i64t.fn_type(&[i64t.into()], false), None);
@@ -663,11 +1256,31 @@ pub(super) fn build_module_subset<'ctx>(
     module.add_function("rnx_error_class", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_error_unbox", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_error_str", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_error_release", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_report_uncaught", context.i32_type().fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_note_type", void_t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_note_fields", void_t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_note_namespace", void_t.fn_type(&[i64t.into(), i64t.into()], false), None);
+    module.add_function(
+        "rnx_error_release",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_report_uncaught",
+        context.i32_type().fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_note_type",
+        void_t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_note_fields",
+        void_t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_note_namespace",
+        void_t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_note_array_kind",
         void_t.fn_type(&[i64t.into(), i64t.into(), i64t.into()], false),
@@ -678,21 +1291,63 @@ pub(super) fn build_module_subset<'ctx>(
         void_t.fn_type(&[i64t.into(), i64t.into(), i64t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_io_pretty", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
+    module.add_function(
+        "rnx_io_pretty",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_type_name", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_typeof_any", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_array_slice", i64t.fn_type(&[i64t.into(), i64t.into(), i64t.into(), i64t.into(), i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_mutex_lock", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_mutex_unlock", void_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_array_slice",
+        i64t.fn_type(
+            &[
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+            ],
+            false,
+        ),
+        None,
+    );
+    module.add_function(
+        "rnx_mutex_lock",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_mutex_unlock",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_mutex_try_lock",
         context.bool_type().fn_type(&[i64t.into()], false),
         None,
     );
-    module.add_function("rnx_rwlock_read_lock", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_rwlock_read_unlock", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_rwlock_write_lock", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_rwlock_write_unlock", void_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_rwlock_read_lock",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_rwlock_read_unlock",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_rwlock_write_lock",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_rwlock_write_unlock",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_rwlock_try_read_lock",
         context.bool_type().fn_type(&[i64t.into()], false),
@@ -710,20 +1365,44 @@ pub(super) fn build_module_subset<'ctx>(
     );
     module.add_function(
         "rnx_condvar_wait_timeout",
-        context.bool_type().fn_type(&[i64t.into(), i64t.into(), i64t.into()], false),
+        context
+            .bool_type()
+            .fn_type(&[i64t.into(), i64t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_condvar_notify_one", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_condvar_notify_all", void_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_condvar_notify_one",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_condvar_notify_all",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_barrier_wait",
-        context.bool_type().fn_type(&[i64t.into(), i64t.into()], false),
+        context
+            .bool_type()
+            .fn_type(&[i64t.into(), i64t.into()], false),
         None,
     );
     let v4f32 = context.f32_type().vec_type(4);
-    module.add_function("llvm.minnum.v4f32", v4f32.fn_type(&[v4f32.into(), v4f32.into()], false), None);
-    module.add_function("llvm.maxnum.v4f32", v4f32.fn_type(&[v4f32.into(), v4f32.into()], false), None);
-    module.add_function("llvm.sqrt.v4f32", v4f32.fn_type(&[v4f32.into()], false), None);
+    module.add_function(
+        "llvm.minnum.v4f32",
+        v4f32.fn_type(&[v4f32.into(), v4f32.into()], false),
+        None,
+    );
+    module.add_function(
+        "llvm.maxnum.v4f32",
+        v4f32.fn_type(&[v4f32.into(), v4f32.into()], false),
+        None,
+    );
+    module.add_function(
+        "llvm.sqrt.v4f32",
+        v4f32.fn_type(&[v4f32.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_thread_pool_init",
         void_t.fn_type(&[i64t.into(), i64t.into()], false),
@@ -736,11 +1415,28 @@ pub(super) fn build_module_subset<'ctx>(
     );
     module.add_function(
         "rnx_thread_pool_parallel_for",
-        void_t.fn_type(&[i64t.into(), i64t.into(), i64t.into(), i64t.into(), i64t.into()], false),
+        void_t.fn_type(
+            &[
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+                i64t.into(),
+            ],
+            false,
+        ),
         None,
     );
-    module.add_function("rnx_thread_pool_join", void_t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_thread_pool_shutdown", void_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_thread_pool_join",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_thread_pool_shutdown",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_sync_channel_send_str",
         void_t.fn_type(&[i64t.into(), ptr_t.into()], false),
@@ -748,35 +1444,65 @@ pub(super) fn build_module_subset<'ctx>(
     );
     module.add_function(
         "rnx_sync_channel_send_obj",
-        void_t.fn_type(&[i64t.into(), ptr_t.into(), i64t.into(), ptr_t.into()], false),
+        void_t.fn_type(
+            &[i64t.into(), ptr_t.into(), i64t.into(), ptr_t.into()],
+            false,
+        ),
         None,
     );
     module.add_function(
         "rnx_sync_channel_send_array",
-        void_t.fn_type(&[i64t.into(), ptr_t.into(), i64t.into(), ptr_t.into()], false),
+        void_t.fn_type(
+            &[i64t.into(), ptr_t.into(), i64t.into(), ptr_t.into()],
+            false,
+        ),
         None,
     );
     module.add_function("rnx_math_sqrt", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_math_sin", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_math_cos", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_math_tan", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_math_atan2", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
-    module.add_function("rnx_math_pow", i64t.fn_type(&[i64t.into(), i64t.into()], false), None);
+    module.add_function(
+        "rnx_math_atan2",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_math_pow",
+        i64t.fn_type(&[i64t.into(), i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_math_floor", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_math_ceil", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_math_round", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_math_log", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_float_nan", i64t.fn_type(&[], false), None);
-    module.add_function("rnx_float_to_bits", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_float_from_bits", i64t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_float_to_bits",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
+    module.add_function(
+        "rnx_float_from_bits",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_float_fma",
         i64t.fn_type(&[i64t.into(), i64t.into(), i64t.into()], false),
         None,
     );
-    module.add_function("rnx_genref_create", i64t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_genref_create",
+        i64t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function("rnx_genref_get", i64t.fn_type(&[i64t.into()], false), None);
-    module.add_function("rnx_genref_invalidate", void_t.fn_type(&[i64t.into()], false), None);
+    module.add_function(
+        "rnx_genref_invalidate",
+        void_t.fn_type(&[i64t.into()], false),
+        None,
+    );
     module.add_function(
         "rnx_release",
         void_t.fn_type(&[ptr_t.into(), i64t.into(), ptr_t.into()], false),
@@ -797,8 +1523,9 @@ pub(super) fn build_module_subset<'ctx>(
             match dbg.subs.get(&f.name) {
                 Some(sp) => {
                     use inkwell::debug_info::AsDIScope;
-                    let (line, col) =
-                        debug.and_then(|d| d.lines.get(&f.name).copied()).unwrap_or((1, 1));
+                    let (line, col) = debug
+                        .and_then(|d| d.lines.get(&f.name).copied())
+                        .unwrap_or((1, 1));
                     Some(dbg.builder.create_debug_location(
                         context,
                         line,
@@ -836,7 +1563,9 @@ pub(super) fn build_module_subset<'ctx>(
                 vfuncs.insert(vname.clone(), vfv);
                 let mut shadow = f.clone();
                 shadow.name = vname;
-                lower_fn(context, &builder, &module, lir, &vfuncs, &shadow, release, loc)?;
+                lower_fn(
+                    context, &builder, &module, lir, &vfuncs, &shadow, release, loc,
+                )?;
                 targets.push(vfv);
             }
             version::synthesize_stub(context, stub, &targets, tier_fn)?;
@@ -851,13 +1580,53 @@ pub(super) fn build_module_subset<'ctx>(
 }
 
 pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnostic> {
-    let bad = |what: &str| Diagnostic::new(Code::E108, format!("llvm subset: {what} in `{}`", f.name));
+    let bad =
+        |what: &str| Diagnostic::new(Code::E108, format!("llvm subset: {what} in `{}`", f.name));
     for t in f.params.iter().chain(f.locals.iter()) {
-        if !matches!(t, LirType::I64 | LirType::Bool | LirType::I8 | LirType::F64(_) | LirType::Null | LirType::Obj(_) | LirType::GenRef(_) | LirType::Pointer(_) | LirType::Pool | LirType::Vec4f | LirType::Vec4i | LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Any | LirType::Closure | LirType::Tuple(_) | LirType::Range | LirType::Error) {
+        if !matches!(
+            t,
+            LirType::I64
+                | LirType::Bool
+                | LirType::I8
+                | LirType::F64(_)
+                | LirType::Null
+                | LirType::Obj(_)
+                | LirType::GenRef(_)
+                | LirType::Pointer(_)
+                | LirType::Pool
+                | LirType::Vec4f
+                | LirType::Vec4i
+                | LirType::Str
+                | LirType::Array(_)
+                | LirType::Enum(_)
+                | LirType::Any
+                | LirType::Closure
+                | LirType::Tuple(_)
+                | LirType::Range
+                | LirType::Error
+        ) {
             return Err(bad("non-scalar local"));
         }
     }
-    if !matches!(f.ret, LirType::I64 | LirType::Bool | LirType::I8 | LirType::F64(_) | LirType::Any | LirType::Void | LirType::Obj(_) | LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Vec4f | LirType::Vec4i | LirType::Closure | LirType::Tuple(_) | LirType::Range | LirType::Error) {
+    if !matches!(
+        f.ret,
+        LirType::I64
+            | LirType::Bool
+            | LirType::I8
+            | LirType::F64(_)
+            | LirType::Any
+            | LirType::Void
+            | LirType::Obj(_)
+            | LirType::Str
+            | LirType::Array(_)
+            | LirType::Enum(_)
+            | LirType::Vec4f
+            | LirType::Vec4i
+            | LirType::Closure
+            | LirType::Tuple(_)
+            | LirType::Range
+            | LirType::Error
+    ) {
         return Err(bad("non-scalar return"));
     }
     for b in &f.blocks {
@@ -866,9 +1635,9 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
                 Instr::Const { lit, .. } => match lit {
                     Lit::Int(_) | Lit::Bool(_) | Lit::Null | Lit::Str(_) | Lit::Float(..) => {}
                 },
-                Instr::Concat { .. } | Instr::ToStr { .. } | Instr::Convert { .. } => {},
+                Instr::Concat { .. } | Instr::ToStr { .. } | Instr::Convert { .. } => {}
                 Instr::Cast { .. } => {}
-                Instr::Copy { dst, src , ..} => {
+                Instr::Copy { dst, src, .. } => {
                     let dinfo = f.locals.get(*dst as usize);
                     let sinfo = f.locals.get(*src as usize);
                     match (dinfo, sinfo) {
@@ -901,42 +1670,65 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
                 | Instr::Cmp { .. }
                 | Instr::Not { .. }
                 | Instr::Neg { .. } => {}
-                Instr::ObjNew { class, instance_size: size, .. } => {
-                    match lir.classes.get(*class) {
-                        Some(c) if *size == instance_size(c.fields.len()) => {}
-                        _ => return Err(bad("bad class alloc")),
-                    }
-                }
-                Instr::StackAlloc { class, instance_size: size, .. } => {
-                    match lir.classes.get(*class) {
-                        Some(c) if *size == instance_size(c.fields.len()) => {}
-                        _ => return Err(bad("bad class alloc")),
-                    }
-                }
-                Instr::GetField { obj, field, .. } => {
-                    match obj_local(lir, f, *obj) {
-                        Some((ci, _)) if *field < lir.classes[ci].fields.len() => {}
-                        _ => return Err(bad("bad field load")),
-                    }
-                }
-                Instr::SetField { obj, field, .. } => {
-                    match obj_local(lir, f, *obj) {
-                        Some((ci, _)) if *field < lir.classes[ci].fields.len() => {}
-                        _ => return Err(bad("bad field store")),
-                    }
-                }
-                Instr::GetFieldByName { obj, field, .. } | Instr::SetFieldByName { obj, field, .. } => {
+                Instr::ObjNew {
+                    class,
+                    instance_size: size,
+                    ..
+                } => match lir.classes.get(*class) {
+                    Some(c) if *size == instance_size(c.fields.len()) => {}
+                    _ => return Err(bad("bad class alloc")),
+                },
+                Instr::StackAlloc {
+                    class,
+                    instance_size: size,
+                    ..
+                } => match lir.classes.get(*class) {
+                    Some(c) if *size == instance_size(c.fields.len()) => {}
+                    _ => return Err(bad("bad class alloc")),
+                },
+                Instr::GetField { obj, field, .. } => match obj_local(lir, f, *obj) {
+                    Some((ci, _)) if *field < lir.classes[ci].fields.len() => {}
+                    _ => return Err(bad("bad field load")),
+                },
+                Instr::SetField { obj, field, .. } => match obj_local(lir, f, *obj) {
+                    Some((ci, _)) if *field < lir.classes[ci].fields.len() => {}
+                    _ => return Err(bad("bad field store")),
+                },
+                Instr::GetFieldByName { obj, field, .. }
+                | Instr::SetFieldByName { obj, field, .. } => {
                     if named_field(lir, f, *obj, field).is_none() {
                         return Err(bad("unresolved field"));
                     }
                 }
-                Instr::Retain { obj , ..} => {
-                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_)) | Some(LirType::Closure)) {
+                Instr::Retain { obj, .. } => {
+                    if obj_local(lir, f, *obj).is_none()
+                        && !matches!(
+                            f.locals.get(*obj as usize),
+                            Some(LirType::Str)
+                                | Some(LirType::Array(_))
+                                | Some(LirType::Enum(_))
+                                | Some(LirType::Any)
+                                | Some(LirType::Error)
+                                | Some(LirType::Obj(_))
+                                | Some(LirType::Closure)
+                        )
+                    {
                         return Err(bad("retain of non-object"));
                     }
                 }
-                Instr::Release { obj , ..} => {
-                    if obj_local(lir, f, *obj).is_none() && !matches!(f.locals.get(*obj as usize), Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Any) | Some(LirType::Error) | Some(LirType::Obj(_)) | Some(LirType::Closure)) {
+                Instr::Release { obj, .. } => {
+                    if obj_local(lir, f, *obj).is_none()
+                        && !matches!(
+                            f.locals.get(*obj as usize),
+                            Some(LirType::Str)
+                                | Some(LirType::Array(_))
+                                | Some(LirType::Enum(_))
+                                | Some(LirType::Any)
+                                | Some(LirType::Error)
+                                | Some(LirType::Obj(_))
+                                | Some(LirType::Closure)
+                        )
+                    {
                         return Err(bad("release of non-object"));
                     }
                 }
@@ -945,19 +1737,25 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
                         return Err(bad("release of unknown class"));
                     }
                 }
-                Instr::ArrayNew { .. } | Instr::ArrayPush { .. } | Instr::ArrayGet { .. } | Instr::ArraySet { .. } | Instr::ArrayLen { .. } => {}
-                Instr::PtrLoad { dst, .. } => {
-                    match f.locals.get(*dst as usize) {
-                        Some(LirType::I64) | Some(LirType::I8) | Some(LirType::F64(_)) | Some(LirType::Bool) => {}
-                        _ => return Err(bad("pointer load needs an Int, Float, or Bool slot")),
-                    }
-                }
-                Instr::PtrStore { val, .. } => {
-                    match f.locals.get(*val as usize) {
-                        Some(LirType::I64) | Some(LirType::I8) | Some(LirType::F64(_)) | Some(LirType::Bool) => {}
-                        _ => return Err(bad("pointer store needs an Int, Float, or Bool value")),
-                    }
-                }
+                Instr::ArrayNew { .. }
+                | Instr::ArrayPush { .. }
+                | Instr::ArrayGet { .. }
+                | Instr::ArraySet { .. }
+                | Instr::ArrayLen { .. } => {}
+                Instr::PtrLoad { dst, .. } => match f.locals.get(*dst as usize) {
+                    Some(LirType::I64)
+                    | Some(LirType::I8)
+                    | Some(LirType::F64(_))
+                    | Some(LirType::Bool) => {}
+                    _ => return Err(bad("pointer load needs an Int, Float, or Bool slot")),
+                },
+                Instr::PtrStore { val, .. } => match f.locals.get(*val as usize) {
+                    Some(LirType::I64)
+                    | Some(LirType::I8)
+                    | Some(LirType::F64(_))
+                    | Some(LirType::Bool) => {}
+                    _ => return Err(bad("pointer store needs an Int, Float, or Bool value")),
+                },
                 Instr::ClosureNew { captures, .. } => {
                     for c in captures {
                         match f.locals.get(*c as usize) {
@@ -972,13 +1770,11 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
                         }
                     }
                 }
-                Instr::ReleaseField { obj, field , ..} => {
-                    match obj_local(lir, f, *obj) {
-                        Some((ci, _)) if *field < lir.classes[ci].fields.len() => {}
-                        _ => return Err(bad("bad field release")),
-                    }
-                }
-                Instr::GenRefOf { obj, .. } | Instr::GenRefInvalidate { obj , ..} => {
+                Instr::ReleaseField { obj, field, .. } => match obj_local(lir, f, *obj) {
+                    Some((ci, _)) if *field < lir.classes[ci].fields.len() => {}
+                    _ => return Err(bad("bad field release")),
+                },
+                Instr::GenRefOf { obj, .. } | Instr::GenRefInvalidate { obj, .. } => {
                     if obj_local(lir, f, *obj).is_none() {
                         return Err(bad("genref of non-object"));
                     }
@@ -997,24 +1793,26 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
                 | Instr::PoolParallelFor { .. }
                 | Instr::PoolJoin { .. }
                 | Instr::PoolShutdown { .. } => {}
-                Instr::EnumNew { dst: _, enu, variant, payload , ..} => {
-                    match lir.enums.get(*enu) {
-                        Some(d) => match d.variants.get(*variant) {
-                            Some(v) if v.payload.len() == payload.len() => {}
-                            _ => return Err(bad("bad enum variant")),
-                        },
-                        None => return Err(bad("unknown enum")),
-                    }
-                }
-                Instr::EnumPayload { scrut, index, .. } => {
-                    match f.locals.get(*scrut as usize) {
-                        Some(LirType::Enum(ei)) => match lir.enums.get(*ei) {
-                            Some(d) if *index < enum_max_payloads(d) => {}
-                            _ => return Err(bad("bad enum payload")),
-                        },
-                        _ => return Err(bad("payload of non-enum")),
-                    }
-                }
+                Instr::EnumNew {
+                    dst: _,
+                    enu,
+                    variant,
+                    payload,
+                    ..
+                } => match lir.enums.get(*enu) {
+                    Some(d) => match d.variants.get(*variant) {
+                        Some(v) if v.payload.len() == payload.len() => {}
+                        _ => return Err(bad("bad enum variant")),
+                    },
+                    None => return Err(bad("unknown enum")),
+                },
+                Instr::EnumPayload { scrut, index, .. } => match f.locals.get(*scrut as usize) {
+                    Some(LirType::Enum(ei)) => match lir.enums.get(*ei) {
+                        Some(d) if *index < enum_max_payloads(d) => {}
+                        _ => return Err(bad("bad enum payload")),
+                    },
+                    _ => return Err(bad("payload of non-enum")),
+                },
                 Instr::EnumTag { scrut, .. } => {
                     if !matches!(f.locals.get(*scrut as usize), Some(LirType::Enum(_))) {
                         return Err(bad("tag of non-enum"));
@@ -1024,7 +1822,7 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
                     let supported = matches!(target, CallTarget::Fn(_))
                         || matches!(target, CallTarget::Foreign { .. })
                         || matches!(target, CallTarget::Value(_))
-                        || matches!(target, CallTarget::Builtin(n) if n == "print" || n == "streq" || n == "strcmp" || n == "assert" || n == "__testCheck" || frontend::runtime::is_runtime_symbol(n));
+                        || matches!(target, CallTarget::Builtin(n) if n == "streq" || n == "strcmp" || n == "assert" || n == "__testCheck" || frontend::runtime::is_runtime_symbol(n));
                     if !supported {
                         return Err(match target {
                             CallTarget::Dyn { method, .. } => Diagnostic::new(
@@ -1039,7 +1837,9 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
                 }
                 Instr::Defer { .. } | Instr::RunDefers { .. } => {}
                 Instr::AddrOf { .. } => {
-                    return Err(bad("address of a stack local is not supported in native codegen; use `Pointer.fromAddress` with a real address"));
+                    return Err(bad(
+                        "address of a stack local is not supported in native codegen; use `Pointer.fromAddress` with a real address",
+                    ));
                 }
                 _ => return Err(bad("unsupported instr")),
             }
@@ -1049,12 +1849,19 @@ pub(super) fn check_supported(lir: &Module, f: &Function) -> Result<(), Diagnost
             Terminator::Throw { src, catch, .. } => {
                 if catch.is_some() {
                     match f.locals.get(*src as usize) {
-                        Some(LirType::Str) | Some(LirType::Error) | Some(LirType::I64) | Some(LirType::I8) | Some(LirType::F64(_)) | Some(LirType::Bool) | Some(LirType::Obj(_)) => {}
+                        Some(LirType::Str)
+                        | Some(LirType::Error)
+                        | Some(LirType::I64)
+                        | Some(LirType::I8)
+                        | Some(LirType::F64(_))
+                        | Some(LirType::Bool)
+                        | Some(LirType::Obj(_)) => {}
                         _ => return Err(bad("throw payload")),
                     }
                 }
             }
-            Terminator::BrErr { .. } => {}            Terminator::Switch { cases, .. } => {
+            Terminator::BrErr { .. } => {}
+            Terminator::Switch { cases, .. } => {
                 for (pat, _) in cases {
                     match pat {
                         SwitchPat::Int(_) | SwitchPat::Enum { .. } | SwitchPat::Is { .. } => {}
@@ -1087,7 +1894,10 @@ fn declare_strings<'a>(
     for f in &lir.functions {
         for b in &f.blocks {
             lir::instr::walk_instrs(&b.instrs, &mut |ins| {
-                if let Instr::Const { lit: Lit::Str(s), .. } = ins {
+                if let Instr::Const {
+                    lit: Lit::Str(s), ..
+                } = ins
+                {
                     texts.insert(s.clone());
                 }
             });
@@ -1131,15 +1941,17 @@ fn declare_strings<'a>(
         );
         let init = ty.const_named_struct(&[
             i32t.const_int(0xFFFF_FFFF, false).into(),
-            i32t.const_int(if text.is_ascii() { 1 } else { 2 }, false).into(),
+            i32t.const_int(if text.is_ascii() { 1 } else { 2 }, false)
+                .into(),
             i64t.const_zero().into(),
             i64t.const_int(bytes.len() as u64, false).into(),
-            i64t.const_int(text.chars().count() as u64 + 1, false).into(),
+            i64t.const_int(text.chars().count() as u64 + 1, false)
+                .into(),
             arr.into(),
         ]);
         let gv = module.add_global(ty, None, &format!("rnx_str_{n}"));
         if release {
-            gv.set_section(Some(&format!(".rodata.rnx_str_{n}")));
+            gv.set_section(Some(&rodata_section(n)));
         }
         gv.set_initializer(&init);
         gv.set_linkage(inkwell::module::Linkage::Private);
@@ -1162,7 +1974,7 @@ fn stack_locals(f: &Function) -> BTreeSet<Local> {
         changed = false;
         for block in &f.blocks {
             for ins in &block.instrs {
-                if let Instr::Copy { dst, src , ..} | Instr::Cast { dst, src , ..} = ins {
+                if let Instr::Copy { dst, src, .. } | Instr::Cast { dst, src, .. } = ins {
                     if set.contains(src) && set.insert(*dst) {
                         changed = true;
                     }
@@ -1232,7 +2044,12 @@ const FLOAT_FNS: [&str; 4] = [
 
 fn bytes_fns_map<'ctx>(module: &LlModule<'ctx>) -> BTreeMap<String, FunctionValue<'ctx>> {
     let mut out = BTreeMap::new();
-    for name in BYTES_READS.into_iter().chain(BYTES_WRITES).chain(BYTES_SINGLE).chain(FLOAT_FNS) {
+    for name in BYTES_READS
+        .into_iter()
+        .chain(BYTES_WRITES)
+        .chain(BYTES_SINGLE)
+        .chain(FLOAT_FNS)
+    {
         if let Some(fv) = module.get_function(name) {
             out.insert(name.to_string(), fv);
         }
@@ -1252,7 +2069,11 @@ fn lower_fn<'a>(
 ) -> Result<(), Diagnostic> {
     let normalized;
     let f = {
-        let rets = f_raw.blocks.iter().filter(|b| matches!(b.term, Terminator::Ret(_))).count();
+        let rets = f_raw
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.term, Terminator::Ret(_)))
+            .count();
         if rets >= 2 {
             normalized = lir::opt::single_exit(f_raw);
             &normalized
@@ -1265,7 +2086,10 @@ fn lower_fn<'a>(
     let entry = context.append_basic_block(fv, "entry");
     let runtime_fn = |name: &str| {
         module.get_function(name).ok_or_else(|| {
-            Diagnostic::new(Code::E108, format!("llvm jit: missing runtime symbol `{name}`"))
+            Diagnostic::new(
+                Code::E108,
+                format!("llvm jit: missing runtime symbol `{name}`"),
+            )
         })
     };
     let alloc = runtime_fn("rnx_alloc")?;
@@ -1308,6 +2132,7 @@ fn lower_fn<'a>(
     let any_retain = runtime_fn("rnx_any_retain")?;
     let any_release_box = runtime_fn("rnx_any_release_box")?;
     let any_release = runtime_fn("rnx_any_release")?;
+    let any_release_ptr = runtime_fn("rnx_any_release_ptr")?;
     let heap_track = runtime_fn("rnx_heap_track")?;
     let closure_new = runtime_fn("rnx_closure_new")?;
     let closure_set = runtime_fn("rnx_closure_set")?;
@@ -1342,6 +2167,13 @@ fn lower_fn<'a>(
     let io_is_tty = runtime_fn("rnx_io_is_tty")?;
     let io_winsize = runtime_fn("rnx_io_winsize")?;
     let io_set_raw = runtime_fn("rnx_io_set_raw")?;
+    let io_warn_missing_arg = runtime_fn("rnx_io_warn_missing_arg")?;
+    let uefi_println = runtime_fn("rnx_uefi_println")?;
+    let uefi_write = runtime_fn("rnx_uefi_write")?;
+    let wasi_println = runtime_fn("rnx_wasi_println")?;
+    let wasi_eprintln = runtime_fn("rnx_wasi_eprintln")?;
+    let wasi_write = runtime_fn("rnx_wasi_write")?;
+    let wasi_ewrite = runtime_fn("rnx_wasi_ewrite")?;
     let path_exists = runtime_fn("rnx_path_exists")?;
     let path_remove = runtime_fn("rnx_path_remove")?;
     let fs_exists = runtime_fn("rnx_fs_exists")?;
@@ -1553,10 +2385,7 @@ fn lower_fn<'a>(
         if hi < i64::MAX {
             let lot = context.i64_type().const_int(lo as u64, false);
             let hit = context.i64_type().const_int(hi as u64 + 1, false);
-            induction_ranges.insert(
-                t.iv,
-                context.metadata_node(&[lot.into(), hit.into()]),
-            );
+            induction_ranges.insert(t.iv, context.metadata_node(&[lot.into(), hit.into()]));
         }
         let trip: u64 = if t.init >= t.bound {
             0
@@ -1572,33 +2401,27 @@ fn lower_fn<'a>(
         context,
         sqrt_fn: {
             use inkwell::intrinsics::Intrinsic;
-            Intrinsic::find("llvm.sqrt").and_then(|i| {
-                i.get_declaration(module, &[context.f64_type().into()])
-            })
+            Intrinsic::find("llvm.sqrt")
+                .and_then(|i| i.get_declaration(module, &[context.f64_type().into()]))
         },
         fma_fn: {
             use inkwell::intrinsics::Intrinsic;
-            Intrinsic::find("llvm.fma").and_then(|i| {
-                i.get_declaration(module, &[context.f64_type().into()])
-            })
+            Intrinsic::find("llvm.fma")
+                .and_then(|i| i.get_declaration(module, &[context.f64_type().into()]))
         },
         tbaa_kind: context.get_kind_id("tbaa"),
         tbaa_header: {
             let zero = context.i64_type().const_int(0, false);
             let root = context.metadata_node(&[context.metadata_string("rnx").into()]);
-            let ty = context.metadata_node(&[
-                context.metadata_string("rnx.header").into(),
-                root.into(),
-            ]);
+            let ty =
+                context.metadata_node(&[context.metadata_string("rnx.header").into(), root.into()]);
             context.metadata_node(&[ty.into(), ty.into(), zero.into()])
         },
         tbaa_payload: {
             let zero = context.i64_type().const_int(0, false);
             let root = context.metadata_node(&[context.metadata_string("rnx").into()]);
-            let ty = context.metadata_node(&[
-                context.metadata_string("rnx.payload").into(),
-                root.into(),
-            ]);
+            let ty = context
+                .metadata_node(&[context.metadata_string("rnx.payload").into(), root.into()]);
             context.metadata_node(&[ty.into(), ty.into(), zero.into()])
         },
         range_kind: context.get_kind_id("range"),
@@ -1650,6 +2473,7 @@ fn lower_fn<'a>(
         any_retain,
         any_release_box,
         any_release,
+        any_release_ptr,
         heap_track,
         closure_new,
         closure_set,
@@ -1684,6 +2508,13 @@ fn lower_fn<'a>(
         io_is_tty,
         io_winsize,
         io_set_raw,
+        io_warn_missing_arg,
+        uefi_println,
+        uefi_write,
+        wasi_println,
+        wasi_eprintln,
+        wasi_write,
+        wasi_ewrite,
         path_exists,
         path_remove,
         fs_exists,
@@ -1923,7 +2754,11 @@ fn lower_fn<'a>(
     }
     for block in &f.blocks {
         for ins in &block.instrs {
-            if let Instr::StackAlloc { instance_size: size, .. } = ins {
+            if let Instr::StackAlloc {
+                instance_size: size,
+                ..
+            } = ins
+            {
                 let arrty = i64t.array_type(((*size as u64 + 7) / 8) as u32);
                 let slot = cx.builder.build_alloca(arrty, "stk").map_err(err)?;
                 cx.stack_slots.push(slot);
@@ -1934,8 +2769,16 @@ fn lower_fn<'a>(
         cx.builder.build_store(cx.locals[i], param).map_err(err)?;
     }
     for (n, t) in f.locals.iter().enumerate() {
-        if matches!(t, LirType::Obj(_) | LirType::Str | LirType::Array(_) | LirType::Enum(_) | LirType::Error | LirType::Any | LirType::Closure)
-            && n >= cx.nborrowed
+        if matches!(
+            t,
+            LirType::Obj(_)
+                | LirType::Str
+                | LirType::Array(_)
+                | LirType::Enum(_)
+                | LirType::Error
+                | LirType::Any
+                | LirType::Closure
+        ) && n >= cx.nborrowed
         {
             cx.builder
                 .build_store(cx.locals[n], i64t.const_zero())
@@ -1953,7 +2796,9 @@ fn lower_fn<'a>(
             }
         }
     }
-    cx.builder.build_unconditional_branch(cx.blocks[0]).map_err(err)?;
+    cx.builder
+        .build_unconditional_branch(cx.blocks[0])
+        .map_err(err)?;
     for i in lir::opt::rpo_order(f) {
         let block = &f.blocks[i];
         cx.builder.position_at_end(cx.blocks[i]);
@@ -1968,7 +2813,10 @@ fn lower_fn<'a>(
     if fv.verify(true) {
         Ok(())
     } else {
-        Err(Diagnostic::new(Code::E108, format!("llvm verify failed in `{}`", f.name)))
+        Err(Diagnostic::new(
+            Code::E108,
+            format!("llvm verify failed in `{}`", f.name),
+        ))
     }
 }
 
@@ -2004,7 +2852,11 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
                     let mut agg = st.get_undef();
                     for (i, l) in ls.iter().enumerate() {
                         let val = load_value(cx, *l)?;
-                        agg = cx.builder.build_insert_value(agg, val, i as u32, "tup").map_err(err)?.into_struct_value();
+                        agg = cx
+                            .builder
+                            .build_insert_value(agg, val, i as u32, "tup")
+                            .map_err(err)?
+                            .into_struct_value();
                     }
                     agg.into()
                 }
@@ -2012,60 +2864,94 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
             cx.builder.build_return(Some(&r)).map_err(err)?;
         }
         Terminator::Br(bb) => {
-            cx.builder.build_unconditional_branch(cx.blocks[*bb]).map_err(err)?;
+            cx.builder
+                .build_unconditional_branch(cx.blocks[*bb])
+                .map_err(err)?;
         }
         Terminator::Throw { src, catch, .. } => {
-            let st = cx.ftypes.get(*src as usize).cloned().unwrap_or(LirType::Any);
+            let st = cx
+                .ftypes
+                .get(*src as usize)
+                .cloned()
+                .unwrap_or(LirType::Any);
             let payload: inkwell::values::IntValue = match st {
                 LirType::Str | LirType::Error => {
                     let v = load(cx, *src)?;
                     let ptr = as_ptr(cx, v)?;
-                    cx.builder.build_call(cx.retain, &[ptr.into()], "").map_err(err)?;
+                    cx.builder
+                        .build_call(cx.retain, &[ptr.into()], "")
+                        .map_err(err)?;
                     v
                 }
                 LirType::Obj(_) => {
                     let v = load(cx, *src)?;
                     let ptr = as_ptr(cx, v)?;
-                    cx.builder.build_call(cx.retain, &[ptr.into()], "").map_err(err)?;
+                    cx.builder
+                        .build_call(cx.retain, &[ptr.into()], "")
+                        .map_err(err)?;
                     let one = cx.context.i64_type().const_int(1, false);
                     cx.builder.build_or(v, one, "errtag").map_err(err)?
                 }
                 LirType::I64 | LirType::I8 => {
                     let v = load(cx, *src)?;
-                    let site = cx.builder.build_call(cx.int_to_str, &[v.into()], "").map_err(err)?;
+                    let site = cx
+                        .builder
+                        .build_call(cx.int_to_str, &[v.into()], "")
+                        .map_err(err)?;
                     match site.try_as_basic_value() {
                         ValueKind::Basic(x) => {
                             let ptr = x.into_pointer_value();
-                            cx.builder.build_ptr_to_int(ptr, cx.context.i64_type(), "").map_err(err)?
+                            cx.builder
+                                .build_ptr_to_int(ptr, cx.context.i64_type(), "")
+                                .map_err(err)?
                         }
                         ValueKind::Instruction(_) => {
-                            return Err(Diagnostic::new(Code::E108, "llvm subset: throw int convert"));
+                            return Err(Diagnostic::new(
+                                Code::E108,
+                                "llvm subset: throw int convert",
+                            ));
                         }
                     }
                 }
                 LirType::F64(_) => {
                     let v = load(cx, *src)?;
-                    let site = cx.builder.build_call(cx.float_to_str, &[v.into()], "").map_err(err)?;
+                    let site = cx
+                        .builder
+                        .build_call(cx.float_to_str, &[v.into()], "")
+                        .map_err(err)?;
                     match site.try_as_basic_value() {
                         ValueKind::Basic(x) => {
                             let ptr = x.into_pointer_value();
-                            cx.builder.build_ptr_to_int(ptr, cx.context.i64_type(), "").map_err(err)?
+                            cx.builder
+                                .build_ptr_to_int(ptr, cx.context.i64_type(), "")
+                                .map_err(err)?
                         }
                         ValueKind::Instruction(_) => {
-                            return Err(Diagnostic::new(Code::E108, "llvm subset: throw float convert"));
+                            return Err(Diagnostic::new(
+                                Code::E108,
+                                "llvm subset: throw float convert",
+                            ));
                         }
                     }
                 }
                 LirType::Bool => {
                     let v = load(cx, *src)?;
-                    let site = cx.builder.build_call(cx.bool_to_str, &[v.into()], "").map_err(err)?;
+                    let site = cx
+                        .builder
+                        .build_call(cx.bool_to_str, &[v.into()], "")
+                        .map_err(err)?;
                     match site.try_as_basic_value() {
                         ValueKind::Basic(x) => {
                             let ptr = x.into_pointer_value();
-                            cx.builder.build_ptr_to_int(ptr, cx.context.i64_type(), "").map_err(err)?
+                            cx.builder
+                                .build_ptr_to_int(ptr, cx.context.i64_type(), "")
+                                .map_err(err)?
                         }
                         ValueKind::Instruction(_) => {
-                            return Err(Diagnostic::new(Code::E108, "llvm subset: throw bool convert"));
+                            return Err(Diagnostic::new(
+                                Code::E108,
+                                "llvm subset: throw bool convert",
+                            ));
                         }
                     }
                 }
@@ -2078,28 +2964,46 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
                 if !cx.stack.contains(bind) {
                     own(cx, *bind);
                 }
-                cx.builder.build_unconditional_branch(cx.blocks[*bb]).map_err(err)?;
+                cx.builder
+                    .build_unconditional_branch(cx.blocks[*bb])
+                    .map_err(err)?;
                 return Ok(());
             }
-            cx.builder.build_call(cx.error_set, &[payload.into()], "").map_err(err)?;
+            cx.builder
+                .build_call(cx.error_set, &[payload.into()], "")
+                .map_err(err)?;
             if cx.ret_slots <= 1 {
                 let z = cx.context.i64_type().const_zero();
                 cx.builder.build_return(Some(&z)).map_err(err)?;
             } else {
-                let fields: Vec<inkwell::types::BasicTypeEnum> =
-                    (0..cx.ret_slots).map(|_| cx.context.i64_type().into()).collect();
+                let fields: Vec<inkwell::types::BasicTypeEnum> = (0..cx.ret_slots)
+                    .map(|_| cx.context.i64_type().into())
+                    .collect();
                 let st = cx.context.struct_type(&fields, false);
                 let mut agg = st.get_undef();
                 for i in 0..cx.ret_slots {
                     let z = cx.context.i64_type().const_zero();
-                    agg = cx.builder.build_insert_value(agg, z, i as u32, "errz").map_err(err)?.into_struct_value();
+                    agg = cx
+                        .builder
+                        .build_insert_value(agg, z, i as u32, "errz")
+                        .map_err(err)?
+                        .into_struct_value();
                 }
                 cx.builder.build_return(Some(&agg)).map_err(err)?;
             }
         }
-        Terminator::BrErr { catch_bb, catch_bind, next_bb, depth, .. } => {
+        Terminator::BrErr {
+            catch_bb,
+            catch_bind,
+            next_bb,
+            depth,
+            ..
+        } => {
             emit_run_defers(cx, lir, *depth)?;
-            let site = cx.builder.build_call(cx.error_take, &[], "errtake").map_err(err)?;
+            let site = cx
+                .builder
+                .build_call(cx.error_take, &[], "errtake")
+                .map_err(err)?;
             let w = match site.try_as_basic_value() {
                 ValueKind::Basic(x) => x.into_int_value(),
                 ValueKind::Instruction(_) => {
@@ -2111,10 +3015,20 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
                 own(cx, *catch_bind);
             }
             let zero = cx.context.i64_type().const_zero();
-            let is_err = cx.builder.build_int_compare(inkwell::IntPredicate::NE, w, zero, "iserr").map_err(err)?;
-            cx.builder.build_conditional_branch(is_err, cx.blocks[*catch_bb], cx.blocks[*next_bb]).map_err(err)?;
+            let is_err = cx
+                .builder
+                .build_int_compare(inkwell::IntPredicate::NE, w, zero, "iserr")
+                .map_err(err)?;
+            cx.builder
+                .build_conditional_branch(is_err, cx.blocks[*catch_bb], cx.blocks[*next_bb])
+                .map_err(err)?;
         }
-        Terminator::BrIf { cond, then_bb, else_bb, .. } => {
+        Terminator::BrIf {
+            cond,
+            then_bb,
+            else_bb,
+            ..
+        } => {
             let c = load(cx, *cond)?;
             let zero = cx.context.i64_type().const_zero();
             let t = cx
@@ -2125,12 +3039,20 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
                 .build_conditional_branch(t, cx.blocks[*then_bb], cx.blocks[*else_bb])
                 .map_err(err)?;
         }
-        Terminator::Switch { scrut, cases, default, .. } => {
+        Terminator::Switch {
+            scrut,
+            cases,
+            default,
+            ..
+        } => {
             let disc = match cx.ftypes.get(*scrut as usize) {
                 Some(LirType::Enum(_)) => {
                     let base = load(cx, *scrut)?;
                     let at = byte_ptr(cx, base, 16)?;
-                    cx.builder.build_load(cx.context.i64_type(), at, "tag").map_err(err)?.into_int_value()
+                    cx.builder
+                        .build_load(cx.context.i64_type(), at, "tag")
+                        .map_err(err)?
+                        .into_int_value()
                 }
                 _ => load(cx, *scrut)?,
             };
@@ -2149,57 +3071,117 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
                             IsDecision::Const(false) => None,
                             IsDecision::Const(true) => {
                                 let one = cx.context.i64_type().const_int(1, false);
-                                Some(cx.builder.build_int_compare(inkwell::IntPredicate::EQ, one, one, "sw_true").map_err(err)?)
+                                Some(
+                                    cx.builder
+                                        .build_int_compare(
+                                            inkwell::IntPredicate::EQ,
+                                            one,
+                                            one,
+                                            "sw_true",
+                                        )
+                                        .map_err(err)?,
+                                )
                             }
                             IsDecision::Tag(pt) => {
                                 let v = load(cx, *source)?;
-                                let site = cx.builder.build_call(cx.any_tag, &[v.into()], "").map_err(err)?;
+                                let site = cx
+                                    .builder
+                                    .build_call(cx.any_tag, &[v.into()], "")
+                                    .map_err(err)?;
                                 let t = match site.try_as_basic_value() {
                                     ValueKind::Basic(x) => x.into_int_value(),
                                     ValueKind::Instruction(_) => {
-                                        return Err(Diagnostic::new(Code::E108, "llvm subset: switch tag call"));
+                                        return Err(Diagnostic::new(
+                                            Code::E108,
+                                            "llvm subset: switch tag call",
+                                        ));
                                     }
                                 };
                                 let want = cx.context.i64_type().const_int(*pt as u64, true);
-                                Some(cx.builder.build_int_compare(inkwell::IntPredicate::EQ, t, want, "sw_is").map_err(err)?)
+                                Some(
+                                    cx.builder
+                                        .build_int_compare(
+                                            inkwell::IntPredicate::EQ,
+                                            t,
+                                            want,
+                                            "sw_is",
+                                        )
+                                        .map_err(err)?,
+                                )
                             }
                             IsDecision::Class(ci) => {
-                                let class_fn = if matches!(cx.ftypes.get(*source as usize), Some(LirType::Error)) {
+                                let class_fn = if matches!(
+                                    cx.ftypes.get(*source as usize),
+                                    Some(LirType::Error)
+                                ) {
                                     cx.error_class
                                 } else {
                                     cx.obj_class
                                 };
                                 let v = load(cx, *source)?;
-                                let site = cx.builder.build_call(class_fn, &[v.into()], "").map_err(err)?;
+                                let site = cx
+                                    .builder
+                                    .build_call(class_fn, &[v.into()], "")
+                                    .map_err(err)?;
                                 let t = match site.try_as_basic_value() {
                                     ValueKind::Basic(x) => x.into_int_value(),
                                     ValueKind::Instruction(_) => {
-                                        return Err(Diagnostic::new(Code::E108, "llvm subset: switch class call"));
+                                        return Err(Diagnostic::new(
+                                            Code::E108,
+                                            "llvm subset: switch class call",
+                                        ));
                                     }
                                 };
                                 let mut acc: Option<inkwell::values::IntValue> = None;
-                                for sub in std::iter::once(*ci).chain(lir::instr::subclasses_of(lir, *ci)) {
-                                    let want = cx.context.i64_type().const_int(sub as u64 + 1, false);
-                                    let eq = cx.builder.build_int_compare(inkwell::IntPredicate::EQ, t, want, "sw_is").map_err(err)?;
+                                for sub in
+                                    std::iter::once(*ci).chain(lir::instr::subclasses_of(lir, *ci))
+                                {
+                                    let want =
+                                        cx.context.i64_type().const_int(sub as u64 + 1, false);
+                                    let eq = cx
+                                        .builder
+                                        .build_int_compare(
+                                            inkwell::IntPredicate::EQ,
+                                            t,
+                                            want,
+                                            "sw_is",
+                                        )
+                                        .map_err(err)?;
                                     acc = Some(match acc {
-                                        Some(prev) => cx.builder.build_or(prev, eq, "sw_or").map_err(err)?,
+                                        Some(prev) => {
+                                            cx.builder.build_or(prev, eq, "sw_or").map_err(err)?
+                                        }
                                         None => eq,
                                     });
                                 }
-                                Some(acc.ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: empty class hierarchy in is-check"))?)
+                                Some(acc.ok_or_else(|| {
+                                    Diagnostic::new(
+                                        Code::E108,
+                                        "llvm subset: empty class hierarchy in is-check",
+                                    )
+                                })?)
                             }
                             IsDecision::Iface(ii) => {
-                                let class_fn = if matches!(cx.ftypes.get(*source as usize), Some(LirType::Error)) {
+                                let class_fn = if matches!(
+                                    cx.ftypes.get(*source as usize),
+                                    Some(LirType::Error)
+                                ) {
                                     cx.error_class
                                 } else {
                                     cx.obj_class
                                 };
                                 let v = load(cx, *source)?;
-                                let site = cx.builder.build_call(class_fn, &[v.into()], "").map_err(err)?;
+                                let site = cx
+                                    .builder
+                                    .build_call(class_fn, &[v.into()], "")
+                                    .map_err(err)?;
                                 let t = match site.try_as_basic_value() {
                                     ValueKind::Basic(x) => x.into_int_value(),
                                     ValueKind::Instruction(_) => {
-                                        return Err(Diagnostic::new(Code::E108, "llvm subset: switch iface call"));
+                                        return Err(Diagnostic::new(
+                                            Code::E108,
+                                            "llvm subset: switch iface call",
+                                        ));
                                     }
                                 };
                                 let mut acc: Option<inkwell::values::IntValue> = None;
@@ -2207,10 +3189,21 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
                                     if !c.ifaces.contains(ii) {
                                         continue;
                                     }
-                                    let want = cx.context.i64_type().const_int(ci as u64 + 1, false);
-                                    let eq = cx.builder.build_int_compare(inkwell::IntPredicate::EQ, t, want, "sw_iface").map_err(err)?;
+                                    let want =
+                                        cx.context.i64_type().const_int(ci as u64 + 1, false);
+                                    let eq = cx
+                                        .builder
+                                        .build_int_compare(
+                                            inkwell::IntPredicate::EQ,
+                                            t,
+                                            want,
+                                            "sw_iface",
+                                        )
+                                        .map_err(err)?;
                                     acc = Some(match acc {
-                                        Some(prev) => cx.builder.build_or(prev, eq, "sw_or").map_err(err)?,
+                                        Some(prev) => {
+                                            cx.builder.build_or(prev, eq, "sw_or").map_err(err)?
+                                        }
                                         None => eq,
                                     });
                                 }
@@ -2218,7 +3211,14 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
                                     Some(v) => v,
                                     None => {
                                         let z = cx.context.i64_type().const_zero();
-                                        cx.builder.build_int_compare(inkwell::IntPredicate::EQ, t, z, "sw_never").map_err(err)?
+                                        cx.builder
+                                            .build_int_compare(
+                                                inkwell::IntPredicate::EQ,
+                                                t,
+                                                z,
+                                                "sw_never",
+                                            )
+                                            .map_err(err)?
                                     }
                                 })
                             }
@@ -2231,12 +3231,18 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
                 }
             }
             if arms.is_empty() {
-                cx.builder.build_unconditional_branch(cx.blocks[*default]).map_err(err)?;
+                cx.builder
+                    .build_unconditional_branch(cx.blocks[*default])
+                    .map_err(err)?;
                 return Ok(());
             }
-            let fv = cx.builder.get_insert_block().and_then(|b| b.get_parent()).ok_or_else(|| {
-                Diagnostic::new(Code::E108, "llvm subset: switch outside function")
-            })?;
+            let fv = cx
+                .builder
+                .get_insert_block()
+                .and_then(|b| b.get_parent())
+                .ok_or_else(|| {
+                    Diagnostic::new(Code::E108, "llvm subset: switch outside function")
+                })?;
             let mut nexts = Vec::with_capacity(arms.len().saturating_sub(1));
             for _ in 1..arms.len() {
                 nexts.push(cx.context.append_basic_block(fv, "sw_next"));
@@ -2245,18 +3251,31 @@ fn lower_term(cx: &mut FnCx, lir: &Module, term: &Terminator) -> Result<(), Diag
                 let t = match arm {
                     Arm::Int(n) => {
                         let want = cx.context.i64_type().const_int(*n as u64, true);
-                        cx.builder.build_int_compare(inkwell::IntPredicate::EQ, disc, want, "sw_eq").map_err(err)?
+                        cx.builder
+                            .build_int_compare(inkwell::IntPredicate::EQ, disc, want, "sw_eq")
+                            .map_err(err)?
                     }
                     Arm::Check(c) => *c,
                 };
-                let else_bb = if i + 1 < arms.len() { nexts[i] } else { cx.blocks[*default] };
-                cx.builder.build_conditional_branch(t, cx.blocks[cases[i].1], else_bb).map_err(err)?;
+                let else_bb = if i + 1 < arms.len() {
+                    nexts[i]
+                } else {
+                    cx.blocks[*default]
+                };
+                cx.builder
+                    .build_conditional_branch(t, cx.blocks[cases[i].1], else_bb)
+                    .map_err(err)?;
                 if i + 1 < arms.len() {
                     cx.builder.position_at_end(nexts[i]);
                 }
             }
         }
-        _ => return Err(Diagnostic::new(Code::E108, "llvm subset: unsupported terminator")),
+        _ => {
+            return Err(Diagnostic::new(
+                Code::E108,
+                "llvm subset: unsupported terminator",
+            ));
+        }
     }
     Ok(())
 }

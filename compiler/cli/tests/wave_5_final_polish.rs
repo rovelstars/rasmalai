@@ -29,7 +29,7 @@ fn run_backend(file: &std::path::Path, backend: &str, extra: &[&str]) -> std::pr
     cmd.output().unwrap()
 }
 
-const CONST_SHARE_SRC: &str = "const dbPath = \"notes.txt\";\nconst retries = 3;\nfn load(): String {\n    return dbPath;\n}\nfn attempts(): Int {\n    return retries + 1;\n}\nfn Main(): Int {\n    print(load());\n    print(attempts());\n    print(dbPath.length());\n    return 0;\n}\n";
+const CONST_SHARE_SRC: &str = "const dbPath = \"notes.txt\";\nconst retries = 3;\nfn load(): String {\n    return dbPath;\n}\nfn attempts(): Int {\n    return retries + 1;\n}\nfn Main(): Int {\n    println!(load());\n    println!(attempts());\n    println!(dbPath.length());\n    return 0;\n}\n";
 
 #[test]
 fn module_const_visible_in_named_fn_on_all_backends() {
@@ -52,7 +52,7 @@ fn module_const_visible_in_named_fn_on_all_backends() {
     }
 }
 
-const TOPLET_SRC: &str = "let n = 3;\nfn f(): Int { return n; }\nprint(f());\n";
+const TOPLET_SRC: &str = "let n = 3;\nfn f(): Int { return n; }\nprintln!(f());\n";
 
 #[test]
 fn cross_function_let_read_names_sharing() {
@@ -69,7 +69,7 @@ fn cross_function_let_read_names_sharing() {
     );
 }
 
-const RANGE_METHOD_SRC: &str = "fn Main(): Int {\n    for i in 0 .. 4 {\n        print(i.toString());\n    }\n    return 0;\n}\n";
+const RANGE_METHOD_SRC: &str = "fn Main(): Int {\n    for i in 0 .. 4 {\n        println!(i.toString());\n    }\n    return 0;\n}\n";
 
 #[test]
 fn range_loop_binding_has_int_methods_on_all_backends() {
@@ -93,7 +93,7 @@ fn range_loop_binding_has_int_methods_on_all_backends() {
 }
 
 const BRACE_JSON_SRC: &str =
-    "let title = \"meeting\";\nprint(\"\\{\\\"title\\\": \\\"\" + title + \"\\\"}\");\n";
+    "let title = \"meeting\";\nprintln!(\"\\{\\\"title\\\": \\\"\" + title + \"\\\"}\");\n";
 
 #[test]
 fn brace_escape_writes_json_and_bare_brace_guides() {
@@ -104,7 +104,7 @@ fn brace_escape_writes_json_and_bare_brace_guides() {
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8(out.stdout.clone()).unwrap(), "{\"title\": \"meeting\"}\n");
     let bad = dir.join("bad.rnx");
-    write_file(&bad, "print(\"{\\\"\");\n");
+    write_file(&bad, "println!(\"{\\\"\");\n");
     let out = run_backend(&bad, "interpreter", &[]);
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8_lossy(&out.stderr).into_owned()
@@ -113,7 +113,7 @@ fn brace_escape_writes_json_and_bare_brace_guides() {
     assert!(text.contains("\\{"), "message must name the brace escape, got:\n{text}");
 }
 
-const NULL_LEN_SRC: &str = "let s: String? = null;\nprint(s.length());\n";
+const NULL_LEN_SRC: &str = "let s: String? = null;\nprintln!(s.length());\n";
 
 #[test]
 fn null_method_fatal_is_human_with_span() {
@@ -123,7 +123,7 @@ fn null_method_fatal_is_human_with_span() {
         if with_sibling {
             write_file(
                 &dir.join("other.rnx"),
-                "let u = 1;\nprint(u);\nprint(u);\nprint(u);\nprint(u);\nprint(u);\n",
+                "let u = 1;\nprintln!(u);\nprintln!(u);\nprintln!(u);\nprintln!(u);\nprintln!(u);\n",
             );
         }
         let out = Command::new(rnx())
@@ -137,13 +137,13 @@ fn null_method_fatal_is_human_with_span() {
             + &String::from_utf8_lossy(&out.stdout).into_owned();
         assert!(!text.contains("__rnx_"), "no internal symbols, got:\n{text}");
         assert!(
-            text.contains("nullstr.rnx:2:7"),
+            text.contains("nullstr.rnx:2:10"),
             "span must survive sibling files, got:\n{text}"
         );
     }
 }
 
-const THROWS_Q_SRC: &str = "fn boom(): Int throws {\n    throw \"x\";\n}\nfn Main(): Int {\n    try {\n        let n = boom()?;\n        print(n);\n    } catch (e) {\n        print(\"caught\");\n    }\n    return 0;\n}\n";
+const THROWS_Q_SRC: &str = "fn boom(): Int throws {\n    throw \"x\";\n}\nfn Main(): Int {\n    try {\n        let n = boom()?;\n        println!(n);\n    } catch (e) {\n        println!(\"caught\");\n    }\n    return 0;\n}\n";
 
 #[test]
 fn question_on_throws_names_the_fix() {
@@ -163,7 +163,7 @@ fn typed_catch_names_bare_identifier_rule() {
     let file = dir.join("c.rnx");
     write_file(
         &file,
-        "fn Main(): Int {\n    try {\n        throw 1;\n    } catch (e: Any) {\n        print(1);\n    }\n    return 0;\n}\n",
+        "fn Main(): Int {\n    try {\n        throw 1;\n    } catch (e: Any) {\n        println!(1);\n    }\n    return 0;\n}\n",
     );
     let out = run_backend(&file, "interpreter", &[]);
     assert_eq!(out.status.code(), Some(1));

@@ -2,7 +2,7 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
-const MAIN_SRC: &str = "fn Main(): Int {\n    print(\"packed ok\");\n    return 0;\n}\n";
+const MAIN_SRC: &str = "fn Main(): Int {\n    println!(\"packed ok\");\n    return 0;\n}\n";
 
 fn manifest(name: &str) -> String {
     format!(

@@ -41,7 +41,7 @@ fn test_init_scaffold() {
     let main = std::fs::read_to_string(root.join("src").join("main.rnx")).unwrap();
     assert_eq!(
         main,
-        "fn Main(): Int {\n    print(\"Hello from sample_project!\");\n    return 0;\n}\n"
+        "fn Main(): Int {\n    println!(\"Hello from sample_project!\");\n    return 0;\n}\n"
     );
     let stdout = String::from_utf8(init.stdout).unwrap();
     assert!(stdout.contains("sample_project"), "{stdout}");

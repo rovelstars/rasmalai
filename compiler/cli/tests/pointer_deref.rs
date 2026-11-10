@@ -40,9 +40,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -80,7 +80,7 @@ fn raw_read_write_volatile() {
         ptr.writeVolatile(999);\n\
         assert(ptr.readVolatile() == 999, \"vol\");\n\
         assert(buf.readInt32LE(0) == 999, \"visible\");\n\
-        print(\"raw-ok\");\n\
+        println!(\"raw-ok\");\n\
         }}\n\
         return 0;\n\
         }}\n"
@@ -102,7 +102,7 @@ fn float_bool_pointees() {
         assert(bptr.read() == true, \"bool\");\n\
         bptr.write(false);\n\
         assert(bptr.read() == false, \"bool2\");\n\
-        print(\"scalar-ok\");\n\
+        println!(\"scalar-ok\");\n\
         }}\n\
         return 0;\n\
         }}\n"
@@ -122,7 +122,7 @@ fn deref_sugar_and_arithmetic() {
         *(ptr + 8) = 7;\n\
         assert(*(ptr + 8) == 7, \"arith\");\n\
         assert(buf.readInt32LE(8) == 7, \"visible\");\n\
-        print(\"sugar-ok\");\n\
+        println!(\"sugar-ok\");\n\
         }}\n\
         return 0;\n\
         }}\n"
@@ -220,7 +220,7 @@ fn address_of_local_rejected_on_jit() {
         let x: Int = 5;\n\
         unsafe {\n\
         let p = &x;\n\
-        print(p);\n\
+        println!(p);\n\
         }\n\
         return 0;\n\
         }\n",

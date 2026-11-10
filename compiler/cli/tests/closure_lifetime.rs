@@ -61,7 +61,7 @@ fn Main(): Int {
     let c = new Counter()
     let id = view(t, c)
     t.fire(id)
-    print(c.n)
+    println!(c.n)
     return 0
 }
 "#;
@@ -90,7 +90,7 @@ fn Main(): Int {
     b.fire(0)
     b.fire(1)
     b.fire(0)
-    print(a.n, c.n)
+    println!(a.n, c.n)
     return 0
 }
 "#;

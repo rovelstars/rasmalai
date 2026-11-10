@@ -13,11 +13,11 @@ A `trait` declares a method set with bodies. Classes adopt traits with `with`, l
 
 ```rnx
 trait Clickable {
-    fn onClick() { print("clicked"); }
+    fn onClick() { println!("clicked"); }
 }
 
 class Button with Clickable {
-    fn onClick() { print("pressed"); }
+    fn onClick() { println!("pressed"); }
 }
 
 let b = new Button();
@@ -43,8 +43,8 @@ class User : Summarizable {
 
 let u = new User("Al");
 let s: Summarizable = u;
-print(s.summary());
-print(s is Summarizable);
+println!(s.summary());
+println!(s is Summarizable);
 ```
 
 There are no fat pointers or vtables in the ABI: the compiler resolves the runtime class id to a direct static call per implementation, decided at compile time from the receiver's static class. Calls through an interface behave identically on every backend.
@@ -56,10 +56,10 @@ There are no fat pointers or vtables in the ABI: the compiler resolves the runti
 ```rnx
 let v: Any = 42;
 if (v is Int) {
-    print(v + 1);
+    println!(v + 1);
 }
-print(typeOf(v));
-print(v is String);
+println!(typeOf(v));
+println!(v is String);
 ```
 
 `case is Type:` arms apply the same narrowing inside `switch`; see [Control Flow](/manual/04-control-flow).

@@ -13,9 +13,9 @@ Paste it into a file or run it straight in the playground:
 ```rnx
 import { OS } from "@std/os";
 
-print(OS.platform(), OS.arch());
-print(OS.cpuCount());
-print(OS.tmpdir());
+println!(OS.platform(), OS.arch());
+println!(OS.cpuCount());
+println!(OS.tmpdir());
 ```
 
 ## Keep going

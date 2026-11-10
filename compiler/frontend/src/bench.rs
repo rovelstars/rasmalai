@@ -61,6 +61,20 @@ fn assign(name: &str, value: A::Spanned<A::Expr>) -> A::Spanned<A::Stmt> {
     stmt(A::Stmt::Assign { target: ident(name), op: A::AssignOp::Eq, value })
 }
 
+fn macro_call(name: &str, args: Vec<A::Spanned<A::Expr>>) -> A::Spanned<A::Expr> {
+    call(
+        name,
+        vec![sp(
+            A::Expr::Array(
+                args.into_iter()
+                    .map(|expr| A::ArrayElem { spread: false, expr })
+                    .collect(),
+            ),
+            Z,
+        )],
+    )
+}
+
 fn expr_stmt(e: A::Spanned<A::Expr>) -> A::Spanned<A::Stmt> {
     stmt(A::Stmt::Expr(e))
 }
@@ -206,7 +220,7 @@ fn bench_block(display: &str, internal: &str) -> Vec<A::Spanned<A::Stmt>> {
     line = binop(A::BinOp::Add, line, strlit(") ["));
     line = binop(A::BinOp::Add, line, ident(&batch));
     line = binop(A::BinOp::Add, line, strlit(" iters]"));
-    stmts.push(expr_stmt(call("print", vec![line])));
+    stmts.push(expr_stmt(macro_call("std.io.println", vec![line])));
     stmts
 }
 
@@ -233,6 +247,7 @@ pub fn generate_bench_harness(
         is_static: false,
         is_test: false,
         is_bench: false,
+        is_macro: false,
         body: A::FnBody::Block(A::Block { stmts }),
         attrs: Vec::new(),
     });

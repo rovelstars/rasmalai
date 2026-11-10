@@ -9,7 +9,7 @@ fn debug_lir_hook_is_gone() {
     let dir = crate::scratch::dir("debug-lir-hook");
     std::fs::write(
         dir.join("main.rnx"),
-        "fn gradeMult(a: Int, b: Int): Int {\n    return a * b;\n}\nfn Main(): Int {\n    print(gradeMult(6, 7))\n    return 0\n}\n",
+        "fn gradeMult(a: Int, b: Int): Int {\n    return a * b;\n}\nfn Main(): Int {\n    println!(gradeMult(6, 7))\n    return 0\n}\n",
     )
     .unwrap();
 

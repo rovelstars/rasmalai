@@ -25,7 +25,7 @@ fn quote(base: Float): Float {
     return base;
 }
 
-print(quote(2.0));
+println!(quote(2.0));
 ```
 
 ### Documenting libraries with JSDoc
@@ -59,7 +59,7 @@ Statements terminate at newlines and `}` boundaries; no semicolon separator is r
 ```rnx
 ;
 let x = 1;;
-print(x);
+println!(x);
 ```
 
 Blocks use curly braces. Indentation carries no meaning.
@@ -70,13 +70,13 @@ The entry file (the `Project.config` entry, or the file passed to `rnx run`) may
 
 ```rnx
 let data = await Promise.resolve(42);
-print(data + 1);
+println!(data + 1);
 if data > 100 {
     return 1;
 }
 ```
 
-The ambient `rnx` object needs no import: `rnx.version` is the compiler version string, `rnx.args` holds CLI arguments after the script path, `rnx.cwd()` reads the working directory, and `rnx.exit(code)` terminates immediately. A local binding named `rnx` shadows it.
+The ambient `rnx` object needs no import when the selected prelude re-exports `RnxHost`, which the stock prelude does from `@std/env`: `rnx.version` is the compiler version string, `rnx.args` holds CLI arguments after the script path, `rnx.cwd()` reads the working directory, and `rnx.exit(code)` terminates immediately. A local binding named `rnx` shadows it, and a prelude without `RnxHost` leaves `rnx` unresolved.
 
 ## Identifiers
 
@@ -97,8 +97,8 @@ There is no `mut` keyword (`let` bindings are mutable). Classes construct with t
 ```rnx
 let name = "rasmalai";
 let count = 7;
-print("Hello {name}! Count is ${count}.");
-print("Hello " + name + "!");
+println!("Hello {name}! Count is ${count}.");
+println!("Hello " + name + "!");
 ```
 
 Strings expose a fixed method set operating on character offsets: `length()` (also available as the `length` property), `slice(start, end)`, `indexOf(needle)`, `trim()`, `concat(other)`, and `charCodeAt(i)`. The prelude adds `contains`, `startsWith`, `endsWith`, `split`, `replace`, `replaceAll`, `repeat`, `toUpperCase`, and `toLowerCase` with no import.
@@ -136,7 +136,7 @@ Interpolation evaluates any `{expr}` or `${expr}` inline, including non-strings 
 
 ```rnx
 let n = 7;
-print("n={n} next=${n + 1} literal \{n}");
+println!("n={n} next=${n + 1} literal \{n}");
 ```
 
 ## Minor keywords
@@ -157,7 +157,7 @@ Four reserved words name behavior specified elsewhere rather than here:
 ```rnx
 let ready = true;
 if ready {
-    print("go");
+    println!("go");
 }
 ```
 

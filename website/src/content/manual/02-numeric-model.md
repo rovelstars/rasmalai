@@ -19,9 +19,9 @@ Rasmalai has no platform-dependent arithmetic. Every numeric type has a fixed wi
 - **Conversions**: `Int(x)` truncates a `Float` toward zero. `Int` operands inside `Float` arithmetic convert implicitly.
 
 ```rnx
-print(17 / 5, 17 % 5);
-print(0xFF_00, 0b1010);
-print(Int(3.9), Int(-3.9));
+println!(17 / 5, 17 % 5);
+println!(0xFF_00, 0b1010);
+println!(Int(3.9), Int(-3.9));
 ```
 
 ## Bitwise operators
@@ -30,10 +30,10 @@ print(Int(3.9), Int(-3.9));
 
 ```rnx
 let flags = 0b1010;
-print(flags & 0b0010);
-print(flags | 0b0101);
-print(flags ^ 0b1111);
-print(~0 & 0xFF);
+println!(flags & 0b0010);
+println!(flags | 0b0101);
+println!(flags ^ 0b1111);
+println!(~0 & 0xFF);
 ```
 
 ## Operator precedence and conversion reference
@@ -86,9 +86,9 @@ assert(Float.fromBits(bits) == 1.5, "bits round-trip");
 Shifts work on `Int`: `<<` (left), `>>` (arithmetic right, sign-extending), `>>>` (logical right, zero-fill). They bind tighter than comparisons but looser than `+`/`-`, and the shift amount masks to 6 bits (`1 << 67` shifts by 3). Compound forms `<<=`, `>>=`, `>>>=` update in place:
 
 ```rnx
-print(1 << 3);
-print((-8) >> 2);
-print((-1) >>> 1);
+println!(1 << 3);
+println!((-8) >> 2);
+println!((-1) >>> 1);
 ```
 
 ## Floats: strict by default, fast by consent
@@ -117,9 +117,9 @@ import { Math } from "@std/math";
 
 let strict: Float = 0.5;
 let fast = strict.asFast();
-print(fast * 2.0.asFast());
-print(Math.sqrt(2.0) > 1.4);
-print(Float(7) / 2.0);
+println!(fast * 2.0.asFast());
+println!(Math.sqrt(2.0) > 1.4);
+println!(Float(7) / 2.0);
 ```
 
 ## Interop lanes
@@ -131,9 +131,9 @@ import { ByteBuffer } from "@std/bytes";
 
 let buf = ByteBuffer.allocate(16);
 buf.writeFloat64BE(0, 1.5);
-print(buf.readFloat64BE(0));
+println!(buf.readFloat64BE(0));
 buf.writeInt32BE(8, 0x01020304);
-print(buf.readInt32BE(8));
+println!(buf.readInt32BE(8));
 ```
 
 ## Summary

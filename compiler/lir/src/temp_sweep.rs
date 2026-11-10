@@ -12,6 +12,7 @@ fn fresh_builtin(name: &str) -> bool {
             | "__rnx_int_to_str"
             | "__rnx_float_to_str"
             | "__rnx_bool_to_str"
+            | "__rnx_any_unbox_heap"
             // Boxing a value for an `Any` slot always hands the caller a fresh
             // reference: either a newly allocated box or a retained existing
             // box. Releasing an inline (unboxed) passthrough is a no-op on

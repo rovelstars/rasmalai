@@ -9,8 +9,8 @@
 //! import { encodeRequestLine, statusCode } from "@std/net/http";
 //!
 //! let line = encodeRequestLine("GET", "/health");
-//! print(line);
-//! print(statusCode("HTTP/1.1 200 OK"));
+//! println!(line);
+//! println!(statusCode("HTTP/1.1 200 OK"));
 //! ```
 /**
 * Request target split into dial and send parts. `host` and `port` select
@@ -29,7 +29,7 @@ record HttpTarget(host: String, port: Int, path: String)
 * @example
 * import { encodeRequestLine } from "@std/net/http";
 *
-* print(encodeRequestLine("GET", "/health"));
+* println!(encodeRequestLine("GET", "/health"));
 */
 fn encodeRequestLine(method: String, target: String): String {
     return method + " " + target + " HTTP/1.1\u{D}\u{A}";
@@ -46,7 +46,7 @@ fn encodeRequestLine(method: String, target: String): String {
 * @example
 * import { statusCode } from "@std/net/http";
 *
-* print(statusCode("HTTP/1.1 404 Not Found"));
+* println!(statusCode("HTTP/1.1 404 Not Found"));
 */
 fn statusCode(statusLine: String): Int {
     let i = 0;
@@ -79,8 +79,8 @@ fn statusCode(statusLine: String): Int {
 * @example
 * import { isSuccess } from "@std/net/http";
 *
-* print(isSuccess(200));
-* print(isSuccess(404));
+* println!(isSuccess(200));
+* println!(isSuccess(404));
 */
 fn isSuccess(code: Int): Bool {
     return code >= 200 && code < 300;

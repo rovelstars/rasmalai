@@ -4,14 +4,29 @@ mod scratch;
 
 use lir::instr::Instr;
 
+static LOWER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn lower_src(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
+    let _guard = LOWER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = if src.contains("println!") || src.contains("print!") {
+        let mut m = frontend::modules::ModuleGraph::from_source(src)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut opts = frontend::macros::MacroOptions::new(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        );
+        let expanded = frontend::macros::expand_syntax(&mut m, &mut opts);
+        assert!(expanded.iter().all(|d| d.code.is_warning()), "{expanded:?}");
+        m
+    } else {
+        frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"))
+    };
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn lower_file(path: &std::path::Path) -> lir::instr::Module {
+    let _guard = LOWER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let graph = frontend::modules::ModuleGraph::build(path).unwrap_or_else(|e| panic!("{e}"));
     let mut m = graph.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
@@ -88,7 +103,7 @@ fn test_escaping_object_remains_heap() {
     }
 }
 
-const LOOP_SRC: &str = "import { Vec2 } from \"@std/math\";\nfn Main(): Int {\n    let total = 10.0;\n    let i = 0;\n    while i < 2 {\n        let a = new Vec2(3.0, 4.0);\n        let b = new Vec2(1.0, 2.0);\n        total = total + a.dot(b) + a.length();\n        i = i + 1;\n    }\n    let res = Int(total);\n    print(\"escape success:\", res);\n    return res;\n}\n";
+const LOOP_SRC: &str = "import { Vec2 } from \"@std/math\";\nfn Main(): Int {\n    let total = 10.0;\n    let i = 0;\n    while i < 2 {\n        let a = new Vec2(3.0, 4.0);\n        let b = new Vec2(1.0, 2.0);\n        total = total + a.dot(b) + a.length();\n        i = i + 1;\n    }\n    let res = Int(total);\n    println!(\"escape success:\", res);\n    return res;\n}\n";
 
 #[test]
 fn test_cross_backend_stack_alloc() {
@@ -98,7 +113,7 @@ fn test_cross_backend_stack_alloc() {
     let main = fn_by_name(&module, "Main");
     assert!(count_kind(main, true) > 0);
     let out = cli::run_files(path.to_str().unwrap(), "Main", vec![]);
-    assert_eq!(out.output, vec!["escape success: 42".to_string()]);
+    assert_eq!(out.output, vec!["escape success: 42\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(42)) => {}
         other => panic!("{other:?}"),

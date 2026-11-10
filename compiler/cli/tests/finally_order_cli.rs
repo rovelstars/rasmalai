@@ -69,15 +69,15 @@ fn finally_runs_after_catch_and_before_following_code() {
         fn Main(): Int {\n\
         try {\n\
         let x = boom(1)\n\
-        print(\"no throw {x}\")\n\
+        println!(\"no throw {x}\")\n\
         } catch (e) {\n\
-        print(\"caught\")\n\
+        println!(\"caught\")\n\
         } finally {\n\
-        print(\"finally\")\n\
+        println!(\"finally\")\n\
         }\n\
-        print(\"after try\")\n\
+        println!(\"after try\")\n\
         let y = boom(0)\n\
-        print(\"y={y}\")\n\
+        println!(\"y={y}\")\n\
         return 0\n\
         }\n",
         "caught\nfinally\nafter try\ny=1\n",
@@ -90,15 +90,15 @@ fn finally_runs_before_a_return_inside_try() {
     check_all_backends(
         "fn pick(): Int {\n\
         try {\n\
-        print(\"try\")\n\
+        println!(\"try\")\n\
         return 7\n\
         } finally {\n\
-        print(\"finally\")\n\
+        println!(\"finally\")\n\
         }\n\
         }\n\
         fn Main(): Int {\n\
         let v = pick()\n\
-        print(\"v={v}\")\n\
+        println!(\"v={v}\")\n\
         return 0\n\
         }\n",
         "try\nfinally\nv=7\n",
@@ -114,20 +114,20 @@ fn finally_runs_before_a_rethrow_leaves_the_catch() {
         try {\n\
         throw \"inner\"\n\
         } catch (e) {\n\
-        print(\"rethrow\")\n\
+        println!(\"rethrow\")\n\
         throw\n\
         } finally {\n\
-        print(\"finally\")\n\
+        println!(\"finally\")\n\
         }\n\
         return 1\n\
         } catch (e) {\n\
-        print(\"outer caught\")\n\
+        println!(\"outer caught\")\n\
         return 2\n\
         }\n\
         }\n\
         fn Main(): Int {\n\
         let r = nested()\n\
-        print(\"r={r}\")\n\
+        println!(\"r={r}\")\n\
         return 0\n\
         }\n",
         "rethrow\nfinally\nouter caught\nr=2\n",
@@ -142,12 +142,12 @@ fn finally_runs_before_continue_leaves_the_try() {
         for i in 0..3 {\n\
         try {\n\
         if i == 1 { continue }\n\
-        print(\"body {i}\")\n\
+        println!(\"body {i}\")\n\
         } finally {\n\
-        print(\"finally {i}\")\n\
+        println!(\"finally {i}\")\n\
         }\n\
         }\n\
-        print(\"done\")\n\
+        println!(\"done\")\n\
         return 0\n\
         }\n",
         "body 0\nfinally 0\nfinally 1\nbody 2\nfinally 2\ndone\n",
@@ -165,19 +165,19 @@ fn finally_runs_before_question_mark_propagates() {
         fn work(fail: Bool): Result<Int, String> {\n\
         try {\n\
         let x = risky(fail)?\n\
-        print(\"try ok\")\n\
+        println!(\"try ok\")\n\
         return Ok(x + 1)\n\
         } finally {\n\
-        print(\"cleanup\")\n\
+        println!(\"cleanup\")\n\
         }\n\
         }\n\
         fn Main(): Int {\n\
         let ok = work(false)\n\
-        print(ok.unwrapOr(-1))\n\
+        println!(ok.unwrapOr(-1))\n\
         let bad = work(true)\n\
         switch bad {\n\
-        case .Ok(v): print(v); pass\n\
-        case .Err(e): print(\"caught {e}\"); pass\n\
+        case .Ok(v): println!(v); pass\n\
+        case .Err(e): println!(\"caught {e}\"); pass\n\
         }\n\
         return 0\n\
         }\n",
@@ -197,22 +197,22 @@ fn finally_runs_around_question_mark_in_nested_try() {
         try {\n\
         try {\n\
         let x = risky(fail)?\n\
-        print(\"inner body\")\n\
+        println!(\"inner body\")\n\
         return Ok(x)\n\
         } finally {\n\
-        print(\"inner cleanup\")\n\
+        println!(\"inner cleanup\")\n\
         }\n\
         } finally {\n\
-        print(\"outer cleanup\")\n\
+        println!(\"outer cleanup\")\n\
         }\n\
         }\n\
         fn Main(): Int {\n\
         let ok = inner(false)\n\
-        print(ok.unwrapOr(-1))\n\
+        println!(ok.unwrapOr(-1))\n\
         let bad = inner(true)\n\
         switch bad {\n\
-        case .Ok(v): print(v); pass\n\
-        case .Err(e): print(\"caught {e}\"); pass\n\
+        case .Ok(v): println!(v); pass\n\
+        case .Err(e): println!(\"caught {e}\"); pass\n\
         }\n\
         return 0\n\
         }\n",
@@ -232,18 +232,18 @@ fn finally_runs_before_question_mark_leaves_the_catch() {
         try {\n\
         throw \"first\"\n\
         } catch (e) {\n\
-        print(\"caught {e}\")\n\
+        println!(\"caught {e}\")\n\
         let x = risky(true)?\n\
         return Ok(x)\n\
         } finally {\n\
-        print(\"cleanup\")\n\
+        println!(\"cleanup\")\n\
         }\n\
         }\n\
         fn Main(): Int {\n\
         let r = work()\n\
         switch r {\n\
-        case .Ok(v): print(v); pass\n\
-        case .Err(e): print(\"caught {e}\"); pass\n\
+        case .Ok(v): println!(v); pass\n\
+        case .Err(e): println!(\"caught {e}\"); pass\n\
         }\n\
         return 0\n\
         }\n",
@@ -268,14 +268,14 @@ fn finally_does_not_evaluate_the_return_value_twice() {
         let x = risky(false)?\n\
         return Ok(bump(log) + x)\n\
         } finally {\n\
-        print(\"cleanup\")\n\
+        println!(\"cleanup\")\n\
         }\n\
         }\n\
         fn Main(): Int {\n\
         let log: Array<Int> = []\n\
         let r = work(log)\n\
-        print(r.unwrapOr(-1))\n\
-        print(log.length())\n\
+        println!(r.unwrapOr(-1))\n\
+        println!(log.length())\n\
         return 0\n\
         }\n",
         "cleanup\n42\n1\n",
@@ -293,15 +293,15 @@ fn finally_keeps_the_question_mark_payload_type() {
         fn work(fail: Bool): Result<String, String> {\n\
         try {\n\
         let s = text(fail)?\n\
-        print(s.length())\n\
+        println!(s.length())\n\
         return Ok(s)\n\
         } finally {\n\
-        print(\"cleanup\")\n\
+        println!(\"cleanup\")\n\
         }\n\
         }\n\
         fn Main(): Int {\n\
-        print(work(false).unwrapOr(\"bad\"))\n\
-        print(work(true).unwrapOr(\"bad\"))\n\
+        println!(work(false).unwrapOr(\"bad\"))\n\
+        println!(work(true).unwrapOr(\"bad\"))\n\
         return 0\n\
         }\n",
         "2\ncleanup\nhi\ncleanup\nbad\n",

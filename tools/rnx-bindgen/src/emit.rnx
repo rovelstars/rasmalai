@@ -205,26 +205,26 @@ fn writeFile(path: String, text: String): Bool {
 fn emitPackage(outDir: String, pkgName: String, pkgVersion: String, nativeLib: String, headerBase: String, fns: Array<FnDecl>, structs: Array<StructDecl>, consts: Array<ConstDecl>): Bool {
     let srcDir = Path.join(outDir, "src");
     if !ensureDir(srcDir) {
-        print("rnx-bindgen: cannot create " + srcDir);
+        println!("rnx-bindgen: cannot create " + srcDir);
         return false;
     }
     let ordered = sortFns(fns);
     let ostructs = sortStructs(structs);
     let oconsts = sortConsts(consts);
-    print("---BEGIN Project.config---");
-    print(renderConfig(pkgName, pkgVersion, nativeLib));
-    print("---END Project.config---");
+    println!("---BEGIN Project.config---");
+    println!(renderConfig(pkgName, pkgVersion, nativeLib));
+    println!("---END Project.config---");
     if ostructs.length() > 0 || oconsts.length() > 0 {
         if !writeFile(Path.join(srcDir, "types.rnx"), renderTypes(headerBase, ostructs, oconsts)) {
-            print("rnx-bindgen: cannot write src/types.rnx");
+            println!("rnx-bindgen: cannot write src/types.rnx");
             return false;
         }
     }
     let typeNames = sortNames(renderTypeNames(ostructs, oconsts));
     if !writeFile(Path.join(srcDir, "lib.rnx"), renderLib(headerBase, nativeLib, ordered, typeNames)) {
-        print("rnx-bindgen: cannot write src/lib.rnx");
+        println!("rnx-bindgen: cannot write src/lib.rnx");
         return false;
     }
-    print("rnx-bindgen: wrote " + "${ordered.length()}" + " functions, " + "${ostructs.length()}" + " structs, " + "${oconsts.length()}" + " consts to " + outDir);
+    println!("rnx-bindgen: wrote " + "${ordered.length()}" + " functions, " + "${ostructs.length()}" + " structs, " + "${oconsts.length()}" + " consts to " + outDir);
     return true;
 }

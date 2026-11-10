@@ -2,21 +2,31 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
+#[path = "../src/test_support.rs"]
+mod support;
+
 use lir::{lower, verify};
 
 fn compile(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
-    let d = frontend::desugar::desugar(&mut m);
-    assert!(d.is_empty(), "{d:?}");
+    let m = support::resolve_for_lowering(src);
     let out = lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     let v = verify::verify(&out);
     assert!(v.is_empty(), "{v:?}");
     out
 }
 
+fn is_user_function(name: &str) -> bool {
+    !name.starts_with("std.")
+        && !name.starts_with("__ext_")
+        && !name.starts_with("__arrdtor_")
+        && !name.starts_with("__enum_dtor_")
+        && !name.starts_with("__dtor_std.")
+}
+
 fn count_instrs(m: &lir::instr::Module, pred: impl Fn(&lir::instr::Instr) -> bool) -> usize {
     m.functions
         .iter()
+        .filter(|f| is_user_function(&f.name))
         .flat_map(|f| f.blocks.iter())
         .flat_map(|b| b.instrs.iter())
         .filter(|i| pred(i))
@@ -26,8 +36,8 @@ fn count_instrs(m: &lir::instr::Module, pred: impl Fn(&lir::instr::Instr) -> boo
 #[test]
 fn arithmetic_fn() {
     let m = compile("fn Add(a: Int, b: Int): Int { return a + b }");
-    assert_eq!(m.functions.len(), 1);
-    assert_eq!(m.functions[0].blocks.len(), 1);
+    let add = m.functions.iter().find(|f| f.name == "Add").expect("Add");
+    assert_eq!(add.blocks.len(), 1);
 }
 
 #[test]
@@ -42,7 +52,7 @@ fn while_and_for() {
 fn switch_try_defer() {
     let m = compile(
         r#"fn F(x: Int): Int {
-  defer { print("out") }
+  defer { println!("out") }
   try { switch x { case 0..=5: return 1 default: return 2 } }
   catch (err) { return 0 }
 }"#,
@@ -55,8 +65,8 @@ fn class_init_fields() {
     let m = compile(
         "class P { let x: Int let y: Int = 7 init(x: Int) { this.x = x } fn get(): Int { return this.x } }",
     );
-    assert_eq!(m.classes.len(), 1);
-    assert_eq!(m.classes[0].fields.len(), 2);
+    let class = m.classes.iter().find(|c| c.name == "P").expect("P");
+    assert_eq!(class.fields.len(), 2);
     assert!(m.fn_index.contains_key("P.init"));
     assert!(m.fn_index.contains_key("P.get"));
 }
@@ -80,18 +90,16 @@ fn e305_float_mix_fails() {
 }
 
 fn lower_err(src: &str) -> diagnostics::Code {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
-    let d = frontend::desugar::desugar(&mut m);
-    assert!(d.is_empty(), "{d:?}");
+    let m = support::resolve_for_lowering(src);
     lower::lower(&m).expect_err("must fail").code
 }
 
 #[test]
 fn record_value_type() {
     let m = compile("record Point(x: Float, y: Float) fn F(): Int { return 0 }");
-    assert_eq!(m.classes.len(), 1);
-    assert!(m.classes[0].is_struct);
-    assert_eq!(m.classes[0].fields.len(), 2);
+    let point = m.classes.iter().find(|c| c.name == "Point").expect("Point");
+    assert!(point.is_struct);
+    assert_eq!(point.fields.len(), 2);
 }
 
 #[test]
@@ -114,6 +122,47 @@ fn enum_default_skips_exhaustiveness() {
     compile(
         "enum Color { Red, Green, Blue } fn F(c: Color): Int { switch c { case .Red: return 1 default: return 0 } }",
     );
+}
+
+#[test]
+fn unqualified_variant_uses_scrutinee_enum() {
+    compile(
+        "enum Status { Ok, Failed } enum Outcome { Ok(Int), Err(String) } fn F(o: Outcome): Int { switch o { case .Ok(v): return v case .Err(e): return 0 } }",
+    );
+}
+
+#[test]
+fn unqualified_variant_uses_scrutinee_enum_in_expression_switch() {
+    compile(
+        "enum Status { Ok, Failed } enum Outcome { Ok(Int), Err(String) } fn F(o: Outcome): Int { let n = switch o { case .Ok(v): v case .Err(e): 0 } return n }",
+    );
+}
+
+#[test]
+fn unqualified_variant_construction_uses_expected_enum() {
+    compile(
+        "enum Status { Ok, Failed } enum Outcome { Ok(Int), Failed(String) } fn Make(): Outcome { return Ok(7) } fn Main(): Int { let o: Outcome = Ok(3) return take(Ok(4)) } fn take(o: Outcome): Int { switch o { case .Ok(v): return v case .Failed(e): return 0 } }",
+    );
+}
+
+#[test]
+fn any_to_string_unbox_retains_payload() {
+    let m = compile("fn F(a: Array<Any>): Int { let s = a[0] as String return s.length() }");
+    let found = m
+        .functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instrs.iter())
+        .any(|i| {
+            matches!(
+                i,
+                lir::instr::Instr::Call {
+                    target: lir::instr::CallTarget::Builtin(name),
+                    ..
+                } if name == "__rnx_any_unbox_heap"
+            )
+        });
+    assert!(found, "string unbox did not retain the payload");
 }
 
 #[test]
@@ -305,7 +354,7 @@ fn array_dtor_synthesized_for_objects() {
 #[test]
 fn array_no_dtor_for_ints() {
     let m = compile("fn F(): Int { let a = [1, 2]; return 0; }");
-    assert!(m.array_dtors.is_empty());
+    assert!(!m.array_dtors.contains_key("i64"));
 }
 
 #[test]
@@ -560,7 +609,7 @@ fn enum_eq_compares_tags() {
 
 #[test]
 fn void_fn_implicit_return_terminates_cleanly() {
-    let m = compile("fn Main() { print(\"hi\") }");
+    let m = compile("fn Main() { println!(\"hi\") }");
     let f = m.functions.iter().find(|f| f.name == "Main").unwrap();
     assert!(!f.blocks.is_empty());
     assert!(f.blocks.iter().all(|b| matches!(b.term, lir::instr::Terminator::Ret(_))));

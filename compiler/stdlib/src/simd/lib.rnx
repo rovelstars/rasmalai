@@ -43,7 +43,7 @@ class Vec4f {
     * import { Vec4f } from "@std/simd";
     *
     * let v = Vec4f.splat(2.0);
-    * print(v.x() == 2.0, v.w() == 2.0);
+    * println!(v.x() == 2.0, v.w() == 2.0);
     */
     static splat(val: Float): Vec4f {
         return Vec4f.splat(val);
@@ -55,7 +55,7 @@ class Vec4f {
     * @example
     * import { Vec4f } from "@std/simd";
     *
-    * print(new Vec4f(1.0, 2.0, 3.0, 4.0).x() == 1.0);
+    * println!(new Vec4f(1.0, 2.0, 3.0, 4.0).x() == 1.0);
     */
     x(): Float {
         return this.x();
@@ -67,7 +67,7 @@ class Vec4f {
     * @example
     * import { Vec4f } from "@std/simd";
     *
-    * print(new Vec4f(1.0, 2.0, 3.0, 4.0).y() == 2.0);
+    * println!(new Vec4f(1.0, 2.0, 3.0, 4.0).y() == 2.0);
     */
     y(): Float {
         return this.y();
@@ -79,7 +79,7 @@ class Vec4f {
     * @example
     * import { Vec4f } from "@std/simd";
     *
-    * print(new Vec4f(1.0, 2.0, 3.0, 4.0).z() == 3.0);
+    * println!(new Vec4f(1.0, 2.0, 3.0, 4.0).z() == 3.0);
     */
     z(): Float {
         return this.z();
@@ -91,7 +91,7 @@ class Vec4f {
     * @example
     * import { Vec4f } from "@std/simd";
     *
-    * print(new Vec4f(1.0, 2.0, 3.0, 4.0).w() == 4.0);
+    * println!(new Vec4f(1.0, 2.0, 3.0, 4.0).w() == 4.0);
     */
     w(): Float {
         return this.w();
@@ -113,7 +113,7 @@ class Vec4f {
     *     sum = sum + v.get(i);
     *     i = i + 1;
     * }
-    * print(sum == 10.0);
+    * println!(sum == 10.0);
     */
     get(lane: Int): Float {
         return this.get(lane);
@@ -128,7 +128,7 @@ class Vec4f {
     * import { Vec4f } from "@std/simd";
     *
     * let d = new Vec4f(1.0, 2.0, 3.0, 4.0).dot(new Vec4f(2.0, 3.0, 4.0, 5.0));
-    * print(d == 40.0);
+    * println!(d == 40.0);
     */
     dot(other: Vec4f): Float {
         return this.dot(other);
@@ -145,7 +145,7 @@ class Vec4f {
     * import { Vec4f } from "@std/simd";
     *
     * let m = new Vec4f(1.0, 5.0, 3.0, 4.0).min(new Vec4f(4.0, 2.0, 6.0, 0.0));
-    * print(m.x() == 1.0, m.y() == 2.0, m.z() == 3.0, m.w() == 0.0);
+    * println!(m.x() == 1.0, m.y() == 2.0, m.z() == 3.0, m.w() == 0.0);
     */
     min(other: Vec4f): Vec4f {
         return this.min(other);
@@ -162,7 +162,7 @@ class Vec4f {
     * import { Vec4f } from "@std/simd";
     *
     * let h = new Vec4f(1.0, 5.0, 3.0, 4.0).max(new Vec4f(4.0, 2.0, 6.0, 0.0));
-    * print(h.x() == 4.0, h.y() == 5.0, h.z() == 6.0, h.w() == 4.0);
+    * println!(h.x() == 4.0, h.y() == 5.0, h.z() == 6.0, h.w() == 4.0);
     */
     max(other: Vec4f): Vec4f {
         return this.max(other);
@@ -176,7 +176,7 @@ class Vec4f {
     * import { Vec4f } from "@std/simd";
     *
     * let r = new Vec4f(4.0, 9.0, 16.0, 25.0).sqrt();
-    * print(r.x() == 2.0, r.z() == 4.0);
+    * println!(r.x() == 2.0, r.z() == 4.0);
     */
     sqrt(): Vec4f {
         return this.sqrt();
@@ -213,7 +213,7 @@ class Vec4i {
     * import { Vec4i } from "@std/simd";
     *
     * let v = Vec4i.splat(7);
-    * print(v.y() == 7, v.get(3) == 7);
+    * println!(v.y() == 7, v.get(3) == 7);
     */
     static splat(val: Int): Vec4i {
         return Vec4i.splat(val);
@@ -225,7 +225,7 @@ class Vec4i {
     * @example
     * import { Vec4i } from "@std/simd";
     *
-    * print(new Vec4i(1, 2, 3, 4).x() == 1);
+    * println!(new Vec4i(1, 2, 3, 4).x() == 1);
     */
     x(): Int {
         return this.x();
@@ -237,7 +237,7 @@ class Vec4i {
     * @example
     * import { Vec4i } from "@std/simd";
     *
-    * print(new Vec4i(1, 2, 3, 4).y() == 2);
+    * println!(new Vec4i(1, 2, 3, 4).y() == 2);
     */
     y(): Int {
         return this.y();
@@ -249,7 +249,7 @@ class Vec4i {
     * @example
     * import { Vec4i } from "@std/simd";
     *
-    * print(new Vec4i(1, 2, 3, 4).z() == 3);
+    * println!(new Vec4i(1, 2, 3, 4).z() == 3);
     */
     z(): Int {
         return this.z();
@@ -261,7 +261,7 @@ class Vec4i {
     * @example
     * import { Vec4i } from "@std/simd";
     *
-    * print(new Vec4i(1, 2, 3, 4).w() == 4);
+    * println!(new Vec4i(1, 2, 3, 4).w() == 4);
     */
     w(): Int {
         return this.w();
@@ -282,7 +282,7 @@ class Vec4i {
     *     sum = sum + v.get(i);
     *     i = i + 1;
     * }
-    * print(sum == 10);
+    * println!(sum == 10);
     */
     get(lane: Int): Int {
         return this.get(lane);

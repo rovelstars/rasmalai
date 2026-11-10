@@ -14,7 +14,7 @@ Paste it into a file or run it straight in the playground:
 import { Vec4f } from "@std/simd";
 
 let v = Vec4f.splat(2.0);
-print(v.x() == 2.0, v.w() == 2.0);
+println!(v.x() == 2.0, v.w() == 2.0);
 ```
 
 ## Keep going

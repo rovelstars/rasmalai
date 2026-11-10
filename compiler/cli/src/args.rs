@@ -36,14 +36,18 @@ pub struct Cli {
     pub prefer_bundled: bool,
 
     /// Use a custom sysroot directory instead of probing the host
-    /// (`lib/rustlib/<triple>/lib` for link inputs, `share/rnx/std` for an
-    /// alternate standard library). Reads RNX_SYSROOT when the flag is absent.
+    /// (`lib/rustlib/<triple>/lib` for link inputs). Reads RNX_SYSROOT when
+    /// the flag is absent.
     #[arg(long, global = true, env = "RNX_SYSROOT")]
     pub sysroot: Option<PathBuf>,
 
     /// Print a toolchain value and exit (`sysroot` prints the effective root)
     #[arg(long, global = true)]
     pub print: Option<String>,
+
+    /// Disable network access for this command (target packs and registry seeding use local caches only)
+    #[arg(long, global = true)]
+    pub offline: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -251,6 +255,9 @@ pub enum Command {
         /// Package selection
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
+        /// Record the installed target pack for this triple in `sysroots`
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Re-resolve registry ranges and rewrite Project.deplock with new digests
     Update {
@@ -480,6 +487,16 @@ pub enum Command {
         #[arg(long, env = "RNX_MEMORY_CAP", value_parser = crate::parse_memory_cap)]
         memory_cap: Option<u64>,
     },
+    /// Inspect the built-in target descriptors
+    Target {
+        #[command(subcommand)]
+        action: TargetAction,
+    },
+    /// Install, inspect, verify, and prune target packs (sysroots)
+    Sysroot {
+        #[command(subcommand)]
+        action: SysrootAction,
+    },
     /// Inspect and prune the build cache (global content-addressed store plus project pools)
     Cache {
         #[command(subcommand)]
@@ -561,6 +578,72 @@ pub enum Command {
     },
     /// Serve a Model Context Protocol (stdio) server exposing the toolchain
     Mcp,
+}
+
+/// Target descriptor management
+#[derive(Subcommand, Debug, Clone)]
+pub enum TargetAction {
+    /// List built-in target descriptors, sorted by triple
+    List {
+        /// Emit a JSON array instead of a table
+        #[arg(long)]
+        json: bool,
+        /// Restrict output to one tier
+        #[arg(long, value_parser = parse_tier)]
+        tier: Option<u8>,
+    },
+}
+
+/// Target pack management
+#[derive(Subcommand, Debug, Clone)]
+pub enum SysrootAction {
+    /// Install a target pack from OCI, or from a local directory with --local
+    Add {
+        /// Target triple, optionally versioned (`<triple>@<version>`)
+        spec: Option<String>,
+        /// Install this hand-built pack directory
+        #[arg(long)]
+        local: Option<PathBuf>,
+        /// Assert the expected pack integrity digest (`sha256:<hex>`)
+        #[arg(long)]
+        digest: Option<String>,
+    },
+    /// List installed target packs, sorted by triple
+    List {
+        /// Emit a JSON array instead of a table
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the current pack directory for a triple
+    Path {
+        /// Target triple
+        triple: String,
+    },
+    /// Rehash an installed pack and validate its manifest
+    Verify {
+        /// Target triple
+        triple: String,
+    },
+    /// Remove every installed pack for a triple
+    Remove {
+        /// Target triple
+        triple: String,
+    },
+    /// Drop digests other than the current one
+    Prune {
+        /// Keep at most this many digests per triple (default 1)
+        #[arg(long)]
+        keep: Option<usize>,
+    },
+}
+
+fn parse_tier(value: &str) -> Result<u8, String> {
+    match value {
+        "1" => Ok(1),
+        "2" => Ok(2),
+        "3" => Ok(3),
+        _ => Err("tier must be 1, 2, or 3".to_string()),
+    }
 }
 
 /// Build cache management

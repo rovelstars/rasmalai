@@ -30,9 +30,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got: Vec<String> = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -64,7 +64,7 @@ fn run_binary(path: &std::path::Path, extra: &[&str]) -> std::process::Output {
 #[test]
 fn clean_top_level_execution() {
     check_all_backends(
-        "let a = 10;\nlet b = 20;\nprint(a + b);\n",
+        "let a = 10;\nlet b = 20;\nprintln!(a + b);\n",
         0,
         &["30".to_string()],
         "clean",
@@ -74,7 +74,7 @@ fn clean_top_level_execution() {
 #[test]
 fn top_level_await_executes() {
     check_all_backends(
-        "let data = await Promise.resolve(42);\nprint(data);\n",
+        "let data = await Promise.resolve(42);\nprintln!(data);\n",
         0,
         &["42".to_string()],
         "await",
@@ -88,7 +88,7 @@ fn top_level_return_sets_exit_code() {
 
 #[test]
 fn fallthrough_defaults_to_zero() {
-    check_all_backends("print(\"hi\");\n", 0, &["hi".to_string()], "fallthrough");
+    check_all_backends("println!(\"hi\");\n", 0, &["hi".to_string()], "fallthrough");
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn run_propagates_top_level_exit_code() {
 #[test]
 fn explicit_main_keeps_parity() {
     check_all_backends(
-        "fn Main(): Int {\n    print(6 * 7);\n    return 5;\n}\n",
+        "fn Main(): Int {\n    println!(6 * 7);\n    return 5;\n}\n",
         5,
         &["42".to_string()],
         "explicit",
@@ -113,9 +113,9 @@ fn explicit_main_keeps_parity() {
 #[test]
 fn e112_on_imported_print() {
     let dir = crate::scratch::dir("tl");
-    std::fs::write(dir.join("helpers.rnx"), "fn helper(): Int {\n    return 1;\n}\n\nprint(\"leak\");\n").unwrap();
+    std::fs::write(dir.join("helpers.rnx"), "fn helper(): Int {\n    return 1;\n}\n\nprintln!(\"leak\");\n").unwrap();
     let main = dir.join("main.rnx");
-    std::fs::write(&main, "import { helper } from \"./helpers\";\n\nfn Main(): Int {\n    print(helper());\n    return 0;\n}\n").unwrap();
+    std::fs::write(&main, "import { helper } from \"./helpers\";\n\nfn Main(): Int {\n    println!(helper());\n    return 0;\n}\n").unwrap();
     let g = frontend::modules::ModuleGraph::build(&main).unwrap_or_else(|e| panic!("{e:?}"));
     let err = g.resolve().expect_err("expected E112");
     assert_eq!(err.code.as_str(), "E112");
@@ -147,7 +147,7 @@ fn valid_declarative_import_runs() {
     let main = dir.join("main.rnx");
     std::fs::write(
         &main,
-        "import { bar } from \"./helpers\";\n\nlet v = bar() + 1;\nprint(v);\n",
+        "import { bar } from \"./helpers\";\n\nlet v = bar() + 1;\nprintln!(v);\n",
     )
     .unwrap();
     let out = run_binary(&main, &[]);
@@ -158,7 +158,7 @@ fn valid_declarative_import_runs() {
 #[test]
 fn rnx_global_version_and_cwd() {
     let out = cli::run_source(
-        "print(rnx.version);\nprint(rnx.cwd().length() > 0);\n",
+        "println!(rnx.version);\nprintln!(rnx.cwd().length() > 0);\n",
         "Main",
         vec![],
     );
@@ -167,15 +167,15 @@ fn rnx_global_version_and_cwd() {
         other => panic!("{other:?}"),
     }
     assert_eq!(out.output.len(), 2);
-    assert_eq!(out.output[0], env!("CARGO_PKG_VERSION"));
-    assert_eq!(out.output[1], "true");
+    assert_eq!(out.output[0], format!("{}\n", env!("CARGO_PKG_VERSION")));
+    assert_eq!(out.output[1], "true\n");
 }
 
 #[test]
 fn rnx_global_args_skip_script_path() {
     let dir = crate::scratch::dir("tl");
     let main = dir.join("main.rnx");
-    std::fs::write(&main, "print(rnx.args.length());\nprint(rnx.args[0]);\n").unwrap();
+    std::fs::write(&main, "println!(rnx.args.length());\nprintln!(rnx.args[0]);\n").unwrap();
     let out = run_binary(&main, &["--", "alpha"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\nalpha\n");
@@ -194,7 +194,7 @@ fn rnx_exit_terminates_with_code() {
 fn lowercase_main_check_build_run_agree() {
     let dir = crate::scratch::dir("lowmain");
     let main = dir.join("main.rnx");
-    std::fs::write(&main, "fn main(): Int {\n    print(\"lower\");\n    return 3;\n}\n").unwrap();
+    std::fs::write(&main, "fn main(): Int {\n    println!(\"lower\");\n    return 3;\n}\n").unwrap();
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let check = std::process::Command::new(rnx)
         .arg("check")

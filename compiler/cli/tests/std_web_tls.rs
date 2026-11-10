@@ -143,8 +143,8 @@ impl TlsFixture {
 const FETCH_SECURE: &str = r#"import { fetch, Response } from "@std/web";
 
 let r: Response = await fetch("https://127.0.0.1:__PORT__/secure");
-print(r.status);
-print(r.text());
+println!(r.status);
+println!(r.text());
 "#;
 
 #[test]
@@ -165,7 +165,7 @@ const BAD_DOMAIN: &str = r#"import { TcpStream, TlsStream } from "@std/net";
 
 let raw: TcpStream = await TcpStream.connect("127.0.0.1", __PORT__);
 let tls: TlsStream = await TlsStream.connect(raw, "wrong.invalid");
-print("unreachable");
+println!("unreachable");
 "#;
 
 #[test]
@@ -183,8 +183,8 @@ fn tls_rejects_wrong_domain() {
 const FETCH_EXAMPLE: &str = r#"import { fetch, Response } from "@std/web";
 
 let r: Response = await fetch("https://example.com/");
-print(r.status);
-print(r.text().length() > 0);
+println!(r.status);
+println!(r.text().length() > 0);
 "#;
 
 #[test]

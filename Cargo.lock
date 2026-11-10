@@ -1469,6 +1469,7 @@ dependencies = [
  "memmap2",
  "rayon",
  "runtime",
+ "sha2",
  "sysroot",
  "tempfile",
 ]
@@ -1507,6 +1508,7 @@ dependencies = [
  "lir",
  "llvm-sys",
  "runtime",
+ "sysroot",
  "tempfile",
 ]
 
@@ -2448,6 +2450,7 @@ dependencies = [
 name = "sysroot"
 version = "0.2.1"
 dependencies = [
+ "diagnostics",
  "serde_json",
  "sha2",
 ]

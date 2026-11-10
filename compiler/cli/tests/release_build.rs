@@ -38,7 +38,7 @@ fn sha256(path: &std::path::Path) -> String {
     String::from_utf8(out.stdout).unwrap().split_whitespace().next().unwrap().to_string()
 }
 
-const EXEC_SRC: &str = "import { AtomicInt } from \"@std/sync\";\n\nfn Main(): Int {\n    let a = AtomicInt.byId(810);\n    a.set(40);\n    a.fetchAdd(2);\n    let n = a.get();\n    print(\"release:\", n);\n    if n == 42 {\n        return 42;\n    }\n    return 1;\n}\n";
+const EXEC_SRC: &str = "import { AtomicInt } from \"@std/sync\";\n\nfn Main(): Int {\n    let a = AtomicInt.byId(810);\n    a.set(40);\n    a.fetchAdd(2);\n    let n = a.get();\n    println!(\"release:\", n);\n    if n == 42 {\n        return 42;\n    }\n    return 1;\n}\n";
 
 #[test]
 fn test_release_build_execution() {
@@ -98,7 +98,7 @@ fn test_bit_identical_reproducibility() {
     assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
 }
 
-const MATRIX_SRC: &str = "import { AtomicInt, Mutex } from \"@std/sync\";\nimport { Vec4f } from \"@std/simd\";\n\nfn task() {\n    let m = Mutex.byId(801);\n    m.lock();\n    AtomicInt.byId(800).fetchAdd(1);\n    m.unlock();\n}\n\nfn Main(): Int {\n    let d = Int(new Vec4f(1.0, 2.0, 3.0, 4.0).dot(new Vec4f(2.0, 3.0, 4.0, 5.0)));\n    let pool = ThreadPool.byId(806, 4);\n    let i = 0;\n    while i < 8 {\n        pool.submit(task);\n        i = i + 1;\n    }\n    pool.join();\n    pool.shutdown();\n    let n = AtomicInt.byId(800).get();\n    print(\"release matrix:\", d, n);\n    if d == 40 && n == 8 {\n        return 0;\n    }\n    return 1;\n}\n";
+const MATRIX_SRC: &str = "import { AtomicInt, Mutex } from \"@std/sync\";\nimport { Vec4f } from \"@std/simd\";\n\nfn task() {\n    let m = Mutex.byId(801);\n    m.lock();\n    AtomicInt.byId(800).fetchAdd(1);\n    m.unlock();\n}\n\nfn Main(): Int {\n    let d = Int(new Vec4f(1.0, 2.0, 3.0, 4.0).dot(new Vec4f(2.0, 3.0, 4.0, 5.0)));\n    let pool = ThreadPool.byId(806, 4);\n    let i = 0;\n    while i < 8 {\n        pool.submit(task);\n        i = i + 1;\n    }\n    pool.join();\n    pool.shutdown();\n    let n = AtomicInt.byId(800).get();\n    println!(\"release matrix:\", d, n);\n    if d == 40 && n == 8 {\n        return 0;\n    }\n    return 1;\n}\n";
 
 #[test]
 fn test_release_runtime_matrix() {

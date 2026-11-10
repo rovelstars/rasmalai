@@ -35,19 +35,13 @@
 //! let ore = new Map<String, Int>();
 //! ore.set("iron", 12);
 //! ore.set("coal", 7);
-//! print(ore.get("iron") ?? 0);
+//! println!(ore.get("iron") ?? 0);
 //!
 //! let seen = new Set<String>();
 //! seen.add("iron");
 //! seen.add("iron");
-//! print(seen.len(), seen.values().join(", "));
+//! println!(seen.len(), seen.values().join(", "));
 //! ```
-import {
-    ArrayIter,
-    Iterable,
-    Iterator
-} from "@std/prelude";
-
 import {
     fn __rnx_gmap_clear(handle: Int): Void,
     fn __rnx_gmap_delete(handle: Int, key: Any): Bool,
@@ -83,9 +77,9 @@ import {
 * let ore = new Map<String, Int>();
 * ore.set("iron", 12);
 * ore.set("coal", 7);
-* print(ore.get("iron") ?? 0, ore.get("gold") ?? 0);
-* print(ore.keys().join(","));
-* print(ore.len());
+* println!(ore.get("iron") ?? 0, ore.get("gold") ?? 0);
+* println!(ore.keys().join(","));
+* println!(ore.len());
 */
 class Map<K, V> with Iterable<K> {
     /**
@@ -122,8 +116,8 @@ class Map<K, V> with Iterable<K> {
     * m.set("a", 1);
     * m.set("b", 2);
     * m.set("a", 10);
-    * print(m.keys().join(","));
-    * print(m.values().join(","));
+    * println!(m.keys().join(","));
+    * println!(m.values().join(","));
     */
     set(key: K, val: V) {
         __rnx_gmap_set(this.handle, key, val);
@@ -142,8 +136,8 @@ class Map<K, V> with Iterable<K> {
     *
     * let m = new Map<String, Int>();
     * m.set("ore", 7);
-    * print(m.get("ore") ?? 0);
-    * print(m.get("coal") ?? 0);
+    * println!(m.get("ore") ?? 0);
+    * println!(m.get("coal") ?? 0);
     */
     get(key: K): V? {
         if __rnx_gmap_has(this.handle, key) {
@@ -162,7 +156,7 @@ class Map<K, V> with Iterable<K> {
     *
     * let m = new Map<String, Int>();
     * m.set("ore", 7);
-    * print(m.has("ore"), m.has("coal"));
+    * println!(m.has("ore"), m.has("coal"));
     */
     has(key: K): Bool {
         return __rnx_gmap_has(this.handle, key);
@@ -180,9 +174,9 @@ class Map<K, V> with Iterable<K> {
     * let m = new Map<String, Int>();
     * m.set("a", 1);
     * m.set("b", 2);
-    * print(m.delete("a"), m.len());
-    * print(m.delete("a"));
-    * print(m.keys().join(","));
+    * println!(m.delete("a"), m.len());
+    * println!(m.delete("a"));
+    * println!(m.keys().join(","));
     */
     delete(key: K): Bool {
         return __rnx_gmap_delete(this.handle, key);
@@ -198,7 +192,7 @@ class Map<K, V> with Iterable<K> {
     * let m = new Map<String, Int>();
     * m.set("a", 1);
     * m.set("b", 2);
-    * print(m.len());
+    * println!(m.len());
     */
     len(): Int {
         return __rnx_gmap_len(this.handle);
@@ -215,7 +209,7 @@ class Map<K, V> with Iterable<K> {
     * m.set("a", 1);
     * m.set("b", 2);
     * m.clear();
-    * print(m.len(), m.keys().join(","));
+    * println!(m.len(), m.keys().join(","));
     */
     clear() {
         __rnx_gmap_clear(this.handle);
@@ -232,8 +226,8 @@ class Map<K, V> with Iterable<K> {
     * m.set("iron", 12);
     * m.set("coal", 7);
     * m.set("iron", 14);
-    * print(m.keys().join(", "));
-    * print(m.len());
+    * println!(m.keys().join(", "));
+    * println!(m.len());
     */
     keys(): Array<K> {
         return __rnx_gmap_keys(this.handle);
@@ -250,7 +244,7 @@ class Map<K, V> with Iterable<K> {
     * let m = new Map<String, Int>();
     * m.set("iron", 12);
     * m.set("coal", 7);
-    * print(m.values().join(", "));
+    * println!(m.values().join(", "));
     */
     values(): Array<V> {
         return __rnx_gmap_values(this.handle);
@@ -268,7 +262,7 @@ class Map<K, V> with Iterable<K> {
     * m.set("iron", 12);
     * m.set("coal", 7);
     * for name in m {
-    *     print(name, m.get(name) ?? 0);
+    *     println!(name, m.get(name) ?? 0);
     * }
     */
     iterator(): Iterator<K> {
@@ -293,8 +287,8 @@ class Map<K, V> with Iterable<K> {
 * seen.add("iron");
 * seen.add("coal");
 * seen.add("iron");
-* print(seen.len(), seen.has("coal"));
-* print(seen.values().join(", "));
+* println!(seen.len(), seen.has("coal"));
+* println!(seen.values().join(", "));
 */
 class Set<T> with Iterable<T> {
     /**
@@ -323,8 +317,8 @@ class Set<T> with Iterable<T> {
     * let s = new Set<String>();
     * s.add("ore");
     * s.add("ore");
-    * print(s.has("ore"), s.len());
-    * print(s.values().join(", "));
+    * println!(s.has("ore"), s.len());
+    * println!(s.values().join(", "));
     */
     add(val: T) {
         this.inner.set(val, true);
@@ -339,7 +333,7 @@ class Set<T> with Iterable<T> {
     *
     * let s = new Set<String>();
     * s.add("ore");
-    * print(s.has("ore"), s.has("coal"));
+    * println!(s.has("ore"), s.has("coal"));
     */
     has(val: T): Bool {
         return this.inner.has(val);
@@ -357,8 +351,8 @@ class Set<T> with Iterable<T> {
     * let s = new Set<String>();
     * s.add("ore");
     * s.add("coal");
-    * print(s.delete("ore"), s.len());
-    * print(s.values().join(", "));
+    * println!(s.delete("ore"), s.len());
+    * println!(s.values().join(", "));
     */
     delete(val: T): Bool {
         return this.inner.delete(val);
@@ -373,7 +367,7 @@ class Set<T> with Iterable<T> {
     * let s = new Set<String>();
     * s.add("iron");
     * s.add("coal");
-    * print(s.len());
+    * println!(s.len());
     */
     len(): Int {
         return this.inner.len();
@@ -390,7 +384,7 @@ class Set<T> with Iterable<T> {
     * s.add("ore");
     * s.add("coal");
     * s.clear();
-    * print(s.len(), s.values().join(","));
+    * println!(s.len(), s.values().join(","));
     */
     clear() {
         this.inner.clear();
@@ -406,7 +400,7 @@ class Set<T> with Iterable<T> {
     * let s = new Set<String>();
     * s.add("iron");
     * s.add("coal");
-    * print(s.values().join(", "));
+    * println!(s.values().join(", "));
     */
     values(): Array<T> {
         return this.inner.keys();
@@ -424,7 +418,7 @@ class Set<T> with Iterable<T> {
     * s.add("iron");
     * s.add("coal");
     * for member in s {
-    *     print(member);
+    *     println!(member);
     * }
     */
     iterator(): Iterator<T> {

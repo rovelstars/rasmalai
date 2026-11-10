@@ -212,7 +212,22 @@ impl TaskRegistry {
             );
         }
 
-        for (dep_name, spec) in &project.config.dependencies {
+        for (dep_key, raw_spec) in &project.config.dependencies {
+            let rewritten = match raw_spec {
+                frontend::project::DependencySpec::Alias { .. } => Some(
+                    frontend::modules::resolve_alias_spec(
+                        &project.scope_root,
+                        &project.config,
+                        dep_key,
+                        &mut Vec::new(),
+                    )?,
+                ),
+                _ => None,
+            };
+            let (dep_name, spec) = match &rewritten {
+                Some((name, spec)) => (name.as_str(), spec),
+                None => (dep_key.as_str(), raw_spec),
+            };
             if packages.contains_key(dep_name) {
                 continue;
             }
@@ -221,9 +236,9 @@ impl TaskRegistry {
                     let dir = project.dir.join(path);
                     match ProjectConfig::load_from_dir(&dir) {
                         Ok(Some(cfg)) => {
-                            if &cfg.name != dep_name {
+                            if cfg.name.as_str() != dep_name {
                                 unresolved.insert(
-                                    dep_name.clone(),
+                                    dep_name.to_string(),
                                     format!(
                                         "path dependency `{dep_name}` declares package name `{}` in {}",
                                         cfg.name,
@@ -250,7 +265,7 @@ impl TaskRegistry {
                         }
                         Ok(None) => {
                             unresolved.insert(
-                                dep_name.clone(),
+                                dep_name.to_string(),
                                 format!(
                                     "path dependency `{dep_name}` has no {} in {}",
                                     frontend::project::MANIFEST_FILE,
@@ -259,16 +274,16 @@ impl TaskRegistry {
                             );
                         }
                         Err(e) => {
-                            unresolved.insert(dep_name.clone(), e.message.clone());
+                            unresolved.insert(dep_name.to_string(), e.message.clone());
                         }
                     }
                 }
                 frontend::project::DependencySpec::Semver { version, .. } => {
                     match resolve_registry_dep(project, dep_name, version) {
                         Ok((dir, cfg, _resolved)) => {
-                            if &cfg.name != dep_name {
+                            if cfg.name.as_str() != dep_name {
                                 unresolved.insert(
-                                    dep_name.clone(),
+                                    dep_name.to_string(),
                                     format!(
                                         "registry dependency `{dep_name}` declares package name `{}` in {}",
                                         cfg.name,
@@ -295,13 +310,13 @@ impl TaskRegistry {
                             });
                         }
                         Err(e) => {
-                            unresolved.insert(dep_name.clone(), e.message.clone());
+                            unresolved.insert(dep_name.to_string(), e.message.clone());
                         }
                     }
                 }
                 frontend::project::DependencySpec::Git { git, rev, .. } => {
                     unresolved.insert(
-                        dep_name.clone(),
+                        dep_name.to_string(),
                         format!(
                             "git dependency `{dep_name}` ({git}#{rev}) has no fetched source; run `rnx lock` and `rnx download` first"
                         ),
@@ -309,13 +324,21 @@ impl TaskRegistry {
                 }
                 frontend::project::DependencySpec::Url { url, .. } => {
                     unresolved.insert(
-                        dep_name.clone(),
+                        dep_name.to_string(),
                         format!(
                             "tarball dependency `{dep_name}` ({url}) has no fetched source; run `rnx lock` and `rnx download` first"
                         ),
                     );
                 }
                 frontend::project::DependencySpec::Native { .. } => {}
+                frontend::project::DependencySpec::Alias { package, .. } => {
+                    unresolved.insert(
+                        dep_name.to_string(),
+                        format!(
+                            "dependency alias `{dep_name}` targets `{package}` but was not resolved"
+                        ),
+                    );
+                }
             }
         }
 

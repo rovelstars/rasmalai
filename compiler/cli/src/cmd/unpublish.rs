@@ -28,7 +28,7 @@ pub(super) fn run_unpublish(target: String, registry: String, token: Option<Stri
             std::process::exit(1);
         }
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }

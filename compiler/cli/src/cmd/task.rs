@@ -40,7 +40,7 @@ pub(super) fn run_task(
     let project = match select_project(package.as_deref()) {
         Ok(p) => p,
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -55,7 +55,7 @@ pub(super) fn run_task(
                 let registry = match cli::task::TaskRegistry::build(&project) {
                     Ok(r) => r,
                     Err(e) => {
-                        println!("{e}");
+                        eprintln!("{e}");
                         std::process::exit(1);
                     }
                 };
@@ -107,7 +107,7 @@ pub(super) fn run_task(
         }
     };
     if let Err(e) = result {
-        println!("{e}");
+        eprintln!("{e}");
         std::process::exit(1);
     }
 }

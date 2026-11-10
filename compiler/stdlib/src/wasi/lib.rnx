@@ -1,0 +1,112 @@
+//! Prelude and console surface for `wasm32-unknown-wasi`.
+//!
+//! A WASI command module has no host process to inherit. It reaches the
+//! outside world through `wasi_snapshot_preview1` imports only, and the
+//! in-house linker supplies those imports when it links the module. This
+//! package is the prelude for that target: the foundation catalog stays
+//! ambient, `Date` comes from `@std/time`, and the print family is lowered
+//! to the WASI runtime archive instead of `@std/io`.
+//!
+//! ```rnx
+//! fn Main(): Int {
+//!     println!("hello wasi");
+//!     return 0;
+//! }
+//! ```
+//!
+//! `@std/io`, `@std/log`, `@std/fs`, `@std/process`, `@std/net`, and
+//! `@std/sync` are not imported. Each one needs an operating system surface
+//! the target does not provide, so the surrounding prelude would fail the
+//! capability gate before a program got as far as linking.
+
+import {
+    fn __rnx_wasi_println(args: Array): Void,
+    fn __rnx_wasi_eprintln(args: Array): Void,
+    fn __rnx_wasi_write(text: String): Void,
+    fn __rnx_wasi_ewrite(text: String): Void,
+} from runtime "wasi";
+
+export {
+    Int,
+    Float,
+    FastFloat,
+    Bool,
+    String,
+    Char,
+    Array,
+    Map,
+    Set,
+    Error,
+    Any,
+    Void,
+    GenRef,
+    Result,
+    Iterator,
+    Iterable,
+    ArrayIter
+} from "@std/foundation";
+export { Date } from "@std/time";
+
+/** Print the argument values as one line on standard output.
+ *
+ * Arguments are joined with a single space and the line ends with `\n`.
+ * The bytes leave the module through `fd_write` on descriptor 1.
+ * @example
+ * println!("hello wasi");
+ */
+#[Macro]
+export fn println(args: Array<Any>) {
+    __rnx_wasi_println(args);
+}
+
+/** The same macro under a name that cannot be confused with the host
+ * console macro.
+ * @example
+ * wasi_println!("hello wasi");
+ */
+#[Macro]
+export fn wasi_println(args: Array<Any>) {
+    __rnx_wasi_println(args);
+}
+
+/** Print the argument values as one line on standard error, descriptor 2.
+ * @example
+ * eprintln!("warning");
+ */
+#[Macro]
+export fn eprintln(args: Array<Any>) {
+    __rnx_wasi_eprintln(args);
+}
+
+/** Print a `String` followed by a newline, without the argument array the
+ * call macros build.
+ * @example
+ * printLine("plain line");
+ */
+export fn printLine(text: String) {
+    __rnx_wasi_write(text + "\n");
+}
+
+/** Print a `String` with no trailing newline.
+ * @example
+ * printText("no newline");
+ */
+export fn printText(text: String) {
+    __rnx_wasi_write(text);
+}
+
+/** Print a `String` followed by a newline on standard error.
+ * @example
+ * printErrorLine("bad input");
+ */
+export fn printErrorLine(text: String) {
+    __rnx_wasi_ewrite(text + "\n");
+}
+
+/** Print a `String` with no trailing newline on standard error.
+ * @example
+ * printErrorText("bad input");
+ */
+export fn printErrorText(text: String) {
+    __rnx_wasi_ewrite(text);
+}

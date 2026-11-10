@@ -69,6 +69,7 @@ fix: declare the variable with `let` or check the spelling
 | `E121` | error | a derived method would collide with an existing member | rename the existing member or drop the derive |
 | `E122` | error | comptime sandbox or file-input violation (`EmbedBytes!` path, foreign call, I/O in build-time code) | keep comptime pure: literals, type info, and `EmbedBytes!` bytes only |
 | `E123` | error | a `StaticAssert!` condition is false or not constant | fix the asserted expression or drop the assertion |
+| `E124` | error | a target pack is missing, corrupt, or does not match the lock | run `rnx sysroot add <triple>` to install the target pack, or `rnx sysroot verify <triple>` to rehash an installed one |
 
 The `E108` declaration rule, corrected:
 
@@ -76,7 +77,7 @@ The `E108` declaration rule, corrected:
 let x = 1;
 if x > 0 {
     let y = 2;
-    print(y);
+    println!(y);
 }
 ```
 
@@ -84,7 +85,7 @@ Each remaining code, with its trigger:
 
 ```rnx
 let data = await Promise.resolve(42);
-print(data);
+println!(data);
 ```
 
 Top-level `await` is legal only in the entry file. The same `await` inside an imported module is `E112`, and `await` inside a synchronous function body is `E109`. Move it into an `async fn`.
@@ -95,7 +96,7 @@ async fn compute(): Int {
 }
 
 let result = await compute();
-print(result);
+println!(result);
 ```
 
 ```rnx
@@ -113,7 +114,7 @@ Each `case` auto-breaks; crossing into the next case needs the explicit `fallthr
 
 ```rnx
 let total = nosuchvar + 1;
-print(total);
+println!(total);
 ```
 
 Reference to a name with no visible declaration fails as `E303` pointing at the exact column (lowercase-led value names; `PascalCase` names are type references that single-file checks leave alone). A `return` value of the wrong type fails as `E304` with `expected`/`got` labels. An intra-procedural ARC cycle without escape fails as `E302`. Restructure so the value escapes, or route the back-edge through `GenRef`.
@@ -213,7 +214,7 @@ const limit: Int = 10;
 ```rnx
 let strict: Float = 0.5;
 let fast = strict.asFast();
-print(fast * 2.0.asFast());
+println!(fast * 2.0.asFast());
 ```
 
 ## Packaging codes (E402, E501)

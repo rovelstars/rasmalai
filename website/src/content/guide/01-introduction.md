@@ -64,7 +64,7 @@ Congratulations, that is a real rnx program, compiled and executed. Open `src/ma
 
 ```rnx
 fn Main(): Int {
-    print("Hello from hello!");
+    println!("Hello from hello!");
     return 0;
 }
 ```

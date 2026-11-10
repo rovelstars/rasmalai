@@ -132,19 +132,19 @@ let port = listener.port();
 let base = "http://127.0.0.1:" + port.toString();
 let srv = Thread.spawn((): Int => serveThree(listener.handle));
 let r1: Response = await fetch(base + "/hello");
-print(r1.status);
-print(r1.text());
-print((r1.headers.get("content-type") ?? ""));
-print((r1.headers.get("content-length") ?? ""));
-print((r1.headers.get("x-echo") ?? ""));
+println!(r1.status);
+println!(r1.text());
+println!((r1.headers.get("content-type") ?? ""));
+println!((r1.headers.get("content-length") ?? ""));
+println!((r1.headers.get("x-echo") ?? ""));
 let r2: Response = await fetch(base + "/missing");
-print(r2.status);
-print(r2.text());
+println!(r2.status);
+println!(r2.text());
 let r3: Response = await fetch(base + "/chunked");
-print(r3.status);
-print(r3.text());
+println!(r3.status);
+println!(r3.text());
 let done = srv.join().unwrap();
-print(done);
+println!(done);
 listener.close();
 "#;
 
@@ -210,10 +210,10 @@ fn writeAll(sh: TcpStream, data: Array<Int>): Int {
 fn showCount(m: Map<String, Any>): Int {
     let cv = m.get("count");
     if cv != null {
-        print(cv);
+        println!(cv);
         return 0;
     }
-    print("none-count");
+    println!("none-count");
     return 1;
 }
 
@@ -250,14 +250,14 @@ let port = listener.port();
 let base = "http://127.0.0.1:" + port.toString();
 let srv = Thread.spawn((): Int => serveJson(listener.handle));
 let r: Response = await fetch(base + "/api");
-print(r.status);
+println!(r.status);
 let m = JSON.asMap(r.json());
 let sv = m.get("status");
 if sv != null {
-    print(sv);
+    println!(sv);
     return showCount(m);
 }
-print("none-status");
+println!("none-status");
 return 1;
 "#;
 
@@ -272,7 +272,7 @@ fn fetch_https_passes_scheme_gate_to_networking() {
     let port = probe.local_addr().unwrap().port();
     drop(probe);
     let src = format!(
-        "import {{ fetch, Response }} from \"@std/web\";\n\nlet r: Response = await fetch(\"https://127.0.0.1:{port}/\");\nprint(r.status);\n"
+        "import {{ fetch, Response }} from \"@std/web\";\n\nlet r: Response = await fetch(\"https://127.0.0.1:{port}/\");\nprintln!(r.status);\n"
     );
     let dir = fresh_dir("https");
     let out = run_backend(&dir, &src, None);

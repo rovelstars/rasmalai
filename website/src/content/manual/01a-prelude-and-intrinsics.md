@@ -17,37 +17,38 @@ struct Map {
 }
 
 let o = Map(1);
-print(o.x);
+println!(o.x);
 ```
 
 The local `struct Map` replaces the prelude `Map` for the declaring scope. Shadowing applies per scope; other files are unaffected.
 
 ## Root intrinsics
 
-Three functions are compiler builtins, available without declaration or import:
+Two functions are compiler builtins, available without declaration or import:
 
 | Intrinsic | Signature | Effect |
 |---|---|---|
-| `print` | `print(...values)` | Formats each value and writes the line to standard output. |
 | `assert` | `assert(condition: Bool, message: String)` | Aborts with file and line diagnostics when `condition` is `false`. |
 | `typeOf` | `typeOf(value)` | Returns the runtime type tag, or the class identifier for objects. |
 
+The print surface is the four `@std/io` macros re-exported by the prelude. `print!` writes its formatted arguments with no newline, and `println!` appends one. There is no ordinary `print` function.
+
 ```rnx
-print("values:", 40 + 2, true);
+println!("values:", 40 + 2, true);
 assert(1 + 1 == 2, "arithmetic");
-print(typeOf(42), typeOf("s"));
+println!(typeOf(42), typeOf("s"));
 ```
 
 Conditional aborts use the `PanicIf!` macro form, which panics with the message when the condition holds:
 
 ```rnx
 PanicIf!(false, "unreached");
-print("alive");
+println!("alive");
 ```
 
 There is no bare `panic(...)` function; calling one is an `E303` error. Failure inside fallible functions uses `throw`; see [Functions and Closures](/manual/05-functions-and-closures).
 
-`print` is a prelude shim over `io.write`: every argument runs through the `@std/io` pretty-printer (see [Hardware and FFI](/manual/13-hardware-and-ffi)), so existing programs keep working with no import.
+`print!`, `println!`, `eprint!`, and `eprintln!` are prelude-visible `@std/io` macros: every argument runs through the shared pretty-printer (see [Hardware and FFI](/manual/13-hardware-and-ffi)). `print!` writes no newline; `println!` adds one.
 
 ## Foundation types
 
@@ -64,13 +65,23 @@ These types resolve from the prelude in every file:
 | `Array` | Dense growable sequence. |
 | `Map` | Insertion-ordered key-value table. |
 | `Set` | Distinct-member collection. |
-| `Date` | Calendar view over the wall clock. |
+| `Date` | Calendar view over the wall clock; declared in `@std/time`. |
 | `Error` | Error value. |
 | `Any` | Untyped escape hatch. |
 | `Void` | Absence of a value. |
 | `GenRef` | Generational reference for cyclic edges. |
 
 Numeric semantics are specified in [Numeric Model](/manual/02-numeric-model); memory behavior in [Memory and ARC](/manual/11-memory-and-arc).
+
+The stock prelude is a facade over ordinary packages. It re-exports `Date` from `@std/time`, `Promise`, `PromiseWithResolvers`, and `PromiseResult` from `@std/async`, and `RnxHost` from `@std/env`. Import those packages directly when you want the names without the prelude:
+
+```rnx
+import { Clock, Date } from "@std/time";
+import { Promise } from "@std/async";
+import { RnxHost } from "@std/env";
+```
+
+A selected prelude that omits `Promise` disables async lowering: `async fn` and `await` fail with `E108` naming the prelude and `Promise`.
 
 ## Nullable values and Result
 
@@ -80,7 +91,7 @@ There is no `Option` type. A missing value is `null` (type `Null`), and a nullab
 let port: Int? = null;
 assert((port ?? 8080) == 8080, "fallback");
 let ok: Result<Int, String> = Result.Ok(42);
-print(ok.unwrap());
+println!(ok.unwrap());
 ```
 
 `Result` is a generic enum merged into every program: `Ok` carries a payload and `Err` carries an error. Its query methods (`isOk`, `isErr`, `unwrap`, `unwrapOr`) lower to discriminant checks. The `?`, `??`, and `?.` channels over nullables and `Result` are specified in [Functions and Closures](/manual/05-functions-and-closures).
@@ -101,10 +112,10 @@ Arrays carry compiler-provided core methods plus prelude extension methods, all 
 ```rnx
 let arr = [10, 20, 30];
 arr.push(40);
-print(arr.length, arr.pop());
+println!(arr.length, arr.pop());
 let doubled = arr.map((x: Int) => x * 2);
 let evens = arr.filter((x: Int) => x % 2 == 0);
-print(doubled.length, evens.length);
+println!(doubled.length, evens.length);
 ```
 
 Search and fold helpers:
@@ -176,16 +187,15 @@ assert(bad.unwrapOr(-1) == -1, "unwrapOr err");
 
 | Intrinsic | Signature | Failure mode |
 |---|---|---|
-| `print(...values)` | any count, any types | never fails; joins with spaces plus trailing newline |
 | `assert(cond, msg)` | `assert(Bool, String)` | aborts with file and line when `cond` is `false` |
 | `typeOf(value)` | any value | never fails; returns the runtime type tag or class identifier |
 | `PanicIf!(cond, msg)` | `PanicIf!(Bool, String)` | aborts when `cond` is `true` |
 
 ```rnx
-print("one", 2, false);
+println!("one", 2, false);
 PanicIf!(1 + 1 == 3, "math broke");
-print(typeOf(42));
-print(typeOf("s"));
+println!(typeOf(42));
+println!(typeOf("s"));
 ```
 
 ## String extensions
@@ -210,11 +220,12 @@ assert("HeLLo".toLowerCase() == "hello", "toLowerCase");
 
 ## Scope-builtin types
 
-`IO`, `Thread`, `ThreadPool`, `Pointer`, and `Address` resolve as compiler builtins alongside the prelude. Threading is specified in [Concurrency and Threads](/manual/14-concurrency-and-threads); raw pointers and C-ABI in [Hardware and FFI](/manual/13-hardware-and-ffi).
+`IO`, `Thread`, and `ThreadPool` are declared by the selected prelude as catalog stubs, and their methods are compiler-lowered. A prelude that omits one of them makes that name unavailable, so a target prelude chooses which ambient surfaces exist. `Pointer` and `Address` remain compiler builtins regardless of the prelude. Threading is specified in [Concurrency and Threads](/manual/14-concurrency-and-threads); raw pointers and C-ABI in [Hardware and FFI](/manual/13-hardware-and-ffi).
 
 ## Summary
 
 - Resolution order: local scopes, then globals and builtins, then `@std/prelude`; explicit declarations shadow prelude names.
-- Root intrinsics: `print`, `assert`, `typeOf`, plus the `PanicIf!` macro form. No bare `panic()` exists.
+- Root intrinsics: `assert` and `typeOf`, plus the `PanicIf!` macro form. The print family comes from `@std/io` through the prelude. No bare `panic()` exists.
 - Foundation types, `null`/`T?` and `Result`, and iteration traits resolve everywhere.
+- The stock prelude re-exports `@std/time`, `@std/async`, and `@std/env`; `IO`, `Thread`, and `ThreadPool` exist only when the selected prelude declares them.
 - Array and String extensions (`find`, `reduce`, `contains`, `split`, and siblings) require no import.

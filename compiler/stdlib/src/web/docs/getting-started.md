@@ -14,12 +14,12 @@ Paste it into a file or run it straight in the playground:
 import { URL, Headers, statusCode, HttpStatus } from "@std/web";
 
 let u = new URL("https://example.com:8080/a/b?x=1#frag");
-print(u.href());
-print(u.hostname(), u.port(), u.pathname());
+println!(u.href());
+println!(u.hostname(), u.port(), u.pathname());
 let h = new Headers();
 h.set("Content-Type", "text/plain");
-print(h.get("content-type").unwrap());
-print(statusCode(HttpStatus.NotFound));
+println!(h.get("content-type").unwrap());
+println!(statusCode(HttpStatus.NotFound));
 ```
 
 ## Keep going

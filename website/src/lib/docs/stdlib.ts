@@ -137,13 +137,31 @@ print(found.unwrap(), typeOf(found));
 
 export const STD_MODULES: StdModuleMeta[] = [
 	{
+		name: 'foundation',
+		tagline: 'Foundation types and Array/String extensions, independent of io and log.',
+		primaryExport: 'Result',
+		whenToUse:
+			'Reach for @std/foundation when building a target prelude or a library that must not pull console or logging runtime code. It declares the language catalog and the Array/String extension methods; the stock prelude re-exports it.',
+		capabilities: ['Int/Float/Bool/String/Array/Map/Set', 'Result/Iterator/Iterable', 'Array/String extensions'],
+		quickstart:
+			'import { Result } from "@std/foundation";\n\nfn Main(): Int {\n    let hit = [1, 2, 3].find((n: Int): Bool => n == 2);\n    return hit ?? -1;\n}\n'
+	},
+	{
 		name: 'prelude',
 		tagline: 'Implicit scope: foundation types, root intrinsics, and Array/String extensions.',
-		primaryExport: 'Option',
+		primaryExport: 'Result',
 		whenToUse:
-			'The prelude is already imported everywhere: every file sees Option, Result, Array, Map, print, assert, and the Array/String extension methods with no import. Reference @std/prelude explicitly only to disambiguate a shadowed name.',
-		capabilities: ['Int/Float/Bool/String/Array/Map/Set', 'print/assert/typeOf intrinsics', 'Option/Result/Iterator', 'Array/String extensions'],
+			'The prelude is already imported everywhere: every file sees the foundation types, Date, Promise, Map, print, assert, and the Array/String extension methods with no import. Reference @std/prelude explicitly only to disambiguate a shadowed name.',
+		capabilities: ['Foundation re-exports', 'Date and promise re-exports', 'print/assert/typeOf intrinsics', 'Array/String extensions'],
 		quickstart: QUICKSTART_PRELUDE
+	},
+	{
+		name: 'async',
+		tagline: 'Promises, settlement handles, and async result records.',
+		primaryExport: 'Promise',
+		whenToUse:
+			'Reach for @std/async when a function returns a value later: an async fn returns a Promise, await settles it, and the combinators in this package run several promises together. The stock prelude re-exports the types, so desktop programs need no import.',
+		capabilities: ['Promise', 'PromiseWithResolvers', 'PromiseResult', 'all/allSettled/race combinators']
 	},
 	{
 		name: 'bytes',
@@ -273,12 +291,36 @@ export const STD_MODULES: StdModuleMeta[] = [
 		quickstart: QUICKSTART_NET
 	},
 	{
+		name: 'log',
+		tagline: 'Leveled logging macros that write to stderr.',
+		primaryExport: 'info',
+		whenToUse:
+			'Reach for @std/log when diagnostics need severities and a runtime threshold. The macros format like @std/io, honor RNX_LOG, and keep stdout for program data. The stock prelude re-exports them.',
+		capabilities: ['log/debug/info/warn/error macros', 'RNX_LOG threshold', 'stderr output']
+	},
+	{
 		name: 'io',
 		tagline: 'Terminal streams, pretty-printing, line input, and raw mode.',
 		primaryExport: 'io',
 		whenToUse:
 			'Reach for @std/io when a program talks to the terminal: write and writeError for color-aware pretty-printing with newlines, writeRaw for exact bytes, read and readLine for input, width and height for layout, colorProfile for the ColorLevel tier, setRawMode for character-at-a-time input. File I/O stays in @std/fs.',
 		capabilities: ['Color-aware pretty-printing', 'stdin/stdout/stderr handles', 'Line input and size queries', 'Raw mode toggling']
+	},
+	{
+		name: 'uefi',
+		tagline: 'Console output for x86_64-unknown-uefi applications.',
+		primaryExport: 'println',
+		whenToUse:
+			'Reach for @std/uefi in a firmware application built with rnx build --target x86_64-unknown-uefi. println! renders its arguments and writes one line to ConOut and to COM1, so a qemu serial capture sees the same text the screen shows.',
+		capabilities: ['println! call macro', 'ConOut UTF-16 writes', 'COM1 capture fallback']
+	},
+	{
+		name: 'wasi',
+		tagline: 'Prelude and console output for wasm32-unknown-wasi modules.',
+		primaryExport: 'println',
+		whenToUse:
+			'@std/wasi is the prelude for a WASI command module built with rnx build --target wasm32-unknown-wasi. println! and eprintln! render their arguments and write through wasi_snapshot_preview1.fd_write on descriptor 1 or 2, so the host captures exactly those bytes.',
+		capabilities: ['println! and eprintln! call macros', 'fd_write console output', 'proc_exit status']
 	}
 ];
 

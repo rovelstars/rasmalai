@@ -449,6 +449,7 @@ fn render_lenient_errors(
                 decls: Vec::new(),
                 docs: String::new(),
                 warnings: Vec::new(),
+                explicit_std_collections: false,
             },
         ));
     }

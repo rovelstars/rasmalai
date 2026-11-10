@@ -16,6 +16,7 @@ core*
 !compiler/cli/tests/corelang.rs
 *.profraw
 compiler/runtime/bundle/Cargo.lock
+compiler/runtime/uefi/Cargo.lock
 benches/data/benchmarks.json
 website/src/lib/benchmarks/pareto.json
 website/static/data/

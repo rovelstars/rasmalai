@@ -148,7 +148,17 @@ fn stmt(node: A::Stmt) -> A::Spanned<A::Stmt> {
 }
 
 fn print_stmt(args: Vec<A::Spanned<A::Expr>>) -> A::Spanned<A::Stmt> {
-    stmt(A::Stmt::Expr(call("print", args)))
+    stmt(A::Stmt::Expr(call(
+        "std.io.println",
+        vec![sp(
+            A::Expr::Array(
+                args.into_iter()
+                    .map(|expr| A::ArrayElem { spread: false, expr })
+                    .collect(),
+            ),
+            Z,
+        )],
+    )))
 }
 
 fn counter(name: &str) -> A::Spanned<A::Stmt> {
@@ -396,6 +406,7 @@ pub fn synthesize_main(names: &[String], files: &[(String, String)]) -> A::Spann
             is_static: false,
             is_test: false,
             is_bench: false,
+            is_macro: false,
             body: A::FnBody::Block(A::Block { stmts }),
             attrs: Vec::new(),
         }),
