@@ -36,6 +36,8 @@ editors/zed/grammars/rasmalai/src/node-types.json
 # Web & WASM
 node_modules/
 **/node_modules/
+# The site builds with npm; a stray Bun lockfile is not a source of truth.
+website/bun.lock
 .svelte-kit/
 build/
 **/*.wasm
