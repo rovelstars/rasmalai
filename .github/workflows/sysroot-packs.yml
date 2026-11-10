@@ -29,7 +29,7 @@ on:
         description: Which pack leg to run
         type: choice
         default: all
-        options: [all, musl, uefi, wasi]
+        options: [all, musl, uefi, wasi, consume]
 
 permissions:
   contents: read
@@ -396,7 +396,7 @@ jobs:
 
   consume:
     name: pull from GHCR
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.leg == 'all')
+    if: always() && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.leg == 'all' || inputs.leg == 'consume')
     needs: [musl, uefi, wasi]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
