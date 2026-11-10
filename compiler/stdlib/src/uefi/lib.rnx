@@ -22,7 +22,6 @@
 //!     return 0;
 //! }
 //! ```
-
 import {
     fn __rnx_uefi_println(args: Array): Void,
     fn __rnx_uefi_write(text: String): Void

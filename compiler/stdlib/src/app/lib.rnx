@@ -8,10 +8,39 @@
 //! An app owns its surface. `App.frame` builds a tree and encodes a display
 //! list; `App.tick` hands that list to the renderer and returns the pixels. No
 //! frame, damage, or present call reaches app code.
-
 import { ByteBuffer } from "@std/bytes"
 import { Map } from "@std/collections"
-import { Build, Camera, Crossfade, Damage, Display, DisplayList, FontFace, FontRegistry, FrameClock, FramePacket, Key, Node, Page, Painter, Presence, Reactive, RichRows, Role, Shortcuts, Text, TextEngine, TextRow, TextRun, TextSpan, Theme, Transition, Tree, View, rgba } from "@std/ui"
+import {
+    Build,
+    Camera,
+    Crossfade,
+    Damage,
+    Display,
+    DisplayList,
+    FontFace,
+    FontRegistry,
+    FrameClock,
+    FramePacket,
+    Key,
+    Node,
+    Page,
+    Painter,
+    Presence,
+    Reactive,
+    RichRows,
+    Role,
+    Shortcuts,
+    Text,
+    TextEngine,
+    TextRow,
+    TextRun,
+    TextSpan,
+    Theme,
+    Transition,
+    Tree,
+    View,
+    rgba
+} from "@std/ui"
 import { Clock } from "@std/time"
 import { Env } from "@std/env"
 import { Thread } from "@std/sync"
@@ -80,8 +109,12 @@ pub enum Renderer {
 }
 
 fn rendererId(r: Renderer): Int {
-    if r == Renderer.vulkan { return 1 }
-    if r == Renderer.gles { return 2 }
+    if r == Renderer.vulkan {
+        return 1
+    }
+    if r == Renderer.gles {
+        return 2
+    }
     return 0
 }
 
@@ -131,15 +164,13 @@ fn registerFont(face: FontFace): Bool {
             Pointer.fromAddress<Byte>(name.address()),
             name.length(),
             Pointer.fromAddress<Byte>(face.data.address()),
-            face.data.length(),
-        )
+            face.data.length(),)
         hostRc = hostRegisterFont(
             face.id,
             Pointer.fromAddress<Byte>(name.address()),
             name.length(),
             Pointer.fromAddress<Byte>(face.data.address()),
-            face.data.length(),
-        )
+            face.data.length(),)
     }
     return cpuRc == 0 && hostRc == 0
 }
@@ -232,41 +263,22 @@ class ParleyText {
         maxWidth: Float,
         wrap: Bool,
         maxLines: Int,
-        ellipsis: Bool
-    ): Array<TextRow> {
-        let rows: Array<TextRow> = []
-        if s == "" {
-            return rows
-        }
-        let bytes: ByteBuffer = ByteBuffer.fromString(s)
-        let wf = 0
-        if wrap {
-            wf = 1
-        }
-        let ef = 0
-        if ellipsis {
-            ef = 1
-        }
-        let n = 0
-        this.ensure(16 * 24)
-        unsafe {
-            n = parleyLayout(
-                Pointer.fromAddress<Byte>(bytes.address()),
-                bytes.length(),
-                size,
-                maxWidth,
-                maxLines,
-                wf,
-                ef,
-                Pointer.fromAddress<Byte>(this.buf.address()),
-                this.buf.length(),
-            )
-        }
-        if n <= 0 {
-            return rows
-        }
-        if n * 24 > this.buf.length() {
-            this.ensure(n * 24)
+        ellipsis: Bool): Array<TextRow> {
+            let rows: Array<TextRow> = []
+            if s == "" {
+                return rows
+            }
+            let bytes: ByteBuffer = ByteBuffer.fromString(s)
+            let wf = 0
+            if wrap {
+                wf = 1
+            }
+            let ef = 0
+            if ellipsis {
+                ef = 1
+            }
+            let n = 0
+            this.ensure(16 * 24)
             unsafe {
                 n = parleyLayout(
                     Pointer.fromAddress<Byte>(bytes.address()),
@@ -277,38 +289,53 @@ class ParleyText {
                     wf,
                     ef,
                     Pointer.fromAddress<Byte>(this.buf.address()),
-                    this.buf.length(),
-                )
+                    this.buf.length(),)
             }
             if n <= 0 {
                 return rows
             }
-        }
-        let i = 0
-        while i < n {
-            let o = i * 24
-            let start = this.buf.readUInt32LE(o)
-            let end = this.buf.readUInt32LE(o + 4)
-            let flags = this.buf.readUInt32LE(o + 8)
-            let width = this.buf.readFloat32LE(o + 12)
-            let height = this.buf.readFloat32LE(o + 16)
-            let baseline = this.buf.readFloat32LE(o + 20)
-            let text = s.slice(start, end)
-            let ellipsized = (flags & 1) != 0
-            if ellipsized {
-                text = text + "…"
+            if n * 24 > this.buf.length() {
+                this.ensure(n * 24)
+                unsafe {
+                    n = parleyLayout(
+                        Pointer.fromAddress<Byte>(bytes.address()),
+                        bytes.length(),
+                        size,
+                        maxWidth,
+                        maxLines,
+                        wf,
+                        ef,
+                        Pointer.fromAddress<Byte>(this.buf.address()),
+                        this.buf.length(),)
+                }
+                if n <= 0 {
+                    return rows
+                }
             }
-            rows.push(TextRow(
-                text: text,
-                width: width,
-                height: height,
-                baseline: baseline,
-                ellipsized: ellipsized,
-            ))
-            i += 1
+            let i = 0
+            while i < n {
+                let o = i * 24
+                let start = this.buf.readUInt32LE(o)
+                let end = this.buf.readUInt32LE(o + 4)
+                let flags = this.buf.readUInt32LE(o + 8)
+                let width = this.buf.readFloat32LE(o + 12)
+                let height = this.buf.readFloat32LE(o + 16)
+                let baseline = this.buf.readFloat32LE(o + 20)
+                let text = s.slice(start, end)
+                let ellipsized = (flags & 1) != 0
+                if ellipsized {
+                    text = text + "…"
+                }
+                rows.push(TextRow(
+                    text: text,
+                    width: width,
+                    height: height,
+                    baseline: baseline,
+                    ellipsized: ellipsized,))
+                i += 1
+            }
+            return rows
         }
-        return rows
-    }
 
     fn rowsStyled(
         s: String,
@@ -320,52 +347,29 @@ class ParleyText {
         weight: Int,
         italic: Bool,
         lineHeight: Float,
-        tracking: Float
-    ): Array<TextRow> {
-        let rows: Array<TextRow> = []
-        if s == "" {
-            return rows
-        }
-        if weight == 400 && !italic && lineHeight == 0.0 && tracking == 0.0 {
-            return this.rows(s, size, maxWidth, wrap, maxLines, ellipsis)
-        }
-        let bytes: ByteBuffer = ByteBuffer.fromString(s)
-        let wf = 0
-        if wrap {
-            wf = 1
-        }
-        let ef = 0
-        if ellipsis {
-            ef = 1
-        }
-        let style = 0
-        if italic {
-            style = 1
-        }
-        let n = 0
-        this.ensure(16 * 24)
-        unsafe {
-            n = parleyLayoutStyled(
-                Pointer.fromAddress<Byte>(bytes.address()),
-                bytes.length(),
-                size,
-                maxWidth,
-                maxLines,
-                wf,
-                ef,
-                weight,
-                style,
-                lineHeight,
-                tracking,
-                Pointer.fromAddress<Byte>(this.buf.address()),
-                this.buf.length(),
-            )
-        }
-        if n <= 0 {
-            return rows
-        }
-        if n * 24 > this.buf.length() {
-            this.ensure(n * 24)
+        tracking: Float): Array<TextRow> {
+            let rows: Array<TextRow> = []
+            if s == "" {
+                return rows
+            }
+            if weight == 400 && !italic && lineHeight == 0.0 && tracking == 0.0 {
+                return this.rows(s, size, maxWidth, wrap, maxLines, ellipsis)
+            }
+            let bytes: ByteBuffer = ByteBuffer.fromString(s)
+            let wf = 0
+            if wrap {
+                wf = 1
+            }
+            let ef = 0
+            if ellipsis {
+                ef = 1
+            }
+            let style = 0
+            if italic {
+                style = 1
+            }
+            let n = 0
+            this.ensure(16 * 24)
             unsafe {
                 n = parleyLayoutStyled(
                     Pointer.fromAddress<Byte>(bytes.address()),
@@ -380,38 +384,57 @@ class ParleyText {
                     lineHeight,
                     tracking,
                     Pointer.fromAddress<Byte>(this.buf.address()),
-                    this.buf.length(),
-                )
+                    this.buf.length(),)
             }
             if n <= 0 {
                 return rows
             }
-        }
-        let i = 0
-        while i < n {
-            let o = i * 24
-            let start = this.buf.readUInt32LE(o)
-            let end = this.buf.readUInt32LE(o + 4)
-            let flags = this.buf.readUInt32LE(o + 8)
-            let width = this.buf.readFloat32LE(o + 12)
-            let height = this.buf.readFloat32LE(o + 16)
-            let baseline = this.buf.readFloat32LE(o + 20)
-            let text = s.slice(start, end)
-            let ellipsized = (flags & 1) != 0
-            if ellipsized {
-                text = text + "…"
+            if n * 24 > this.buf.length() {
+                this.ensure(n * 24)
+                unsafe {
+                    n = parleyLayoutStyled(
+                        Pointer.fromAddress<Byte>(bytes.address()),
+                        bytes.length(),
+                        size,
+                        maxWidth,
+                        maxLines,
+                        wf,
+                        ef,
+                        weight,
+                        style,
+                        lineHeight,
+                        tracking,
+                        Pointer.fromAddress<Byte>(this.buf.address()),
+                        this.buf.length(),)
+                }
+                if n <= 0 {
+                    return rows
+                }
             }
-            rows.push(TextRow(
-                text: text,
-                width: width,
-                height: height,
-                baseline: baseline,
-                ellipsized: ellipsized,
-            ))
-            i += 1
+            let i = 0
+            while i < n {
+                let o = i * 24
+                let start = this.buf.readUInt32LE(o)
+                let end = this.buf.readUInt32LE(o + 4)
+                let flags = this.buf.readUInt32LE(o + 8)
+                let width = this.buf.readFloat32LE(o + 12)
+                let height = this.buf.readFloat32LE(o + 16)
+                let baseline = this.buf.readFloat32LE(o + 20)
+                let text = s.slice(start, end)
+                let ellipsized = (flags & 1) != 0
+                if ellipsized {
+                    text = text + "…"
+                }
+                rows.push(TextRow(
+                    text: text,
+                    width: width,
+                    height: height,
+                    baseline: baseline,
+                    ellipsized: ellipsized,))
+                i += 1
+            }
+            return rows
         }
-        return rows
-    }
 
     fn richRows(
         s: String,
@@ -421,67 +444,45 @@ class ParleyText {
         maxLines: Int,
         ellipsis: Bool,
         spans: Array<TextSpan>,
-        lineHeight: Float
-    ): RichRows {
-        let rows: Array<TextRow> = []
-        let runs: Array<TextRun> = []
-        if s == "" {
-            return new RichRows(rows, runs)
-        }
-        let bytes: ByteBuffer = ByteBuffer.fromString(s)
-        let spanCap = spans.length() * 32
-        if spanCap == 0 {
-            spanCap = 1
-        }
-        let spanBuf: ByteBuffer = ByteBuffer.allocate(spanCap)
-        let si = 0
-        while si < spans.length() {
-            let o = si * 32
-            spanBuf.writeUInt32LE(o, spans[si].start)
-            spanBuf.writeUInt32LE(o + 4, spans[si].end)
-            spanBuf.writeInt32LE(o + 8, spans[si].weight)
-            let italic = 0
-            if spans[si].italic {
-                italic = 1
+        lineHeight: Float): RichRows {
+            let rows: Array<TextRow> = []
+            let runs: Array<TextRun> = []
+            if s == "" {
+                return new RichRows(rows, runs)
             }
-            spanBuf.writeUInt32LE(o + 12, italic)
-            spanBuf.writeFloat64LE(o + 16, spans[si].tracking)
-            let style = spans[si].fontFamilyId() + spans[si].decorationBits() * 256
-            spanBuf.writeUInt32LE(o + 24, style)
-            spanBuf.writeUInt32LE(o + 28, 0)
-            si += 1
-        }
-        let wf = 0
-        if wrap {
-            wf = 1
-        }
-        let ef = 0
-        if ellipsis {
-            ef = 1
-        }
-        let n = 0
-        this.ensure(16)
-        unsafe {
-            n = parleyLayoutRich(
-                Pointer.fromAddress<Byte>(bytes.address()),
-                bytes.length(),
-                size,
-                maxWidth,
-                maxLines,
-                wf,
-                ef,
-                lineHeight,
-                Pointer.fromAddress<Byte>(spanBuf.address()),
-                spans.length(),
-                Pointer.fromAddress<Byte>(this.buf.address()),
-                this.buf.length(),
-            )
-        }
-        if n <= 0 {
-            return new RichRows(rows, runs)
-        }
-        if n > this.buf.length() {
-            this.ensure(n)
+            let bytes: ByteBuffer = ByteBuffer.fromString(s)
+            let spanCap = spans.length() * 32
+            if spanCap == 0 {
+                spanCap = 1
+            }
+            let spanBuf: ByteBuffer = ByteBuffer.allocate(spanCap)
+            let si = 0
+            while si < spans.length() {
+                let o = si * 32
+                spanBuf.writeUInt32LE(o, spans[si].start)
+                spanBuf.writeUInt32LE(o + 4, spans[si].end)
+                spanBuf.writeInt32LE(o + 8, spans[si].weight)
+                let italic = 0
+                if spans[si].italic {
+                    italic = 1
+                }
+                spanBuf.writeUInt32LE(o + 12, italic)
+                spanBuf.writeFloat64LE(o + 16, spans[si].tracking)
+                let style = spans[si].fontFamilyId() + spans[si].decorationBits() * 256
+                spanBuf.writeUInt32LE(o + 24, style)
+                spanBuf.writeUInt32LE(o + 28, 0)
+                si += 1
+            }
+            let wf = 0
+            if wrap {
+                wf = 1
+            }
+            let ef = 0
+            if ellipsis {
+                ef = 1
+            }
+            let n = 0
+            this.ensure(16)
             unsafe {
                 n = parleyLayoutRich(
                     Pointer.fromAddress<Byte>(bytes.address()),
@@ -495,55 +496,72 @@ class ParleyText {
                     Pointer.fromAddress<Byte>(spanBuf.address()),
                     spans.length(),
                     Pointer.fromAddress<Byte>(this.buf.address()),
-                    this.buf.length(),
-                )
+                    this.buf.length(),)
             }
             if n <= 0 {
                 return new RichRows(rows, runs)
             }
-        }
-        let rowCount = this.buf.readUInt32LE(0)
-        let runCount = this.buf.readUInt32LE(4)
-        let ro = 16
-        let i = 0
-        while i < rowCount {
-            let o = ro + i * 24
-            let start = this.buf.readUInt32LE(o)
-            let end = this.buf.readUInt32LE(o + 4)
-            let flags = this.buf.readUInt32LE(o + 8)
-            let width = this.buf.readFloat32LE(o + 12)
-            let height = this.buf.readFloat32LE(o + 16)
-            let baseline = this.buf.readFloat32LE(o + 20)
-            let text = s.slice(start, end)
-            let ellipsized = (flags & 1) != 0
-            if ellipsized {
-                text = text + "…"
+            if n > this.buf.length() {
+                this.ensure(n)
+                unsafe {
+                    n = parleyLayoutRich(
+                        Pointer.fromAddress<Byte>(bytes.address()),
+                        bytes.length(),
+                        size,
+                        maxWidth,
+                        maxLines,
+                        wf,
+                        ef,
+                        lineHeight,
+                        Pointer.fromAddress<Byte>(spanBuf.address()),
+                        spans.length(),
+                        Pointer.fromAddress<Byte>(this.buf.address()),
+                        this.buf.length(),)
+                }
+                if n <= 0 {
+                    return new RichRows(rows, runs)
+                }
             }
-            rows.push(TextRow(
-                text: text,
-                width: width,
-                height: height,
-                baseline: baseline,
-                ellipsized: ellipsized,
-            ))
-            i += 1
+            let rowCount = this.buf.readUInt32LE(0)
+            let runCount = this.buf.readUInt32LE(4)
+            let ro = 16
+            let i = 0
+            while i < rowCount {
+                let o = ro + i * 24
+                let start = this.buf.readUInt32LE(o)
+                let end = this.buf.readUInt32LE(o + 4)
+                let flags = this.buf.readUInt32LE(o + 8)
+                let width = this.buf.readFloat32LE(o + 12)
+                let height = this.buf.readFloat32LE(o + 16)
+                let baseline = this.buf.readFloat32LE(o + 20)
+                let text = s.slice(start, end)
+                let ellipsized = (flags & 1) != 0
+                if ellipsized {
+                    text = text + "…"
+                }
+                rows.push(TextRow(
+                    text: text,
+                    width: width,
+                    height: height,
+                    baseline: baseline,
+                    ellipsized: ellipsized,))
+                i += 1
+            }
+            let runBase = 16 + rowCount * 24
+            let ri = 0
+            while ri < runCount {
+                let o = runBase + ri * 32
+                runs.push(new TextRun(
+                    row: this.buf.readUInt32LE(o),
+                    start: this.buf.readUInt32LE(o + 4),
+                    end: this.buf.readUInt32LE(o + 8),
+                    x: this.buf.readFloat32LE(o + 16),
+                    advance: this.buf.readFloat32LE(o + 20),
+                    flags: this.buf.readUInt32LE(o + 12),))
+                ri += 1
+            }
+            return new RichRows(rows, runs)
         }
-        let runBase = 16 + rowCount * 24
-        let ri = 0
-        while ri < runCount {
-            let o = runBase + ri * 32
-            runs.push(new TextRun(
-                row: this.buf.readUInt32LE(o),
-                start: this.buf.readUInt32LE(o + 4),
-                end: this.buf.readUInt32LE(o + 8),
-                x: this.buf.readFloat32LE(o + 16),
-                advance: this.buf.readFloat32LE(o + 20),
-                flags: this.buf.readUInt32LE(o + 12),
-            ))
-            ri += 1
-        }
-        return new RichRows(rows, runs)
-    }
 }
 
 /** The app's one window. On runixOS, the surface socket owns the surface, not the app. */
@@ -690,7 +708,6 @@ pub class Frame {
     pub fn bytes(): Int {
         return this.list.length()
     }
-
 }
 
 fn pngCopy(dst: ByteBuffer, dAt: Int, src: ByteBuffer, sAt: Int, n: Int) {
@@ -759,7 +776,9 @@ fn encodePngRgba(width: Int, height: Int, pixels: ByteBuffer): ByteBuffer {
     let off = 0
     while off < n {
         let len = n - off
-        if len > 65535 { len = 65535 }
+        if len > 65535 {
+            len = 65535
+        }
         let final = off + len >= n
         if final {
             z.writeUInt8(p, 1)
@@ -832,8 +851,7 @@ pub class Surface {
                 this.height,
                 Pointer.fromAddress<Byte>(this.list.address()),
                 this.list.length(),
-                Pointer.fromAddress<Byte>(this.pixels.address()),
-            )
+                Pointer.fromAddress<Byte>(this.pixels.address()),)
         }
         if rc == -2 || rc == -3 || rc == -5 || rc == -7 || rc == -8 || rc == -9 {
             rc = this.drawCpu()
@@ -852,8 +870,7 @@ pub class Surface {
                 this.height,
                 Pointer.fromAddress<Byte>(this.list.address()),
                 this.list.length(),
-                Pointer.fromAddress<Byte>(this.pixels.address()),
-            )
+                Pointer.fromAddress<Byte>(this.pixels.address()),)
         }
         if rc == 0 {
             this.usedBackend = 2
@@ -906,8 +923,7 @@ pub class Surface {
             this.pixels.readUInt8(at),
             this.pixels.readUInt8(at + 1),
             this.pixels.readUInt8(at + 2),
-            this.pixels.readUInt8(at + 3),
-        )
+            this.pixels.readUInt8(at + 3),)
     }
 
     pub fn records(): Int {
@@ -1045,19 +1061,25 @@ pub class WindowSet {
 
     pub fn titleOf(id: Int): String {
         let at = this.indexOf(id)
-        if at < 0 { return "" }
+        if at < 0 {
+            return ""
+        }
         return this.titles[at]
     }
 
     pub fn widthOf(id: Int): Int {
         let at = this.indexOf(id)
-        if at < 0 { return 0 }
+        if at < 0 {
+            return 0
+        }
         return this.widths[at]
     }
 
     pub fn heightOf(id: Int): Int {
         let at = this.indexOf(id)
-        if at < 0 { return 0 }
+        if at < 0 {
+            return 0
+        }
         return this.heights[at]
     }
 
@@ -1072,7 +1094,9 @@ pub class WindowSet {
 
     pub fn visibleAt(id: Int): Bool {
         let at = this.indexOf(id)
-        if at < 0 { return false }
+        if at < 0 {
+            return false
+        }
         return this.visible[at]
     }
 
@@ -1096,7 +1120,9 @@ pub class WindowSet {
 
     pub fn suspendedAt(id: Int): Bool {
         let at = this.indexOf(id)
-        if at < 0 { return true }
+        if at < 0 {
+            return true
+        }
         return this.paused[at]
     }
 
@@ -1112,7 +1138,9 @@ pub class WindowSet {
 
     pub fn framesOf(id: Int): Int {
         let at = this.indexOf(id)
-        if at < 0 { return 0 }
+        if at < 0 {
+            return 0
+        }
         return this.frames[at]
     }
 }
@@ -1139,8 +1167,12 @@ pub class Gamepad {
             this.axes.push(0.0)
         }
         let v = Float(raw) / 32767.0
-        if v < -1.0 { v = -1.0 }
-        if v > 1.0 { v = 1.0 }
+        if v < -1.0 {
+            v = -1.0
+        }
+        if v > 1.0 {
+            v = 1.0
+        }
         this.axes[i] = v
     }
 
@@ -1238,69 +1270,108 @@ pub class A11yNode {
         labelValue: Int = 0,
         describedByValue: Int = 0,
         controlsValue: Int = 0,
-        announceValue: Int = 0
-    ) {
-        this.id = nodeId
-        this.parent = nodeParent
-        this.role = nodeRole
-        this.roleId = nodeRoleId
-        this.name = nodeName
-        this.value = nodeValue
-        this.x = bx
-        this.y = by
-        this.w = bw
-        this.h = bh
-        this.actions = mask
-        this.checked = isChecked
-        this.disabled = isDisabled
-        this.focused = isFocused
-        this.inert = isInert
-        this.selected = isSelected
-        this.expanded = expandedValue
-        this.busy = isBusy
-        this.required = isRequired
-        this.invalid = invalidValue
-        this.level = levelValue
-        this.live = liveValue
-        this.description = nodeDescription
-        this.valueMin = minValue
-        this.valueMax = maxValue
-        this.valueStep = stepValue
-        this.labelId = labelValue
-        this.describedById = describedByValue
-        this.controlsId = controlsValue
-        this.announceSeq = announceValue
-    }
+        announceValue: Int = 0) {
+            this.id = nodeId
+            this.parent = nodeParent
+            this.role = nodeRole
+            this.roleId = nodeRoleId
+            this.name = nodeName
+            this.value = nodeValue
+            this.x = bx
+            this.y = by
+            this.w = bw
+            this.h = bh
+            this.actions = mask
+            this.checked = isChecked
+            this.disabled = isDisabled
+            this.focused = isFocused
+            this.inert = isInert
+            this.selected = isSelected
+            this.expanded = expandedValue
+            this.busy = isBusy
+            this.required = isRequired
+            this.invalid = invalidValue
+            this.level = levelValue
+            this.live = liveValue
+            this.description = nodeDescription
+            this.valueMin = minValue
+            this.valueMax = maxValue
+            this.valueStep = stepValue
+            this.labelId = labelValue
+            this.describedById = describedByValue
+            this.controlsId = controlsValue
+            this.announceSeq = announceValue
+        }
 
     pub fn can(a: String): Bool {
-        if a == "tap" { return (this.actions & 1) != 0 }
-        if a == "toggle" { return (this.actions & 2) != 0 }
-        if a == "setValue" { return (this.actions & 4) != 0 }
-        if a == "dismiss" { return (this.actions & 8) != 0 }
+        if a == "tap" {
+            return (this.actions & 1) != 0
+        }
+        if a == "toggle" {
+            return (this.actions & 2) != 0
+        }
+        if a == "setValue" {
+            return (this.actions & 4) != 0
+        }
+        if a == "dismiss" {
+            return (this.actions & 8) != 0
+        }
         return false
     }
 
     pub fn describe(): String {
         let out = this.role + " \"" + this.name + "\" [" + this.x.toString() + "," + this.y.toString() + " " + this.w.toString() + "x" + this.h.toString() + "]"
-        if this.value != "" { out = out + " value=" + this.value }
-        if this.checked { out = out + " checked" }
-        if this.disabled { out = out + " disabled" }
-        if this.focused { out = out + " focused" }
-        if this.inert { out = out + " inert" }
-        if this.selected { out = out + " selected" }
-        if this.expanded >= 0 { out = out + " expanded=" + this.expanded.toString() }
-        if this.busy { out = out + " busy" }
-        if this.required { out = out + " required" }
-        if this.invalid != 0 { out = out + " invalid=" + this.invalid.toString() }
-        if this.level != 0 { out = out + " level=" + this.level.toString() }
-        if this.live != 0 { out = out + " live=" + this.live.toString() }
-        if this.description != "" { out = out + " description=" + this.description }
+        if this.value != "" {
+            out = out + " value=" + this.value
+        }
+        if this.checked {
+            out = out + " checked"
+        }
+        if this.disabled {
+            out = out + " disabled"
+        }
+        if this.focused {
+            out = out + " focused"
+        }
+        if this.inert {
+            out = out + " inert"
+        }
+        if this.selected {
+            out = out + " selected"
+        }
+        if this.expanded >= 0 {
+            out = out + " expanded=" + this.expanded.toString()
+        }
+        if this.busy {
+            out = out + " busy"
+        }
+        if this.required {
+            out = out + " required"
+        }
+        if this.invalid != 0 {
+            out = out + " invalid=" + this.invalid.toString()
+        }
+        if this.level != 0 {
+            out = out + " level=" + this.level.toString()
+        }
+        if this.live != 0 {
+            out = out + " live=" + this.live.toString()
+        }
+        if this.description != "" {
+            out = out + " description=" + this.description
+        }
         if this.valueMax > this.valueMin {
             out = out + " range=" + this.valueMin.toString() + ".." + this.valueMax.toString() + "/" + this.valueStep.toString()
         }
-        if this.can("tap") { out = out + " tap" }
-        if this.can("toggle") { out = out + " toggle" }
-        if this.can("setValue") { out = out + " setValue" }
+        if this.can("tap") {
+            out = out + " tap"
+        }
+        if this.can("toggle") {
+            out = out + " toggle"
+        }
+        if this.can("setValue") {
+            out = out + " setValue"
+        }
         return out
     }
 }
@@ -1364,13 +1435,27 @@ fn a11yPacket(nodes: Array<A11yNode>): ByteBuffer {
         buf.writeInt32LE(o + 24, n.h)
         buf.writeUInt32LE(o + 28, n.actions)
         let flags = 0
-        if n.checked { flags += 1 }
-        if n.disabled { flags += 2 }
-        if n.focused { flags += 4 }
-        if n.inert { flags += 8 }
-        if n.selected { flags += 16 }
-        if n.busy { flags += 32 }
-        if n.required { flags += 64 }
+        if n.checked {
+            flags += 1
+        }
+        if n.disabled {
+            flags += 2
+        }
+        if n.focused {
+            flags += 4
+        }
+        if n.inert {
+            flags += 8
+        }
+        if n.selected {
+            flags += 16
+        }
+        if n.busy {
+            flags += 32
+        }
+        if n.required {
+            flags += 64
+        }
         buf.writeUInt32LE(o + 32, flags)
         buf.writeUInt32LE(o + 36, at)
         let nl = buf.writeString(at, n.name)
@@ -1452,8 +1537,7 @@ pub class Accessibility {
             t.labelIdOf(id),
             t.describedByIdOf(id),
             t.controlsIdOf(id),
-            0
-        ))
+            0))
         let role = t.role[id]
         if role == 5 || role == 11 {
             let rects = t.linkRects(id)
@@ -1500,8 +1584,7 @@ pub class Accessibility {
                     0,
                     0,
                     0,
-                    0
-                ))
+                    0))
                 this.linkSeq += 1
                 i += 1
             }
@@ -1597,9 +1680,15 @@ pub class AppConfig {
         return new AppConfig(title, 760, 560, Appearance.system, "src/main.rnx")
     }
 
-    pub fn titleText(): String { return this.title }
-    pub fn widthValue(): Int { return this.width }
-    pub fn heightValue(): Int { return this.height }
+    pub fn titleText(): String {
+        return this.title
+    }
+    pub fn widthValue(): Int {
+        return this.width
+    }
+    pub fn heightValue(): Int {
+        return this.height
+    }
 
     /** Resolve the appearance against a desktop preference. */
     pub fn theme(systemDark: Bool): Theme {
@@ -1835,9 +1924,10 @@ fn viewRouteParams(pattern: String, path: String): Map<String, String> {
  */
 pub class RouteMatch {
     let fullPathV: String
-    let paramMapV: Map<String, String>
-    let restV: Array<String>
-    let childrenV: Array<Route>
+    let paramMapV: Map < String,
+    String >
+    let restV: Array < String >
+    let childrenV: Array < Route >
     let buildV: fn(RouteMatch): View
     let matchedV: Bool
 
@@ -1847,15 +1937,14 @@ pub class RouteMatch {
         rest: Array<String>,
         children: Array<Route>,
         build: fn(RouteMatch): View,
-        matched: Bool
-    ) {
-        this.fullPathV = fullPath
-        this.paramMapV = paramMap
-        this.restV = rest
-        this.childrenV = children
-        this.buildV = build
-        this.matchedV = matched
-    }
+        matched: Bool) {
+            this.fullPathV = fullPath
+            this.paramMapV = paramMap
+            this.restV = rest
+            this.childrenV = children
+            this.buildV = build
+            this.matchedV = matched
+        }
 
     /** The full requested path, query string included. */
     pub fn path(): String {
@@ -1888,7 +1977,7 @@ pub class RouteMatch {
 pub class Route {
     let pattern: String
     let build: fn(RouteMatch): View
-    let children: Array<Route>
+    let children: Array < Route >
 
     init(pattern: String, build: fn(RouteMatch): View, children: Array<Route> = []) {
         this.pattern = pattern
@@ -2270,7 +2359,6 @@ pub class ViewRouter {
     }
 }
 
-
 /** One transient message. */
 pub class Notice {
     let id: Int
@@ -2344,7 +2432,9 @@ pub class Notifications {
             card.fixedWidth(300)
             card.addChild(b.text(n.title))
             card.addChild(b.text(n.body))
-            card.addChild(b.button("Dismiss", () => { this.dismiss(n.id) }))
+            card.addChild(b.button("Dismiss", () => {
+                this.dismiss(n.id)
+            }))
             col.addChild(card)
             i += 1
         }
@@ -2395,7 +2485,7 @@ pub class AppBundle {
     let name: String
     let version: String
     let entry: String
-    let capabilities: Array<String>
+    let capabilities: Array < String >
 
     init(name: String, version: String, entry: String, capabilities: Array<String>) {
         this.name = name
@@ -2506,15 +2596,12 @@ pub class App {
             (s: String, size: Float): Float => text.measure(s, size),
             (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool): Array<TextRow> => text.rows(s, size, width, wrap, lines, ell),
             (s: String, at: Int): Int => text.nextGrapheme(s, at),
-            (s: String, at: Int): Int => text.prevGrapheme(s, at),
-        )
+            (s: String, at: Int): Int => text.prevGrapheme(s, at),)
         this.textEngine.setStyled(
             (s: String, size: Float, weight: Int, italic: Bool, tracking: Float): Float => text.measureStyled(s, size, weight, italic, tracking),
-            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool, weight: Int, italic: Bool, lineHeight: Float, tracking: Float): Array<TextRow> => text.rowsStyled(s, size, width, wrap, lines, ell, weight, italic, lineHeight, tracking),
-        )
+            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool, weight: Int, italic: Bool, lineHeight: Float, tracking: Float): Array<TextRow> => text.rowsStyled(s, size, width, wrap, lines, ell, weight, italic, lineHeight, tracking),)
         this.textEngine.setRich(
-            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool, spans: Array<TextSpan>, lineHeight: Float): RichRows => text.richRows(s, size, width, wrap, lines, ell, spans, lineHeight),
-        )
+            (s: String, size: Float, width: Float, wrap: Bool, lines: Int, ell: Bool, spans: Array<TextSpan>, lineHeight: Float): RichRows => text.richRows(s, size, width, wrap, lines, ell, spans, lineHeight),)
         this.rootTree = new Tree(this.textEngine)
         this.rootTree.setTheme(th)
         let app = this
@@ -2528,7 +2615,9 @@ pub class App {
                 }
             }
         })
-        this.shortcuts.bind("tab", () => { app.focusNext() })
+        this.shortcuts.bind("tab", () => {
+            app.focusNext()
+        })
         this.shortcuts.bind("shift+tab", () => {
             let prev = app.rootTree.focusPrev()
             if prev != -1 {
@@ -2688,8 +2777,12 @@ pub class App {
      */
     pub fn announce(text: String, priority: Int) {
         let p = priority
-        if p < 1 { p = 1 }
-        if p > 2 { p = 2 }
+        if p < 1 {
+            p = 1
+        }
+        if p > 2 {
+            p = 2
+        }
         this.announceTextV = text
         this.announcePriorityV = p
         this.announceSeqV += 1
@@ -2729,8 +2822,7 @@ pub class App {
                 -1,
                 -1,
                 -1,
-                this.announceSeqV
-            ))
+                this.announceSeqV))
         }
         return a
     }
@@ -2997,13 +3089,21 @@ pub class App {
         }
         let t3 = Clock.mono().nanos
         let buildNs = t1 - t0
-        if buildNs < 0 { buildNs = 0 }
+        if buildNs < 0 {
+            buildNs = 0
+        }
         let layoutNs = t2 - t1
-        if layoutNs < 0 { layoutNs = 0 }
+        if layoutNs < 0 {
+            layoutNs = 0
+        }
         let paintNs = t3 - t2
-        if paintNs < 0 { paintNs = 0 }
+        if paintNs < 0 {
+            paintNs = 0
+        }
         let totalNs = t3 - t0
-        if totalNs < 0 { totalNs = 0 }
+        if totalNs < 0 {
+            totalNs = 0
+        }
         let snap = ""
         if !regions {
             snap = this.rootTree.snapshot()
@@ -3052,8 +3152,7 @@ pub class App {
                     let n = hostCapture(
                         Pointer.fromAddress<Byte>(this.hostAddr),
                         Pointer.fromAddress<Byte>(pixels.address()),
-                        pixels.length(),
-                    )
+                        pixels.length(),)
                     if n > 0 {
                         return fs.writeBytes(path, encodePngRgba(w, h, pixels), .Overwrite).isOk()
                     }
@@ -3090,8 +3189,7 @@ pub class App {
                 bytes.length(),
                 1,
                 this.window.width,
-                this.window.height,
-            )
+                this.window.height,)
         }
         if addr == 0 {
             return -2
@@ -3120,8 +3218,7 @@ pub class App {
                     Pointer.fromAddress<Byte>(pkt.address()),
                     pkt.length(),
                     Pointer.fromAddress<Byte>(dmg.address()),
-                    dn,
-                )
+                    dn,)
             }
             if rc < 0 {
                 status = rc
@@ -3231,8 +3328,7 @@ pub class App {
                 Pointer.fromAddress<Byte>(f.list.address()),
                 f.list.length(),
                 Pointer.fromAddress<Byte>(dmg.address()),
-                dn,
-            )
+                dn,)
         }
         return rc
     }
@@ -3435,32 +3531,84 @@ pub class App {
     }
 
     fn keyName(code: Int): String {
-        if code == 1 { return "escape" }
-        if code == 15 { return "tab" }
-        if code == 28 { return "enter" }
-        if code == 57 { return "space" }
-        if code == 14 { return "backspace" }
-        if code == 111 { return "delete" }
-        if code == 102 { return "home" }
-        if code == 107 { return "end" }
-        if code == 104 { return "pageup" }
-        if code == 109 { return "pagedown" }
-        if code == 103 { return "up" }
-        if code == 105 { return "left" }
-        if code == 106 { return "right" }
-        if code == 108 { return "down" }
-        if code == 59 { return "f1" }
-        if code == 60 { return "f2" }
-        if code == 61 { return "f3" }
-        if code == 62 { return "f4" }
-        if code == 63 { return "f5" }
-        if code == 64 { return "f6" }
-        if code == 65 { return "f7" }
-        if code == 66 { return "f8" }
-        if code == 67 { return "f9" }
-        if code == 68 { return "f10" }
-        if code == 87 { return "f11" }
-        if code == 88 { return "f12" }
+        if code == 1 {
+            return "escape"
+        }
+        if code == 15 {
+            return "tab"
+        }
+        if code == 28 {
+            return "enter"
+        }
+        if code == 57 {
+            return "space"
+        }
+        if code == 14 {
+            return "backspace"
+        }
+        if code == 111 {
+            return "delete"
+        }
+        if code == 102 {
+            return "home"
+        }
+        if code == 107 {
+            return "end"
+        }
+        if code == 104 {
+            return "pageup"
+        }
+        if code == 109 {
+            return "pagedown"
+        }
+        if code == 103 {
+            return "up"
+        }
+        if code == 105 {
+            return "left"
+        }
+        if code == 106 {
+            return "right"
+        }
+        if code == 108 {
+            return "down"
+        }
+        if code == 59 {
+            return "f1"
+        }
+        if code == 60 {
+            return "f2"
+        }
+        if code == 61 {
+            return "f3"
+        }
+        if code == 62 {
+            return "f4"
+        }
+        if code == 63 {
+            return "f5"
+        }
+        if code == 64 {
+            return "f6"
+        }
+        if code == 65 {
+            return "f7"
+        }
+        if code == 66 {
+            return "f8"
+        }
+        if code == 67 {
+            return "f9"
+        }
+        if code == 68 {
+            return "f10"
+        }
+        if code == 87 {
+            return "f11"
+        }
+        if code == 88 {
+            return "f12"
+        }
         return this.appKeyChar(code, false)
     }
 
@@ -3509,27 +3657,69 @@ pub class App {
         if upper != lower {
             return upper
         }
-        if lower == "1" { return "!" }
-        if lower == "2" { return "@" }
-        if lower == "3" { return "#" }
-        if lower == "4" { return "$" }
-        if lower == "5" { return "%" }
-        if lower == "6" { return "^" }
-        if lower == "7" { return "&" }
-        if lower == "8" { return "*" }
-        if lower == "9" { return "(" }
-        if lower == "0" { return ")" }
-        if lower == "-" { return "_" }
-        if lower == "=" { return "+" }
-        if lower == "[" { return "\{" }
-        if lower == "]" { return "}" }
-        if lower == ";" { return ":" }
-        if lower == "'" { return "\"" }
-        if lower == "`" { return "~" }
-        if lower == "\\" { return "|" }
-        if lower == "," { return "<" }
-        if lower == "." { return ">" }
-        if lower == "/" { return "?" }
+        if lower == "1" {
+            return "!"
+        }
+        if lower == "2" {
+            return "@"
+        }
+        if lower == "3" {
+            return "#"
+        }
+        if lower == "4" {
+            return "$"
+        }
+        if lower == "5" {
+            return "%"
+        }
+        if lower == "6" {
+            return "^"
+        }
+        if lower == "7" {
+            return "&"
+        }
+        if lower == "8" {
+            return "*"
+        }
+        if lower == "9" {
+            return "("
+        }
+        if lower == "0" {
+            return ")"
+        }
+        if lower == "-" {
+            return "_"
+        }
+        if lower == "=" {
+            return "+"
+        }
+        if lower == "[" {
+            return "\{"
+        }
+        if lower == "]" {
+            return "}"
+        }
+        if lower == ";" {
+            return ":"
+        }
+        if lower == "'" {
+            return "\""
+        }
+        if lower == "`" {
+            return "~"
+        }
+        if lower == "\\" {
+            return "|"
+        }
+        if lower == "," {
+            return "<"
+        }
+        if lower == "." {
+            return ">"
+        }
+        if lower == "/" {
+            return "?"
+        }
         return lower
     }
 
@@ -3539,10 +3729,18 @@ pub class App {
             return ""
         }
         let out = ""
-        if (this.modifiers & 1) != 0 { out = out + "ctrl+" }
-        if (this.modifiers & 2) != 0 { out = out + "alt+" }
-        if (this.modifiers & 4) != 0 { out = out + "shift+" }
-        if (this.modifiers & 8) != 0 { out = out + "meta+" }
+        if (this.modifiers & 1) != 0 {
+            out = out + "ctrl+"
+        }
+        if (this.modifiers & 2) != 0 {
+            out = out + "alt+"
+        }
+        if (this.modifiers & 4) != 0 {
+            out = out + "shift+"
+        }
+        if (this.modifiers & 8) != 0 {
+            out = out + "meta+"
+        }
         return out + name
     }
 
@@ -3676,8 +3874,7 @@ pub class App {
                 title.length(),
                 this.window.width,
                 this.window.height,
-                rendererId(this.rendererChoice),
-            )
+                rendererId(this.rendererChoice),)
             if hostWidth(host) < 0 {
                 return -1
             }
@@ -3722,8 +3919,7 @@ pub class App {
                         Pointer.fromAddress<Byte>(f.list.address()),
                         f.list.length(),
                         Pointer.fromAddress<Int>(dmg.address()),
-                        dn,
-                    )
+                        dn,)
                     dirty = false
                     if rc < 0 && rc != -4 {
                         status = rc
@@ -4062,33 +4258,79 @@ fn uiFloatOf(text: String): Float {
 }
 
 fn uiIsKey(name: String): Bool {
-    if name == "enter" { return true }
-    if name == "tab" { return true }
-    if name == "escape" { return true }
-    if name == "space" { return true }
-    if name == "up" { return true }
-    if name == "down" { return true }
-    if name == "left" { return true }
-    if name == "right" { return true }
-    if name == "backspace" { return true }
-    if name == "delete" { return true }
-    if name == "home" { return true }
-    if name == "end" { return true }
+    if name == "enter" {
+        return true
+    }
+    if name == "tab" {
+        return true
+    }
+    if name == "escape" {
+        return true
+    }
+    if name == "space" {
+        return true
+    }
+    if name == "up" {
+        return true
+    }
+    if name == "down" {
+        return true
+    }
+    if name == "left" {
+        return true
+    }
+    if name == "right" {
+        return true
+    }
+    if name == "backspace" {
+        return true
+    }
+    if name == "delete" {
+        return true
+    }
+    if name == "home" {
+        return true
+    }
+    if name == "end" {
+        return true
+    }
     return false
 }
 
 fn uiKey(name: String): Key {
-    if name == "tab" { return Key.tab }
-    if name == "escape" { return Key.escape }
-    if name == "space" { return Key.space }
-    if name == "up" { return Key.up }
-    if name == "down" { return Key.down }
-    if name == "left" { return Key.left }
-    if name == "right" { return Key.right }
-    if name == "backspace" { return Key.backspace }
-    if name == "delete" { return Key.delete }
-    if name == "home" { return Key.home }
-    if name == "end" { return Key.end }
+    if name == "tab" {
+        return Key.tab
+    }
+    if name == "escape" {
+        return Key.escape
+    }
+    if name == "space" {
+        return Key.space
+    }
+    if name == "up" {
+        return Key.up
+    }
+    if name == "down" {
+        return Key.down
+    }
+    if name == "left" {
+        return Key.left
+    }
+    if name == "right" {
+        return Key.right
+    }
+    if name == "backspace" {
+        return Key.backspace
+    }
+    if name == "delete" {
+        return Key.delete
+    }
+    if name == "home" {
+        return Key.home
+    }
+    if name == "end" {
+        return Key.end
+    }
     return Key.enter
 }
 
@@ -4931,8 +5173,12 @@ test fn scriptStepsDriveAndAssert() {
     let app = App.launch("Script", 240, 120, (b: Build): Node => {
         b.animate(false)
         let root = b.column()
-        root.addChild(b.button("Add", () => { hits[0] += 1 }))
-        root.addChild(b.textField(name[0], "name", (v: String) => { name[0] = v }))
+        root.addChild(b.button("Add", () => {
+            hits[0] += 1
+        }))
+        root.addChild(b.textField(name[0], "name", (v: String) => {
+            name[0] = v
+        }))
         return root
     })
     let ok = app.runScript("press:button:Add;key:button:Add:enter;wait:1;assert:button:Add;focus:button:Add;assertFocus:button:Add;set:textbox:name:hello;assertValue:textbox:name:hello;assertChecked:button:Add:false")

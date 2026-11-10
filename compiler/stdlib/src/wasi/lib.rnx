@@ -18,7 +18,6 @@
 //! `@std/sync` are not imported. Each one needs an operating system surface
 //! the target does not provide, so the surrounding prelude would fail the
 //! capability gate before a program got as far as linking.
-
 import {
     fn __rnx_wasi_println(args: Array): Void,
     fn __rnx_wasi_eprintln(args: Array): Void,
