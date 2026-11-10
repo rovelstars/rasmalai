@@ -75,44 +75,28 @@ jobs:
         run: command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
 
       - name: Build rnx
-        run: cargo build -p cli
+        run: cargo build --release -p cli
 
-      - name: Stage checkout stdlib
+      - name: Use the checkout stdlib
         run: |
-          # The canary below must build against the checkout sources, never
-          # the published registry snapshot: after a breaking stdlib change
-          # the two differ and the old snapshot no longer compiles.
-          ./target/debug/rnx vendor \
-            @std/prelude @std/simd @std/collections @std/math \
-            @std/fs @std/bytes @std/time @std/random \
-            @std/sync @std/env @std/process @std/os \
-            @std/testing @std/web @std/net @std/json @std/io \
-            --dir "${{ runner.temp }}/std-vendor"
-          echo "RNX_VENDOR_DIR=${{ runner.temp }}/std-vendor" >> "$GITHUB_ENV"
-
-      - name: Seed stdlib
-        run: |
-          seeded=""
-          for _ in 1 2 3; do
-            if ./target/debug/rnx download; then seeded=1; break; fi
-          done
-          [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
+          test -f compiler/stdlib/src/prelude/lib.rnx
+          echo "RNX_VENDOR_DIR=$GITHUB_WORKSPACE/compiler/stdlib/src" >> "$GITHUB_ENV"
 
       - name: Emit object and stage blob
         run: |
-          ./target/debug/rnx --version
+          ./target/release/rnx --version
           command -v ld >/dev/null || { echo "no ld on PATH"; exit 1; }
           command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
           src="$RUNNER_TEMP/canary.rnx"
           printf 'fn Main(): Int { return 42; }\n' > "$src"
-          if ! out="$(./target/debug/rnx --no-color build --emit-obj --target ${{ matrix.triple }} "$src" 2>&1)"; then
+          if ! out="$(./target/release/rnx --no-color build --emit-obj --target ${{ matrix.triple }} "$src" 2>&1)"; then
             printf '%s\n' "$out"
             exit 1
           fi
           command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
           src="$RUNNER_TEMP/canary.rnx"
           printf 'fn Main(): Int { return 42; }\n' > "$src"
-          out="$(./target/debug/rnx --no-color build --emit-obj --target ${{ matrix.triple }} "$src")"
+          out="$(./target/release/rnx --no-color build --emit-obj --target ${{ matrix.triple }} "$src")"
           obj="$(printf '%s\n' "$out" | grep '^artifact: ' | tail -1 | sed -e 's/^artifact: //' -e 's/ (fresh)$//')"
           [ -n "$obj" ] && [ -f "$obj" ] || { echo "no object emitted for ${{ matrix.triple }}"; exit 1; }
           python3 - "$obj" "${{ matrix.machine }}" <<'EOF'
@@ -133,7 +117,7 @@ jobs:
         run: |
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           src="$RUNNER_TEMP/canary.rnx"
-          if ! out="$(./target/debug/rnx --no-color build "$src" 2>&1)"; then
+          if ! out="$(./target/release/rnx --no-color build "$src" 2>&1)"; then
             printf '%s\n' "$out"
             exit 1
           fi
@@ -207,25 +191,10 @@ jobs:
       - name: Ensure jq (index selectors)
         run: command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
 
-      - name: Seed stdlib
+      - name: Use the checkout stdlib
         run: |
-          seeded=""
-          for _ in 1 2 3; do
-            if cargo run -q -p cli -- download; then seeded=1; break; fi
-          done
-          [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
-
-      - name: Stage checkout stdlib
-        run: |
-          # The probe tests below compile against the checkout sources, not
-          # the seeded registry snapshot (see the build job above).
-          cargo run -q -p cli -- vendor \
-            @std/prelude @std/simd @std/collections @std/math \
-            @std/fs @std/bytes @std/time @std/random \
-            @std/sync @std/env @std/process @std/os \
-            @std/testing @std/web @std/net @std/json @std/io \
-            --dir "${{ runner.temp }}/std-vendor"
-          echo "RNX_VENDOR_DIR=${{ runner.temp }}/std-vendor" >> "$GITHUB_ENV"
+          test -f compiler/stdlib/src/prelude/lib.rnx
+          echo "RNX_VENDOR_DIR=$GITHUB_WORKSPACE/compiler/stdlib/src" >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@v7
         with:
