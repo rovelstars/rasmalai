@@ -45,13 +45,47 @@ if (!cliVersion) throw new Error('cannot read cli version');
 // embed the command line, and argv would leak the secret into logs.
 process.env['RNX_TOKEN'] = TOKEN;
 
-const modules = [];
+const found = [];
 for (const e of readdirSync(stdDir, { withFileTypes: true })) {
-	if (e.isDirectory() && existsSync(join(stdDir, e.name, 'lib.rnx'))) modules.push(e.name);
+	if (e.isDirectory() && existsSync(join(stdDir, e.name, 'lib.rnx'))) found.push(e.name);
 }
-modules.sort();
 // net/http.rnx is a submodule file, not a package: it ships inside @std/net.
 const SUBMODULES = { net: ['http.rnx'] };
+
+// Publish dependencies before dependents. The server analyses each upload
+// against the versions already in the registry, so a prelude published before
+// its @std/time would be checked against the older time and fail on an export
+// that only the new source has.
+function importDeps(name) {
+	let src = readFileSync(join(stdDir, name, 'lib.rnx'), 'utf8');
+	for (const sub of SUBMODULES[name] ?? []) {
+		src += '\n' + readFileSync(join(stdDir, name, sub), 'utf8');
+	}
+	src = src.replace(/\/\*[\s\S]*?\*\//g, '');
+	src = src.split('\n').filter((line) => !line.trimStart().startsWith('//')).join('\n');
+	return new Set(
+		[...src.matchAll(/from\s+"@std\/([A-Za-z][A-Za-z0-9_]*)/g)]
+			.map((m) => m[1])
+			.filter((dep) => dep !== name)
+	);
+}
+
+function publishOrder(names) {
+	const known = new Set(names);
+	const deps = new Map(names.map((name) => [name, [...importDeps(name)].filter((d) => known.has(d))]));
+	const done = new Set();
+	const out = [];
+	const visit = (name) => {
+		if (done.has(name)) return;
+		done.add(name);
+		for (const dep of [...deps.get(name)].sort()) visit(dep);
+		out.push(name);
+	};
+	for (const name of [...names].sort()) visit(name);
+	return out;
+}
+
+const modules = publishOrder(found);
 
 // Declared permissions per std module: the union of the analyzer verdict
 // (`rnx audit`, the same predicate as the server capability-coverage gate)
