@@ -115,6 +115,9 @@ pub(crate) fn export_trap(msg: String) -> ! {
         Some(addr) if addr != 0 => {
             #[cfg(not(target_arch = "wasm32"))]
             unsafe {
+                #[cfg(windows)]
+                longjmp(addr as *mut u8, 1);
+                #[cfg(not(windows))]
                 _longjmp(addr as *mut u8, 1);
             }
             #[cfg(target_arch = "wasm32")]
@@ -124,7 +127,12 @@ pub(crate) fn export_trap(msg: String) -> ! {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+unsafe extern "C" {
+    fn longjmp(env: *mut u8, val: i32) -> !;
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
 unsafe extern "C" {
     fn _longjmp(env: *mut u8, val: i32) -> !;
 }
