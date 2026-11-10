@@ -24,7 +24,9 @@ concurrency:
 jobs:
   rust:
     name: nextest --workspace
-    runs-on: ubuntu-24.04
+    # TEST_RUNNER opts into Blacksmith, unset means GitHub-hosted;
+    # see requirements/30_CI_RUNNER_BUDGET.md.
+    runs-on: ${{ vars.TEST_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
