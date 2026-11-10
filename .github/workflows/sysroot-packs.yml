@@ -24,6 +24,12 @@ on:
       - ".cargo/**"
       - ".github/workflows/sysroot-packs.yml"
   workflow_dispatch:
+    inputs:
+      leg:
+        description: Which pack leg to run
+        type: choice
+        default: all
+        options: [all, musl, uefi, wasi]
 
 permissions:
   contents: read
@@ -47,6 +53,7 @@ concurrency:
 jobs:
   musl:
     name: x86_64-unknown-linux-musl
+    if: github.event_name != 'workflow_dispatch' || inputs.leg == 'all' || inputs.leg == 'musl'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -104,6 +111,7 @@ jobs:
 
           pack="$RUNNER_TEMP/musl-pack"
           ./target/release/rnx sysroot build "$triple" \
+            --from /usr/lib/x86_64-linux-musl \
             --from "$rust_sysroot" \
             --runtime "$archive" \
             --builtins "$builtins" \
@@ -142,6 +150,7 @@ jobs:
 
   uefi:
     name: x86_64-unknown-uefi
+    if: github.event_name != 'workflow_dispatch' || inputs.leg == 'all' || inputs.leg == 'uefi'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -261,6 +270,7 @@ jobs:
 
   wasi:
     name: wasm32-unknown-wasi
+    if: github.event_name != 'workflow_dispatch' || inputs.leg == 'all' || inputs.leg == 'wasi'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -361,7 +371,7 @@ jobs:
 
   consume:
     name: pull from GHCR
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.leg == 'all')
     needs: [musl, uefi, wasi]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
