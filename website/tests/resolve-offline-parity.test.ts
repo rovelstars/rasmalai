@@ -13,10 +13,10 @@ import { seedPackage, seedPayload, type CanonicalPublishPayload } from './publis
 // compiler/frontend/src/fetch.rs, tests `offline_float_*`): the same
 // inventories must pick the same versions. The engine below is the
 // toolchain the CLI resolves with (compiler/frontend/Cargo.toml keeps
-// `version = "0.2.1"`); if that version moves, update ENGINE here and the
+// `version = "0.3.0"`); if that version moves, update ENGINE here and the
 // CLI vectors stay paired.
 
-const ENGINE = '0.2.1';
+const ENGINE = '0.3.0';
 
 let fake: FakeLibsql;
 
@@ -78,8 +78,7 @@ describe('offline selection parity (server side)', () => {
 				const msg = String((err as Error)?.message ?? err);
 				assert.match(msg, /@acme\/parity/);
 				assert.match(msg, /2\.0\.0/);
-				assert.match(msg, /for engine/);
-				assert.match(msg, /0\.2\.1/);
+				assert.ok(msg.includes(`for engine ${ENGINE}`), msg);
 				assert.match(msg, /satisfies/);
 				return true;
 			}

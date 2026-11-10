@@ -27,7 +27,7 @@ The package declares the four libraries the app loads directly in
 
 ```rnx
 export default {
-    project: { name: "@std/app", version: "0.2.1" },
+    project: { name: "@std/app", version: "0.3.0" },
     dependencies: {
         cpu_cabi: { native: "cpu_cabi", system: true, version: ">=0.1.0" },
         host_cabi: { native: "host_cabi", system: true, version: ">=0.1.0" },
