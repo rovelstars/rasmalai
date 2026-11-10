@@ -1,0 +1,410 @@
+name: Sysroot packs
+
+# Build real target packs with `rnx sysroot build`, install them, and run a
+# program against them. Packs built on main are pushed to GHCR; a consume job
+# then pulls them back by tag and repeats the build from the registry copy.
+#
+# GHCR package: ghcr.io/rovelstars/rnx-sysroot, linked to this repository by
+# the org.opencontainers.image.source annotation.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "compiler/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - ".github/workflows/sysroot-packs.yml"
+  pull_request:
+    paths:
+      - "compiler/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - ".github/workflows/sysroot-packs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  RNX_VENDOR_DIR: ${{ github.workspace }}/compiler/stdlib/src
+  RNX_SYSROOT_OCI: ghcr.io/rovelstars/rnx-sysroot
+  RNX_OCI_PUSH_URL: https://ghcr.io
+  RNX_OCI_PUSH_USERNAME: ${{ github.actor }}
+  RNX_OCI_PUSH_TOKEN: ${{ github.token }}
+
+concurrency:
+  group: sysroot-packs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  musl:
+    name: x86_64-unknown-linux-musl
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - name: Install LLVM 22 and musl
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22 llvm-22-dev libpolly-22-dev libclang-rt-22-dev musl-tools musl-dev
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sysroot-packs-musl
+
+      - name: Build the release compiler
+        run: cargo build --release -p cli
+
+      - name: Build the musl runtime archive
+        run: |
+          cargo build \
+            --manifest-path compiler/runtime/bundle/Cargo.toml \
+            --target x86_64-unknown-linux-musl \
+            --profile release \
+            --config 'profile.release.opt-level=3' \
+            --config 'profile.release.codegen-units=1' \
+            --config 'profile.release.panic="abort"'
+
+      - name: Build, install, and run the musl pack
+        env:
+          RNX_CACHE_HOME: ${{ runner.temp }}/rnx-cache-musl
+        run: |
+          set -euo pipefail
+          triple=x86_64-unknown-linux-musl
+          archive=compiler/runtime/bundle/target/$triple/release/libruntime_native.a
+          [ -f "$archive" ] || { echo "no runtime archive at $archive"; exit 1; }
+          gcc_dir="$(dirname "$(find /usr/lib/gcc/x86_64-linux-gnu -name crtbeginT.o -print -quit)")"
+          builtins="$(find /usr/lib/llvm-22 /usr/lib/clang -name 'libclang_rt.builtins-x86_64.a' -print -quit)"
+          [ -d "$gcc_dir" ] || { echo "no GCC crtbeginT.o directory"; exit 1; }
+          [ -n "$builtins" ] || { echo "no compiler-rt x86_64 builtins"; exit 1; }
+
+          pack="$RUNNER_TEMP/musl-pack"
+          ./target/release/rnx sysroot build "$triple" \
+            --from /usr/lib/x86_64-linux-musl \
+            --from "$gcc_dir" \
+            --runtime "$archive" \
+            --builtins "$builtins" \
+            --out "$pack" \
+            --force
+          ./target/release/rnx sysroot add --local "$pack"
+          ./target/release/rnx sysroot verify "$triple"
+
+          project="$RUNNER_TEMP/musl-project"
+          rm -rf "$project"
+          mkdir -p "$project/src"
+          cat > "$project/Project.config" <<'EOF'
+          export default {
+              project: { name: "musl-hello", version: "0.1.0", targets: ["x86_64-unknown-linux-musl"] }
+          }
+          EOF
+          cat > "$project/src/main.rnx" <<'EOF'
+          fn Main(): Int {
+              println!("hello musl");
+              return 0;
+          }
+          EOF
+          out="$(./target/release/rnx --no-color build --release --target "$triple" "$project/src/main.rnx")"
+          app="$(printf '%s\n' "$out" | sed -n 's/^artifact: //p' | tail -1 | sed 's/ (fresh)$//')"
+          [ -n "$app" ] && [ -x "$app" ] || { echo "no musl executable emitted"; printf '%s\n' "$out"; exit 1; }
+          file "$app" | grep -q "statically linked" || { echo "not a static binary: $(file "$app")"; exit 1; }
+          output="$("$app")"
+          [ "$output" = "hello musl" ] || { echo "unexpected output: $output"; exit 1; }
+          echo "ran $app"
+
+      - name: Push the musl pack
+        if: github.event_name != 'pull_request'
+        env:
+          pack: ${{ runner.temp }}/musl-pack
+        run: ./target/release/rnx sysroot publish "$pack"
+
+  uefi:
+    name: x86_64-unknown-uefi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - name: Install LLVM 22, QEMU, and OVMF
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22 llvm-22-dev libpolly-22-dev qemu-system-x86 ovmf
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-uefi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sysroot-packs-uefi
+
+      - name: Build the release compiler
+        run: cargo build --release -p cli
+
+      - name: Build the UEFI runtime archive
+        run: |
+          cargo build \
+            --manifest-path compiler/runtime/uefi/Cargo.toml \
+            --target x86_64-unknown-uefi \
+            --release
+
+      - name: Build, install, and boot the UEFI pack
+        env:
+          RNX_CACHE_HOME: ${{ runner.temp }}/rnx-cache-uefi
+        run: |
+          set -euo pipefail
+          triple=x86_64-unknown-uefi
+          archive=compiler/runtime/uefi/target/$triple/release/libruntime_native.a
+          [ -f "$archive" ] || { echo "no runtime archive at $archive"; exit 1; }
+
+          pack="$RUNNER_TEMP/uefi-pack"
+          ./target/release/rnx sysroot build "$triple" \
+            --runtime "$archive" \
+            --out "$pack" \
+            --force
+          ./target/release/rnx sysroot add --local "$pack"
+          ./target/release/rnx sysroot verify "$triple"
+
+          project="$RUNNER_TEMP/uefi-project"
+          rm -rf "$project"
+          mkdir -p "$project/src"
+          cat > "$project/Project.config" <<'EOF'
+          export default {
+              project: { name: "uefi-hello", version: "0.1.0", targets: ["x86_64-unknown-uefi"] }
+          }
+          EOF
+          cat > "$project/src/main.rnx" <<'EOF'
+          fn Main(): Int {
+              println!("hello uefi");
+              return 0;
+          }
+          EOF
+          out="$(./target/release/rnx --no-color build --release --target "$triple" "$project/src/main.rnx")"
+          app="$(printf '%s\n' "$out" | sed -n 's/^artifact: //p' | tail -1 | sed 's/ (fresh)$//')"
+          [ -n "$app" ] && [ -f "$app" ] || { echo "no UEFI image emitted"; printf '%s\n' "$out"; exit 1; }
+          file "$app" | grep -q "PE32+ executable for EFI" || { echo "not a UEFI image: $(file "$app")"; exit 1; }
+
+          firmware=""
+          for candidate in \
+            /usr/share/edk2/x64/OVMF.4m.fd \
+            /usr/share/OVMF/x64/OVMF.4m.fd \
+            /usr/share/edk2/ovmf/OVMF_CODE.fd \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/edk2/x64/OVMF_CODE.4m.fd; do
+            if [ -f "$candidate" ]; then firmware="$candidate"; break; fi
+          done
+          [ -n "$firmware" ] || { echo "no OVMF firmware"; exit 1; }
+
+          esp="$RUNNER_TEMP/esp"
+          rm -rf "$esp"
+          mkdir -p "$esp/EFI/BOOT"
+          cp "$app" "$esp/EFI/BOOT/BOOTX64.EFI"
+          serial="$RUNNER_TEMP/uefi-serial.log"
+          set +e
+          timeout 30 qemu-system-x86_64 \
+            -machine q35 -m 256 -bios "$firmware" \
+            -drive format=raw,file=fat:rw:"$esp" \
+            -display none -serial file:"$serial" -no-reboot
+          set -e
+          grep -q "hello uefi" "$serial" || {
+            echo "the UEFI image did not print its banner"
+            cat "$serial" || true
+            exit 1
+          }
+          echo "booted $app"
+
+      - name: Push the UEFI pack
+        if: github.event_name != 'pull_request'
+        env:
+          pack: ${{ runner.temp }}/uefi-pack
+        run: ./target/release/rnx sysroot publish "$pack"
+
+  wasi:
+    name: wasm32-unknown-wasi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - name: Install LLVM 22
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22 llvm-22-dev libpolly-22-dev
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sysroot-packs-wasi
+
+      - name: Build the release compiler
+        run: cargo build --release -p cli
+
+      - name: Build the WASI runtime archive
+        run: |
+          cargo build \
+            --manifest-path compiler/runtime/wasi/Cargo.toml \
+            --target wasm32-unknown-unknown \
+            --release
+
+      - name: Build, install, and run the WASI pack
+        env:
+          RNX_CACHE_HOME: ${{ runner.temp }}/rnx-cache-wasi
+        run: |
+          set -euo pipefail
+          triple=wasm32-unknown-wasi
+          archive=compiler/runtime/wasi/target/wasm32-unknown-unknown/release/libruntime_native.a
+          [ -f "$archive" ] || { echo "no runtime archive at $archive"; exit 1; }
+
+          pack="$RUNNER_TEMP/wasi-pack"
+          ./target/release/rnx sysroot build "$triple" \
+            --runtime "$archive" \
+            --out "$pack" \
+            --force
+          ./target/release/rnx sysroot add --local "$pack"
+          ./target/release/rnx sysroot verify "$triple"
+
+          project="$RUNNER_TEMP/wasi-project"
+          rm -rf "$project"
+          mkdir -p "$project/src"
+          cat > "$project/Project.config" <<'EOF'
+          export default {
+              project: { name: "wasi-hello", version: "0.1.0", targets: ["wasm32-unknown-wasi"] }
+          }
+          EOF
+          cat > "$project/src/main.rnx" <<'EOF'
+          fn Main(): Int {
+              println!("hello wasi");
+              return 0;
+          }
+          EOF
+          out="$(./target/release/rnx --no-color build --release --target "$triple" "$project/src/main.rnx")"
+          app="$(printf '%s\n' "$out" | sed -n 's/^artifact: //p' | tail -1 | sed 's/ (fresh)$//')"
+          [ -n "$app" ] && [ -f "$app" ] || { echo "no WASI module emitted"; printf '%s\n' "$out"; exit 1; }
+
+          runner="$RUNNER_TEMP/wasi-run.mjs"
+          cat > "$runner" <<'EOF'
+          import { WASI } from 'node:wasi';
+          import { readFile } from 'node:fs/promises';
+
+          const file = process.argv[2];
+          const wasi = new WASI({ version: 'preview1', args: ['wasi-hello'], env: {}, returnOnExit: true });
+          const { instance } = await WebAssembly.instantiate(await readFile(file), wasi.getImportObject());
+          const code = wasi.start(instance);
+          process.exit(code);
+          EOF
+          output="$(node "$runner" "$app")"
+          [ "$output" = "hello wasi" ] || { echo "unexpected WASI output: $output"; exit 1; }
+          echo "ran $app"
+
+      - name: Push the WASI pack
+        if: github.event_name != 'pull_request'
+        env:
+          pack: ${{ runner.temp }}/wasi-pack
+        run: ./target/release/rnx sysroot publish "$pack"
+
+  consume:
+    name: pull from GHCR
+    if: github.event_name != 'pull_request'
+    needs: [musl, uefi, wasi]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install LLVM 22
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22 llvm-22-dev libpolly-22-dev
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sysroot-packs-consume
+
+      - name: Build the release compiler
+        run: cargo build --release -p cli
+
+      - name: Pull and use the published packs
+        env:
+          RNX_CACHE_HOME: ${{ runner.temp }}/rnx-cache-consume
+        run: |
+          set -euo pipefail
+          for triple in x86_64-unknown-linux-musl x86_64-unknown-uefi wasm32-unknown-wasi; do
+            ./target/release/rnx sysroot add "$triple"
+            ./target/release/rnx sysroot verify "$triple"
+          done
+          ./target/release/rnx sysroot list
+
+          project="$RUNNER_TEMP/consume-project"
+          rm -rf "$project"
+          mkdir -p "$project/src"
+          cat > "$project/Project.config" <<'EOF'
+          export default {
+              project: { name: "consume-hello", version: "0.1.0", targets: ["x86_64-unknown-linux-musl"] }
+          }
+          EOF
+          cat > "$project/src/main.rnx" <<'EOF'
+          fn Main(): Int {
+              println!("hello from ghcr");
+              return 0;
+          }
+          EOF
+          out="$(./target/release/rnx --no-color build --release --target x86_64-unknown-linux-musl "$project/src/main.rnx")"
+          app="$(printf '%s\n' "$out" | sed -n 's/^artifact: //p' | tail -1 | sed 's/ (fresh)$//')"
+          [ -n "$app" ] && [ -x "$app" ] || { echo "no musl executable emitted"; printf '%s\n' "$out"; exit 1; }
+          output="$("$app")"
+          [ "$output" = "hello from ghcr" ] || { echo "unexpected output: $output"; exit 1; }
+          echo "pulled from ghcr and ran $app"
