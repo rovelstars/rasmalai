@@ -625,7 +625,7 @@ rnx sysroot remove aarch64-unknown-linux-musl
 rnx sysroot prune --keep 2
 ```
 
-`add` fetches `ghcr.io/rovelstars/rnx-sysroot:rnx-<toolchain-version>-<triple>` and verifies the index digest, the manifest digest, the blob digest, the `sysroot` kind and role annotations, the target annotation, and the pack `integrity.digest` before installing. A version suffix uses that version in the tag. `--local <dir>` installs a hand-built pack after the same validation, and `--digest sha256:<hex>` asserts the expected digest. `RNX_SYSROOT_OCI` overrides the repository for a mirror. `list` shows the triple, digest, tier, and current marker; `prune` never removes the digest named by `current`.
+`add` fetches `ghcr.io/rovelstars/rnx-sysroot:rnx-<toolchain-version>-<triple>` and verifies the index digest, the manifest digest, the blob digest, the `sysroot` kind and role annotations, the target annotation, and the pack `integrity.digest` before installing. The published package is public, so a plain `rnx sysroot add <triple>` fetches an anonymous registry token and needs no credentials. A private mirror needs `RNX_OCI_PUSH_USERNAME` and `RNX_OCI_PUSH_TOKEN`. A version suffix uses that version in the tag. `--local <dir>` installs a hand-built pack after the same validation, and `--digest sha256:<hex>` asserts the expected digest. `RNX_SYSROOT_OCI` overrides the repository for a mirror. `list` shows the triple, digest, tier, and current marker; `prune` never removes the digest named by `current`.
 
 ### Building a target pack
 

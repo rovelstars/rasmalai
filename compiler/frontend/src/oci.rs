@@ -101,20 +101,20 @@ fn http_get(url: &str, accept: &str, cap: usize, what: &str) -> Result<Vec<u8>, 
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_string();
-    let credentials = oci_credentials().ok_or_else(|| {
-        Diagnostic::new(
+    let credentials = oci_credentials();
+    let bearer = registry_token(&client, &challenge, credentials.as_ref()).map_err(|e| {
+        let mut error = Diagnostic::new(
             Code::E108,
-            format!(
-                "artifact origin requires authentication ({what} answered HTTP 401)"
-            ),
-        )
-        .with_hint(format!(
-            "set {} to a registry token, and {} when the registry needs a username",
-            OCI_TOKEN_ENV, OCI_USERNAME_ENV
-        ))
+            format!("artifact authentication failed: {}", e.message),
+        );
+        if credentials.is_none() {
+            error = error.with_hint(format!(
+                "the package may be private; set {} to a registry token, and {} when the registry needs a username",
+                OCI_TOKEN_ENV, OCI_USERNAME_ENV
+            ));
+        }
+        error
     })?;
-    let bearer = registry_token(&client, &challenge, &credentials)
-        .map_err(|e| Diagnostic::new(Code::E108, format!("artifact authentication failed: {}", e.message)))?;
     let response = client
         .get(url)
         .header("Accept", accept)
@@ -178,7 +178,7 @@ fn oci_credentials() -> Option<(String, String)> {
 fn registry_token(
     client: &reqwest::blocking::Client,
     challenge: &str,
-    credentials: &(String, String),
+    credentials: Option<&(String, String)>,
 ) -> Result<String, Diagnostic> {
     let (realm, service, scope) = parse_bearer_challenge(challenge);
     if realm.is_empty() {
@@ -201,8 +201,10 @@ fn registry_token(
         url.push_str(&encode_query(&scope));
     }
     let mut request = client.get(&url);
-    if !credentials.0.is_empty() {
-        request = request.basic_auth(&credentials.0, Some(&credentials.1));
+    if let Some((username, token)) = credentials
+        && !username.is_empty()
+    {
+        request = request.basic_auth(username, Some(token));
     }
     let response = request.send().map_err(|e| {
         Diagnostic::new(Code::E108, format!("token endpoint unreachable: {e}"))
