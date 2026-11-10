@@ -328,7 +328,7 @@ impl<'a> PushClient<'a> {
         body: &[u8],
     ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), Diagnostic> {
         let (status, headers, bytes) = self.raw(method, url, None, content_type, body)?;
-        if status != 401 {
+        if status != 401 && status != 403 {
             return Ok((status, headers, bytes));
         }
         let Some(auth) = &self.auth else {
@@ -347,7 +347,14 @@ impl<'a> PushClient<'a> {
     }
 
     fn token_for(&self, auth: &PushAuth<'_>, challenge: &BearerChallenge) -> Result<String, Diagnostic> {
-        let key = format!("{}|{}", challenge.realm, challenge.scope);
+        let scope = if challenge.scope.is_empty() || challenge.scope.contains("push") {
+            challenge.scope.clone()
+        } else if let Some((prefix, _)) = challenge.scope.rsplit_once(':') {
+            format!("{prefix}:push,pull")
+        } else {
+            challenge.scope.clone()
+        };
+        let key = format!("{}|{scope}", challenge.realm);
         if let Some(token) = self.tokens.borrow().get(&key) {
             return Ok(token.clone());
         }
@@ -359,10 +366,10 @@ impl<'a> PushClient<'a> {
             url.push_str(&encode_query(&challenge.service));
             sep = '&';
         }
-        if !challenge.scope.is_empty() {
+        if !scope.is_empty() {
             url.push(sep);
             url.push_str("scope=");
-            url.push_str(&encode_query(&challenge.scope));
+            url.push_str(&encode_query(&scope));
         }
         let mut request = self.agent.get(&url);
         if let Some(username) = auth.username {
@@ -376,7 +383,10 @@ impl<'a> PushClient<'a> {
         if !(200..300).contains(&status) {
             return Err(Diagnostic::new(
                 Code::E108,
-                format!("artifact push failed (token exchange answered HTTP {status})"),
+                format!(
+                    "artifact push failed (token exchange answered HTTP {status}): {}",
+                    String::from_utf8_lossy(&bytes)
+                ),
             ));
         }
         let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
@@ -407,7 +417,13 @@ impl<'a> PushClient<'a> {
             "POST" => self.agent.post(url),
             _ => self.agent.put(url),
         };
-        if let Some(token) = token.or_else(|| self.auth.as_ref().map(|auth| auth.token)) {
+        let fallback = token.or_else(|| {
+            self.auth
+                .as_ref()
+                .filter(|auth| auth.username.is_none())
+                .map(|auth| auth.token)
+        });
+        if let Some(token) = fallback {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
         let mut response = req
@@ -525,7 +541,8 @@ pub fn push_assembly_as(
     let client = PushClient::new(auth);
     for (digest, bytes) in assembly.blobs.iter() {
         let mono = format!("{base}/v2/{repo}/blobs/uploads/?digest={digest}");
-        let (status, headers, _) = client.request("POST", &mono, "application/octet-stream", bytes)?;
+        let (status, headers, response_body) =
+            client.request("POST", &mono, "application/octet-stream", bytes)?;
         if status == 201 {
             continue;
         }
@@ -535,7 +552,10 @@ pub fn push_assembly_as(
             _ => {
                 return Err(Diagnostic::new(
                     Code::E108,
-                    format!("artifact push failed (blob {digest} answered HTTP {status}, expected 201 or a 202 with a location)"),
+                    format!(
+                        "artifact push failed (blob {digest} answered HTTP {status}, expected 201 or a 202 with a location): {}",
+                        String::from_utf8_lossy(&response_body)
+                    ),
                 ));
             }
         };
