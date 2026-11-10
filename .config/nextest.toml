@@ -1,8 +1,8 @@
 # Nextest configuration for the Rasmalai workspace.
 #
-# CI runs `cargo nextest run --profile ci`, which replaces the old
-# `cargo test --workspace --no-fail-fast` invocation. Local runs should use
-# the same profile: `cargo nextest run --profile ci --workspace`.
+# CI runs `cargo nextest run --profile ci --cargo-profile release`, split
+# into four hash partitions on main and one on pull requests. Local runs
+# should use the same profile: `cargo nextest run --profile ci --workspace`.
 #
 # Design rules for this file:
 # - `fail-fast = false` preserves the old `--no-fail-fast` semantics: every

@@ -13,6 +13,7 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
 
 # PR pushes cancel their superseded runs; main runs never cancel, so every
 # merged commit gets its verdict (out-of-order finishing cannot confuse
@@ -23,9 +24,16 @@ concurrency:
 
 jobs:
   rust:
-    name: nextest --workspace
+    name: nextest --workspace${{ matrix.total == 1 && '' || format(' ({0}/{1})', matrix.shard, matrix.total) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        # PR runs keep the affected-only filter and one shard; main runs the
+        # full suite split across four hash partitions.
+        shard: ${{ github.event_name == 'pull_request' && fromJSON('[1]') || fromJSON('[1,2,3,4]') }}
+        total: ${{ github.event_name == 'pull_request' && fromJSON('[1]') || fromJSON('[4]') }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -59,12 +67,11 @@ jobs:
         with:
           tool: cargo-nextest@0.9.149
 
-      # `key` and `shared-key` are alternatives in rust-cache: setting
-      # `shared-key` drops the job id from the cache key, so a second cached
-      # job added to this file would write the same entry and thrash it.
+      # Every shard builds the same release test binaries, so one shared key
+      # is correct here. The first shard to save wins; the rest restore it.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: host
+          shared-key: host-release
 
       - name: Cache global build pools
         uses: actions/cache@v6
@@ -74,8 +81,9 @@ jobs:
           # CARGO_PKG_VERSION, which tracks the cli crate version here, so nothing
           # in-tree records which compiler revision emitted them. Hashing the
           # compiler sources is what stops a codegen change from restoring
-          # products that still pass validate_dep_product.
-          key: rnx-global-v2-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'compiler/*/Cargo.toml', 'compiler/*/build.rs', 'compiler/*/src/**', 'compiler/runtime/bundle/**') }}
+          # products that still pass validate_dep_product. The profile is part
+          # of the key because release and debug products are not interchangeable.
+          key: rnx-global-v3-${{ runner.os }}-release-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'compiler/*/Cargo.toml', 'compiler/*/build.rs', 'compiler/*/src/**', 'compiler/runtime/bundle/**') }}
 
       - name: Ensure jq (affected-tests + main-health selectors)
         # Both CI selectors shell out to jq. ubuntu runners ship it today,
@@ -84,12 +92,14 @@ jobs:
         # inside a fail-open selector.
         run: command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
 
-      - name: Workspace test suite (affected on PR, full on main)
+      - name: Prepare linker
         run: |
           command -v ld >/dev/null || { echo "no ld on PATH"; exit 1; }
           command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
-          sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
-          ulimit -c unlimited
+
+      - name: Prepare docs and offline probe
+        if: matrix.shard == 1
+        run: |
           # The standard library comes from the repository checkout
           # directly. There is no vendor staging step, no registry
           # download, and no package list to keep in sync as modules are
@@ -98,7 +108,7 @@ jobs:
           export RNX_VENDOR_DIR="$GITHUB_WORKSPACE/compiler/stdlib/src"
           export RNX_CACHE_HOME="${{ runner.temp }}/rnx-empty-cache"
           mkdir -p "$RNX_CACHE_HOME"
-          cargo run -q -p cli -- doc --json --stdlib --out-dir website/static/data
+          cargo run -q -p cli --release -- doc --json --stdlib --out-dir website/static/data
           mkdir -p "${{ runner.temp }}/offline-probe/src"
           cat > "${{ runner.temp }}/offline-probe/Project.config" <<'EOF'
           export default {
@@ -117,14 +127,19 @@ jobs:
           # The checkout alone (empty cache, dead registry for this one
           # command) resolves through the local-source override and
           # warns once per package.
-          RNX_REGISTRY="http://127.0.0.1:9" cargo run -q -p cli -- build "${{ runner.temp }}/offline-probe/src/main.rnx" 2>"${{ runner.temp }}/probe-stderr.txt"
+          RNX_REGISTRY="http://127.0.0.1:9" cargo run -q -p cli --release -- build "${{ runner.temp }}/offline-probe/src/main.rnx" 2>"${{ runner.temp }}/probe-stderr.txt"
           grep -q "using local source" "${{ runner.temp }}/probe-stderr.txt" || { echo "probe build printed no local-source warning"; cat "${{ runner.temp }}/probe-stderr.txt"; exit 1; }
           set +e
           "${{ runner.temp }}/offline-probe/.rnx-cache/build/dev/probe"
           code=$?
           set -e
           [ "$code" -eq 2 ] || { echo "probe binary returned $code (want 2)"; exit 1; }
-          unset RNX_CACHE_HOME RNX_REGISTRY
+
+      - name: Workspace test suite (affected on PR, full on main)
+        run: |
+          sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
+          ulimit -c unlimited
+          export RNX_VENDOR_DIR="$GITHUB_WORKSPACE/compiler/stdlib/src"
           # RNX_VENDOR_DIR stays exported for the suite below: the
           # standard library under test is the repository checkout,
           # never the registry cache, so `@std/*` resolution exercises
@@ -146,14 +161,16 @@ jobs:
             FILTER="FULL"
           fi
           [ -n "$FILTER" ] || FILTER="FULL"
+          PARTITION="hash:${{ matrix.shard }}/${{ matrix.total }}"
           echo "nextest target list: $FILTER"
+          echo "nextest partition: $PARTITION"
           run_suite() {
             if [ "$FILTER" = "FULL" ]; then
-              cargo nextest run --workspace --profile ci --no-fail-fast
+              cargo nextest run --workspace --profile ci --cargo-profile release --no-fail-fast --partition "$PARTITION"
             else
               # FILTER is a `-p <pkg>` list produced by affected-tests.sh.
               # shellcheck disable=SC2086
-              cargo nextest run --profile ci --no-fail-fast $FILTER
+              cargo nextest run --profile ci --cargo-profile release --no-fail-fast --partition "$PARTITION" $FILTER
             fi
           }
           run_suite || {
