@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ModuleDocs from '$lib/components/ModuleDocs.svelte';
+	import DocPager from '$lib/components/DocPager.svelte';
 	import { withHost } from '$lib/docs/host';
 	import { onDocCodeClick } from '$lib/docs/codeActions';
 	import { canonicalUrl } from '$lib/site';
@@ -20,6 +21,7 @@
 		scope: string;
 		module: string;
 		page: string;
+		title?: string;
 		version: string;
 		description: string;
 		html: string | null;
@@ -29,6 +31,8 @@
 		noApi: boolean;
 		raw?: string;
 		sections?: RawSection[];
+		prev?: { path: string; title: string } | null;
+		next?: { path: string; title: string } | null;
 	}
 
 	let { data }: { data: PackageDocData } = $props();
@@ -49,7 +53,7 @@
 		}
 	});
 
-	let html = $derived(withHost(data.html ?? ''));
+	let html = $derived(withHost((data.html ?? '').replace(/<h1\b[^>]*>[\s\S]*?<\/h1>/i, '')));
 	let articleEl: HTMLElement | undefined = $state();
 	const pageRaw = $derived('raw' in data ? (data.raw as string) : null);
 	const pageSections = $derived('sections' in data ? data.sections : null);
@@ -60,12 +64,12 @@
 </script>
 
 <svelte:head>
-	<title>{data.full} - {titles[data.page] ?? data.page} | Rasmalai Docs</title>
+	<title>{data.full} - {data.title ?? titles[data.page] ?? data.page} | Rasmalai Docs</title>
 	<meta name="description" content={tagline} />
 	{@html `<script type="application/ld+json">${JSON.stringify({
 		'@context': 'https://schema.org',
 		'@type': 'TechArticle',
-		headline: `${data.full} - ${titles[data.page] ?? data.page}`,
+		headline: `${data.full} - ${data.title ?? titles[data.page] ?? data.page}`,
 		description: tagline,
 		url: canonicalUrl(`/docs/${data.full}/${data.page}`),
 		inLanguage: 'en',
@@ -82,7 +86,7 @@
 			</button>
 		{/if}
 	</div>
-	<h1 class="doc-h1">{titles[data.page] ?? data.page}</h1>
+	<h1 class="doc-h1">{data.title ?? titles[data.page] ?? data.page}</h1>
 	{#if isStd && data.module === 'prelude'}
 		<div class="callout callout-tip">
 			<p class="callout-label">Implicit scope</p>
@@ -106,4 +110,5 @@
 	{:else if data.mod}
 		<ModuleDocs mod={data.mod} />
 	{/if}
+	<DocPager prev={data.prev ?? null} next={data.next ?? null} />
 </article>

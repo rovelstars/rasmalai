@@ -13,7 +13,6 @@
 import { PlaygroundRunner } from '$lib/playground/runner';
 import { isFormattablePackagePath, selectPackageText } from '$lib/packages-format';
 	import { untar, gunzip, isGzip } from '$lib/docs/untar';
-import { importSnippet } from '$lib/docs/stdlib';
 	import '$lib/styles/registry.css';
 
 	let { data } = $props();
@@ -23,7 +22,6 @@ import { importSnippet } from '$lib/docs/stdlib';
 	interface StoredGuide {
 		slug: string;
 		title: string;
-		html: string;
 	}
 
 	let guides = $derived.by((): StoredGuide[] => {
@@ -62,32 +60,25 @@ import { importSnippet } from '$lib/docs/stdlib';
 		}
 	});
 
-	let openGuide = $state<string | null>(null);
-	let selectedGuide = $derived(guides.find((g) => g.slug === openGuide) ?? guides[0] ?? null);
-
-	type TabId = 'readme' | 'code' | 'guides' | 'api' | 'dependencies' | 'dependents' | 'versions';
-	const TABS: TabId[] = ['readme', 'code', 'guides', 'api', 'dependencies', 'dependents', 'versions'];
+	type TabId = 'readme' | 'code' | 'api' | 'dependencies' | 'dependents' | 'versions';
+	const TABS: TabId[] = ['readme', 'code', 'api', 'dependencies', 'dependents', 'versions'];
 	const TAB_LABELS: Record<TabId, string> = {
 		readme: 'Readme',
 		code: 'Files',
-		guides: 'Guides',
 		api: 'API',
 		dependencies: 'Dependencies',
 		dependents: 'Dependents',
 		versions: 'Versions'
 	};
 
-	const visibleTabs = $derived(
-		TABS.filter((t) => (t !== 'guides' || guides.length > 0) && (t !== 'api' || apiMods.length > 0))
-	);
+	const visibleTabs = $derived(TABS.filter((t) => t !== 'api' || apiMods.length > 0));
 
 	let tab = $derived.by((): TabId => {
 		let t: TabId = 'readme';
 		if (browser) {
 			const q = page.url.searchParams.get('tab');
-			if (q === 'code' || q === 'guides' || q === 'api' || q === 'dependencies' || q === 'dependents' || q === 'versions') t = q;
+			if (q === 'code' || q === 'api' || q === 'dependencies' || q === 'dependents' || q === 'versions') t = q;
 		}
-		if (t === 'guides' && guides.length === 0) return 'readme';
 		if (t === 'api' && apiMods.length === 0) return 'readme';
 		return t;
 	});
@@ -167,15 +158,6 @@ import { importSnippet } from '$lib/docs/stdlib';
 		event.preventDefault();
 		focusTab(event, next);
 		nav({ tab: visibleTabs[next] });
-	}
-
-	function onGuideKeydown(event: KeyboardEvent, slug: string) {
-		const index = guides.findIndex((g) => g.slug === slug);
-		const next = nextTabIndex(event, guides.length, index);
-		if (next === null) return;
-		event.preventDefault();
-		focusTab(event, next);
-		openGuide = guides[next].slug;
 	}
 
 	async function copyInstall() {
@@ -510,9 +492,6 @@ import { importSnippet } from '$lib/docs/stdlib';
 			{#if pkg.description}
 				<p class="dossier-sub">{pkg.description}</p>
 			{/if}
-			{#if pkg.name.startsWith('@std/')}
-				<p class="dossier-import">{importSnippet(pkg.name.slice('@std/'.length))}</p>
-			{/if}
 			<dl class="dossier-facts">
 				<div>
 					<dt>Author</dt>
@@ -599,7 +578,7 @@ import { importSnippet } from '$lib/docs/stdlib';
 						>
 					{:else}
 						{#if guides.length > 0}
-							<button onclick={() => nav({ tab: 'guides' })} class="dossier-link">guides</button>
+							<a href={`/docs/${pkg.name}/${guides[0].slug}`} class="dossier-link">guides</a>
 						{/if}
 						{#if apiMods.length > 0}
 							<button onclick={() => nav({ tab: 'api' })} class="dossier-link">api reference</button>
@@ -713,39 +692,6 @@ import { importSnippet } from '$lib/docs/stdlib';
 							{/if}
 						</div>
 					</div>
-				{/if}
-			{:else if tab === 'guides'}
-				{#if guides.length === 0}
-					<p class="py-6 text-sm text-aura-muted">This version ships no guides.</p>
-				{:else}
-					<div class="pkg-subtabs" role="tablist" aria-label="Guides">
-						{#each guides as g}
-							<button
-								id={`pkg-guide-tab-${g.slug}`}
-								role="tab"
-								aria-selected={selectedGuide?.slug === g.slug}
-								aria-controls="pkg-guide-panel"
-								tabindex={selectedGuide?.slug === g.slug ? 0 : -1}
-								onclick={() => (openGuide = g.slug)}
-								onkeydown={(event) => onGuideKeydown(event, g.slug)}
-								class="pkg-subtab"
-							>
-								{g.title}
-							</button>
-						{/each}
-					</div>
-					{#if selectedGuide}
-						<div
-							id="pkg-guide-panel"
-							role="tabpanel"
-							aria-labelledby={`pkg-guide-tab-${selectedGuide.slug}`}
-						>
-							<article class="doc-prose mt-6">
-								<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-								{@html selectedGuide.html}
-							</article>
-						</div>
-					{/if}
 				{/if}
 			{:else if tab === 'api'}
 				{#if apiMods.length === 0}

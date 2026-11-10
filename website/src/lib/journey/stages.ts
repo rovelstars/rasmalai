@@ -40,7 +40,7 @@ export interface Stage {
 }
 
 const SHADE = `fn shade(sun: Vec4f): Float {
-    defer { print("shade done"); }
+    defer { println!("shade done"); }
     let acc = Vec4f.splat(0.0);
     let i = 0;
     while i < 4 {
@@ -61,7 +61,7 @@ const CHECK_SRC = `fn double(x: Int): Int => x * 2;
 
 fn triple(x: Int): Int => x * 3;
 
-print(double(21) + triple(14));`;
+println!(double(21) + triple(14));`;
 
 const LINT_BEFORE = `class B {
     init() { this.cb = () => this.flush(); }
@@ -74,7 +74,7 @@ const LINT_AFTER = `class B {
 }`;
 
 const LSP_SRC = `let v = Vec4f.splat(1.0);
-print(v.x());`;
+println!(v.x());`;
 
 const TOKEN_SRC = `let total = (x) => x * 2;`;
 

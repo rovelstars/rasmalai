@@ -31,7 +31,9 @@ import {
 	Monitor,
 	Link,
 	Sparkles,
-	Package
+	Package,
+	LayoutDashboard,
+	AppWindow
 } from 'lucide-svelte';
 
 import { buildChapters } from './chapters';
@@ -199,7 +201,9 @@ export const STDLIB = [
 	'io',
 	'log',
 	'uefi',
-	'wasi'
+	'wasi',
+	'ui',
+	'app'
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -218,7 +222,9 @@ export const STDLIB_ICONS: Record<string, any> = {
 	process: Terminal,
 	os: Monitor,
 	testing: FlaskConical,
-	web: Link
+	web: Link,
+	ui: LayoutDashboard,
+	app: AppWindow
 };
 
 export interface TrackMeta {

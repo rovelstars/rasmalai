@@ -1,6 +1,13 @@
+---
+title: Getting started with @std/bytes
+description: Import ByteBuffer and write your first binary header.
+section: Getting started
+order: 10
+---
+
 # Getting started with @std/bytes
 
-No install step: the module ships inside the compiler. Import what you need:
+The module ships inside the compiler, so there is nothing to install. Import the class you need:
 
 ```rnx
 import { ByteBuffer } from "@std/bytes";
@@ -8,18 +15,25 @@ import { ByteBuffer } from "@std/bytes";
 
 ## Copy this
 
-Paste it into a file or run it straight in the playground:
+Save it as `src/main.rnx` in a project, or paste it into the playground:
 
 ```rnx
 import { ByteBuffer } from "@std/bytes";
 
-let buf = ByteBuffer.allocate(16);
-buf.writeInt32BE(0, 0x01020304);
-println!(buf.readInt32BE(0));
-println!(buf.writeString(4, "Rasmalai"));
-println!(buf.readString(4, 8));
+let header = ByteBuffer.allocate(16);
+header.writeUInt32BE(0, 0x89504e47);
+let n = header.writeString(4, "Rasmalai");
+println!(header.readUInt32BE(0));
+println!(n);
+println!(header.readString(4, n));
 ```
 
-## Keep going
+Run it with `rnx run`. The three lines are:
 
-Read the [overview](overview) for the full picture, then open the API reference for exact signatures.
+```text
+2303741511
+8
+Rasmalai
+```
+
+`0x89504e47` is stored most significant byte first, and reading it with the same order returns the number. `writeString` returns the number of UTF-8 bytes it wrote, not the number of characters, and `readString` takes that byte count.

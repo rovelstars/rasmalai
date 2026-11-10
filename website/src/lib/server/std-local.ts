@@ -1,9 +1,11 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import type { PackageDetail, VersionDoc } from './db.js';
+import { parseFrontmatter } from '$lib/docs/markdown';
+import { normalizeGuideEntry } from './guides.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..', '..', '..');
@@ -175,16 +177,104 @@ export function diskStoreChunk(hash: string): Uint8Array | null {
 	return null;
 }
 
+function localGuides(name: string): string {
+	const docs = join(stdDir, name, 'docs');
+	if (!existsSync(docs)) return '[]';
+	const found: string[] = [];
+	const walk = (dir: string): void => {
+		let names: string[];
+		try {
+			names = readdirSync(dir);
+		} catch {
+			return;
+		}
+		for (const entry of names) {
+			if (entry.startsWith('.')) continue;
+			const path = join(dir, entry);
+			let isDir = false;
+			try {
+				isDir = statSync(path).isDirectory();
+			} catch {
+				continue;
+			}
+			if (isDir) walk(path);
+			else if (entry.endsWith('.md')) found.push(path);
+		}
+	};
+	walk(docs);
+	const guides: unknown[] = [];
+	for (const path of found.sort()) {
+		const rel = relative(docs, path).replace(/\\/g, '/').replace(/\.md$/, '');
+		let raw: string;
+		try {
+			raw = readFileSync(path, 'utf8');
+		} catch {
+			continue;
+		}
+		const { meta, body } = parseFrontmatter(raw);
+		const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? '';
+		const stem = rel.split('/').pop() ?? rel;
+		const title = meta.title.trim() || heading || stem.replace(/[-_]/g, ' ');
+		const entry = normalizeGuideEntry({
+			slug: rel,
+			title,
+			source: body,
+			description: meta.description,
+			section: meta.section ?? null,
+			order: meta.order ?? null
+		});
+		if (entry.ok) guides.push(entry.entry);
+	}
+	return JSON.stringify(guides);
+}
+
+function packageDescription(name: string, mod: Record<string, unknown> | null): string {
+	const overview = join(stdDir, name, 'docs', 'overview.md');
+	try {
+		const text = readFileSync(overview, 'utf8');
+		const { meta, body } = parseFrontmatter(text);
+		if (meta.description.trim()) return meta.description.trim();
+		const paragraph = body
+			.split(/\n\s*\n/)
+			.map((p) => p.trim())
+			.find((p) => p && !p.startsWith('#') && !p.startsWith('```'));
+		if (paragraph) return paragraph;
+	} catch {
+		/* fall through to the API description */
+	}
+	const docs = (mod?.['docs'] ?? {}) as Record<string, unknown>;
+	const description = String(docs['description'] ?? '').split('\n')[0].trim();
+	return description || `@std/${name} standard library module`;
+}
+
+function packageReadme(name: string, full: string, version: string): string {
+	try {
+		const text = readFileSync(join(stdDir, name, 'README.md'), 'utf8').trim();
+		if (text) return text + '\n';
+	} catch {
+		/* fall through to the generic readme */
+	}
+	return `# ${full}\n\nStandard library module, version ${version}.\n`;
+}
+
+function packageVersion(name: string): string | null {
+	try {
+		const text = readFileSync(join(stdDir, name, 'Project.config'), 'utf8');
+		return text.match(/^\s*version:\s*["']([^"']+)["']/m)?.[1] ?? null;
+	} catch {
+		return null;
+	}
+}
+
 export function localStdPackage(full: string): { pkg: PackageDetail; doc: VersionDoc } | null {
 	if (!full.startsWith('@std/')) return null;
-	const snap = localStdSnapshot();
-	if (!snap) return null;
 	const name = full.slice('@std/'.length);
-	const mod = snap.modules.find((m) => String(m['name']) === name);
-	if (!mod) return null;
-	const docs = (mod['docs'] ?? {}) as Record<string, unknown>;
-	const description = String(docs['description'] ?? `${full} standard library module`).split('\n')[0];
-	const version = snap.version || cliVersion();
+	const base = join(stdDir, name);
+	if (!existsSync(base)) return null;
+	const snap = localStdSnapshot();
+	const mod = snap?.modules.find((m) => String(m['name']) === name) ?? null;
+	const description = packageDescription(name, mod);
+	const version = packageVersion(name) ?? snap?.version ?? cliVersion();
 	const now = Math.floor(Date.now() / 1000);
 	return {
 		pkg: {
@@ -206,9 +296,9 @@ export function localStdPackage(full: string): { pkg: PackageDetail; doc: Versio
 		},
 		doc: {
 			version,
-			readme: `# ${full}\n\nStandard library module, version ${version}.\n`,
-			docJson: JSON.stringify({ modules: [mod] }),
-			guides: '[]',
+			readme: packageReadme(name, full, version),
+			docJson: mod ? JSON.stringify({ modules: [mod] }) : '{"modules":[]}',
+			guides: localGuides(name),
 			permissions: []
 		}
 	};

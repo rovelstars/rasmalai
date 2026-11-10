@@ -1,7 +1,7 @@
 use diagnostics::theme::{AuraColor, AuraTheme};
 
 use crate::lexer::lex;
-use crate::token::TokenKind;
+use crate::token::{Token, TokenKind};
 
 fn is_type_name(word: &str) -> bool {
     // Option stays: user-declared types highlight even though std.prelude omits it.
@@ -67,6 +67,39 @@ fn paint_doc(theme: &AuraTheme, text: &str) -> String {
     out
 }
 
+fn token_color_at(toks: &[Token], index: usize) -> Option<AuraColor> {
+    let kind = &toks[index].kind;
+    if let TokenKind::Ident(name) = kind {
+        if is_type_name(name) {
+            return Some(AuraColor::Pink);
+        }
+        let prev = index.checked_sub(1).and_then(|i| toks.get(i)).map(|t| &t.kind);
+        let prev2 = index.checked_sub(2).and_then(|i| toks.get(i)).map(|t| &t.kind);
+        let next = toks.get(index + 1).map(|t| &t.kind);
+        if matches!(next, Some(TokenKind::Bang)) {
+            return Some(AuraColor::Cyan);
+        }
+        if matches!(prev, Some(TokenKind::Dot)) {
+            return Some(AuraColor::Cyan);
+        }
+        if matches!(prev, Some(TokenKind::Fn)) {
+            return Some(AuraColor::Cyan);
+        }
+        if matches!(prev, Some(TokenKind::LBracket))
+            && matches!(prev2, Some(TokenKind::Hash) | Some(TokenKind::Bang))
+        {
+            return Some(AuraColor::Cyan);
+        }
+        if matches!(prev2, Some(TokenKind::Hash)) && matches!(prev, Some(TokenKind::Bang)) {
+            return Some(AuraColor::Cyan);
+        }
+        if matches!(next, Some(TokenKind::LParen)) {
+            return Some(AuraColor::Cyan);
+        }
+    }
+    token_color(kind)
+}
+
 fn token_color(kind: &TokenKind) -> Option<AuraColor> {
     match kind {
         TokenKind::Fn
@@ -118,7 +151,8 @@ fn token_color(kind: &TokenKind) -> Option<AuraColor> {
         | TokenKind::Extends
         | TokenKind::With
         | TokenKind::Comptime
-        | TokenKind::Native => Some(AuraColor::Purple),
+        | TokenKind::Native
+        | TokenKind::Runtime => Some(AuraColor::Purple),
         TokenKind::Int(_)
         | TokenKind::Float(_)
         | TokenKind::StrText(_)
@@ -148,7 +182,7 @@ pub fn highlight_line(theme: &AuraTheme, line: &str) -> String {
     }
     let mut out = String::with_capacity(line.len() + 16);
     let mut cursor = 0usize;
-    for tok in &toks {
+    for (index, tok) in toks.iter().enumerate() {
         let start = tok.span.start as usize;
         let end = tok.span.end as usize;
         if start > cursor {
@@ -158,7 +192,7 @@ pub fn highlight_line(theme: &AuraTheme, line: &str) -> String {
         if matches!(tok.kind, TokenKind::DocComment(_)) {
             out.push_str(&paint_doc(theme, text));
         } else {
-            match token_color(&tok.kind) {
+            match token_color_at(&toks, index) {
                 Some(color) => out.push_str(&theme.paint(color, text)),
                 None => out.push_str(text),
             }
@@ -252,6 +286,32 @@ mod tests {
         }
         let out = highlight_line(&theme, "super");
         assert!(out.contains("\x1b[38;2;237;236;238msuper\x1b[0m"), "{out}");
+    }
+
+
+    #[test]
+    fn runtime_keyword_is_purple() {
+        let theme = AuraTheme {
+            enabled: true,
+            truecolor: true,
+        };
+        let out = highlight_line(&theme, "import { fn len(): Int } from runtime \"core\";");
+        assert!(out.contains("\x1b[38;2;162;119;255mruntime\x1b[0m"), "{out}");
+    }
+
+    #[test]
+    fn macros_attributes_and_functions_are_cyan() {
+        let theme = AuraTheme {
+            enabled: true,
+            truecolor: true,
+        };
+        let out = highlight_line(&theme, "#[Macro] fn run() { println!(1); }");
+        for word in ["Macro", "run", "println"] {
+            assert!(
+                out.contains(&format!("\x1b[38;2;130;226;255m{word}\x1b[0m")),
+                "{word}: {out}"
+            );
+        }
     }
 
     #[test]

@@ -1,11 +1,29 @@
-# @std/testing
+---
+title: Testing
+description: Keep benchmark work from being optimized away and assert allocation balance in tests.
+section: Overview
+order: 0
+---
 
-Benchmark helper that keeps measured work from being optimized away.
+# Testing
 
-`bench` blocks are timed by `rnx bench`. An optimizing backend is free to
-delete a loop whose result nobody reads, which turns a benchmark into a
-measurement of nothing. `blackBox` hands the value to the runtime as an
-opaque value and hands it straight back, so the work stays in the timing.
+@std/testing supports two jobs that happen outside normal program runs. The
+first is benchmarking: an optimizing backend is free to delete a loop whose
+result nobody reads, which turns a benchmark into a measurement of nothing.
+`blackBox` hands a value to the runtime as an opaque value and hands it
+straight back, so the work stays in the timing.
+
+The second is leak checks. `liveCount` reads the runtime's live
+object-plus-array count, so a test can snapshot it before and after the code
+under test and assert that allocations balance.
+
+The package has two free functions:
+
+- `blackBox(val: Any): Any` returns the value unchanged through the
+  backend's black-box barrier.
+- `liveCount(): Int` returns the live allocation count at the call instant.
+
+A first call:
 
 ```rnx
 import { blackBox } from "@std/testing";
@@ -13,12 +31,24 @@ import { blackBox } from "@std/testing";
 println!(blackBox(40 + 2));
 ```
 
-## What is inside
+This prints `42`.
 
-- free functions: `blackBox()`
+## Tests are not in this module
 
-## When to use
+`test fn` blocks, the `assert(cond, message)` builtin, and the `rnx test`
+runner are part of the language and toolchain. You do not import @std/testing
+to write a test. Import it when a test needs an allocation snapshot, or when
+a benchmark needs a black-box fence.
 
-Reach for @std/testing inside benchmarks: blackBox keeps the optimizer from deleting the code being measured. Tests themselves live in test fn blocks and run under rnx test.
+`bench` blocks are timed by `rnx bench`. A bench block needs no `Main` and no
+test registration. Put it in the project source and run the benchmark
+command.
 
-It covers: blackBox fences; Benchmark support.
+## Guides
+
+- [Benchmarking](guides/benchmarking) covers `blackBox`, `bench` blocks,
+  and the limits of the return type.
+- [Leak checks](guides/leak-checks) covers `liveCount` and the shape of an
+  allocation-balance test.
+
+Start with [Getting started](getting-started) for a runnable program.

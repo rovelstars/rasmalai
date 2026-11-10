@@ -1,6 +1,13 @@
-# Getting started with @std/testing
+---
+title: Getting started with Testing
+description: Run blackBox in a small program and see the value come back unchanged.
+section: Getting started
+order: 10
+---
 
-No install step: the module ships inside the compiler. Import what you need:
+# Getting started with Testing
+
+The module ships inside the compiler:
 
 ```rnx
 import { blackBox } from "@std/testing";
@@ -8,15 +15,30 @@ import { blackBox } from "@std/testing";
 
 ## Copy this
 
-Paste it into a file or run it straight in the playground:
+Save this as `box.rnx`:
 
 ```rnx
 import { blackBox } from "@std/testing";
 
-let x = blackBox(40 + 2);
-println!(x);
+let total = blackBox(40) + blackBox(2);
+println!(total);
 ```
 
-## Keep going
+Run it:
 
-Read the [overview](overview) for the full picture, then open the API reference for exact signatures.
+```sh
+rnx run box.rnx
+```
+
+The output is `42`. Each call returns the value it was given, so the sum is
+the same as `40 + 2`. The point is not the number; it is that the optimizer
+cannot fold the calls away. In a benchmark, the work that produced the value
+stays in the measured block.
+
+## What to expect
+
+`blackBox` is an ordinary call at run time. It takes one value, returns it,
+and does not print or change the value. The result is typed `Any`, so
+arithmetic works but assigning it to a narrower binding does not.
+[Benchmarking](guides/benchmarking) explains that rule and shows a bench
+block.

@@ -1784,30 +1784,6 @@ samp {
 		color: var(--color-faint);
 	}
 
-	.pkg-subtabs {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-md);
-		border-bottom: 1px solid var(--color-rule);
-		padding-bottom: var(--space-xs);
-	}
-
-	.pkg-subtab {
-		font-size: var(--text-sm);
-		color: var(--color-faint);
-	}
-
-	.pkg-subtab:hover {
-		color: var(--color-ink);
-	}
-
-	.pkg-subtab[aria-selected='true'] {
-		color: var(--color-ink);
-		text-decoration: underline;
-		text-decoration-color: var(--color-accent);
-		text-underline-offset: 5px;
-	}
-
 	/* Docs shell: one spine for the guide, the manual, the stdlib and the registry. */
 	.docs {
 		padding-bottom: var(--space-4xl);
@@ -1980,6 +1956,17 @@ samp {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--space-xs);
+	}
+
+	.docs-version {
+		min-height: 26px;
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-sm);
+		background: var(--color-paper);
+		padding: 0 var(--space-2xs);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--color-ink);
 	}
 
 	.docs-toc-list {

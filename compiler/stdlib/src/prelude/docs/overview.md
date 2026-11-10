@@ -1,50 +1,36 @@
+---
+title: "@std/prelude"
+description: "The names every Rasmalai compilation unit sees without an import, and how a target replaces them."
+section: Overview
+order: 0
+---
+
 # @std/prelude
 
-Names every compilation unit sees without an import.
+The prelude is the set of names that every compilation unit sees without an import. It contains the foundation types, the date and promise types, the output and log macros, and a few catalog stubs that the compiler lowers to runtime calls.
 
-An explicit declaration or an import always shadows a prelude name. The
-foundation types come from `@std/foundation`: `Int`, `Float`, `FastFloat`,
-`Bool`, `String`, `Char`, `Array`, `Map`, `Set`, `Error`, `Any`, `Void`,
-`GenRef`, `Result`, `Iterator`, `Iterable`, and `ArrayIter`, plus the Array
-and String extension methods. This package re-exports those names and adds
-`Date` from `@std/time`, `Promise` and friends from `@std/async`, `RnxHost`
-from `@std/env`, the print and log macros, and the `IO`, `Thread`, and
-`ThreadPool` catalog stubs.
+The foundation names come from `@std/foundation`: `Int`, `Float`, `FastFloat`, `Bool`, `String`, `Char`, `Array`, `Map`, `Set`, `Error`, `Any`, `Void`, `GenRef`, `Result`, `Iterator`, `Iterable`, and `ArrayIter`, with the array and string extension methods. The prelude re-exports them and adds `Date` from `@std/time`, `Promise`, `PromiseResult`, and `PromiseWithResolvers` from `@std/async`, `RnxHost` from `@std/env`, the output macros from `@std/io`, and the log macros from `@std/log`. `IO`, `Thread`, and `ThreadPool` are catalog stubs declared here, so the compiler can lower their operations without a separate import.
 
-`Map` and `Set` are catalog stubs here; their bodies live in
-`@std/collections`. A target prelude can replace this package and provide
-only the catalog it supports.
+An explicit declaration or an import always shadows a prelude name. That is how a program can use `Map` from `@std/collections` instead of the ambient catalog stub.
 
 ```rnx
 println!("no import needed");
-let found = [1, 2, 3].find((n) => n > 1);
-println!(found ?? -1, typeOf(found));
+let found = [1, 2, 3].find((n: Int): Bool => n > 1);
+println!(found ?? -1);
 ```
 
-## What is inside
+The program prints `no import needed` and then `2`. `println!`, `Array`, and the `find` extension method all come from the prelude.
 
-Foundation re-exports:
+`Map` and `Set` are catalog stubs in this package. Their methods live in `@std/collections`. Import those two names from that package when you need the real tables:
 
-- `Int`, `Float`, `FastFloat`, `Bool`, `String`, `Char`
-- `Array`, `Map`, `Set`, `Error`, `Any`, `Void`, `GenRef`
-- `Result`, `Iterator`, `Iterable`, `ArrayIter`
+```rnx
+import { Map } from "@std/collections";
 
-Prelude-only names:
+let ore = new Map<String, Int>();
+ore.set("iron", 12);
+println!(ore.get("iron") ?? 0);
+```
 
-- `Date`
-- `Promise`, `PromiseResult`, `PromiseWithResolvers`
-- `RnxHost`
-- `print`, `println`, `eprint`, `eprintln`
-- `log`, `debug`, `info`, `warn`, `error`
-- `IO`, `Thread`, `ThreadPool`
+## Guides
 
-## When to use
-
-The prelude is already imported everywhere: every file sees the foundation
-types, `Date`, `Promise`, the Array and String extension methods, `assert`,
-and `typeOf` with no import. Reference `@std/prelude` explicitly only to
-disambiguate a shadowed name.
-
-A barebones target ships its own prelude package and selects it through the
-project alias or the target descriptor. The catalog names must still be
-present; `@uefi/prelude` is the worked example.
+[Ambient names](guides/ambient-names) explains what is in scope, how shadowing works, and which names are compiler builtins rather than prelude declarations. [Custom preludes](guides/custom-prelude) covers selecting a different prelude for a target and the names a replacement must provide.

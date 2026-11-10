@@ -175,7 +175,7 @@ describe('project model', () => {
 	});
 
 	it('migrates legacy snippet tabs', () => {
-		const p = migrateLegacyTabs([{ name: 'Hello!', code: 'print(1);' }, { code: 'print(2);' }]);
+		const p = migrateLegacyTabs([{ name: 'Hello!', code: 'println!(1);' }, { code: 'println!(2);' }]);
 		assert.ok(p);
 		assert.ok(allRnxFiles(p).length === 2);
 		assert.equal(migrateLegacyTabs([]), null);
@@ -349,7 +349,7 @@ describe('ide store hygiene', () => {
 
 describe('rnx editor mode', () => {
 	it('keeps oracle keyword and type sets in sync with highlight.ts', () => {
-		for (const w of ['fn', 'let', 'import', 'export', 'pass', 'super']) assert.ok(AURA_KEYWORDS.has(w), w);
+		for (const w of ['fn', 'let', 'import', 'export', 'pass', 'super', 'runtime']) assert.ok(AURA_KEYWORDS.has(w), w);
 		for (const w of ['Int', 'Option', 'String', 'Vec4f']) assert.ok(AURA_TYPES.has(w), w);
 		assert.ok(!AURA_KEYWORDS.has('taken'));
 	});
@@ -397,7 +397,15 @@ describe('rnx editor mode', () => {
 					peek: () => (at < w.length ? w.charAt(at) : undefined),
 					eat: () => undefined
 				};
-				out.push(rnxStream.token(fake as unknown as StringStream, { inBlockComment: false, inString: false }));
+				out.push(
+					rnxStream.token(fake as unknown as StringStream, {
+						inBlockComment: false,
+						inString: false,
+						attrDepth: 0,
+						expectFunctionName: false,
+						prev: ''
+					})
+				);
 			}
 			return out;
 		};

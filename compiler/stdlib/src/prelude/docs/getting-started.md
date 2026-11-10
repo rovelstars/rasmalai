@@ -1,41 +1,31 @@
+---
+title: "Getting started with @std/prelude"
+description: "Use the ambient names with no import and run a first program."
+section: Getting started
+order: 10
+---
+
 # Getting started with @std/prelude
 
-No install step: the module ships inside the compiler.
-
-The prelude is already in scope in every file, no import needed.
+There is no install step and no import line. The prelude is already in scope in every file. `println!`, `Array`, `String`, `Result`, `Promise`, and the rest of the catalog are available as soon as a program starts.
 
 ## Copy this
 
-Paste it into a file or run it straight in the playground:
-
 ```rnx
-// no import: the prelude is ambient
-
 println!("no import needed");
-let found = [1, 2, 3].find((n) => n > 1);
+let found = [1, 2, 3].find((n: Int): Bool => n > 1);
+println!(found ?? -1);
 assert("abc".contains("b"), "prelude");
-println!(found ?? -1, typeOf(found));
 ```
 
-## Pick another prelude
+Save it as the entry file of a project and run `rnx run`, or start with `rnx init` and replace `src/main.rnx`.
 
-Alias `@std/prelude` to a package that re-exports the catalog without the
-host console and logging surface:
+## What to expect
 
-```rnx
-export default {
-    project: { name: "uefi-probe", version: "0.1.0" },
-    dependencies: {
-        "@std/prelude": { alias: "@uefi/prelude" },
-        "@uefi/prelude": { path: "../../compiler/stdlib/uefi_prelude" },
-    },
-}
-```
+The program prints two lines. The first is `no import needed`. The second is `2`, because `find` returns the first value above 1. The `assert` call succeeds and produces no output. The process exits with status 0.
 
-The selected package must declare the required names; a missing name fails
-`E108` with the package and the name.
+## When to import it
 
-## Keep going
+Almost never. The compiler loads the prelude before your file, so adding `import ... from "@std/prelude"` is redundant. Reference the package directly only when you need to disambiguate a name that your own declaration or another import shadows.
 
-Read the [overview](overview) for the full picture, then open the API
-reference for exact signatures.
+`@std/prelude` is also the package a target can replace. The built-in UEFI target selects `@std/uefi`, and the WASI target selects `@std/wasi`. See [Custom preludes](guides/custom-prelude) for the selection rules.

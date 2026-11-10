@@ -354,7 +354,7 @@ pub struct PackageGuide {
     pub order: Option<String>,
 }
 
-fn guide_slug_for_stem(stem: &str) -> Option<String> {
+fn guide_slug_for_segment(stem: &str) -> Option<String> {
     let mut out = String::new();
     for c in stem.to_ascii_lowercase().chars() {
         if c.is_ascii_alphanumeric() {
@@ -366,15 +366,35 @@ fn guide_slug_for_stem(stem: &str) -> Option<String> {
     while out.ends_with('-') {
         out.pop();
     }
-    if out.len() >= 1 && out.len() <= 64 && out.as_bytes()[0] != b'-' {
+    if !out.is_empty() && out.len() <= 64 && out.as_bytes()[0] != b'-' {
         Some(out)
     } else {
         None
     }
 }
 
+fn guide_slug_for_stem(stem: &str) -> Option<String> {
+    guide_slug_for_segment(stem)
+}
+
+fn guide_slug_for_rel(rel: &str) -> Option<String> {
+    let rel = rel.strip_suffix(".md")?;
+    let parts: Vec<&str> = rel.split('/').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        out.push(guide_slug_for_segment(part)?);
+    }
+    Some(out.join("/"))
+}
+
 fn split_guide_frontmatter(text: &str) -> (Vec<(String, String)>, &str) {
-    let Some(rest) = text.strip_prefix("---\n") else {
+    let Some(rest) = text
+        .strip_prefix("---\r\n")
+        .or_else(|| text.strip_prefix("---\n"))
+    else {
         return (Vec::new(), text);
     };
     let mut fields = Vec::new();
@@ -390,7 +410,10 @@ fn split_guide_frontmatter(text: &str) -> (Vec<(String, String)>, &str) {
         if let Some(colon) = trimmed.find(':') {
             let key = trimmed[..colon].trim();
             let mut value = trimmed[colon + 1..].trim().to_string();
-            if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+            if value.len() >= 2
+                && ((value.starts_with('"') && value.ends_with('"'))
+                    || (value.starts_with('\'') && value.ends_with('\'')))
+            {
                 value = value[1..value.len() - 1].to_string();
             }
             if matches!(key, "title" | "description" | "section" | "order") {
@@ -420,18 +443,18 @@ fn humanize_guide_stem(stem: &str) -> String {
 }
 
 fn guide_title_for_body(body: &str, fields: &[(String, String)], stem: &str) -> String {
+    if let Some(title) = guide_field(fields, "title") {
+        let title = title.trim();
+        if !title.is_empty() {
+            return title.to_string();
+        }
+    }
     for line in body.lines() {
         if let Some(heading) = line.strip_prefix("# ") {
             let heading = heading.trim();
             if !heading.is_empty() {
                 return heading.to_string();
             }
-        }
-    }
-    if let Some(title) = guide_field(fields, "title") {
-        let title = title.trim();
-        if !title.is_empty() {
-            return title.to_string();
         }
     }
     humanize_guide_stem(stem)
@@ -455,10 +478,10 @@ pub fn package_guides(package_dir: &Path, manifest: &Manifest) -> Result<Vec<Pac
     for abs in &found {
         let rel = abs.strip_prefix(package_dir).unwrap_or(abs).to_string_lossy().replace('\\', "/");
         let depth = rel.strip_prefix(&format!("{docs}/")).unwrap_or(&rel);
-        if depth.split('/').count() > 2 {
+        if depth.split('/').count() > 4 {
             return Err(Diagnostic::new(
                 Code::E108,
-                format!("entries.docs allows at most one nesting level (`{rel}` is too deep)"),
+                format!("entries.docs allows at most four nesting levels (`{rel}` is too deep)"),
             ));
         }
         rels.insert(rel);
@@ -476,10 +499,11 @@ pub fn package_guides(package_dir: &Path, manifest: &Manifest) -> Result<Vec<Pac
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let Some(slug) = guide_slug_for_stem(&stem) else {
+        let depth = rel.strip_prefix(&format!("{docs}/")).unwrap_or(&rel);
+        let Some(slug) = guide_slug_for_rel(depth) else {
             return Err(Diagnostic::new(
                 Code::E108,
-                format!("guide `{rel}` maps to an unusable slug (name the file with lowercase letters, digits, and dashes, at most 64 characters)"),
+                format!("guide `{rel}` maps to an unusable slug (name each path segment with lowercase letters, digits, and dashes, at most 64 characters, at most four levels)"),
             ));
         };
         if !seen.insert(slug.clone()) {
@@ -502,7 +526,13 @@ pub fn package_guides(package_dir: &Path, manifest: &Manifest) -> Result<Vec<Pac
             order: opt("order"),
         });
     }
-    guides.sort_by(|a, b| a.slug.cmp(&b.slug));
+    guides.sort_by(|a, b| {
+        let rank = |g: &PackageGuide| match g.order.as_deref().and_then(|o| o.parse::<i64>().ok()) {
+            Some(n) => (0, n, g.slug.clone()),
+            None => (1, 0, g.slug.clone()),
+        };
+        rank(a).cmp(&rank(b))
+    });
     Ok(guides)
 }
 
@@ -853,11 +883,21 @@ mod tests {
         let manifest = Manifest { project: Some(project), workspace: None };
         let guides = package_guides(&std_bytes, &manifest).unwrap();
         let slugs: Vec<&str> = guides.iter().map(|g| g.slug.as_str()).collect();
-        assert_eq!(slugs, vec!["getting-started", "overview"]);
-        assert_eq!(guides[0].title, "Getting started with @std/bytes");
-        assert_eq!(guides[1].title, "@std/bytes");
+        assert_eq!(
+            slugs,
+            vec![
+                "overview",
+                "getting-started",
+                "guides/byte-order",
+                "guides/reading-and-writing"
+            ]
+        );
+        assert_eq!(guides[0].title, "Byte buffers");
+        assert_eq!(guides[1].title, "Getting started with @std/bytes");
+        assert_eq!(guides[2].title, "Byte order");
+        assert_eq!(guides[3].title, "Reading and writing lanes");
         assert!(guides.iter().all(|g| g.source.starts_with("# ")));
-        assert!(guides[0].source.contains("```rnx"));
+        assert!(guides[1].source.contains("```rnx"));
     }
 
     #[test]
@@ -873,7 +913,7 @@ mod tests {
         let manifest = fixture_manifest(&dir);
         let guides = package_guides(&dir, &manifest).unwrap();
         let slugs: Vec<&str> = guides.iter().map(|g| g.slug.as_str()).collect();
-        assert_eq!(slugs, vec!["apple", "nested", "zebra"]);
+        assert_eq!(slugs, vec!["apple", "sub/nested", "zebra"]);
         assert_eq!(guides[0].title, "Apple");
         assert_eq!(guides[0].source, "# Apple\n\nFruit.\n");
         assert_eq!(guides[0].description, "");
@@ -882,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn guides_title_prefers_heading_then_frontmatter_then_filename() {
+    fn guides_title_prefers_frontmatter_then_heading_then_filename() {
         let dir = fixture_guides_dir(
             "titles",
             &[
@@ -894,7 +934,7 @@ mod tests {
         let manifest = fixture_manifest(&dir);
         let guides = package_guides(&dir, &manifest).unwrap();
         let by_slug = |slug: &str| guides.iter().find(|g| g.slug == slug).unwrap().title.clone();
-        assert_eq!(by_slug("aaa"), "Heading");
+        assert_eq!(by_slug("aaa"), "Frontmatter");
         assert_eq!(by_slug("bbb"), "Frontmatter");
         assert_eq!(by_slug("my-quick-start"), "My Quick Start");
         let front = guides.iter().find(|g| g.slug == "bbb").unwrap();
@@ -930,6 +970,9 @@ mod tests {
         assert_eq!(guide_slug_for_stem(""), None);
         assert_eq!(guide_slug_for_stem(&"a".repeat(64)).unwrap().len(), 64);
         assert_eq!(guide_slug_for_stem(&"a".repeat(65)), None);
+        assert_eq!(guide_slug_for_rel("Guides/First Step.md").as_deref(), Some("guides/first-step"));
+        assert_eq!(guide_slug_for_rel("a/b/c/d.md").as_deref(), Some("a/b/c/d"));
+        assert_eq!(guide_slug_for_rel("a/b/c/d/e.md"), None);
     }
 
     #[test]
@@ -941,17 +984,17 @@ mod tests {
         assert!(err.message.contains("docs/!!!.md"), "{}", err.message);
         let dir = fixture_guides_dir(
             "dup-slug",
-            &[("docs/a b.md", "# One\n"), ("docs/sub/a-b.md", "# Two\n")],
+            &[("docs/sub/a b.md", "# One\n"), ("docs/sub/a-b.md", "# Two\n")],
         );
         let manifest = fixture_manifest(&dir);
         let err = package_guides(&dir, &manifest).unwrap_err();
         assert_eq!(err.code, diagnostics::Code::E108);
-        assert!(err.message.contains("duplicate guide slug `a-b`"), "{}", err.message);
-        let dir = fixture_guides_dir("too-deep", &[("docs/a/b/c.md", "# Deep\n")]);
+        assert!(err.message.contains("duplicate guide slug `sub/a-b`"), "{}", err.message);
+        let dir = fixture_guides_dir("too-deep", &[("docs/a/b/c/d/e.md", "# Deep\n")]);
         let manifest = fixture_manifest(&dir);
         let err = package_guides(&dir, &manifest).unwrap_err();
         assert_eq!(err.code, diagnostics::Code::E108);
-        assert!(err.message.contains("one nesting level"), "{}", err.message);
+        assert!(err.message.contains("four nesting levels"), "{}", err.message);
         let dir = fixture_guides_dir("nonutf", &[("docs/blob.md", "# Blob\n")]);
         std::fs::write(dir.join("docs").join("blob.md"), [0xff, 0xfe, 0x00]).unwrap();
         let manifest = fixture_manifest(&dir);

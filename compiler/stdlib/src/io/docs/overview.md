@@ -1,26 +1,34 @@
-# @std/io
+---
+title: Terminal input and output
+description: Standard streams, pretty-printed output, line input, terminal size, colors, and raw mode.
+section: Overview
+order: 0
+---
 
-Terminal streams, pretty-printing, line input, and raw mode.
+# Terminal input and output
 
-`io` owns the terminal: standard streams, color-aware pretty-printing,
-line input, size queries, and raw mode. File I/O stays in `@std/fs`.
-Every item uses the `export` keyword. There is no ambient `Console`
-class. `print` stays in the prelude as a shim over `io.write`.
+`@std/io` owns the terminal. It writes values to stdout and stderr, reads a line or the rest of stdin, reports the terminal size, picks a color level, and toggles raw mode. File and directory work stays in `@std/fs`.
+
+Import the namespace for the free functions, and the enum when you compare color levels:
 
 ```rnx
-import io from "@std/io";
-
-io.write("hello");
-println!(io.width() > 0);
+import io, { ColorLevel } from "@std/io";
 ```
 
-## What is inside
+The print macros `print!`, `println!`, `eprint!`, and `eprintln!` are declared in this package and re-exported by the stock prelude, so most programs call them without an import. There is no `print` function and no `Console` class. The function form is `io.write(value)`, which prints one value with a trailing newline. `ColorLevel` has four values: `TrueColor`, `Ansi256`, `Ansi16`, and `Ascii`.
 
-- `ColorLevel`
-- free functions: `stdin()`, `stdout()`, `stderr()`, `write()`, `writeRaw()`, `writeError()`, `clear()`, `read()`
+`io.write` renders containers with the shared pretty-printer: arrays as `[a, b]`, maps as `{k: v}`, class instances as `Name{field: value}`, and results as `Ok(v)` or `Err(e)`. Nesting deeper than 3 becomes `...`, and a value that contains itself becomes `<cycle>`. Strings print as-is, without quotes. Colors appear only when stdout is a terminal and the color profile allows them.
 
-## When to use
+```rnx
+import io, { ColorLevel } from "@std/io";
 
-Reach for @std/io when a program talks to the terminal: write and writeError for color-aware pretty-printing with newlines, writeRaw for exact bytes, read and readLine for input, width and height for layout, colorProfile for the ColorLevel tier, setRawMode for character-at-a-time input. File I/O stays in @std/fs.
+io.write("hello");
+println!("width", io.width(), "height", io.height());
+println!(io.colorProfile() == ColorLevel.Ascii);
+```
 
-It covers: Color-aware pretty-printing; stdin/stdout/stderr handles; Line input and size queries; Raw mode toggling.
+The first line is fixed. The other two report the terminal and the environment, so their values differ between a terminal, a pipe, and the playground.
+
+## Guides
+
+[Getting started](getting-started) has a first program. [Writing output](guides/writing-output) covers the value renderer, raw bytes, stderr, and colors. [Reading input](guides/reading-input) covers lines, whole input, and raw mode. [Print formatting](guides/formatting) covers placeholders, braces, and argument joining.

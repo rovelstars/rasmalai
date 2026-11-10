@@ -1,13 +1,16 @@
+---
+title: "@std/wasi"
+description: Prelude and console output for wasm32-unknown-wasi command modules.
+section: Overview
+order: 0
+---
+
 # @std/wasi
 
-Prelude and console output for `wasm32-unknown-wasi`.
-
-A WASI command module starts with no process around it. There is no stdout
-file descriptor to inherit, no `@std/io`, and no `@std/fs` unless the host
-grants those directories. Everything the module shows a user leaves through
-`wasi_snapshot_preview1.fd_write`, and the module ends by calling
-`proc_exit`. `@std/wasi` is the small surface for that: two call macros and
-four plain functions.
+`@std/wasi` is the prelude and console surface for `wasm32-unknown-wasi`.
+A WASI command module starts with no host process to inherit. It reaches the
+outside world through `wasi_snapshot_preview1` imports, and the in-house
+linker supplies those imports when it links the module.
 
 ```rnx
 fn Main(): Int {
@@ -16,47 +19,41 @@ fn Main(): Int {
 }
 ```
 
-Build it:
-
-```sh
-rnx build --target wasm32-unknown-wasi --release
-```
-
-Current Node and Deno releases no longer run a `.wasm` file as a WASI
-program directly, so the module goes through the preview 1 API. Save this
-as `runner.mjs`:
-
-```js
-import { WASI } from "node:wasi";
-import { readFile } from "node:fs/promises";
-const wasi = new WASI({ version: "preview1", args: [], env: {} });
-const bytes = await readFile(process.argv[2]);
-const module = await WebAssembly.compile(bytes);
-const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
-process.exit(wasi.start(instance));
-```
-
-```sh
-node runner.mjs build/release/hello.wasm
-deno run --allow-read runner.mjs build/release/hello.wasm
-```
+`@std/wasi` is selected automatically as the prelude for the target, so
+`println!`, `eprintln!`, and the foundation names are in scope with no import.
+The package re-exports the foundation catalog (`Int`, `String`, `Array`,
+`Map`, and the rest) and `Date` from `@std/time`.
 
 ## What is inside
 
-- `println!`, the call macro that renders its arguments as one line
-- `wasi_println!`, the same macro under a distinct name
-- `eprintln!`, the same rendering on descriptor 2
-- `printLine(text)`, `printText(text)`, `printErrorLine(text)`,
-  `printErrorText(text)` for a `String` you already hold
+The console surface is three call macros and four plain functions:
 
-The foundation names (`Int`, `String`, `Array`, `Map`, and the rest) stay
-ambient because this package is the target prelude, and `Date` comes from
-`@std/time`.
+- `println!` writes one line to standard output.
+- `wasi_println!` is the same macro under a distinct name.
+- `eprintln!` writes one line to standard error.
+- `printLine(text)` writes a `String` and a newline to standard output.
+- `printText(text)` writes a `String` with no newline to standard output.
+- `printErrorLine(text)` writes a `String` and a newline to standard error.
+- `printErrorText(text)` writes a `String` with no newline to standard error.
 
-## When to use
+Macro arguments are joined with a single space and the line ends with `\n`.
+The bytes leave the module through `fd_write` on descriptor 1 for standard
+output and descriptor 2 for standard error.
 
-Use it in a program built with `rnx build --target wasm32-unknown-wasi`.
-The target is tier 3: the in-house linker builds modules that print and
-exit, and the wider `@std` surface is not ported yet. Importing a package
-that needs a capability the descriptor does not declare fails at the
-import, before the link runs.
+## Target details
+
+`@std/wasi` declares the `alloc`, `console`, and `clock` capabilities, which
+the WASI descriptor provides. The module exports `_start` and `memory` and
+imports only `wasi_snapshot_preview1` `fd_write` and `proc_exit`. A `Main`
+return value becomes the `proc_exit` status.
+
+The target is Tier 3 and experimental. `@std/io`, `@std/log`, `@std/fs`,
+`@std/process`, `@std/net`, and `@std/sync` are not part of this prelude.
+`@std/process`, `@std/net`, and `@std/sync` also need capabilities the WASI
+descriptor does not declare, so importing them fails the capability check
+before linking. The runtime does not carry the wider I/O surface yet.
+
+## Guides
+
+- [Console streams](guides/streams) covers standard output, standard error,
+  formatting, and the functions for strings you already hold.

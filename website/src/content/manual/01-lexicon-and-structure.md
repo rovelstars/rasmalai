@@ -86,7 +86,7 @@ Free functions and methods use `camelCase` (`calculateDamage`, `updatePosition`)
 
 ## Reserved keywords
 
-The following words are reserved and cannot serve as identifiers: `true`, `false`, `null`, `this`, `new`, `class`, `struct`, `record`, `trait`, `interface`, `extension`, `enum`, `fn`, `init`, `deinit`, `onReload`, `extends`, `with`, `let`, `const`, `static`, `if`, `else`, `for`, `while`, `in`, `return`, `break`, `continue`, `try`, `catch`, `finally`, `throw`, `throws`, `defer`, `guard`, `switch`, `case`, `default`, `do`, `fallthrough`, `is`, `import`, `from`, `as`, `public`, `pub`, `private`, `unsafe`, `comptime`, `native`, `async`, `await`, `pass`.
+The following words are reserved and cannot serve as identifiers: `true`, `false`, `null`, `this`, `new`, `class`, `struct`, `record`, `trait`, `interface`, `extension`, `enum`, `fn`, `init`, `deinit`, `onReload`, `extends`, `with`, `let`, `const`, `static`, `if`, `else`, `for`, `while`, `in`, `return`, `break`, `continue`, `try`, `catch`, `finally`, `throw`, `throws`, `defer`, `guard`, `switch`, `case`, `default`, `do`, `fallthrough`, `is`, `import`, `from`, `as`, `public`, `pub`, `private`, `unsafe`, `comptime`, `native`, `runtime`, `async`, `await`, `pass`.
 
 There is no `mut` keyword (`let` bindings are mutable). Classes construct with the `new` keyword (`new Meter(20)`); structs keep a direct call. There is no `::` path separator; a literal `::` is a compile error.
 
@@ -141,13 +141,14 @@ println!("n={n} next=${n + 1} literal \{n}");
 
 ## Minor keywords
 
-Four reserved words name behavior specified elsewhere rather than here:
+Five reserved words name behavior specified elsewhere rather than here:
 
 | Keyword | Meaning | Specified in |
 |---|---|---|
 | `pass` | explicit no-op statement for otherwise empty cases | [Control Flow](/manual/04-control-flow), [Concurrency and Threads](/manual/14-concurrency-and-threads) |
 | `comptime` | marks compile-time evaluation position | reserved; no general compile-time execution beyond manifest `switch` over `target` (see [Packages and Registries](/manual/18-packages-and-registries)) |
 | `native` | declares a foreign C-ABI signature (`from native "lib"`) | [Hardware and FFI](/manual/13-hardware-and-ffi) |
+| `runtime` | imports a compiler runtime shim (`from runtime "core"`) | [Project and Toolchain](/manual/16-project-and-toolchain) |
 | `onReload` | hot-reload hook for `rnx dev` | [Project and Toolchain](/manual/16-project-and-toolchain) |
 
 ## Truth values

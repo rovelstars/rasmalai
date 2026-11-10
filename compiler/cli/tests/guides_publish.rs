@@ -119,7 +119,7 @@ fn publish_posts_collected_guides_to_mock_registry() {
     assert_eq!(guides[0]["description"], "First steps.");
     assert_eq!(guides[0]["section"], "Basics");
     assert_eq!(guides[0]["order"], "1");
-    assert_eq!(guides[1]["slug"], "perf");
+    assert_eq!(guides[1]["slug"], "advanced/perf");
     assert_eq!(guides[1]["title"], "Perf");
     assert!(guides[1]["section"].is_null(), "{}", guides[1]["section"]);
     assert!(guides[1]["order"].is_null(), "{}", guides[1]["order"]);

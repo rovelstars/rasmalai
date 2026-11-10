@@ -514,6 +514,7 @@ module.exports = grammar({
     import_source: $ => choice(
       $.string_literal,
       seq('native', field('native_library', $.string_literal)),
+      seq('runtime', field('runtime_library', $.string_literal)),
     ),
 
     import_specifier: $ => choice(

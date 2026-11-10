@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildChapters } from '../src/lib/docs/chapters.ts';
+import { parseFrontmatter } from '../src/lib/docs/markdown.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -19,6 +20,19 @@ describe('guide chapter count parity', () => {
 		assert.doesNotMatch(block, /slug: '[^']+'/);
 		assert.match(nav, /buildChapters\(guideFiles/);
 		assert.match(nav, /buildChapters\(manualFiles/);
+	});
+});
+
+describe('package frontmatter', () => {
+	it('parses CRLF, quoted values, and the guide fields', () => {
+		const { meta, body } = parseFrontmatter(
+			'---\r\ntitle: "Install: the first step"\r\ndescription: \'A quoted description.\'\r\nsection: "Getting started"\r\norder: "20"\r\n---\r\n\r\n# Install\r\n'
+		);
+		assert.equal(meta.title, 'Install: the first step');
+		assert.equal(meta.description, 'A quoted description.');
+		assert.equal(meta.section, 'Getting started');
+		assert.equal(meta.order, '20');
+		assert.equal(body.trim(), '# Install');
 	});
 });
 

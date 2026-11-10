@@ -36,7 +36,7 @@
 			bypass:
 				'Values die when their block ends. The release runs deterministically on the releasing thread. Cleanup reads like Go defer, because it is defer, without a collector behind it.',
 			code: `fn handle(id: Int): Int {
-    defer { print("done"); }
+    defer { println!("done"); }
     return id * 2;
 }`
 		},

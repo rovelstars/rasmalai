@@ -1,6 +1,13 @@
-# Getting started with @std/env
+---
+title: Getting started with Env
+description: Read arguments, write a variable, and print the working directory from one small program.
+section: Getting started
+order: 10
+---
 
-No install step: the module ships inside the compiler. Import what you need:
+# Getting started with Env
+
+The module ships inside the compiler, so there is no install step:
 
 ```rnx
 import { Env } from "@std/env";
@@ -8,17 +15,49 @@ import { Env } from "@std/env";
 
 ## Copy this
 
-Paste it into a file or run it straight in the playground:
+Save this as `hello-env.rnx`:
 
 ```rnx
 import { Env } from "@std/env";
 
-Env.set("GREETING", "hi");
-println!(Env.get("GREETING"));
-println!(Env.args().len() > 0);
-println!(Env.cwd().len() > 0);
+let args = Env.args();
+println!("program:", args[0]);
+println!("arguments:", args.len() - 1);
+Env.set("MODE", "demo");
+println!("mode:", Env.get("MODE"));
+println!("cwd:", Env.cwd());
 ```
 
-## Keep going
+Run it:
 
-Read the [overview](overview) for the full picture, then open the API reference for exact signatures.
+```sh
+rnx run hello-env.rnx
+```
+
+The output looks like this, with your own path in the first line:
+
+```text
+program: hello-env.rnx
+arguments: 0
+mode: demo
+cwd: /home/you/project
+```
+
+`Env.args()` returns every command-line argument, with the program path at
+index 0. The count after index 0 is the number of user arguments.
+`Env.set("MODE", "demo")` writes a variable into this process, and the next
+`Env.get` sees it immediately. `Env.cwd()` returns an absolute path.
+
+Pass arguments after `--` and run it again:
+
+```sh
+rnx run hello-env.rnx -- alpha beta
+```
+
+The second line becomes `arguments: 2`.
+
+## What to expect
+
+The program prints four lines each run. There is no setup file and no
+cleanup. A variable written with `Env.set` lives for the rest of the process
+and does not change what a child process inherits.

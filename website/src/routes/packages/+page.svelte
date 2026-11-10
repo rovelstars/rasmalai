@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { STD_MODULES } from '$lib/docs/stdlib';
+	import { ENGINE_VERSION, STD_MODULES } from '$lib/docs/stdlib';
 	import { humanDate } from '$lib/packages-meta';
 	import { Search } from 'lucide-svelte';
 	import '$lib/styles/registry.css';
@@ -84,7 +84,7 @@
 	}
 
 	let feed = $derived.by((): FeedPackage[] => {
-		return data.packages.map((p) => {
+		const registry = data.packages.map((p) => {
 			const extra = extraByName[p.name] ?? {};
 			const tags = Array.isArray(p.tags) ? p.tags : [];
 			const kw = Array.isArray(p.keywords) && p.keywords.length > 0 ? p.keywords : tags;
@@ -100,6 +100,19 @@
 				dependents: extra.dependents ?? p.dependents ?? 0
 			};
 		});
+		const known = new Set(registry.map((p) => p.name));
+		const std = STD_MODULES.filter((m) => !known.has(`@std/${m.name}`)).map((m) => ({
+			name: `@std/${m.name}`,
+			description: m.tagline,
+			author: 'Rovel Stars',
+			license: 'MIT OR Apache-2.0',
+			keywords: ['stdlib'],
+			latest: ENGINE_VERSION,
+			updatedAt: 0,
+			versionCount: 1,
+			dependents: 0
+		}));
+		return [...std, ...registry];
 	});
 
 	let searching = $derived(
@@ -150,7 +163,7 @@
 			? 'nothing here'
 			: searching
 				? `${results.length} ${results.length === 1 ? 'package' : 'packages'}${query.trim() ? ` matching "${query.trim()}"` : ''}`
-				: `${results.length} ${results.length === 1 ? 'package' : 'packages'} in the registry`
+				: `${results.length} ${results.length === 1 ? 'package' : 'packages'} in the registry and standard library`
 	);
 
 	function isoDate(ts: number): string {

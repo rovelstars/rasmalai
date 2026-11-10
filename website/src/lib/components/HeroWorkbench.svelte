@@ -6,7 +6,7 @@
 		`import { Vec4f } from "@std/simd";
 
 fn shade(sun: Vec4f): Float {
-    defer { print("shade done"); }
+    defer { println!("shade done"); }
     let acc = Vec4f.splat(0.0);
     let v = new Vec4f(1.0, 2.0, 3.0, 4.0);
     let lit = v * sun;

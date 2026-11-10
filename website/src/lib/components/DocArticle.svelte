@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { Component } from 'svelte';
-	import { ArrowLeft, ArrowRight } from 'lucide-svelte';
 	import { onDocCodeClick } from '$lib/docs/codeActions';
 	import { attachSectionCopy, onSectionCopyClick } from '$lib/docs/sectionCopy';
+	import DocPager from '$lib/components/DocPager.svelte';
 
 	let {
 		title,
@@ -56,22 +56,5 @@
 	<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 	{@html html}
 
-	{#if prev || next}
-		<nav class="doc-pager" aria-label="Page navigation">
-			{#if prev}
-				<a href={prev.path} class="doc-pager-link">
-					<span class="doc-pager-dir"><ArrowLeft size={12} /> Previous</span>
-					<span class="doc-pager-title">{prev.title}</span>
-				</a>
-			{:else}
-				<span></span>
-			{/if}
-			{#if next}
-				<a href={next.path} class="doc-pager-link doc-pager-next">
-					<span class="doc-pager-dir">Next <ArrowRight size={12} /></span>
-					<span class="doc-pager-title">{next.title}</span>
-				</a>
-			{/if}
-		</nav>
-	{/if}
+	<DocPager {prev} {next} />
 </article>

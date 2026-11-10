@@ -22,6 +22,9 @@ interface GuideOut {
 	title: string;
 	html: string;
 	source: string;
+	description: string;
+	section: string | null;
+	order: string | null;
 }
 
 function normalizeModule(m: DocModule): DocModule {
@@ -50,7 +53,15 @@ function modsFromDocJson(docJson: string): DocModule[] {
 function guidesFromStored(raw: string): GuideOut[] {
 	return parseStoredGuides(raw)
 		.filter((g) => typeof g.html === 'string')
-		.map((g) => ({ slug: g.slug, title: g.title, html: g.html, source: g.source }));
+		.map((g) => ({
+			slug: g.slug,
+			title: g.title,
+			html: g.html,
+			source: g.source,
+			description: g.description,
+			section: g.section,
+			order: g.order
+		}));
 }
 
 function registryStarted(full: string, mod: DocModule | null): { importLine: string; snippet: string } {
@@ -122,11 +133,11 @@ export async function load({ params, platform, setHeaders }) {
 					installed: false
 				});
 	const stored = guides.find((g) => g.slug === name);
-	if (stored && stored.html) {
+	if (stored) {
 		const rendered = renderMarkdown(stored.source.replace(/^\s*# .*\n/, ''));
 		return {
 			...base,
-			html: stored.html,
+			html: rendered.html,
 			toc: rendered.toc,
 			raw: stored.source,
 			sections: splitRawSections(stored.source),

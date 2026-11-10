@@ -170,9 +170,9 @@ fn test_grammar_coverage_of_language_features() {
         "pub", "public", "fn", "let", "const", "class", "struct", "record", "trait", "enum",
         "with", "if", "else", "while", "for", "in", "switch", "case", "default", "break",
         "continue", "return", "async", "await", "defer", "throw", "throws", "try", "catch",
-        "import", "export", "from", "test", "bench", "Vec4f", "Vec4i", "Int", "Float",
-        "Bool", "Void", "String", "Array", "Map", "Set", "Option", "Result", "GenRef",
-        "Mutex", "RwLock", "Condvar", "Barrier", "Channel", "ThreadPool", "init",
+        "import", "export", "from", "test", "bench", "runtime", "decay", "Vec4f", "Vec4i",
+        "Int", "Float", "Bool", "Void", "String", "Array", "Map", "Set", "Option", "Result",
+        "GenRef", "Mutex", "RwLock", "Condvar", "Barrier", "Channel", "ThreadPool", "init",
         "deinit", "onReload", "this", "true", "false", "null", "nil", "none",
     ];
     for keyword in keywords {
@@ -182,6 +182,8 @@ fn test_grammar_coverage_of_language_features() {
         "0x1F", "0b101", "0o17", "1.5", "42", "// note", "/// docs", "//! module",
         "\"text\"", "${name}", "$name", "fn name", "name(", "CustomType",
         "/** docs */", "@param", "{Int}", "=>", "x =>", "(x: Int): Int =>",
+        "#[Macro]", "#[Allow(CyclicReference)]", "println!", "Shape.Circle", ".Circle",
+        "runtime \"core\"", "native \"z\"", "?.", "??", "..=", "...",
     ];
     for probe in probes {
         assert_covered(&patterns, probe);

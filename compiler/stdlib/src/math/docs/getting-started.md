@@ -1,6 +1,13 @@
+---
+title: "Getting started with @std/math"
+description: "Import Math and Vec2 and run a first numeric program."
+section: Getting started
+order: 10
+---
+
 # Getting started with @std/math
 
-No install step: the module ships inside the compiler. Import what you need:
+There is no install step. The package ships inside the compiler. Import what you need:
 
 ```rnx
 import { Math, Vec2 } from "@std/math";
@@ -8,7 +15,7 @@ import { Math, Vec2 } from "@std/math";
 
 ## Copy this
 
-Paste it into a file or run it straight in the playground:
+Save it as the entry file of a project and run `rnx run`, or start with `rnx init` and replace `src/main.rnx`:
 
 ```rnx
 import { Math, Vec2 } from "@std/math";
@@ -18,6 +25,6 @@ println!(v.length());
 println!(Math.sin(Math.PI() / 2.0));
 ```
 
-## Keep going
+## What to expect
 
-Read the [overview](overview) for the full picture, then open the API reference for exact signatures.
+The program prints two lines. The first is `5`, the Euclidean length of `(3.0, 4.0)`. The second is the sine of 90 degrees, which is 1.

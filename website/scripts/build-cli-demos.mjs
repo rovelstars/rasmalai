@@ -32,7 +32,7 @@ function makeFixture(withError) {
 	);
 	writeFileSync(
 		join(dir, 'src', 'main.rnx'),
-		'fn Main(): Int {\n    print("demo ok");\n    return 0;\n}\n'
+		'fn Main(): Int {\n    println!("demo ok");\n    return 0;\n}\n'
 	);
 	if (withError) {
 		writeFileSync(

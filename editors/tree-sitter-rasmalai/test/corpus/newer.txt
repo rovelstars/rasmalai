@@ -1,0 +1,60 @@
+================================================================================
+Imports and attributes: runtime shims, macros, attributes
+================================================================================
+
+import { fn __rnx_core_len(): Int } from runtime "core";
+
+import {
+  fn compressBound(n: Int): Int
+} from native "z";
+
+#[Macro]
+export fn println(args: Array<Any>) {
+  println!("x");
+}
+
+---
+
+(source_file
+  (import_declaration
+    (import_specifier
+      (identifier)
+      (parameter_list)
+      (type
+        (primitive_type)))
+    (import_source
+      (string_literal)))
+  (import_declaration
+    (import_specifier
+      (identifier)
+      (parameter_list
+        (parameter
+          (identifier)
+          (type
+            (primitive_type))))
+      (type
+        (primitive_type)))
+    (import_source
+      (string_literal)))
+  (attribute
+    (identifier))
+  (export_declaration
+    (function_declaration
+      (identifier)
+      (parameter_list
+        (parameter
+          (identifier)
+          (type
+            (generic_type
+              (identifier)
+              (type
+                (identifier))))))
+      (block
+        (expression_statement
+          (expression
+            (macro_expression
+              (identifier)
+              (argument_list
+                (argument
+                  (expression
+                    (string_literal)))))))))))

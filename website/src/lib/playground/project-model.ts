@@ -27,7 +27,7 @@ export interface IdeProject {
 }
 
 export function defaultMainSource(): string {
-	return 'fn Main(): Int {\n    print("hello from Rasmalai");\n    return 0;\n}\n';
+	return 'fn Main(): Int {\n    println!("hello from Rasmalai");\n    return 0;\n}\n';
 }
 
 export function createProject(name: string, id?: string): IdeProject {

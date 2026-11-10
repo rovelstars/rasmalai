@@ -12,7 +12,7 @@ import {
 	moduleFor,
 	overviewMarkdown
 } from '../src/lib/docs/module-doc.ts';
-import { load as docsLoad } from '../src/routes/docs/[scope]/[name]/[page]/+page.server.ts';
+import { load as docsLoad } from '../src/routes/docs/[scope]/[name]/[...page]/+page.server.ts';
 import { load as bareRedirectLoad } from '../src/routes/docs/[name]/+page.server.ts';
 import { load as twoSegServerLoad } from '../src/routes/docs/[scope]/[name]/+page.server.ts';
 
@@ -35,9 +35,9 @@ function collect(dir: string, out: string[] = []): string[] {
 
 describe('docs route inventory', () => {
 	it('serves module docs from the generalized scope route', () => {
-		assert.ok(statSync(join(ROUTES, 'docs', '[scope]', '[name]', '[page]', '+page.server.ts')).isFile());
-		assert.ok(statSync(join(ROUTES, 'docs', '[scope]', '[name]', '[page]', '+page.ts')).isFile());
-		assert.ok(statSync(join(ROUTES, 'docs', '[scope]', '[name]', '[page]', '+page.svelte')).isFile());
+		assert.ok(statSync(join(ROUTES, 'docs', '[scope]', '[name]', '[...page]', '+page.server.ts')).isFile());
+		assert.ok(statSync(join(ROUTES, 'docs', '[scope]', '[name]', '[...page]', '+page.ts')).isFile());
+		assert.ok(statSync(join(ROUTES, 'docs', '[scope]', '[name]', '[...page]', '+page.svelte')).isFile());
 		assert.ok(statSync(join(ROUTES, 'docs', '[scope]', '[name]', '+layout.svelte')).isFile());
 	});
 
@@ -97,7 +97,7 @@ describe('docs link integrity', () => {
 		assert.ok(STDLIB.length > 0, 'stdlib::MODULES must not be empty');
 		assert.ok(STDLIB.includes('prelude'), 'stdlib::MODULES must list prelude');
 		const server = readFileSync(
-			join(ROUTES, 'docs', '[scope]', '[name]', '[page]', '+page.server.ts'),
+			join(ROUTES, 'docs', '[scope]', '[name]', '[...page]', '+page.server.ts'),
 			'utf8'
 		);
 		const serverList = [...server.matchAll(/^\t'([a-z]+)',?$/gm)].map((m) => m[1]).sort();
@@ -207,11 +207,13 @@ describe('generalized docs serving', () => {
 		return JSON.stringify([r.entry]);
 	}
 
-	function call(scope: string, name: string, page: string) {
+	function call(scope: string, name: string, page: string, version?: string) {
+		const url = new URL(`https://registry.test/docs/${scope}/${name}/${page}`);
+		if (version) url.searchParams.set('v', version);
 		return docsLoad({
 			params: { scope, name, page },
 			platform: { env: fake.env },
-			url: new URL(`https://registry.test/docs/${scope}/${name}/${page}`),
+			url,
 			fetch: globalThis.fetch,
 			setHeaders: () => {}
 		} as never);
@@ -241,6 +243,27 @@ describe('generalized docs serving', () => {
 		assert.equal((data['mods'] as Array<{ name: string }>).length, 1);
 		assert.equal((data['mods'] as Array<{ name: string }>)[0].name, 'widgets');
 		assert.equal((data['guides'] as Array<{ slug: string }>)[0].slug, 'overview');
+	});
+
+	it('serves a nested guide slug', async () => {
+		fake.reset();
+		const guide = normalizeGuideEntry({
+			slug: 'guides/install',
+			title: 'Install it',
+			source: '# Install it\n\nRun the command.\n',
+			description: 'Nested guide.',
+			section: 'Getting started',
+			order: '20'
+		});
+		assert.equal(guide.ok, true);
+		if (!guide.ok) throw new Error('nested guide must normalize');
+		await seedPackage(fake.env, '@acme/widgets', '2.1.0', {
+			docJson: docJson(),
+			guidesJson: JSON.stringify([guide.entry])
+		});
+		const data = (await call('@acme', 'widgets', 'guides/install')) as Record<string, unknown>;
+		assert.equal(data['page'], 'guides/install');
+		assert.equal((data['guides'] as Array<{ slug: string }>)[0].slug, 'guides/install');
 	});
 
 	it('404s unknown packages, bad pages, and bare scopes', async () => {
@@ -383,7 +406,9 @@ describe('generalized docs serving', () => {
 			string,
 			unknown
 		>;
-		assert.ok(String(start['html']).includes('<code>barewidgets</code>'));
+		assert.ok(
+			String(start['html']).includes('<code><span class="text-aura-text">barewidgets</span></code>')
+		);
 		assert.ok(String(start['html']).includes('to your manifest dependencies'));
 		const api = (await bareServerCall('barewidgets', 'api', headers())) as Record<string, unknown>;
 		assert.notEqual(api['mod'], null);

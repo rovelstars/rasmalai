@@ -11,10 +11,7 @@
 (interpolation) @string.special
 (number_literal) @number
 (boolean_literal) @boolean
-(string_literal) @string
-(interpolation) @string.special
-(number_literal) @number
-(boolean_literal) @boolean
+(null_literal) @constant.builtin
 
 [
   "pub"
@@ -34,6 +31,8 @@
   "with"
   "extends"
   "native"
+  "runtime"
+  "decay"
   "export"
   "new"
 ] @keyword
@@ -76,7 +75,18 @@
   "bench"
 ] @keyword.special
 
-"=>" @operator
+(attribute
+  "#" @punctuation.special
+  name: (identifier) @attribute)
+
+(attribute
+  "[" @punctuation.bracket)
+
+(attribute
+  "]" @punctuation.bracket)
+
+(macro_expression
+  macro: (identifier) @function.macro)
 
 (arrow_function
   parameter: (identifier) @variable.parameter)
@@ -97,9 +107,14 @@
 (function_signature
   name: (identifier) @function)
 
-(init_declaration) @function
-(deinit_declaration) @function
-(onreload_declaration) @function
+(init_declaration
+  "init" @function)
+
+(deinit_declaration
+  "deinit" @function)
+
+(onreload_declaration
+  "onReload" @function)
 
 (import_declaration
   "import" @keyword.control.import
@@ -111,6 +126,9 @@
 
 (import_source
   "native" @keyword.control.import)
+
+(import_source
+  "runtime" @keyword.control.import)
 
 (native_declaration
   "native" @keyword.control.import)
@@ -143,6 +161,21 @@
 (record_declaration
   name: (identifier) @type)
 
+(enum_variant
+  name: (identifier) @constructor)
+
+(implicit_member_expression
+  member: (identifier) @constructor)
+
+(record_field
+  name: (identifier) @property)
+
+(record_field
+  name: (string_literal) @property)
+
+(argument
+  name: (identifier) @variable.parameter)
+
 (type
   (identifier) @type)
 
@@ -152,5 +185,70 @@
 (variable_declaration
   name: (identifier) @variable)
 
+(destructure_tuple_statement
+  (identifier) @variable)
+
+(destructure_array_statement
+  (identifier) @variable)
+
+(destructure_record_statement
+  (identifier) @variable)
+
 (this_expression) @variable.builtin
 (super_expression) @variable.builtin
+
+[
+  "=>"
+  "??"
+  "?."
+  ".."
+  "..="
+  "..."
+  "=="
+  "!="
+  "<="
+  ">="
+  "&&"
+  "||"
+  "<<"
+  ">>"
+  ">>>"
+  "="
+  "+="
+  "-="
+  "*="
+  "/="
+  "%="
+  "<<="
+  ">>="
+  ">>>="
+  "++"
+  "--"
+  "+"
+  "-"
+  "*"
+  "/"
+  "%"
+  "!"
+  "~"
+  "&"
+  "|"
+  "^"
+  "?"
+] @operator
+
+[
+  "("
+  ")"
+  "{"
+  "}"
+  "["
+  "]"
+] @punctuation.bracket
+
+[
+  ","
+  ";"
+  ":"
+  "."
+] @punctuation.delimiter

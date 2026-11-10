@@ -1,5 +1,5 @@
 import { marked, type Token, type Tokens } from 'marked';
-import { highlightAura, highlightCode } from '$lib/aura/highlight';
+import { highlightAura, highlightCode, highlightInlineCode } from '$lib/aura/highlight';
 
 export interface TocEntry {
 	id: string;
@@ -86,22 +86,33 @@ export interface DocMeta {
 
 export function parseFrontmatter(src: string): { meta: DocMeta; body: string } {
 	const meta: DocMeta = { title: '', description: '' };
-	if (!src.startsWith('---\n')) return { meta, body: src };
-	const end = src.indexOf('\n---', 4);
-	if (end < 0) return { meta, body: src };
-	for (const line of src.slice(4, end).split('\n')) {
+	const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(src);
+	if (!match) return { meta, body: src };
+	for (const line of match[1].split(/\r?\n/)) {
 		const colon = line.indexOf(':');
 		if (colon < 0) continue;
 		const key = line.slice(0, colon).trim();
-		const value = line
-			.slice(colon + 1)
-			.trim()
-			.replace(/^"(.*)"$/, '$1');
-		if (key === 'title' || key === 'description' || key === 'track' || key === 'sourceLang' || key === 'section' || key === 'order' || key === 'icon') {
+		let value = line.slice(colon + 1).trim();
+		if (
+			value.length >= 2 &&
+			((value.startsWith('"') && value.endsWith('"')) ||
+				(value.startsWith("'") && value.endsWith("'")))
+		) {
+			value = value.slice(1, -1);
+		}
+		if (
+			key === 'title' ||
+			key === 'description' ||
+			key === 'track' ||
+			key === 'sourceLang' ||
+			key === 'section' ||
+			key === 'order' ||
+			key === 'icon'
+		) {
 			(meta as unknown as Record<string, string>)[key] = value;
 		}
 	}
-	return { meta, body: src.slice(end + 4).replace(/^\n/, '') };
+	return { meta, body: src.slice(match[0].length) };
 }
 
 export interface CompareBlock {
@@ -263,6 +274,12 @@ const renderer = {
 	},
 	code({ text, lang }: Tokens.Code) {
 		return renderCode(text, (lang ?? '').toLowerCase());
+	},
+	codespan({ text }: Tokens.Codespan) {
+		const spans = highlightInlineCode(text)
+			.map((s) => `<span class="${s.cls}">${escHtml(s.text)}</span>`)
+			.join('');
+		return `<code>${spans}</code>`;
 	},
 	blockquote({ tokens }: Tokens.Blockquote) {
 		const inner = marked.parser(tokens) as string;

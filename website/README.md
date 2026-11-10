@@ -29,6 +29,16 @@ npm run dev
 npm run dev -- --open
 ```
 
+### Playground engine
+
+The playground runs a wasm build of `compiler/wasm_playground`. The
+`predev` check compares that wasm file with the compiler sources and
+rebuilds it with `wasm-pack` when it is stale. This matters after a
+change to `compiler/stdlib/src/lib.rs`: the module list is compiled into
+the engine, so a stale wasm build does not know about `@std/ui` or
+`@std/app`. Run `npm run build:wasm:ci` yourself if the check cannot
+find `wasm-pack`.
+
 ### Playground stdlib origin
 
 In production the playground reads `@std/*` from the same origin. Under

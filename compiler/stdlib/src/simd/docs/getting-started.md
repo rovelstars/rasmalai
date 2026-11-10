@@ -1,6 +1,13 @@
+---
+title: "Getting started with @std/simd"
+description: "Import Vec4f and Vec4i and run a first vector program."
+section: Getting started
+order: 10
+---
+
 # Getting started with @std/simd
 
-No install step: the module ships inside the compiler. Import what you need:
+There is no install step. The package ships inside the compiler. Import the vector types you need:
 
 ```rnx
 import { Vec4f } from "@std/simd";
@@ -8,15 +15,17 @@ import { Vec4f } from "@std/simd";
 
 ## Copy this
 
-Paste it into a file or run it straight in the playground:
+Save it as the entry file of a project and run `rnx run`, or start with `rnx init` and replace `src/main.rnx`:
 
 ```rnx
 import { Vec4f } from "@std/simd";
 
 let v = Vec4f.splat(2.0);
 println!(v.x() == 2.0, v.w() == 2.0);
+let sum = v + Vec4f.splat(3.0);
+println!(sum.z());
 ```
 
-## Keep going
+## What to expect
 
-Read the [overview](overview) for the full picture, then open the API reference for exact signatures.
+The first line is `true true`, because `splat(2.0)` sets all four lanes to 2.0. The second line is the `z` lane of the sum, which is 5.

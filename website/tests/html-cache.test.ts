@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { startFakeLibsql, type FakeLibsql } from './libsql-fake.js';
 import { normalizeGuideEntry } from '../src/lib/server/guides.ts';
 import { seedPackage } from './publish-helpers.js';
-import { load as docsLoad } from '../src/routes/docs/[scope]/[name]/[page]/+page.server.ts';
+import { load as docsLoad } from '../src/routes/docs/[scope]/[name]/[...page]/+page.server.ts';
 import { load as packageLoad } from '../src/routes/packages/[...slug]/+page.server.ts';
 import { load as catalogLoad } from '../src/routes/packages/+page.server.ts';
 import { handle } from '../src/hooks.server.ts';
@@ -94,7 +94,7 @@ describe('docs html cache headers', () => {
 
 	it('keeps the docs server load free of per-user branches', () => {
 		const src = readFileSync(
-			join(ROOT, 'src', 'routes', 'docs', '[scope]', '[name]', '[page]', '+page.server.ts'),
+			join(ROOT, 'src', 'routes', 'docs', '[scope]', '[name]', '[...page]', '+page.server.ts'),
 			'utf8'
 		);
 		for (const token of ['Cookie', 'Set-Cookie', 'sessionUser', 'readSessionCookie']) {

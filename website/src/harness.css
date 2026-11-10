@@ -31,12 +31,15 @@
 		border-radius: 6px;
 		padding: 2px;
 	}
-	.harness-only-light {
+	img.harness-logo.harness-only-light,
+	.doc-prose .doc-h img.harness-logo.harness-only-light {
 		display: none;
 	}
-	html.light .harness-only-light {
+	html.light img.harness-logo.harness-only-light,
+	html.light .doc-prose .doc-h img.harness-logo.harness-only-light {
 		display: inline;
 	}
-	html.light .harness-only-dark {
+	html.light img.harness-logo.harness-only-dark,
+	html.light .doc-prose .doc-h img.harness-logo.harness-only-dark {
 		display: none;
 	}

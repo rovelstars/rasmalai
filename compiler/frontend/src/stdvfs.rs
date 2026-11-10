@@ -43,6 +43,12 @@ pub fn clear() {
     vfs().clear();
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn is_known_module(rest: &str) -> bool {
+    !normalize_rest(rest).is_empty()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn is_known_module(rest: &str) -> bool {
     stdlib::MODULES.contains(&normalize_rest(rest).as_str())
         || vendored_module(rest).is_some()

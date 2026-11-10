@@ -1,6 +1,13 @@
+---
+title: Getting started with @std/random
+description: Import Rng, seed two streams, and confirm they produce the same values.
+section: Getting started
+order: 10
+---
+
 # Getting started with @std/random
 
-No install step: the module ships inside the compiler. Import what you need:
+The module ships inside the compiler. Import what you need:
 
 ```rnx
 import { Rng } from "@std/random";
@@ -8,16 +15,19 @@ import { Rng } from "@std/random";
 
 ## Copy this
 
-Paste it into a file or run it straight in the playground:
-
 ```rnx
 import { Rng } from "@std/random";
 
 let a = Rng.seeded(7);
 let b = Rng.seeded(7);
-println!(a.next() == b.next());
+let x = a.next();
+let y = b.next();
+println!(x == y);
+println!(a.int(1, 10), b.int(1, 10));
 ```
 
-## Keep going
+Run it with `rnx run`. The first line is `true`, and the last line prints two equal numbers. Both streams started at seed `7`, and each received the same calls in the same order.
 
-Read the [overview](overview) for the full picture, then open the API reference for exact signatures.
+## Where the seeds go
+
+Use a fixed seed when you want the same run again, and a value from `CryptoRng.int()` when you want a different sequence each time. The seed is an `Int`, so any integer works.

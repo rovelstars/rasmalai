@@ -1,6 +1,13 @@
-# Getting started with @std/os
+---
+title: Getting started with OS
+description: Print the host platform, architecture, CPU count, and temporary directory.
+section: Getting started
+order: 10
+---
 
-No install step: the module ships inside the compiler. Import what you need:
+# Getting started with OS
+
+The module ships inside the compiler:
 
 ```rnx
 import { OS } from "@std/os";
@@ -8,7 +15,7 @@ import { OS } from "@std/os";
 
 ## Copy this
 
-Paste it into a file or run it straight in the playground:
+Save this as `host.rnx`:
 
 ```rnx
 import { OS } from "@std/os";
@@ -18,6 +25,29 @@ println!(OS.cpuCount());
 println!(OS.tmpdir());
 ```
 
-## Keep going
+Run it:
 
-Read the [overview](overview) for the full picture, then open the API reference for exact signatures.
+```sh
+rnx run host.rnx
+```
+
+On a Linux x86_64 machine the output is three lines:
+
+```text
+linux x86_64
+16
+/tmp
+```
+
+The CPU count and temporary directory differ by machine. `OS.cpuCount()`
+reports the threads this process can use, so a container with a CPU quota
+reports the quota, not the physical core count.
+
+## What to expect
+
+All three calls are read-only. They print values and change nothing. There
+is no handle, no close step, and nothing to clean up.
+
+`OS.platform()` and `OS.arch()` are never empty. The other calls have
+documented fallbacks: `hostname()` returns `"unknown"`, `homedir()` returns
+`""`, `cpuCount()` returns 1, and `uptime()` returns 0.0.

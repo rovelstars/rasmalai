@@ -170,14 +170,10 @@ fn mcp_prompts_teach_new_for_classes() {
     );
 }
 
-// Packages that live in the tree before their first publish. They are vendored
-// locally, so they are not in `MODULES` and not seeded from the registry.
-const IN_DEVELOPMENT: &[&str] = &["app", "ui"];
-
 const EXPECTED_MODULES: &[&str] = &[
     "prelude", "foundation", "async", "simd", "math", "collections", "fs", "bytes", "time",
     "random", "sync", "env", "process", "os", "testing", "web", "json", "net", "io", "log",
-    "uefi", "wasi",
+    "uefi", "wasi", "ui", "app",
 ];
 
 #[test]
@@ -187,7 +183,6 @@ fn stdlib_module_list_matches_docs() {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().join("lib.rnx").is_file())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| !IN_DEVELOPMENT.contains(&n.as_str()))
         .collect();
     shipped.sort();
     let mut expected: Vec<String> = EXPECTED_MODULES.iter().map(|n| n.to_string()).collect();
@@ -201,7 +196,7 @@ fn stdlib_module_list_matches_docs() {
         assert!(manual.contains(m), "manual/16 must list @std/{m}");
     }
     assert!(
-        manual.contains("Twenty-two modules"),
+        manual.contains("Twenty-four modules"),
         "manual/16 must count twenty-two"
     );
     let stdlib_ts =

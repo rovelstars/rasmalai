@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { ArrowLeft } from 'lucide-svelte';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import DocsShell from '$lib/components/DocsShell.svelte';
 	import { STDLIB_ICONS } from '$lib/docs/nav';
+	import { buildPackagePageNav } from '$lib/docs/package-pages';
 	import { ENGINE_VERSION, stdApiModule, quickstartFor } from '$lib/docs/stdlib';
 	import { encodeSnippet } from '$lib/playground/share';
 
@@ -29,11 +31,16 @@
 
 	const SECTIONS = [
 		{ slug: 'overview', title: 'Overview' },
-		{ slug: 'getting-started', title: 'Getting started' },
-		{ slug: 'api', title: 'API reference' }
+		{ slug: 'getting-started', title: 'Getting started' }
 	];
 
 	let currentSection = $derived((page.data.page as string | undefined) ?? page.params.page ?? 'overview');
+	type GuideLink = { slug: string; title: string; section?: string | null; order?: string | null };
+	const basePages = new Set(['overview', 'getting-started', 'api']);
+	let guides = $derived(
+		((page.data.guides ?? []) as GuideLink[]).filter((g) => !basePages.has(g.slug))
+	);
+	let guideNav = $derived(buildPackagePageNav(guides));
 	let tryCode = $derived.by(() => {
 		if (scope !== '@std') return null;
 		try {
@@ -43,6 +50,15 @@
 		}
 	});
 	let version = $derived((page.data.version as string | undefined) ?? ENGINE_VERSION);
+	let versions = $derived((page.data.versions as string[] | undefined) ?? [version]);
+	let latest = $derived((page.data.latest as string | undefined) ?? version);
+	function onVersionChange(event: Event) {
+		const next = (event.currentTarget as HTMLSelectElement).value;
+		const url = new URL(page.url);
+		if (next === latest) url.searchParams.delete('v');
+		else url.searchParams.set('v', next);
+		goto(url, { keepFocus: true });
+	}
 </script>
 
 {#snippet nav()}
@@ -51,7 +67,7 @@
 		<li>
 			<a href="/packages/{full}" class="docs-icon">
 				<ArrowLeft size={13} />
-				All versions
+				Package page
 			</a>
 		</li>
 	</ul>
@@ -62,7 +78,20 @@
 			<span class="min-w-0 truncate">{full}</span>
 		</p>
 		<div class="mt-2 flex flex-wrap items-center gap-2 font-mono text-[11px]">
-			<span class="text-aura-faint" title="Documented version">v{version}</span>
+			{#if versions.length > 1}
+				<select
+					value={version}
+					onchange={onVersionChange}
+					aria-label="Select version"
+					class="docs-version"
+				>
+					{#each versions as v}
+						<option value={v}>v{v}</option>
+					{/each}
+				</select>
+			{:else}
+				<span class="text-aura-faint" title="Documented version">v{version}</span>
+			{/if}
 			{#if tryCode}
 				<a
 					href="/playground?code={tryCode}"
@@ -84,21 +113,49 @@
 				<a href="/docs/{full}/{s.slug}" aria-current={active ? 'page' : undefined}>{s.title}</a>
 			</li>
 		{/each}
+		{#each guideNav.loose as guide}
+			{@const active = currentSection === guide.slug}
+			<li>
+				<a href="/docs/{full}/{guide.slug}" aria-current={active ? 'page' : undefined}>
+					{guide.title}
+				</a>
+			</li>
+		{/each}
 	</ul>
 
-	{#if symbols.length > 0}
-		<p class="docs-group">Symbols</p>
+	{#each guideNav.sections as { section, pages }}
+		<p class="docs-group">{section}</p>
 		<ul class="docs-list">
-			{#each symbols as s}
+			{#each pages as guide}
+				{@const active = currentSection === guide.slug}
 				<li>
-					<a href="/docs/{full}/{s.href}#{s.anchor}" class="font-mono text-[12px]">
-						<span class="text-aura-pink">{s.kind[0]}</span>
-						<span class="ml-1.5">{s.name}</span>
+					<a href="/docs/{full}/{guide.slug}" aria-current={active ? 'page' : undefined}>
+						{guide.title}
 					</a>
 				</li>
 			{/each}
 		</ul>
-	{/if}
+	{/each}
+
+	<p class="docs-group">API Reference</p>
+	<ul class="docs-list">
+		<li>
+			<a
+				href="/docs/{full}/api"
+				aria-current={currentSection === 'api' ? 'page' : undefined}
+			>
+				All symbols
+			</a>
+		</li>
+		{#each symbols as s}
+			<li>
+				<a href="/docs/{full}/{s.href}#{s.anchor}" class="font-mono text-[12px]">
+					<span class="text-aura-pink">{s.kind[0]}</span>
+					<span class="ml-1.5">{s.name}</span>
+				</a>
+			</li>
+		{/each}
+	</ul>
 {/snippet}
 
 {#snippet header()}

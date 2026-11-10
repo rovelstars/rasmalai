@@ -22,4 +22,6 @@ pub const MODULES: &[&str] = &[
     "log",
     "uefi",
     "wasi",
+    "ui",
+    "app",
 ];

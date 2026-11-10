@@ -72,67 +72,67 @@ const QUICKSTART_BYTES = `import { ByteBuffer } from "@std/bytes";
 
 let buf = ByteBuffer.allocate(16);
 buf.writeInt32BE(0, 0x01020304);
-print(buf.readInt32BE(0));
-print(buf.writeString(4, "Rasmalai"));
-print(buf.readString(4, 8));
+println!(buf.readInt32BE(0));
+println!(buf.writeString(4, "Rasmalai"));
+println!(buf.readString(4, 8));
 `;
 
 const QUICKSTART_OS = `import { OS } from "@std/os";
 
 
-print(OS.platform(), OS.arch());
-print(OS.cpuCount());
-print(OS.tmpdir());
+println!(OS.platform(), OS.arch());
+println!(OS.cpuCount());
+println!(OS.tmpdir());
 `;
 
 const QUICKSTART_PROCESS = `import { Process } from "@std/process";
 
 
 let out = Process.run("echo", ["hello"]);
-print(out.exitCode);
-print(out.stdoutText().contains("hello"));
+println!(out.exitCode);
+println!(out.stdoutText().contains("hello"));
 `;
 
 const QUICKSTART_TESTING = `import { blackBox } from "@std/testing";
 
 
 let x = blackBox(40 + 2);
-print(x);
+println!(x);
 `;
 
 const QUICKSTART_WEB = `import { URL, Headers, statusCode, HttpStatus } from "@std/web";
 
 
 let u = new URL("https://example.com:8080/a/b?x=1#frag");
-print(u.href());
-print(u.hostname(), u.port(), u.pathname());
+println!(u.href());
+println!(u.hostname(), u.port(), u.pathname());
 let h = new Headers();
 h.set("Content-Type", "text/plain");
-print(h.get("content-type").unwrap());
-print(statusCode(HttpStatus.NotFound));
+println!(h.get("content-type").unwrap());
+println!(statusCode(HttpStatus.NotFound));
 `;
 
 const QUICKSTART_JSON = `import { JSON } from "@std/json";
 
 
-print(JSON.stringify(JSON.parse("12345")));
-print(JSON.stringify(JSON.parse("\"hello world\"")));
+println!(JSON.stringify(JSON.parse("12345")));
+println!(JSON.stringify(JSON.parse("\"hello world\"")));
 let obj = JSON.parseObject("\{\"count\": 41}");
-print(obj.get("count"));
+println!(obj.get("count"));
 `;
 
 const QUICKSTART_NET = `import { TcpListener } from "@std/net";
 
 
 let listener = TcpListener.bind("127.0.0.1", 0);
-print(listener.port() > 0);
+println!(listener.port() > 0);
 listener.close();
 `;
 
-const QUICKSTART_PRELUDE = `print("no import needed");
+const QUICKSTART_PRELUDE = `println!("no import needed");
 let found = [1, 2, 3].find((n) => n > 1);
 assert("abc".contains("b"), "prelude");
-print(found.unwrap(), typeOf(found));
+println!(found.unwrap(), typeOf(found));
 `;
 
 export const STD_MODULES: StdModuleMeta[] = [
@@ -151,8 +151,8 @@ export const STD_MODULES: StdModuleMeta[] = [
 		tagline: 'Implicit scope: foundation types, root intrinsics, and Array/String extensions.',
 		primaryExport: 'Result',
 		whenToUse:
-			'The prelude is already imported everywhere: every file sees the foundation types, Date, Promise, Map, print, assert, and the Array/String extension methods with no import. Reference @std/prelude explicitly only to disambiguate a shadowed name.',
-		capabilities: ['Foundation re-exports', 'Date and promise re-exports', 'print/assert/typeOf intrinsics', 'Array/String extensions'],
+			'The prelude is already imported everywhere: every file sees the foundation types, Date, Promise, Map, println!, assert, and the Array/String extension methods with no import. Reference @std/prelude explicitly only to disambiguate a shadowed name.',
+		capabilities: ['Foundation re-exports', 'Date and promise re-exports', 'println!/assert/typeOf intrinsics', 'Array/String extensions'],
 		quickstart: QUICKSTART_PRELUDE
 	},
 	{
@@ -321,6 +321,22 @@ export const STD_MODULES: StdModuleMeta[] = [
 		whenToUse:
 			'@std/wasi is the prelude for a WASI command module built with rnx build --target wasm32-unknown-wasi. println! and eprintln! render their arguments and write through wasi_snapshot_preview1.fd_write on descriptor 1 or 2, so the host captures exactly those bytes.',
 		capabilities: ['println! and eprintln! call macros', 'fd_write console output', 'proc_exit status']
+	},
+	{
+		name: 'ui',
+		tagline: 'Declarative views, layout, controls, text, and accessibility for native apps.',
+		primaryExport: 'Page',
+		whenToUse:
+			'Reach for @std/ui when an app needs a declarative value tree: Page, Stack, Card, Text, Button, and the other constructors return View values that App.launchView mounts. The package is headless, so the same view runs under the native host and under Driver tests.',
+		capabilities: ['View value constructors', 'Layout and focus', 'Controls and text', 'Accessibility projection']
+	},
+	{
+		name: 'app',
+		tagline: 'Native window, frame clock, input, renderer, and app runtime for @std/ui views.',
+		primaryExport: 'App',
+		whenToUse:
+			'Reach for @std/app when a @std/ui view needs a window: App.launchView mounts the view, owns the frame clock and renderer, and routes pointer, keyboard, scroll, and accessibility events through the same handlers the headless driver uses.',
+		capabilities: ['App.launchView and show', 'Frame clock and damage', 'Pointer and keyboard input', 'Headless Driver and MCP projection']
 	}
 ];
 

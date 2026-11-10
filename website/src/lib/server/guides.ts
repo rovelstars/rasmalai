@@ -12,7 +12,7 @@ export interface GuideEntry {
 	order: string | null;
 }
 
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}(?:\/[a-z0-9][a-z0-9-]{0,63}){0,3}$/;
 
 function optText(v: unknown): string | null {
 	if (typeof v !== 'string') return null;

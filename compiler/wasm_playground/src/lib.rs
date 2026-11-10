@@ -293,14 +293,23 @@ pub fn std_pin_version() -> String {
     frontend::stdvfs::pin_version().to_string()
 }
 
+fn valid_std_module_name(rest: &str) -> bool {
+    if rest.is_empty() || rest.len() > 128 || rest.contains('\\') || rest.contains('\0') {
+        return false;
+    }
+    rest.split('/').all(|segment| {
+        !segment.is_empty() && segment != "." && segment != ".." && !segment.contains(':')
+    })
+}
+
 #[wasm_bindgen]
 pub fn std_provide(name: &str, source: &str) -> String {
     let rest = frontend::stdvfs::normalize_rest(name.trim());
     if rest.is_empty() {
         return std_fail("empty standard library module name".to_string());
     }
-    if !frontend::stdvfs::is_known_module(&rest) {
-        return std_fail(format!("unknown standard library module `@std/{rest}`"));
+    if !valid_std_module_name(&rest) {
+        return std_fail(format!("invalid standard library module name `@std/{rest}`"));
     }
     if source.is_empty() {
         return std_fail(format!("empty source for `@std/{rest}`"));
@@ -333,9 +342,6 @@ pub fn std_missing(source: &str) -> String {
             continue;
         }
         seen.push(name.clone());
-        if !frontend::stdvfs::is_known_module(&name) {
-            continue;
-        }
         let Some(src) = frontend::stdvfs::get(&name) else {
             continue;
         };
@@ -1373,15 +1379,34 @@ mod tests {
     }
 
     #[test]
-    fn std_provide_rejects_unknown_and_empty() {
+    fn std_provide_accepts_registry_modules_and_rejects_bad_names() {
         let _serial = serial();
         frontend::stdvfs::clear();
-        let bad = std_provide("nope", "export fn x(): Int { return 1; }\n");
+        let dynamic = std_provide("future", "export fn x(): Int { return 1; }\n");
+        assert!(dynamic.contains("\"ok\":true"), "{dynamic}");
+        let bad = std_provide("../escape", "export fn x(): Int { return 1; }\n");
         assert!(bad.contains("\"ok\":false"), "{bad}");
         let empty = std_provide("fs", "");
         assert!(empty.contains("\"ok\":false"), "{empty}");
         let blank = std_provide("  ", "export fn x(): Int { return 1; }\n");
         assert!(blank.contains("\"ok\":false"), "{blank}");
+        frontend::stdvfs::clear();
+    }
+
+    #[test]
+    fn std_missing_walks_dynamic_modules_without_an_allowlist() {
+        let _serial = serial();
+        frontend::stdvfs::clear();
+        let provided = std_provide(
+            "future",
+            "import { child } from \"@std/future-child\";\nexport fn x(): Int { return 0; }\n",
+        );
+        assert!(provided.contains("\"ok\":true"), "{provided}");
+        let out = std_missing(
+            "import { x } from \"@std/future\";\nfn Main(): Int { return 0; }\n",
+        );
+        assert!(out.contains("\"future-child\""), "{out}");
+        assert!(!out.contains("\"future\""), "{out}");
         frontend::stdvfs::clear();
     }
 

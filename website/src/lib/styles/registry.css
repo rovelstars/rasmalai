@@ -421,12 +421,6 @@
 	color: var(--color-muted);
 }
 
-.dossier-import {
-	margin-top: var(--space-sm);
-	font-size: var(--text-sm);
-	color: var(--color-muted);
-}
-
 .dossier-facts {
 	display: flex;
 	flex-wrap: wrap;

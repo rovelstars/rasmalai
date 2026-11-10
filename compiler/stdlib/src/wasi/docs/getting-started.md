@@ -1,7 +1,19 @@
+---
+title: "Getting started with @std/wasi"
+description: Build and run a first WASI command module with rnx and a preview 1 runner.
+section: Getting started
+order: 10
+---
+
 # Getting started with @std/wasi
 
-`@std/wasi` is the prelude for `wasm32-unknown-wasi`. Nothing needs to be
-imported: `println!` is already in scope once the build targets WASI.
+`@std/wasi` is the prelude for `wasm32-unknown-wasi`, so there is no import
+line to write. The build loads the package as the target prelude, and
+`println!` is already in scope. An explicit
+`import { println } from "@std/wasi";` is not accepted, because the package is
+not an ordinary library import on this target.
+
+## Copy this
 
 ```rnx
 fn Main(): Int {
@@ -10,9 +22,10 @@ fn Main(): Int {
 }
 ```
 
-## Build a module
+Install the target pack if `rnx target list` reports it missing, then build:
 
 ```sh
+rnx sysroot add wasm32-unknown-wasi
 rnx build --target wasm32-unknown-wasi --release
 ```
 
@@ -23,11 +36,8 @@ export. It imports `fd_write` and `proc_exit` from
 ## Run it
 
 Current Node and Deno releases no longer execute a `.wasm` file as a WASI
-program directly: `node --experimental-wasi-unstable-preview1 app.wasm`
-treats the file as an ES module import, and `deno run app.wasm` rejects the
-`wasi_snapshot_preview1` import. Both hosts expose the preview 1 API
-through `node:wasi`, so one small runner serves both. Save it as
-`runner.mjs`:
+program directly. Both expose the preview 1 API through `node:wasi`, so one
+small runner serves both. Save it as `runner.mjs`:
 
 ```js
 import { WASI } from "node:wasi";
@@ -44,27 +54,15 @@ node runner.mjs build/release/app.wasm
 deno run --allow-read runner.mjs build/release/app.wasm
 ```
 
-Both print exactly the line the program printed and exit with its status.
+Both print:
 
-## Strings and formatting
-
-Every argument renders the way the host prelude renders it: `Int`, `Bool`,
-`Float`, and `String` print their value, and arguments are joined with one
-space. The line ends with `\n`.
-
-```rnx
-fn Main(): Int {
-    let name = "wasi";
-    println!("hello", name, 7);
-    return 0;
-}
+```text
+one line
 ```
 
-The output is `hello wasi 7`.
+They exit with the value `Main` returned.
 
-## What is missing
+## Keep going
 
-Container rendering falls back to a placeholder, so `Array`, `Map`, and
-class instances are not pretty-printed yet. `@std/fs`, `@std/process`,
-`@std/net`, and `@std/sync` are not part of the target prelude: their
-capabilities are not implemented on this tier 3 target.
+Read [Console streams](guides/streams) next for standard error, the print
+functions for strings, and the formatting rules.

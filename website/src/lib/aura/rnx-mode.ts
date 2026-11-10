@@ -5,10 +5,13 @@ import { AURA_KEYWORDS, AURA_TYPES } from '$lib/aura/highlight';
 interface RnxState {
 	inBlockComment: boolean;
 	inString: boolean;
+	attrDepth: number;
+	expectFunctionName: boolean;
+	prev: string;
 }
 
 function startState(): RnxState {
-	return { inBlockComment: false, inString: false };
+	return { inBlockComment: false, inString: false, attrDepth: 0, expectFunctionName: false, prev: '' };
 }
 
 function readString(stream: StringStream, state: RnxState): string {
@@ -71,19 +74,59 @@ export const rnxStream = {
 			state.inBlockComment = true;
 			return 'comment';
 		}
+		if (stream.match(/#!?\[/, true)) {
+			state.attrDepth = 1;
+			state.prev = '';
+			return 'meta';
+		}
+		if (state.attrDepth > 0 && stream.match('[', true)) {
+			state.attrDepth += 1;
+			return 'punctuation';
+		}
+		if (state.attrDepth > 0 && stream.match(']', true)) {
+			state.attrDepth -= 1;
+			return 'punctuation';
+		}
 		if (stream.match('"', true)) {
 			state.inString = true;
+			state.prev = '"';
 			return readString(stream, state);
 		}
-		if (stream.match(/0[xX][0-9a-fA-F_]+|\d[\d_]*(?:\.\d[\d_]*)?/, true)) return 'number';
+		if (stream.match(/0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?/, true)) {
+			state.prev = '0';
+			return 'number';
+		}
 		if (stream.match(/[A-Za-z_][A-Za-z0-9_]*/, true)) {
 			const word = stream.current();
-			if (AURA_KEYWORDS.has(word)) return 'keyword';
+			const prev = state.prev;
+			const next = stream.peek();
+			const expectName = state.expectFunctionName;
+			state.prev = word.charAt(word.length - 1);
+			state.expectFunctionName = false;
+			if (word === 'true' || word === 'false') return 'bool';
+			if (word === 'null') return 'null';
+			if (state.attrDepth > 0) return 'attributeName';
+			if (AURA_KEYWORDS.has(word)) {
+				if (word === 'fn') state.expectFunctionName = true;
+				return 'keyword';
+			}
+			if (next === '!' && !stream.match('!=', false)) return 'macroName';
 			if (AURA_TYPES.has(word)) return 'typeName';
+			if (expectName) return 'variableName.function';
+			if (/^[A-Z]/.test(word)) return 'typeName';
+			if (prev === '.') return 'propertyName';
+			if (next === '(') return 'variableName.function';
+			if (next === ':' && (prev === '(' || prev === ',' || prev === '{')) return 'propertyName';
 			return 'variableName';
 		}
-		stream.next();
-		return null;
+		if (stream.match(/>>>=|<<=|>>=|\.\.=|\.\.\.|>>>|\?\.|\?\?|=>|==|!=|<=|>=|&&|\|\||<<|>>|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|\+\+|--/, true)) {
+			state.prev = stream.current().charAt(stream.current().length - 1);
+			return 'operator';
+		}
+		const ch = stream.next();
+		if (ch === undefined) return null;
+		state.prev = ch === '.' ? '.' : ch;
+		return 'punctuation';
 	},
 	languageData: {
 		commentTokens: { line: '//', block: { open: '/*', close: '*/' } },
@@ -99,8 +142,14 @@ export const auraHighlight = HighlightStyle.define([
 	{ tag: tags.string, color: 'rgb(var(--aura-orange))' },
 	{ tag: tags.number, color: 'rgb(var(--aura-orange))' },
 	{ tag: tags.bool, color: 'rgb(var(--aura-orange))' },
+	{ tag: tags.null, color: 'rgb(var(--aura-orange))' },
 	{ tag: tags.comment, color: 'rgb(var(--aura-faint))', fontStyle: 'italic' },
 	{ tag: tags.meta, color: 'rgb(var(--aura-green))' },
+	{ tag: tags.attributeName, color: 'rgb(var(--aura-cyan))' },
+	{ tag: tags.macroName, color: 'rgb(var(--aura-cyan))' },
+	{ tag: tags.propertyName, color: 'rgb(var(--aura-cyan))' },
+	{ tag: tags.function(tags.variableName), color: 'rgb(var(--aura-cyan))' },
+	{ tag: tags.operator, color: 'rgb(var(--aura-purple))' },
 	{ tag: tags.variableName, color: 'rgb(var(--aura-text))' }
 ]);
 

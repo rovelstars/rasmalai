@@ -5,13 +5,13 @@ Statements: defer, fallthrough, pass, unsafe, for forms, do-while, destructuring
 fn cleanup(f: File): Int {
   defer f.close();
   defer {
-    print("done");
+    println!("done");
   }
   for x in items {
-    print(x);
+    println!(x);
   }
   for (k, v) in pairs {
-    print(k);
+    println!(k);
   }
   do {
     x = next();
@@ -65,7 +65,7 @@ fn arms(c: Int): Int {
           (block
             (expression_statement
               (expression
-                (call_expression
+                (macro_expression
                   (identifier)
                   (argument_list
                     (argument
@@ -78,7 +78,7 @@ fn arms(c: Int): Int {
           (block
             (expression_statement
               (expression
-                (call_expression
+                (macro_expression
                   (identifier)
                   (argument_list
                     (argument
@@ -92,7 +92,7 @@ fn arms(c: Int): Int {
           (block
             (expression_statement
               (expression
-                (call_expression
+                (macro_expression
                   (identifier)
                   (argument_list
                     (argument

@@ -5,8 +5,6 @@ import type { DocModule } from '$lib/docs/api';
 
 export const prerender = false;
 
-const PAGES = ['overview', 'getting-started', 'api'] as const;
-
 const SCOPE_RE = /^@[a-z0-9][a-z0-9-]*$/;
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -35,7 +33,9 @@ const STD_TOPS = [
 	'io',
 	'log',
 	'uefi',
-	'wasi'
+	'wasi',
+	'ui',
+	'app'
 ];
 
 interface GuideOut {
@@ -43,6 +43,9 @@ interface GuideOut {
 	title: string;
 	html: string;
 	source: string;
+	description: string;
+	section: string | null;
+	order: string | null;
 }
 
 function normalizeModule(m: DocModule): DocModule {
@@ -71,11 +74,27 @@ function modsFromDocJson(docJson: string): DocModule[] {
 function guidesFromStored(raw: string): GuideOut[] {
 	return parseStoredGuides(raw)
 		.filter((g) => typeof g.html === 'string')
-		.map((g) => ({ slug: g.slug, title: g.title, html: g.html, source: g.source }));
+		.map((g) => ({
+			slug: g.slug,
+			title: g.title,
+			html: g.html,
+			source: g.source,
+			description: g.description,
+			section: g.section,
+			order: g.order
+		}));
+}
+
+const BASE_PAGES = new Set(['overview', 'getting-started', 'api']);
+
+function ensurePage(page: string, guides: GuideOut[]) {
+	if (!BASE_PAGES.has(page) && !guides.some((g) => g.slug === page)) {
+		error(404, 'doc page not found');
+	}
 }
 
 export async function load({ params, platform, url, fetch, setHeaders }) {
-	if (!PAGES.includes(params.page as (typeof PAGES)[number])) error(404, 'doc page not found');
+	const page = params.page ?? '';
 	const scope = params.scope ?? '';
 	const name = params.name ?? '';
 	if (!SCOPE_RE.test(scope) || !NAME_RE.test(name)) error(404, 'package not found');
@@ -94,34 +113,45 @@ export async function load({ params, platform, url, fetch, setHeaders }) {
 		const local = localStdPackage(full);
 		if (!local) error(404, 'package not found');
 		setHeaders({ 'Cache-Control': 'no-store' });
+		const guides = guidesFromStored(local.doc.guides);
+		ensurePage(page, guides);
 		return {
 			full,
 			scope,
 			name,
-			page: params.page,
+			page,
 			version: local.doc.version,
+			versions: local.pkg.versions.map((v) => v.version),
+			latest: local.pkg.latest,
 			description: local.pkg.description,
 			mods: modsFromDocJson(local.doc.docJson),
-			guides: guidesFromStored(local.doc.guides)
+			guides
 		};
 	}
 
 	try {
 		const pkg = await getPackage(env, full);
 		if (pkg) {
-			const meta = pkg.versions[0];
-			const doc = await getVersionDoc(env, pkg.name, meta.version);
+			const versions = pkg.versions.map((v) => v.version);
+			const requested = url.searchParams.get('v');
+			const latest = pkg.latest || versions[0] || '';
+			const version = requested && versions.includes(requested) ? requested : latest;
+			const doc = await getVersionDoc(env, pkg.name, version);
 			if (doc) {
 				setHeaders({ 'Cache-Control': 'public, max-age=300, s-maxage=300' });
+				const guides = guidesFromStored(doc.guides);
+				ensurePage(page, guides);
 				return {
 					full,
 					scope,
 					name,
-					page: params.page,
-					version: meta.version,
+					page,
+					version,
+					versions,
+					latest,
 					description: pkg.description,
 					mods: modsFromDocJson(doc.docJson),
-					guides: guidesFromStored(doc.guides)
+					guides
 				};
 			}
 		}
@@ -141,12 +171,16 @@ export async function load({ params, platform, url, fetch, setHeaders }) {
 					const mod = mods.find((m) => m.name === name) ?? null;
 					const firstLine = (mod?.docs.description ?? '').split('\n')[0];
 					setHeaders({ 'Cache-Control': 'public, max-age=300, s-maxage=300' });
+					ensurePage(page, []);
+					const version = typeof snap.version === 'string' ? snap.version : '0.1.0';
 					return {
 						full,
 						scope,
 						name,
-						page: params.page,
-						version: typeof snap.version === 'string' ? snap.version : '0.1.0',
+						page,
+						version,
+						versions: [version],
+						latest: version,
 						description: firstLine || `${full} standard library module`,
 						mods,
 						guides: [] as GuideOut[]
