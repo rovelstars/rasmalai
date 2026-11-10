@@ -230,19 +230,34 @@ jobs:
           for candidate in \
             /usr/share/edk2/x64/OVMF.4m.fd \
             /usr/share/OVMF/x64/OVMF.4m.fd \
-            /usr/share/edk2/ovmf/OVMF_CODE.fd \
-            /usr/share/OVMF/OVMF_CODE.fd \
-            /usr/share/OVMF/OVMF_CODE_4M.fd \
-            /usr/share/OVMF/OVMF_CODE.4m.fd \
-            /usr/share/edk2/x64/OVMF_CODE.4m.fd \
-            /usr/share/qemu/OVMF.fd; do
+            /usr/share/qemu/OVMF.fd \
+            /usr/share/OVMF/OVMF.fd \
+            /usr/share/ovmf/OVMF.fd \
+            /usr/share/edk2/ovmf/OVMF.fd; do
             if [ -f "$candidate" ]; then firmware="$candidate"; break; fi
           done
           if [ -z "$firmware" ]; then
-            firmware="$(find /usr/share -name 'OVMF*.fd' -print -quit)"
+            firmware="$(find /usr/share -name 'OVMF*.fd' ! -name 'OVMF_CODE*' ! -name 'OVMF_VARS*' -print -quit)"
           fi
-          [ -n "$firmware" ] || { echo "no OVMF firmware"; exit 1; }
-          echo "firmware: $firmware"
+
+          code=""
+          vars=""
+          if [ -z "$firmware" ]; then
+            for candidate in \
+              /usr/share/OVMF/OVMF_CODE_4M.fd \
+              /usr/share/OVMF/OVMF_CODE.fd \
+              /usr/share/edk2/x64/OVMF_CODE.4m.fd; do
+              if [ -f "$candidate" ]; then code="$candidate"; break; fi
+            done
+            for candidate in \
+              /usr/share/OVMF/OVMF_VARS_4M.fd \
+              /usr/share/OVMF/OVMF_VARS.fd \
+              /usr/share/edk2/x64/OVMF_VARS.4m.fd; do
+              if [ -f "$candidate" ]; then vars="$candidate"; break; fi
+            done
+          fi
+          [ -n "$firmware" ] || { [ -n "$code" ] && [ -n "$vars" ]; } || { echo "no OVMF firmware"; exit 1; }
+          echo "firmware: ${firmware:-$code}"
 
           esp="$RUNNER_TEMP/esp"
           rm -rf "$esp"
@@ -250,10 +265,20 @@ jobs:
           cp "$app" "$esp/EFI/BOOT/BOOTX64.EFI"
           serial="$RUNNER_TEMP/uefi-serial.log"
           set +e
-          timeout 30 qemu-system-x86_64 \
-            -machine q35 -m 256 -bios "$firmware" \
-            -drive format=raw,file=fat:rw:"$esp" \
-            -display none -serial file:"$serial" -no-reboot
+          if [ -n "$firmware" ]; then
+            timeout 30 qemu-system-x86_64 \
+              -machine q35 -m 256 -bios "$firmware" \
+              -drive format=raw,file=fat:rw:"$esp" \
+              -display none -serial file:"$serial" -no-reboot
+          else
+            cp "$vars" "$RUNNER_TEMP/OVMF_VARS.fd"
+            timeout 30 qemu-system-x86_64 \
+              -machine q35 -m 256 \
+              -drive if=pflash,format=raw,readonly=on,file="$code" \
+              -drive if=pflash,format=raw,file="$RUNNER_TEMP/OVMF_VARS.fd" \
+              -drive format=raw,file=fat:rw:"$esp" \
+              -display none -serial file:"$serial" -no-reboot
+          fi
           set -e
           grep -q "hello uefi" "$serial" || {
             echo "the UEFI image did not print its banner"
