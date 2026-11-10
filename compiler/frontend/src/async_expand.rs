@@ -459,6 +459,25 @@ fn subst_direct_awaits(e: Spanned<Expr>, tmps: &mut Vec<String>) -> Spanned<Expr
 }
 
 pub fn expand_async(module: &mut Module, diags: &mut Vec<Diagnostic>) {
+    let needs_promise = module
+        .decls
+        .iter()
+        .any(|d| matches!(&d.node, Decl::Fn(f) if f.is_async));
+    if needs_promise
+        && let Some((spec, _)) = crate::modules::selected_prelude()
+        && !crate::prelude::provides("Promise")
+    {
+        diags.push(
+            Diagnostic::new(
+                Code::E108,
+                format!(
+                    "prelude package `{spec}` does not provide `Promise`; async lowering needs it"
+                ),
+            )
+            .with_hint("declare `Promise` in the selected prelude or choose a prelude that provides it"),
+        );
+        return;
+    }
     lift_async_closures(module);
     let asyncs: Vec<FnDecl> = module
         .decls
@@ -485,7 +504,6 @@ pub fn expand_async(module: &mut Module, diags: &mut Vec<Diagnostic>) {
 }
 
 const LIFT_BUILTINS: &[&str] = &[
-    "print",
     "assert",
     "typeOf",
     "IO",
@@ -496,7 +514,16 @@ const LIFT_BUILTINS: &[&str] = &[
 ];
 
 fn ty_promise(inner: Type) -> Type {
-    Type { path: vec!["std.prelude.Promise".to_string()], args: vec![inner], nullable: false, fn_sig: None, tuple: Vec::new() }
+    Type { path: vec![promise_path()], args: vec![inner], nullable: false, fn_sig: None, tuple: Vec::new() }
+}
+
+pub(crate) fn promise_path() -> String {
+    if crate::modules::selected_prelude().is_some() {
+        crate::prelude::canonical_path("Promise")
+            .unwrap_or_else(|| "std.prelude.Promise".to_string())
+    } else {
+        "std.prelude.Promise".to_string()
+    }
 }
 
 // An async fn may spell its return type either bare (`T`) or already wrapped
@@ -1117,7 +1144,7 @@ fn expand_promise_fn(
     });
     let with_resolvers = ex(Expr::Call {
         callee: Box::new(ex(Expr::Member {
-            base: Box::new(ident("std.prelude.Promise")),
+            base: Box::new(ident(&promise_path())),
             field: "withResolvers".to_string(),
         })),
         type_args: vec![t.clone()],
@@ -1158,7 +1185,7 @@ fn inline_entry_body(
 ) {
     let with_resolvers = ex(Expr::Call {
         callee: Box::new(ex(Expr::Member {
-            base: Box::new(ident("std.prelude.Promise")),
+            base: Box::new(ident(&promise_path())),
             field: "withResolvers".to_string(),
         })),
         type_args: vec![t.clone()],
@@ -1218,6 +1245,7 @@ fn expand_entry_driver(module: &mut Module, entry: &str) {
         is_static: false,
         is_test: false,
         is_bench: false,
+        is_macro: false,
         body: FnBody::Block(Block {
             stmts: vec![
                 mk_stmt(Stmt::Var {
@@ -1245,7 +1273,13 @@ fn expand_entry_driver(module: &mut Module, entry: &str) {
                             },
                             guard: None,
                             body: vec![
-                                mk_stmt(Stmt::Expr(call(ident("print"), vec![ident("__e")]))),
+                                mk_stmt(Stmt::Expr(call(
+                                    ident("std.io.println"),
+                                    vec![ex(Expr::Array(vec![ArrayElem {
+                                        spread: false,
+                                        expr: ident("__e"),
+                                    }]))],
+                                ))),
                                 mk_stmt(Stmt::Return(Some(int_lit(1)))),
                             ],
                         },
@@ -1934,6 +1968,7 @@ impl ClosureLifter {
                 is_static: false,
                 is_test: false,
                 is_bench: false,
+                is_macro: false,
                 body,
                 attrs: Vec::new(),
             }),

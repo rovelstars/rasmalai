@@ -35,48 +35,7 @@ pub fn effective_cap(dir: &Path, requested: Option<u64>) -> u64 {
 }
 
 pub fn global_cache_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("RNX_CACHE_HOME") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    #[cfg(windows)]
-    {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            if !local.is_empty() {
-                return PathBuf::from(local).join("rnx");
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-            if !xdg.is_empty() {
-                return PathBuf::from(xdg).join("rnx");
-            }
-        }
-    }
-    home_dir().join(".cache").join("rnx")
-}
-
-fn home_dir() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Ok(profile) = std::env::var("USERPROFILE") {
-            if !profile.is_empty() {
-                return PathBuf::from(profile);
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            if !home.is_empty() {
-                return PathBuf::from(home);
-            }
-        }
-    }
-    PathBuf::from(".")
+    sysroot::store::cache_root()
 }
 
 pub fn project_cache_dir(root: &Path) -> PathBuf {
@@ -125,17 +84,24 @@ fn stdlib_digest_memo() -> &'static std::sync::Mutex<Option<(StdlibDigestKey, Ve
     MEMO.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+#[cfg(test)]
+fn reset_stdlib_digest_memo() {
+    *stdlib_digest_memo().lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct StdlibDigestKey {
     pin_path: PathBuf,
     pin_bytes: Option<Vec<u8>>,
     files: Vec<(String, String, u64, u64, u64)>,
+    local_modules: Vec<(String, Option<PathBuf>)>,
 }
 
 fn stdlib_digest_key() -> StdlibDigestKey {
     let pin_path = crate::stdlib_seed::std_pin_path();
     let pin_bytes = std::fs::read(&pin_path).ok();
     let mut files = Vec::new();
+    let mut local_modules = Vec::new();
     if let Some(pin) = pin_bytes
         .as_ref()
         .and_then(|_| crate::stdlib_seed::read_std_pin())
@@ -145,21 +111,56 @@ fn stdlib_digest_key() -> StdlibDigestKey {
             else {
                 continue;
             };
-            collect_cached_meta(&dir, &dir, full, &mut files);
+            collect_cached_meta(&dir, &dir, full, false, &mut files);
         }
-        files.sort();
+    } else {
+        let anchor = local_stdlib_anchor();
+        for name in stdlib::MODULES {
+            let dir = resolve_local_module(name, &anchor);
+            if let Some(dir) = &dir {
+                collect_cached_meta(dir, dir, name, true, &mut files);
+            }
+            local_modules.push((name.to_string(), dir));
+        }
     }
+    files.sort();
     StdlibDigestKey {
         pin_path,
         pin_bytes,
         files,
+        local_modules,
     }
+}
+
+fn local_stdlib_anchor() -> PathBuf {
+    std::env::current_dir()
+        .map(|cwd| crate::fetch::cache_anchor(&cwd))
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn resolve_local_module(name: &str, anchor: &Path) -> Option<PathBuf> {
+    if let Some(dir) = crate::fetch::local_override_dir(&format!("@std/{name}"), anchor) {
+        return Some(dir);
+    }
+    if let Some((top, _)) = name.split_once('/')
+        && let Some(dir) = crate::fetch::local_override_dir(&format!("@std/{top}"), anchor)
+    {
+        return Some(dir);
+    }
+    let dir = crate::fetch::find_stdlib_checkout(anchor)?.join(name);
+    dir.is_dir().then_some(dir)
+}
+
+fn is_build_dir(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|n| n == "target" || n == ".git" || n == ".rnx-cache")
 }
 
 fn collect_cached_meta(
     root: &Path,
     dir: &Path,
     pkg: &str,
+    skip_build_dirs: bool,
     out: &mut Vec<(String, String, u64, u64, u64)>,
 ) {
     let entries = match std::fs::read_dir(dir) {
@@ -177,7 +178,10 @@ fn collect_cached_meta(
             continue;
         }
         if meta.file_type().is_dir() {
-            collect_cached_meta(root, &path, pkg, out);
+            if skip_build_dirs && is_build_dir(&path) {
+                continue;
+            }
+            collect_cached_meta(root, &path, pkg, skip_build_dirs, out);
         } else if meta.file_type().is_file() {
             let rel = match path.strip_prefix(root) {
                 Ok(r) => r.to_string_lossy().replace('\\', "/"),
@@ -196,11 +200,6 @@ fn collect_cached_meta(
 
 fn stdlib_sources_digest_uncached() -> Vec<u8> {
     let mut hasher = Sha256::new();
-    if let Some(overlay) = crate::sysroot::overlay_digest() {
-        hasher.update(b"rnx-sysroot-std-overlay");
-        hasher.update(&(overlay.len() as u64).to_le_bytes());
-        hasher.update(&overlay);
-    }
     match crate::stdlib_seed::read_std_pin() {
         Some(pin) => {
             hasher.update(&(pin.registry.len() as u64).to_le_bytes());
@@ -217,22 +216,29 @@ fn stdlib_sources_digest_uncached() -> Vec<u8> {
                         continue;
                     }
                 };
-                hash_cached_package(&mut hasher, &dir);
+                hash_cached_package(&mut hasher, &dir, false);
             }
         }
         None => {
+            let anchor = local_stdlib_anchor();
             for name in stdlib::MODULES {
                 hasher.update(&(name.len() as u64).to_le_bytes());
                 hasher.update(name.as_bytes());
+                match resolve_local_module(name, &anchor) {
+                    Some(dir) => hash_cached_package(&mut hasher, &dir, true),
+                    None => {
+                        hasher.update(&0u64.to_le_bytes());
+                    }
+                }
             }
         }
     }
     hasher.finalize().to_vec()
 }
 
-fn hash_cached_package(hasher: &mut Sha256, dir: &Path) {
+fn hash_cached_package(hasher: &mut Sha256, dir: &Path, skip_build_dirs: bool) {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    collect_cached_files(dir, dir, &mut files);
+    collect_cached_files(dir, dir, skip_build_dirs, &mut files);
     files.sort_by(|a, b| a.0.cmp(&b.0));
     hasher.update(&(files.len() as u64).to_le_bytes());
     for (rel, bytes) in &files {
@@ -243,7 +249,12 @@ fn hash_cached_package(hasher: &mut Sha256, dir: &Path) {
     }
 }
 
-fn collect_cached_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+fn collect_cached_files(
+    root: &Path,
+    dir: &Path,
+    skip_build_dirs: bool,
+    out: &mut Vec<(String, Vec<u8>)>,
+) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -259,7 +270,10 @@ fn collect_cached_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)
             continue;
         }
         if meta.file_type().is_dir() {
-            collect_cached_files(root, &path, out);
+            if skip_build_dirs && is_build_dir(&path) {
+                continue;
+            }
+            collect_cached_files(root, &path, skip_build_dirs, out);
         } else if meta.file_type().is_file() {
             let rel = match path.strip_prefix(root) {
                 Ok(r) => r.to_string_lossy().replace('\\', "/"),
@@ -555,6 +569,119 @@ mod tests {
         bytes.extend_from_slice(b"\n");
         std::fs::write(&target, &bytes).unwrap();
         assert_ne!(stdlib_sources_digest(), seeded);
+    }
+
+    fn write_vendor_module(root: &Path, name: &str, body: &str) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let manifest = format!(
+            "export default {{\n    project: {{\n        name: \"@std/{name}\",\n        version: \"{}\"\n    }}\n}}\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        std::fs::write(dir.join(crate::project::MANIFEST_FILE), manifest).unwrap();
+        std::fs::write(dir.join("src").join("lib.rnx"), body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn vendored_stdlib_edit_changes_digest() {
+        use crate::fetch::testkit;
+
+        let (_guard, _dir) = testkit::isolate_cache("digestvendor");
+        let tree = crate::scratch::dir("vendor");
+        let prelude = write_vendor_module(
+            &tree,
+            "prelude",
+            "export fn stub(): Int { return 1; }\n",
+        );
+        let _vendor = testkit::set_vendor_dir(&tree);
+        reset_stdlib_digest_memo();
+        let first = stdlib_sources_digest();
+        assert_eq!(first.len(), 32);
+        assert_eq!(stdlib_sources_digest(), first);
+
+        std::fs::write(
+            prelude.join("src").join("lib.rnx"),
+            "export fn stub(): Int { return 2; }\n",
+        )
+        .unwrap();
+        reset_stdlib_digest_memo();
+        assert_ne!(stdlib_sources_digest(), first);
+    }
+
+    #[test]
+    fn vendored_stdlib_digest_ignores_build_output() {
+        use crate::fetch::testkit;
+
+        let (_guard, _dir) = testkit::isolate_cache("digestvendorbuild");
+        let tree = crate::scratch::dir("vendor");
+        let prelude = write_vendor_module(
+            &tree,
+            "prelude",
+            "export fn stub(): Int { return 1; }\n",
+        );
+        let _vendor = testkit::set_vendor_dir(&tree);
+        reset_stdlib_digest_memo();
+        let first = stdlib_sources_digest();
+
+        for dir in [".rnx-cache", "target"] {
+            let nested = prelude.join(dir).join("junk");
+            std::fs::create_dir_all(&nested).unwrap();
+            std::fs::write(nested.join("product.bin"), b"built").unwrap();
+        }
+        reset_stdlib_digest_memo();
+        assert_eq!(stdlib_sources_digest(), first);
+    }
+
+    #[test]
+    fn temp_vendor_tree_hashes_without_registry() {
+        use crate::fetch::testkit;
+
+        let (_guard, cache) = testkit::isolate_cache("digestvendorlocal");
+        let tree = crate::scratch::dir("vendor");
+        write_vendor_module(&tree, "prelude", "export fn stub(): Int { return 1; }\n");
+        write_vendor_module(&tree, "foundation", "export fn other(): Int { return 2; }\n");
+        let _vendor = testkit::set_vendor_dir(&tree);
+
+        assert!(crate::stdlib_seed::read_std_pin().is_none());
+        reset_stdlib_digest_memo();
+        let first = stdlib_sources_digest();
+        assert_eq!(stdlib_sources_digest(), first);
+        assert!(crate::fetch::scan_cache_have().is_empty());
+        assert!(std::fs::read_dir(&cache).unwrap().next().is_none());
+
+        let resolved = crate::fetch::local_override_dir("@std/prelude", &local_stdlib_anchor())
+            .expect("temp tree resolves prelude");
+        assert_eq!(resolved, tree.join("prelude"));
+    }
+
+    #[test]
+    fn pinned_digest_ignores_vendor_sources() {
+        use crate::fetch::testkit;
+        use std::collections::BTreeMap;
+
+        let (_guard, _dir) = testkit::isolate_cache("digestpinnedvendor");
+        let pin = env!("CARGO_PKG_VERSION");
+        let mut chunks = BTreeMap::new();
+        let mut nodes = Vec::new();
+        for full in crate::stdlib_seed::std_package_names() {
+            let (manifest, pairs, digest, _pc, _main) = testkit::fixture_tree(&full, pin);
+            nodes.push(testkit::node_json(&full, pin, &digest, false));
+            chunks.insert(format!("{full}@{pin}"), (manifest, pairs));
+        }
+        let body = testkit::resolve_json_static(&nodes);
+        let server = testkit::MockRegistry::start_dynamic(chunks, move |_| body.clone());
+        let cfg = testkit::registry_cfg(&server.base);
+        crate::stdlib_seed::seed_stdlib_cache(Some(&cfg), &BTreeMap::new()).unwrap();
+        reset_stdlib_digest_memo();
+        let pinned = stdlib_sources_digest();
+
+        let tree = crate::scratch::dir("pinned-vendor");
+        write_vendor_module(&tree, "prelude", "export fn stub(): Int { return 9; }\n");
+        let _vendor = testkit::set_vendor_dir(&tree);
+        reset_stdlib_digest_memo();
+        assert_eq!(stdlib_sources_digest(), pinned);
+        assert_eq!(stdlib_sources_digest(), pinned);
     }
 
     #[test]

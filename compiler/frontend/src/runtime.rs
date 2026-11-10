@@ -25,6 +25,8 @@ pub const RUNTIME_MODULES: &[&str] = &[
     "sync",
     "testing",
     "time",
+    "uefi",
+    "wasi",
 ];
 
 pub fn is_runtime_module(module: &str) -> bool {
@@ -325,6 +327,13 @@ const RUNTIME_TABLE: &[RuntimeDecl] = &[
     d("__rnx_host_version", "core", &[], "String", &[]),
     d("__rnx_int_to_str", "core", &["Int"], "String", &[]),
     d("__rnx_io_is_tty", "io", &["Int"], "Bool", &[Sink::TermRead]),
+    d(
+        "__rnx_io_warn_missing_arg",
+        "io",
+        &[],
+        "Void",
+        &[Sink::TermWrite],
+    ),
     d("__rnx_io_pretty", "io", &["Any", "Int"], "String", &[Sink::TermWrite]),
     d("__rnx_io_set_raw", "io", &["Int", "Int"], "String", &[Sink::TermRaw]),
     d("__rnx_io_winsize", "io", &[], "Array<Int>", &[Sink::TermRead]),
@@ -333,6 +342,12 @@ const RUNTIME_TABLE: &[RuntimeDecl] = &[
     d("__rnx_json_stringify", "json", &["Any"], "String", &[]),
     d("__rnx_json_stringify_into", "json", &["Any", "Int", "Int"], "Int", &[]),
     d("__rnx_json_unwrap", "json", &["Int"], "Int", &[]),
+    d("__rnx_uefi_println", "uefi", &["Array"], "Void", &[Sink::TermWrite]),
+    d("__rnx_uefi_write", "uefi", &["String"], "Void", &[Sink::TermWrite]),
+    d("__rnx_wasi_println", "wasi", &["Array"], "Void", &[Sink::TermWrite]),
+    d("__rnx_wasi_eprintln", "wasi", &["Array"], "Void", &[Sink::TermWrite]),
+    d("__rnx_wasi_write", "wasi", &["String"], "Void", &[Sink::TermWrite]),
+    d("__rnx_wasi_ewrite", "wasi", &["String"], "Void", &[Sink::TermWrite]),
     d("__rnx_map_clear", "core", &["Int"], "Void", &[]),
     d("__rnx_map_delete", "core", &["Int", "String"], "Bool", &[]),
     d("__rnx_map_get", "core", &["Int", "String"], "Int", &[]),

@@ -27,7 +27,8 @@ export default {
     project: {
         name: "colony",
         version: "0.4.0",
-        engine: ">=0.4.0"
+        engine: ">=0.4.0",
+        targets: ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
     },
     entries: {
         main: "src/main.rnx"
@@ -42,7 +43,9 @@ export default {
         physics_2d: { path: "../physics_2d" },
         physics: { git: "https://github.com/org/physics", tag: "v1.2.0" },
         zstd: { version: "1.5.5", url: "https://example.com/zstd.tar.gz", checksum: "sha256:..." },
-        zlib: { native: "z", system: true }
+        zlib: { native: "z", system: true },
+        "@std/prelude": { alias: "@uefi/prelude" },
+        "@uefi/prelude": { path: "../uefi-prelude" }
     },
     i18n: {
         base: "en-US",
@@ -81,6 +84,42 @@ export default {
     }
 }
 ```
+
+### Target constraints
+
+`project.targets` lists the built-in triples a package is meant to build for. The array is optional and each entry is validated when the manifest loads; an unknown triple fails as `E108` with the accepted list.
+
+```rnx
+export default {
+    project: {
+        name: "boot",
+        version: "0.1.0",
+        targets: ["x86_64-unknown-uefi"]
+    }
+}
+```
+
+Selection follows four rules:
+
+- With `--target`, the triple must appear in `project.targets` when the list is not empty. A triple outside the list fails as `E108` and names both the request and the allowed list.
+- Without `--target`, a single listed triple becomes the default.
+- Without `--target`, more than one listed triple fails as `E108` and asks for `--target`.
+- An absent or empty list selects the host target.
+
+The list is a compatibility guard, not the code generator. The built-in descriptor table still decides the object format, libc, loader, CPU baseline, and capabilities. Run `rnx target list` to see the triples, tiers, object formats, capabilities, and pack status; add `--json` for machine-readable output or `--tier 1` to filter. The descriptors are `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-uefi`, and `wasm32-unknown-wasi`.
+
+### Required capabilities
+
+A package can state which target facilities it needs with a top-level `capabilities` array. The accepted names are `alloc`, `console`, `clock`, `random`, `fs`, `net`, `threads`, `process`, `log`, and `firmware`; an unknown name fails as `E108`.
+
+```rnx
+export default {
+    project: { name: "@acme/telemetry", version: "0.1.0" },
+    capabilities: ["fs", "net"]
+}
+```
+
+The descriptor for the active target supplies the other half of the check. Importing a package that requires a capability the target does not provide fails as `E108` naming the package, the missing capability, and the triple. For example, a package declaring `capabilities: ["fs"]` cannot be imported when `project.targets` selects `x86_64-unknown-uefi`, because UEFI provides `alloc`, `console`, `clock`, and `firmware` but not `fs`. The check runs for path, git, registry, alias, and `@std` imports. `permissions` is a separate security ceiling and does not satisfy this check.
 
 ### Patching sources and wrappers
 
@@ -131,6 +170,8 @@ Version requirements follow SemVer 2.0: `^1.2.0` permits compatible minor and pa
 
 `rnx add <name>` resolves the latest stable version from the configured registry and records it as `^<version>`; `rnx add <name>@<range>` records the given range verbatim (`*`, `latest`, `X.Y.Z`, `^`, `~`, `>=`). The lockfile pins the resolved version digest, never the range or a tag name. `rnx add <name> --path <dir>` keeps the local flow: the directory is recorded as a `path` entry.
 
+An alias points one package name at another package: `{ alias: "@uefi/prelude" }`. The target may be declared in the same `dependencies` table, which wins, or pinned inline with `version: "0.2.2"`, which fetches it from the registry. Without either, the locked version is used and a missing pin fails as `E115`. `alias` cannot combine with another source key. Chains are allowed up to 16 links, and a cycle fails as `E108` with the full chain. See [Packages and Registries](/manual/18-packages-and-registries) for the worked example and the lock representation.
+
 | Requirement | Matches | Skips |
 |---|---|---|
 | `^1.2.0` | `>=1.2.0`, same major | `2.0.0`, prereleases |
@@ -167,7 +208,7 @@ Unknown packages fail as `E108`; circular package dependencies fail as `E107`, w
 Programs start at the entry file's top-level statements, with no wrapper required. An explicit `main`/`Main` still works when you want a named entry point, but define exactly one: `main` and `Main` together in the entry file is an `E108` error. `rnx run` prefers lowercase `main` when resolving a default entry, and `rnx build` compiles it by renaming the symbol clear of the C-level `main`. A top-level `return <Int>` (or the entry function's return value) becomes the process exit code; `0` means success.
 
 ```rnx
-print("hello,", "world");
+println!("hello,", "world");
 ```
 
 `Process.exit(code)` terminates immediately with a code, flushing output already written to stdout first; `Process.args()` reads CLI arguments as `Array<String>`. Every element is a `String`, index 0 is the program path, and user arguments follow a `--` separator from index 1. `"5" + 1` concatenates to `"51"`: convert explicitly before doing arithmetic, since `Int()` on a `String` is an `E108` error. A parameterless `Main` ignores extra arguments on every backend; the JIT backends pass declared `Main` parameters as integers only. `rnx build --release` compiles through LLVM `-O3` and links a stripped native executable.
@@ -187,7 +228,7 @@ import "./setup";
 
 A default import binds the module namespace; `import * as ns` is the explicit spelling of the same binding; `import "./setup"` loads a file for declarations alone. Relative imports probe `<path>.rnx`, `<path>/mod.rnx`, `<path>/index.rnx` in order, and the error lists every path tried. Specifiers with a `:` are rejected as `E108` (`std:time` becomes `@std/time`). There is no `::` in the language; paths, variants, and generics use `.` and `<>`.
 
-`@std/` imports resolve from the standard library compiled into `rnx` itself, with nothing to install and no versions to pin. Seventeen modules ship with the compiler: `prelude`, `simd`, `math`, `collections`, `fs`, `bytes`, `time`, `random`, `sync`, `env`, `process`, `os`, `testing`, `web`, `json`, `net`, and `io`. `@std/net` provides the TCP, TLS, and DNS primitives the `net:*` capability domain refers to. `@std/io` owns the terminal streams and the `term:*` capability domain: `write`/`writeError` pretty-printing, `writeRaw` for exact bytes, `read`/`readLine` line input, `isTTY`/`width`/`height`/`colorProfile` queries, `setRawMode`, and TTY-guarded `clear`. Every file also sees `@std/prelude` without importing it; local declarations and imports always win, and anything found in neither scope is `E303`. Each `@std/*` module ships reference docs at `/docs/@std/<module>/overview` (overview, getting-started, API reference), any published `@scope/<name>` package gets the same pages at `/docs/@scope/<name>/overview`, and unscoped packages get them at `/docs/<name>/overview`.
+`@std/` imports resolve from the standard library compiled into `rnx` itself, with nothing to install and no versions to pin. Twenty-two modules ship with the compiler: `prelude`, `foundation`, `async`, `simd`, `math`, `collections`, `fs`, `bytes`, `time`, `random`, `sync`, `env`, `process`, `os`, `testing`, `web`, `json`, `net`, `io`, `log`, `uefi`, and `wasi`. `@std/net` provides the TCP, TLS, and DNS primitives the `net:*` capability domain refers to. `@std/io` owns the terminal streams and the `term:*` capability domain: `write`/`writeError` pretty-printing, `writeRaw` for exact bytes, `read`/`readLine` line input, `isTTY`/`width`/`height`/`colorProfile` queries, `setRawMode`, and TTY-guarded `clear`. Every file also sees `@std/prelude` without importing it; local declarations and imports always win, and anything found in neither scope is `E303`. Each `@std/*` module ships reference docs at `/docs/@std/<module>/overview` (overview, getting-started, API reference), any published `@scope/<name>` package gets the same pages at `/docs/@scope/<name>/overview`, and unscoped packages get them at `/docs/<name>/overview`.
 
 ```rnx
 import { Vec2 } from "@std/math";
@@ -196,7 +237,7 @@ import { Map } from "@std/collections";
 let m = new Map<String, Int>();
 m.set("ore", 7);
 let v = new Vec2(3.0, 4.0);
-print(m.get("ore"), v.length());
+println!(m.get("ore"), v.length());
 ```
 
 Bare and scoped specifiers name registry or path dependencies from the nearest `Project.config`: `"pkg"` loads that package's entry, `"pkg/sub"` loads `src/sub.rnx` inside it, and `"@scope/pkg"` checks the matching scoped registry first. Transitive dependencies resolve against each package's own manifest; diamond imports parse once, deduplicated by canonical path.
@@ -310,7 +351,7 @@ fn quote(base: Float): Float {
     return base;
 }
 
-print(quote(2.0));
+println!(quote(2.0));
 ```
 
 `rnx doc` collects documented items into a static site under `target/doc` (`pub` only; `--all` adds internals; `--open` opens a browser; `--json` writes `api.json`). Every `@example` in the standard library executes as a documentation test and fails the build when broken.
@@ -340,6 +381,10 @@ print(quote(2.0));
 | `rnx completions` | shell completion scripts | `bash`, `zsh`, `fish`, `powershell`, `elvish` |
 | `rnx pack` | deterministic ustar plus SHA-256 | `-p`, `--out-dir`, `--gzip/-z` |
 | `rnx unpack` | verify and extract archive | `--out-dir <dir>` |
+| `rnx target list` | show built-in target triples, tiers, object formats, capabilities, and pack status | `--json`, `--tier <1\|2\|3>` |
+| `rnx sysroot add` | install a target pack from OCI or from a local directory | `<triple>[@<version>]`, `--local <dir>`, `--digest <sha256>` |
+| `rnx sysroot list/path/verify` | list installed packs, print the current directory, or rehash a pack | `[--json]`, `<triple>` |
+| `rnx sysroot remove/prune` | remove one triple's packs or every non-current digest | `<triple>`, `--keep <n>` |
 | `rnx init` | scaffold a new project | `[name]` |
 | `rnx setup` | configure editor LSP and highlighting | `<vscode\|zed\|helix\|neovim>` |
 | `rnx lock/fetch/vendor` | lockfiles, git-dependency cache, dep precompilation, and local source staging | `[packages]`, `--dir <path>` |
@@ -348,9 +393,11 @@ print(quote(2.0));
 | `rnx download` | seed the registry cache with libraries (`@std/*` when no names are given) | `[packages]`, `--local`, `--registry <url>` |
 | `rnx doctor` | check the stdlib cache pin and contents, plus dep product status | `--repair-std`, `--registry <url>` |
 
-Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners. `--prefer-system` resolves every native dependency from the host library and `--prefer-bundled` from bundled OCI blobs; the two conflict, and per-dependency `native` pins override either.
+Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners, `--offline` disables automatic target pack fetch, and `--sysroot <dir>` selects a custom root. `--prefer-system` resolves every native dependency from the host library and `--prefer-bundled` from bundled OCI blobs; the two conflict, and per-dependency `native` pins override either.
 
-`rnx download` with no package names resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). With names, it downloads `name` or `name@range` libraries (the same SemVer grammar as dependency requirements, with the engine-range check after resolve) into the global cache. With `--local`, it targets the project-local cache (`.rnx-cache/registry/`) instead, with the pin recorded at `.rnx-cache/std-pin.json`. Global downloads land in the content-addressed store (`store/` under the cache root: chunk blobs plus one verified tree per manifest digest; see [Packages and Registries](/manual/18-packages-and-registries)); `--local` keeps the older per-version project layout instead. The installer runs `rnx download` automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. `download` and `doctor` accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default, which is how a self-hosted registry seeds its own standard library. With an empty cache and no network, `@std/*` imports fail as `E108` naming the registry instead of falling back silently. There is no embedded fallback: the binary carries no stdlib bytes. To seed or hack on the standard library without a registry instead, run `rnx vendor @std/... --dir <DIR>` from a checkout (see below), then point `RNX_VENDOR_DIR` at the staged directory: `@std/*` imports resolve straight from that tree with zero network, the same local-source override that covers every registry package (see [Packages and Registries](/manual/18-packages-and-registries)). Distributors bundle a pre-seeded cache directory and set `RNX_CACHE_HOME` at it. The stdlib sources in this repository are a workspace of packages, one manifest per module, so `RNX_VENDOR_DIR=<repo>/compiler/stdlib/src` resolves every `@std/*` import from the checkout. With a vendor directory, `@std/<name>` accepts either `<dir>/@std/<name>` or `<dir>/<name>`. No second mechanism exists.
+`rnx download` with no package names resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). With names, it downloads `name` or `name@range` libraries (the same SemVer grammar as dependency requirements, with the engine-range check after resolve) into the global cache. With `--local`, it targets the project-local cache (`.rnx-cache/registry/`) instead, with the pin recorded at `.rnx-cache/std-pin.json`. Global downloads land in the content-addressed store (`store/` under the cache root: chunk blobs plus one verified tree per manifest digest; see [Packages and Registries](/manual/18-packages-and-registries)); `--local` keeps the older per-version project layout instead. The installer runs `rnx download` automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. `download` and `doctor` accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default, which is how a self-hosted registry seeds its own standard library. With an empty cache and no network, `@std/*` imports fail as `E108` naming the registry instead of falling back silently. There is no embedded fallback: the binary carries no stdlib bytes. To seed or hack on the standard library without a registry instead, run `rnx vendor @std/... --dir <DIR>` from a checkout (see below), then point `RNX_VENDOR_DIR` at the staged directory: `@std/*` imports resolve straight from that tree with zero network, the same local-source override that covers every registry package (see [Packages and Registries](/manual/18-packages-and-registries)). Distributors bundle a pre-seeded cache directory and set `RNX_CACHE_HOME` at it. The stdlib sources in this repository are a workspace of packages, one manifest per module, so `RNX_VENDOR_DIR=<repo>/compiler/stdlib/src` resolves every `@std/*` import from the checkout. Repository development needs no export: the root `.cargo/config.toml` sets `RNX_VENDOR_DIR` to `compiler/stdlib/src` as a relative path, so `cargo run`, `cargo test`, and `cargo nextest` resolve `@std/*` from the checkout. The value is not forced, so an explicit `RNX_VENDOR_DIR` in the environment wins. A `rnx` binary installed from the registry carries no checkout path and resolves `@std/*` from the registry cache; the checkout override applies only to repository development and its tests. With a vendor directory, `@std/<name>` accepts either `<dir>/@std/<name>` or `<dir>/<name>`. No second mechanism exists.
+
+Build products key on what the selected stdlib tree contains. With no pin file, the digest hashes each resolved `@std` module's files, so editing a vendored source invalidates the products built from it instead of reusing a stale one. Build output inside a vendored module (`.rnx-cache/`, `target/`) stays out of that hash, so a warm tree does not re-key on its own artifacts.
 
 `rnx install` runs `lock` and then `fetch`, so a fresh checkout gets a lockfile and a warm dependency cache in one step. `rnx run` and `rnx check` already download missing registry packages on demand, but they never write the lock.
 
@@ -486,9 +533,9 @@ Every new failure here reports `E108` with the cause in the message; no new diag
 
 Profiling and debug flags (`build`, `run`, `bench`): `--time-passes` prints a pass timing table to stderr, `--trace <path>` writes a Perfetto trace JSON file, and `--perf-map` writes `/tmp/perf-<pid>.map` for JIT backends. `build -g|--debug` emits DWARF line tables (`--release` strips them).
 
-`rnx build` emits an LLVM object for the host target, links it against the embedded native runtime archive with mold first, then LLD, then the system linker, and marks the output executable. The program's `Main` return value becomes the process exit code. `--release` forces the LIR pipeline to level 1, runs the standard LLVM `default<O3>` pipeline over per-function `.text.<name>` (and `.rodata.<name>`) sections, and links with `-Wl,--gc-sections -s` to drop dead runtime code and the symbol table; rebuilding identical sources with identical flags yields byte-identical binaries.
+`rnx build` emits an LLVM object for the host target, links it against the embedded native runtime archive with mold first, then LLD, then the system linker, and marks the output executable. The program's `Main` return value becomes the process exit code. `--release` forces the LIR pipeline to level 1, runs the standard LLVM `default<O3>` pipeline over per-function `.text.<name>` (and `.rodata.<name>`) sections, and links with `-Wl,--gc-sections -s` to drop dead runtime code and the symbol table; rebuilding identical sources with identical flags yields byte-identical binaries. Mach-O targets use `__TEXT,__text` and `__TEXT,__const` section names and the in-house linker described under macOS below.
 
-Exit code is `0` on success, `1` on compile errors, thrown errors, or fatals. An uncaught throw prints as `Uncaught exception: <value>` on stderr, followed by a `Stack trace:` listing when the stop site is known; `print()` output goes to stdout on every backend (interpreter, Cranelift dev, LLVM release) through the shared `rnx_print_*` runtime symbols. `rnx run` prints only program output; the `Main` return value is not echoed. Performance warnings (`P201`, `P202`, `P203`) print to stderr after a successful build; performance notes (`P101`/`P102`) print only with `--show-perf-notes` (or `RNX_SHOW_PERF_NOTES=1`). `--deny-perf-lints` exits `1` when a denied warning is present without changing the built binary, and unknown codes exit `2`. `rnx build --fix` attempts the proven automatic rewrite for fixable `P201` ZeroInit cases (preview diff, `.bak` backup, re-parse plus rebuild plus output comparison, byte-for-byte rollback on any failure); anything else is refused with `no autofix available`.
+Exit code is `0` on success, `1` on compile errors, thrown errors, or fatals. An uncaught throw prints as `Uncaught exception: <value>` on stderr, followed by a `Stack trace:` listing when the stop site is known; `println!()` output goes to stdout on every backend (interpreter, Cranelift dev, LLVM release) through the shared `rnx_print_*` runtime symbols. `rnx run` prints only program output; the `Main` return value is not echoed. Performance warnings (`P201`, `P202`, `P203`) print to stderr after a successful build; performance notes (`P101`/`P102`) print only with `--show-perf-notes` (or `RNX_SHOW_PERF_NOTES=1`). `--deny-perf-lints` exits `1` when a denied warning is present without changing the built binary, and unknown codes exit `2`. `rnx build --fix` attempts the proven automatic rewrite for fixable `P201` ZeroInit cases (preview diff, `.bak` backup, re-parse plus rebuild plus output comparison, byte-for-byte rollback on any failure); anything else is refused with `no autofix available`.
 
 ## Editors and language servers
 
@@ -538,21 +585,63 @@ args = ["lsp"]
 
 `editors/tree-sitter-rasmalai/` holds the Tree-sitter grammar (`grammar.js`, scope `source.rnx`, `*.rnx`) with `queries/highlights.scm`, `queries/locals.scm`, `queries/folds.scm`, `queries/outline.scm`, and `queries/indents.scm`. The generated `src/parser.c`, `src/grammar.json`, and `src/node-types.json` are not committed: CI rebuilds them from `grammar.js` with `tree-sitter generate`, checks them with `tree-sitter test`, and publishes them as build artifacts (see `.github/workflows/tree-sitter.yml`). Check query captures locally with `tree-sitter query`.
 
-## Sysroots and Linux targets
+## Sysroots and target packs
 
-A sysroot is one directory that carries everything the toolchain needs beyond the current crate: C link inputs per target and, optionally, an alternate standard library. The layout mirrors `rustc --print sysroot`, with per-target directories under one root, no absolute paths baked in, and identity by content hash:
+A sysroot carries the link inputs and the target runtime for one triple. The host toolchain uses the host directly. A cross target needs a target pack: a content-addressed directory with a version 2 `sysroot.json` and the per-target library tree.
 
 ```sh
 $SYSROOT/
-  sysroot.json                  # {"version": 1, "std_version": "0.2.1", "targets": [...]}
-  lib/rustlib/<triple>/lib/     # crt1.o, crti.o, crtn.o, crtbegin/end, libc.a, libm.a, ...
-  share/rnx/std/<module>.rnx    # alternate std sources (target-independent)
-  share/rnx/std/<module>/lib.rnx # directory form, e.g. share/rnx/std/time/lib.rnx
+  sysroot.json
+  lib/rustlib/<triple>/lib/    # crt1.o, crti.o, crtn.o, crtbegin/end, libc.a, libm.a, ...
 ```
 
-`rnx --print sysroot` prints the effective root. Discovery order is `--sysroot <dir>`, then `RNX_SYSROOT`, then the host: without a custom sysroot the linker probes the host exactly as before (`cc -print-search-dirs`, sorted GCC version directories, then the fixed `/usr/lib*` list), so default builds are byte-identical with or without the sysroot layer. A packed `lib/rustlib/<triple>/lib` directory shadows the host for that target only; the host tail stays unchanged. A configured sysroot must carry `sysroot.json` (version 1); anything else fails the first command that consults it with `E108`. Identity is `sha256:` over the sorted file bytes (never mtimes); switching sysroots changes the build fingerprint, so cached artifacts never leak across roots.
+Packs carry no C headers and no `@std` source. Link map entries in `sysroot.json` are normalized relative names resolved against the declared search directories. Absolute paths, `..`, symlinks, device files, and FIFOs are rejected. `integrity.digest` is SHA-256 over the canonical manifest and every file except the manifest itself, in sorted path order, so the identity never depends on mtimes or other file metadata. A corrupt byte, a missing file, or a manifest that disagrees with the target descriptor fails `E124` and names the pack directory and the failing path.
 
-Linux targets select the C library by triple, never by host probing:
+Installed packs live in one store:
+
+```sh
+$RNX_CACHE_HOME/sysroots/     # ~/.cache/rnx/sysroots by default
+  <triple>/
+    current                   # text file holding one digest
+    sha256:<hex>/
+      sysroot.json
+      lib/rustlib/<triple>/lib/...
+  tmp/                        # download and validation staging
+```
+
+Install and inspect with `rnx sysroot`:
+
+```sh
+rnx sysroot add aarch64-unknown-linux-musl
+rnx sysroot add aarch64-unknown-linux-musl@0.2.2
+rnx sysroot add --local ./my-pack
+rnx sysroot list
+rnx sysroot list --json
+rnx sysroot path aarch64-unknown-linux-musl
+rnx sysroot verify aarch64-unknown-linux-musl
+rnx sysroot remove aarch64-unknown-linux-musl
+rnx sysroot prune --keep 2
+```
+
+`add` fetches `ghcr.io/rovelstars/rnx-sysroot:rnx-<toolchain-version>-<triple>` and verifies the index digest, the manifest digest, the blob digest, the `sysroot` kind and role annotations, the target annotation, and the pack `integrity.digest` before installing. A version suffix uses that version in the tag. `--local <dir>` installs a hand-built pack after the same validation, and `--digest sha256:<hex>` asserts the expected digest. `RNX_SYSROOT_OCI` overrides the repository for a mirror. `list` shows the triple, digest, tier, and current marker; `prune` never removes the digest named by `current`.
+
+`rnx lock` pins the installed pack for every triple in `project.targets` and for an explicit `--target`. The lockfile is version 3 and carries a sorted `sysroots` map:
+
+```rnx
+export default {
+    version: 3,
+    packages: [...],
+    sysroots: {
+        "aarch64-unknown-linux-musl": "sha256:..."
+    }
+}
+```
+
+Version 1 and 2 locks still load; a version 2 lock has no `sysroots` entry. `rnx build --locked` and `rnx lock` verification rehash the installed pack for each pinned triple and fail `E124` on a missing pack or a digest mismatch. A cross build for a triple with no pin is allowed and uses the current pack; the next `rnx lock` records it.
+
+`--offline` and a non-empty, non-zero `CI` disable automatic pack fetch. A missing pack then fails `E124` with a hint to run `rnx sysroot add <triple>`. `--sysroot <dir>` and `RNX_SYSROOT` still override the store for local development; the custom root is validated but is not pinned. `rnx target list` reports a `PACK` column, either `installed sha256:<prefix>` or `missing`, next to each built-in descriptor.
+
+The host target needs no pack. Linux targets select the C library by triple, never by host probing:
 
 | Triple | C library | Link mode |
 |---|---|---|
@@ -560,23 +649,162 @@ Linux targets select the C library by triple, never by host probing:
 | `x86_64-unknown-linux-musl` | musl | always fully static |
 | `aarch64-unknown-linux-gnu` | glibc | `--emit-obj` only (linking runs on the host) |
 
-The musl target needs musl libraries packed at `lib/rustlib/x86_64-unknown-linux-musl/lib` (or reachable via `RNX_LIB_DIRS`); without them the link fails closed naming the expected directory instead of silently falling back to glibc. The baked loader path follows the triple: `/lib64/ld-linux-x86-64.so.2` for glibc, `/lib/ld-musl-x86_64.so.1` for musl. The `cc`-driver fallback path refuses musl targets outright. Musl links fully static through the native backend. `rnx build --target x86_64-unknown-linux-musl --emit-obj` works with no sysroot; linking is what needs the packed libraries. `validate_target` accepts exactly the three triples above.
+Cross builds select and validate the pack for the requested triple. The pack's link map supplies the link inputs: `crt` and `crt_end` for each mode (`static`, `dynpie`, `staticpie`), `libs` for `c`, `m`, `pthread`, `dl`, `rt`, and `gcc_s` (a null value omits the library), and `builtins` for the compiler-rt archive when the pack ships one. Bare names resolve against `link.search`, then the pack's `lib/rustlib/<triple>/lib`, then the host search path. A declared file that is missing fails `E124` naming the pack and the file, and a non-empty link map that omits the requested CRT mode fails the same way.
 
-A custom sysroot can also carry an alternate standard library, which is how barebones platforms ship their own prelude. Resolution order for `@std/*` is: test VFS hooks, then the sysroot overlay (`share/rnx/std`), then `.vendor/` and `RNX_VENDOR_DIR`, then the project and global caches, then the registry. The overlay covers whole modules: under it, `is_known_module` accepts modules the stock library never heard of, and a sysroot-only module such as `@std/bareonly` builds and runs like any other. Official platforms keep `@std` untouched. The overlay only applies when a custom sysroot is configured. `pin_version` under a custom sysroot reports the manifest's `std_version` instead of the toolchain version, so vendored platform packages pin against the platform declaration; explicit deplock and project pins still win, and vendor/cache precedence among themselves is unchanged. A minimal platform prelude must still define the ambient names the compiler expects (`Int`, `String`, `Array`, and the rest of the foundation catalog; copy the stock prelude and extend it):
+The runtime archive also comes from the pack. `rnx` reads `runtime.file`, verifies the recorded `runtime.sha256`, and requires `runtime.abi` to equal the compiler's runtime ABI (1). A mismatch is `E124` naming the target and both ABI values. The embedded archive is the host fast path. A host build ignores an installed host pack unless the lock pins that triple in `sysroots` or `--sysroot`/`RNX_SYSROOT` names a v2 pack. The pack digest, the runtime archive sha256, and the runtime ABI all feed the build key, so replacing a selected pack rebuilds the artifact.
 
-```rnx
-import { sysrootMarker } from "@std/prelude";
+The musl target needs musl libraries packed at `lib/rustlib/x86_64-unknown-linux-musl/lib` (or reachable via `RNX_LIB_DIRS`); without them the link fails closed naming the expected directory instead of silently falling back to glibc. The baked loader path follows the triple: `/lib64/ld-linux-x86-64.so.2` for glibc, `/lib/ld-musl-x86_64.so.1` for musl. The `cc`-driver fallback path refuses musl targets outright. Musl links fully static through the native backend. `rnx target list` is the authoritative list of accepted triples.
 
-fn Main(): Int {
-    return sysrootMarker();
-}
+AArch64 Linux is Tier 2. The in-house linker handles AArch64 ELF objects, static and static-pie executables, and dynamic glibc executables: absolute and pc-relative data, `adrp`/`add`/`ldr` page addressing, branches, GOT loads, PLT calls, local-exec and initial-exec TLS, and `R_AARCH64_RELATIVE` static-pie relocations. `rnx build --target aarch64-unknown-linux-gnu` links through the native backend, and `--emit-obj` emits an AArch64 object without one. A full linked executable additionally needs the target pack's AArch64 `libruntime_native.a`, which the pack build job supplies; without a real archive the link fails at the archive input, and the runtime ABI check still applies. The linker tests assemble AArch64 fixtures with `aarch64-linux-gnu-as`, link them with the in-house backend, and run the result with `qemu-aarch64-static`:
+
+```sh
+aarch64-linux-gnu-as -o main.o main.s
+qemu-aarch64-static -L /usr/aarch64-linux-gnu ./main
+```
+
+The backend rejects general-dynamic TLS instead of emitting a wrong sequence, and reports misaligned or out-of-range relocations as linker errors. Two links of the same inputs are byte-identical.
+
+`x86_64-pc-windows-gnu` is Tier 2. The in-house PE backend reads x86_64 COFF objects and archives, including COMDAT and weak externals, resolves imports from MinGW-style import libraries, and writes PE32+ images: console subsystem by default, `.text`/`.rdata`/`.data`/`.bss`/`.pdata`/`.xdata` sections, an import directory with ILT/IAT, and a `.reloc` directory for absolute pointers. `rnx build --target x86_64-pc-windows-gnu` uses the pack's `crt2.o`, import libraries, builtins, and runtime archive; `--emit-obj` still emits a COFF object without linking. A missing pack is `E124`.
+
+Windows execution is not validated on Linux: this environment has no MinGW toolchain and no Wine. The CI job must provide the Wine gate before Tier 1. Structural tests assemble fixtures with `llvm-mc`, build import libraries with `llvm-dlltool`, inspect output with `llvm-readobj`, and compare machine, subsystem, entry, section permissions, imports, and relocation kinds against `lld-link`.
+
+`aarch64-apple-darwin` and `x86_64-apple-darwin` are Tier 2 and console-only. `rnx build --target aarch64-apple-darwin` or `x86_64-apple-darwin` links through the in-house Mach-O backend: 64-bit Mach-O objects, BSD archives, and `.tbd` stubs from the pack become an `MH_EXECUTE` image with `__PAGEZERO`, `__TEXT`, `__DATA_CONST` when present, `__DATA`, and `__LINKEDIT`, followed by `LC_MAIN`, `/usr/lib/dyld`, `LC_LOAD_DYLIB`, `LC_BUILD_VERSION`, `LC_DYLD_INFO_ONLY`, and an ad-hoc `LC_CODE_SIGNATURE`. The linker covers the arm64 and x86_64 relocations the compiler and `libSystem` stubs use, including GOT loads, subtractor pairs, addends, and thread-local descriptors. `--emit-obj` still emits a Mach-O object.
+
+The pack supplies the startup objects, `libSystem.tbd`, optional builtins, and `libruntime_native.a`. A missing pack is `E124`, and a declared pack file that cannot be read is also `E124`. Frameworks, Objective-C, universal or fat binaries, and chained fixups are out of scope.
+
+macOS execution is not tested on this Linux host: there is no macOS runner and no Apple SDK. Structural tests assemble fixtures with `llvm-mc`, inspect the image with `llvm-objdump`, check the ad-hoc signature blob and thread-local descriptor offsets, verify two links are byte-identical, and compare structure against `ld64.lld`. The CI job must run the linked executables on macOS before the target leaves Tier 2.
+
+`x86_64-unknown-uefi` is Tier 3 and experimental. `rnx build --target x86_64-unknown-uefi` links through the same PE writer with subsystem 10 (`IMAGE_SUBSYSTEM_EFI_APPLICATION`) and entry `efi_main`, so the output is a firmware application, not a console program. The image imports nothing, carries no `.idata` section, and needs no C runtime. The pack ships only `libruntime_native.a` and `sysroot.json`; `--emit-obj` still emits a COFF object and needs no pack. A missing pack is `E124` with a hint to run `rnx sysroot add x86_64-unknown-uefi`.
+
+The target runtime lives in `compiler/runtime/uefi`, a detached `no_std` crate built for the triple:
+
+```sh
+cargo build --manifest-path compiler/runtime/uefi/Cargo.toml \
+  --target x86_64-unknown-uefi --release
+```
+
+It supplies `efi_main`, a Boot Services allocator, strings, arrays, `Any` boxing, integer and float rendering, a ConOut writer, a COM1 writer for captures, and a panic handler. `@std/uefi` is the console package: `println!` renders its arguments and writes one line to ConOut and COM1. `@uefi/prelude` re-exports the foundation catalog, `Date`, and that console surface.
+
+The boot gate runs the image under qemu with OVMF:
+
+```sh
+qemu-system-x86_64 -machine q35 -m 256 -bios /usr/share/edk2/x64/OVMF.4m.fd \
+  -drive format=raw,file=fat:rw:esp -display none -serial stdio -no-reboot
+```
+
+Place the PE at `EFI/BOOT/BOOTX64.EFI` inside the `esp` directory. Stage a pack from a locally built archive with `cargo run -p sysroot --example uefi_pack -- --runtime <archive> --out <dir>`, then install it with `rnx sysroot add --local <dir>`. `compiler/cli/tests/uefi_boot.rs` builds the runtime archive, stages and installs a pack, checks the PE headers with `llvm-readobj`, and asserts the serial capture contains the expected line. The test skips when `qemu-system-x86_64`, OVMF, or the Rust target is absent.
+
+Limits: maps, sets, JSON, files, sockets, threads, and the event loop are not implemented by the UEFI runtime, and a program that uses them fails at link with the missing symbol. `println!` renders `Int`, `Bool`, `Float`, `String`, and `null`; arrays and objects render as placeholders. The entry must be named `Main`.
+
+`wasm32-unknown-wasi` is Tier 3 and experimental. `rnx build --target wasm32-unknown-wasi` links a WASI command module with the in-house wasm linker, and `--emit-obj` emits the relocatable wasm object without a pack, like the COFF and Mach-O paths.
+
+The link model is wasm-specific. The linker reads LLVM relocatable objects: type, import, function, table, memory, global, export, element, code, data, and data-count sections, plus the `linking` custom section with its symbol table and `reloc.CODE` / `reloc.DATA` relocation sections. Archive members are pulled on demand, so the runtime archive contributes only the members the program references. Symbols resolve across objects, function, global, and table indices are renumbered, data segments are laid out, and the relocations the compiler and `rustc` emit are applied: `FUNCTION_INDEX_LEB`, `TABLE_INDEX_SLEB`, `TABLE_INDEX_I32`, `MEMORY_ADDR_LEB`, `MEMORY_ADDR_SLEB`, `MEMORY_ADDR_I32`, `MEMORY_ADDR_REL_SLEB`, `TYPE_INDEX_LEB`, `GLOBAL_INDEX_LEB`, `GLOBAL_INDEX_I32`, `FUNCTION_OFFSET_I32`, `SECTION_OFFSET_I32`, `FUNCTION_INDEX_I32`, and `TABLE_NUMBER_LEB`. An unknown relocation type fails as `E108` instead of producing a module that traps later.
+
+The layout is fixed and deterministic: static data starts at 1024, one mebibyte of stack follows it, `__stack_pointer` starts at the stack top, `__heap_base` points at the first byte the runtime allocator owns, and the initial memory covers both plus one page. Function table slot 0 stays empty so a null function reference stays distinguishable; every function whose address is taken gets the next slot. Two links of the same inputs are byte-identical. Sections appear in one fixed order: type, import, function, table, memory, global, export, element, data count, code, data. The module exports `_start` and `memory` and imports only `wasi_snapshot_preview1` `fd_write` and `proc_exit`.
+
+The pack ships only `libruntime_native.a` and `sysroot.json`: no headers, no `@std` source, and no wasi-libc. The runtime archive is a detached `no_std` crate built for `wasm32-unknown-unknown`:
+
+```sh
+cargo build --manifest-path compiler/runtime/wasi/Cargo.toml \
+  --target wasm32-unknown-unknown --release
+```
+
+The target is `wasm32-unknown-unknown` with explicit preview 1 imports, not `wasm32-wasip2`, because the wasip2 standard library emits preview 2 component imports that a preview 1 host cannot satisfy. The crate supplies `_start`, a linear-memory allocator with a first-fit free list, strings, arrays, `Any` boxing, integer and float rendering, `fd_write` console output on descriptors 1 and 2, `proc_exit`, and a panic handler. `@std/wasi` is the prelude for the triple: it re-exports the foundation catalog and `Date` and provides `println!`, `wasi_println!`, `eprintln!`, `printLine`, `printText`, `printErrorLine`, and `printErrorText`. `@std/io`, `@std/log`, `@std/fs`, `@std/process`, `@std/net`, and `@std/sync` are not in that prelude.
+
+Stage a pack from a locally built archive, install it, and build:
+
+```sh
+cargo run -p sysroot --example wasi_pack -- \
+  --runtime compiler/runtime/wasi/target/wasm32-unknown-unknown/release/libruntime_native.a \
+  --out /tmp/wasi-pack
+rnx sysroot add --local /tmp/wasi-pack wasm32-unknown-wasi
+rnx build --target wasm32-unknown-wasi --release
+```
+
+Node 26 no longer runs a `.wasm` file as a WASI program, so both hosts go through the same ten-line preview 1 runner:
+
+```js
+import { WASI } from "node:wasi";
+import { readFile } from "node:fs/promises";
+const wasi = new WASI({ version: "preview1", args: [], env: {} });
+const bytes = await readFile(process.argv[2]);
+const module = await WebAssembly.compile(bytes);
+const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
+process.exit(wasi.start(instance));
 ```
 
 ```sh
-RNX_SYSROOT=/opt/barebones rnx build src/main.rnx
+node runner.mjs build/release/<name>.wasm
+deno run --allow-read runner.mjs build/release/<name>.wasm
 ```
 
-All sysroot lookups sort directory entries and hash bytes, never mtimes; the overlay content feeds the stdlib source digest, so dependency products invalidate when the platform sources change. Builds with a custom sysroot stay offline as long as the overlay covers every `@std/*` import: resolution short-circuits before any registry contact.
+The program below prints one line and exits 0. A `return 3` in `Main` becomes `proc_exit(3)`.
+
+```rnx
+fn Main(): Int {
+    println!("hello wasi");
+    return 0;
+}
+```
+
+`compiler/cli/tests/wasi_run.rs` builds the runtime archive, stages and installs a pack, links the fixture, and asserts the exact line on stdout and the exit status under Node and, when present, Deno. It also checks that `--emit-obj` works with no pack installed and that the object carries the `linking` and `reloc.CODE` sections. A differential test links the same object and archive with `wasm-ld`, compares import and export names and the observed output, and requires the in-house module to cover at least the reference memory size. The tests skip with a printed reason when the Rust target or the hosts are absent.
+
+Limits: the linker does not yet drop unreachable code, so a module carries every function and data segment of the archive members it pulls and its initial memory is larger than a `wasm-ld` link of the same program. It drops custom sections from the inputs, so a `-g` build carries no DWARF, no name section, and no producers record. `--lib` is refused for this target. `println!` renders `Int`, `Bool`, `Float`, `String`, and `null`; arrays, maps, and class instances render as placeholders. `@std/fs`, `@std/process`, `@std/net`, and `@std/sync` are not ported, though the descriptor declares the `fs`, `log`, and `random` capabilities for a future runtime. The browser playground keeps its own engine path and does not use this linker.
+
+A custom sysroot supplies link inputs only. It does not replace `@std` sources; those resolve through the package graph, the project and global caches, and the registry in that order. A barebones platform ships its own prelude as an ordinary package and selects it through one of the prelude rules below.
+
+The compiler always imports `@std/prelude`. The specifier resolves in three levels, first match wins:
+
+1. `Project.config.dependencies["@std/prelude"]`, including an `alias:` chain.
+2. The active target descriptor's `prelude` field.
+3. The stock package `@std/prelude`.
+
+A project that wants a local prelude aliases the specifier and declares the package:
+
+```rnx
+export default {
+    project: { name: "app", version: "0.1.0" },
+    dependencies: {
+        "@std/prelude": { alias: "@myorg/prelude" },
+        "@myorg/prelude": { path: "../myorg-prelude" },
+    },
+}
+```
+
+The selected prelude must declare the foundation names the compiler expects: `Int`, `Float`, `FastFloat`, `Bool`, `String`, `Char`, `Array`, `Map`, `Set`, `Date`, `Error`, `Any`, `Void`, `Null`, `GenRef`, `Result`, and `Iterator`. `Null` is a language builtin and needs no declaration. A missing name fails `E108` with the package and the missing name. Start from the stock prelude and extend it, then keep the package in the lock file like any other dependency.
+
+The stock prelude is a facade. It re-exports `Date` from `@std/time`, `Promise`, `PromiseWithResolvers`, and `PromiseResult` from `@std/async`, and `RnxHost` from `@std/env`. It also declares `IO`, `Thread`, and `ThreadPool` as catalog stubs whose methods the compiler lowers. Those three names and `Promise` are prelude-driven: a prelude that omits `Thread` makes `Thread` unavailable, and a prelude that omits `Promise` makes `async`/`await` fail with `E108` naming the prelude and `Promise`. `assert` and `typeOf` stay compiler intrinsics; the print family is macros re-exported from `@std/io`, and the log family is macros re-exported from `@std/log`.
+
+The foundation declarations live in `@std/foundation`, not in the stock prelude. The package declares `Int`, `Float`, `FastFloat`, `Bool`, `String`, `Char`, `Array`, `Map`, `Set`, `Error`, `Any`, `Void`, `GenRef`, `Result`, `Iterator`, `Iterable`, and `ArrayIter`, plus the Array and String extension methods. It imports only the native `runtime "bytes"` and `runtime "core"` shims, never `@std/io` or `@std/log`. The stock prelude re-exports those names and adds `Date`, the promise types, `RnxHost`, the print and log macros, and the `IO`, `Thread`, and `ThreadPool` stubs.
+
+A target prelude can therefore provide the catalog without the host console and logging surface. The repository ships `@uefi/prelude` as the worked example: it re-exports the foundation names, `Date`, and the `@std/uefi` console surface. Select it with an alias:
+
+```rnx
+export default {
+    project: {
+        name: "uefi-probe",
+        version: "0.1.0",
+        targets: ["x86_64-unknown-uefi"]
+    },
+    dependencies: {
+        "@std/prelude": { alias: "@uefi/prelude" },
+        "@uefi/prelude": { path: "../../compiler/stdlib/uefi_prelude" },
+    },
+}
+```
+
+A program under that prelude can use `Int`, `Result`, `Array`, `String`, `Date`, and `println!`. `println!` writes through the UEFI console, not a host stdout descriptor. `IO`, `Thread`, `ThreadPool`, the log macros, and every `@std` package that needs an operating system are not in scope. Because `@std/uefi` declares the `console` and `firmware` capabilities, the same project fails as `E108` if it is built for a host target.
+
+```rnx
+fn Main(): Int {
+    println!("hello from uefi");
+    return 0;
+}
+```
+
+Built with `rnx build --target x86_64-unknown-uefi --release`, that program becomes a PE32+ image that boots under OVMF. See [Sysroots and target packs](#sysroots-and-target-packs) above for the pack, the runtime archive, and the qemu command.
+
+All sysroot lookups sort directory entries and hash bytes, never mtimes.
 
 All preset files are validated by `crates/cli/tests/editor_configs_test.rs`, `grammar_test.rs` (TextMate JSON syntax, root keys, keyword coverage over real `.rnx` sources), and `tree_sitter_test.rs` (file presence, S-expression balance, keyword consistency against the compiler lexer).
 
@@ -594,7 +822,10 @@ listed at the end and are not part of the public contract.
 | `RNX_REGISTRY` | built-in registry | Registry endpoint for resolve, download, audit, and publish. `--registry` wins. |
 | `RNX_VENDOR_DIR` | unset | Extra local source tree consulted before caches and the registry. |
 | `RNX_ADVISORY_KEY` | unset | Expected advisory-feed key id or public key. |
-| `RNX_SYSROOT` | host probe | Sysroot for the linker. `--sysroot` wins. |
+| `RNX_SYSROOT` | host probe | Custom sysroot for the linker. `--sysroot` wins. The root is validated but not pinned. |
+| `RNX_SYSROOT_OCI` | `ghcr.io/rovelstars/rnx-sysroot` | OCI repository used by `rnx sysroot add`. |
+| `RNX_OFFLINE` | unset | Any non-empty, non-zero value disables automatic target pack fetch. `--offline` sets it. |
+| `CI` | unset | A non-empty, non-zero value also disables automatic target pack fetch. |
 | `RNX_LIB_DIRS` | unset | Colon-separated extra link library directories. |
 | `RNX_NATIVE_LINK` | automatic on x86_64 Linux | `1` forces the in-house linker, `0` forces the C driver. |
 | `RNX_PREFER_NATIVE` | manifest pins | `system` or `bundled` default for native dependencies. The `--prefer-*` flags win. |

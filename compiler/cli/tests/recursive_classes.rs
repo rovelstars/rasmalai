@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -101,7 +101,7 @@ fn recursive_tree_count_and_access() {
         assert(root.left.value == 5, \"left\");\n\
         assert(root.right.value == 15, \"right\");\n\
         assert(root.left.left == null, \"leaf null\");\n\
-        print(\"tree-ok\");\n\
+        println!(\"tree-ok\");\n\
         return 0;\n\
         }}\n"
     );
@@ -125,7 +125,7 @@ fn mutually_recursive_link_and_break() {
         assert(b.a != null, \"back\");\n\
         b.a = null;\n\
         assert(b.a == null, \"broken\");\n\
-        print(\"mutual-ok\");\n\
+        println!(\"mutual-ok\");\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["mutual-ok".to_string()], "mutual");
@@ -147,7 +147,7 @@ fn field_overwrite_releases_old_child() {
         assert(root.count() == 2, \"after\");\n\
         assert(root.left.value == 3, \"replaced\");\n\
         assert(old.value == 2, \"old alive\");\n\
-        print(\"overwrite-ok\");\n\
+        println!(\"overwrite-ok\");\n\
         return 0;\n\
         }}\n"
     );
@@ -179,7 +179,7 @@ fn deep_chain_build_and_drop() {
         assert(count == 5000, \"count\");\n\
         head = null;\n\
         cur = null;\n\
-        print(\"drop-ok\");\n\
+        println!(\"drop-ok\");\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["drop-ok".to_string()], "deep");
@@ -224,7 +224,7 @@ fn conditional_construction_in_constructor_allowed() {
         fn Main(): Int {\n\
         let n = new Node(3, 3);\n\
         assert(n.sum() == 6, \"sum\");\n\
-        print(\"ctor-ok\");\n\
+        println!(\"ctor-ok\");\n\
         return 0;\n\
         }\n";
     check_all_backends(src, 0, &["ctor-ok".to_string()], "ctor");

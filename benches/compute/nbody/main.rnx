@@ -97,6 +97,6 @@ fn Main(): Int {
     }
     offsetMomentum(px, py, pz, vx, vy, vz, m);
     advance(px, py, pz, vx, vy, vz, m, 100000);
-    print("RESULT checksum", energy(px, py, pz, vx, vy, vz, m));
+    println!("RESULT checksum", energy(px, py, pz, vx, vy, vz, m));
     return 0;
 }

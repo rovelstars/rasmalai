@@ -19,7 +19,7 @@ struct Vec3 {
 }
 
 let v = Vec3(1.0, 2.0, 3.0);
-print(v.x, v.y, v.z);
+println!(v.x, v.y, v.z);
 ```
 
 Fields default to package visibility. `private` restricts a field to its enclosing scope; reading a `private` field from outside is an `E203` error. Structs accept type parameters in angle brackets; parameters erase to `Any` in field slots, so one declaration serves every element type with a single shared layout.
@@ -30,7 +30,7 @@ struct Box<T> {
 }
 
 let b = Box(42);
-print(b.value);
+println!(b.value);
 ```
 
 ## init and deinit
@@ -46,7 +46,7 @@ struct Meter {
     }
 
     deinit {
-        print("meter dropped");
+        println!("meter dropped");
     }
 
     fn bump(amount: Int): Int {
@@ -56,7 +56,7 @@ struct Meter {
 }
 
 let m = Meter(20);
-print(m.bump(22));
+println!(m.bump(22));
 ```
 
 ## Records
@@ -68,7 +68,7 @@ record Point(x: Float, y: Float)
 
 let a = Point(1.0, 2.0);
 let b = a;
-print(b.x, b.y);
+println!(b.x, b.y);
 ```
 
 Records serve coordinates, colors, and messages: data flowing through functions without attached behavior.
@@ -80,7 +80,7 @@ Anonymous records skip the declaration: `{ id: 1, name: "Al" }` builds a record 
 ```rnx
 let user = { id: 1, name: "Al", role: "admin" };
 let { id, ...meta } = user;
-print(id, meta.name);
+println!(id, meta.name);
 ```
 
 ## Value-type reference

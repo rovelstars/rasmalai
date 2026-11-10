@@ -40,7 +40,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -88,8 +88,8 @@ fn tuple_div_rem_destructure() {
         }\n\
         fn Main(): Int {\n\
         let (q, r) = div_rem(10, 3);\n\
-        print(q);\n\
-        print(r);\n\
+        println!(q);\n\
+        println!(r);\n\
         return 0;\n\
         }\n",
         "3\n1\n",
@@ -111,9 +111,9 @@ fn tuple_swap_param_and_return() {
         fn Main(): Int {\n\
         let res = swap((42, \"hello\"));\n\
         assert(res.0 == \"hello\" && res.1 == 42, \"tuple param and return\");\n\
-        print(format_pair((\"Bob\", 25)));\n\
+        println!(format_pair((\"Bob\", 25)));\n\
         let (q, r) = res;\n\
-        print(q);\n\
+        println!(q);\n\
         return r - 42;\n\
         }\n",
         "Bob: 25\nhello\n",
@@ -132,10 +132,10 @@ fn tuple_three_wide() {
         }\n\
         fn Main(): Int {\n\
         let (a, b, c) = triple();\n\
-        print(a);\n\
-        print(b);\n\
-        print(first((1, \"x\", false)) + 41);\n\
-        if (c) { print(\"yes\"); }\n\
+        println!(a);\n\
+        println!(b);\n\
+        println!(first((1, \"x\", false)) + 41);\n\
+        if (c) { println!(\"yes\"); }\n\
         return 0;\n\
         }\n",
         "7\nseven\n42\nyes\n",
@@ -176,21 +176,21 @@ fn err_tuple_arity_mismatch() {
 fn defer_lifo_return_and_propagate() {
     check_stdout_everywhere(
         "fn test_defer(fail: Bool): Int? {\n\
-        defer print(\"d1\");\n\
-        defer print(\"d2\");\n\
+        defer println!(\"d1\");\n\
+        defer println!(\"d2\");\n\
         if (fail) {\n\
         return null;\n\
         }\n\
-        defer print(\"d3\");\n\
+        defer println!(\"d3\");\n\
         return 100;\n\
         }\n\
         fn Main(): Int {\n\
-        print(test_defer(false) ?? -1);\n\
-        print(\"---\");\n\
+        println!(test_defer(false) ?? -1);\n\
+        println!(\"---\");\n\
         let b = test_defer(true);\n\
-        if (b != null) { print(b ?? -1); } else { print(\"early\"); }\n\
-        defer print(\"last\");\n\
-        defer { print(\"first\"); }\n\
+        if (b != null) { println!(b ?? -1); } else { println!(\"early\"); }\n\
+        defer println!(\"last\");\n\
+        defer { println!(\"first\"); }\n\
         return 0;\n\
         }\n",
         "d3\nd2\nd1\n100\n---\nd2\nd1\nearly\nfirst\nlast\n",
@@ -204,14 +204,14 @@ fn defer_conditional() {
         "fn Main(): Int {\n\
         let c = true;\n\
         if (c) {\n\
-        defer print(\"cond\");\n\
+        defer println!(\"cond\");\n\
         }\n\
-        defer print(\"always\");\n\
+        defer println!(\"always\");\n\
         let d = false;\n\
         if (d) {\n\
-        defer print(\"never\");\n\
+        defer println!(\"never\");\n\
         }\n\
-        print(\"body\");\n\
+        println!(\"body\");\n\
         return 0;\n\
         }\n",
         "body\nalways\ncond\n",
@@ -225,11 +225,11 @@ fn defer_loop_break() {
         "fn Main(): Int {\n\
         let i = 0;\n\
         while (true) {\n\
-        defer print(\"w\");\n\
+        defer println!(\"w\");\n\
         i = i + 1;\n\
         if (i >= 2) { break; }\n\
         }\n\
-        print(\"body\");\n\
+        println!(\"body\");\n\
         return 0;\n\
         }\n",
         "w\nw\nbody\n",
@@ -249,9 +249,9 @@ fn defer_mutating_assign_form() {
         fn Main(): Int {\n\
         let log: Array<Int> = [];\n\
         fill(log);\n\
-        print(log.length());\n\
-        print(log[0]);\n\
-        print(log[2]);\n\
+        println!(log.length());\n\
+        println!(log[0]);\n\
+        println!(log[2]);\n\
         return 0;\n\
         }\n",
         "3\n3\n1\n",
@@ -270,9 +270,9 @@ fn spread_combined_and_rest() {
         assert(combined[2] == 2 && combined[4] == 4, \"array spread elements\");\n\
         let [first, ...remainder] = combined;\n\
         assert(first == 0 && remainder.length() == 5, \"array destructure rest\");\n\
-        print(first);\n\
-        print(remainder.length());\n\
-        print(remainder[0]);\n\
+        println!(first);\n\
+        println!(remainder.length());\n\
+        println!(remainder[0]);\n\
         return 0;\n\
         }\n",
         "0\n5\n1\n",
@@ -286,11 +286,11 @@ fn spread_empty_and_oob_defaults() {
         "fn Main(): Int {\n\
         let e: Array<Int> = [];\n\
         let full = [...e, 9, ...e];\n\
-        print(full.length());\n\
+        println!(full.length());\n\
         let [x, y, ...tail] = full;\n\
-        print(x);\n\
-        print(y);\n\
-        print(tail.length());\n\
+        println!(x);\n\
+        println!(y);\n\
+        println!(tail.length());\n\
         return 0;\n\
         }\n",
         "1\n9\n0\n0\n",
@@ -304,12 +304,12 @@ fn record_literal_and_rest() {
         "fn Main(): Int {\n\
         let user = { id: 1, name: \"Alice\", role: \"admin\", active: true };\n\
         let { id, ...meta } = user;\n\
-        print(id);\n\
-        print(meta.name);\n\
-        print(meta.role);\n\
-        if (meta.active) { print(\"on\"); }\n\
+        println!(id);\n\
+        println!(meta.name);\n\
+        println!(meta.role);\n\
+        if (meta.active) { println!(\"on\"); }\n\
         let nested = { a: { b: 42 } };\n\
-        print(nested.a.b);\n\
+        println!(nested.a.b);\n\
         return 0;\n\
         }\n",
         "1\nAlice\nadmin\non\n42\n",
@@ -328,9 +328,9 @@ fn record_rest_on_struct() {
         fn Main(): Int {\n\
         let u = User(7, \"Zed\", \"root\");\n\
         let { id, ...meta } = u;\n\
-        print(id);\n\
-        print(meta.name);\n\
-        print(meta.role);\n\
+        println!(id);\n\
+        println!(meta.name);\n\
+        println!(meta.role);\n\
         return 0;\n\
         }\n",
         "7\nZed\nroot\n",
@@ -392,7 +392,7 @@ fn err_record_unknown_field() {
     check_fails_with(
         "fn Main(): Int {\n\
         let u = { a: 1 };\n\
-        print(u.b);\n\
+        println!(u.b);\n\
         return 0;\n\
         }\n",
         &["E108", "unknown field"],

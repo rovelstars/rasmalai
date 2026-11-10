@@ -183,6 +183,7 @@ fn synthesize_entry_main(module: &mut Module, diags: &mut Vec<Diagnostic>, files
             is_static: false,
             is_test: false,
             is_bench: false,
+            is_macro: false,
             body: FnBody::Block(Block { stmts: vec![sp(Stmt::Return(Some(sp(Expr::Int(0), span))), span)] }),
             attrs: Vec::new(),
         });
@@ -222,7 +223,7 @@ fn synthesize_entry_main(module: &mut Module, diags: &mut Vec<Diagnostic>, files
     // fn bodies and closures never leak await outward (see top_*_has_await).
     let needs_async = top.iter().any(|s| top_stmt_has_await(&s.node));
     let (ret, is_async) = if needs_async {
-        (Type { path: vec!["std.prelude.Promise".to_string()], args: vec![int], nullable: false, fn_sig: None, tuple: Vec::new() }, true)
+        (Type { path: vec![crate::async_expand::promise_path()], args: vec![int], nullable: false, fn_sig: None, tuple: Vec::new() }, true)
     } else {
         (int, false)
     };
@@ -239,6 +240,7 @@ fn synthesize_entry_main(module: &mut Module, diags: &mut Vec<Diagnostic>, files
         is_static: false,
         is_test: false,
         is_bench: false,
+        is_macro: false,
         body: FnBody::Block(Block { stmts: top }),
         attrs: Vec::new(),
     });

@@ -53,6 +53,12 @@ then mirror CI locally:
 cargo nextest run --profile ci --workspace
 ```
 
+The repository-root `.cargo/config.toml` sets `RNX_VENDOR_DIR` to the checkout's
+`compiler/stdlib/src`, so no export is needed: every `@std/*` import in a test
+resolves from this repository. The setting does not force, so an explicit
+`RNX_VENDOR_DIR` in your shell wins. Installed consumers resolve `@std/*` from
+the registry cache instead.
+
 `.config/nextest.toml` holds the `ci` profile: no fail-fast (every test
 runs, as with the old `--no-fail-fast`), a slow-timeout that flags a test
 at 15 minutes and terminates it a period later, and zero retries except

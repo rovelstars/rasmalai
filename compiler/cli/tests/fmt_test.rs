@@ -282,7 +282,30 @@ fn test_fmt_unary_and_control_spacing() {
         .unwrap_or_else(|e| panic!("formatted unary fails to parse: {e}"));
 }
 
-const JOINED_SRC: &str = "import { Map } from \"@std/collections\";\nimport { Clock } from \"@std/time\";\nimport { Aye, Bee } from \"@std/cee\";\nimport { fn f(x: Int): Int as g, fn h(x: Int): Int as k } from native \"libx\";\nexport const K: Int = 1; export const J: Int = 2;\nexport fn alpha(x: Int): Int { return x + 1; } export fn beta(y: Int): Int { let t = y * 2; return t - 1; }\npub class Pair {\n    let a: Int;\n    let b: Int;\n    init(a: Int, b: Int) { this.a = a; this.b = b; }\n    fn sum(): Int { return this.a + this.b; }\n} enum E { Ok(Int), Err(String), }\ninterface I { fn run(): Int; }\nfn flow(n: Int): Int { let i = 0; while i < n { if i == 2 { i = i + 1; } else if i == 3 { i = i + 10; } else { i = i + 100; } i = i + 1; } for x in [1, 2, 3] { i = i + x; } return i; }\nfn looped(ok: Bool): Int { do { print(\"x\"); } while ok; return 0; }\nfn guarded(v: Int?): Int { guard let x = v else { return -1; } return x; }\nfn tried(ok: Bool): Int { try { if ok { return 1; } return 2; } catch(e) { return 3; } finally { print(\"done\"); } return 4; }\nfn switched(x: Int): Int { switch x { case 1: return 10; case 2: return 20; default: return 0; } }\nfn lambdas(): Int { let a = (x) => x * 2; let d = () => { return 42; }; return a(21) + d(); }\nfn checks(v: Any): Int { if v is Int { return 1; } let s = v as String; return 0; }\n";
+const MACRO_CALL_SRC: &str = "fn Main(): Int {\n    let ok = true;\n    println!(\"x\");\n    log!(\"y\");\n    assert![ok];\n    assert!(ok, \"must hold\");\n    if !ok {\n        return 0;\n    }\n    return 1;\n}\n";
+
+#[test]
+fn test_fmt_macro_calls_stay_tight() {
+    let out = fmt(MACRO_CALL_SRC);
+    for tight in [
+        "println!(\"x\");",
+        "log!(\"y\");",
+        "assert![ok];",
+        "assert!(ok, \"must hold\");",
+        "if !ok {",
+    ] {
+        assert!(out.contains(tight), "missing {tight:?} in:\n{out}");
+    }
+    for bad in ["println !", "log !", "assert !", "assert![ ok", "! ok"] {
+        assert!(!out.contains(bad), "bad spacing {bad:?} in:\n{out}");
+    }
+    let again = fmt(&out);
+    assert_eq!(out, again, "macro formatting not idempotent");
+    frontend::parser::Parser::parse_module(&out)
+        .unwrap_or_else(|e| panic!("formatted macro calls fail to parse: {e}"));
+}
+
+const JOINED_SRC: &str = "import { Map } from \"@std/collections\";\nimport { Clock } from \"@std/time\";\nimport { Aye, Bee } from \"@std/cee\";\nimport { fn f(x: Int): Int as g, fn h(x: Int): Int as k } from native \"libx\";\nexport const K: Int = 1; export const J: Int = 2;\nexport fn alpha(x: Int): Int { return x + 1; } export fn beta(y: Int): Int { let t = y * 2; return t - 1; }\npub class Pair {\n    let a: Int;\n    let b: Int;\n    init(a: Int, b: Int) { this.a = a; this.b = b; }\n    fn sum(): Int { return this.a + this.b; }\n} enum E { Ok(Int), Err(String), }\ninterface I { fn run(): Int; }\nfn flow(n: Int): Int { let i = 0; while i < n { if i == 2 { i = i + 1; } else if i == 3 { i = i + 10; } else { i = i + 100; } i = i + 1; } for x in [1, 2, 3] { i = i + x; } return i; }\nfn looped(ok: Bool): Int { do { println!(\"x\"); } while ok; return 0; }\nfn guarded(v: Int?): Int { guard let x = v else { return -1; } return x; }\nfn tried(ok: Bool): Int { try { if ok { return 1; } return 2; } catch(e) { return 3; } finally { println!(\"done\"); } return 4; }\nfn switched(x: Int): Int { switch x { case 1: return 10; case 2: return 20; default: return 0; } }\nfn lambdas(): Int { let a = (x) => x * 2; let d = () => { return 42; }; return a(21) + d(); }\nfn checks(v: Any): Int { if v is Int { return 1; } let s = v as String; return 0; }\n";
 
 #[test]
 fn test_fmt_converges_on_joined_statements() {

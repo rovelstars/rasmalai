@@ -1,5 +1,7 @@
 pub const MODULES: &[&str] = &[
     "prelude",
+    "foundation",
+    "async",
     "simd",
     "collections",
     "math",
@@ -17,4 +19,7 @@ pub const MODULES: &[&str] = &[
     "net/http",
     "json",
     "io",
+    "log",
+    "uefi",
+    "wasi",
 ];

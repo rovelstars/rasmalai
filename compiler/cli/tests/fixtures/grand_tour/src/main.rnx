@@ -64,7 +64,7 @@ async fn Main(): Int {
     let asyncOk = asyncVal == 10;
 
     if timeOk && rngOk && ioOk && envOk && mathOk && collOk && syncOk && asyncOk {
-        print("Phase 5 Grand Tour verified: 42");
+        println!("Phase 5 Grand Tour verified: 42");
         return 42;
     }
     return 1;

@@ -34,7 +34,7 @@ fn run_bin(bin: &str) -> (i32, String) {
     (run.status.code().unwrap(), String::from_utf8(run.stdout).unwrap())
 }
 
-const MAIN_SRC: &str = "import { helper } from \"./m2\";\nfn Main(): Int {\n    print(helper());\n    return helper();\n}\n";
+const MAIN_SRC: &str = "import { helper } from \"./m2\";\nfn Main(): Int {\n    println!(helper());\n    return helper();\n}\n";
 
 #[test]
 fn edited_relative_import_invalidates_build() {
@@ -72,7 +72,7 @@ fn edited_entry_still_invalidates_build() {
 
     std::fs::write(
         &main,
-        "import { helper } from \"./m2\";\nfn Main(): Int {\n    print(helper() + 10);\n    return helper() + 10;\n}\n",
+        "import { helper } from \"./m2\";\nfn Main(): Int {\n    println!(helper() + 10);\n    return helper() + 10;\n}\n",
     )
     .unwrap();
     let (fresh, bin) = build(&main);
@@ -100,7 +100,7 @@ fn edited_nested_import_outside_src_invalidates_build() {
     // Import resolves relative to the importer: src/main.rnx -> ../lib/m2.
     std::fs::write(
         &main,
-        "import { helper } from \"../lib/m2\";\nfn Main(): Int {\n    print(helper());\n    return helper();\n}\n",
+        "import { helper } from \"../lib/m2\";\nfn Main(): Int {\n    println!(helper());\n    return helper();\n}\n",
     )
     .unwrap();
 

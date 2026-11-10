@@ -40,7 +40,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -87,13 +87,13 @@ fn switch_guards_see_bindings() {
         let o: Result = Result.Ok(42);\n\
         switch o {\n\
             case .Ok(v) if v > 100:\n\
-                print(1);\n\
+                println!(1);\n\
                 pass;\n\
             case .Ok(v):\n\
-                print(2);\n\
+                println!(2);\n\
                 pass;\n\
             case .Err(e):\n\
-                print(0);\n\
+                println!(0);\n\
                 pass;\n\
         }\n\
         return 0;\n\
@@ -124,9 +124,9 @@ fn switch_custom_enum_payloads() {
             }\n\
         }\n\
         fn Main(): Int {\n\
-        print(area(Shape.Circle(1.0)));\n\
-        print(area(Shape.Rect(3.0, 4.0)));\n\
-        print(area(Shape.Circle(200.0)));\n\
+        println!(area(Shape.Circle(1.0)));\n\
+        println!(area(Shape.Rect(3.0, 4.0)));\n\
+        println!(area(Shape.Circle(200.0)));\n\
         return 0;\n\
         }\n",
         "3.0\n12.0\n0.0\n",
@@ -148,8 +148,8 @@ fn try_null_coalesces() {
         return v * 2;\n\
         }\n\
         fn Main(): Int {\n\
-        print(getVal());\n\
-        print(getNull());\n\
+        println!(getVal());\n\
+        println!(getNull());\n\
         return 0;\n\
         }\n",
         "42\n10\n",
@@ -171,8 +171,8 @@ fn try_result_propagates() {
         return Result.Ok(v);\n\
         }\n\
         fn Main(): Int {\n\
-        print(calc(20).unwrap());\n\
-        print(failer().isErr());\n\
+        println!(calc(20).unwrap());\n\
+        println!(failer().isErr());\n\
         return 0;\n\
         }\n",
         "41\ntrue\n",
@@ -194,8 +194,8 @@ fn try_pop_and_join() {
         return Result.Ok(v + 2);\n\
         }\n\
         fn Main(): Int {\n\
-        print(popIt());\n\
-        print(spawnIt().unwrap());\n\
+        println!(popIt());\n\
+        println!(spawnIt().unwrap());\n\
         return 0;\n\
         }\n",
         "21\n42\n",
@@ -208,9 +208,9 @@ fn ternary_still_works() {
     check_stdout_everywhere(
         "fn Main(): Int {\n\
         let t = 1 > 2 ? 10 : 20;\n\
-        print(t);\n\
+        println!(t);\n\
         let u = 2 > 1 ? 1 : 2;\n\
-        print(u);\n\
+        println!(u);\n\
         return 0;\n\
         }\n",
         "20\n1\n",
@@ -225,7 +225,7 @@ fn err_non_exhaustive_switch() {
         let o: Result = Result.Ok(42);\n\
         switch o {\n\
             case .Ok(v):\n\
-                print(v);\n\
+                println!(v);\n\
                 pass;\n\
         }\n\
         return 0;\n\

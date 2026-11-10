@@ -13,22 +13,22 @@ impl ExpandSession {
         ExpandSession { opts }
     }
 
-    pub fn phase_a(
+    pub fn expand_syntax(
         &mut self,
         module: &mut frontend::ast::Module,
         profiler: Option<&mut frontend::profiler::PassProfiler>,
     ) -> Vec<Diagnostic> {
         if let Some(p) = profiler {
-            p.start("expandA");
-            let out = frontend::macros::expand_phase_a(module, &mut self.opts);
+            p.start("syntax_expand");
+            let out = frontend::macros::expand_syntax(module, &mut self.opts);
             p.stop();
             out
         } else {
-            frontend::macros::expand_phase_a(module, &mut self.opts)
+            frontend::macros::expand_syntax(module, &mut self.opts)
         }
     }
 
-    pub fn phase_b(
+    pub fn expand_comptime(
         &mut self,
         module: &mut frontend::ast::Module,
         profiler: Option<&mut frontend::profiler::PassProfiler>,
@@ -38,14 +38,14 @@ impl ExpandSession {
             Err(e) => return vec![e],
         };
         let mut run = |opts: &mut MacroOptions| {
-            frontend::macros::expand_phase_b(
+            frontend::macros::expand_comptime(
                 module,
                 opts,
                 runner.as_ref().map(|r| r as &dyn ComptimeRunner),
             )
         };
         if let Some(p) = profiler {
-            p.start("expandB");
+            p.start("comptime_expand");
             let out = run(&mut self.opts);
             p.stop();
             out
@@ -68,11 +68,11 @@ pub fn expand_all(
     mut profiler: Option<&mut frontend::profiler::PassProfiler>,
 ) -> Vec<Diagnostic> {
     let mut session = ExpandSession::new(base_dir, dump);
-    let mut diags = session.phase_a(module, reborrow(profiler.as_mut()));
+    let mut diags = session.expand_syntax(module, reborrow(profiler.as_mut()));
     if diags.iter().any(|d| !d.code.is_warning()) {
         return diags;
     }
-    diags.extend(session.phase_b(module, reborrow(profiler.as_mut())));
+    diags.extend(session.expand_comptime(module, reborrow(profiler.as_mut())));
     diags
 }
 
@@ -99,14 +99,14 @@ mod tests {
         let dump = dir.join(".rnx-cache").join("expansions");
         let mut session = super::ExpandSession::new(&dir, Some(dump.clone()));
         let mut profiler = frontend::profiler::PassProfiler::new(true, None);
-        let a = session.phase_a(&mut module, Some(&mut profiler));
+        let a = session.expand_syntax(&mut module, Some(&mut profiler));
         assert!(a.iter().all(|d| d.code.is_warning()), "{a:?}");
-        let b = session.phase_b(&mut module, Some(&mut profiler));
+        let b = session.expand_comptime(&mut module, Some(&mut profiler));
         assert!(b.iter().all(|d| d.code.is_warning()), "{b:?}");
         let names: Vec<&str> = profiler.records().iter().map(|(n, _, _)| *n).collect();
-        assert!(names.contains(&"expandA"), "{names:?}");
-        assert!(names.contains(&"expandB"), "{names:?}");
-        for f in ["phase-a.before", "phase-a.after", "phase-b.before", "phase-b.after"] {
+        assert!(names.contains(&"syntax_expand"), "{names:?}");
+        assert!(names.contains(&"comptime_expand"), "{names:?}");
+        for f in ["syntax.before", "syntax.after", "comptime.before", "comptime.after"] {
             assert!(dump.join(f).is_file(), "{f}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
@@ -128,9 +128,9 @@ mod tests {
         let graph = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap();
         let mut module = graph.resolve().unwrap();
         let mut session = super::ExpandSession::new(&dir, None);
-        let a = session.phase_a(&mut module, None);
+        let a = session.expand_syntax(&mut module, None);
         assert!(a.iter().all(|d| d.code.is_warning()), "{a:?}");
-        let b = session.phase_b(&mut module, None);
+        let b = session.expand_comptime(&mut module, None);
         assert!(b.iter().all(|d| d.code.is_warning()), "{b:?}");
         assert_eq!(frontend::macros::comptime_runs(), 0);
         std::fs::remove_dir_all(&dir).unwrap();

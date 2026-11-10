@@ -40,7 +40,7 @@ console.log(v.length());
 import { Vec2 } from "@std/math";
 
 let v = new Vec2(3.0, 4.0);
-print(v.length());
+println!(v.length());
 ```
 
 ## Numbers with hardware sizes
@@ -58,7 +58,7 @@ console.log(Math.trunc(3.9), a * 2);
 ```rnx
 let a: Float = 0.5;
 let fast = a.asFast();
-print(Int(3.9), fast * 2.0.asFast());
+println!(Int(3.9), fast * 2.0.asFast());
 ```
 
 ## Config from the environment
@@ -75,7 +75,7 @@ console.log(process.env["MODE"]);
 import { Env } from "@std/env";
 
 Env.set("MODE", "bare");
-print(Env.get("MODE"));
+println!(Env.get("MODE"));
 ```
 
 ## Ship one file

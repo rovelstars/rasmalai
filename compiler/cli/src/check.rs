@@ -286,9 +286,9 @@ pub fn run_check(
                         let base = entry_parent(entry);
                         let mut opts = frontend::macros::MacroOptions::new(base);
                         let mut staged =
-                            frontend::macros::expand_phase_a(&mut module, &mut opts);
+                            frontend::macros::expand_syntax(&mut module, &mut opts);
                         if staged.iter().all(|d| d.code.is_warning()) {
-                            staged.extend(frontend::macros::expand_phase_b(
+                            staged.extend(frontend::macros::expand_comptime(
                                 &mut module,
                                 &mut opts,
                                 None,

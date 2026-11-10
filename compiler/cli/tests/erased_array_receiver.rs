@@ -34,7 +34,7 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         other => panic!("interpreter {tag}: {other:?}"),
     }
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(machine.output.clone(), want_out, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -71,8 +71,8 @@ fn manual_join_examples_native_and_aot() {
     check_all_backends(
         "fn Main(): Int {\n\
         let numbers: Array<Int> = [10, 20, 30, 40, 50];\n\
-        print(numbers.join(\",\"));\n\
-        print([1, 2, 3].join());\n\
+        println!(numbers.join(\",\"));\n\
+        println!([1, 2, 3].join());\n\
         return 0;\n\
         }\n",
         0,
@@ -86,15 +86,15 @@ fn string_and_empty_typed_arrays_join() {
     check_all_backends(
         "fn Main(): Int {\n\
         let words: Array<String> = [\"a\", \"b\", \"c\"];\n\
-        print(words.join(\"-\"));\n\
+        println!(words.join(\"-\"));\n\
         let ints: Array<Int> = [];\n\
-        print(\"[\" + ints.join(\",\") + \"]\");\n\
+        println!(\"[\" + ints.join(\",\") + \"]\");\n\
         let texts: Array<String> = [];\n\
-        print(\"[\" + texts.join(\",\") + \"]\");\n\
+        println!(\"[\" + texts.join(\",\") + \"]\");\n\
         let flags: Array<Bool> = [];\n\
-        print(\"[\" + flags.join(\",\") + \"]\");\n\
+        println!(\"[\" + flags.join(\",\") + \"]\");\n\
         let reals: Array<Float> = [];\n\
-        print(\"[\" + reals.join(\",\") + \"]\");\n\
+        println!(\"[\" + reals.join(\",\") + \"]\");\n\
         return 0;\n\
         }\n",
         0,
@@ -114,17 +114,17 @@ fn erased_receiver_find_some_reversed_on_typed_arrays() {
     check_all_backends(
         "fn Main(): Int {\n\
         let xs: Array<Int> = [4, 9, 16];\n\
-        print(xs.findIndex((x: Int): Bool => x > 5));\n\
-        print(xs.some((x: Int): Bool => x == 9));\n\
-        print(xs.every((x: Int): Bool => x > 0));\n\
+        println!(xs.findIndex((x: Int): Bool => x > 5));\n\
+        println!(xs.some((x: Int): Bool => x == 9));\n\
+        println!(xs.every((x: Int): Bool => x > 0));\n\
         let hit = xs.find((x: Int): Bool => x == 16);\n\
-        print(hit ?? -1);\n\
-        print(xs.reversed().join(\",\"));\n\
-        print([4, 9, 16].join(\" | \"));\n\
+        println!(hit ?? -1);\n\
+        println!(xs.reversed().join(\",\"));\n\
+        println!([4, 9, 16].join(\" | \"));\n\
         let flags: Array<Bool> = [true, false];\n\
-        print(flags.join(\",\"));\n\
+        println!(flags.join(\",\"));\n\
         let reals: Array<Float> = [1.5, 2.5];\n\
-        print(reals.join(\",\"));\n\
+        println!(reals.join(\",\"));\n\
         return 0;\n\
         }\n",
         0,
@@ -185,11 +185,11 @@ const ERASED_PARAM_SRC: &str = "fn head<T>(xs: Array<T>): String {\n\
         }\n\
         fn Main(): Int {\n\
         let xs: Array<Int> = [3, 4, 5];\n\
-        print(head(xs));\n\
-        print(firstOf(xs) + 1);\n\
+        println!(head(xs));\n\
+        println!(firstOf(xs) + 1);\n\
         let it = new ArrayIter<Int>(xs);\n\
-        print(it.next() ?? -1);\n\
-        print(it.next() ?? -1);\n\
+        println!(it.next() ?? -1);\n\
+        println!(it.next() ?? -1);\n\
         return 0;\n\
         }\n";
 
@@ -198,10 +198,10 @@ fn bare_array_annotation_on_typed_literal_boxed() {
     check_all_backends(
         "fn Main(): Int {\n\
         let wide: Array = [1, 2];\n\
-        print(wide[0] == 1);\n\
-        print(wide[0]);\n\
-        print(wide.join(\"-\"));\n\
-        print(\"len=\" + wide.length());\n\
+        println!(wide[0] == 1);\n\
+        println!(wide[0]);\n\
+        println!(wide.join(\"-\"));\n\
+        println!(\"len=\" + wide.length());\n\
         return 0;\n\
         }\n",
         0,

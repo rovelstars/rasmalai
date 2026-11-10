@@ -14,12 +14,12 @@ icon: "Split"
 ```rnx
 let score = 42;
 if score > 40 {
-    print("high");
+    println!("high");
 } else {
-    print("low");
+    println!("low");
 }
-if score > 0 print("positive");
-else print("non-positive");
+if score > 0 println!("positive");
+else println!("non-positive");
 ```
 
 Test for presence with `!= null`, which narrows the binding inside the block, or diverge early with `guard let ... else`. There are no if-expressions: `if` never yields a value. The conditional expression is the ternary `cond ? a : b`.
@@ -31,7 +31,7 @@ while i < 3 {
     acc = i % 2 == 0 ? acc + "e" : acc + "o";
     i = i + 1;
 }
-print(acc);
+println!(acc);
 ```
 
 ## for..in
@@ -43,7 +43,7 @@ let total = 0;
 for x in [10, 20, 30] {
     total = total + x;
 }
-print(total);
+println!(total);
 ```
 
 The binding destructures: `for (a, b) in pairs` pulls array elements by index, or record and struct elements by field name. `for (a, b)` over a range is a compile error. `Map` iterates keys, `Set` iterates members. Iteration over `.iterator()` types desugars to a `while` loop over `next()` with identical `break`/`continue` semantics; arrays and ranges keep zero-allocation fast paths.
@@ -70,12 +70,12 @@ let i = 0;
 while i < 3 {
     i = i + 1;
 }
-print(i);
+println!(i);
 let j = 0;
 do {
     j = j + 1;
 } while j < 3;
-print(j);
+println!(j);
 ```
 
 ## switch
@@ -91,7 +91,7 @@ fn level(score: Int): String {
     }
 }
 
-print(level(42));
+println!(level(42));
 ```
 
 `is` tests a value against a type and narrows it inside the matching arm; no cast is required. `typeOf` returns the runtime type name. Identity checks compare integer tags, never strings: primitives test the `Any` discriminant, objects compare the class id in the instance header.
@@ -99,10 +99,10 @@ print(level(42));
 ```rnx
 let v: Any = 42;
 if (v is Int) {
-    print(v + 1);
+    println!(v + 1);
 }
-print(typeOf(v));
-print(v is String);
+println!(typeOf(v));
+println!(v is String);
 ```
 
 `switch` also serves as an expression: each arm yields a value, arms agree on one type, and the match is exhaustive or carries `default`.
@@ -114,7 +114,7 @@ let status = switch code {
     case 404: "Not Found",
     default: "Error",
 };
-print(status);
+println!(status);
 ```
 
 ## Switch reference
@@ -161,18 +161,18 @@ Enum matching has its own exhaustiveness rule; see [Enums and Matching](/manual/
 `defer` schedules a block to run when the current scope exits: normal return, early `return`, `throw`, `break`, or `continue` out of loops. Multiple defers run last-in, first-out. A `defer` inside a branch registers only when the branch executes.
 
 ```rnx
-defer { print("closed"); }
-defer { print("flushed"); }
-print("working");
+defer { println!("closed"); }
+defer { println!("flushed"); }
+println!("working");
 ```
 
 Output order is `working`, `flushed`, `closed`. A single statement is accepted without braces.
 
 ```rnx
 let trail = "";
-defer print("closed");
+defer println!("closed");
 defer trail = trail + "!";
-print("working");
+println!("working");
 ```
 
 ## guard
@@ -186,8 +186,8 @@ fn pick(flag: Bool): Int {
     return 1;
 }
 
-print(pick(true));
-print(pick(false));
+println!(pick(true));
+println!(pick(false));
 ```
 
 ## Summary

@@ -165,7 +165,7 @@ fn headless_add_denied_with_exit_2() {
 }
 
 #[test]
-fn headless_add_with_accept_caps_writes_v2() {
+fn headless_add_with_accept_caps_writes_v3() {
     let dir = fresh_dir("accept");
     let app = dir.join("app");
     write(&app.join("Project.config"), &app_manifest("", None));
@@ -181,7 +181,7 @@ fn headless_add_with_accept_caps_writes_v2() {
     );
     assert_eq!(add.status.code(), Some(0), "{}", combined(&add));
     let lock_text = std::fs::read_to_string(app.join("Project.deplock")).unwrap();
-    assert!(lock_text.contains("version: 2"), "{lock_text}");
+    assert!(lock_text.contains("version: 3"), "{lock_text}");
     assert!(lock_text.contains("tier: \"delegated\""), "{lock_text}");
     assert!(lock_text.contains("\"fs:delegated\""), "{lock_text}");
     let config = std::fs::read_to_string(app.join("Project.config")).unwrap();

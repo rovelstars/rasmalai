@@ -6,12 +6,14 @@ use diagnostics::{Code, Diagnostic};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-pub const LOCK_VERSION: u32 = 2;
+pub const LOCK_VERSION: u32 = 3;
+const READABLE_VERSIONS: &[u32] = &[1, 2, 3];
 pub const LOCK_FILE: &str = "Project.deplock";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockedPackage {
     pub name: String,
+    pub alias: Option<String>,
     pub version: String,
     pub source: String,
     pub checksum: String,
@@ -27,10 +29,12 @@ pub struct LockedPackage {
 pub struct ProjectDepLock {
     pub version: u32,
     pub packages: Vec<LockedPackage>,
+    pub sysroots: BTreeMap<String, String>,
 }
 
 struct PkgNode {
     name: String,
+    alias: Option<String>,
     version: String,
     source: String,
     checksum: String,
@@ -114,6 +118,7 @@ fn requested_link(spec: &crate::project::DependencySpec) -> crate::license::Link
         | crate::project::DependencySpec::Git { link, .. }
         | crate::project::DependencySpec::Url { link, .. }
         | crate::project::DependencySpec::Native { link, .. } => *link,
+        crate::project::DependencySpec::Alias { .. } => crate::license::LinkPreference::Auto,
     }
 }
 
@@ -130,33 +135,48 @@ fn collect_into(
     overrides: &BTreeMap<String, String>,
     locked: &BTreeMap<String, String>,
 ) -> Result<(), Diagnostic> {
-    let mut stack: Vec<(PathBuf, ProjectConfig, bool, Option<String>, String)> =
-        vec![(root.to_path_buf(), config.clone(), is_root, None, "static".to_string())];
-    while let Some((pkg_root, cfg, first, source_hint, incoming_link)) = stack.pop() {
-
-        if nodes.contains_key(&cfg.name) {
-            let seen = &nodes[&cfg.name];
+    let mut stack: Vec<(PathBuf, ProjectConfig, bool, Option<String>, String, Option<String>)> =
+        vec![(root.to_path_buf(), config.clone(), is_root, None, "static".to_string(), None)];
+    while let Some((pkg_root, cfg, first, source_hint, incoming_link, record_name)) = stack.pop() {
+        let node_name = record_name.clone().unwrap_or_else(|| cfg.name.clone());
+        if let Some(seen) = nodes.get(&node_name) {
             if seen.version != cfg.version {
                 return Err(Diagnostic::new(
                     Code::E108,
                     format!(
                         "version conflict for package `{}`: {} and {}",
-                        cfg.name, seen.version, cfg.version
+                        node_name, seen.version, cfg.version
                     ),
                 ));
             }
             continue;
         }
         let mut deps: Vec<(String, String)> = Vec::new();
-        for (dep_name, spec) in &cfg.dependencies {
+        for (dep_key, raw_spec) in &cfg.dependencies {
+            let rewritten: Option<(String, crate::project::DependencySpec)> =
+                match raw_spec {
+                    crate::project::DependencySpec::Alias { .. } => Some(
+                        crate::modules::resolve_alias_spec(anchor, &cfg, dep_key, &mut Vec::new())?,
+                    ),
+                    _ => None,
+                };
+            let (dep_name, spec) = match &rewritten {
+                Some((name, spec)) => (name.as_str(), spec),
+                None => (dep_key.as_str(), raw_spec),
+            };
             if let crate::project::DependencySpec::Native { lib, system, version, from, link, .. } = spec {
-                if nodes.contains_key(dep_name) {
-                    deps.push((dep_name.clone(), String::new()));
+                let node_name = if rewritten.is_some() {
+                    dep_key.clone()
+                } else {
+                    dep_name.to_string()
+                };
+                if nodes.contains_key(&node_name) {
+                    deps.push((node_name, String::new()));
                     continue;
                 }
                 let pin = pins.get(dep_name);
                 if pin.is_some() {
-                    used_pins.insert(dep_name.clone());
+                    used_pins.insert(dep_name.to_string());
                 }
                 let eff = crate::native::effective_choice(
                     *system,
@@ -189,11 +209,13 @@ fn collect_into(
                 };
                 let has_shared = eff.system || eff.from.is_some();
                 let effective = link.effective(has_shared).to_string();
+                let alias = (node_name != dep_name).then(|| dep_name.to_string());
                 nodes.insert(
-                    dep_name.clone(),
+                    node_name.clone(),
                     PkgNode {
                         source,
-                        name: dep_name.clone(),
+                        name: node_name.clone(),
+                        alias,
                         version: installed.unwrap_or_default(),
                         checksum: String::new(),
                         artifact_digest: owner_digest,
@@ -203,7 +225,7 @@ fn collect_into(
                         dir: pkg_root.clone(),
                     },
                 );
-                deps.push((dep_name.clone(), String::new()));
+                deps.push((node_name, String::new()));
                 continue;
             }
             let want_link = requested_link(spec);
@@ -255,9 +277,18 @@ fn collect_into(
                 crate::project::DependencySpec::Native { .. } => {
                     unreachable!("native dependencies are recorded above")
                 }
+                crate::project::DependencySpec::Alias { .. } => {
+                    unreachable!("aliases are resolved before source dispatch")
+                }
             };
-            deps.push((dep_cfg.name.clone(), dep_cfg.version.clone()));
-            stack.push((dep_root, dep_cfg, false, hint, effective));
+            let edge_name = if rewritten.is_some() {
+                dep_key.clone()
+            } else {
+                dep_cfg.name.clone()
+            };
+            deps.push((edge_name.clone(), dep_cfg.version.clone()));
+            let child_record = rewritten.is_some().then_some(edge_name);
+            stack.push((dep_root, dep_cfg, false, hint, effective, child_record));
         }
         let source = source_hint.unwrap_or_else(|| source_of(anchor, &pkg_root, first));
         // The lock pins the registry manifest digest for registry packages,
@@ -279,11 +310,13 @@ fn collect_into(
         } else {
             None
         };
+        let alias = (node_name != cfg.name).then(|| cfg.name.clone());
         nodes.insert(
-            cfg.name.clone(),
+            node_name.clone(),
             PkgNode {
                 source,
-                name: cfg.name.clone(),
+                name: node_name,
+                alias,
                 version: cfg.version.clone(),
                 checksum,
                 artifact_digest,
@@ -382,6 +415,7 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
         if n.source.starts_with("native:") {
             packages.push(LockedPackage {
                 name: n.name,
+                alias: n.alias,
                 version: n.version,
                 source: n.source,
                 checksum: n.checksum,
@@ -401,6 +435,7 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
         capabilities.sort();
         packages.push(LockedPackage {
             name: n.name,
+            alias: n.alias,
             version: n.version,
             source: n.source,
             checksum: n.checksum,
@@ -422,11 +457,12 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
     Ok(ProjectDepLock {
         version: LOCK_VERSION,
         packages,
+        sysroots: BTreeMap::new(),
     })
 }
 
 fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnostic> {
-    if lock.version != 1 && lock.version != LOCK_VERSION {
+    if !READABLE_VERSIONS.contains(&lock.version) {
         return Err(Diagnostic::new(
             Code::E108,
             format!(
@@ -437,6 +473,32 @@ fn check_nodes(nodes: Vec<PkgNode>, lock: &ProjectDepLock) -> Result<(), Diagnos
     }
     let by_name: BTreeMap<&str, &LockedPackage> =
         lock.packages.iter().map(|p| (p.name.as_str(), p)).collect();
+    for locked in lock.packages.iter().filter(|p| p.alias.is_some()) {
+        let target = locked.alias.as_deref().unwrap_or_default();
+        let source_names_target = if let Some(rest) = locked.source.strip_prefix("registry:") {
+            rest.rsplit_once('@')
+                .map(|(full, _)| full == target)
+                .unwrap_or(false)
+        } else if let Some(rest) = locked.source.strip_prefix("native:") {
+            rest.split(['+', '#']).next() == Some(target)
+        } else {
+            true
+        };
+        let node_matches = nodes
+            .iter()
+            .find(|n| n.name == target)
+            .map(|n| n.source == locked.source)
+            .unwrap_or(true);
+        if !source_names_target || !node_matches {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "lock alias mismatch for package `{}`: alias target `{target}` does not resolve to source `{}`, run 'rnx lock'",
+                    locked.name, locked.source
+                ),
+            ));
+        }
+    }
     let effective = effective_bills(&nodes)?;
     for node in nodes {
         let locked = by_name.get(node.name.as_str()).ok_or_else(|| {
@@ -587,6 +649,18 @@ impl ProjectDepLock {
         nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, overrides, &BTreeMap::new())?)
     }
 
+    pub fn pin_sysroots(&mut self, targets: &[String]) {
+        let store = sysroot::store::Store::default_store();
+        self.sysroots = targets
+            .iter()
+            .filter_map(|triple| {
+                store
+                    .current_digest(triple)
+                    .map(|digest| (triple.clone(), digest))
+            })
+            .collect();
+    }
+
     pub fn load(root: &Path) -> Result<Option<ProjectDepLock>, Diagnostic> {
         let path = root.join(LOCK_FILE);
         let text = match std::fs::read_to_string(&path) {
@@ -620,13 +694,17 @@ impl ProjectDepLock {
         out.push_str(&self.version.to_string());
         out.push_str(",\n    packages: [");
         if self.packages.is_empty() {
-            out.push_str("]\n}\n");
+            out.push_str("],\n");
+            append_sysroots(&mut out, &self.sysroots);
             return out;
         }
         out.push('\n');
         for (i, p) in self.packages.iter().enumerate() {
             out.push_str("        {\n");
             out.push_str(&format!("            name: {},\n", rnx_string(&p.name)));
+            if let Some(alias) = &p.alias {
+                out.push_str(&format!("            alias: {},\n", rnx_string(alias)));
+            }
             out.push_str(&format!("            version: {},\n", rnx_string(&p.version)));
             out.push_str(&format!("            source: {},\n", rnx_string(&p.source)));
             out.push_str(&format!("            checksum: {},\n", rnx_string(&p.checksum)));
@@ -662,7 +740,8 @@ impl ProjectDepLock {
             }
             out.push('\n');
         }
-        out.push_str("    ]\n}\n");
+        out.push_str("    ],\n");
+        append_sysroots(&mut out, &self.sysroots);
         out
     }
 
@@ -690,8 +769,56 @@ impl ProjectDepLock {
             None => return Err("missing required field `packages`".to_string()),
         }
         packages.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(ProjectDepLock { version, packages })
+        let mut sysroots: BTreeMap<String, String> = BTreeMap::new();
+        match top.get("sysroots") {
+            Some(ConfigValue::Object(fields)) => {
+                for (triple, value) in fields {
+                    if triple.is_empty() {
+                        return Err("field `sysroots` carries an empty triple".to_string());
+                    }
+                    let digest = match value {
+                        ConfigValue::String(digest) => digest,
+                        _ => {
+                            return Err(format!(
+                                "sysroot pin for `{triple}` must be a digest string"
+                            ));
+                        }
+                    };
+                    if !sysroot::pack::is_digest(digest) {
+                        return Err(format!(
+                            "sysroot pin for `{triple}` must be `sha256:<64 lowercase hex chars>`"
+                        ));
+                    }
+                    sysroots.insert(triple.clone(), digest.clone());
+                }
+            }
+            Some(_) => return Err("field `sysroots` must be an object".to_string()),
+            None => {}
+        }
+        Ok(ProjectDepLock { version, packages, sysroots })
     }
+}
+
+fn append_sysroots(out: &mut String, sysroots: &BTreeMap<String, String>) {
+    out.push_str("    sysroots: {");
+    if sysroots.is_empty() {
+        out.push_str("}\n}\n");
+        return;
+    }
+    out.push('\n');
+    let last = sysroots.len();
+    for (index, (triple, digest)) in sysroots.iter().enumerate() {
+        out.push_str(&format!(
+            "        {}: {}",
+            rnx_string(triple),
+            rnx_string(digest)
+        ));
+        if index + 1 < last {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str("    }\n}\n");
 }
 
 fn parse_locked(val: &ConfigValue) -> Result<LockedPackage, String> {
@@ -748,8 +875,17 @@ fn parse_locked(val: &ConfigValue) -> Result<LockedPackage, String> {
         Some(_) => return Err("locked package field `link` must be a string".to_string()),
         None => None,
     };
+    let alias = match obj.get("alias") {
+        Some(ConfigValue::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(ConfigValue::String(_)) => {
+            return Err("locked package field `alias` must not be empty".to_string())
+        }
+        Some(_) => return Err("locked package field `alias` must be a string".to_string()),
+        None => None,
+    };
     Ok(LockedPackage {
         name: get_str("name")?,
+        alias,
         version: get_str("version")?,
         source: get_str("source")?,
         checksum: get_str("checksum")?,
@@ -792,7 +928,8 @@ pub fn verify_lock_with(
     prefer: crate::native::NativePrefer,
 ) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
-    check_nodes(collect_graph(root, config, &have, prefer, &BTreeMap::new(), &registry_pins(lock))?, lock)
+    check_nodes(collect_graph(root, config, &have, prefer, &BTreeMap::new(), &registry_pins(lock))?, lock)?;
+    verify_sysroots(lock)
 }
 
 pub fn verify_workspace_lock(
@@ -810,7 +947,29 @@ pub fn verify_workspace_lock_with(
     prefer: crate::native::NativePrefer,
 ) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
-    check_nodes(collect_workspace_graph(ws_root, members, &have, prefer, &BTreeMap::new(), &registry_pins(lock))?, lock)
+    check_nodes(collect_workspace_graph(ws_root, members, &have, prefer, &BTreeMap::new(), &registry_pins(lock))?, lock)?;
+    verify_sysroots(lock)
+}
+
+pub fn verify_sysroots(lock: &ProjectDepLock) -> Result<(), Diagnostic> {
+    if lock.sysroots.is_empty() {
+        return Ok(());
+    }
+    let custom = std::env::var(sysroot::ENV_VAR)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if custom {
+        return Ok(());
+    }
+    let store = sysroot::store::Store::default_store();
+    for (triple, digest) in &lock.sysroots {
+        store.verify_digest(triple, digest).map_err(|e| {
+            e.with_hint(format!(
+                "run `rnx sysroot add {triple}`, then `rnx lock` to record the installed digest"
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1060,6 +1219,7 @@ impl ProjectDepLock {
                     .map_err(with_update_engine_remedy)?,
             )?;
         }
+        candidate.sysroots = old.sysroots.clone();
         let updated = summarize_update(&old, &candidate);
         Ok((candidate, UpdateSummary { updated, held }))
     }
@@ -1091,6 +1251,7 @@ impl ProjectDepLock {
                     .map_err(with_update_engine_remedy)?,
             )?;
         }
+        candidate.sysroots = old.sysroots.clone();
         let updated = summarize_update(&old, &candidate);
         Ok((candidate, UpdateSummary { updated, held }))
     }
@@ -1563,6 +1724,7 @@ mod tests {
         let analysis = crate::security::analyze_dep_dir(&cached).unwrap();
         let widget = LockedPackage {
             name: "@acme/widget".to_string(),
+            alias: None,
             version: "1.2.0".to_string(),
             source: "registry:@acme/widget@1.2.0".to_string(),
             checksum: integrity.to_string(),
@@ -1575,6 +1737,7 @@ mod tests {
         };
         let app = LockedPackage {
             name: "app".to_string(),
+            alias: None,
             version: "0.1.0".to_string(),
             source: "root".to_string(),
             checksum: crate::checksum::compute_package_checksum(root).unwrap(),
@@ -1585,7 +1748,7 @@ mod tests {
             tier: "pure".to_string(),
             capabilities: Vec::new(),
         };
-        ProjectDepLock { version: LOCK_VERSION, packages: vec![app, widget] }
+        ProjectDepLock { version: LOCK_VERSION, packages: vec![app, widget], sysroots: BTreeMap::new() }
     }
 
     #[test]

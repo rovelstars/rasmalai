@@ -32,7 +32,7 @@ fn Main(): Int {
     let before = liveCount();
     let v = useArray();
     let after = liveCount();
-    print("live delta:", after - before, "v:", v);
+    println!("live delta:", after - before, "v:", v);
     return 0;
 }
 "#;

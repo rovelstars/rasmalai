@@ -25,11 +25,11 @@ A missing value is `null` (type `Null`). A type written `T?` holds either a `T` 
 ```rnx
 let nums = [10, 20];
 let first = nums.find((n) => n > 5) ?? -1;
-print(first);
+println!(first);
 let missing: Int? = null;
-print(missing ?? 8080);
+println!(missing ?? 8080);
 let empty: Array<Int> = [];
-print(empty.pop() ?? -1);
+println!(empty.pop() ?? -1);
 ```
 
 That prints `10`, `8080`, and `-1`. `lhs ?? rhs` yields `lhs` when it is not `null` and evaluates `rhs` otherwise. `rhs` never runs when `lhs` is present, so fallbacks chain: `a ?? b ?? 8080`.
@@ -41,9 +41,9 @@ record Profile(name: String)
 record User(profile: Profile?)
 
 let u = User(Profile("Al"));
-print(u?.profile?.name ?? "anonymous");
+println!(u?.profile?.name ?? "anonymous");
 let ghost = User(null);
-print(ghost?.profile?.name ?? "anonymous");
+println!(ghost?.profile?.name ?? "anonymous");
 ```
 
 That prints `Al` and `anonymous`. The chain yields `null` (not a wrapper) when any link is missing, so the final `?? default` is the idiomatic landing.
@@ -56,7 +56,7 @@ Test for presence with `!= null`, which narrows the binding to the payload type 
 ```rnx
 let s: String? = "hi";
 if s != null {
-    print(s.length());
+    println!(s.length());
 }
 ```
 
@@ -67,7 +67,7 @@ import { Map } from "@std/collections";
 
 fn greet(m: Map<String, Int>, key: String): Int {
     guard let v = m.get(key) else {
-        print("missing");
+        println!("missing");
         return -1;
     }
     return v + 1;
@@ -76,8 +76,8 @@ fn greet(m: Map<String, Int>, key: String): Int {
 fn Main(): Int {
     let m = new Map<String, Int>();
     m.set("ore", 7);
-    print(greet(m, "ore"));
-    print(greet(m, "dust"));
+    println!(greet(m, "ore"));
+    println!(greet(m, "dust"));
     return 0;
 }
 ```
@@ -98,11 +98,11 @@ fn div(a: Int, b: Int): Result<Int, String> {
 
 let r = div(10, 2);
 if r.isOk() {
-    print(r.unwrap());
+    println!(r.unwrap());
 }
 let bad = div(1, 0);
-print(bad.isErr());
-print(bad.unwrapOr(-1));
+println!(bad.isErr());
+println!(bad.unwrapOr(-1));
 ```
 
 That prints `5`, `true`, and `-1`. `unwrap` yields the payload and aborts on `Err`. Only call it when you have checked first. `unwrapOr` yields the payload or the fallback. Postfix `?` unwraps inside a function that itself returns a `Result`, returning the `Err` early to the caller:
@@ -120,7 +120,7 @@ fn calc(): Result<Int, String> {
     return Result.Ok(v + 1);
 }
 
-print(calc().unwrapOr(-1));
+println!(calc().unwrapOr(-1));
 ```
 
 That prints `6`. The `?` unwrapped `5`, added one, and re-wrapped. `?` binds tighter than binary operators. Using it on a non-`Result` value, or inside a function returning something else, is a compile error.
@@ -137,14 +137,14 @@ fn load(ok: Bool): Int throws {
 
 fn Main(): Int {
     try {
-        print(load(true));
+        println!(load(true));
     } catch (err) {
-        print("failed");
+        println!("failed");
     }
     try {
-        print(load(false));
+        println!(load(false));
     } catch (err) {
-        print("failed");
+        println!("failed");
     }
     return 0;
 }
@@ -166,12 +166,12 @@ fn first(): String throws {
 
 fn Main(): Int {
     try {
-        print(first());
+        println!(first());
     } catch (err) {
         if err is ParseError {
-            print("parse problem");
+            println!("parse problem");
         } else {
-            print("unknown");
+            println!("unknown");
         }
     }
     return 0;

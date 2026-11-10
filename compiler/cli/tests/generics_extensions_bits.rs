@@ -42,7 +42,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -86,18 +86,18 @@ fn bits_hex_bin_literals() {
         "fn Main(): Int {\n\
         let mask = 0xFF;\n\
         let flags = 0b1010;\n\
-        print(flags & 0b0010);\n\
-        print(flags | 0b0101);\n\
-        print(flags ^ 0b1111);\n\
-        print(~0 & 0xFF);\n\
-        print(mask);\n\
-        print(flags);\n\
-        print(0xFF_00);\n\
-        print(0b1010_0110);\n\
-        print(0x7FFF);\n\
-        print(0B1111);\n\
-        print((flags & 0b0010) == 2);\n\
-        print((~5) + 6);\n\
+        println!(flags & 0b0010);\n\
+        println!(flags | 0b0101);\n\
+        println!(flags ^ 0b1111);\n\
+        println!(~0 & 0xFF);\n\
+        println!(mask);\n\
+        println!(flags);\n\
+        println!(0xFF_00);\n\
+        println!(0b1010_0110);\n\
+        println!(0x7FFF);\n\
+        println!(0B1111);\n\
+        println!((flags & 0b0010) == 2);\n\
+        println!((~5) + 6);\n\
         return 0;\n\
         }\n",
         "2\n15\n5\n255\n255\n10\n65280\n166\n32767\n15\ntrue\n0\n",
@@ -136,17 +136,17 @@ fn extension_methods() {
         }\n\
         }\n\
         fn Main(): Int {\n\
-        print(\"hi\".double());\n\
-        print(42.isEven());\n\
-        print(5.isEven());\n\
+        println!(\"hi\".double());\n\
+        println!(42.isEven());\n\
+        println!(5.isEven());\n\
         let num = 42;\n\
-        print(num.isEven());\n\
-        print(num.addN(8));\n\
-        print(num.addN(n: 8));\n\
+        println!(num.isEven());\n\
+        println!(num.addN(8));\n\
+        println!(num.addN(n: 8));\n\
         let c = new Counter(41);\n\
-        print(c.next());\n\
+        println!(c.next());\n\
         let a: Array<Int> = [];\n\
-        print(a.count());\n\
+        println!(a.count());\n\
         return 0;\n\
         }\n",
         "hihi\ntrue\nfalse\ntrue\n50\n50\n42\n0\n",
@@ -167,18 +167,18 @@ fn generic_inference() {
         return (val, true);\n\
         }\n\
         fn Main(): Int {\n\
-        print(identity(42));\n\
-        print(identity<Int>(7));\n\
-        print(identity(\"hi\"));\n\
+        println!(identity(42));\n\
+        println!(identity<Int>(7));\n\
+        println!(identity(\"hi\"));\n\
         let p = make_pair(\"status\", 200);\n\
-        print(p.0);\n\
-        print(p.1);\n\
+        println!(p.0);\n\
+        println!(p.1);\n\
         let pair_int = wrap(100);\n\
-        print(pair_int.0 == 100);\n\
-        print(pair_int.1);\n\
+        println!(pair_int.0 == 100);\n\
+        println!(pair_int.1);\n\
         let pair_str = wrap(\"test\");\n\
-        print(pair_str.0 == \"test\");\n\
-        print(pair_str.1);\n\
+        println!(pair_str.0 == \"test\");\n\
+        println!(pair_str.1);\n\
         return 0;\n\
         }\n",
         "42\n7\nhi\nstatus\n200\ntrue\ntrue\ntrue\ntrue\n",
@@ -220,7 +220,7 @@ fn task_program_assert_style() {
         assert(pair_int.0 == 100 && pair_int.1, \"generic inference int\");\n\
         let pair_str = wrap(\"test\");\n\
         assert(pair_str.0 == \"test\" && pair_str.1, \"generic inference string\");\n\
-        print(\"ok\");\n\
+        println!(\"ok\");\n\
         return 0;\n\
         }\n",
         "ok\n",
@@ -231,7 +231,7 @@ fn task_program_assert_style() {
 #[test]
 fn err_bitwise_non_int() {
     check_fails_with(
-        "fn Main(): Int {\n    print(\"a\" & \"b\");\n    return 0;\n}\n",
+        "fn Main(): Int {\n    println!(\"a\" & \"b\");\n    return 0;\n}\n",
         &["bitwise operations need `Int` operands"],
         "bits_str",
     );
@@ -240,7 +240,7 @@ fn err_bitwise_non_int() {
 #[test]
 fn err_bitnot_non_int() {
     check_fails_with(
-        "fn Main(): Int {\n    print(~true);\n    return 0;\n}\n",
+        "fn Main(): Int {\n    println!(~true);\n    return 0;\n}\n",
         &["bitwise `~` needs an `Int` operand"],
         "bitnot_bool",
     );
@@ -249,7 +249,7 @@ fn err_bitnot_non_int() {
 #[test]
 fn err_generic_conflict() {
     check_fails_with(
-        "fn pick<T>(x: T, y: T): T {\n    return x;\n}\nfn Main(): Int {\n    print(pick(1, \"a\"));\n    return 0;\n}\n",
+        "fn pick<T>(x: T, y: T): T {\n    return x;\n}\nfn Main(): Int {\n    println!(pick(1, \"a\"));\n    return 0;\n}\n",
         &["conflicting types for `T`"],
         "generic_conflict",
     );
@@ -258,7 +258,7 @@ fn err_generic_conflict() {
 #[test]
 fn err_generic_uninferrable() {
     check_fails_with(
-        "fn maker<T>(): Int {\n    return 0;\n}\nfn Main(): Int {\n    print(maker());\n    return 0;\n}\n",
+        "fn maker<T>(): Int {\n    return 0;\n}\nfn Main(): Int {\n    println!(maker());\n    return 0;\n}\n",
         &["cannot infer type parameter `T`"],
         "generic_noinfer",
     );
@@ -267,7 +267,7 @@ fn err_generic_uninferrable() {
 #[test]
 fn err_generic_arity() {
     check_fails_with(
-        "fn ident<T>(x: T): T {\n    return x;\n}\nfn Main(): Int {\n    print(ident<Int, String>(1));\n    return 0;\n}\n",
+        "fn ident<T>(x: T): T {\n    return x;\n}\nfn Main(): Int {\n    println!(ident<Int, String>(1));\n    return 0;\n}\n",
         &["takes 1 type arguments but 2 were given"],
         "generic_arity",
     );
@@ -276,7 +276,7 @@ fn err_generic_arity() {
 #[test]
 fn err_targs_on_plain_fn() {
     check_fails_with(
-        "fn f(x: Int): Int {\n    return x;\n}\nfn Main(): Int {\n    print(f<Int>(1));\n    return 0;\n}\n",
+        "fn f(x: Int): Int {\n    return x;\n}\nfn Main(): Int {\n    println!(f<Int>(1));\n    return 0;\n}\n",
         &["is not generic"],
         "targs_plain",
     );

@@ -40,7 +40,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -87,18 +87,18 @@ fn rtti_typeof_values() {
         let name: String;\n\
         }\n\
         fn Main(): Int {\n\
-        print(typeOf(42));\n\
-        print(typeOf(\"hi\"));\n\
-        print(typeOf(1.5));\n\
-        print(typeOf(true));\n\
+        println!(typeOf(42));\n\
+        println!(typeOf(\"hi\"));\n\
+        println!(typeOf(1.5));\n\
+        println!(typeOf(true));\n\
         let u = User(\"Al\");\n\
-        print(typeOf(u));\n\
-        print(typeOf([1, 2]));\n\
+        println!(typeOf(u));\n\
+        println!(typeOf([1, 2]));\n\
         let a: Any = 7;\n\
-        print(typeOf(a));\n\
+        println!(typeOf(a));\n\
         let s: Any = \"yo\";\n\
-        print(typeOf(s));\n\
-        print(typeOf(u));\n\
+        println!(typeOf(s));\n\
+        println!(typeOf(u));\n\
         return 0;\n\
         }\n",
         "Int\nString\nFloat\nBool\nUser\nArray\nInt\nString\nUser\n",
@@ -116,18 +116,18 @@ fn rtti_is_predicates() {
         let level: Int;\n\
         }\n\
         fn Main(): Int {\n\
-        print(7 is Int);\n\
-        print(7 is String);\n\
-        print(\"x\" is String);\n\
+        println!(7 is Int);\n\
+        println!(7 is String);\n\
+        println!(\"x\" is String);\n\
         let u = User(\"Al\");\n\
-        print(u is User);\n\
-        print(u is Admin);\n\
+        println!(u is User);\n\
+        println!(u is Admin);\n\
         let a: Any = 99;\n\
-        print(a is Int);\n\
-        print(a is String);\n\
+        println!(a is Int);\n\
+        println!(a is String);\n\
         let b: Any = u;\n\
-        print(b is User);\n\
-        print(b is Admin);\n\
+        println!(b is User);\n\
+        println!(b is Admin);\n\
         return 0;\n\
         }\n",
         "true\nfalse\ntrue\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\n",
@@ -150,12 +150,12 @@ fn rtti_switch_is() {
         }\n\
         }\n\
         fn Main(): Int {\n\
-        print(describe(7));\n\
-        print(describe(\"x\"));\n\
+        println!(describe(7));\n\
+        println!(describe(\"x\"));\n\
         let u = User(\"Al\");\n\
-        print(describe(u));\n\
-        print(describe(1.5));\n\
-        print(describe([1]));\n\
+        println!(describe(u));\n\
+        println!(describe(1.5));\n\
+        println!(describe([1]));\n\
         return 0;\n\
         }\n",
         "int\nstr\nuser\nother\nother\n",
@@ -173,17 +173,17 @@ fn rtti_narrowing() {
         fn Main(): Int {\n\
         let u = User(\"Al\", 30);\n\
         if (u is User) {\n\
-        print(u.name);\n\
-        print(u.age + 1);\n\
+        println!(u.name);\n\
+        println!(u.age + 1);\n\
         }\n\
         let a: Any = 41;\n\
         if (a is Int) {\n\
-        print(a + 1);\n\
+        println!(a + 1);\n\
         }\n\
         let b: Any = User(\"Bo\", 7);\n\
         switch b {\n\
-        case is User: print(\"got user\"); pass;\n\
-        default: print(\"nope\"); pass;\n\
+        case is User: println!(\"got user\"); pass;\n\
+        default: println!(\"nope\"); pass;\n\
         }\n\
         return 0;\n\
         }\n",
@@ -196,7 +196,7 @@ fn rtti_narrowing() {
 fn err_is_unknown_type() {
     check_fails_with(
         "fn Main(): Int {\n\
-        print(1 is Nope);\n\
+        println!(1 is Nope);\n\
         return 0;\n\
         }\n",
         &["E108", "unknown type"],
@@ -209,7 +209,7 @@ fn err_is_array_on_any() {
     check_fails_with(
         "fn Main(): Int {\n\
         let a: Any = [1];\n\
-        print(a is Array);\n\
+        println!(a is Array);\n\
         return 0;\n\
         }\n",
         &["E108", "is Array"],
@@ -229,8 +229,8 @@ fn range_first_class() {
         }\n\
         fn Main(): Int {\n\
         let r: Range = 1..5;\n\
-        print(sum_range(r));\n\
-        print(sum_range(10..=12));\n\
+        println!(sum_range(r));\n\
+        println!(sum_range(10..=12));\n\
         let t = 0;\n\
         for i in 0..10 {\n\
         t = t + i;\n\
@@ -238,9 +238,9 @@ fn range_first_class() {
         for j in (0..10).stride(3) {\n\
         t = t + j;\n\
         }\n\
-        print(t);\n\
-        print(r is Range);\n\
-        print(typeOf(r));\n\
+        println!(t);\n\
+        println!(r is Range);\n\
+        println!(typeOf(r));\n\
         return 0;\n\
         }\n",
         "10\n33\n63\ntrue\nRange\n",
@@ -254,16 +254,16 @@ fn slice_indexing() {
         "fn Main(): Int {\n\
         let a = [10, 20, 30, 40, 50];\n\
         let mid = a[1..4];\n\
-        print(mid.length());\n\
-        print(mid[0]);\n\
-        print(mid[2]);\n\
-        print(a[..2].length());\n\
-        print(a[1..=2].length());\n\
-        print(a[3..100].length());\n\
+        println!(mid.length());\n\
+        println!(mid[0]);\n\
+        println!(mid[2]);\n\
+        println!(a[..2].length());\n\
+        println!(a[1..=2].length());\n\
+        println!(a[3..100].length());\n\
         let s = \"hello\";\n\
-        print(s[1..4]);\n\
-        print(s[..2]);\n\
-        print(s[2..=3]);\n\
+        println!(s[1..4]);\n\
+        println!(s[..2]);\n\
+        println!(s[2..=3]);\n\
         return 0;\n\
         }\n",
         "3\n20\n40\n2\n2\n2\nell\nhe\nll\n",
@@ -276,7 +276,7 @@ fn err_slice_non_sliceable() {
     check_fails_with(
         "fn Main(): Int {\n\
         let x = 5;\n\
-        print(x[1..2]);\n\
+        println!(x[1..2]);\n\
         return 0;\n\
         }\n",
         &["E108", "range index"],
@@ -309,15 +309,15 @@ fn generic_structs() {
         }\n\
         fn Main(): Int {\n\
         let b = Box(42, \"answer\");\n\
-        print(b.value);\n\
-        print(b.tag);\n\
-        print(typeOf(b));\n\
-        print(b is Box);\n\
+        println!(b.value);\n\
+        println!(b.tag);\n\
+        println!(typeOf(b));\n\
+        println!(b is Box);\n\
         let p = Pair(\"x\", 7);\n\
-        print(p.first);\n\
-        print(p.second);\n\
+        println!(p.first);\n\
+        println!(p.second);\n\
         let s = Box(\"hi\", \"greet\");\n\
-        print(s.value);\n\
+        println!(s.value);\n\
         return 0;\n\
         }\n",
         "42\nanswer\nBox\ntrue\nx\n7\nhi\n",
@@ -339,11 +339,11 @@ fn generic_struct_methods() {
         }\n\
         fn Main(): Int {\n\
         let b = Box(1);\n\
-        print(b.get());\n\
+        println!(b.get());\n\
         b.set(99);\n\
-        print(b.get());\n\
+        println!(b.get());\n\
         let s = Box(\"a\");\n\
-        print(s.get());\n\
+        println!(s.get());\n\
         return 0;\n\
         }\n",
         "1\n99\na\n",

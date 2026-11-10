@@ -54,9 +54,9 @@ fn expect_failure_everywhere(tag: &str, src: &str, want_err: &str) {
 
 const IP_FAST_PATH: &str = r#"import { Dns } from "@std/net";
 let v4 = await Dns.lookup("127.0.0.1");
-print(v4);
+println!(v4);
 let v6 = await Dns.lookup("::1");
-print(v6);
+println!(v6);
 "#;
 
 #[test]
@@ -66,7 +66,7 @@ fn dns_ip_literals_resolve_synchronously() {
 
 const LOCALHOST: &str = r#"import { Dns } from "@std/net";
 let ip = await Dns.lookup("localhost");
-print(ip == "127.0.0.1" || ip == "::1");
+println!(ip == "127.0.0.1" || ip == "::1");
 "#;
 
 #[test]
@@ -76,7 +76,7 @@ fn dns_localhost_resolves_off_thread() {
 
 const NXDOMAIN: &str = r#"import { Dns } from "@std/net";
 let ip = await Dns.lookup("this-domain-definitely-does-not-exist.invalid");
-print(ip);
+println!(ip);
 "#;
 
 #[test]
@@ -156,10 +156,10 @@ let port = listener.port();
 let base = "http://localhost:" + port.toString();
 let srv = Thread.spawn((): Int => serveOne(listener.handle));
 let r: Response = await fetch(base + "/hello");
-print(r.status);
-print(r.text());
+println!(r.status);
+println!(r.text());
 let done = srv.join().unwrap();
-print(done > 0);
+println!(done > 0);
 listener.close();
 "#;
 

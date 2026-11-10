@@ -1,0 +1,77 @@
+//! UEFI console output and firmware metadata.
+//!
+//! This package is the target layer for `x86_64-unknown-uefi`. It imports
+//! only the `runtime "uefi"` shim, which the UEFI runtime archive
+//! (`libruntime_native.a` in the target pack) implements on top of the
+//! Boot Services console. There is no dependency on `@std/io`, `@std/fs`,
+//! `@std/log`, or `@std/process`, so the package stays inside the
+//! `alloc`, `console`, `clock`, and `firmware` capabilities the UEFI
+//! descriptor declares.
+//!
+//! `println!` is a call macro. It forwards the whole argument array to the
+//! runtime, which renders each value and writes one line to ConOut and to
+//! the serial port. `Int`, `Bool`, `Float`, and `String` render the way
+//! they do on the host. Other values render as a placeholder until the
+//! UEFI renderer covers them.
+//!
+//! ```rnx
+//! import { println } from "@std/uefi";
+//!
+//! fn Main(): Int {
+//!     println!("hello from uefi");
+//!     return 0;
+//! }
+//! ```
+
+import {
+    fn __rnx_uefi_println(args: Array): Void,
+    fn __rnx_uefi_write(text: String): Void
+} from runtime "uefi";
+
+/** Print the argument values as one line on the UEFI console.
+ *
+ * Arguments are joined with a single space. The line also goes to COM1
+ * when the firmware exposes it, so a qemu `-serial stdio` capture sees the
+ * same text.
+ * @example
+ * import { println } from "@std/uefi";
+ *
+ * println!("hello from uefi");
+ */
+#[Macro]
+export fn println(args: Array<Any>) {
+    __rnx_uefi_println(args);
+}
+
+/** Same as `println!`, under a name that cannot be confused with a host
+ * console macro.
+ * @example
+ * import { uefi_println } from "@std/uefi";
+ *
+ * uefi_println!("hello from uefi");
+ */
+#[Macro]
+export fn uefi_println(args: Array<Any>) {
+    __rnx_uefi_println(args);
+}
+
+/** Print text followed by a newline, without the call-macro argument
+ * array. Use it for a message that is already a `String`.
+ * @example
+ * import { printLine } from "@std/uefi";
+ *
+ * printLine("plain line");
+ */
+export fn printLine(text: String) {
+    __rnx_uefi_write(text + "\n");
+}
+
+/** Print text with no trailing newline.
+ * @example
+ * import { printText } from "@std/uefi";
+ *
+ * printText("no newline");
+ */
+export fn printText(text: String) {
+    __rnx_uefi_write(text);
+}

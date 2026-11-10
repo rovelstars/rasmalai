@@ -1,7 +1,7 @@
 use crate::ast as A;
 use crate::project::{self, ProjectConfig, RegistryConfig};
 use diagnostics::{Code, Diagnostic, Span};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 pub struct ModuleFile {
@@ -21,6 +21,7 @@ pub struct ModuleGraph {
     pub root: PathBuf,
     pub files: Vec<ModuleFile>,
 }
+
 
 pub struct FnLine {
     pub line: u32,
@@ -76,6 +77,78 @@ fn mangle(key: &str, name: &str) -> String {
     } else {
         format!("{key}.{name}")
     }
+}
+
+fn export_key(key: &str) -> &str {
+    // Foundation declarations keep the prelude namespace so compiler paths
+    // such as `std.prelude.Result` stay stable across the package split.
+    if key == "std.foundation" {
+        "std.prelude"
+    } else {
+        key
+    }
+}
+
+fn is_foundation_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Int"
+            | "Int64"
+            | "Int32"
+            | "Int16"
+            | "Int8"
+            | "UInt"
+            | "UInt64"
+            | "UInt32"
+            | "UInt16"
+            | "UInt8"
+            | "Short"
+            | "Byte"
+            | "Float"
+            | "Float32"
+            | "FastFloat"
+            | "FastFloat32"
+            | "Bool"
+            | "String"
+            | "Char"
+            | "Array"
+            | "Any"
+            | "Void"
+            | "Null"
+            | "GenRef"
+            | "Pointer"
+            | "Address"
+            | "Range"
+    )
+}
+
+fn package_label(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(STD_SCOPE) {
+        let top = rest.split('/').next().unwrap_or(rest);
+        return format!("@std/{top}");
+    }
+    let start = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or_else(|| Path::new("."))
+    };
+    if let Some(root) = project::find_project_root(start)
+        && let Ok(Some(cfg)) = ProjectConfig::load_from_dir(&root)
+    {
+        return cfg.name;
+    }
+    start
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Debug)]
+struct ExportEntry {
+    mangled: String,
+    private: bool,
+    is_macro: bool,
 }
 /// Local name bound by an import specifier for module-local use.
 pub fn import_local_name(spec: &A::ImportSpecifier) -> String {
@@ -184,6 +257,12 @@ impl ModuleGraph {
     }
 
     pub fn from_source_graph(src: &str) -> Result<ModuleGraph, Diagnostic> {
+        let project = std_project_ctx()?;
+        let (project_root, cfg) = match &project {
+            Some((root, cfg)) => (Some(root.as_path()), Some(cfg)),
+            None => (None, None),
+        };
+        prepare_prelude(project_root, cfg)?;
         let user = crate::parser::Parser::parse_module(src)?;
         let root = PathBuf::from("inline/main.rnx");
         let mut files = vec![ModuleFile { path: root.clone(), key: String::new(), kind: ModuleKind::Entry, module: user }];
@@ -203,7 +282,14 @@ impl ModuleGraph {
             if files.iter().any(|f| f.path == PathBuf::from(format!("@std/{name}"))) {
                 continue;
             }
-            let src = load_std_module_source(&name)?;
+            let src = if name == "prelude" {
+                match selected_prelude() {
+                    Some((_, src)) => src,
+                    None => load_std_module_source(&name)?,
+                }
+            } else {
+                load_std_module_source(&name)?
+            };
             let module = crate::parser::Parser::parse_module(&src)?;
             for (spec, _) in module_sources(&module.decls) {
                 if is_std_spec(spec) {
@@ -247,6 +333,18 @@ impl ModuleGraph {
         if let Some((r, cfg)) = &entry_ctx {
             crate::patch::apply(r, cfg).map_err(|e| vec![e])?;
         }
+        let want_prelude = if cfg!(target_arch = "wasm32") {
+            crate::stdvfs::std_source("prelude").is_some()
+        } else {
+            true
+        };
+        if want_prelude {
+            let (entry_root, cfg) = match &entry_ctx {
+                Some((r, cfg)) => (Some(r.as_path()), Some(cfg)),
+                None => (None, None),
+            };
+            prepare_prelude(entry_root, cfg).map_err(|e| vec![e])?;
+        }
         let entry_root = entry_ctx.map(|(r, _)| r);
         let mut order: Vec<ModuleFile> = Vec::new();
         let mut state: BTreeMap<PathBuf, u8> = BTreeMap::new();
@@ -272,14 +370,12 @@ impl ModuleGraph {
             &mut edge_log,
         )
         .map_err(|e| vec![e])?;
-        let want_prelude = if cfg!(target_arch = "wasm32") {
-            crate::stdvfs::std_source("prelude").is_some()
-        } else {
-            true
-        };
         if want_prelude {
+            let prelude = selected_prelude()
+                .map(|(spec, _)| prelude_virtual_path(&spec))
+                .unwrap_or_else(|| PathBuf::from(PRELUDE_SPEC));
             visit(
-                &PathBuf::from("@std/prelude"),
+                &prelude,
                 &base,
                 &root,
                 entry_root.as_ref(),
@@ -351,6 +447,18 @@ impl ModuleGraph {
         if let Some((r, cfg)) = &entry_ctx {
             crate::patch::apply(r, cfg).map_err(|e| vec![e])?;
         }
+        let want_prelude = if cfg!(target_arch = "wasm32") {
+            crate::stdvfs::std_source("prelude").is_some()
+        } else {
+            true
+        };
+        if want_prelude {
+            let (entry_root, cfg) = match &entry_ctx {
+                Some((r, cfg)) => (Some(r.as_path()), Some(cfg)),
+                None => (None, None),
+            };
+            prepare_prelude(entry_root, cfg).map_err(|e| vec![e])?;
+        }
         let entry_root = entry_ctx.map(|(r, _)| r);
         let dep_gen = crate::depcache::begin_build();
         if let Some(build_gen) = dep_gen {
@@ -370,16 +478,11 @@ impl ModuleGraph {
             .collect();
         let mut discover = Discover::new(pool.as_ref(), overlay_base);
         discover.run(vec![root.clone()]);
-        let want_prelude = if cfg!(target_arch = "wasm32") {
-            crate::stdvfs::std_source("prelude").is_some()
-        } else {
-            true
-        };
-        if !discover.clash
-            && want_prelude
-            && !discover.visited.contains(&PathBuf::from("@std/prelude"))
-        {
-            discover.run(vec![PathBuf::from("@std/prelude")]);
+        let prelude = selected_prelude()
+            .map(|(spec, _)| prelude_virtual_path(&spec))
+            .unwrap_or_else(|| PathBuf::from(PRELUDE_SPEC));
+        if !discover.clash && want_prelude && !discover.visited.contains(&prelude) {
+            discover.run(vec![prelude]);
         }
         if !discover.clash {
             let mut seeds: Vec<PathBuf> = extra_canon
@@ -430,11 +533,13 @@ impl ModuleGraph {
             if f.path == self.root {
                 root_attrs = f.module.inner_attrs.clone();
             }
-            let (own, aliases, namespaces) = self.file_scope(i, &mut exports, &index, &base)?;
+            let (own, aliases, namespaces, macros) =
+                self.file_scope(i, &mut exports, &index, &base)?;
             let mut rw = Rewriter {
                 own: &own,
                 aliases: &aliases,
                 namespaces: &namespaces,
+                macros: &macros,
                 locals: Vec::new(),
             };
             for (alias, key) in &namespaces {
@@ -466,6 +571,7 @@ impl ModuleGraph {
                 merged.push(decl);
             }
         }
+        self.check_prelude_graph(&base)?;
         for synth in all_ns.keys() {
             merged.push(A::sp(
                 A::Decl::Class {
@@ -501,11 +607,15 @@ impl ModuleGraph {
             diagnostics::tag_new(&mut w, 0, Some(f.path.clone()));
             warnings.extend(w);
         }
+        let explicit_std_collections = self
+            .reachable_packages(&base)
+            .contains("@std/collections");
         Ok(A::Module {
             inner_attrs: root_attrs,
             decls: merged,
             docs: docs.join("\n\n"),
             warnings,
+            explicit_std_collections,
         })
     }
 
@@ -513,33 +623,60 @@ impl ModuleGraph {
         &self,
         base: &Path,
         index: &BTreeMap<&PathBuf, usize>,
-    ) -> Result<Vec<BTreeMap<String, (String, bool)>>, Diagnostic> {
-        let mut exports: Vec<BTreeMap<String, (String, bool)>> = Vec::new();
-        // bool marks explicitly `private` items, which never cross files (E203).
+    ) -> Result<Vec<BTreeMap<String, ExportEntry>>, Diagnostic> {
+        let mut exports: Vec<BTreeMap<String, ExportEntry>> = Vec::new();
         for f in &self.files {
             let mut table = BTreeMap::new();
             for decl in &f.module.decls {
                 match &decl.node {
                     A::Decl::Fn(d) => {
-                        let mangled = mangle(&f.key, &d.name);
-                        table.insert(d.name.clone(), (mangled, d.access == A::Access::Private));
+                        let mangled = mangle(export_key(&f.key), &d.name);
+                        table.insert(
+                            d.name.clone(),
+                            ExportEntry {
+                                mangled,
+                                private: d.access == A::Access::Private,
+                                is_macro: d.is_macro,
+                            },
+                        );
                     }
                     A::Decl::Class { access, name, .. }
                     | A::Decl::Struct { access, name, .. }
                     | A::Decl::Enum { access, name, .. }
                     | A::Decl::Interface { access, name, .. }
                     | A::Decl::Record { access, name, .. } => {
-                        let mangled = mangle(&f.key, name);
-                        table.insert(name.clone(), (mangled, *access == A::Access::Private));
+                        let mangled = mangle(export_key(&f.key), name);
+                        table.insert(
+                            name.clone(),
+                            ExportEntry {
+                                mangled,
+                                private: *access == A::Access::Private,
+                                is_macro: false,
+                            },
+                        );
                     }
                     A::Decl::Const { access, name, .. } => {
-                        let mangled = mangle(&f.key, name);
-                        table.insert(name.clone(), (mangled, *access == A::Access::Private));
+                        let mangled = mangle(export_key(&f.key), name);
+                        table.insert(
+                            name.clone(),
+                            ExportEntry {
+                                mangled,
+                                private: *access == A::Access::Private,
+                                is_macro: false,
+                            },
+                        );
                     }
                     A::Decl::Import(d) => {
                         if let A::ImportSource::Native(_) = d.source {
                             for local in native_import_locals(&d.clause) {
-                                table.insert(local.clone(), (local, false));
+                                table.insert(
+                                    local.clone(),
+                                    ExportEntry {
+                                        mangled: local,
+                                        private: false,
+                                        is_macro: false,
+                                    },
+                                );
                             }
                         }
                     }
@@ -548,7 +685,14 @@ impl ModuleGraph {
                             && let A::ExportClause::Native(sigs) = &d.clause
                         {
                             for local in native_local_names(sigs) {
-                                table.insert(local.clone(), (local, false));
+                                table.insert(
+                                    local.clone(),
+                                    ExportEntry {
+                                        mangled: local,
+                                        private: false,
+                                        is_macro: false,
+                                    },
+                                );
                             }
                         }
                     }
@@ -558,7 +702,7 @@ impl ModuleGraph {
             exports.push(table);
         }
         for (i, f) in self.files.iter().enumerate() {
-            let mut reexp: BTreeMap<String, (String, bool)> = BTreeMap::new();
+            let mut reexp: BTreeMap<String, ExportEntry> = BTreeMap::new();
             for decl in &f.module.decls {
                 match &decl.node {
                     A::Decl::ExportFrom(d) => {
@@ -579,7 +723,7 @@ impl ModuleGraph {
                             match &d.clause {
                                 A::ExportClause::Named(specs) => {
                                     for spec in specs {
-                                        let (mangled, private) =
+                                        let entry =
                                             exports[ti].get(&spec.name).ok_or_else(|| {
                                                 Diagnostic::new(
                                                     Code::E108,
@@ -591,7 +735,7 @@ impl ModuleGraph {
                                                 .with_span(d.source_span)
                                                 .with_file(f.path.clone())
                                             })?;
-                                        if *private {
+                                        if entry.private {
                                             return Err(Diagnostic::new(
                                                 Code::E203,
                                                 format!("`{}` is private in `{source}`", spec.name),
@@ -601,17 +745,35 @@ impl ModuleGraph {
                                         }
                                         reexp.insert(
                                             spec.alias.clone().unwrap_or_else(|| spec.name.clone()),
-                                            (mangled.clone(), false),
+                                            ExportEntry {
+                                                mangled: entry.mangled.clone(),
+                                                private: false,
+                                                is_macro: entry.is_macro,
+                                            },
                                         );
                                     }
                                 }
                                 A::ExportClause::All { alias } => {
                                     if let Some(ns) = alias {
-                                        reexp.insert(ns.clone(), (self.files[ti].key.clone(), false));
+                                        reexp.insert(
+                                            ns.clone(),
+                                            ExportEntry {
+                                                mangled: self.files[ti].key.clone(),
+                                                private: false,
+                                                is_macro: false,
+                                            },
+                                        );
                                     } else {
-                                        for (plain, (mangled, private)) in &exports[ti] {
-                                            if !private {
-                                                reexp.insert(plain.clone(), (mangled.clone(), false));
+                                        for (plain, entry) in &exports[ti] {
+                                            if !entry.private {
+                                                reexp.insert(
+                                                    plain.clone(),
+                                                    ExportEntry {
+                                                        mangled: entry.mangled.clone(),
+                                                        private: false,
+                                                        is_macro: entry.is_macro,
+                                                    },
+                                                );
                                             }
                                         }
                                     }
@@ -634,12 +796,23 @@ impl ModuleGraph {
                             })?;
                             reexp.insert(
                                 spec.alias.clone().unwrap_or_else(|| spec.name.clone()),
-                                (entry.0, false),
+                                ExportEntry {
+                                    mangled: entry.mangled,
+                                    private: false,
+                                    is_macro: entry.is_macro,
+                                },
                             );
                         }
                     }
                     A::Decl::ExportDefault(_) => {
-                        reexp.insert("default".to_string(), ("__default_export".to_string(), false));
+                        reexp.insert(
+                            "default".to_string(),
+                            ExportEntry {
+                                mangled: "__default_export".to_string(),
+                                private: false,
+                                is_macro: false,
+                            },
+                        );
                     }
                     _ => {}
                 }
@@ -649,14 +822,126 @@ impl ModuleGraph {
         Ok(exports)
     }
 
+    fn package_edges(&self, base: &Path) -> BTreeMap<String, BTreeSet<String>> {
+        let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for f in &self.files {
+            let from = package_label(&f.path);
+            for decl in &f.module.decls {
+                let source = match &decl.node {
+                    A::Decl::Import(d) => match &d.source {
+                        A::ImportSource::Module(source) => source,
+                        _ => continue,
+                    },
+                    A::Decl::ExportFrom(d) => match &d.source {
+                        A::ImportSource::Module(source) => source,
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                let to = if is_std_spec(source) {
+                    let rest = std_rest(source);
+                    match rest.split('/').next() {
+                        Some(top) if !top.is_empty() => format!("@std/{top}"),
+                        _ => continue,
+                    }
+                } else if source.starts_with('.') {
+                    match resolve_source(&f.path, base, source) {
+                        Ok(target) => package_label(&target),
+                        Err(_) => continue,
+                    }
+                } else {
+                    source.clone()
+                };
+                if to.is_empty() {
+                    continue;
+                }
+                edges.entry(from.clone()).or_default().insert(to);
+            }
+        }
+        edges
+    }
+
+    fn reachable_packages(&self, base: &Path) -> BTreeSet<String> {
+        let edges = self.package_edges(base);
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        let root = package_label(&self.root);
+        seen.insert(root.clone());
+        queue.push_back(root);
+        while let Some(pkg) = queue.pop_front() {
+            // The prelude is implicit for every unit. Its own re-exports
+            // must not make a package look explicitly imported.
+            if pkg == PRELUDE_SPEC {
+                continue;
+            }
+            let Some(deps) = edges.get(&pkg) else {
+                continue;
+            };
+            for dep in deps {
+                if seen.insert(dep.clone()) {
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+        seen
+    }
+
+    fn check_prelude_graph(&self, base: &Path) -> Result<(), Diagnostic> {
+        let Some(root_idx) = self
+            .files
+            .iter()
+            .position(|f| is_virtual(&f.path) && f.key == "std.prelude")
+        else {
+            return Ok(());
+        };
+        let root = package_label(&self.files[root_idx].path);
+        let edges = self.package_edges(base);
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut parent: BTreeMap<String, String> = BTreeMap::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        seen.insert(root.clone());
+        queue.push_back(root.clone());
+        while let Some(pkg) = queue.pop_front() {
+            let Some(deps) = edges.get(&pkg) else {
+                continue;
+            };
+            for dep in deps {
+                if dep == PRELUDE_SPEC && pkg != root {
+                    let mut chain: Vec<String> = vec![pkg.clone()];
+                    let mut cursor = pkg.clone();
+                    while let Some(prev) = parent.get(&cursor) {
+                        chain.push(prev.clone());
+                        cursor = prev.clone();
+                    }
+                    chain.reverse();
+                    chain.push(PRELUDE_SPEC.to_string());
+                    let text = chain.join(" -> ");
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        format!("prelude graph cycle: {text}"),
+                    )
+                    .with_hint(
+                        "remove the explicit `@std/prelude` import from packages the prelude re-exports",
+                    ));
+                }
+                if seen.insert(dep.clone()) {
+                    parent.insert(dep.clone(), pkg.clone());
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn file_scope(
         &self,
         idx: usize,
-        exports: &mut Vec<BTreeMap<String, (String, bool)>>,
+        exports: &mut Vec<BTreeMap<String, ExportEntry>>,
         index: &BTreeMap<&PathBuf, usize>,
         base: &Path,
     ) -> Result<
         (
+            BTreeMap<String, String>,
             BTreeMap<String, String>,
             BTreeMap<String, String>,
             BTreeMap<String, String>,
@@ -665,13 +950,21 @@ impl ModuleGraph {
     > {
         let f = &self.files[idx];
         let mut own: BTreeMap<String, String> = BTreeMap::new();
-        for (plain, (mangled, _)) in &exports[idx] {
+        for (plain, entry) in &exports[idx] {
             // Identity entries included: a file's own declarations
             // shadow prelude aliases of the same name in the Rewriter.
-            own.insert(plain.clone(), mangled.clone());
+            own.insert(plain.clone(), entry.mangled.clone());
         }
         let mut aliases: BTreeMap<String, String> = BTreeMap::new();
         let mut namespaces: BTreeMap<String, String> = BTreeMap::new();
+        // Call macros are a separate namespace: they answer `name!` only and
+        // never take part in ordinary value resolution.
+        let mut macros: BTreeMap<String, String> = BTreeMap::new();
+        for (plain, entry) in &exports[idx] {
+            if entry.is_macro {
+                macros.insert(plain.clone(), entry.mangled.clone());
+            }
+        }
         for decl in &f.module.decls {
             let import = match &decl.node {
                 A::Decl::Import(d) => d,
@@ -733,9 +1026,14 @@ impl ModuleGraph {
                                 .with_span(import.source_span)
                                 .with_file(f.path.clone())
                         })?;
-                        for (plain, (mangled, private)) in &exports[ti] {
-                            if !private {
-                                aliases.entry(plain.clone()).or_insert_with(|| mangled.clone());
+                        for (plain, entry) in &exports[ti] {
+                            if entry.private {
+                                continue;
+                            }
+                            if entry.is_macro {
+                                macros.entry(plain.clone()).or_insert_with(|| entry.mangled.clone());
+                            } else {
+                                aliases.entry(plain.clone()).or_insert_with(|| entry.mangled.clone());
                             }
                         }
                     }
@@ -749,7 +1047,14 @@ impl ModuleGraph {
                         let local = import_local_name(spec);
                         aliases.entry(local.clone()).or_insert(local.clone());
                         if spec.is_export {
-                            exports[idx].insert(local.clone(), (local.clone(), false));
+                            exports[idx].insert(
+                                local.clone(),
+                                ExportEntry {
+                                    mangled: local.clone(),
+                                    private: false,
+                                    is_macro: false,
+                                },
+                            );
                             own.insert(local.clone(), local.clone());
                         }
                     }
@@ -788,12 +1093,12 @@ impl ModuleGraph {
                             .with_span(import.source_span)
                             .with_file(f.path.clone()));
                         }
-                        let (mangled, private) = exports[ti].get(&spec.name).cloned().ok_or_else(|| {
+                        let entry = exports[ti].get(&spec.name).cloned().ok_or_else(|| {
                             Diagnostic::new(Code::E108, format!("`{}` is not exported by `{source}`", spec.name))
                                 .with_span(import.source_span)
                                 .with_file(f.path.clone())
                         })?;
-                        if private {
+                        if entry.private {
                             return Err(Diagnostic::new(
                                 Code::E203,
                                 format!("`{}` is private in `{source}`", spec.name),
@@ -802,25 +1107,44 @@ impl ModuleGraph {
                             .with_file(f.path.clone()));
                         }
                         let local = import_local_name(spec);
-                        aliases.entry(local.clone()).or_insert_with(|| mangled.clone());
+                        if entry.is_macro {
+                            macros.entry(local.clone()).or_insert_with(|| entry.mangled.clone());
+                        } else {
+                            aliases.entry(local.clone()).or_insert_with(|| entry.mangled.clone());
+                        }
                         if spec.is_export {
-                            exports[idx].insert(local.clone(), (mangled.clone(), false));
-                            own.insert(local, mangled.clone());
+                            exports[idx].insert(
+                                local.clone(),
+                                ExportEntry {
+                                    mangled: entry.mangled.clone(),
+                                    private: false,
+                                    is_macro: entry.is_macro,
+                                },
+                            );
+                            own.insert(local, entry.mangled.clone());
                         }
                     }
                 }
             }
         }
-        if !is_virtual(&f.path) {
+        if f.key != "std.prelude" {
             if let Some(pi) = self.files.iter().position(|o| is_virtual(&o.path) && o.key == "std.prelude") {
-                for (plain, (mangled, private)) in &exports[pi] {
-                    if !private {
-                        aliases.entry(plain.clone()).or_insert_with(|| mangled.clone());
+                for (plain, entry) in &exports[pi] {
+                    if entry.private {
+                        continue;
+                    }
+                    if matches!(plain.as_str(), "IO" | "Thread" | "ThreadPool") {
+                        continue;
+                    }
+                    if entry.is_macro {
+                        macros.entry(plain.clone()).or_insert_with(|| entry.mangled.clone());
+                    } else {
+                        aliases.entry(plain.clone()).or_insert_with(|| entry.mangled.clone());
                     }
                 }
             }
         }
-        Ok((own, aliases, namespaces))
+        Ok((own, aliases, namespaces, macros))
     }
 
     /// Per-file import isolation: every user file must resolve each name it
@@ -849,7 +1173,7 @@ impl ModuleGraph {
             if is_virtual(&self.files[i].path) {
                 continue;
             }
-            let (own, aliases, namespaces) = match self.file_scope(i, &mut exports, &index, &base) {
+            let (own, aliases, namespaces, _) = match self.file_scope(i, &mut exports, &index, &base) {
                 Ok(s) => s,
                 Err(e) => {
                     out.push(e);
@@ -871,12 +1195,32 @@ const AMBIENT_TYS: &[&str] = &[
     "Byte", "Float32", "FastFloat32", "Vec4f", "Vec4i", "Range",
 ];
 
-fn prelude_variants() -> &'static BTreeSet<String> {
-    static MEMBERS: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
-    MEMBERS.get_or_init(|| {
+fn prelude_variants() -> BTreeSet<String> {
+    static MEMBERS: std::sync::Mutex<Option<(String, BTreeSet<String>)>> =
+        std::sync::Mutex::new(None);
+    let (spec, src) = selected_prelude().unwrap_or_else(|| {
+        let spec = prelude_spec(None);
+        let src = load_prelude_source(&spec).unwrap_or_default();
+        (spec, src)
+    });
+    let mut guard = MEMBERS.lock().unwrap_or_else(|e| e.into_inner());
+    let stale = guard.as_ref().is_none_or(|(cached, _)| cached != &spec);
+    if stale {
         let mut out = BTreeSet::new();
-        if let Some(src) = crate::stdvfs::std_source("prelude") {
-            if let Ok(module) = crate::parser::Parser::parse_module(&src) {
+        let mut sources = vec![src];
+        if let Ok(module) = crate::parser::Parser::parse_module(&sources[0]) {
+            for decl in &module.decls {
+                if let A::Decl::ExportFrom(d) = &decl.node
+                    && let A::ImportSource::Module(source) = &d.source
+                    && crate::modules::std_rest(source) == "foundation"
+                    && let Ok(foundation) = load_prelude_source(source)
+                {
+                    sources.push(foundation);
+                }
+            }
+        }
+        for source in &sources {
+            if let Ok(module) = crate::parser::Parser::parse_module(source) {
                 for decl in &module.decls {
                     if let A::Decl::Enum { members, .. } = &decl.node {
                         for m in members {
@@ -886,8 +1230,12 @@ fn prelude_variants() -> &'static BTreeSet<String> {
                 }
             }
         }
-        out
-    })
+        *guard = Some((spec, out));
+    }
+    guard
+        .as_ref()
+        .map(|(_, members)| members.clone())
+        .unwrap_or_default()
 }
 
 fn check_file_isolation(
@@ -898,7 +1246,7 @@ fn check_file_isolation(
     traits: &BTreeSet<String>,
     diags: &mut Vec<Diagnostic>,
 ) {
-    let mut variants = prelude_variants().clone();
+    let mut variants = prelude_variants();
     for decl in &file.module.decls {
         if let A::Decl::Enum { members, .. } = &decl.node {
             for m in members {
@@ -958,7 +1306,7 @@ impl IsoCheck<'_> {
         if crate::prelude::provides(name) {
             return true;
         }
-        if crate::semantic::SCOPE_BUILTINS.contains(&name) {
+        if crate::semantic::scope_builtin(&name) {
             return true;
         }
         if AMBIENT_TYS.contains(&name) {
@@ -1529,7 +1877,7 @@ impl IsoCheck<'_> {
             }
             A::Expr::ImplicitMember(_) => {}
             A::Expr::Macro { name, args, .. } => {
-                let owned_by_later_pass = crate::macros::is_phase_a_macro(name)
+                let owned_by_later_pass = crate::macros::is_syntax_macro(name)
                     || matches!(
                         name.as_str(),
                         "Assert"
@@ -1654,8 +2002,106 @@ pub fn std_rest(source: &str) -> &str {
 }
 pub const PRELUDE_SPEC: &str = "@std/prelude";
 
-pub fn prelude_spec() -> &'static str {
-    PRELUDE_SPEC
+static SELECTED_PRELUDE: std::sync::Mutex<Option<(String, String)>> =
+    std::sync::Mutex::new(None);
+
+fn project_scope_root(project_root: &Path) -> PathBuf {
+    project::find_workspace_root(project_root).unwrap_or_else(|| project_root.to_path_buf())
+}
+
+fn prelude_spec_with_target(
+    project_root: &Path,
+    cfg: Option<&ProjectConfig>,
+    target: &sysroot::target::Target,
+) -> String {
+    let scope_root = project_scope_root(project_root);
+    if let Some(cfg) = cfg
+        && let Some(crate::project::DependencySpec::Alias { package, .. }) =
+            cfg.dependencies.get(PRELUDE_SPEC)
+    {
+        return match resolve_alias_spec(&scope_root, cfg, PRELUDE_SPEC, &mut Vec::new()) {
+            Ok((name, _)) => name,
+            Err(_) => package.clone(),
+        };
+    }
+    if !target.prelude.is_empty() {
+        return target.prelude.clone();
+    }
+    PRELUDE_SPEC.to_string()
+}
+
+pub fn prelude_spec(cfg: Option<&ProjectConfig>) -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    prelude_spec_with_target(&cwd, cfg, &sysroot::target::active_target())
+}
+
+pub(crate) fn selected_prelude() -> Option<(String, String)> {
+    SELECTED_PRELUDE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn install_prelude_source(spec: &str, source: &str) {
+    *SELECTED_PRELUDE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some((spec.to_string(), source.to_string()));
+}
+
+fn prelude_virtual_path(_spec: &str) -> PathBuf {
+    // Prelude declarations keep the stable virtual key so catalog names such
+    // as `std.prelude.Result` stay put even when the bytes come from another
+    // package.
+    PathBuf::from(PRELUDE_SPEC)
+}
+
+fn prepare_prelude(
+    project_root: Option<&Path>,
+    cfg: Option<&ProjectConfig>,
+) -> Result<(), Diagnostic> {
+    let fallback = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let root = project_root.unwrap_or(fallback.as_path());
+    let spec = prelude_spec_with_target(root, cfg, &sysroot::target::active_target());
+    let source = load_prelude_source_at(root, &spec)?;
+    install_prelude_source(&spec, &source);
+    crate::prelude::validate_catalog(&crate::prelude::load_names(&source))?;
+    Ok(())
+}
+
+fn load_prelude_source_at(project_root: &Path, spec: &str) -> Result<String, Diagnostic> {
+    let from = project_root.join("__rnx_prelude__.rnx");
+    if is_std_spec(spec) {
+        let rest = std_rest(spec);
+        if rest.is_empty() {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("cannot resolve prelude module `{spec}`"),
+            )
+            .with_hint("use `@std/prelude` or a package name"));
+        }
+        return load_std_module_source_at(&from, rest, StdGating::Target);
+    }
+    let (target, _, _) = resolve_package(&from, spec)?;
+    std::fs::read_to_string(&target).map_err(|e| {
+        Diagnostic::new(
+            Code::E108,
+            format!("cannot read prelude `{target}`: {e}", target = target.display()),
+        )
+    })
+}
+
+pub fn load_prelude_source(spec: &str) -> Result<String, Diagnostic> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    load_prelude_source_at(&cwd, spec)
+}
+
+fn target_prelude_override() -> Option<String> {
+    let prelude = sysroot::target::active_target().prelude;
+    if prelude.is_empty() || prelude == PRELUDE_SPEC {
+        None
+    } else {
+        Some(prelude)
+    }
 }
 
 fn scheme_hint(source: &str) -> String {
@@ -1751,6 +2197,11 @@ fn std_submodule(path: &Path) -> String {
 
 fn read_source(path: &Path) -> Result<String, Diagnostic> {
     if is_virtual(path) {
+        if path == Path::new(PRELUDE_SPEC)
+            && let Some((_, src)) = selected_prelude()
+        {
+            return Ok(src);
+        }
         if let Some(real) = STD_OVERLAY
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1766,7 +2217,7 @@ fn read_source(path: &Path) -> Result<String, Diagnostic> {
         if let Some(cached) = crate::depcache::bytes_get(path) {
             return Ok(cached);
         }
-        if let Some(src) = crate::stdvfs::std_source(&rest) {
+        if let Some(src) = crate::stdvfs::std_source_result(&rest)? {
             return Ok(src);
         }
         if cfg!(target_arch = "wasm32") {
@@ -1887,8 +2338,41 @@ fn resolve_std_with_registries(
         None => (format!("@std/{rest}"), None),
     };
     let meta = Some((pkg.clone(), crate::depcache::KIND_STD.to_string()));
+    if let Some((proj_root, cfg)) = package_ctx_of(from)?
+        && matches!(
+            cfg.dependencies.get(&pkg),
+            Some(crate::project::DependencySpec::Alias { .. })
+        )
+    {
+        let scope_root =
+            project::find_workspace_root(&proj_root).unwrap_or_else(|| proj_root.clone());
+        let (real, resolved) = resolve_alias_spec(&scope_root, &cfg, &pkg, &mut Vec::new())?;
+        let (dep_root, dep_cfg, _) =
+            resolve_dep_source(&proj_root, &cfg, &pkg, &real, &resolved)?;
+        let target = resolve_subpath_target(&dep_root, sub, &dep_cfg, &pkg, source)?;
+        set_std_overlay(&virtual_path, &target);
+        return Ok((virtual_path, None, meta));
+    }
+    if pkg == PRELUDE_SPEC
+        && let Some(spec) = target_prelude_override()
+    {
+        if is_std_spec(&spec) {
+            let target_rest = std_rest(&spec);
+            if !target_rest.is_empty() {
+                let prelude = load_std_module_source_at(from, target_rest, StdGating::Target)?;
+                install_prelude_source(&spec, &prelude);
+                crate::prelude::validate_catalog(&crate::prelude::load_names(&prelude))?;
+                clear_std_overlay(&virtual_path);
+                return Ok((virtual_path, None, meta));
+            }
+        } else {
+            let (target, _, _) = resolve_package(from, &spec)?;
+            set_std_overlay(&virtual_path, &target);
+            return Ok((virtual_path, None, meta));
+        }
+    }
     if cfg!(target_arch = "wasm32") {
-        if crate::stdvfs::std_source(rest).is_some() {
+        if crate::stdvfs::std_source_result(rest)?.is_some() {
             return Ok((virtual_path, None, meta));
         }
         return Err(playground_std_error(source));
@@ -1903,13 +2387,23 @@ fn resolve_std_with_registries(
         clear_std_overlay(&virtual_path);
         return Ok((virtual_path, None, meta));
     }
-    if crate::sysroot::has_std_source(rest) {
-        clear_std_overlay(&virtual_path);
-        return Ok((virtual_path, None, meta));
-    }
     if let Some(err) = crate::sysroot::validation_error() {
         return Err(Diagnostic::new(Code::E108, format!("invalid sysroot: {err}"))
             .with_hint("point RNX_SYSROOT or --sysroot at a sysroot root carrying sysroot.json"));
+    }
+    let anchor = std_vendor_anchor(from);
+    let explicit_vendor = std::env::var(crate::fetch::LOCAL_VENDOR_ENV)
+        .is_ok_and(|v| !v.trim().is_empty());
+    if explicit_vendor
+        && let Some(dir) = crate::fetch::local_override_dir(&pkg, &anchor)
+        && let Ok(Some(cfg)) = ProjectConfig::load_from_dir(&dir)
+    {
+        ensure_target_capabilities(&cfg.name, &cfg)?;
+        if let Ok(target) = resolve_subpath_target(&dir, sub.as_deref(), &cfg, &pkg, source) {
+            crate::fetch::note_local_override(&pkg, &cfg.version, &dir);
+            set_std_overlay(&virtual_path, &target);
+            return Ok((virtual_path, None, meta));
+        }
     }
     let (default_owned, owned_overrides, explicit, locked) = std_ctx_for(from, &pkg);
     let default_ref = default.or(default_owned.as_ref());
@@ -1928,7 +2422,6 @@ fn resolve_std_with_registries(
     });
     let have = crate::fetch::scan_cache_have();
     let mut detail: Option<Diagnostic> = None;
-    let anchor = std_vendor_anchor(from);
     match crate::fetch::resolve_registry_package(
         &pkg,
         &requirement,
@@ -1939,6 +2432,7 @@ fn resolve_std_with_registries(
         Some(&anchor),
     ) {
         Ok((dep_root, dep_cfg, _)) => {
+            ensure_target_capabilities(&dep_cfg.name, &dep_cfg)?;
             if let Ok(target) =
                 resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source)
             {
@@ -1951,7 +2445,7 @@ fn resolve_std_with_registries(
         }
     }
     clear_std_overlay(&virtual_path);
-    if crate::stdvfs::std_source(rest).is_some() {
+    if crate::stdvfs::std_source_result(rest)?.is_some() {
         return Ok((virtual_path, None, meta));
     }
     Err(match detail {
@@ -1980,6 +2474,14 @@ fn std_ctx_for(
         merged.entry(k.clone()).or_insert_with(|| v.clone());
     }
     let explicit = match cfg.dependencies.get(pkg) {
+        Some(crate::project::DependencySpec::Alias { .. }) => {
+            let scope_root =
+                project::find_workspace_root(&proj_root).unwrap_or_else(|| proj_root.clone());
+            match resolve_alias_spec(&scope_root, &cfg, pkg, &mut Vec::new()) {
+                Ok((_, crate::project::DependencySpec::Semver { version, .. })) => Some(version),
+                _ => None,
+            }
+        }
         Some(crate::project::DependencySpec::Semver { version, .. }) => Some(version.clone()),
         _ => None,
     };
@@ -2020,7 +2522,51 @@ pub(crate) fn exact_version(range: &str) -> Option<String> {
     }
 }
 
+fn std_project_ctx() -> Result<Option<(PathBuf, ProjectConfig)>, Diagnostic> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(None);
+    };
+    let Some(root) = project::find_project_root(&cwd) else {
+        return Ok(None);
+    };
+    Ok(ProjectConfig::load_from_dir(&root)?.map(|cfg| (root, cfg)))
+}
+
+/// Whether loading a `@std` package source applies the active target's
+/// capability gate.
+///
+/// Compilation imports must use `Target`: importing a package whose
+/// capabilities the target lacks is `E108`. Metadata readers that only
+/// parse and document every package use `Metadata`, because a doc build
+/// has no target program and must see `@std/uefi` and `@std/wasi` on a
+/// host. Never use `Metadata` from `ModuleGraph` or any other build path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StdGating {
+    Target,
+    Metadata,
+}
+
 pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
+    load_std_module_source_with(rest, StdGating::Target)
+}
+
+/// Load a `@std` package source for documentation or another metadata
+/// reader. No target capability check runs, because nothing is compiled.
+pub fn load_std_module_source_ungated(rest: &str) -> Result<String, Diagnostic> {
+    load_std_module_source_with(rest, StdGating::Metadata)
+}
+
+fn load_std_module_source_with(rest: &str, gating: StdGating) -> Result<String, Diagnostic> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    load_std_module_source_at(&cwd.join("__inline__.rnx"), rest, gating)
+}
+
+fn load_std_module_source_at(
+    from: &Path,
+    rest: &str,
+    gating: StdGating,
+) -> Result<String, Diagnostic> {
+    let target_gated = gating == StdGating::Target;
     let rest = crate::stdvfs::normalize_rest(rest);
     if rest.is_empty() {
         return Err(
@@ -2028,10 +2574,54 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
                 .with_hint("use `@std/<module>`, e.g. `@std/time`"),
         );
     }
-    if let Some(src) = crate::stdvfs::std_source(&rest) {
+    let top = rest.split('/').next().unwrap_or(rest.as_str());
+    let pkg = format!("@std/{top}");
+    let source = format!("@std/{rest}");
+    if let Some((proj_root, cfg)) = package_ctx_of(from)?
+        && matches!(
+            cfg.dependencies.get(&pkg),
+            Some(crate::project::DependencySpec::Alias { .. })
+        )
+    {
+        let scope_root =
+            project::find_workspace_root(&proj_root).unwrap_or_else(|| proj_root.clone());
+        let (real, resolved) = resolve_alias_spec(&scope_root, &cfg, &pkg, &mut Vec::new())?;
+        let (dep_root, dep_cfg, _) =
+            resolve_dep_source(&proj_root, &cfg, &pkg, &real, &resolved)?;
+        let sub = rest.split_once('/').map(|(_, s)| s);
+        let target = resolve_subpath_target(&dep_root, sub, &dep_cfg, &pkg, &source)?;
+        return std::fs::read_to_string(&target).map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("cannot read `{}`: {e}", target.display()),
+            )
+        });
+    }
+    if rest == "prelude"
+        && let Some(spec) = target_prelude_override()
+    {
+        if is_std_spec(&spec) {
+            let target_rest = std_rest(&spec);
+            if !target_rest.is_empty() {
+                return load_std_module_source_at(from, target_rest, gating);
+            }
+        } else {
+            let (target, _, _) = resolve_package(from, &spec)?;
+            return std::fs::read_to_string(&target).map_err(|e| {
+                Diagnostic::new(
+                    Code::E108,
+                    format!("cannot read `{}`: {e}", target.display()),
+                )
+            });
+        }
+    }
+    if let Some(src) = crate::stdvfs::get(&rest) {
         return Ok(src);
     }
     if cfg!(target_arch = "wasm32") {
+        if let Some(src) = crate::stdvfs::std_source_result(&rest)? {
+            return Ok(src);
+        }
         return Err(playground_std_error(&format!("@std/{rest}")));
     }
     if !crate::stdvfs::is_known_module(&rest) {
@@ -2041,8 +2631,6 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
         ));
     }
     let (default, overrides) = crate::stdlib_seed::std_registry_from_env();
-    let top = rest.split('/').next().unwrap_or(rest.as_str());
-    let pkg = format!("@std/{top}");
     let base = crate::fetch::registry_base_for(&pkg, default.as_ref(), &overrides);
     let anchor = std_vendor_anchor(Path::new("."));
     let version = crate::stdlib_seed::unpinned_std_version_for(Some(&anchor), &pkg);
@@ -2050,6 +2638,9 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
     if let Some((dir, cfg, _)) =
         crate::fetch::resolve_local_override(&pkg, &version, Some(&version), &anchor)?
     {
+        if target_gated {
+            ensure_target_capabilities(&cfg.name, &cfg)?;
+        }
         let sub = rest.split_once('/').map(|(_, s)| s.to_string());
         let source = format!("@std/{rest}");
         let target =
@@ -2060,6 +2651,9 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
                 format!("cannot read `{}`: {e}", target.display()),
             )
         });
+    }
+    if let Some(src) = crate::stdvfs::std_source_result(&rest)? {
+        return Ok(src);
     }
     match crate::fetch::resolve_registry_package(
         &pkg,
@@ -2074,13 +2668,16 @@ pub fn load_std_module_source(rest: &str) -> Result<String, Diagnostic> {
             // The resolved directory is authoritative: it may be the
             // project-local cache (`rnx download --local`), which the
             // global VFS read below cannot see.
+            if target_gated {
+                ensure_target_capabilities(&cfg.name, &cfg)?;
+            }
             let sub = rest.split_once('/').map(|(_, s)| s.to_string());
             if let Ok(target) = resolve_subpath_target(&dir, sub.as_deref(), &cfg, &pkg, &format!("@std/{rest}"))
                 && let Ok(src) = std::fs::read_to_string(&target)
             {
                 return Ok(src);
             }
-            crate::stdvfs::std_source(&rest)
+            crate::stdvfs::std_source_result(&rest)?
                 .ok_or_else(|| std_cache_miss_error(&format!("@std/{rest}"), &base))
         }
         Err(e) => Err(std_fetch_error(&format!("@std/{rest}"), &base, &e.message)),
@@ -2220,41 +2817,104 @@ fn resolve_package(
     }
     let unknown = || Diagnostic::new(Code::E108, format!("unknown package dependency `{pkg}`"));
     let (proj_root, cfg) = package_ctx_of(from)?.ok_or_else(unknown)?;
-    let (dep_root, dep_cfg, kind) = match cfg.dependencies.get(pkg.as_str()) {
-        Some(crate::project::DependencySpec::Path { path, .. }) => {
+    let scope_root = project::find_workspace_root(&proj_root).unwrap_or_else(|| proj_root.clone());
+    let (real_pkg, dep_root, dep_cfg, kind) =
+        match effective_dep_spec(&scope_root, &cfg, &pkg)? {
+            Some((real_pkg, spec)) => {
+                let (dep_root, dep_cfg, kind) =
+                    resolve_dep_source(&proj_root, &cfg, &pkg, &real_pkg, &spec)?;
+                (real_pkg, dep_root, dep_cfg, kind)
+            }
+            None => {
+                let (dep_root, dep_cfg) = workspace_sibling(&proj_root, &pkg)?.ok_or_else(|| {
+                    Diagnostic::new(Code::E108, format!("unknown package dependency `{pkg}`"))
+                })?;
+                (
+                    pkg.clone(),
+                    dep_root,
+                    dep_cfg,
+                    crate::depcache::KIND_WORKSPACE.to_string(),
+                )
+            }
+        };
+    ensure_target_capabilities(&dep_cfg.name, &dep_cfg)?;
+    let target = resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source)?;
+    Ok((target, Some(dep_root), Some((real_pkg, kind))))
+}
+
+fn ensure_target_capabilities(pkg: &str, cfg: &ProjectConfig) -> Result<(), Diagnostic> {
+    let target = sysroot::target::active_target();
+    for name in &cfg.capabilities {
+        let capability = name.parse::<sysroot::target::Capability>().map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("package `{pkg}` declares {e}"),
+            )
+        })?;
+        if !target.capabilities.contains(&capability) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!(
+                    "package `{pkg}` requires capability `{name}` but target `{}` does not provide it",
+                    target.triple
+                ),
+            )
+            .with_hint("remove the import, choose a target that provides the capability, or use a prelude that omits the package"));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_dep_source(
+    proj_root: &Path,
+    cfg: &ProjectConfig,
+    requested: &str,
+    real_pkg: &str,
+    spec: &crate::project::DependencySpec,
+) -> Result<(PathBuf, ProjectConfig, String), Diagnostic> {
+    let scope_root =
+        project::find_workspace_root(proj_root).unwrap_or_else(|| proj_root.to_path_buf());
+    match spec {
+        crate::project::DependencySpec::Path { path, .. } => {
             let dep_root = std::fs::canonicalize(proj_root.join(path)).map_err(|_| {
-                Diagnostic::new(Code::E108, format!("cannot resolve package `{pkg}`"))
+                Diagnostic::new(Code::E108, format!("cannot resolve package `{requested}`"))
             })?;
             let dep_cfg = ProjectConfig::load_from_dir(&dep_root)?.ok_or_else(|| {
-                Diagnostic::new(Code::E108, format!("package `{pkg}` has no Project.config"))
+                Diagnostic::new(
+                    Code::E108,
+                    format!("package `{requested}` has no Project.config"),
+                )
             })?;
-            (dep_root, dep_cfg, crate::depcache::KIND_PATH.to_string())
+            ensure_target_capabilities(&dep_cfg.name, &dep_cfg)?;
+            Ok((dep_root, dep_cfg, crate::depcache::KIND_PATH.to_string()))
         }
-        Some(crate::project::DependencySpec::Git { git, rev, .. }) => {
-            let anchor = crate::fetch::cache_anchor(&proj_root);
-            let dep_root = crate::fetch::resolve_git_dep(&anchor, &pkg, git, rev)?;
+        crate::project::DependencySpec::Git { git, rev, .. } => {
+            let anchor = crate::fetch::cache_anchor(proj_root);
+            let dep_root = crate::fetch::resolve_git_dep(&anchor, real_pkg, git, rev)?;
             let dep_cfg = ProjectConfig::load_from_dir(&dep_root)?.ok_or_else(|| {
-                Diagnostic::new(Code::E108, format!("package `{pkg}` has no Project.config"))
+                Diagnostic::new(
+                    Code::E108,
+                    format!("package `{requested}` has no Project.config"),
+                )
             })?;
-            (dep_root, dep_cfg, crate::depcache::KIND_GIT.to_string())
+            ensure_target_capabilities(&dep_cfg.name, &dep_cfg)?;
+            Ok((dep_root, dep_cfg, crate::depcache::KIND_GIT.to_string()))
         }
-        Some(crate::project::DependencySpec::Semver { version, .. }) => {
-            let scope_root =
-                project::find_workspace_root(&proj_root).unwrap_or_else(|| proj_root.clone());
-            let pinned = locked_registry_version(&scope_root, &pkg);
+        crate::project::DependencySpec::Semver { version, .. } => {
+            let pinned = locked_registry_version(&scope_root, real_pkg);
             if pinned.is_none() && exact_version(version).is_none() {
                 return Err(Diagnostic::new(
                     Code::E115,
                     format!(
-                        "package `{pkg}` declares floating range `{version}` with no locked version; run `rnx lock` to pin it"
+                        "package `{requested}` declares floating range `{version}` with no locked version; run `rnx lock` to pin it"
                     ),
                 )
                 .with_hint("run `rnx lock` to pin every registry dependency, then build again"));
             }
             let have = crate::fetch::scan_cache_have();
-            let anchor = crate::fetch::cache_anchor(&proj_root);
+            let anchor = crate::fetch::cache_anchor(proj_root);
             let (dep_root, dep_cfg, _) = crate::fetch::resolve_registry_package(
-                &pkg,
+                real_pkg,
                 version,
                 cfg.registry.as_ref(),
                 &cfg.registries,
@@ -2262,26 +2922,26 @@ fn resolve_package(
                 &have,
                 Some(&anchor),
             )?;
-            (dep_root, dep_cfg, crate::depcache::KIND_SEMVER.to_string())
+            ensure_target_capabilities(&dep_cfg.name, &dep_cfg)?;
+            Ok((dep_root, dep_cfg, crate::depcache::KIND_SEMVER.to_string()))
         }
-        Some(crate::project::DependencySpec::Url { url, .. }) => {
-            return Err(Diagnostic::new(
-                Code::E108,
-                format!("cannot resolve package `{pkg}`: tarball `{url}` fetch is not implemented yet"),
-            ));
-        }
-        Some(crate::project::DependencySpec::Native { lib, .. }) => {
-            return Err(Diagnostic::new(
-                Code::E108,
-                format!("cannot import native system dependency `{pkg}` (`{lib}`) as a module; call it with `from native \"{lib}\"`"),
-            ));
-        }
-        None => workspace_sibling(&proj_root, &pkg)?
-            .ok_or_else(unknown)
-            .map(|(r, c)| (r, c, crate::depcache::KIND_WORKSPACE.to_string()))?,
-    };
-    let target = resolve_subpath_target(&dep_root, sub.as_deref(), &dep_cfg, &pkg, source)?;
-    Ok((target, Some(dep_root), Some((pkg, kind))))
+        crate::project::DependencySpec::Url { url, .. } => Err(Diagnostic::new(
+            Code::E108,
+            format!(
+                "cannot resolve package `{requested}`: tarball `{url}` fetch is not implemented yet"
+            ),
+        )),
+        crate::project::DependencySpec::Native { lib, .. } => Err(Diagnostic::new(
+            Code::E108,
+            format!(
+                "cannot import native system dependency `{requested}` (`{lib}`) as a module; call it with `from native \"{lib}\"`"
+            ),
+        )),
+        crate::project::DependencySpec::Alias { .. } => Err(Diagnostic::new(
+            Code::E108,
+            format!("cannot resolve package `{requested}`: unresolved alias"),
+        )),
+    }
 }
 
 fn resolve_subpath_target(
@@ -2293,13 +2953,19 @@ fn resolve_subpath_target(
 ) -> Result<PathBuf, Diagnostic> {
     let target = match sub {
         None => {
-            let main = dep_cfg.main_path(&dep_root);
-            if main.is_file() {
-                main
-            } else if let Some(lib) = dep_cfg.lib_path(&dep_root) {
-                if lib.is_file() {
-                    lib
-                } else {
+            let mut candidates = vec![
+                dep_cfg.main_path(&dep_root),
+                dep_root.join(&dep_cfg.entries.main),
+            ];
+            if let Some(lib) = dep_cfg.lib_path(&dep_root) {
+                candidates.push(lib);
+            }
+            if let Some(lib) = dep_cfg.entries.lib.as_ref() {
+                candidates.push(dep_root.join(lib));
+            }
+            match candidates.into_iter().find(|p| p.is_file()) {
+                Some(path) => path,
+                None => {
                     return Err(Diagnostic::new(
                         Code::E108,
                         format!(
@@ -2309,14 +2975,6 @@ fn resolve_subpath_target(
                         ),
                     ));
                 }
-            } else {
-                return Err(Diagnostic::new(
-                    Code::E108,
-                    format!(
-                        "package `{pkg}` entries.main `{}` not found with no lib fallback",
-                        dep_cfg.entries.main,
-                    ),
-                ));
             }
         }
         Some(s) => {
@@ -2334,6 +2992,9 @@ fn resolve_subpath_target(
                 probed.push(base.join(format!("{s}.rnx")));
                 probed.push(base.join(&s).join("mod.rnx"));
                 probed.push(base.join(&s).join("index.rnx"));
+                probed.push(dep_root.join(format!("{s}.rnx")));
+                probed.push(dep_root.join(&s).join("lib.rnx"));
+                probed.push(dep_root.join(&s).join("mod.rnx"));
             }
             let mut resolved = None;
             for candidate in &probed {
@@ -2366,6 +3027,104 @@ pub(crate) fn locked_registry_version(scope_root: &Path, pkg: &str) -> Option<St
         Some(version.to_string())
     } else {
         None
+    }
+}
+
+const ALIAS_CHAIN_LIMIT: usize = 16;
+
+fn alias_chain_text(seen: &[String], tail: &str) -> String {
+    let mut parts: Vec<&str> = seen.iter().map(String::as_str).collect();
+    parts.push(tail);
+    parts.join(" -> ")
+}
+
+fn locked_alias_version(scope_root: &Path, alias_name: &str, package: &str) -> Option<String> {
+    let lock = crate::deplock::ProjectDepLock::load(scope_root).ok()??;
+    let entry = lock.packages.iter().find(|p| p.name == alias_name)?;
+    if let Some(target) = entry.alias.as_deref()
+        && target != package
+    {
+        return None;
+    }
+    let rest = entry.source.strip_prefix("registry:")?;
+    let (full, version) = rest.rsplit_once('@')?;
+    if full == package && !version.is_empty() {
+        Some(version.to_string())
+    } else {
+        None
+    }
+}
+
+pub fn resolve_alias_spec(
+    scope_root: &Path,
+    cfg: &ProjectConfig,
+    name: &str,
+    seen: &mut Vec<String>,
+) -> Result<(String, crate::project::DependencySpec), Diagnostic> {
+    if seen.iter().any(|n| n == name) {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("dependency alias cycle: {}", alias_chain_text(seen, name)),
+        ));
+    }
+    if seen.len() >= ALIAS_CHAIN_LIMIT {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!(
+                "dependency alias chain exceeds {ALIAS_CHAIN_LIMIT} links: {}",
+                alias_chain_text(seen, name)
+            ),
+        ));
+    }
+    let spec = cfg.dependencies.get(name).ok_or_else(|| {
+        Diagnostic::new(Code::E108, format!("unknown package dependency `{name}`"))
+    })?;
+    let crate::project::DependencySpec::Alias { package, version } = spec else {
+        return Ok((name.to_string(), spec.clone()));
+    };
+    seen.push(name.to_string());
+    let result = if cfg.dependencies.contains_key(package.as_str()) {
+        resolve_alias_spec(scope_root, cfg, package, seen)
+    } else if let Some(range) = version {
+        Ok((
+            package.clone(),
+            crate::project::DependencySpec::Semver {
+                version: range.clone(),
+                link: crate::license::LinkPreference::Auto,
+            },
+        ))
+    } else if let Some(locked) = locked_alias_version(scope_root, name, package) {
+        Ok((
+            package.clone(),
+            crate::project::DependencySpec::Semver {
+                version: locked,
+                link: crate::license::LinkPreference::Auto,
+            },
+        ))
+    } else {
+        Err(Diagnostic::new(
+            Code::E115,
+            format!(
+                "dependency alias `{name}` targets `{package}`, which is not declared in `dependencies` and has no locked version"
+            ),
+        )
+        .with_hint("add `version` to the alias or run `rnx lock` to pin it"))
+    };
+    seen.pop();
+    result
+}
+
+fn effective_dep_spec(
+    scope_root: &Path,
+    cfg: &ProjectConfig,
+    name: &str,
+) -> Result<Option<(String, crate::project::DependencySpec)>, Diagnostic> {
+    match cfg.dependencies.get(name) {
+        Some(crate::project::DependencySpec::Alias { .. }) => {
+            resolve_alias_spec(scope_root, cfg, name, &mut Vec::new()).map(Some)
+        }
+        Some(spec) => Ok(Some((name.to_string(), spec.clone()))),
+        None => Ok(None),
     }
 }
 
@@ -2411,6 +3170,9 @@ fn dep_spec_string(spec: &crate::project::DependencySpec) -> String {
             from.as_deref().unwrap_or_default(),
             link.as_str()
         ),
+        crate::project::DependencySpec::Alias { package, version } => {
+            format!("alias:{package}@{}", version.as_deref().unwrap_or("*"))
+        }
     }
 }
 
@@ -2701,6 +3463,18 @@ fn dep_restore_for_entry(entry_root: Option<&PathBuf>, build_gen: u64) {
     );
 }
 
+fn dep_kind_for_spec(name: &str, spec: &crate::project::DependencySpec) -> Option<&'static str> {
+    use crate::depcache::*;
+    match spec {
+        crate::project::DependencySpec::Git { .. } => Some(KIND_GIT),
+        crate::project::DependencySpec::Semver { .. } if name.starts_with("@std/") => {
+            Some(KIND_STD)
+        }
+        crate::project::DependencySpec::Semver { .. } => Some(KIND_SEMVER),
+        _ => None,
+    }
+}
+
 fn dep_restore_global(
     entry_root: &Path,
     entry_cfg: &ProjectConfig,
@@ -2715,16 +3489,20 @@ fn dep_restore_global(
     let mut candidates: Vec<(String, &str)> = Vec::new();
     for (pkg, spec) in &entry_cfg.dependencies {
         match spec {
-            crate::project::DependencySpec::Git { .. } => {
-                candidates.push((pkg.clone(), KIND_GIT));
+            crate::project::DependencySpec::Alias { .. } => {
+                let scope_root = dep_scope_root(entry_root);
+                if let Ok((real, resolved)) =
+                    resolve_alias_spec(&scope_root, entry_cfg, pkg, &mut Vec::new())
+                    && let Some(kind) = dep_kind_for_spec(&real, &resolved)
+                {
+                    candidates.push((real, kind));
+                }
             }
-            crate::project::DependencySpec::Semver { .. } if pkg.starts_with("@std/") => {
-                candidates.push((pkg.clone(), KIND_STD));
+            _ => {
+                if let Some(kind) = dep_kind_for_spec(pkg, spec) {
+                    candidates.push((pkg.clone(), kind));
+                }
             }
-            crate::project::DependencySpec::Semver { .. } => {
-                candidates.push((pkg.clone(), KIND_SEMVER));
-            }
-            _ => {}
         }
     }
     candidates.sort();
@@ -2769,7 +3547,6 @@ fn dep_restore_global(
 }
 
 pub fn product_statuses(entry_root: &Path) -> Vec<crate::products::ProductStatus> {
-    use crate::depcache::*;
     let mut out = Vec::new();
     let entry_cfg = match ProjectConfig::load_from_dir(entry_root) {
         Ok(Some(cfg)) => cfg,
@@ -2779,14 +3556,20 @@ pub fn product_statuses(entry_root: &Path) -> Vec<crate::products::ProductStatus
     let mut pkgs: Vec<(String, &str)> = Vec::new();
     for (pkg, spec) in &entry_cfg.dependencies {
         match spec {
-            crate::project::DependencySpec::Git { .. } => pkgs.push((pkg.clone(), KIND_GIT)),
-            crate::project::DependencySpec::Semver { .. } if pkg.starts_with("@std/") => {
-                pkgs.push((pkg.clone(), KIND_STD));
+            crate::project::DependencySpec::Alias { .. } => {
+                let scope_root = dep_scope_root(entry_root);
+                if let Ok((real, resolved)) =
+                    resolve_alias_spec(&scope_root, &entry_cfg, pkg, &mut Vec::new())
+                    && let Some(kind) = dep_kind_for_spec(&real, &resolved)
+                {
+                    pkgs.push((real, kind));
+                }
             }
-            crate::project::DependencySpec::Semver { .. } => {
-                pkgs.push((pkg.clone(), KIND_SEMVER));
+            _ => {
+                if let Some(kind) = dep_kind_for_spec(pkg, spec) {
+                    pkgs.push((pkg.clone(), kind));
+                }
             }
-            _ => {}
         }
     }
     pkgs.sort();
@@ -2820,7 +3603,7 @@ fn read_product_current(files: &[crate::depcache::DepFile]) -> Option<Vec<(Strin
             // in this build, so the overlay can only hold another build's
             // stale mapping. The pinned cache is the validation source.
             let rest = std_submodule(&path);
-            crate::stdvfs::std_source(&rest)?.into_bytes()
+            crate::stdvfs::std_source_result(&rest).ok().flatten()?.into_bytes()
         } else {
             std::fs::read(&path).ok()?
         };
@@ -2859,6 +3642,13 @@ fn validate_dep_product(
         Ok(Some(c)) => c,
         _ => return false,
     };
+    // A cached std product carries raw source, so it must not restore into a
+    // target that cannot provide the package's declared capabilities. Without
+    // this check a UEFI build's product serves a later host build and the
+    // import gate never runs.
+    if ensure_target_capabilities(&dep_cfg.name, &dep_cfg).is_err() {
+        return false;
+    }
     let Some(version_key) =
         dep_version_key(&product.kind, &product.pkg, entry_root, entry_cfg, Some(&dep_cfg))
     else {
@@ -3389,8 +4179,11 @@ fn assemble_graph<B: VisitBackend>(
     )
     .map_err(|e| vec![e])?;
     if want_prelude {
+        let prelude = selected_prelude()
+            .map(|(spec, _)| prelude_virtual_path(&spec))
+            .unwrap_or_else(|| PathBuf::from(PRELUDE_SPEC));
         visit_impl(
-            &PathBuf::from("@std/prelude"),
+            &prelude,
             base,
             root,
             entry_root.as_ref(),
@@ -3605,6 +4398,7 @@ struct Rewriter<'a> {
     own: &'a BTreeMap<String, String>,
     aliases: &'a BTreeMap<String, String>,
     namespaces: &'a BTreeMap<String, String>,
+    macros: &'a BTreeMap<String, String>,
     locals: Vec<BTreeSet<String>>,
 }
 
@@ -3625,10 +4419,29 @@ impl Rewriter<'_> {
         }
     }
 
+    // `print(...)` keeps resolving to the deprecated builtin even though a
+    // call macro of the same name exists; other macro names are qualified
+    // here so the checker can report a normal call to a macro function.
+    fn macro_call_name(&self, callee: &mut A::Spanned<A::Expr>) {
+        let A::Expr::Ident(name) = &callee.node else {
+            return;
+        };
+        if self.locals.iter().any(|s| s.contains(name))
+            || self.own.contains_key(name)
+            || self.aliases.contains_key(name)
+            || crate::semantic::scope_builtin(name)
+        {
+            return;
+        }
+        if let Some(m) = self.macros.get(name) {
+            callee.node = A::Expr::Ident(m.clone());
+        }
+    }
+
     fn ty(&self, t: &mut A::Type) {
         if let Some(first) = t.path.first() {
             let key = first.clone();
-            if self.locals.iter().all(|s| !s.contains(&key)) {
+            if !is_foundation_type_name(&key) && self.locals.iter().all(|s| !s.contains(&key)) {
                 if let Some(m) = self.own.get(&key).or_else(|| self.aliases.get(&key)) {
                     t.path[0] = m.clone();
                 } else if let Some(nskey) = self.namespaces.get(&key) {
@@ -3961,12 +4774,14 @@ impl Rewriter<'_> {
                     && !self.aliases.contains_key(n)
                     && !self.namespaces.contains_key(n)
                 {
-                    *e = A::Expr::New {
-                        target: "std.prelude.RnxHost".to_string(),
-                        type_args: Vec::new(),
-                        args: Vec::new(),
-                    };
-                    return;
+                    if let Some(target) = crate::prelude::canonical_path("RnxHost") {
+                        *e = A::Expr::New {
+                            target,
+                            type_args: Vec::new(),
+                            args: Vec::new(),
+                        };
+                        return;
+                    }
                 }
                 if !self.locals.iter().any(|s| s.contains(n.as_str()))
                     && !self.own.contains_key(n)
@@ -4038,6 +4853,7 @@ impl Rewriter<'_> {
                 self.expr(&mut hi.node);
             }
             A::Expr::Call { callee, type_args, args, trailing } => {
+                self.macro_call_name(callee);
                 self.expr(&mut callee.node);
                 for t in type_args.iter_mut() {
                     self.ty(t);
@@ -4077,7 +4893,11 @@ impl Rewriter<'_> {
                 self.expr(&mut base.node)
             }
             A::Expr::Macro { name, args, .. } => {
-                self.ident(name);
+                if let Some(m) = self.macros.get(name) {
+                    *name = m.clone();
+                } else {
+                    self.ident(name);
+                }
                 for a in args.iter_mut() {
                     self.expr(&mut a.node);
                 }
@@ -4143,6 +4963,41 @@ mod tests {
     use super::*;
     use crate::fetch::testkit;
 
+    fn graph_file(path: &str, key: &str, src: &str) -> ModuleFile {
+        ModuleFile {
+            path: PathBuf::from(path),
+            key: key.to_string(),
+            kind: ModuleKind::Imported,
+            module: crate::parser::Parser::parse_module(src).unwrap(),
+        }
+    }
+
+    #[test]
+    fn prelude_graph_rejects_a_package_that_imports_the_prelude() {
+        let graph = ModuleGraph {
+            root: PathBuf::from("main.rnx"),
+            files: vec![
+                graph_file(
+                    "@std/prelude",
+                    "std.prelude",
+                    "export { Marker } from \"@std/io\";\n",
+                ),
+                graph_file(
+                    "@std/io",
+                    "std.io",
+                    "import { Marker } from \"@std/prelude\";\nexport fn Marker() {}\n",
+                ),
+            ],
+        };
+        let err = graph.check_prelude_graph(Path::new(".")).unwrap_err();
+        assert_eq!(err.code, Code::E108);
+        assert!(
+            err.message.contains("@std/prelude -> @std/io -> @std/prelude"),
+            "{}",
+            err.message
+        );
+    }
+
     fn registry_app(tag: &str, registry_url: &str) -> crate::scratch::Scratch {
         let root = crate::scratch::dir(&format!("modreg-{tag}"));
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -4159,6 +5014,53 @@ mod tests {
         )
         .unwrap();
         root
+    }
+
+    fn prelude_config(deps: &str) -> ProjectConfig {
+        let text = format!(
+            "export default {{\n    project: {{ name: \"app\", version: \"0.1.0\" }},\n    dependencies: {{ {deps} }}\n}}\n"
+        );
+        crate::project::parse_manifest_for_publish(&text)
+            .expect("manifest parses")
+            .0
+            .expect("project table")
+    }
+
+    #[test]
+    fn prelude_spec_precedence_is_project_then_target_then_stock() {
+        let host = sysroot::target::Target::host().unwrap();
+        let root = PathBuf::from(".");
+        assert_eq!(
+            prelude_spec_with_target(&root, None, &host),
+            "@std/prelude"
+        );
+
+        let mut target = host.clone();
+        target.prelude = "@uefi/prelude".to_string();
+        assert_eq!(
+            prelude_spec_with_target(&root, None, &target),
+            "@uefi/prelude"
+        );
+
+        let cfg = prelude_config(
+            "\"@std/prelude\": { alias: \"@local/prelude\" }, \"@local/prelude\": { path: \"deps/prelude\" }",
+        );
+        assert_eq!(
+            prelude_spec_with_target(&root, Some(&cfg), &target),
+            "@local/prelude"
+        );
+    }
+
+    #[test]
+    fn prelude_spec_follows_an_alias_chain() {
+        let cfg = prelude_config(
+            "\"@std/prelude\": { alias: \"@local/mid\" }, \"@local/mid\": { alias: \"@local/prelude\" }, \"@local/prelude\": { path: \"deps/prelude\" }",
+        );
+        let host = sysroot::target::Target::host().unwrap();
+        assert_eq!(
+            prelude_spec_with_target(&PathBuf::from("."), Some(&cfg), &host),
+            "@local/prelude"
+        );
     }
 
     fn start_widget_server() -> testkit::MockRegistry {
@@ -4277,7 +5179,7 @@ mod tests {
             pin,
             &"ef".repeat(32),
             "",
-            "export fn hello(): Int { return 1; }\n",
+            testkit::minimal_prelude_source(),
         );
     }
 
@@ -4913,12 +5815,14 @@ mod tests {
             BTreeMap::new();
         for full in crate::stdlib_seed::std_package_names() {
             let top = full.strip_prefix("@std/").unwrap_or(&full);
-            let main = if top == "time" {
-                "export fn tick(): Int { return 1; }\nexport fn hello(): Int { return 1; }\n"
+            let main = if full == PRELUDE_SPEC {
+                testkit::minimal_prelude_source().to_string()
+            } else if top == "time" {
+                "export fn tick(): Int { return 1; }\nexport fn hello(): Int { return 1; }\n".to_string()
             } else {
-                "export fn hello(): Int { return 1; }\n"
+                "export fn hello(): Int { return 1; }\n".to_string()
             };
-            let (manifest, pairs, digest) = std_install_tree(&full, pin, main);
+            let (manifest, pairs, digest) = std_install_tree(&full, pin, &main);
             balls.insert((full, pin.to_string()), (manifest, pairs, digest));
         }
         let nodes: Vec<String> = balls

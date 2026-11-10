@@ -11,7 +11,7 @@ fn vec_macro_is_not_an_unresolved_identifier() {
     let diags = isolation("fn Main(): Int { let v = vec![1, 2, 3]; return v[0]; }");
     assert!(
         diags.iter().all(|d| d.code.is_warning()),
-        "vec! is owned by the Phase-A expander and must not fail import isolation: {diags:?}"
+        "vec! is owned by the syntax expansion pass and must not fail import isolation: {diags:?}"
     );
 }
 
@@ -20,7 +20,7 @@ fn embed_bytes_macro_is_not_an_unresolved_identifier() {
     let diags = isolation("fn Main(): Int { let b = EmbedBytes!(\"blob.bin\"); return b.len(); }");
     assert!(
         diags.iter().all(|d| d.code.is_warning()),
-        "EmbedBytes! is owned by the Phase-A expander and must not fail import isolation: {diags:?}"
+        "EmbedBytes! is owned by the syntax expansion pass and must not fail import isolation: {diags:?}"
     );
 }
 
@@ -31,7 +31,7 @@ fn static_assert_macro_is_not_an_unresolved_identifier() {
     );
     assert!(
         diags.iter().all(|d| d.code.is_warning()),
-        "StaticAssert! is owned by the Phase-B expander and must not fail import isolation: {diags:?}"
+        "StaticAssert! is owned by the comptime expansion pass and must not fail import isolation: {diags:?}"
     );
 }
 

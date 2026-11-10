@@ -16,7 +16,7 @@ Two topics, learned together: giving names to values, and numbers that mean exac
 let score = 0;
 score = score + 10;
 const label = "score:";
-print(label, score);
+println!(label, score);
 ```
 
 That prints `score: 10`. Type annotations are optional on bindings but always allowed. Put them where they document intent:
@@ -27,7 +27,7 @@ let attempt = 0;
 while attempt < maxRetries {
     attempt = attempt + 1;
 }
-print("tried", attempt, "times");
+println!("tried", attempt, "times");
 ```
 
 > [!NOTE]
@@ -42,16 +42,16 @@ print("tried", attempt, "times");
 Arithmetic wraps on overflow with two's-complement semantics. Division or remainder by zero is a runtime fatal. You get an abort, never undefined behavior or a quietly wrong answer:
 
 ```rnx
-print(41 + 1);
-print(7 / 2);
-print(7 % 3);
+println!(41 + 1);
+println!(7 / 2);
+println!(7 % 3);
 ```
 
 That prints `42`, `3` (integer division truncates), and `1`. Convert a float with `Int(x)`, which truncates toward zero, and render a number with `toString()`:
 
 ```rnx
-print(Int(2.9));
-print(Int(-2.9));
+println!(Int(2.9));
+println!(Int(-2.9));
 ```
 
 Both print as you would expect: `2` and `-2`.
@@ -65,9 +65,9 @@ Both print as you would expect: `2` and `-2`.
 
 ```rnx
 let c: Float = 10.5 * 2.0 + 20.25;
-print(c);
+println!(c);
 let scaled = c.asFast() * 2.0.asFast();
-print(scaled == 82.5.asFast(), scaled.asStrict());
+println!(scaled == 82.5.asFast(), scaled.asStrict());
 ```
 
 `asFast()` moves to relaxed mode, `asStrict()` comes back. If the compiler complains about mixing `Float` and `FastFloat` (error `E305`), name the conversion you mean instead of guessing. That explicitness is the whole point.
@@ -81,9 +81,9 @@ Handy extras on `Float`: `Float.nan()`, `Float.isNaN(x)`, `Float.fma(a, b, c)` f
 ```rnx
 let name = "ore";
 let level = 7;
-print("player ${name} reached level ${level + 1}");
-print("sum {level + 1}");
-print("ab" + "cd");
+println!("player ${name} reached level ${level + 1}");
+println!("sum {level + 1}");
+println!("ab" + "cd");
 ```
 
 `+` with a `String` on either side concatenates, converting the other operand: `"5" + 1` is `"51"`, not `6`. Useful measurements on strings: `length()` (characters, not bytes), `slice(start, end)`, `indexOf(needle)`, `trim()`, and `charCodeAt(index)`. The full toolkit (`contains`, `split`, `replace`, and friends) lives in [Collections](/guide/06-collections). For now, interpolation plus `print` covers most programs.
@@ -96,7 +96,7 @@ print("ab" + "cd");
 let hp = 30;
 let shielded = false;
 if hp > 0 && !shielded {
-    print("vulnerable");
+    println!("vulnerable");
 }
 ```
 

@@ -39,7 +39,7 @@ let total = 0;
 for x in new Counter(3) {
     total = total + x;
 }
-print(total);
+println!(total);
 ```
 
 `for..in` over anything with `.iterator()` desugars to a `while` loop over `next()` with identical `break`/`continue` semantics. Arrays and ranges keep their zero-allocation fast paths.
@@ -71,7 +71,7 @@ extension Vec2 {
 }
 
 let v = Vec2(1.0, 2.0) + Vec2(3.0, 4.0);
-print(v.x, v.y);
+println!(v.x, v.y);
 ```
 
 ## Extensions add methods from outside
@@ -159,8 +159,8 @@ class User : Summarizable {
 
 let u = new User("Al");
 let s: Summarizable = u;
-print(s.summary());
-print(s is Summarizable);
+println!(s.summary());
+println!(s is Summarizable);
 ```
 
 There are no fat pointers or vtables in the ABI: the compiler resolves the runtime class id to a direct static call per implementation. `is` tests interface membership, and `typeOf` on an interface-typed value reports the concrete class. Calls through an interface work identically on every backend.

@@ -27,6 +27,7 @@ pub struct DynInfo {
     pub fini_addr: u64,
     pub force_dynamic: bool,
     pub relacount: u64,
+    pub bind_now: bool,
     pub osabi: u8,
     pub build_id: Option<[u8; 20]>,
 }
@@ -52,6 +53,7 @@ impl DynInfo {
             fini_addr: 0,
             force_dynamic: false,
             relacount: 0,
+            bind_now: false,
             osabi: 0,
             build_id: None,
         }
@@ -166,7 +168,7 @@ pub(crate) fn is_debug_sec(g: &Graph, oi: usize, si: u32) -> bool {
         .is_some_and(|&c| c == SecClass::Debug)
 }
 
-fn tls_values(g: &Graph, t: &TargetSym) -> (i64, u64) {
+fn tls_values(g: &Graph, t: &TargetSym, target: &dyn Target) -> (i64, u64) {
     if t.obj == usize::MAX || t.weak_zero {
         return (0, 0);
     }
@@ -175,8 +177,7 @@ fn tls_values(g: &Graph, t: &TargetSym) -> (i64, u64) {
         id = w;
     }
     let dtpoff = g.tls.dtpoff.get(&id).copied().unwrap_or(0) + t.value;
-    let tpoff = dtpoff as i64 - g.tls.size as i64;
-    (tpoff, dtpoff)
+    (target.tls_tp_offset(dtpoff, g.tls.size), dtpoff)
 }
 
 pub fn write_output(
@@ -260,13 +261,16 @@ pub fn write_output(
             }
             SynthSec::Got => {
                 for (i, slot) in g.got.iter().enumerate() {
-                    let v = got_slot_value(g, layout, db, slot)?;
+                    let v = got_slot_value(g, layout, db, slot, target)?;
                     dest[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
                 }
             }
             SynthSec::GotPlt => {
                 dest.fill(0);
-                if layout.got_plt_addr != 0 && layout.plt_addr != 0 {
+                // AArch64 stubs load the GOT slot directly and the image is
+                // built with BIND_NOW, so the x86 push-stub trampoline value
+                // has no meaning there.
+                if target.machine() != 183 && layout.got_plt_addr != 0 && layout.plt_addr != 0 {
                     let mut n = 0u32;
                     for slot in g.plt.iter() {
                         if slot.ifunc {
@@ -366,9 +370,21 @@ pub(crate) fn got_slot_value(
     layout: &Layout,
     db: &crate::core::symdb::SymDb,
     slot: &crate::core::graph::GotSlot,
+    target: &dyn Target,
 ) -> Result<u64, LinkError> {
     if slot.dynamic || slot.ifunc {
         return Ok(0);
+    }
+    if slot.tls_ie {
+        let value = match &slot.key {
+            crate::core::graph::GotKey::Named(name) => {
+                def_value(g, layout, db, name).map(|v| v.0).unwrap_or(0)
+            }
+            crate::core::graph::GotKey::Local(oi, sec, val) => {
+                g.tls.dtpoff.get(&(*oi, *sec)).copied().unwrap_or(0) + val
+            }
+        };
+        return Ok(target.tls_tp_offset(value, g.tls.size) as u64);
     }
     match &slot.key {
         crate::core::graph::GotKey::Named(name) => {
@@ -411,14 +427,7 @@ fn emit_plt(g: &Graph, layout: &Layout, dest: &mut [u8], iplt: bool, target: &dy
     let plt0 = layout.plt_addr;
     let got_plt = layout.got_plt_addr;
     {
-        let mut p0 = [0u8; 16];
-        p0[0] = 0xff;
-        p0[1] = 0x35;
-        p0[2..6].copy_from_slice(&((got_plt as i64 + 8 - (plt0 as i64 + 6)) as i32).to_le_bytes());
-        p0[6] = 0xff;
-        p0[7] = 0x25;
-        p0[8..12].copy_from_slice(&((got_plt as i64 + 16 - (plt0 as i64 + 12)) as i32).to_le_bytes());
-        p0[12..16].copy_from_slice(&[0x0f, 0x1f, 0x40, 0x00]);
+        let p0 = target.plt0_entry(plt0, got_plt);
         dest.get_mut(0..16).ok_or_else(|| LinkError::Native("plt overflow".to_string()))?.copy_from_slice(&p0);
     }
     let mut n = 0u32;
@@ -468,7 +477,7 @@ fn emit_eh_frame(
             }
             let t = g.resolved[foi].get(r.sym as usize).and_then(|o| o.as_ref()).ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
             let s = target_address(g, layout, &t, false)?;
-            let (tpoff, dtpoff) = tls_values(g, &t);
+            let (tpoff, dtpoff) = tls_values(g, &t, target);
             let place = eh_base + g.eh_cie_off[ci] + (r.offset as usize - fstart) as u64;
             if g.relaxed.contains(&(foi, fsi, r.offset)) {
                 crate::target::x86_64::apply_relaxed(slot, r.offset as usize - fstart, s, place, r.addend)?;
@@ -514,7 +523,7 @@ fn emit_eh_frame(
                 }
                 let t = g.resolved[oi].get(r.sym as usize).and_then(|o| o.as_ref()).ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
                 let s = target_address(g, layout, &t, false)?;
-                let (tpoff, dtpoff) = tls_values(g, &t);
+                let (tpoff, dtpoff) = tls_values(g, &t, target);
                 let place = field_out + (r.offset as usize - in_start) as u64 - 4;
                 let rel_off = r.offset as usize - in_start;
                 if g.relaxed.contains(&(oi, si, r.offset)) {
@@ -661,7 +670,7 @@ fn apply_relocations(
                 }
                 let t = g.resolved[oi].get(r.sym as usize).and_then(|o| o.as_ref()).ok_or_else(|| LinkError::Native("unresolved relocation".to_string()))?;
                 let s = target_address(g, layout, &t, is_debug_sec(g, oi, si))?;
-                let (tpoff, dtpoff) = tls_values(g, &t);
+                let (tpoff, dtpoff) = tls_values(g, &t, target);
                 let place = base_addr + r.offset;
                 if g.relaxed.contains(&(oi, si, r.offset)) {
                     crate::target::x86_64::apply_relaxed(buf, r.offset as usize, s, place, r.addend).map_err(|e| {
@@ -726,6 +735,9 @@ pub fn dynamic_count(dyn_info: &DynInfo, has_init_array: bool, has_fini_array: b
     if dyn_info.runpath.is_some() {
         n += 1;
     }
+    if dyn_info.bind_now {
+        n += 1;
+    }
     n + 1
 }
 
@@ -751,8 +763,11 @@ fn emit_dynamic(layout: &Layout, dyn_info: &DynInfo, dest: &mut [u8]) -> Result<
         Err(LinkError::Native(format!("dynamic string `{name}` missing")))
     };
     let mut n = 0usize;
+    let capacity = dest.len() / 16;
     let mut put = |tag: i64, val: u64| -> Result<(), LinkError> {
-        let slot = dest.get_mut(n * 16..n * 16 + 16).ok_or_else(|| LinkError::Native("dynamic overflow".to_string()))?;
+        let slot = dest.get_mut(n * 16..n * 16 + 16).ok_or_else(|| {
+            LinkError::Native(format!("dynamic overflow: slot {n} of {capacity}"))
+        })?;
         elf::write_dyn(slot, tag, val);
         n += 1;
         Ok(())
@@ -780,7 +795,11 @@ fn emit_dynamic(layout: &Layout, dyn_info: &DynInfo, dest: &mut [u8]) -> Result<
     put(elf::DT_STRSZ as i64, dyn_size(layout, SynthSec::DynStr))?;
     put(elf::DT_HASH as i64, dyn_addr(layout, SynthSec::Hash))?;
     put(elf::DT_DEBUG as i64, 0)?;
-    put(elf::DT_FLAGS_1 as i64, elf::DF_1_PIE)?;
+    if dyn_info.bind_now {
+        put(elf::DT_FLAGS as i64, elf::DF_BIND_NOW)?;
+    }
+    let flags1 = elf::DF_1_PIE | if dyn_info.bind_now { elf::DF_1_NOW } else { 0 };
+    put(elf::DT_FLAGS_1 as i64, flags1)?;
     if !dyn_info.versym.is_empty() {
         put(elf::DT_VERSYM as i64, dyn_addr(layout, SynthSec::GnuVersion))?;
         put(elf::DT_VERNEED as i64, dyn_addr(layout, SynthSec::GnuVersionR))?;

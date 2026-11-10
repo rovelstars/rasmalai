@@ -54,7 +54,7 @@ fn app_with_git_dep(dir: &std::path::Path, remote: &str, rev: Option<&str>) -> s
     .unwrap();
     std::fs::write(
         app.join("src").join("main.rnx"),
-        "import { double } from \"glib\";\n\nfn Main(): Int {\n    let res = double(21);\n    print(\"Git dep success:\", res);\n    return 0;\n}\n",
+        "import { double } from \"glib\";\n\nfn Main(): Int {\n    let res = double(21);\n    println!(\"Git dep success:\", res);\n    return 0;\n}\n",
     )
     .unwrap();
     app

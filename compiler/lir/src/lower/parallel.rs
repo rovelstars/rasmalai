@@ -19,6 +19,15 @@ pub fn lower_parallel(m: &A::Module, jobs: usize) -> Result<Module, Diagnostic> 
         ext_self: BTreeMap::new(),
         mod_consts: BTreeMap::new(),
         runtime_alias: BTreeMap::new(),
+        explicit_std_collections: m.explicit_std_collections,
+        macro_fns: m
+            .decls
+            .iter()
+            .filter_map(|d| match &d.node {
+                A::Decl::Fn(f) if f.is_macro => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect(),
         diags: Vec::new(),
     };
     let expanded = l.expand_traits(m);
@@ -52,6 +61,8 @@ struct Shared<'a> {
     ext_self: &'a BTreeMap<String, A::Type>,
     mod_consts: &'a BTreeMap<String, (Lit, LirType, Simple)>,
     runtime_alias: &'a BTreeMap<String, String>,
+    explicit_std_collections: bool,
+    macro_fns: &'a BTreeSet<String>,
 }
 
 struct BodyOut {
@@ -89,6 +100,8 @@ fn lower_one(
         s.ext_self,
         s.mod_consts,
         s.runtime_alias,
+        s.explicit_std_collections,
+        s.macro_fns,
         id,
         prefix,
     );
@@ -265,6 +278,8 @@ impl Lower {
                     ext_self: &self.ext_self,
                     mod_consts: &self.mod_consts,
                     runtime_alias: &self.runtime_alias,
+                    explicit_std_collections: self.explicit_std_collections,
+                    macro_fns: &self.macro_fns,
                 };
                 level
                     .into_par_iter()

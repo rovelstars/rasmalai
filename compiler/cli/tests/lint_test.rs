@@ -101,9 +101,9 @@ fn test_lint_deny_warnings_flag() {
     assert_eq!(strict.status.code(), Some(1), "{}", String::from_utf8_lossy(&strict.stderr));
 }
 
-const SHADOW_SRC: &str = "fn Main(): Int {\n    let rock = 1;\n    print(rock);\n    while true {\n        let rock = 2;\n        print(rock);\n    }\n    return rock;\n}\n";
+const SHADOW_SRC: &str = "fn Main(): Int {\n    let rock = 1;\n    println!(rock);\n    while true {\n        let rock = 2;\n        println!(rock);\n    }\n    return rock;\n}\n";
 
-const SHADOW_UNUSED_SRC: &str = "fn Main(): Int {\n    let rock = 1;\n    while true {\n        let rock = 2;\n        print(rock);\n    }\n    return 0;\n}\n";
+const SHADOW_UNUSED_SRC: &str = "fn Main(): Int {\n    let rock = 1;\n    while true {\n        let rock = 2;\n        println!(rock);\n    }\n    return 0;\n}\n";
 
 #[test]
 fn test_lint_shadowed_bindings_resolve_innermost() {
@@ -134,7 +134,7 @@ fn test_lint_reports_unparseable_file() {
     assert!(stderr.contains("main.rnx"), "{stderr}");
 }
 
-const RESHADOW_SRC: &str = "fn Main(): Int {\n    let k = 0;\n    while k < 2 {\n        let t0 = 1;\n        let m1 = t0 + 1;\n        let t0 = 2;\n        let m2 = t0 + 1;\n        print(m1 + m2);\n        k = k + 1;\n    }\n    return 0;\n}\n";
+const RESHADOW_SRC: &str = "fn Main(): Int {\n    let k = 0;\n    while k < 2 {\n        let t0 = 1;\n        let m1 = t0 + 1;\n        let t0 = 2;\n        let m2 = t0 + 1;\n        println!(m1 + m2);\n        k = k + 1;\n    }\n    return 0;\n}\n";
 
 #[test]
 fn test_lint_same_block_redeclare_read_after_is_used() {
@@ -156,7 +156,7 @@ fn test_lint_same_block_redeclare_read_after_is_used() {
     assert_eq!(before, after, "--fix must not rename a read shadowed variable");
 }
 
-const SHADOW_LOOP_RUNTIME_SRC: &str = "fn Main(): Int {\n    let k = 0;\n    while k < 2 {\n        let t0 = 10;\n        let m1 = t0 + 1;\n        let t0 = 100;\n        let m2 = t0 + 1;\n        print(\"m1=\" + (\"\" + m1) + \" m2=\" + (\"\" + m2));\n        k = k + 1;\n    }\n    return 0;\n}\n";
+const SHADOW_LOOP_RUNTIME_SRC: &str = "fn Main(): Int {\n    let k = 0;\n    while k < 2 {\n        let t0 = 10;\n        let m1 = t0 + 1;\n        let t0 = 100;\n        let m2 = t0 + 1;\n        println!(\"m1=\" + (\"\" + m1) + \" m2=\" + (\"\" + m2));\n        k = k + 1;\n    }\n    return 0;\n}\n";
 
 fn run_program(name: &str) -> std::process::Output {
     Command::new(rnx())
@@ -194,7 +194,7 @@ fn test_lint_fix_preserves_shadowed_loop_runtime() {
     assert_eq!(before_run.status.code(), after_run.status.code());
 }
 
-const RESHADOW_UNUSED_SRC: &str = "fn Main(): Int {\n    let t0 = 1;\n    print(t0);\n    let t0 = 2;\n    return 0;\n}\n";
+const RESHADOW_UNUSED_SRC: &str = "fn Main(): Int {\n    let t0 = 1;\n    println!(t0);\n    let t0 = 2;\n    return 0;\n}\n";
 
 #[test]
 fn test_lint_shadowed_unused_withholds_autofix() {

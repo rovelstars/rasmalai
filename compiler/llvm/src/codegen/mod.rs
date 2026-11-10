@@ -2,21 +2,23 @@ pub(super) use diagnostics::{Code, Diagnostic};
 pub(super) use inkwell::builder::Builder;
 pub(super) use inkwell::context::Context;
 pub(super) use inkwell::module::Module as LlModule;
-pub(super) use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
-pub(super) use inkwell::values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue, ValueKind, VectorValue};
-pub(super) use inkwell::{FloatPredicate, IntPredicate};
 pub(super) use inkwell::targets::TargetMachine;
+pub(super) use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
+pub(super) use inkwell::values::{
+    BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, IntValue,
+    PointerValue, ValueKind, VectorValue,
+};
+pub(super) use inkwell::{FloatPredicate, IntPredicate};
 pub(super) use lir::instr::*;
 pub(super) use std::collections::{BTreeMap, BTreeSet};
 
-mod lower_fn;
 mod instr;
-mod version;
+mod lower_fn;
 pub mod stdlib_prebuilt;
+mod version;
 
 use self::instr::{FnCx, lower_instr};
 use self::lower_fn::{build_module, build_module_subset, check_supported};
-
 
 pub struct Jit<'ctx> {
     module: LlModule<'ctx>,
@@ -96,8 +98,7 @@ fn start_debug<'ctx>(
     let i64di = dibuilder
         .create_basic_type("long", 64, DW_ATE_SIGNED, DIFlags::ZERO)
         .map_err(|e| Diagnostic::new(Code::E108, format!("llvm debug type: {e}")))?;
-    let sub_ty =
-        dibuilder.create_subroutine_type(file, Some(i64di.as_type()), &[], DIFlags::ZERO);
+    let sub_ty = dibuilder.create_subroutine_type(file, Some(i64di.as_type()), &[], DIFlags::ZERO);
     let mut subs = BTreeMap::new();
     for (i, f) in lir.functions.iter().enumerate() {
         if !define.is_none_or(|d| d.contains(&i)) {
@@ -122,7 +123,10 @@ fn start_debug<'ctx>(
         }
         subs.insert(f.name.clone(), sp);
     }
-    Ok(ActiveDebug { builder: dibuilder, subs })
+    Ok(ActiveDebug {
+        builder: dibuilder,
+        subs,
+    })
 }
 
 pub type PerfMap = (i64, Vec<PerfEntry>);
@@ -165,7 +169,6 @@ pub fn execute_with_map(lir: &Module, entry: &str) -> Result<PerfMap, Diagnostic
 }
 
 impl<'ctx> Jit<'ctx> {
-
     pub fn compile(
         context: &'ctx Context,
         lir: &Module,
@@ -181,340 +184,1298 @@ impl<'ctx> Jit<'ctx> {
             .create_execution_engine()
             .map_err(|e| Diagnostic::new(Code::E108, format!("llvm jit: {e}")))?;
         for (name, addr) in [
-            ("rnx_alloc", runtime::native::rnx_alloc as *const () as usize),
+            (
+                "rnx_alloc",
+                runtime::native::rnx_alloc as *const () as usize,
+            ),
             ("rnx_free", runtime::native::rnx_free as *const () as usize),
-            ("rnx_print_str", runtime::native::rnx_print_str as *const () as usize),
-            ("rnx_print_i64", runtime::native::rnx_print_i64 as *const () as usize),
-            ("rnx_panic", runtime::native::rnx_panic as *const () as usize),
-            ("rnx_retain", runtime::native::rnx_retain as *const () as usize),
-            ("rnx_string_concat", runtime::native::rnx_string_concat as *const () as usize),
-            ("rnx_string_split", runtime::native::rnx_string_split as *const () as usize),
-            ("rnx_string_eq", runtime::native::rnx_string_eq as *const () as usize),
-            ("rnx_string_cmp", runtime::native::rnx_string_cmp as *const () as usize),
-            ("rnx_print_val", runtime::native::rnx_print_val as *const () as usize),
-            ("rnx_print_str", runtime::native::rnx_print_str as *const () as usize),
-            ("rnx_int_to_str", runtime::native::rnx_int_to_str as *const () as usize),
-            ("rnx_bool_to_str", runtime::native::rnx_bool_to_str as *const () as usize),
-            ("rnx_any_to_str", runtime::native::rnx_any_to_str as *const () as usize),
-            ("rnx_eq_any_str", runtime::native::rnx_eq_any_str as *const () as usize),
-            ("rnx_eq_any", runtime::native::rnx_eq_any as *const () as usize),
-            ("rnx_float_to_str", runtime::native::rnx_float_to_str as *const () as usize),
-            ("rnx_release_str", runtime::native::rnx_release_str as *const () as usize),
-            ("rnx_array_new", runtime::native::rnx_array_new as *const () as usize),
-            ("rnx_array_push", runtime::native::rnx_array_push as *const () as usize),
-            ("rnx_array_get", runtime::native::rnx_array_get as *const () as usize),
-            ("rnx_array_set", runtime::native::rnx_array_set as *const () as usize),
-            ("rnx_array_get_unchecked", runtime::native::rnx_array_get_unchecked as *const () as usize),
-            ("rnx_array_set_unchecked", runtime::native::rnx_array_set_unchecked as *const () as usize),
-            ("rnx_array_len", runtime::native::rnx_array_len as *const () as usize),
-            ("rnx_string_len", runtime::native::rnx_string_len as *const () as usize),
-            ("rnx_string_slice", runtime::native::rnx_string_slice as *const () as usize),
-            ("rnx_string_index_of", runtime::native::rnx_string_index_of as *const () as usize),
-            ("rnx_string_index_of_from", runtime::native::rnx_string_index_of_from as *const () as usize),
-            ("rnx_string_trim", runtime::native::rnx_string_trim as *const () as usize),
-            ("rnx_string_char_code_at", runtime::native::rnx_string_char_code_at as *const () as usize),
-            ("rnx_string_from_char_code", runtime::native::rnx_string_from_char_code as *const () as usize),
-            ("rnx_array_pop", runtime::native::rnx_array_pop as *const () as usize),
-            ("rnx_any_box", runtime::native::rnx_any_box as *const () as usize),
-            ("rnx_any_unbox", runtime::native::rnx_any_unbox as *const () as usize),
-            ("rnx_any_unbox_heap", runtime::native::rnx_any_unbox_heap as *const () as usize),
-            ("rnx_any_retain", runtime::native::rnx_any_retain as *const () as usize),
-            ("rnx_any_release_box", runtime::native::rnx_any_release_box as *const () as usize),
-            ("rnx_any_release", runtime::native::rnx_any_release as *const () as usize),
-            ("rnx_heap_track", runtime::native::rnx_heap_track as *const () as usize),
-            ("rnx_closure_new", runtime::native::rnx_closure_new as *const () as usize),
-            ("rnx_closure_set", runtime::native::rnx_closure_set as *const () as usize),
-            ("rnx_closure_release", runtime::native::rnx_closure_release as *const () as usize),
-            ("rnx_thread_spawn_closure", runtime::native::rnx_thread_spawn_closure as *const () as usize),
-            ("rnx_thread_join_val", runtime::native::rnx_thread_join_val as *const () as usize),
-            ("rnx_thread_join_err", runtime::native::rnx_thread_join_err as *const () as usize),
-            ("rnx_task_await_val", runtime::native::rnx_task_await_val as *const () as usize),
-            ("rnx_task_await_err", runtime::native::rnx_task_await_err as *const () as usize),
-            ("rnx_pool_new", runtime::native::rnx_pool_new as *const () as usize),
-            ("rnx_thread_pool_submit_handle", runtime::native::rnx_thread_pool_submit_handle as *const () as usize),
-            ("rnx_thread_pool_submit_closure", runtime::native::rnx_thread_pool_submit_closure as *const () as usize),
-            ("rnx_thread_pool_parallel_closure", runtime::native::rnx_thread_pool_parallel_closure as *const () as usize),
-            ("rnx_closure_register", runtime::native::rnx_closure_register as *const () as usize),
-            ("rnx_panic_str", runtime::native::rnx_panic_str as *const () as usize),
-            ("rnx_fatal_span", runtime::native::rnx_fatal_span as *const () as usize),
-            ("rnx_release_array", runtime::native::rnx_release_array as *const () as usize),
-            ("rnx_thread_spawn", runtime::native::rnx_thread_spawn as *const () as usize),
-            ("rnx_thread_join", runtime::native::rnx_thread_join as *const () as usize),
-            ("rnx_clock_monotonic_nanos", runtime::native::rnx_clock_monotonic_nanos as *const () as usize),
-            ("rnx_sleep_nanos", runtime::native::rnx_sleep_nanos as *const () as usize),
-            ("rnx_crypto_random_u64", runtime::native::rnx_crypto_random_u64 as *const () as usize),
-            ("rnx_prng_seed", runtime::native::rnx_prng_seed as *const () as usize),
-            ("rnx_prng_next", runtime::native::rnx_prng_next as *const () as usize),
-            ("rnx_file_open", runtime::native::rnx_file_open as *const () as usize),
-            ("rnx_file_close", runtime::native::rnx_file_close as *const () as usize),
-            ("rnx_file_read_text", runtime::native::rnx_file_read_text as *const () as usize),
-            ("rnx_file_read_text_err", runtime::native::rnx_file_read_text_err as *const () as usize),
-            ("rnx_file_write_text", runtime::native::rnx_file_write_text as *const () as usize),
-            ("rnx_file_flush", runtime::native::rnx_file_flush as *const () as usize),
-            ("rnx_file_seek", runtime::native::rnx_file_seek as *const () as usize),
-            ("rnx_file_tell", runtime::native::rnx_file_tell as *const () as usize),
-            ("rnx_file_from_handle", runtime::native::rnx_file_from_handle as *const () as usize),
-            ("rnx_io_is_tty", runtime::native::rnx_io_is_tty as *const () as usize),
-            ("rnx_io_winsize", runtime::native::rnx_io_winsize as *const () as usize),
-            ("rnx_io_set_raw", runtime::native::rnx_io_set_raw as *const () as usize),
-            ("rnx_file_read_bytes", runtime::native::rnx_file_read_bytes as *const () as usize),
-            ("rnx_file_write_bytes", runtime::native::rnx_file_write_bytes as *const () as usize),
-            ("rnx_bytes_alloc", runtime::native::rnx_bytes_alloc as *const () as usize),
-            ("rnx_bytes_free", runtime::native::rnx_bytes_free as *const () as usize),
-            ("rnx_bytes_len", runtime::native::rnx_bytes_len as *const () as usize),
-            ("rnx_bytes_cap", runtime::native::rnx_bytes_cap as *const () as usize),
-            ("rnx_bytes_data", runtime::native::rnx_bytes_data as *const () as usize),
-            ("rnx_bytes_copy_within", runtime::native::rnx_bytes_copy_within as *const () as usize),
-            ("rnx_bytes_read_u8", runtime::native::rnx_bytes_read_u8 as *const () as usize),
-            ("rnx_bytes_read_i8", runtime::native::rnx_bytes_read_i8 as *const () as usize),
-            ("rnx_bytes_read_u16le", runtime::native::rnx_bytes_read_u16le as *const () as usize),
-            ("rnx_bytes_read_u16be", runtime::native::rnx_bytes_read_u16be as *const () as usize),
-            ("rnx_bytes_read_i16le", runtime::native::rnx_bytes_read_i16le as *const () as usize),
-            ("rnx_bytes_read_i16be", runtime::native::rnx_bytes_read_i16be as *const () as usize),
-            ("rnx_bytes_read_u32le", runtime::native::rnx_bytes_read_u32le as *const () as usize),
-            ("rnx_bytes_read_u32be", runtime::native::rnx_bytes_read_u32be as *const () as usize),
-            ("rnx_bytes_read_i32le", runtime::native::rnx_bytes_read_i32le as *const () as usize),
-            ("rnx_bytes_read_i32be", runtime::native::rnx_bytes_read_i32be as *const () as usize),
-            ("rnx_bytes_read_i64le", runtime::native::rnx_bytes_read_i64le as *const () as usize),
-            ("rnx_bytes_read_i64be", runtime::native::rnx_bytes_read_i64be as *const () as usize),
-            ("rnx_bytes_write_u8", runtime::native::rnx_bytes_write_u8 as *const () as usize),
-            ("rnx_bytes_write_u16le", runtime::native::rnx_bytes_write_u16le as *const () as usize),
-            ("rnx_bytes_write_u16be", runtime::native::rnx_bytes_write_u16be as *const () as usize),
-            ("rnx_bytes_write_u32le", runtime::native::rnx_bytes_write_u32le as *const () as usize),
-            ("rnx_bytes_write_u32be", runtime::native::rnx_bytes_write_u32be as *const () as usize),
-            ("rnx_bytes_write_u64le", runtime::native::rnx_bytes_write_u64le as *const () as usize),
-            ("rnx_bytes_write_u64be", runtime::native::rnx_bytes_write_u64be as *const () as usize),
-            ("rnx_bytes_read_f32le", runtime::native::rnx_bytes_read_f32le as *const () as usize),
-            ("rnx_bytes_read_f32be", runtime::native::rnx_bytes_read_f32be as *const () as usize),
-            ("rnx_bytes_read_f64le", runtime::native::rnx_bytes_read_f64le as *const () as usize),
-            ("rnx_bytes_read_f64be", runtime::native::rnx_bytes_read_f64be as *const () as usize),
-            ("rnx_bytes_write_f32le", runtime::native::rnx_bytes_write_f32le as *const () as usize),
-            ("rnx_bytes_write_f32be", runtime::native::rnx_bytes_write_f32be as *const () as usize),
-            ("rnx_bytes_write_f64le", runtime::native::rnx_bytes_write_f64le as *const () as usize),
-            ("rnx_bytes_write_f64be", runtime::native::rnx_bytes_write_f64be as *const () as usize),
-            ("rnx_bytes_read_string", runtime::native::rnx_bytes_read_string as *const () as usize),
-            ("rnx_bytes_write_string", runtime::native::rnx_bytes_write_string as *const () as usize),
-            ("rnx_path_exists", runtime::native::rnx_path_exists as *const () as usize),
-            ("rnx_path_remove", runtime::native::rnx_path_remove as *const () as usize),
-            ("rnx_fs_exists", runtime::native::rnx_fs_exists as *const () as usize),
-            ("rnx_fs_is_file", runtime::native::rnx_fs_is_file as *const () as usize),
-            ("rnx_fs_is_dir", runtime::native::rnx_fs_is_dir as *const () as usize),
-            ("rnx_fs_stat", runtime::native::rnx_fs_stat as *const () as usize),
-            ("rnx_fs_stat_err", runtime::native::rnx_fs_stat_err as *const () as usize),
-            ("rnx_fs_read_dir", runtime::native::rnx_fs_read_dir as *const () as usize),
-            ("rnx_fs_read_dir_err", runtime::native::rnx_fs_read_dir_err as *const () as usize),
-            ("rnx_fs_glob", runtime::native::rnx_fs_glob as *const () as usize),
-            ("rnx_fs_glob_err", runtime::native::rnx_fs_glob_err as *const () as usize),
-            ("rnx_fs_read_link", runtime::native::rnx_fs_read_link as *const () as usize),
-            ("rnx_fs_read_link_err", runtime::native::rnx_fs_read_link_err as *const () as usize),
-            ("rnx_fs_remove", runtime::native::rnx_fs_remove as *const () as usize),
-            ("rnx_fs_remove_err", runtime::native::rnx_fs_remove_err as *const () as usize),
-            ("rnx_fs_remove_all", runtime::native::rnx_fs_remove_all as *const () as usize),
-            ("rnx_fs_remove_all_err", runtime::native::rnx_fs_remove_all_err as *const () as usize),
-            ("rnx_fs_mkdir_err", runtime::native::rnx_fs_mkdir_err as *const () as usize),
-            ("rnx_fs_copy_err", runtime::native::rnx_fs_copy_err as *const () as usize),
-            ("rnx_fs_move_err", runtime::native::rnx_fs_move_err as *const () as usize),
-            ("rnx_fs_rename_err", runtime::native::rnx_fs_rename_err as *const () as usize),
-            ("rnx_fs_truncate_err", runtime::native::rnx_fs_truncate_err as *const () as usize),
-            ("rnx_fs_chmod_err", runtime::native::rnx_fs_chmod_err as *const () as usize),
-            ("rnx_fs_symlink_err", runtime::native::rnx_fs_symlink_err as *const () as usize),
-            ("rnx_fs_fsync_err", runtime::native::rnx_fs_fsync_err as *const () as usize),
-            ("rnx_fs_read_text", runtime::native::rnx_fs_read_text as *const () as usize),
-            ("rnx_fs_read_text_err", runtime::native::rnx_fs_read_text_err as *const () as usize),
-            ("rnx_fs_write_text", runtime::native::rnx_fs_write_text as *const () as usize),
-            ("rnx_fs_write_text_err", runtime::native::rnx_fs_write_text_err as *const () as usize),
-            ("rnx_fs_read_bytes", runtime::native::rnx_fs_read_bytes as *const () as usize),
-            ("rnx_fs_read_bytes_err", runtime::native::rnx_fs_read_bytes_err as *const () as usize),
-            ("rnx_fs_write_bytes", runtime::native::rnx_fs_write_bytes as *const () as usize),
-            ("rnx_fs_write_bytes_err", runtime::native::rnx_fs_write_bytes_err as *const () as usize),
-            ("rnx_fs_mmap", runtime::native::rnx_fs_mmap as *const () as usize),
-            ("rnx_fs_mmap_err", runtime::native::rnx_fs_mmap_err as *const () as usize),
-            ("rnx_fs_mmap_anon", runtime::native::rnx_fs_mmap_anon as *const () as usize),
-            ("rnx_fs_mmap_anon_err", runtime::native::rnx_fs_mmap_anon_err as *const () as usize),
-            ("rnx_fs_mmap_addr", runtime::native::rnx_fs_mmap_addr as *const () as usize),
-            ("rnx_fs_mmap_len", runtime::native::rnx_fs_mmap_len as *const () as usize),
-            ("rnx_fs_mmap_flush", runtime::native::rnx_fs_mmap_flush as *const () as usize),
-            ("rnx_fs_mmap_close", runtime::native::rnx_fs_mmap_close as *const () as usize),
-            ("rnx_assert", runtime::native::rnx_assert as *const () as usize),
-            ("rnx_test_check", runtime::native::rnx_test_check as *const () as usize),
-            ("rnx_env_args_count", runtime::native::rnx_env_args_count as *const () as usize),
-            ("rnx_env_args_get", runtime::native::rnx_env_args_get as *const () as usize),
-            ("rnx_env_get", runtime::native::rnx_env_get as *const () as usize),
-            ("rnx_env_set", runtime::native::rnx_env_set as *const () as usize),
-            ("rnx_env_cwd", runtime::native::rnx_env_cwd as *const () as usize),
-            ("rnx_host_version", runtime::native::rnx_host_version as *const () as usize),
-            ("rnx_env_exit", runtime::native::rnx_env_exit as *const () as usize),
-            ("rnx_net_connect_start", runtime::native::rnx_net_connect_start as *const () as usize),
-            ("rnx_net_take_error", runtime::native::rnx_net_take_error as *const () as usize),
-            ("rnx_net_connect_wait", runtime::native::rnx_net_connect_wait as *const () as usize),
-            ("rnx_net_recv_or_wait", runtime::native::rnx_net_recv_or_wait as *const () as usize),
-            ("rnx_net_send_or_wait", runtime::native::rnx_net_send_or_wait as *const () as usize),
-            ("rnx_net_recv_get", runtime::native::rnx_net_recv_get as *const () as usize),
-            ("rnx_net_error_text", runtime::native::rnx_net_error_text as *const () as usize),
-            ("rnx_net_close", runtime::native::rnx_net_close as *const () as usize),
-            ("rnx_net_listener_bind", runtime::native::rnx_net_listener_bind as *const () as usize),
-            ("rnx_net_listener_port", runtime::native::rnx_net_listener_port as *const () as usize),
-            ("rnx_net_listener_accept_start", runtime::native::rnx_net_listener_accept_start as *const () as usize),
-            ("rnx_net_listener_accept_wait", runtime::native::rnx_net_listener_accept_wait as *const () as usize),
-            ("rnx_net_listener_close", runtime::native::rnx_net_listener_close as *const () as usize),
-            ("rnx_tls_connect_start", runtime::native::rnx_tls_connect_start as *const () as usize),
-            ("rnx_tls_handshake_start", runtime::native::rnx_tls_handshake_start as *const () as usize),
-            ("rnx_tls_handshake_wait", runtime::native::rnx_tls_handshake_wait as *const () as usize),
-            ("rnx_tls_recv_or_wait", runtime::native::rnx_tls_recv_or_wait as *const () as usize),
-            ("rnx_tls_send_or_wait", runtime::native::rnx_tls_send_or_wait as *const () as usize),
-            ("rnx_tls_recv_get", runtime::native::rnx_tls_recv_get as *const () as usize),
-            ("rnx_tls_error_text", runtime::native::rnx_tls_error_text as *const () as usize),
-            ("rnx_tls_close", runtime::native::rnx_tls_close as *const () as usize),
-            ("rnx_process_pid", runtime::native::rnx_process_pid as *const () as usize),
-            ("rnx_process_remove_env", runtime::native::rnx_process_remove_env as *const () as usize),
-            ("rnx_process_all_env_count", runtime::native::rnx_process_all_env_count as *const () as usize),
-            ("rnx_process_all_env_get", runtime::native::rnx_process_all_env_get as *const () as usize),
-            ("rnx_process_chdir", runtime::native::rnx_process_chdir as *const () as usize),
-            ("rnx_process_spawn", runtime::native::rnx_process_spawn as *const () as usize),
-            ("rnx_process_run", runtime::native::rnx_process_run as *const () as usize),
-            ("rnx_process_pid_of", runtime::native::rnx_process_pid_of as *const () as usize),
-            ("rnx_process_write_stdin", runtime::native::rnx_process_write_stdin as *const () as usize),
-            ("rnx_process_read_stdout", runtime::native::rnx_process_read_stdout as *const () as usize),
-            ("rnx_process_read_stderr", runtime::native::rnx_process_read_stderr as *const () as usize),
-            ("rnx_process_close_stdin", runtime::native::rnx_process_close_stdin as *const () as usize),
-            ("rnx_process_wait", runtime::native::rnx_process_wait as *const () as usize),
-            ("rnx_process_try_wait", runtime::native::rnx_process_try_wait as *const () as usize),
-            ("rnx_process_kill", runtime::native::rnx_process_kill as *const () as usize),
-            ("rnx_process_take_stdout", runtime::native::rnx_process_take_stdout as *const () as usize),
-            ("rnx_process_take_stderr", runtime::native::rnx_process_take_stderr as *const () as usize),
-            ("rnx_process_exit_code", runtime::native::rnx_process_exit_code as *const () as usize),
-            ("rnx_process_forget", runtime::native::rnx_process_forget as *const () as usize),
-            ("rnx_os_platform", runtime::native::rnx_os_platform as *const () as usize),
-            ("rnx_os_arch", runtime::native::rnx_os_arch as *const () as usize),
-            ("rnx_os_hostname", runtime::native::rnx_os_hostname as *const () as usize),
-            ("rnx_os_tmpdir", runtime::native::rnx_os_tmpdir as *const () as usize),
-            ("rnx_os_homedir", runtime::native::rnx_os_homedir as *const () as usize),
-            ("rnx_os_cpu_count", runtime::native::rnx_os_cpu_count as *const () as usize),
-            ("rnx_os_uptime", runtime::native::rnx_os_uptime as *const () as usize),
-            ("rnx_map_new", runtime::native::rnx_map_new as *const () as usize),
-            ("rnx_map_set", runtime::native::rnx_map_set as *const () as usize),
-            ("rnx_map_get", runtime::native::rnx_map_get as *const () as usize),
-            ("rnx_map_has", runtime::native::rnx_map_has as *const () as usize),
-            ("rnx_map_delete", runtime::native::rnx_map_delete as *const () as usize),
-            ("rnx_map_len", runtime::native::rnx_map_len as *const () as usize),
-            ("rnx_map_clear", runtime::native::rnx_map_clear as *const () as usize),
-            ("rnx_map_keys", runtime::native::rnx_map_keys as *const () as usize),
-            ("rnx_map_values", runtime::native::rnx_map_values as *const () as usize),
-            ("rnx_gmap_new", runtime::native::rnx_gmap_new as *const () as usize),
-            ("rnx_gmap_free", runtime::native::rnx_gmap_free as *const () as usize),
-            ("rnx_gmap_set", runtime::native::rnx_gmap_set as *const () as usize),
-            ("rnx_gmap_get", runtime::native::rnx_gmap_get as *const () as usize),
-            ("rnx_gmap_has", runtime::native::rnx_gmap_has as *const () as usize),
-            ("rnx_gmap_delete", runtime::native::rnx_gmap_delete as *const () as usize),
-            ("rnx_gmap_len", runtime::native::rnx_gmap_len as *const () as usize),
-            ("rnx_gmap_clear", runtime::native::rnx_gmap_clear as *const () as usize),
-            ("rnx_gmap_keys", runtime::native::rnx_gmap_keys as *const () as usize),
-            ("rnx_gmap_values", runtime::native::rnx_gmap_values as *const () as usize),
-            ("rnx_json_parse", runtime::native::rnx_json_parse as *const () as usize),
-            ("rnx_json_parse_typed", runtime::native::rnx_json_parse_typed as *const () as usize),
-            ("rnx_json_stringify_into", runtime::native::rnx_json_stringify_into as *const () as usize),
-            ("rnx_json_stringify", runtime::native::rnx_json_stringify as *const () as usize),
-            ("rnx_json_unwrap", runtime::native::rnx_json_unwrap as *const () as usize),
-            ("rnx_dns_lookup_start", runtime::native::rnx_dns_lookup_start as *const () as usize),
-            ("rnx_dns_lookup_wait", runtime::native::rnx_dns_lookup_wait as *const () as usize),
-            ("rnx_dns_lookup_get", runtime::native::rnx_dns_lookup_get as *const () as usize),
-            ("rnx_dns_lookup_error", runtime::native::rnx_dns_lookup_error as *const () as usize),
-            ("rnx_release_map", runtime::native::rnx_release_map as *const () as usize),
-            ("rnx_sync_atomic_get", runtime::native::rnx_sync_atomic_get as *const () as usize),
-            ("rnx_black_box_i64", runtime::native::rnx_black_box_i64 as *const () as usize),
-            ("rnx_sync_atomic_set", runtime::native::rnx_sync_atomic_set as *const () as usize),
-            ("rnx_sync_atomic_fetch_add", runtime::native::rnx_sync_atomic_fetch_add as *const () as usize),
-            ("rnx_sync_atomic_cas", runtime::native::rnx_sync_atomic_cas as *const () as usize),
-            ("rnx_sync_channel_send", runtime::native::rnx_sync_channel_send as *const () as usize),
-            ("rnx_sync_channel_send_str", runtime::native::rnx_sync_channel_send_str as *const () as usize),
-            ("rnx_sync_channel_send_obj", runtime::native::rnx_sync_channel_send_obj as *const () as usize),
-            ("rnx_sync_channel_send_array", runtime::native::rnx_sync_channel_send_array as *const () as usize),
-            ("rnx_sync_channel_recv", runtime::native::rnx_sync_channel_recv as *const () as usize),
-            ("rnx_sync_channel_try_recv", runtime::native::rnx_sync_channel_try_recv as *const () as usize),
-            ("rnx_sync_channel_len", runtime::native::rnx_sync_channel_len as *const () as usize),
-            ("rnx_fs_pool_depth", runtime::native::rnx_fs_pool_depth as *const () as usize),
-            ("rnx_sync_channel_drop", runtime::native::rnx_sync_channel_drop as *const () as usize),
-            ("rnx_debug_live_count", runtime::native::rnx_debug_live_count as *const () as usize),
-            ("rnx_any_tag", runtime::native::rnx_any_tag as *const () as usize),
-            ("rnx_obj_class", runtime::native::rnx_obj_class as *const () as usize),
-            ("rnx_error_set", runtime::native::rnx_error_set as *const () as usize),
-            ("rnx_error_take", runtime::native::rnx_error_take as *const () as usize),
-            ("rnx_error_class", runtime::native::rnx_error_class as *const () as usize),
-            ("rnx_error_unbox", runtime::native::rnx_error_unbox as *const () as usize),
-            ("rnx_error_str", runtime::native::rnx_error_str as *const () as usize),
-            ("rnx_error_release", runtime::native::rnx_error_release as *const () as usize),
-            ("rnx_error_set", runtime::native::rnx_error_set as *const () as usize),
-            ("rnx_error_take", runtime::native::rnx_error_take as *const () as usize),
-            ("rnx_error_class", runtime::native::rnx_error_class as *const () as usize),
-            ("rnx_error_unbox", runtime::native::rnx_error_unbox as *const () as usize),
-            ("rnx_error_str", runtime::native::rnx_error_str as *const () as usize),
-            ("rnx_error_release", runtime::native::rnx_error_release as *const () as usize),
-            ("rnx_note_type", runtime::native::rnx_note_type as *const () as usize),
-            ("rnx_note_fields", runtime::native::rnx_note_fields as *const () as usize),
-            ("rnx_note_namespace", runtime::native::rnx_note_namespace as *const () as usize),
-            ("rnx_note_array_kind", runtime::native::rnx_note_array_kind as *const () as usize),
-            ("rnx_note_enum", runtime::native::rnx_note_enum as *const () as usize),
-            ("rnx_io_pretty", runtime::native::rnx_io_pretty as *const () as usize),
-            ("rnx_type_name", runtime::native::rnx_type_name as *const () as usize),
-            ("rnx_typeof_any", runtime::native::rnx_typeof_any as *const () as usize),
-            ("rnx_array_slice", runtime::native::rnx_array_slice as *const () as usize),
-            ("rnx_defer_push", runtime::native::rnx_defer_push as *const () as usize),
-            ("rnx_defer_pop", runtime::native::rnx_defer_pop as *const () as usize),
-            ("rnx_defer_len", runtime::native::rnx_defer_len as *const () as usize),
-            ("rnx_mutex_lock", runtime::native::rnx_mutex_lock as *const () as usize),
-            ("rnx_mutex_unlock", runtime::native::rnx_mutex_unlock as *const () as usize),
-            ("rnx_mutex_try_lock", runtime::native::rnx_mutex_try_lock as *const () as usize),
-            ("rnx_rwlock_read_lock", runtime::native::rnx_rwlock_read_lock as *const () as usize),
-            ("rnx_rwlock_read_unlock", runtime::native::rnx_rwlock_read_unlock as *const () as usize),
-            ("rnx_rwlock_write_lock", runtime::native::rnx_rwlock_write_lock as *const () as usize),
-            ("rnx_rwlock_write_unlock", runtime::native::rnx_rwlock_write_unlock as *const () as usize),
-            ("rnx_rwlock_try_read_lock", runtime::native::rnx_rwlock_try_read_lock as *const () as usize),
-            ("rnx_rwlock_try_write_lock", runtime::native::rnx_rwlock_try_write_lock as *const () as usize),
-            ("rnx_condvar_wait", runtime::native::rnx_condvar_wait as *const () as usize),
-            ("rnx_condvar_wait_timeout", runtime::native::rnx_condvar_wait_timeout as *const () as usize),
-            ("rnx_condvar_notify_one", runtime::native::rnx_condvar_notify_one as *const () as usize),
-            ("rnx_condvar_notify_all", runtime::native::rnx_condvar_notify_all as *const () as usize),
-            ("rnx_barrier_wait", runtime::native::rnx_barrier_wait as *const () as usize),
-            ("rnx_thread_pool_init", runtime::native::rnx_thread_pool_init as *const () as usize),
-            ("rnx_thread_pool_submit", runtime::native::rnx_thread_pool_submit as *const () as usize),
-            ("rnx_thread_pool_parallel_for", runtime::native::rnx_thread_pool_parallel_for as *const () as usize),
-            ("rnx_thread_pool_join", runtime::native::rnx_thread_pool_join as *const () as usize),
-            ("rnx_thread_pool_shutdown", runtime::native::rnx_thread_pool_shutdown as *const () as usize),
-            ("rnx_math_sqrt", runtime::native::rnx_math_sqrt as *const () as usize),
-            ("rnx_math_sin", runtime::native::rnx_math_sin as *const () as usize),
-            ("rnx_math_cos", runtime::native::rnx_math_cos as *const () as usize),
-            ("rnx_math_tan", runtime::native::rnx_math_tan as *const () as usize),
-            ("rnx_math_atan2", runtime::native::rnx_math_atan2 as *const () as usize),
-            ("rnx_math_pow", runtime::native::rnx_math_pow as *const () as usize),
-            ("rnx_math_floor", runtime::native::rnx_math_floor as *const () as usize),
-            ("rnx_math_ceil", runtime::native::rnx_math_ceil as *const () as usize),
-            ("rnx_math_round", runtime::native::rnx_math_round as *const () as usize),
-            ("rnx_math_log", runtime::native::rnx_math_log as *const () as usize),
-            ("rnx_float_nan", runtime::native::rnx_float_nan as *const () as usize),
-            ("rnx_float_to_bits", runtime::native::rnx_float_to_bits as *const () as usize),
-            ("rnx_float_from_bits", runtime::native::rnx_float_from_bits as *const () as usize),
-            ("rnx_float_fma", runtime::native::rnx_float_fma as *const () as usize),
-            ("rnx_genref_create", runtime::native::rnx_genref_create as *const () as usize),
-            ("rnx_genref_get", runtime::native::rnx_genref_get as *const () as usize),
+            (
+                "rnx_print_str",
+                runtime::native::rnx_print_str as *const () as usize,
+            ),
+            (
+                "rnx_print_i64",
+                runtime::native::rnx_print_i64 as *const () as usize,
+            ),
+            (
+                "rnx_panic",
+                runtime::native::rnx_panic as *const () as usize,
+            ),
+            (
+                "rnx_retain",
+                runtime::native::rnx_retain as *const () as usize,
+            ),
+            (
+                "rnx_string_concat",
+                runtime::native::rnx_string_concat as *const () as usize,
+            ),
+            (
+                "rnx_string_split",
+                runtime::native::rnx_string_split as *const () as usize,
+            ),
+            (
+                "rnx_string_eq",
+                runtime::native::rnx_string_eq as *const () as usize,
+            ),
+            (
+                "rnx_string_cmp",
+                runtime::native::rnx_string_cmp as *const () as usize,
+            ),
+            (
+                "rnx_print_val",
+                runtime::native::rnx_print_val as *const () as usize,
+            ),
+            (
+                "rnx_print_str",
+                runtime::native::rnx_print_str as *const () as usize,
+            ),
+            (
+                "rnx_int_to_str",
+                runtime::native::rnx_int_to_str as *const () as usize,
+            ),
+            (
+                "rnx_bool_to_str",
+                runtime::native::rnx_bool_to_str as *const () as usize,
+            ),
+            (
+                "rnx_any_to_str",
+                runtime::native::rnx_any_to_str as *const () as usize,
+            ),
+            (
+                "rnx_eq_any_str",
+                runtime::native::rnx_eq_any_str as *const () as usize,
+            ),
+            (
+                "rnx_eq_any",
+                runtime::native::rnx_eq_any as *const () as usize,
+            ),
+            (
+                "rnx_float_to_str",
+                runtime::native::rnx_float_to_str as *const () as usize,
+            ),
+            (
+                "rnx_release_str",
+                runtime::native::rnx_release_str as *const () as usize,
+            ),
+            (
+                "rnx_array_new",
+                runtime::native::rnx_array_new as *const () as usize,
+            ),
+            (
+                "rnx_array_push",
+                runtime::native::rnx_array_push as *const () as usize,
+            ),
+            (
+                "rnx_array_get",
+                runtime::native::rnx_array_get as *const () as usize,
+            ),
+            (
+                "rnx_array_set",
+                runtime::native::rnx_array_set as *const () as usize,
+            ),
+            (
+                "rnx_array_get_unchecked",
+                runtime::native::rnx_array_get_unchecked as *const () as usize,
+            ),
+            (
+                "rnx_array_set_unchecked",
+                runtime::native::rnx_array_set_unchecked as *const () as usize,
+            ),
+            (
+                "rnx_array_len",
+                runtime::native::rnx_array_len as *const () as usize,
+            ),
+            (
+                "rnx_string_len",
+                runtime::native::rnx_string_len as *const () as usize,
+            ),
+            (
+                "rnx_string_slice",
+                runtime::native::rnx_string_slice as *const () as usize,
+            ),
+            (
+                "rnx_string_index_of",
+                runtime::native::rnx_string_index_of as *const () as usize,
+            ),
+            (
+                "rnx_string_index_of_from",
+                runtime::native::rnx_string_index_of_from as *const () as usize,
+            ),
+            (
+                "rnx_string_trim",
+                runtime::native::rnx_string_trim as *const () as usize,
+            ),
+            (
+                "rnx_string_char_code_at",
+                runtime::native::rnx_string_char_code_at as *const () as usize,
+            ),
+            (
+                "rnx_string_from_char_code",
+                runtime::native::rnx_string_from_char_code as *const () as usize,
+            ),
+            (
+                "rnx_array_pop",
+                runtime::native::rnx_array_pop as *const () as usize,
+            ),
+            (
+                "rnx_any_box",
+                runtime::native::rnx_any_box as *const () as usize,
+            ),
+            (
+                "rnx_any_unbox",
+                runtime::native::rnx_any_unbox as *const () as usize,
+            ),
+            (
+                "rnx_any_unbox_heap",
+                runtime::native::rnx_any_unbox_heap as *const () as usize,
+            ),
+            (
+                "rnx_any_retain",
+                runtime::native::rnx_any_retain as *const () as usize,
+            ),
+            (
+                "rnx_any_release_box",
+                runtime::native::rnx_any_release_box as *const () as usize,
+            ),
+            (
+                "rnx_any_release",
+                runtime::native::rnx_any_release as *const () as usize,
+            ),
+            (
+                "rnx_heap_track",
+                runtime::native::rnx_heap_track as *const () as usize,
+            ),
+            (
+                "rnx_closure_new",
+                runtime::native::rnx_closure_new as *const () as usize,
+            ),
+            (
+                "rnx_closure_set",
+                runtime::native::rnx_closure_set as *const () as usize,
+            ),
+            (
+                "rnx_closure_release",
+                runtime::native::rnx_closure_release as *const () as usize,
+            ),
+            (
+                "rnx_thread_spawn_closure",
+                runtime::native::rnx_thread_spawn_closure as *const () as usize,
+            ),
+            (
+                "rnx_thread_join_val",
+                runtime::native::rnx_thread_join_val as *const () as usize,
+            ),
+            (
+                "rnx_thread_join_err",
+                runtime::native::rnx_thread_join_err as *const () as usize,
+            ),
+            (
+                "rnx_task_await_val",
+                runtime::native::rnx_task_await_val as *const () as usize,
+            ),
+            (
+                "rnx_task_await_err",
+                runtime::native::rnx_task_await_err as *const () as usize,
+            ),
+            (
+                "rnx_pool_new",
+                runtime::native::rnx_pool_new as *const () as usize,
+            ),
+            (
+                "rnx_thread_pool_submit_handle",
+                runtime::native::rnx_thread_pool_submit_handle as *const () as usize,
+            ),
+            (
+                "rnx_thread_pool_submit_closure",
+                runtime::native::rnx_thread_pool_submit_closure as *const () as usize,
+            ),
+            (
+                "rnx_thread_pool_parallel_closure",
+                runtime::native::rnx_thread_pool_parallel_closure as *const () as usize,
+            ),
+            (
+                "rnx_closure_register",
+                runtime::native::rnx_closure_register as *const () as usize,
+            ),
+            (
+                "rnx_panic_str",
+                runtime::native::rnx_panic_str as *const () as usize,
+            ),
+            (
+                "rnx_fatal_span",
+                runtime::native::rnx_fatal_span as *const () as usize,
+            ),
+            (
+                "rnx_release_array",
+                runtime::native::rnx_release_array as *const () as usize,
+            ),
+            (
+                "rnx_thread_spawn",
+                runtime::native::rnx_thread_spawn as *const () as usize,
+            ),
+            (
+                "rnx_thread_join",
+                runtime::native::rnx_thread_join as *const () as usize,
+            ),
+            (
+                "rnx_clock_monotonic_nanos",
+                runtime::native::rnx_clock_monotonic_nanos as *const () as usize,
+            ),
+            (
+                "rnx_sleep_nanos",
+                runtime::native::rnx_sleep_nanos as *const () as usize,
+            ),
+            (
+                "rnx_crypto_random_u64",
+                runtime::native::rnx_crypto_random_u64 as *const () as usize,
+            ),
+            (
+                "rnx_prng_seed",
+                runtime::native::rnx_prng_seed as *const () as usize,
+            ),
+            (
+                "rnx_prng_next",
+                runtime::native::rnx_prng_next as *const () as usize,
+            ),
+            (
+                "rnx_file_open",
+                runtime::native::rnx_file_open as *const () as usize,
+            ),
+            (
+                "rnx_file_close",
+                runtime::native::rnx_file_close as *const () as usize,
+            ),
+            (
+                "rnx_file_read_text",
+                runtime::native::rnx_file_read_text as *const () as usize,
+            ),
+            (
+                "rnx_file_read_text_err",
+                runtime::native::rnx_file_read_text_err as *const () as usize,
+            ),
+            (
+                "rnx_file_write_text",
+                runtime::native::rnx_file_write_text as *const () as usize,
+            ),
+            (
+                "rnx_file_flush",
+                runtime::native::rnx_file_flush as *const () as usize,
+            ),
+            (
+                "rnx_file_seek",
+                runtime::native::rnx_file_seek as *const () as usize,
+            ),
+            (
+                "rnx_file_tell",
+                runtime::native::rnx_file_tell as *const () as usize,
+            ),
+            (
+                "rnx_file_from_handle",
+                runtime::native::rnx_file_from_handle as *const () as usize,
+            ),
+            (
+                "rnx_io_is_tty",
+                runtime::native::rnx_io_is_tty as *const () as usize,
+            ),
+            (
+                "rnx_io_winsize",
+                runtime::native::rnx_io_winsize as *const () as usize,
+            ),
+            (
+                "rnx_io_set_raw",
+                runtime::native::rnx_io_set_raw as *const () as usize,
+            ),
+            (
+                "rnx_io_warn_missing_arg",
+                runtime::native::rnx_io_warn_missing_arg as *const () as usize,
+            ),
+            (
+                "rnx_file_read_bytes",
+                runtime::native::rnx_file_read_bytes as *const () as usize,
+            ),
+            (
+                "rnx_file_write_bytes",
+                runtime::native::rnx_file_write_bytes as *const () as usize,
+            ),
+            (
+                "rnx_bytes_alloc",
+                runtime::native::rnx_bytes_alloc as *const () as usize,
+            ),
+            (
+                "rnx_bytes_free",
+                runtime::native::rnx_bytes_free as *const () as usize,
+            ),
+            (
+                "rnx_bytes_len",
+                runtime::native::rnx_bytes_len as *const () as usize,
+            ),
+            (
+                "rnx_bytes_cap",
+                runtime::native::rnx_bytes_cap as *const () as usize,
+            ),
+            (
+                "rnx_bytes_data",
+                runtime::native::rnx_bytes_data as *const () as usize,
+            ),
+            (
+                "rnx_bytes_copy_within",
+                runtime::native::rnx_bytes_copy_within as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_u8",
+                runtime::native::rnx_bytes_read_u8 as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_i8",
+                runtime::native::rnx_bytes_read_i8 as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_u16le",
+                runtime::native::rnx_bytes_read_u16le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_u16be",
+                runtime::native::rnx_bytes_read_u16be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_i16le",
+                runtime::native::rnx_bytes_read_i16le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_i16be",
+                runtime::native::rnx_bytes_read_i16be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_u32le",
+                runtime::native::rnx_bytes_read_u32le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_u32be",
+                runtime::native::rnx_bytes_read_u32be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_i32le",
+                runtime::native::rnx_bytes_read_i32le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_i32be",
+                runtime::native::rnx_bytes_read_i32be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_i64le",
+                runtime::native::rnx_bytes_read_i64le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_i64be",
+                runtime::native::rnx_bytes_read_i64be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_u8",
+                runtime::native::rnx_bytes_write_u8 as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_u16le",
+                runtime::native::rnx_bytes_write_u16le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_u16be",
+                runtime::native::rnx_bytes_write_u16be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_u32le",
+                runtime::native::rnx_bytes_write_u32le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_u32be",
+                runtime::native::rnx_bytes_write_u32be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_u64le",
+                runtime::native::rnx_bytes_write_u64le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_u64be",
+                runtime::native::rnx_bytes_write_u64be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_f32le",
+                runtime::native::rnx_bytes_read_f32le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_f32be",
+                runtime::native::rnx_bytes_read_f32be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_f64le",
+                runtime::native::rnx_bytes_read_f64le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_f64be",
+                runtime::native::rnx_bytes_read_f64be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_f32le",
+                runtime::native::rnx_bytes_write_f32le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_f32be",
+                runtime::native::rnx_bytes_write_f32be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_f64le",
+                runtime::native::rnx_bytes_write_f64le as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_f64be",
+                runtime::native::rnx_bytes_write_f64be as *const () as usize,
+            ),
+            (
+                "rnx_bytes_read_string",
+                runtime::native::rnx_bytes_read_string as *const () as usize,
+            ),
+            (
+                "rnx_bytes_write_string",
+                runtime::native::rnx_bytes_write_string as *const () as usize,
+            ),
+            (
+                "rnx_path_exists",
+                runtime::native::rnx_path_exists as *const () as usize,
+            ),
+            (
+                "rnx_path_remove",
+                runtime::native::rnx_path_remove as *const () as usize,
+            ),
+            (
+                "rnx_fs_exists",
+                runtime::native::rnx_fs_exists as *const () as usize,
+            ),
+            (
+                "rnx_fs_is_file",
+                runtime::native::rnx_fs_is_file as *const () as usize,
+            ),
+            (
+                "rnx_fs_is_dir",
+                runtime::native::rnx_fs_is_dir as *const () as usize,
+            ),
+            (
+                "rnx_fs_stat",
+                runtime::native::rnx_fs_stat as *const () as usize,
+            ),
+            (
+                "rnx_fs_stat_err",
+                runtime::native::rnx_fs_stat_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_read_dir",
+                runtime::native::rnx_fs_read_dir as *const () as usize,
+            ),
+            (
+                "rnx_fs_read_dir_err",
+                runtime::native::rnx_fs_read_dir_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_glob",
+                runtime::native::rnx_fs_glob as *const () as usize,
+            ),
+            (
+                "rnx_fs_glob_err",
+                runtime::native::rnx_fs_glob_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_read_link",
+                runtime::native::rnx_fs_read_link as *const () as usize,
+            ),
+            (
+                "rnx_fs_read_link_err",
+                runtime::native::rnx_fs_read_link_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_remove",
+                runtime::native::rnx_fs_remove as *const () as usize,
+            ),
+            (
+                "rnx_fs_remove_err",
+                runtime::native::rnx_fs_remove_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_remove_all",
+                runtime::native::rnx_fs_remove_all as *const () as usize,
+            ),
+            (
+                "rnx_fs_remove_all_err",
+                runtime::native::rnx_fs_remove_all_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_mkdir_err",
+                runtime::native::rnx_fs_mkdir_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_copy_err",
+                runtime::native::rnx_fs_copy_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_move_err",
+                runtime::native::rnx_fs_move_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_rename_err",
+                runtime::native::rnx_fs_rename_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_truncate_err",
+                runtime::native::rnx_fs_truncate_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_chmod_err",
+                runtime::native::rnx_fs_chmod_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_symlink_err",
+                runtime::native::rnx_fs_symlink_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_fsync_err",
+                runtime::native::rnx_fs_fsync_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_read_text",
+                runtime::native::rnx_fs_read_text as *const () as usize,
+            ),
+            (
+                "rnx_fs_read_text_err",
+                runtime::native::rnx_fs_read_text_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_write_text",
+                runtime::native::rnx_fs_write_text as *const () as usize,
+            ),
+            (
+                "rnx_fs_write_text_err",
+                runtime::native::rnx_fs_write_text_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_read_bytes",
+                runtime::native::rnx_fs_read_bytes as *const () as usize,
+            ),
+            (
+                "rnx_fs_read_bytes_err",
+                runtime::native::rnx_fs_read_bytes_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_write_bytes",
+                runtime::native::rnx_fs_write_bytes as *const () as usize,
+            ),
+            (
+                "rnx_fs_write_bytes_err",
+                runtime::native::rnx_fs_write_bytes_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_mmap",
+                runtime::native::rnx_fs_mmap as *const () as usize,
+            ),
+            (
+                "rnx_fs_mmap_err",
+                runtime::native::rnx_fs_mmap_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_mmap_anon",
+                runtime::native::rnx_fs_mmap_anon as *const () as usize,
+            ),
+            (
+                "rnx_fs_mmap_anon_err",
+                runtime::native::rnx_fs_mmap_anon_err as *const () as usize,
+            ),
+            (
+                "rnx_fs_mmap_addr",
+                runtime::native::rnx_fs_mmap_addr as *const () as usize,
+            ),
+            (
+                "rnx_fs_mmap_len",
+                runtime::native::rnx_fs_mmap_len as *const () as usize,
+            ),
+            (
+                "rnx_fs_mmap_flush",
+                runtime::native::rnx_fs_mmap_flush as *const () as usize,
+            ),
+            (
+                "rnx_fs_mmap_close",
+                runtime::native::rnx_fs_mmap_close as *const () as usize,
+            ),
+            (
+                "rnx_assert",
+                runtime::native::rnx_assert as *const () as usize,
+            ),
+            (
+                "rnx_test_check",
+                runtime::native::rnx_test_check as *const () as usize,
+            ),
+            (
+                "rnx_env_args_count",
+                runtime::native::rnx_env_args_count as *const () as usize,
+            ),
+            (
+                "rnx_env_args_get",
+                runtime::native::rnx_env_args_get as *const () as usize,
+            ),
+            (
+                "rnx_env_get",
+                runtime::native::rnx_env_get as *const () as usize,
+            ),
+            (
+                "rnx_env_set",
+                runtime::native::rnx_env_set as *const () as usize,
+            ),
+            (
+                "rnx_env_cwd",
+                runtime::native::rnx_env_cwd as *const () as usize,
+            ),
+            (
+                "rnx_host_version",
+                runtime::native::rnx_host_version as *const () as usize,
+            ),
+            (
+                "rnx_env_exit",
+                runtime::native::rnx_env_exit as *const () as usize,
+            ),
+            (
+                "rnx_net_connect_start",
+                runtime::native::rnx_net_connect_start as *const () as usize,
+            ),
+            (
+                "rnx_net_take_error",
+                runtime::native::rnx_net_take_error as *const () as usize,
+            ),
+            (
+                "rnx_net_connect_wait",
+                runtime::native::rnx_net_connect_wait as *const () as usize,
+            ),
+            (
+                "rnx_net_recv_or_wait",
+                runtime::native::rnx_net_recv_or_wait as *const () as usize,
+            ),
+            (
+                "rnx_net_send_or_wait",
+                runtime::native::rnx_net_send_or_wait as *const () as usize,
+            ),
+            (
+                "rnx_net_recv_get",
+                runtime::native::rnx_net_recv_get as *const () as usize,
+            ),
+            (
+                "rnx_net_error_text",
+                runtime::native::rnx_net_error_text as *const () as usize,
+            ),
+            (
+                "rnx_net_close",
+                runtime::native::rnx_net_close as *const () as usize,
+            ),
+            (
+                "rnx_net_listener_bind",
+                runtime::native::rnx_net_listener_bind as *const () as usize,
+            ),
+            (
+                "rnx_net_listener_port",
+                runtime::native::rnx_net_listener_port as *const () as usize,
+            ),
+            (
+                "rnx_net_listener_accept_start",
+                runtime::native::rnx_net_listener_accept_start as *const () as usize,
+            ),
+            (
+                "rnx_net_listener_accept_wait",
+                runtime::native::rnx_net_listener_accept_wait as *const () as usize,
+            ),
+            (
+                "rnx_net_listener_close",
+                runtime::native::rnx_net_listener_close as *const () as usize,
+            ),
+            (
+                "rnx_tls_connect_start",
+                runtime::native::rnx_tls_connect_start as *const () as usize,
+            ),
+            (
+                "rnx_tls_handshake_start",
+                runtime::native::rnx_tls_handshake_start as *const () as usize,
+            ),
+            (
+                "rnx_tls_handshake_wait",
+                runtime::native::rnx_tls_handshake_wait as *const () as usize,
+            ),
+            (
+                "rnx_tls_recv_or_wait",
+                runtime::native::rnx_tls_recv_or_wait as *const () as usize,
+            ),
+            (
+                "rnx_tls_send_or_wait",
+                runtime::native::rnx_tls_send_or_wait as *const () as usize,
+            ),
+            (
+                "rnx_tls_recv_get",
+                runtime::native::rnx_tls_recv_get as *const () as usize,
+            ),
+            (
+                "rnx_tls_error_text",
+                runtime::native::rnx_tls_error_text as *const () as usize,
+            ),
+            (
+                "rnx_tls_close",
+                runtime::native::rnx_tls_close as *const () as usize,
+            ),
+            (
+                "rnx_process_pid",
+                runtime::native::rnx_process_pid as *const () as usize,
+            ),
+            (
+                "rnx_process_remove_env",
+                runtime::native::rnx_process_remove_env as *const () as usize,
+            ),
+            (
+                "rnx_process_all_env_count",
+                runtime::native::rnx_process_all_env_count as *const () as usize,
+            ),
+            (
+                "rnx_process_all_env_get",
+                runtime::native::rnx_process_all_env_get as *const () as usize,
+            ),
+            (
+                "rnx_process_chdir",
+                runtime::native::rnx_process_chdir as *const () as usize,
+            ),
+            (
+                "rnx_process_spawn",
+                runtime::native::rnx_process_spawn as *const () as usize,
+            ),
+            (
+                "rnx_process_run",
+                runtime::native::rnx_process_run as *const () as usize,
+            ),
+            (
+                "rnx_process_pid_of",
+                runtime::native::rnx_process_pid_of as *const () as usize,
+            ),
+            (
+                "rnx_process_write_stdin",
+                runtime::native::rnx_process_write_stdin as *const () as usize,
+            ),
+            (
+                "rnx_process_read_stdout",
+                runtime::native::rnx_process_read_stdout as *const () as usize,
+            ),
+            (
+                "rnx_process_read_stderr",
+                runtime::native::rnx_process_read_stderr as *const () as usize,
+            ),
+            (
+                "rnx_process_close_stdin",
+                runtime::native::rnx_process_close_stdin as *const () as usize,
+            ),
+            (
+                "rnx_process_wait",
+                runtime::native::rnx_process_wait as *const () as usize,
+            ),
+            (
+                "rnx_process_try_wait",
+                runtime::native::rnx_process_try_wait as *const () as usize,
+            ),
+            (
+                "rnx_process_kill",
+                runtime::native::rnx_process_kill as *const () as usize,
+            ),
+            (
+                "rnx_process_take_stdout",
+                runtime::native::rnx_process_take_stdout as *const () as usize,
+            ),
+            (
+                "rnx_process_take_stderr",
+                runtime::native::rnx_process_take_stderr as *const () as usize,
+            ),
+            (
+                "rnx_process_exit_code",
+                runtime::native::rnx_process_exit_code as *const () as usize,
+            ),
+            (
+                "rnx_process_forget",
+                runtime::native::rnx_process_forget as *const () as usize,
+            ),
+            (
+                "rnx_os_platform",
+                runtime::native::rnx_os_platform as *const () as usize,
+            ),
+            (
+                "rnx_os_arch",
+                runtime::native::rnx_os_arch as *const () as usize,
+            ),
+            (
+                "rnx_os_hostname",
+                runtime::native::rnx_os_hostname as *const () as usize,
+            ),
+            (
+                "rnx_os_tmpdir",
+                runtime::native::rnx_os_tmpdir as *const () as usize,
+            ),
+            (
+                "rnx_os_homedir",
+                runtime::native::rnx_os_homedir as *const () as usize,
+            ),
+            (
+                "rnx_os_cpu_count",
+                runtime::native::rnx_os_cpu_count as *const () as usize,
+            ),
+            (
+                "rnx_os_uptime",
+                runtime::native::rnx_os_uptime as *const () as usize,
+            ),
+            (
+                "rnx_map_new",
+                runtime::native::rnx_map_new as *const () as usize,
+            ),
+            (
+                "rnx_map_set",
+                runtime::native::rnx_map_set as *const () as usize,
+            ),
+            (
+                "rnx_map_get",
+                runtime::native::rnx_map_get as *const () as usize,
+            ),
+            (
+                "rnx_map_has",
+                runtime::native::rnx_map_has as *const () as usize,
+            ),
+            (
+                "rnx_map_delete",
+                runtime::native::rnx_map_delete as *const () as usize,
+            ),
+            (
+                "rnx_map_len",
+                runtime::native::rnx_map_len as *const () as usize,
+            ),
+            (
+                "rnx_map_clear",
+                runtime::native::rnx_map_clear as *const () as usize,
+            ),
+            (
+                "rnx_map_keys",
+                runtime::native::rnx_map_keys as *const () as usize,
+            ),
+            (
+                "rnx_map_values",
+                runtime::native::rnx_map_values as *const () as usize,
+            ),
+            (
+                "rnx_gmap_new",
+                runtime::native::rnx_gmap_new as *const () as usize,
+            ),
+            (
+                "rnx_gmap_free",
+                runtime::native::rnx_gmap_free as *const () as usize,
+            ),
+            (
+                "rnx_gmap_set",
+                runtime::native::rnx_gmap_set as *const () as usize,
+            ),
+            (
+                "rnx_gmap_get",
+                runtime::native::rnx_gmap_get as *const () as usize,
+            ),
+            (
+                "rnx_gmap_has",
+                runtime::native::rnx_gmap_has as *const () as usize,
+            ),
+            (
+                "rnx_gmap_delete",
+                runtime::native::rnx_gmap_delete as *const () as usize,
+            ),
+            (
+                "rnx_gmap_len",
+                runtime::native::rnx_gmap_len as *const () as usize,
+            ),
+            (
+                "rnx_gmap_clear",
+                runtime::native::rnx_gmap_clear as *const () as usize,
+            ),
+            (
+                "rnx_gmap_keys",
+                runtime::native::rnx_gmap_keys as *const () as usize,
+            ),
+            (
+                "rnx_gmap_values",
+                runtime::native::rnx_gmap_values as *const () as usize,
+            ),
+            (
+                "rnx_json_parse",
+                runtime::native::rnx_json_parse as *const () as usize,
+            ),
+            (
+                "rnx_json_parse_typed",
+                runtime::native::rnx_json_parse_typed as *const () as usize,
+            ),
+            (
+                "rnx_json_stringify_into",
+                runtime::native::rnx_json_stringify_into as *const () as usize,
+            ),
+            (
+                "rnx_json_stringify",
+                runtime::native::rnx_json_stringify as *const () as usize,
+            ),
+            (
+                "rnx_json_unwrap",
+                runtime::native::rnx_json_unwrap as *const () as usize,
+            ),
+            (
+                "rnx_dns_lookup_start",
+                runtime::native::rnx_dns_lookup_start as *const () as usize,
+            ),
+            (
+                "rnx_dns_lookup_wait",
+                runtime::native::rnx_dns_lookup_wait as *const () as usize,
+            ),
+            (
+                "rnx_dns_lookup_get",
+                runtime::native::rnx_dns_lookup_get as *const () as usize,
+            ),
+            (
+                "rnx_dns_lookup_error",
+                runtime::native::rnx_dns_lookup_error as *const () as usize,
+            ),
+            (
+                "rnx_release_map",
+                runtime::native::rnx_release_map as *const () as usize,
+            ),
+            (
+                "rnx_sync_atomic_get",
+                runtime::native::rnx_sync_atomic_get as *const () as usize,
+            ),
+            (
+                "rnx_black_box_i64",
+                runtime::native::rnx_black_box_i64 as *const () as usize,
+            ),
+            (
+                "rnx_sync_atomic_set",
+                runtime::native::rnx_sync_atomic_set as *const () as usize,
+            ),
+            (
+                "rnx_sync_atomic_fetch_add",
+                runtime::native::rnx_sync_atomic_fetch_add as *const () as usize,
+            ),
+            (
+                "rnx_sync_atomic_cas",
+                runtime::native::rnx_sync_atomic_cas as *const () as usize,
+            ),
+            (
+                "rnx_sync_channel_send",
+                runtime::native::rnx_sync_channel_send as *const () as usize,
+            ),
+            (
+                "rnx_sync_channel_send_str",
+                runtime::native::rnx_sync_channel_send_str as *const () as usize,
+            ),
+            (
+                "rnx_sync_channel_send_obj",
+                runtime::native::rnx_sync_channel_send_obj as *const () as usize,
+            ),
+            (
+                "rnx_sync_channel_send_array",
+                runtime::native::rnx_sync_channel_send_array as *const () as usize,
+            ),
+            (
+                "rnx_sync_channel_recv",
+                runtime::native::rnx_sync_channel_recv as *const () as usize,
+            ),
+            (
+                "rnx_sync_channel_try_recv",
+                runtime::native::rnx_sync_channel_try_recv as *const () as usize,
+            ),
+            (
+                "rnx_sync_channel_len",
+                runtime::native::rnx_sync_channel_len as *const () as usize,
+            ),
+            (
+                "rnx_fs_pool_depth",
+                runtime::native::rnx_fs_pool_depth as *const () as usize,
+            ),
+            (
+                "rnx_sync_channel_drop",
+                runtime::native::rnx_sync_channel_drop as *const () as usize,
+            ),
+            (
+                "rnx_debug_live_count",
+                runtime::native::rnx_debug_live_count as *const () as usize,
+            ),
+            (
+                "rnx_any_tag",
+                runtime::native::rnx_any_tag as *const () as usize,
+            ),
+            (
+                "rnx_obj_class",
+                runtime::native::rnx_obj_class as *const () as usize,
+            ),
+            (
+                "rnx_error_set",
+                runtime::native::rnx_error_set as *const () as usize,
+            ),
+            (
+                "rnx_error_take",
+                runtime::native::rnx_error_take as *const () as usize,
+            ),
+            (
+                "rnx_error_class",
+                runtime::native::rnx_error_class as *const () as usize,
+            ),
+            (
+                "rnx_error_unbox",
+                runtime::native::rnx_error_unbox as *const () as usize,
+            ),
+            (
+                "rnx_error_str",
+                runtime::native::rnx_error_str as *const () as usize,
+            ),
+            (
+                "rnx_error_release",
+                runtime::native::rnx_error_release as *const () as usize,
+            ),
+            (
+                "rnx_error_set",
+                runtime::native::rnx_error_set as *const () as usize,
+            ),
+            (
+                "rnx_error_take",
+                runtime::native::rnx_error_take as *const () as usize,
+            ),
+            (
+                "rnx_error_class",
+                runtime::native::rnx_error_class as *const () as usize,
+            ),
+            (
+                "rnx_error_unbox",
+                runtime::native::rnx_error_unbox as *const () as usize,
+            ),
+            (
+                "rnx_error_str",
+                runtime::native::rnx_error_str as *const () as usize,
+            ),
+            (
+                "rnx_error_release",
+                runtime::native::rnx_error_release as *const () as usize,
+            ),
+            (
+                "rnx_note_type",
+                runtime::native::rnx_note_type as *const () as usize,
+            ),
+            (
+                "rnx_note_fields",
+                runtime::native::rnx_note_fields as *const () as usize,
+            ),
+            (
+                "rnx_note_namespace",
+                runtime::native::rnx_note_namespace as *const () as usize,
+            ),
+            (
+                "rnx_note_array_kind",
+                runtime::native::rnx_note_array_kind as *const () as usize,
+            ),
+            (
+                "rnx_note_enum",
+                runtime::native::rnx_note_enum as *const () as usize,
+            ),
+            (
+                "rnx_io_pretty",
+                runtime::native::rnx_io_pretty as *const () as usize,
+            ),
+            (
+                "rnx_type_name",
+                runtime::native::rnx_type_name as *const () as usize,
+            ),
+            (
+                "rnx_typeof_any",
+                runtime::native::rnx_typeof_any as *const () as usize,
+            ),
+            (
+                "rnx_array_slice",
+                runtime::native::rnx_array_slice as *const () as usize,
+            ),
+            (
+                "rnx_defer_push",
+                runtime::native::rnx_defer_push as *const () as usize,
+            ),
+            (
+                "rnx_defer_pop",
+                runtime::native::rnx_defer_pop as *const () as usize,
+            ),
+            (
+                "rnx_defer_len",
+                runtime::native::rnx_defer_len as *const () as usize,
+            ),
+            (
+                "rnx_mutex_lock",
+                runtime::native::rnx_mutex_lock as *const () as usize,
+            ),
+            (
+                "rnx_mutex_unlock",
+                runtime::native::rnx_mutex_unlock as *const () as usize,
+            ),
+            (
+                "rnx_mutex_try_lock",
+                runtime::native::rnx_mutex_try_lock as *const () as usize,
+            ),
+            (
+                "rnx_rwlock_read_lock",
+                runtime::native::rnx_rwlock_read_lock as *const () as usize,
+            ),
+            (
+                "rnx_rwlock_read_unlock",
+                runtime::native::rnx_rwlock_read_unlock as *const () as usize,
+            ),
+            (
+                "rnx_rwlock_write_lock",
+                runtime::native::rnx_rwlock_write_lock as *const () as usize,
+            ),
+            (
+                "rnx_rwlock_write_unlock",
+                runtime::native::rnx_rwlock_write_unlock as *const () as usize,
+            ),
+            (
+                "rnx_rwlock_try_read_lock",
+                runtime::native::rnx_rwlock_try_read_lock as *const () as usize,
+            ),
+            (
+                "rnx_rwlock_try_write_lock",
+                runtime::native::rnx_rwlock_try_write_lock as *const () as usize,
+            ),
+            (
+                "rnx_condvar_wait",
+                runtime::native::rnx_condvar_wait as *const () as usize,
+            ),
+            (
+                "rnx_condvar_wait_timeout",
+                runtime::native::rnx_condvar_wait_timeout as *const () as usize,
+            ),
+            (
+                "rnx_condvar_notify_one",
+                runtime::native::rnx_condvar_notify_one as *const () as usize,
+            ),
+            (
+                "rnx_condvar_notify_all",
+                runtime::native::rnx_condvar_notify_all as *const () as usize,
+            ),
+            (
+                "rnx_barrier_wait",
+                runtime::native::rnx_barrier_wait as *const () as usize,
+            ),
+            (
+                "rnx_thread_pool_init",
+                runtime::native::rnx_thread_pool_init as *const () as usize,
+            ),
+            (
+                "rnx_thread_pool_submit",
+                runtime::native::rnx_thread_pool_submit as *const () as usize,
+            ),
+            (
+                "rnx_thread_pool_parallel_for",
+                runtime::native::rnx_thread_pool_parallel_for as *const () as usize,
+            ),
+            (
+                "rnx_thread_pool_join",
+                runtime::native::rnx_thread_pool_join as *const () as usize,
+            ),
+            (
+                "rnx_thread_pool_shutdown",
+                runtime::native::rnx_thread_pool_shutdown as *const () as usize,
+            ),
+            (
+                "rnx_math_sqrt",
+                runtime::native::rnx_math_sqrt as *const () as usize,
+            ),
+            (
+                "rnx_math_sin",
+                runtime::native::rnx_math_sin as *const () as usize,
+            ),
+            (
+                "rnx_math_cos",
+                runtime::native::rnx_math_cos as *const () as usize,
+            ),
+            (
+                "rnx_math_tan",
+                runtime::native::rnx_math_tan as *const () as usize,
+            ),
+            (
+                "rnx_math_atan2",
+                runtime::native::rnx_math_atan2 as *const () as usize,
+            ),
+            (
+                "rnx_math_pow",
+                runtime::native::rnx_math_pow as *const () as usize,
+            ),
+            (
+                "rnx_math_floor",
+                runtime::native::rnx_math_floor as *const () as usize,
+            ),
+            (
+                "rnx_math_ceil",
+                runtime::native::rnx_math_ceil as *const () as usize,
+            ),
+            (
+                "rnx_math_round",
+                runtime::native::rnx_math_round as *const () as usize,
+            ),
+            (
+                "rnx_math_log",
+                runtime::native::rnx_math_log as *const () as usize,
+            ),
+            (
+                "rnx_float_nan",
+                runtime::native::rnx_float_nan as *const () as usize,
+            ),
+            (
+                "rnx_float_to_bits",
+                runtime::native::rnx_float_to_bits as *const () as usize,
+            ),
+            (
+                "rnx_float_from_bits",
+                runtime::native::rnx_float_from_bits as *const () as usize,
+            ),
+            (
+                "rnx_float_fma",
+                runtime::native::rnx_float_fma as *const () as usize,
+            ),
+            (
+                "rnx_genref_create",
+                runtime::native::rnx_genref_create as *const () as usize,
+            ),
+            (
+                "rnx_genref_get",
+                runtime::native::rnx_genref_get as *const () as usize,
+            ),
             (
                 "rnx_genref_invalidate",
                 runtime::native::rnx_genref_invalidate as *const () as usize,
             ),
-            ("rnx_release", runtime::native::rnx_release as *const () as usize),
+            (
+                "rnx_release",
+                runtime::native::rnx_release as *const () as usize,
+            ),
         ] {
             let fv: FunctionValue<'ctx> = module.get_function(name).ok_or_else(|| {
-                Diagnostic::new(Code::E108, format!("llvm jit: missing runtime symbol `{name}`"))
+                Diagnostic::new(
+                    Code::E108,
+                    format!("llvm jit: missing runtime symbol `{name}`"),
+                )
             })?;
             engine.add_global_mapping(&fv, addr);
         }
         for f in &lir.foreign {
             let fv: FunctionValue<'ctx> = module.get_function(&f.symbol).ok_or_else(|| {
-                Diagnostic::new(Code::E108, format!("llvm jit: missing foreign symbol `{}`", f.symbol))
+                Diagnostic::new(
+                    Code::E108,
+                    format!("llvm jit: missing foreign symbol `{}`", f.symbol),
+                )
             })?;
             let addr = runtime::native::resolve_foreign(&f.lib, &f.symbol).ok_or_else(|| {
                 Diagnostic::new(
                     Code::E108,
-                    format!("unknown foreign symbol `{}` in native lib `{}`", f.symbol, f.lib),
+                    format!(
+                        "unknown foreign symbol `{}` in native lib `{}`",
+                        f.symbol, f.lib
+                    ),
                 )
             })? as usize;
             engine.add_global_mapping(&fv, addr);
@@ -526,7 +1487,10 @@ impl<'ctx> Jit<'ctx> {
                 continue;
             }
             let fv: FunctionValue<'ctx> = funcs.get(&f.name).copied().ok_or_else(|| {
-                Diagnostic::new(Code::E108, format!("llvm jit: missing closure `{}`", f.name))
+                Diagnostic::new(
+                    Code::E108,
+                    format!("llvm jit: missing closure `{}`", f.name),
+                )
             })?;
             let addr = engine
                 .get_function_address(&fv.get_name().to_string_lossy())
@@ -568,9 +1532,11 @@ impl<'ctx> Jit<'ctx> {
         // Holds this module's code mapped for the duration of the call, and
         // covers any worker this call detaches.
         let _residency = runtime::native::JitResidency::enter(self.epoch);
-        let fv = self.funcs.get(name).copied().ok_or_else(|| {
-            Diagnostic::new(Code::E108, format!("unknown function `{name}`"))
-        })?;
+        let fv = self
+            .funcs
+            .get(name)
+            .copied()
+            .ok_or_else(|| Diagnostic::new(Code::E108, format!("unknown function `{name}`")))?;
         if self.vec_rets.contains(name) {
             return Err(Diagnostic::new(
                 Code::E108,
@@ -582,9 +1548,9 @@ impl<'ctx> Jit<'ctx> {
                 0 => {
                     let addr = {
                         let _guard = jit_lock();
-                        self.engine.get_function_address(&fv.get_name().to_string_lossy()).map_err(|e| {
-                            Diagnostic::new(Code::E108, format!("addr: {e}"))
-                        })?
+                        self.engine
+                            .get_function_address(&fv.get_name().to_string_lossy())
+                            .map_err(|e| Diagnostic::new(Code::E108, format!("addr: {e}")))?
                     };
                     let f: JitFn0 = std::mem::transmute(addr);
                     f()
@@ -592,9 +1558,9 @@ impl<'ctx> Jit<'ctx> {
                 1 => {
                     let addr = {
                         let _guard = jit_lock();
-                        self.engine.get_function_address(&fv.get_name().to_string_lossy()).map_err(|e| {
-                            Diagnostic::new(Code::E108, format!("addr: {e}"))
-                        })?
+                        self.engine
+                            .get_function_address(&fv.get_name().to_string_lossy())
+                            .map_err(|e| Diagnostic::new(Code::E108, format!("addr: {e}")))?
                     };
                     let f: JitFn1 = std::mem::transmute(addr);
                     f(args[0])
@@ -602,9 +1568,9 @@ impl<'ctx> Jit<'ctx> {
                 2 => {
                     let addr = {
                         let _guard = jit_lock();
-                        self.engine.get_function_address(&fv.get_name().to_string_lossy()).map_err(|e| {
-                            Diagnostic::new(Code::E108, format!("addr: {e}"))
-                        })?
+                        self.engine
+                            .get_function_address(&fv.get_name().to_string_lossy())
+                            .map_err(|e| Diagnostic::new(Code::E108, format!("addr: {e}")))?
                     };
                     let f: JitFn2 = std::mem::transmute(addr);
                     f(args[0], args[1])
@@ -616,7 +1582,10 @@ impl<'ctx> Jit<'ctx> {
                 return Err(Diagnostic::new(Code::E108, format!("fatal: {msg}")).with_span(span));
             }
             if let Some(msg) = runtime::native::take_uncaught_message() {
-                return Err(Diagnostic::new(Code::E108, format!("uncaught error: {msg}")));
+                return Err(Diagnostic::new(
+                    Code::E108,
+                    format!("uncaught error: {msg}"),
+                ));
             }
             Ok(v)
         }
@@ -650,7 +1619,8 @@ fn named_field(lir: &Module, f: &Function, obj: Local, field: &str) -> Option<(u
 
 fn mark_pure_runtime_fns(context: &Context, module: &LlModule) {
     use inkwell::attributes::{Attribute, AttributeLoc};
-    let flag = |name: &str| context.create_enum_attribute(Attribute::get_named_enum_kind_id(name), 0);
+    let flag =
+        |name: &str| context.create_enum_attribute(Attribute::get_named_enum_kind_id(name), 0);
     let nounwind = flag("nounwind");
     for name in [
         "rnx_array_len",
@@ -710,7 +1680,8 @@ fn check_build(lir: &Module, entry: &str) -> Result<(), Diagnostic> {
     runtime::native::rnx_set_closure_epoch(0);
     for f in &lir.functions {
         check_supported(lir, f)?;
-        if f.name == "main" && entry != "main" || f.name == "rnx_entry_main" || f.name == "rnx_init" {
+        if f.name == "main" && entry != "main" || f.name == "rnx_entry_main" || f.name == "rnx_init"
+        {
             return Err(Diagnostic::new(
                 Code::E108,
                 format!("build reserves `{}`", f.name),
@@ -768,15 +1739,29 @@ fn synthesize_glue<'ctx>(
             return Err(Diagnostic::new(Code::E108, "build: entry returned void"));
         }
     }
-    module.add_function("rnx_init", context.void_type().fn_type(&[i32t.into(), ptr_t.into()], false), None);
+    module.add_function(
+        "rnx_init",
+        context
+            .void_type()
+            .fn_type(&[i32t.into(), ptr_t.into()], false),
+        None,
+    );
     let init = module.get_function("rnx_init").expect("declared");
     let strict_fn = module.add_function(
         "rnx_set_assert_strict",
-        context.void_type().fn_type(&[context.bool_type().into()], false),
+        context
+            .void_type()
+            .fn_type(&[context.bool_type().into()], false),
         None,
     );
-    let reg_fn = module.get_function("rnx_closure_register").expect("declared");
-    let clo_init = module.add_function("__rnx_closure_init", context.void_type().fn_type(&[], false), None);
+    let reg_fn = module
+        .get_function("rnx_closure_register")
+        .expect("declared");
+    let clo_init = module.add_function(
+        "__rnx_closure_init",
+        context.void_type().fn_type(&[], false),
+        None,
+    );
     let cbb = context.append_basic_block(clo_init, "entry");
     wb.position_at_end(cbb);
     for (i, f) in lir.functions.iter().enumerate() {
@@ -786,9 +1771,12 @@ fn synthesize_glue<'ctx>(
         let fv = funcs.get(&f.name).copied().ok_or_else(|| {
             Diagnostic::new(Code::E108, format!("build: missing closure `{}`", f.name))
         })?;
-        let addr = wb.build_ptr_to_int(fv.as_global_value().as_pointer_value(), i64t, "").map_err(err)?;
+        let addr = wb
+            .build_ptr_to_int(fv.as_global_value().as_pointer_value(), i64t, "")
+            .map_err(err)?;
         let fid = i64t.const_int(runtime::native::rnx_closure_tag(i as u64), false);
-        wb.build_call(reg_fn, &[fid.into(), addr.into()], "").map_err(err)?;
+        wb.build_call(reg_fn, &[fid.into(), addr.into()], "")
+            .map_err(err)?;
     }
     wb.build_return(None).map_err(err)?;
     let main_fn = module.add_function(
@@ -803,15 +1791,20 @@ fn synthesize_glue<'ctx>(
     let argv = main_params.next().map(|v| v.into_pointer_value());
     match (argc, argv) {
         (Some(argc), Some(argv)) => {
-            wb.build_call(init, &[argc.into(), argv.into()], "").map_err(err)?;
+            wb.build_call(init, &[argc.into(), argv.into()], "")
+                .map_err(err)?;
         }
         _ => {
-            return Err(Diagnostic::new(Code::E108, "build: main needs (argc, argv)"));
+            return Err(Diagnostic::new(
+                Code::E108,
+                "build: main needs (argc, argv)",
+            ));
         }
     }
     wb.build_call(clo_init, &[], "").map_err(err)?;
     let strict_on = context.bool_type().const_int(1, false);
-    wb.build_call(strict_fn, &[strict_on.into()], "").map_err(err)?;
+    wb.build_call(strict_fn, &[strict_on.into()], "")
+        .map_err(err)?;
     let site = wb.build_call(wrapper, &[], "r").map_err(err)?;
     match site.try_as_basic_value() {
         ValueKind::Basic(v) => {
@@ -819,24 +1812,32 @@ fn synthesize_glue<'ctx>(
                 .build_int_truncate(v.into_int_value(), i32t, "code")
                 .map_err(err)?;
             let take_fn = module.get_function("rnx_error_take").expect("declared");
-            let report_fn = module.get_function("rnx_report_uncaught").expect("declared");
+            let report_fn = module
+                .get_function("rnx_report_uncaught")
+                .expect("declared");
             let fatal_fn = module.get_function("rnx_report_fatal").expect("declared");
             let fatal_site = wb.build_call(fatal_fn, &[], "fatalrep").map_err(err)?;
             let fatal_code = match fatal_site.try_as_basic_value() {
                 ValueKind::Basic(x) => x.into_int_value(),
                 ValueKind::Instruction(_) => {
-                    return Err(Diagnostic::new(Code::E108, "build: fatal report returned void"));
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        "build: fatal report returned void",
+                    ));
                 }
             };
-            let has_fatal = wb.build_int_compare(
-                inkwell::IntPredicate::NE,
-                fatal_code,
-                i32t.const_zero(),
-                "hasfatal",
-            ).map_err(err)?;
+            let has_fatal = wb
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    fatal_code,
+                    i32t.const_zero(),
+                    "hasfatal",
+                )
+                .map_err(err)?;
             let fatal_bb = context.append_basic_block(main_fn, "fatal");
             let nofatal_bb = context.append_basic_block(main_fn, "nofatal");
-            wb.build_conditional_branch(has_fatal, fatal_bb, nofatal_bb).map_err(err)?;
+            wb.build_conditional_branch(has_fatal, fatal_bb, nofatal_bb)
+                .map_err(err)?;
             wb.position_at_end(fatal_bb);
             let one = i32t.const_int(1, false);
             wb.build_return(Some(&one)).map_err(err)?;
@@ -845,20 +1846,28 @@ fn synthesize_glue<'ctx>(
             let pending = match take_site.try_as_basic_value() {
                 ValueKind::Basic(x) => x.into_int_value(),
                 ValueKind::Instruction(_) => {
-                    return Err(Diagnostic::new(Code::E108, "build: error take returned void"));
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        "build: error take returned void",
+                    ));
                 }
             };
-            let has_err = wb.build_int_compare(
-                inkwell::IntPredicate::NE,
-                pending,
-                i64t.const_zero(),
-                "haserr",
-            ).map_err(err)?;
+            let has_err = wb
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    pending,
+                    i64t.const_zero(),
+                    "haserr",
+                )
+                .map_err(err)?;
             let err_bb = context.append_basic_block(main_fn, "uncaught");
             let ok_bb = context.append_basic_block(main_fn, "ok");
-            wb.build_conditional_branch(has_err, err_bb, ok_bb).map_err(err)?;
+            wb.build_conditional_branch(has_err, err_bb, ok_bb)
+                .map_err(err)?;
             wb.position_at_end(err_bb);
-            let rep_site = wb.build_call(report_fn, &[pending.into()], "rep").map_err(err)?;
+            let rep_site = wb
+                .build_call(report_fn, &[pending.into()], "rep")
+                .map_err(err)?;
             match rep_site.try_as_basic_value() {
                 ValueKind::Basic(x) => {
                     wb.build_return(Some(&x)).map_err(err)?;
@@ -875,10 +1884,18 @@ fn synthesize_glue<'ctx>(
         }
     }
     if release {
-        wrapper.set_section(Some(".text.rnx_entry_main"));
-        main_fn.set_section(Some(".text.main"));
-        init.set_section(Some(".text.rnx_init"));
-        clo_init.set_section(Some(".text.rnx_closure_init"));
+        let macho = sysroot::target::active_target().object == sysroot::target::ObjectFormat::MachO;
+        if macho {
+            wrapper.set_section(Some("__TEXT,__text"));
+            main_fn.set_section(Some("__TEXT,__text"));
+            init.set_section(Some("__TEXT,__text"));
+            clo_init.set_section(Some("__TEXT,__text"));
+        } else {
+            wrapper.set_section(Some(".text.rnx_entry_main"));
+            main_fn.set_section(Some(".text.main"));
+            init.set_section(Some(".text.rnx_init"));
+            clo_init.set_section(Some(".text.rnx_closure_init"));
+        }
     }
     Ok(())
 }
@@ -925,7 +1942,15 @@ fn emit_unit(
     let result = (|| {
         let release = opt == OptLevel::Release;
         let version = version_target_for(target, release);
-        let (module, funcs) = build_module_subset(&context, lir, name, release, debug, Some(define), version.as_deref())?;
+        let (module, funcs) = build_module_subset(
+            &context,
+            lir,
+            name,
+            release,
+            debug,
+            Some(define),
+            version.as_deref(),
+        )?;
         // Every unit renames a user `main`: the definition lives in exactly one
         // unit while unit 0 calls it, so all must agree on `__rnx_user_main`.
         rename_entry_for_glue(&funcs, entry);
@@ -954,7 +1979,9 @@ pub fn emit_objects(
     units: usize,
 ) -> Result<Vec<Vec<u8>>, Diagnostic> {
     if units <= 1 || lir.functions.len() < CGU_THRESHOLD {
-        return Ok(vec![emit_object_with_debug(lir, name, entry, opt, target, debug)?]);
+        return Ok(vec![emit_object_with_debug(
+            lir, name, entry, opt, target, debug,
+        )?]);
     }
     check_build(lir, entry)?;
     let total = lir.functions.len();
@@ -970,7 +1997,16 @@ pub fn emit_objects(
             let unit_name = format!("{name}.{unit}");
             handles.push(s.spawn(move || {
                 let define: BTreeSet<usize> = (lo..hi).collect();
-                emit_unit(lir, &unit_name, entry, opt, target, debug, &define, unit == 0)
+                emit_unit(
+                    lir,
+                    &unit_name,
+                    entry,
+                    opt,
+                    target,
+                    debug,
+                    &define,
+                    unit == 0,
+                )
             }));
         }
         let mut out: Vec<Vec<u8>> = Vec::with_capacity(count);
@@ -1028,7 +2064,11 @@ pub fn unit_hash(
     }
     parts.push(lir::codegen_hash::module_salt(lir).into_bytes());
     let mut members: Vec<usize> = match define {
-        Some(d) => d.iter().copied().filter(|i| *i < lir.functions.len()).collect(),
+        Some(d) => d
+            .iter()
+            .copied()
+            .filter(|i| *i < lir.functions.len())
+            .collect(),
         None => (0..lir.functions.len()).collect(),
     };
     members.sort();
@@ -1105,7 +2145,9 @@ pub fn emit_objects_cached(
         return emit_objects(lir, name, entry, opt, target, debug, units);
     };
     if units <= 1 || lir.functions.len() < CGU_THRESHOLD {
-        return Ok(vec![emit_object_cached(lir, name, entry, opt, target, debug, cache)?]);
+        return Ok(vec![emit_object_cached(
+            lir, name, entry, opt, target, debug, cache,
+        )?]);
     }
     check_build(lir, entry)?;
     let total = lir.functions.len();
@@ -1139,8 +2181,17 @@ pub fn emit_objects_cached(
             let unit_name = format!("{name}.{unit}");
             handles.push(s.spawn(move || {
                 let define: BTreeSet<usize> = (lo..hi).collect();
-                emit_unit(lir, &unit_name, entry, opt, target, debug, &define, unit == 0)
-                    .map(|bytes| (unit, bytes))
+                emit_unit(
+                    lir,
+                    &unit_name,
+                    entry,
+                    opt,
+                    target,
+                    debug,
+                    &define,
+                    unit == 0,
+                )
+                .map(|bytes| (unit, bytes))
             }));
         }
         let mut fresh = Vec::with_capacity(handles.len());
@@ -1183,14 +2234,20 @@ pub fn version_target_for(target: Option<&str>, release: bool) -> Option<String>
     t.starts_with("x86_64").then(|| t.to_string())
 }
 
-static LLVM_TARGETS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+static LLVM_TARGETS: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
 
-fn ensure_targets() {
+fn ensure_targets() -> Result<(), Diagnostic> {
     use inkwell::targets::{InitializationConfig, Target};
-    LLVM_TARGETS.get_or_init(|| {
-        Target::initialize_x86(&InitializationConfig::default());
-        Target::initialize_aarch64(&InitializationConfig::default());
-    });
+    LLVM_TARGETS
+        .get_or_init(|| {
+            let config = InitializationConfig::default();
+            Target::initialize_x86(&config);
+            Target::initialize_aarch64(&config);
+            Target::initialize_webassembly(&config);
+            Ok(())
+        })
+        .clone()
+        .map_err(|message| Diagnostic::new(Code::E108, format!("llvm: {message}")))
 }
 
 // Process-global host triple, queried once: every unit machine for
@@ -1201,18 +2258,28 @@ static HOST_INFO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 fn host_info() -> &'static String {
     HOST_INFO.get_or_init(|| {
-        ensure_targets();
-        TargetMachine::get_default_triple().as_str().to_string_lossy().into_owned()
+        let _ = ensure_targets();
+        TargetMachine::get_default_triple()
+            .as_str()
+            .to_string_lossy()
+            .into_owned()
     })
+}
+
+fn cpu_for(triple: &str) -> (String, String) {
+    match sysroot::target::Target::parse(triple) {
+        Ok(target) => (target.cpu.model, target.cpu.features),
+        Err(_) => baseline_cpu_for(triple),
+    }
 }
 
 fn make_machine(
     triple: Option<&str>,
     opt: OptLevel,
 ) -> Result<(inkwell::targets::TargetTriple, TargetMachine), Diagnostic> {
-    use inkwell::targets::{CodeModel, RelocMode, Target, TargetTriple};
     use inkwell::OptimizationLevel;
-    ensure_targets();
+    use inkwell::targets::{CodeModel, RelocMode, Target, TargetTriple};
+    ensure_targets()?;
     let triple_ref = match triple {
         Some(t) => TargetTriple::create(t),
         None => TargetTriple::create(host_info()),
@@ -1224,8 +2291,16 @@ fn make_machine(
         OptLevel::Release => OptimizationLevel::Aggressive,
     };
     let (cpu, features) = match triple {
-        Some(t) => baseline_cpu_for(t),
+        Some(t) => cpu_for(t),
         None => baseline_cpu_for(host_info()),
+    };
+    // A wasm object always ends up inside one final module, so position
+    // independence buys nothing and costs the linker a per-object
+    // `__memory_base` global. Emit absolute addresses like rustc does for
+    // the runtime archive; every other target keeps PIC.
+    let reloc = match triple {
+        Some(t) if t.starts_with("wasm32") => RelocMode::Static,
+        _ => RelocMode::PIC,
     };
     let machine = target
         .create_target_machine(
@@ -1233,7 +2308,7 @@ fn make_machine(
             &cpu,
             &features,
             level,
-            RelocMode::PIC,
+            reloc,
             CodeModel::Default,
         )
         .ok_or_else(|| Diagnostic::new(Code::E108, "llvm: no target machine"))?;
@@ -1252,7 +2327,10 @@ pub fn optimized_ir(lir: &Module, name: &str) -> Result<String, Diagnostic> {
             .run_passes("default<O3>", &machine, PassBuilderOptions::create())
             .map_err(|e| Diagnostic::new(Code::E108, format!("llvm O3 passes: {e}")))?;
         module.verify().map_err(|e| {
-            Diagnostic::new(Code::E108, format!("llvm verify after O3 for `{name}`: {e}"))
+            Diagnostic::new(
+                Code::E108,
+                format!("llvm verify after O3 for `{name}`: {e}"),
+            )
         })?;
     }
     Ok(module.print_to_string().to_string())
@@ -1284,7 +2362,10 @@ fn finish_object(
             .run_passes("default<O3>", &machine, PassBuilderOptions::create())
             .map_err(|e| Diagnostic::new(Code::E108, format!("llvm O3 passes: {e}")))?;
         module.verify().map_err(|e| {
-            Diagnostic::new(Code::E108, format!("llvm verify after O3 for `{name}`: {e}"))
+            Diagnostic::new(
+                Code::E108,
+                format!("llvm verify after O3 for `{name}`: {e}"),
+            )
         })?;
     }
     let buffer = machine
@@ -1293,11 +2374,23 @@ fn finish_object(
     Ok(buffer.as_slice().to_vec())
 }
 
-pub fn emit_library(lir: &Module, name: &str, opt: OptLevel, target: Option<&str>) -> Result<Vec<u8>, Diagnostic> {
+pub fn emit_library(
+    lir: &Module,
+    name: &str,
+    opt: OptLevel,
+    target: Option<&str>,
+) -> Result<Vec<u8>, Diagnostic> {
     emit_library_with_debug(lir, name, opt, target, None, "")
 }
 
-pub fn emit_library_with_debug(lir: &Module, name: &str, opt: OptLevel, target: Option<&str>, debug: Option<&DebugInfo>, lib_prefix: &str) -> Result<Vec<u8>, Diagnostic> {
+pub fn emit_library_with_debug(
+    lir: &Module,
+    name: &str,
+    opt: OptLevel,
+    target: Option<&str>,
+    debug: Option<&DebugInfo>,
+    lib_prefix: &str,
+) -> Result<Vec<u8>, Diagnostic> {
     runtime::native::rnx_set_closure_epoch(0);
     for f in &lir.functions {
         check_supported(lir, f)?;
@@ -1316,33 +2409,36 @@ pub fn emit_library_with_debug(lir: &Module, name: &str, opt: OptLevel, target: 
     let ptr_t = context.ptr_type(inkwell::AddressSpace::default());
     let void_t = context.void_type();
     let ensure_init = decl_helper(&module, "rnx_ensure_init", void_t.fn_type(&[], false));
-    let export_push = decl_helper(&module, 
+    let export_push = decl_helper(
+        &module,
         "rnx_export_push",
         void_t.fn_type(&[ptr_t.into()], false),
     );
     let export_pop = decl_helper(&module, "rnx_export_pop", void_t.fn_type(&[], false));
     let export_clear = decl_helper(&module, "rnx_export_clear", void_t.fn_type(&[], false));
-    let export_drain = decl_helper(&module, 
+    let export_drain = decl_helper(
+        &module,
         "rnx_export_drain",
         context.i8_type().fn_type(&[], false),
     );
-    let setjmp_fn = decl_helper(&module, 
+    let setjmp_fn = decl_helper(
+        &module,
         "_setjmp",
         context.i32_type().fn_type(&[ptr_t.into()], false),
     );
     {
         use inkwell::attributes::{Attribute, AttributeLoc};
-        let twice = context.create_enum_attribute(
-            Attribute::get_named_enum_kind_id("returns_twice"),
-            0,
-        );
+        let twice =
+            context.create_enum_attribute(Attribute::get_named_enum_kind_id("returns_twice"), 0);
         setjmp_fn.add_attribute(AttributeLoc::Function, twice);
     }
-    let from_cstr = decl_helper(&module, 
+    let from_cstr = decl_helper(
+        &module,
         "rnx_string_from_cstr",
         ptr_t.fn_type(&[ptr_t.into()], false),
     );
-    let release_str = decl_helper(&module, 
+    let release_str = decl_helper(
+        &module,
         "rnx_release_str",
         void_t.fn_type(&[ptr_t.into()], false),
     );
@@ -1369,16 +2465,22 @@ pub fn emit_library_with_debug(lir: &Module, name: &str, opt: OptLevel, target: 
         }
         validate_c_export(f, &short)?;
         let internal = funcs[&f.name];
-        let sanitized: String =
-            short.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-        internal.as_global_value().set_name(&format!("__rnx_impl_{fi}_{sanitized}"));
+        let sanitized: String = short
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        internal
+            .as_global_value()
+            .set_name(&format!("__rnx_impl_{fi}_{sanitized}"));
         internal.set_linkage(inkwell::module::Linkage::Internal);
         let symbol = if lib_prefix.is_empty() {
             short.clone()
         } else {
             format!("{lib_prefix}_{short}")
         };
-        emit_c_wrapper(&context, &module, &helpers, internal, &short, &symbol, &f.params, &f.ret, release)?;
+        emit_c_wrapper(
+            &context, &module, &helpers, internal, &short, &symbol, &f.params, &f.ret, release,
+        )?;
     }
     for (fi, f) in lir.functions.iter().enumerate() {
         if f.is_pub {
@@ -1400,7 +2502,9 @@ fn decl_helper<'ctx>(
     name: &str,
     ty: inkwell::types::FunctionType<'ctx>,
 ) -> FunctionValue<'ctx> {
-    module.get_function(name).unwrap_or_else(|| module.add_function(name, ty, None))
+    module
+        .get_function(name)
+        .unwrap_or_else(|| module.add_function(name, ty, None))
 }
 
 fn validate_c_export(f: &Function, short: &str) -> Result<(), Diagnostic> {
@@ -1417,8 +2521,10 @@ fn validate_c_export(f: &Function, short: &str) -> Result<(), Diagnostic> {
         ));
     }
     for (i, p) in f.params.iter().enumerate() {
-        let ok = matches!(p, LirType::I64 | LirType::I8 | LirType::F64(_) | LirType::Bool | LirType::Str)
-            || matches!(p, LirType::Pointer(inner) if matches!(inner.as_ref(), LirType::I8));
+        let ok = matches!(
+            p,
+            LirType::I64 | LirType::I8 | LirType::F64(_) | LirType::Bool | LirType::Str
+        ) || matches!(p, LirType::Pointer(inner) if matches!(inner.as_ref(), LirType::I8));
         if !ok {
             return Err(Diagnostic::new(
                 Code::E108,
@@ -1426,7 +2532,10 @@ fn validate_c_export(f: &Function, short: &str) -> Result<(), Diagnostic> {
             ));
         }
     }
-    if !matches!(f.ret, LirType::I64 | LirType::I8 | LirType::F64(_) | LirType::Bool | LirType::Void) {
+    if !matches!(
+        f.ret,
+        LirType::I64 | LirType::I8 | LirType::F64(_) | LirType::Bool | LirType::Void
+    ) {
         return Err(Diagnostic::new(
             Code::E108,
             format!("pub fn `{short}` has non-C-ABI return type"),
@@ -1518,12 +2627,15 @@ fn emit_c_wrapper<'ctx>(
         match p {
             LirType::I64 | LirType::I8 => args.push(pv.into()),
             LirType::F64(_) => {
-                let b = builder.build_bit_cast(pv.into_float_value(), i64t, "b").map_err(err)?;
+                let b = builder
+                    .build_bit_cast(pv.into_float_value(), i64t, "b")
+                    .map_err(err)?;
                 args.push(b.into());
             }
             LirType::Bool => {
-                let w =
-                    builder.build_int_z_extend(pv.into_int_value(), i64t, "w").map_err(err)?;
+                let w = builder
+                    .build_int_z_extend(pv.into_int_value(), i64t, "w")
+                    .map_err(err)?;
                 args.push(w.into());
             }
             LirType::Str => {
@@ -1557,21 +2669,40 @@ fn emit_c_wrapper<'ctx>(
             }
         }
     }
-    let buf = builder.build_alloca(i8t.array_type(512), "trap").map_err(err)?;
-    let slot = builder.build_bit_cast(buf, ptr_t, "slot").map_err(err)?.into_pointer_value();
-    let site = builder.build_call(setjmp_fn, &[slot.into()], "sj").map_err(err)?;
+    let buf = builder
+        .build_alloca(i8t.array_type(512), "trap")
+        .map_err(err)?;
+    let slot = builder
+        .build_bit_cast(buf, ptr_t, "slot")
+        .map_err(err)?
+        .into_pointer_value();
+    let site = builder
+        .build_call(setjmp_fn, &[slot.into()], "sj")
+        .map_err(err)?;
     let jumped = match site.try_as_basic_value() {
         ValueKind::Basic(v) => v.into_int_value(),
         ValueKind::Instruction(_) => {
-            return Err(Diagnostic::new(Code::E108, "llvm subset: setjmp returned void"));
+            return Err(Diagnostic::new(
+                Code::E108,
+                "llvm subset: setjmp returned void",
+            ));
         }
     };
     let panicked = builder
-        .build_int_compare(inkwell::IntPredicate::NE, jumped, context.i32_type().const_zero(), "panicked")
+        .build_int_compare(
+            inkwell::IntPredicate::NE,
+            jumped,
+            context.i32_type().const_zero(),
+            "panicked",
+        )
         .map_err(err)?;
-    builder.build_conditional_branch(panicked, panic_bb, run_bb).map_err(err)?;
+    builder
+        .build_conditional_branch(panicked, panic_bb, run_bb)
+        .map_err(err)?;
     builder.position_at_end(run_bb);
-    builder.build_call(export_push, &[slot.into()], "").map_err(err)?;
+    builder
+        .build_call(export_push, &[slot.into()], "")
+        .map_err(err)?;
     let site = builder.build_call(internal, &args, "r").map_err(err)?;
     builder.build_call(export_pop, &[], "").map_err(err)?;
     let drained_i8 = match builder
@@ -1581,7 +2712,10 @@ fn emit_c_wrapper<'ctx>(
     {
         ValueKind::Basic(v) => v.into_int_value(),
         ValueKind::Instruction(_) => {
-            return Err(Diagnostic::new(Code::E108, "llvm subset: drain returned void"));
+            return Err(Diagnostic::new(
+                Code::E108,
+                "llvm subset: drain returned void",
+            ));
         }
     };
     let drained = builder
@@ -1598,14 +2732,19 @@ fn emit_c_wrapper<'ctx>(
         .map_err(err)?;
     builder.position_at_end(ok_bb);
     for s in &strings {
-        builder.build_call(release_str, &[(*s).into()], "").map_err(err)?;
+        builder
+            .build_call(release_str, &[(*s).into()], "")
+            .map_err(err)?;
     }
     match ret {
         LirType::I64 | LirType::I8 => {
             let v = match site.try_as_basic_value() {
                 ValueKind::Basic(v) => v.into_int_value(),
                 ValueKind::Instruction(_) => {
-                    return Err(Diagnostic::new(Code::E108, "llvm subset: call returned void"));
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        "llvm subset: call returned void",
+                    ));
                 }
             };
             builder.build_return(Some(&v)).map_err(err)?;
@@ -1614,7 +2753,10 @@ fn emit_c_wrapper<'ctx>(
             let v = match site.try_as_basic_value() {
                 ValueKind::Basic(v) => v.into_int_value(),
                 ValueKind::Instruction(_) => {
-                    return Err(Diagnostic::new(Code::E108, "llvm subset: call returned void"));
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        "llvm subset: call returned void",
+                    ));
                 }
             };
             let d = builder.build_bit_cast(v, f64t, "d").map_err(err)?;
@@ -1624,7 +2766,10 @@ fn emit_c_wrapper<'ctx>(
             let v = match site.try_as_basic_value() {
                 ValueKind::Basic(v) => v.into_int_value(),
                 ValueKind::Instruction(_) => {
-                    return Err(Diagnostic::new(Code::E108, "llvm subset: call returned void"));
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        "llvm subset: call returned void",
+                    ));
                 }
             };
             let b = builder.build_int_truncate(v, i8t, "b").map_err(err)?;
@@ -1636,7 +2781,9 @@ fn emit_c_wrapper<'ctx>(
     }
     builder.position_at_end(panic_bb);
     for s in &strings {
-        builder.build_call(release_str, &[(*s).into()], "").map_err(err)?;
+        builder
+            .build_call(release_str, &[(*s).into()], "")
+            .map_err(err)?;
     }
     match ret {
         LirType::I64 | LirType::I8 => {
@@ -1658,7 +2805,10 @@ fn emit_c_wrapper<'ctx>(
     Ok(())
 }
 
-fn zero_value<'a>(context: &'a Context, ty: BasicTypeEnum<'a>) -> Result<BasicValueEnum<'a>, Diagnostic> {
+fn zero_value<'a>(
+    context: &'a Context,
+    ty: BasicTypeEnum<'a>,
+) -> Result<BasicValueEnum<'a>, Diagnostic> {
     match ty {
         BasicTypeEnum::IntType(t) => Ok(t.const_zero().into()),
         BasicTypeEnum::FloatType(t) => Ok(t.const_zero().into()),
@@ -1755,7 +2905,12 @@ fn vector_shape(
                 None => false,
             };
             match ins {
-                Instr::ArrayGet { arr, elem_size, index, .. } => {
+                Instr::ArrayGet {
+                    arr,
+                    elem_size,
+                    index,
+                    ..
+                } => {
                     if array_inline_elem(cx, *arr, *elem_size).is_some()
                         && cx.fresh_array_root.contains_key(arr)
                     {
@@ -1767,7 +2922,13 @@ fn vector_shape(
                         shape_ok = false;
                     }
                 }
-                Instr::ArraySet { arr, elem_size, index, value, .. } => {
+                Instr::ArraySet {
+                    arr,
+                    elem_size,
+                    index,
+                    value,
+                    ..
+                } => {
                     let prim = matches!(
                         cx.ftypes.get(*value as usize),
                         Some(LirType::I64) | Some(LirType::I8) | Some(LirType::F64(_))
@@ -1791,7 +2952,10 @@ fn vector_shape(
             }
         }
     }
-    (!calls && innermost && fresh_load && shape_ok, fresh_load && fresh_store)
+    (
+        !calls && innermost && fresh_load && shape_ok,
+        fresh_load && fresh_store,
+    )
 }
 
 fn loop_id<'a>(
@@ -1806,7 +2970,8 @@ fn loop_id<'a>(
             .iter()
             .map(|h| llvm_sys::core::LLVMValueAsMetadata(h.as_value_ref()))
             .collect();
-        let temp = llvm_sys::debuginfo::LLVMTemporaryMDNode(ctx_ref, parts.as_mut_ptr(), parts.len());
+        let temp =
+            llvm_sys::debuginfo::LLVMTemporaryMDNode(ctx_ref, parts.as_mut_ptr(), parts.len());
         let mut pair: Vec<_> = std::iter::once(temp).chain(parts.iter().copied()).collect();
         let node = llvm_sys::core::LLVMMDNodeInContext2(ctx_ref, pair.as_mut_ptr(), pair.len());
         llvm_sys::debuginfo::LLVMMetadataReplaceAllUsesWith(temp, node);
@@ -1882,7 +3047,9 @@ fn tag_loop_facts(cx: &FnCx, f: &lir::instr::Function) -> Result<(), Diagnostic>
         for &bi in lp.blocks.iter() {
             let is_latch = match &f.blocks[bi].term {
                 Terminator::Br(t) => *t == lp.header,
-                Terminator::BrIf { then_bb, else_bb, .. } => *then_bb == lp.header || *else_bb == lp.header,
+                Terminator::BrIf {
+                    then_bb, else_bb, ..
+                } => *then_bb == lp.header || *else_bb == lp.header,
                 _ => false,
             };
             if !is_latch {
@@ -1919,7 +3086,10 @@ fn emit_run_defers(cx: &mut FnCx, lir: &Module, keep: usize) -> Result<(), Diagn
     let mut dispatch: Vec<inkwell::basic_block::BasicBlock> = Vec::with_capacity(bodies.len());
     let mut work: Vec<inkwell::basic_block::BasicBlock> = Vec::with_capacity(bodies.len());
     for (n, _) in bodies.iter().enumerate() {
-        dispatch.push(cx.context.append_basic_block(func, &format!("defer_chk{n}")));
+        dispatch.push(
+            cx.context
+                .append_basic_block(func, &format!("defer_chk{n}")),
+        );
         work.push(cx.context.append_basic_block(func, &format!("defer_do{n}")));
     }
     cx.builder.build_unconditional_branch(head).map_err(err)?;
@@ -1965,7 +3135,11 @@ fn emit_run_defers(cx: &mut FnCx, lir: &Module, keep: usize) -> Result<(), Diagn
             .builder
             .build_int_compare(inkwell::IntPredicate::EQ, id, want, "defer_mine")
             .map_err(err)?;
-        let next = if n + 1 < dispatch.len() { dispatch[n + 1] } else { done };
+        let next = if n + 1 < dispatch.len() {
+            dispatch[n + 1]
+        } else {
+            done
+        };
         cx.builder
             .build_conditional_branch(is_mine, work[n], next)
             .map_err(err)?;
@@ -1976,7 +3150,9 @@ fn emit_run_defers(cx: &mut FnCx, lir: &Module, keep: usize) -> Result<(), Diagn
         cx.builder.build_unconditional_branch(head).map_err(err)?;
     }
     cx.builder.position_at_end(done);
-    cx.builder.build_unconditional_branch(resume_next).map_err(err)?;
+    cx.builder
+        .build_unconditional_branch(resume_next)
+        .map_err(err)?;
     cx.builder.position_at_end(resume_next);
     Ok(())
 }
@@ -1999,9 +3175,7 @@ fn load<'a>(cx: &FnCx<'a>, l: Local) -> Result<IntValue<'a>, Diagnostic> {
 
 fn load_value<'a>(cx: &FnCx<'a>, l: Local) -> Result<BasicValueEnum<'a>, Diagnostic> {
     match cx.ftypes.get(l as usize) {
-        Some(LirType::Vec4f) | Some(LirType::Vec4i) => {
-            load_vec(cx, l).map(|v| v.into())
-        }
+        Some(LirType::Vec4f) | Some(LirType::Vec4i) => load_vec(cx, l).map(|v| v.into()),
         _ => load(cx, l).map(|v| v.into()),
     }
 }
@@ -2015,7 +3189,10 @@ fn double_of<'a>(cx: &FnCx<'a>, l: Local) -> Result<FloatValue<'a>, Diagnostic> 
             .build_bit_cast(bits, f64t, "f")
             .map_err(err)
             .map(|v| v.into_float_value()),
-        _ => cx.builder.build_signed_int_to_float(bits, f64t, "f").map_err(err),
+        _ => cx
+            .builder
+            .build_signed_int_to_float(bits, f64t, "f")
+            .map_err(err),
     }
 }
 
@@ -2057,8 +3234,14 @@ fn fast_flags(_cx: &FnCx, v: FloatValue, fast: bool) -> Result<(), Diagnostic> {
 }
 
 fn store(cx: &FnCx, dst: Local, v: BasicValueEnum) -> Result<(), Diagnostic> {
-    cx.builder.build_store(cx.locals[dst as usize], v).map_err(err)?;
-    cx.writes.borrow_mut().entry(dst).or_default().push(cx.cur_block);
+    cx.builder
+        .build_store(cx.locals[dst as usize], v)
+        .map_err(err)?;
+    cx.writes
+        .borrow_mut()
+        .entry(dst)
+        .or_default()
+        .push(cx.cur_block);
     Ok(())
 }
 
@@ -2092,7 +3275,9 @@ fn own(cx: &mut FnCx, l: Local) {
 }
 
 fn any_retain_val(cx: &FnCx, v: inkwell::values::IntValue) -> Result<(), Diagnostic> {
-    cx.builder.build_call(cx.any_retain, &[v.into()], "").map_err(err)?;
+    cx.builder
+        .build_call(cx.any_retain, &[v.into()], "")
+        .map_err(err)?;
     Ok(())
 }
 
@@ -2105,7 +3290,11 @@ fn track_heap(
 ) -> Result<(), Diagnostic> {
     let k = cx.context.i64_type().const_int(kind, false);
     cx.builder
-        .build_call(cx.heap_track, &[ptr.into(), k.into(), aux1.into(), aux2.into()], "")
+        .build_call(
+            cx.heap_track,
+            &[ptr.into(), k.into(), aux1.into(), aux2.into()],
+            "",
+        )
         .map_err(err)?;
     Ok(())
 }
@@ -2122,18 +3311,27 @@ fn erased_obj(lir: &Module, cx: &FnCx, l: Local) -> bool {
     }
 }
 
-fn retain_val(cx: &FnCx, lir: &Module, l: Local, v: inkwell::values::IntValue) -> Result<(), Diagnostic> {
+fn retain_val(
+    cx: &FnCx,
+    lir: &Module,
+    l: Local,
+    v: inkwell::values::IntValue,
+) -> Result<(), Diagnostic> {
     if erased_obj(lir, cx, l) {
         any_retain_val(cx, v)
     } else {
         let ptr = as_ptr(cx, v)?;
-        cx.builder.build_call(cx.retain, &[ptr.into()], "").map_err(err)?;
+        cx.builder
+            .build_call(cx.retain, &[ptr.into()], "")
+            .map_err(err)?;
         Ok(())
     }
 }
 
 fn any_release_val(cx: &FnCx, v: inkwell::values::IntValue) -> Result<(), Diagnostic> {
-    cx.builder.build_call(cx.any_release, &[v.into()], "").map_err(err)?;
+    cx.builder
+        .build_call(cx.any_release, &[v.into()], "")
+        .map_err(err)?;
     Ok(())
 }
 
@@ -2165,8 +3363,13 @@ fn release_call_args(
     Ok(())
 }
 
-fn as_ptr<'a>(cx: &FnCx<'a>, v: IntValue<'a>) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
-    cx.builder.build_int_to_ptr(v, cx.context.ptr_type(inkwell::AddressSpace::default()), "").map_err(err)
+fn as_ptr<'a>(
+    cx: &FnCx<'a>,
+    v: IntValue<'a>,
+) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
+    cx.builder
+        .build_int_to_ptr(v, cx.context.ptr_type(inkwell::AddressSpace::default()), "")
+        .map_err(err)
 }
 
 fn local_alloca_ty<'a>(context: &'a Context, t: &LirType) -> BasicTypeEnum<'a> {
@@ -2181,7 +3384,12 @@ fn load_vec<'a>(cx: &FnCx<'a>, l: Local) -> Result<VectorValue<'a>, Diagnostic> 
     let ty = match cx.ftypes.get(l as usize) {
         Some(LirType::Vec4f) => cx.context.f32_type().vec_type(4),
         Some(LirType::Vec4i) => cx.context.i32_type().vec_type(4),
-        _ => return Err(Diagnostic::new(Code::E108, "llvm subset: vector load of scalar")),
+        _ => {
+            return Err(Diagnostic::new(
+                Code::E108,
+                "llvm subset: vector load of scalar",
+            ));
+        }
     };
     cx.builder
         .build_load(ty, cx.locals[l as usize], "v")
@@ -2191,28 +3399,40 @@ fn load_vec<'a>(cx: &FnCx<'a>, l: Local) -> Result<VectorValue<'a>, Diagnostic> 
 
 fn f32_of_lane<'a>(cx: &FnCx<'a>, l: Local) -> Result<FloatValue<'a>, Diagnostic> {
     let d = double_of(cx, l)?;
-    cx.builder.build_float_trunc(d, cx.context.f32_type(), "t").map_err(err)
+    cx.builder
+        .build_float_trunc(d, cx.context.f32_type(), "t")
+        .map_err(err)
 }
 
 fn store_f32(cx: &FnCx, dst: Local, v: FloatValue) -> Result<(), Diagnostic> {
-    let d = cx.builder.build_float_ext(v, cx.context.f64_type(), "e").map_err(err)?;
+    let d = cx
+        .builder
+        .build_float_ext(v, cx.context.f64_type(), "e")
+        .map_err(err)?;
     store_double(cx, dst, d)
 }
 
 fn i32_of_lane<'a>(cx: &FnCx<'a>, l: Local) -> Result<IntValue<'a>, Diagnostic> {
     let v = load(cx, l)?;
-    cx.builder.build_int_truncate(v, cx.context.i32_type(), "t").map_err(err)
+    cx.builder
+        .build_int_truncate(v, cx.context.i32_type(), "t")
+        .map_err(err)
 }
 
 fn store_i32(cx: &FnCx, dst: Local, v: IntValue) -> Result<(), Diagnostic> {
-    let w = cx.builder.build_int_s_extend(v, cx.context.i64_type(), "e").map_err(err)?;
+    let w = cx
+        .builder
+        .build_int_s_extend(v, cx.context.i64_type(), "e")
+        .map_err(err)?;
     store(cx, dst, w.into())
 }
 
 fn str_addr<'a>(cx: &FnCx<'a>, text: &str) -> Result<IntValue<'a>, Diagnostic> {
-    let gv = cx.strings.get(text).copied().ok_or_else(|| {
-        Diagnostic::new(Code::E108, "llvm subset: missing static str")
-    })?;
+    let gv = cx
+        .strings
+        .get(text)
+        .copied()
+        .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: missing static str"))?;
     cx.builder
         .build_ptr_to_int(gv.as_pointer_value(), cx.context.i64_type(), "")
         .map_err(err)
@@ -2220,28 +3440,47 @@ fn str_addr<'a>(cx: &FnCx<'a>, text: &str) -> Result<IntValue<'a>, Diagnostic> {
 
 fn release_str_val(cx: &FnCx, v: IntValue) -> Result<(), Diagnostic> {
     let ptr = as_ptr(cx, v)?;
-    cx.builder.build_call(cx.release_str, &[ptr.into()], "").map_err(err)?;
+    cx.builder
+        .build_call(cx.release_str, &[ptr.into()], "")
+        .map_err(err)?;
     Ok(())
 }
 
-fn guard_int<'a>(cx: &FnCx<'a>, ptr: IntValue<'a>, keep: Option<IntValue<'a>>) -> Result<IntValue<'a>, Diagnostic> {
+fn guard_int<'a>(
+    cx: &FnCx<'a>,
+    ptr: IntValue<'a>,
+    keep: Option<IntValue<'a>>,
+) -> Result<IntValue<'a>, Diagnostic> {
     match keep {
         None => Ok(ptr),
         Some(k) => {
-            let same = cx.builder.build_int_compare(IntPredicate::EQ, ptr, k, "alias").map_err(err)?;
+            let same = cx
+                .builder
+                .build_int_compare(IntPredicate::EQ, ptr, k, "alias")
+                .map_err(err)?;
             let zero = cx.context.i64_type().const_zero();
-            cx.builder.build_select(same, zero, ptr, "unguarded").map_err(err).map(|v| v.into_int_value())
+            cx.builder
+                .build_select(same, zero, ptr, "unguarded")
+                .map_err(err)
+                .map(|v| v.into_int_value())
         }
     }
 }
 
-fn release_any(cx: &mut FnCx, lir: &Module, l: Local, keep: Option<IntValue>) -> Result<(), Diagnostic> {
+fn release_any(
+    cx: &mut FnCx,
+    lir: &Module,
+    l: Local,
+    keep: Option<IntValue>,
+) -> Result<(), Diagnostic> {
     match cx.ftypes.get(l as usize).cloned() {
         Some(LirType::Closure) => {
             let base = load(cx, l)?;
             let raw = guard_int(cx, base, keep)?;
             let ptr = as_ptr(cx, raw)?;
-            cx.builder.build_call(cx.closure_release, &[ptr.into()], "").map_err(err)?;
+            cx.builder
+                .build_call(cx.closure_release, &[ptr.into()], "")
+                .map_err(err)?;
             cx.owned.remove(&l);
             cx.ever_owned.remove(&l);
             Ok(())
@@ -2256,7 +3495,9 @@ fn release_any(cx: &mut FnCx, lir: &Module, l: Local, keep: Option<IntValue>) ->
         Some(LirType::Error) => {
             let base = load(cx, l)?;
             let guarded = guard_int(cx, base, keep)?;
-            cx.builder.build_call(cx.error_release, &[guarded.into()], "").map_err(err)?;
+            cx.builder
+                .build_call(cx.error_release, &[guarded.into()], "")
+                .map_err(err)?;
             cx.owned.remove(&l);
             cx.ever_owned.remove(&l);
             Ok(())
@@ -2284,7 +3525,9 @@ fn release_any(cx: &mut FnCx, lir: &Module, l: Local, keep: Option<IntValue>) ->
             let ptr = as_ptr(cx, guard_int(cx, raw, keep)?)?;
             let n = cx.context.i64_type().const_int(size, false);
             let dtor = enum_dtor_ptr(cx, lir, ei)?;
-            cx.builder.build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "").map_err(err)?;
+            cx.builder
+                .build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "")
+                .map_err(err)?;
             cx.owned.remove(&l);
             cx.ever_owned.remove(&l);
             Ok(())
@@ -2320,12 +3563,19 @@ fn llvm_array_capturable(inner: &LirType) -> bool {
     )
 }
 
-fn array_elem_dtor<'a>(cx: &FnCx<'a>, lir: &Module, elem: &LirType) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
+fn array_elem_dtor<'a>(
+    cx: &FnCx<'a>,
+    lir: &Module,
+    elem: &LirType,
+) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
     let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
     if let Some(fid) = lir.array_dtors.get(&lir::instr::type_key(elem)) {
         let fname = &lir.functions[*fid].name;
         let fv = cx.funcs.get(fname).copied().ok_or_else(|| {
-            Diagnostic::new(Code::E108, format!("llvm subset: unknown array dtor `{fname}`"))
+            Diagnostic::new(
+                Code::E108,
+                format!("llvm subset: unknown array dtor `{fname}`"),
+            )
         })?;
         return Ok(fv.as_global_value().as_pointer_value());
     }
@@ -2346,29 +3596,55 @@ fn array_elem_dtor<'a>(cx: &FnCx<'a>, lir: &Module, elem: &LirType) -> Result<in
         LirType::Str => Ok(cx.release_str.as_global_value().as_pointer_value()),
         LirType::Closure => Ok(cx.closure_release.as_global_value().as_pointer_value()),
         LirType::Enum(ei) => enum_dtor_ptr(cx, lir, *ei),
-        LirType::Any => Ok(cx.any_release.as_global_value().as_pointer_value()),
+        // An `Any` value is a 64-bit tagged word, but a dtor is called
+        // through a pointer-sized slot. On wasm32 those mean different
+        // signatures, so the runtime provides a 32-bit entry point that
+        // forwards to the 64-bit one.
+        LirType::Any => {
+            if sysroot::target::active_target().arch == sysroot::target::Arch::Wasm32 {
+                Ok(cx.any_release_ptr.as_global_value().as_pointer_value())
+            } else {
+                Ok(cx.any_release.as_global_value().as_pointer_value())
+            }
+        }
         LirType::Array(_) => {
             let key = lir::instr::type_key(elem);
             match lir.array_dtors.get(&key) {
                 Some(fid) => {
                     let fname = &lir.functions[*fid].name;
                     let fv = cx.funcs.get(fname).copied().ok_or_else(|| {
-                        Diagnostic::new(Code::E108, format!("llvm subset: unknown array dtor `{fname}`"))
+                        Diagnostic::new(
+                            Code::E108,
+                            format!("llvm subset: unknown array dtor `{fname}`"),
+                        )
                     })?;
                     Ok(fv.as_global_value().as_pointer_value())
                 }
-                None => Err(Diagnostic::new(Code::E108, "llvm subset: missing array dtor")),
+                None => Err(Diagnostic::new(
+                    Code::E108,
+                    "llvm subset: missing array dtor",
+                )),
             }
         }
         _ => Ok(ptr_t.const_null()),
     }
 }
 
-fn release_array_val(cx: &FnCx, lir: &Module, base: IntValue, elem: &LirType) -> Result<(), Diagnostic> {
+fn release_array_val(
+    cx: &FnCx,
+    lir: &Module,
+    base: IntValue,
+    elem: &LirType,
+) -> Result<(), Diagnostic> {
     let ptr = as_ptr(cx, base)?;
-    let n = cx.context.i64_type().const_int(lir::instr::elem_size(elem) as u64, false);
+    let n = cx
+        .context
+        .i64_type()
+        .const_int(lir::instr::elem_size(elem) as u64, false);
     let dtor = array_elem_dtor(cx, lir, elem)?;
-    cx.builder.build_call(cx.release_array, &[ptr.into(), n.into(), dtor.into()], "").map_err(err)?;
+    cx.builder
+        .build_call(cx.release_array, &[ptr.into(), n.into(), dtor.into()], "")
+        .map_err(err)?;
     Ok(())
 }
 
@@ -2442,7 +3718,10 @@ fn array_len_value<'a>(cx: &'a FnCx<'a>, ap: PointerValue<'a>) -> Result<IntValu
     Ok(v)
 }
 
-fn array_data_ptr<'a>(cx: &'a FnCx<'a>, ap: PointerValue<'a>) -> Result<PointerValue<'a>, Diagnostic> {
+fn array_data_ptr<'a>(
+    cx: &'a FnCx<'a>,
+    ap: PointerValue<'a>,
+) -> Result<PointerValue<'a>, Diagnostic> {
     let i8t = cx.context.i8_type();
     let i64t = cx.context.i64_type();
     let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
@@ -2464,7 +3743,12 @@ fn array_elem_ptr<'a>(
     unsafe { cx.builder.build_in_bounds_gep(i64t, datap, &[idx], "") }.map_err(err)
 }
 
-fn inline_array_len(cx: &FnCx, span: diagnostics::Span, arr: Local, dst: Local) -> Result<(), Diagnostic> {
+fn inline_array_len(
+    cx: &FnCx,
+    span: diagnostics::Span,
+    arr: Local,
+    dst: Local,
+) -> Result<(), Diagnostic> {
     let i64t = cx.context.i64_type();
     let a = load(cx, arr)?;
     if !cx.nonnull.contains(&arr) {
@@ -2483,30 +3767,51 @@ fn inline_array_len(cx: &FnCx, span: diagnostics::Span, arr: Local, dst: Local) 
     store(cx, dst, len)
 }
 
-fn trap_if_null(cx: &FnCx, span: diagnostics::Span, msg: &str, recv: IntValue) -> Result<(), Diagnostic> {
+fn trap_if_null(
+    cx: &FnCx,
+    span: diagnostics::Span,
+    msg: &str,
+    recv: IntValue,
+) -> Result<(), Diagnostic> {
     let i64t = cx.context.i64_type();
     let zero = i64t.const_zero();
-    let is_null = cx.builder.build_int_compare(IntPredicate::EQ, recv, zero, "nullrecv").map_err(err)?;
-    let fv = cx.builder.get_insert_block().and_then(|b| b.get_parent()).ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: no insert function"))?;
+    let is_null = cx
+        .builder
+        .build_int_compare(IntPredicate::EQ, recv, zero, "nullrecv")
+        .map_err(err)?;
+    let fv = cx
+        .builder
+        .get_insert_block()
+        .and_then(|b| b.get_parent())
+        .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: no insert function"))?;
     let trap_bb = cx.context.append_basic_block(fv, "null_recv");
     let cont_bb = cx.context.append_basic_block(fv, "recv_ok");
-    cx.builder.build_conditional_branch(is_null, trap_bb, cont_bb).map_err(err)?;
+    cx.builder
+        .build_conditional_branch(is_null, trap_bb, cont_bb)
+        .map_err(err)?;
     cx.builder.position_at_end(trap_bb);
     let m = str_addr(cx, msg)?;
     let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
     let p = cx.builder.build_int_to_ptr(m, ptr_t, "").map_err(err)?;
     let s = i64t.const_int(span.start as u64, false);
     let e = i64t.const_int(span.end as u64, false);
-    cx.builder.build_call(cx.fatal_span, &[p.into(), s.into(), e.into()], "").map_err(err)?;
+    cx.builder
+        .build_call(cx.fatal_span, &[p.into(), s.into(), e.into()], "")
+        .map_err(err)?;
     if cx.ret_slots <= 1 {
         cx.builder.build_return(Some(&zero)).map_err(err)?;
     } else {
-        let fields: Vec<inkwell::types::BasicTypeEnum> =
-            (0..cx.ret_slots).map(|_| cx.context.i64_type().into()).collect();
+        let fields: Vec<inkwell::types::BasicTypeEnum> = (0..cx.ret_slots)
+            .map(|_| cx.context.i64_type().into())
+            .collect();
         let st = cx.context.struct_type(&fields, false);
         let mut agg = st.get_undef();
         for i in 0..cx.ret_slots {
-            agg = cx.builder.build_insert_value(agg, zero, i as u32, "errz").map_err(err)?.into_struct_value();
+            agg = cx
+                .builder
+                .build_insert_value(agg, zero, i as u32, "errz")
+                .map_err(err)?
+                .into_struct_value();
         }
         cx.builder.build_return(Some(&agg)).map_err(err)?;
     }
@@ -2548,7 +3853,10 @@ fn inline_array_get<'x>(
                 tag_group(cx, arr);
                 let d = loaded.into_float_value();
                 tag_last(cx, cx.tbaa_payload);
-                cx.builder.build_bit_cast(d, i64t, "").map_err(err)?.into_int_value()
+                cx.builder
+                    .build_bit_cast(d, i64t, "")
+                    .map_err(err)?
+                    .into_int_value()
             }
         };
         store(cx, dst, fast_bits.into())?;
@@ -2564,30 +3872,56 @@ fn inline_array_get<'x>(
     let join_bb = cx.context.append_basic_block(fv, "ag_join");
     if cx.nonnull.contains(&arr) {
         let len = array_len_value(cx, ap)?;
-        let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
-        let br = cx.builder.build_conditional_branch(inrange, fast_bb, slow_bb).map_err(err)?;
+        let inrange = cx
+            .builder
+            .build_int_compare(IntPredicate::ULT, i, len, "")
+            .map_err(err)?;
+        let br = cx
+            .builder
+            .build_conditional_branch(inrange, fast_bb, slow_bb)
+            .map_err(err)?;
         cold_branch(cx, br, 2000000, 1);
     } else {
         let check_bb = cx.context.append_basic_block(fv, "ag_check");
-        let notnull = cx.builder.build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "").map_err(err)?;
-        let br_null = cx.builder.build_conditional_branch(notnull, check_bb, slow_bb).map_err(err)?;
+        let notnull = cx
+            .builder
+            .build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "")
+            .map_err(err)?;
+        let br_null = cx
+            .builder
+            .build_conditional_branch(notnull, check_bb, slow_bb)
+            .map_err(err)?;
         cold_branch(cx, br_null, 2000000, 1);
         cx.builder.position_at_end(check_bb);
         let len = array_len_value(cx, ap)?;
-        let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
-        let br = cx.builder.build_conditional_branch(inrange, fast_bb, slow_bb).map_err(err)?;
+        let inrange = cx
+            .builder
+            .build_int_compare(IntPredicate::ULT, i, len, "")
+            .map_err(err)?;
+        let br = cx
+            .builder
+            .build_conditional_branch(inrange, fast_bb, slow_bb)
+            .map_err(err)?;
         cold_branch(cx, br, 2000000, 1);
     }
     cx.builder.position_at_end(slow_bb);
     let e = i64t.const_int(8, false);
-    let site = cx.builder.build_call(cx.array_get, &[ap.into(), i.into(), e.into()], "").map_err(err)?;
+    let site = cx
+        .builder
+        .build_call(cx.array_get, &[ap.into(), i.into(), e.into()], "")
+        .map_err(err)?;
     let slow_bits = match site.try_as_basic_value() {
         ValueKind::Basic(v) => v.into_int_value(),
         ValueKind::Instruction(_) => {
-            return Err(Diagnostic::new(Code::E108, "llvm subset: array_get returned void"));
+            return Err(Diagnostic::new(
+                Code::E108,
+                "llvm subset: array_get returned void",
+            ));
         }
     };
-    cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
+    cx.builder
+        .build_unconditional_branch(join_bb)
+        .map_err(err)?;
     cx.builder.position_at_end(fast_bb);
     let datap = array_data_ptr(cx, ap)?;
     let ep = array_elem_ptr(cx, datap, i)?;
@@ -2609,10 +3943,15 @@ fn inline_array_get<'x>(
             tag_group(cx, arr);
             let d = loaded.into_float_value();
             tag_last(cx, cx.tbaa_payload);
-            cx.builder.build_bit_cast(d, i64t, "").map_err(err)?.into_int_value()
+            cx.builder
+                .build_bit_cast(d, i64t, "")
+                .map_err(err)?
+                .into_int_value()
         }
     };
-    cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
+    cx.builder
+        .build_unconditional_branch(join_bb)
+        .map_err(err)?;
     cx.builder.position_at_end(join_bb);
     let phi = cx.builder.build_phi(i64t, "ag").map_err(err)?;
     phi.add_incoming(&[
@@ -2661,35 +4000,62 @@ fn inline_array_set(
     let join_bb = cx.context.append_basic_block(fv, "as_join");
     if cx.nonnull.contains(&arr) {
         let len = array_len_value(cx, ap)?;
-        let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
-        let br = cx.builder.build_conditional_branch(inrange, fast_bb, slow_bb).map_err(err)?;
+        let inrange = cx
+            .builder
+            .build_int_compare(IntPredicate::ULT, i, len, "")
+            .map_err(err)?;
+        let br = cx
+            .builder
+            .build_conditional_branch(inrange, fast_bb, slow_bb)
+            .map_err(err)?;
         cold_branch(cx, br, 2000000, 1);
     } else {
         let check_bb = cx.context.append_basic_block(fv, "as_check");
-        let notnull = cx.builder.build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "").map_err(err)?;
-        let br_null = cx.builder.build_conditional_branch(notnull, check_bb, slow_bb).map_err(err)?;
+        let notnull = cx
+            .builder
+            .build_not(cx.builder.build_is_null(ap, "").map_err(err)?, "")
+            .map_err(err)?;
+        let br_null = cx
+            .builder
+            .build_conditional_branch(notnull, check_bb, slow_bb)
+            .map_err(err)?;
         cold_branch(cx, br_null, 2000000, 1);
         cx.builder.position_at_end(check_bb);
         let len = array_len_value(cx, ap)?;
-        let inrange = cx.builder.build_int_compare(IntPredicate::ULT, i, len, "").map_err(err)?;
-        let br = cx.builder.build_conditional_branch(inrange, fast_bb, slow_bb).map_err(err)?;
+        let inrange = cx
+            .builder
+            .build_int_compare(IntPredicate::ULT, i, len, "")
+            .map_err(err)?;
+        let br = cx
+            .builder
+            .build_conditional_branch(inrange, fast_bb, slow_bb)
+            .map_err(err)?;
         cold_branch(cx, br, 2000000, 1);
     }
     cx.builder.position_at_end(slow_bb);
     let e = i64t.const_int(8, false);
-    cx.builder.build_call(cx.array_set, &[ap.into(), i.into(), v.into(), e.into()], "").map_err(err)?;
-    cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
+    cx.builder
+        .build_call(cx.array_set, &[ap.into(), i.into(), v.into(), e.into()], "")
+        .map_err(err)?;
+    cx.builder
+        .build_unconditional_branch(join_bb)
+        .map_err(err)?;
     cx.builder.position_at_end(fast_bb);
     let datap = array_data_ptr(cx, ap)?;
     let ep = array_elem_ptr(cx, datap, i)?;
     cx.builder.build_store(ep, v).map_err(err)?;
     align_last(cx);
-    cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
+    cx.builder
+        .build_unconditional_branch(join_bb)
+        .map_err(err)?;
     cx.builder.position_at_end(join_bb);
     Ok(())
 }
 
-fn array_len_slot<'a>(cx: &'a FnCx<'a>, ap: PointerValue<'a>) -> Result<PointerValue<'a>, Diagnostic> {
+fn array_len_slot<'a>(
+    cx: &'a FnCx<'a>,
+    ap: PointerValue<'a>,
+) -> Result<PointerValue<'a>, Diagnostic> {
     let i8t = cx.context.i8_type();
     let i64t = cx.context.i64_type();
     let off = i64t.const_int(16, false);
@@ -2735,51 +4101,82 @@ fn inline_array_push(cx: &FnCx, arr: Local, value: Local) -> Result<(), Diagnost
     let len = if cx.nonnull.contains(&arr) {
         let len = array_len_value(cx, ap)?;
         let cap = array_cap_value(cx, ap)?;
-        let full = cx.builder.build_int_compare(IntPredicate::EQ, len, cap, "").map_err(err)?;
-        let br_full = cx.builder.build_conditional_branch(full, slow_bb, fast_bb).map_err(err)?;
+        let full = cx
+            .builder
+            .build_int_compare(IntPredicate::EQ, len, cap, "")
+            .map_err(err)?;
+        let br_full = cx
+            .builder
+            .build_conditional_branch(full, slow_bb, fast_bb)
+            .map_err(err)?;
         cold_branch(cx, br_full, 1, 2000000);
         len
     } else {
         let check_bb = cx.context.append_basic_block(fv, "ap_check");
         let isnull = cx.builder.build_is_null(ap, "").map_err(err)?;
-        let br_null = cx.builder.build_conditional_branch(isnull, slow_bb, check_bb).map_err(err)?;
+        let br_null = cx
+            .builder
+            .build_conditional_branch(isnull, slow_bb, check_bb)
+            .map_err(err)?;
         cold_branch(cx, br_null, 1, 2000000);
         cx.builder.position_at_end(check_bb);
         let len = array_len_value(cx, ap)?;
         let cap = array_cap_value(cx, ap)?;
-        let full = cx.builder.build_int_compare(IntPredicate::EQ, len, cap, "").map_err(err)?;
-        let br_full = cx.builder.build_conditional_branch(full, slow_bb, fast_bb).map_err(err)?;
+        let full = cx
+            .builder
+            .build_int_compare(IntPredicate::EQ, len, cap, "")
+            .map_err(err)?;
+        let br_full = cx
+            .builder
+            .build_conditional_branch(full, slow_bb, fast_bb)
+            .map_err(err)?;
         cold_branch(cx, br_full, 1, 2000000);
         len
     };
     cx.builder.position_at_end(slow_bb);
     let e = i64t.const_int(8, false);
-    cx.builder.build_call(cx.array_push, &[ap.into(), v.into(), e.into()], "").map_err(err)?;
-    cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
+    cx.builder
+        .build_call(cx.array_push, &[ap.into(), v.into(), e.into()], "")
+        .map_err(err)?;
+    cx.builder
+        .build_unconditional_branch(join_bb)
+        .map_err(err)?;
     cx.builder.position_at_end(fast_bb);
     let datap = array_data_ptr(cx, ap)?;
     let ep = array_elem_ptr(cx, datap, len)?;
     cx.builder.build_store(ep, v).map_err(err)?;
     align_last(cx);
     tag_last(cx, cx.tbaa_payload);
-    let new_len = cx.builder.build_int_add(len, i64t.const_int(1, false), "").map_err(err)?;
+    let new_len = cx
+        .builder
+        .build_int_add(len, i64t.const_int(1, false), "")
+        .map_err(err)?;
     let slot = array_len_slot(cx, ap)?;
     cx.builder.build_store(slot, new_len).map_err(err)?;
     align_last(cx);
     tag_last(cx, cx.tbaa_header);
-    cx.builder.build_unconditional_branch(join_bb).map_err(err)?;
+    cx.builder
+        .build_unconditional_branch(join_bb)
+        .map_err(err)?;
     cx.builder.position_at_end(join_bb);
     Ok(())
 }
 
-fn try_sqrt_intrinsic<'a>(cx: &'a FnCx<'a>, arg: Local) -> Result<Option<IntValue<'a>>, Diagnostic> {
+fn try_sqrt_intrinsic<'a>(
+    cx: &'a FnCx<'a>,
+    arg: Local,
+) -> Result<Option<IntValue<'a>>, Diagnostic> {
     let decl = match cx.sqrt_fn {
         Some(f) => f,
         None => return Ok(None),
     };
     let f64t = cx.context.f64_type();
     let bits = load(cx, arg)?;
-    let d = cx.builder.build_bit_cast(bits, f64t, "").map_err(err)?.into_float_value();
+    let d = cx
+        .builder
+        .build_bit_cast(bits, f64t, "")
+        .map_err(err)?
+        .into_float_value();
     let site = cx.builder.build_call(decl, &[d.into()], "").map_err(err)?;
     match site.try_as_basic_value() {
         ValueKind::Basic(v) => {
@@ -2795,16 +4192,32 @@ fn try_sqrt_intrinsic<'a>(cx: &'a FnCx<'a>, arg: Local) -> Result<Option<IntValu
     }
 }
 
-fn array_get_old<'a>(cx: &'a FnCx<'a>, arr: Local, index: Local, elem_size: usize, unchecked: bool) -> Result<IntValue<'a>, Diagnostic> {
+fn array_get_old<'a>(
+    cx: &'a FnCx<'a>,
+    arr: Local,
+    index: Local,
+    elem_size: usize,
+    unchecked: bool,
+) -> Result<IntValue<'a>, Diagnostic> {
     let a = load(cx, arr)?;
     let ap = as_ptr(cx, a)?;
     let i = load(cx, index)?;
     let e = cx.context.i64_type().const_int(elem_size as u64, false);
-    let callee = if unchecked { cx.array_get_unchecked } else { cx.array_get };
-    let site = cx.builder.build_call(callee, &[ap.into(), i.into(), e.into()], "").map_err(err)?;
+    let callee = if unchecked {
+        cx.array_get_unchecked
+    } else {
+        cx.array_get
+    };
+    let site = cx
+        .builder
+        .build_call(callee, &[ap.into(), i.into(), e.into()], "")
+        .map_err(err)?;
     match site.try_as_basic_value() {
         ValueKind::Basic(v) => Ok(v.into_int_value()),
-        ValueKind::Instruction(_) => Err(Diagnostic::new(Code::E108, "llvm subset: array_get returned void")),
+        ValueKind::Instruction(_) => Err(Diagnostic::new(
+            Code::E108,
+            "llvm subset: array_get returned void",
+        )),
     }
 }
 
@@ -2820,14 +4233,21 @@ fn array_release_old(cx: &FnCx, lir: &Module, arr: Local, old: IntValue) -> Resu
                 let ptr = as_ptr(cx, old)?;
                 let n = cx.context.i64_type().const_int(size, false);
                 let dtor = enum_dtor_ptr(cx, lir, ei)?;
-                cx.builder.build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "").map_err(err)?;
+                cx.builder
+                    .build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "")
+                    .map_err(err)?;
                 Ok(())
             }
             LirType::Obj(_) | LirType::Array(_) => {
                 let ptr = as_ptr(cx, old)?;
-                let n = cx.context.i64_type().const_int(lir::instr::elem_size(&inner) as u64, false);
+                let n = cx
+                    .context
+                    .i64_type()
+                    .const_int(lir::instr::elem_size(&inner) as u64, false);
                 let dtor = array_elem_dtor(cx, lir, &inner)?;
-                cx.builder.build_call(cx.release_array, &[ptr.into(), n.into(), dtor.into()], "").map_err(err)?;
+                cx.builder
+                    .build_call(cx.release_array, &[ptr.into(), n.into(), dtor.into()], "")
+                    .map_err(err)?;
                 Ok(())
             }
             LirType::Any => any_release_val(cx, old),
@@ -2848,21 +4268,33 @@ fn print_tag(ty: &LirType) -> u64 {
     }
 }
 
-fn dtor_ptr<'a>(cx: &FnCx<'a>, lir: &Module, l: Local) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
+fn dtor_ptr<'a>(
+    cx: &FnCx<'a>,
+    lir: &Module,
+    l: Local,
+) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
     let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
     let fid = match cx.ftypes.get(l as usize) {
         Some(LirType::Obj(name)) => {
-            let ci = lir.class_index.get(name).copied().ok_or_else(|| {
-                Diagnostic::new(Code::E108, "llvm subset: unknown class")
-            })?;
+            let ci = lir
+                .class_index
+                .get(name)
+                .copied()
+                .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: unknown class"))?;
             lir.classes[ci].dtor
         }
         Some(LirType::Enum(ei)) => {
-            lir.enums.get(*ei).ok_or_else(|| {
-                Diagnostic::new(Code::E108, "llvm subset: unknown enum")
-            })?.dtor
+            lir.enums
+                .get(*ei)
+                .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: unknown enum"))?
+                .dtor
         }
-        _ => return Err(Diagnostic::new(Code::E108, "llvm subset: dtor of non-object")),
+        _ => {
+            return Err(Diagnostic::new(
+                Code::E108,
+                "llvm subset: dtor of non-object",
+            ));
+        }
     };
     match fid {
         Some(fid) => {
@@ -2876,14 +4308,21 @@ fn dtor_ptr<'a>(cx: &FnCx<'a>, lir: &Module, l: Local) -> Result<inkwell::values
     }
 }
 
-fn enum_dtor_ptr<'a>(cx: &FnCx<'a>, lir: &Module, ei: usize) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
+fn enum_dtor_ptr<'a>(
+    cx: &FnCx<'a>,
+    lir: &Module,
+    ei: usize,
+) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
     let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
     let dtor = lir.enums.get(ei).and_then(|e| e.dtor);
     match dtor {
         Some(fid) => {
             let fname = &lir.functions[fid].name;
             let fv = cx.funcs.get(fname).copied().ok_or_else(|| {
-                Diagnostic::new(Code::E108, format!("llvm subset: unknown enum dtor `{fname}`"))
+                Diagnostic::new(
+                    Code::E108,
+                    format!("llvm subset: unknown enum dtor `{fname}`"),
+                )
             })?;
             Ok(fv.as_global_value().as_pointer_value())
         }
@@ -2891,25 +4330,46 @@ fn enum_dtor_ptr<'a>(cx: &FnCx<'a>, lir: &Module, ei: usize) -> Result<inkwell::
     }
 }
 
-fn field_dtor_ptr<'a>(cx: &FnCx<'a>, lir: &Module, obj: Local, field: usize) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
+fn field_dtor_ptr<'a>(
+    cx: &FnCx<'a>,
+    lir: &Module,
+    obj: Local,
+    field: usize,
+) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
     let ptr_t = cx.context.ptr_type(inkwell::AddressSpace::default());
     let class_name = match cx.ftypes.get(obj as usize) {
         Some(LirType::Obj(name)) => name.clone(),
-        _ => return Err(Diagnostic::new(Code::E108, "llvm subset: field of non-object")),
+        _ => {
+            return Err(Diagnostic::new(
+                Code::E108,
+                "llvm subset: field of non-object",
+            ));
+        }
     };
-    let ci = lir.class_index.get(&class_name).copied().ok_or_else(|| {
-        Diagnostic::new(Code::E108, "llvm subset: unknown class")
-    })?;
-    let fty = lir.classes[ci].fields.get(field).map(|f| f.ty.clone()).ok_or_else(|| {
-        Diagnostic::new(Code::E108, "llvm subset: field out of range")
-    })?;
+    let ci = lir
+        .class_index
+        .get(&class_name)
+        .copied()
+        .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: unknown class"))?;
+    let fty = lir.classes[ci]
+        .fields
+        .get(field)
+        .map(|f| f.ty.clone())
+        .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: field out of range"))?;
     let target = match fty {
         LirType::Obj(name) => name,
-        _ => return Err(Diagnostic::new(Code::E108, "llvm subset: release of non-object field")),
+        _ => {
+            return Err(Diagnostic::new(
+                Code::E108,
+                "llvm subset: release of non-object field",
+            ));
+        }
     };
-    let fci = lir.class_index.get(&target).copied().ok_or_else(|| {
-        Diagnostic::new(Code::E108, "llvm subset: unknown field class")
-    })?;
+    let fci = lir
+        .class_index
+        .get(&target)
+        .copied()
+        .ok_or_else(|| Diagnostic::new(Code::E108, "llvm subset: unknown field class"))?;
     match lir.classes[fci].dtor {
         Some(fid) => {
             let fname = &lir.functions[fid].name;
@@ -2922,20 +4382,40 @@ fn field_dtor_ptr<'a>(cx: &FnCx<'a>, lir: &Module, obj: Local, field: usize) -> 
     }
 }
 
-fn emit_release(cx: &mut FnCx, lir: &Module, l: Local, keep: Option<IntValue>) -> Result<(), Diagnostic> {
+fn emit_release(
+    cx: &mut FnCx,
+    lir: &Module,
+    l: Local,
+    keep: Option<IntValue>,
+) -> Result<(), Diagnostic> {
     let size = obj_size(lir, cx, l)?;
     let raw = load(cx, l)?;
     let ptr = as_ptr(cx, guard_int(cx, raw, keep)?)?;
     let n = cx.context.i64_type().const_int(size, false);
     let dtor = dtor_ptr(cx, lir, l)?;
-    cx.builder.build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "").map_err(err)?;
+    cx.builder
+        .build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "")
+        .map_err(err)?;
     cx.owned.remove(&l);
     cx.ever_owned.remove(&l);
     Ok(())
 }
 
-fn byte_ptr<'a>(cx: &FnCx<'a>, base: IntValue<'a>, offset: usize) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
+fn byte_ptr<'a>(
+    cx: &FnCx<'a>,
+    base: IntValue<'a>,
+    offset: usize,
+) -> Result<inkwell::values::PointerValue<'a>, Diagnostic> {
     let i64t = cx.context.i64_type();
-    let addr = cx.builder.build_int_add(base, i64t.const_int(offset as u64, false), "").map_err(err)?;
-    cx.builder.build_int_to_ptr(addr, cx.context.ptr_type(inkwell::AddressSpace::default()), "").map_err(err)
+    let addr = cx
+        .builder
+        .build_int_add(base, i64t.const_int(offset as u64, false), "")
+        .map_err(err)?;
+    cx.builder
+        .build_int_to_ptr(
+            addr,
+            cx.context.ptr_type(inkwell::AddressSpace::default()),
+            "",
+        )
+        .map_err(err)
 }

@@ -12,7 +12,7 @@ import { ByteBuffer } from "@std/bytes";
 
 let buf = ByteBuffer.allocate(8);
 buf.writeInt32BE(0, 0x01020304);
-print(buf.readInt32BE(0));
+println!(buf.readInt32BE(0));
 ```
 
 ## What is inside

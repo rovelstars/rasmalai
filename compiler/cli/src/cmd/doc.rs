@@ -16,7 +16,7 @@ pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: b
                         }
                     }
                     Err(e) => {
-                        println!("{e}");
+                        eprintln!("{e}");
                         std::process::exit(1);
                     }
                 }
@@ -30,7 +30,7 @@ pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: b
                         }
                     }
                     Err(e) => {
-                        println!("{e}");
+                        eprintln!("{e}");
                         std::process::exit(1);
                     }
                 }
@@ -46,7 +46,7 @@ pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: b
                     }
                 }
                 Err(e) => {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             }

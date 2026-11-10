@@ -1,7 +1,7 @@
-const HELLO: &str = "print(\"hello,\", \"world\");";
-const SIMD: &str = "import { Vec4f } from \"@std/simd\";\n\nlet a = new Vec4f(1.0, 2.0, 3.0, 4.0);\nlet b = Vec4f.splat(2.0);\nlet c = a * b;\nprint(c.x(), c.y(), c.z(), c.w());\nprint(c.dot(b));";
-const DEFER: &str = "defer { print(\"third\"); }\ndefer { print(\"second\"); }\nprint(\"first\");";
-const MATCH: &str = "enum Shape { Circle(Float), Rect(Float, Float), Point }\n\nfn area(s: Shape): Float {\n    switch s {\n        case .Circle(r): return 3.14 * r * r;\n        case .Rect(w, h): return w * h;\n        case .Point: return 0.0;\n    }\n}\n\nprint(area(Shape.Circle(2.0)));\nprint(area(Shape.Rect(3.0, 4.0)));";
+const HELLO: &str = "println!(\"hello,\", \"world\");";
+const SIMD: &str = "import { Vec4f } from \"@std/simd\";\n\nlet a = new Vec4f(1.0, 2.0, 3.0, 4.0);\nlet b = Vec4f.splat(2.0);\nlet c = a * b;\nprintln!(c.x(), c.y(), c.z(), c.w());\nprintln!(c.dot(b));";
+const DEFER: &str = "defer { println!(\"third\"); }\ndefer { println!(\"second\"); }\nprintln!(\"first\");";
+const MATCH: &str = "enum Shape { Circle(Float), Rect(Float, Float), Point }\n\nfn area(s: Shape): Float {\n    switch s {\n        case .Circle(r): return 3.14 * r * r;\n        case .Rect(w, h): return w * h;\n        case .Point: return 0.0;\n    }\n}\n\nprintln!(area(Shape.Circle(2.0)));\nprintln!(area(Shape.Rect(3.0, 4.0)));";
 
 #[test]
 fn playground_presets_check_clean() {

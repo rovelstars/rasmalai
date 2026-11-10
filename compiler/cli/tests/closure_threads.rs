@@ -24,7 +24,7 @@ fn Main(): Int {
         if round(16) != 16 { return 1 }
         i++
     }
-    print("done")
+    println!("done")
     return 0
 }
 "#;

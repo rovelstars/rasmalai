@@ -25,7 +25,7 @@ fn nested_std_submodule_runs() {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("src").join("main.rnx"),
-        "import { encodeRequestLine, statusCode, isSuccess } from \"@std/net/http\";\nfn Main(): Int {\n    print(encodeRequestLine(\"GET\", \"/health\"));\n    let code = statusCode(\"HTTP/1.1 404 Not Found\");\n    print(code);\n    print(isSuccess(200));\n    print(isSuccess(code));\n    return 0;\n}\n",
+        "import { encodeRequestLine, statusCode, isSuccess } from \"@std/net/http\";\nfn Main(): Int {\n    println!(encodeRequestLine(\"GET\", \"/health\"));\n    let code = statusCode(\"HTTP/1.1 404 Not Found\");\n    println!(code);\n    println!(isSuccess(200));\n    println!(isSuccess(code));\n    return 0;\n}\n",
     )
     .unwrap();
     let run = std::process::Command::new(rnx()).arg("run").current_dir(&dir).output().unwrap();
@@ -60,7 +60,7 @@ fn nested_package_submodule_runs() {
     .unwrap();
     std::fs::write(
         app.join("src").join("main.rnx"),
-        "import { deep } from \"dep/ops/deep\";\nfn Main(): Int {\n    print(deep());\n    return 0;\n}\n",
+        "import { deep } from \"dep/ops/deep\";\nfn Main(): Int {\n    println!(deep());\n    return 0;\n}\n",
     )
     .unwrap();
     let run = std::process::Command::new(rnx()).arg("run").current_dir(&app).output().unwrap();
@@ -114,4 +114,8 @@ fn stdlib_doc_json_lists_nested_module() {
     let api = std::fs::read_to_string(dir.join("api").join("api.json")).unwrap();
     assert!(api.contains("\"name\":\"net/http\""), "{api}");
     assert!(api.contains("\"name\":\"net\""), "{api}");
+    // Capability-gated packages are documented too: doc generation parses
+    // every @std package and compiles none, so a host run must list them.
+    assert!(api.contains("\"name\":\"uefi\""), "{api}");
+    assert!(api.contains("\"name\":\"wasi\""), "{api}");
 }

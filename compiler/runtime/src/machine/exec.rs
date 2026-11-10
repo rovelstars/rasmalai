@@ -1319,7 +1319,7 @@ impl<'a> Machine<'a> {
                 Ok(v)
             }
             Value::Null | Value::Module(_) => match method {
-                "print" | "error" | "warn" => {
+                "error" | "warn" => {
                     let line: Vec<String> = args.iter().map(|v| v.display()).collect();
                     self.output.push(line.join(" "));
                     Ok(Value::Null)

@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -60,7 +60,7 @@ fn user_deinit_runs_once_before_field_releases() {
         "class Inner {\n\
         let v: Int\n\
         init(v: Int) { this.v = v }\n\
-        deinit { print(\"inner {this.v}\") }\n\
+        deinit { println!(\"inner {this.v}\") }\n\
         }\n\
         class Outer {\n\
         let child: Inner\n\
@@ -69,17 +69,17 @@ fn user_deinit_runs_once_before_field_releases() {
         this.v = v\n\
         this.child = new Inner(v + 1)\n\
         }\n\
-        deinit { print(\"outer {this.v}\") }\n\
+        deinit { println!(\"outer {this.v}\") }\n\
         }\n\
         fn make(): Int {\n\
         let o = new Outer(1)\n\
-        print(\"body\")\n\
+        println!(\"body\")\n\
         return o.v\n\
         }\n\
         fn Main(): Int {\n\
-        print(\"start\")\n\
+        println!(\"start\")\n\
         let r = make()\n\
-        print(\"after {r}\")\n\
+        println!(\"after {r}\")\n\
         return 0\n\
         }\n",
         0,
@@ -100,11 +100,11 @@ fn user_deinit_runs_once_at_main_exit() {
         "class Handle {\n\
         let id: Int\n\
         init(id: Int) { this.id = id }\n\
-        deinit { print(\"close {this.id}\") }\n\
+        deinit { println!(\"close {this.id}\") }\n\
         }\n\
         fn Main(): Int {\n\
         let a = new Handle(7)\n\
-        print(\"open\")\n\
+        println!(\"open\")\n\
         return 0\n\
         }\n",
         0,

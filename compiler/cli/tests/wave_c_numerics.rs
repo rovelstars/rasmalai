@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -65,15 +65,15 @@ fn nan_is_semantic_on_all_backends() {
         fn Main(): Int {\n\
         let z: Float = 0.0;\n\
         let d: Float = z / z;\n\
-        print(Float.isNaN(d));\n\
-        print(d != d);\n\
-        print(d == d);\n\
+        println!(Float.isNaN(d));\n\
+        println!(d != d);\n\
+        println!(d == d);\n\
         let n: Float = Float.nan();\n\
-        print(Float.isNaN(n));\n\
-        print(n != n);\n\
+        println!(Float.isNaN(n));\n\
+        println!(n != n);\n\
         let s: Float = Math.sqrt(0.0 - 1.0);\n\
-        print(Float.isNaN(s));\n\
-        print(s != s);\n\
+        println!(Float.isNaN(s));\n\
+        println!(s != s);\n\
         return 0;\n\
         }\n",
         0,
@@ -97,16 +97,16 @@ fn float_bit_roundtrip_on_all_backends() {
         fn Main(): Int {\n\
         let buf = ByteBuffer.allocate(16);\n\
         buf.writeFloat64BE(0, Float.nan());\n\
-        print(Float.isNaN(buf.readFloat64BE(0)));\n\
+        println!(Float.isNaN(buf.readFloat64BE(0)));\n\
         buf.writeFloat64BE(0, 1.0 / 0.0);\n\
-        print(buf.readInt64BE(0));\n\
+        println!(buf.readInt64BE(0));\n\
         buf.writeFloat64LE(8, Float.fromBits(1));\n\
-        print(buf.readInt64LE(8));\n\
+        println!(buf.readInt64LE(8));\n\
         let a = [1.5, Float.nan()];\n\
-        print(a[0].toBits());\n\
-        print(Float.isNaN(a[1]));\n\
-        print(Float.fromBits(a[0].toBits()).toBits());\n\
-        print(Float.fromBits(1).toBits());\n\
+        println!(a[0].toBits());\n\
+        println!(Float.isNaN(a[1]));\n\
+        println!(Float.fromBits(a[0].toBits()).toBits());\n\
+        println!(Float.fromBits(1).toBits());\n\
         return 0;\n\
         }\n",
         0,
@@ -127,7 +127,7 @@ fn float_bit_roundtrip_on_all_backends() {
 fn fma_is_fused_without_intermediate_overflow() {
     check_all_backends(
         "fn Main(): Int {\n\
-        print(Float.fma(2.0, 3.0, 4.0).toBits());\n\
+        println!(Float.fma(2.0, 3.0, 4.0).toBits());\n\
         let big: Float = 10.0;\n\
         let i: Int = 0;\n\
         while i < 307 {\n\
@@ -135,7 +135,7 @@ fn fma_is_fused_without_intermediate_overflow() {
         i = i + 1;\n\
         }\n\
         let r: Float = Float.fma(big, 2.0, 0.0 - big);\n\
-        print(r.toBits() == big.toBits());\n\
+        println!(r.toBits() == big.toBits());\n\
         return 0;\n\
         }\n",
         0,
@@ -150,10 +150,10 @@ fn nan_inequality_matches_ieee_on_all_backends() {
         "fn Main(): Int {\n\
         let n: Float = Float.nan();\n\
         let m: Float = 1.5;\n\
-        print(n != n);\n\
-        print(n == n);\n\
-        print(n != m);\n\
-        print(Float.isNaN(1.5));\n\
+        println!(n != n);\n\
+        println!(n == n);\n\
+        println!(n != m);\n\
+        println!(Float.isNaN(1.5));\n\
         return 0;\n\
         }\n",
         0,
@@ -214,7 +214,7 @@ fn float_static_api_rejects_bad_calls_at_check() {
     assert!(stderr.contains("`Float.fma` takes 3 args"), "got: {stderr}");
 
     let out = run_check(
-        "fn Main(): Int {\n    let x: Float = 1.5;\n    print(x.toBits(1));\n    return 0;\n}\n",
+        "fn Main(): Int {\n    let x: Float = 1.5;\n    println!(x.toBits(1));\n    return 0;\n}\n",
         "tobits-arity",
     );
     assert_eq!(out.status.code(), Some(1));
@@ -227,11 +227,11 @@ fn math_log_domain_on_all_backends() {
     check_all_backends(
         "import { Math } from \"@std/math\";\n\
         fn Main(): Int {\n\
-        print(Math.log(1.0));\n\
-        print(Math.log(0.0));\n\
-        print(Float.isNaN(Math.log(0.0 - 5.0)));\n\
-        print(Math.log(Math.E()) > 0.999 && Math.log(Math.E()) < 1.001);\n\
-        print(Math.log(10.0) > 2.302 && Math.log(10.0) < 2.303);\n\
+        println!(Math.log(1.0));\n\
+        println!(Math.log(0.0));\n\
+        println!(Float.isNaN(Math.log(0.0 - 5.0)));\n\
+        println!(Math.log(Math.E()) > 0.999 && Math.log(Math.E()) < 1.001);\n\
+        println!(Math.log(10.0) > 2.302 && Math.log(10.0) < 2.303);\n\
         return 0;\n\
         }\n",
         0,

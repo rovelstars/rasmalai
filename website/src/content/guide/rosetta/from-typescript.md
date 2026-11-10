@@ -33,7 +33,7 @@ console.log(v.length());
 import { Vec2 } from "@std/math";
 
 let v = new Vec2(3.0, 4.0);
-print(v.length());
+println!(v.length());
 ```
 
 ## Numbers with hardware sizes
@@ -48,7 +48,7 @@ console.log(Math.trunc(3.9), a * 2);
 ```rnx
 let a: Float = 0.5;
 let fast = a.asFast();
-print(Int(3.9), fast * 2.0.asFast());
+println!(Int(3.9), fast * 2.0.asFast());
 ```
 
 ## Null-safety without undefined
@@ -65,7 +65,7 @@ import { Env } from "@std/env";
 
 Env.set("PORT", "8080");
 let port = Env.get("PORT");
-print("listening on {port}");
+println!("listening on {port}");
 ```
 
 ## Ship one file

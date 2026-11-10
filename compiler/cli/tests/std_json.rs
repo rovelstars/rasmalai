@@ -54,14 +54,14 @@ fn expect_failure_everywhere(tag: &str, src: &str, want_err: &str) {
 
 const SCALARS: &str = r#"import { JSON } from "@std/json";
 fn Main(): Int {
-    print(JSON.stringify(JSON.parse("null")));
-    print(JSON.stringify(JSON.parse("true")));
-    print(JSON.stringify(JSON.parse("false")));
-    print(JSON.stringify(JSON.parse("12345")));
-    print(JSON.stringify(JSON.parse("-7")));
-    print(JSON.stringify(JSON.parse("3.1415")));
-    print(JSON.stringify(JSON.parse("3.0")));
-    print(JSON.stringify(JSON.parse("\"hello world\"")));
+    println!(JSON.stringify(JSON.parse("null")));
+    println!(JSON.stringify(JSON.parse("true")));
+    println!(JSON.stringify(JSON.parse("false")));
+    println!(JSON.stringify(JSON.parse("12345")));
+    println!(JSON.stringify(JSON.parse("-7")));
+    println!(JSON.stringify(JSON.parse("3.1415")));
+    println!(JSON.stringify(JSON.parse("3.0")));
+    println!(JSON.stringify(JSON.parse("\"hello world\"")));
     return 0;
 }
 "#;
@@ -78,7 +78,7 @@ fn json_scalars_round_trip() {
 const NESTED: &str = r#"import { JSON } from "@std/json";
 fn Main(): Int {
     let doc = "\{\"name\": \"Rasmalai\", \"version\": 1, \"features\": [\"fast\", \"arc\", \"mio\"], \"meta\": \{\"ok\": true}}";
-    print(JSON.stringify(JSON.parse(doc)));
+    println!(JSON.stringify(JSON.parse(doc)));
     return 0;
 }
 "#;
@@ -95,9 +95,9 @@ fn json_nested_round_trip_is_canonical() {
 const ARR_NAV: &str = r#"import { JSON } from "@std/json";
 fn Main(): Int {
     let it: Any = JSON.parse("[10, 20, 30]");
-    print(it[0]);
-    print(it[2]);
-    print((it as Array<Any>).length());
+    println!(it[0]);
+    println!(it[2]);
+    println!((it as Array<Any>).length());
     return 0;
 }
 "#;
@@ -110,19 +110,19 @@ fn json_array_index_and_len() {
 const OBJ_NAV: &str = r#"import { JSON } from "@std/json";
 import { Map } from "@std/collections";
 fn showItems(it: Any): Int {
-    print(it[0]);
-    print(it[1]);
-    print((it as Array<Any>).length());
+    println!(it[0]);
+    println!(it[1]);
+    println!((it as Array<Any>).length());
     return 0;
 }
 fn showMeta(nm: Any): Int {
     let sub = JSON.asMap(nm);
     let okv = sub.get("ok");
     if okv != null {
-        print(okv);
+        println!(okv);
         return 0;
     }
-    print("none-o");
+    println!("none-o");
     return 1;
 }
 fn stepMeta(m: Map<String, Any>): Int {
@@ -130,7 +130,7 @@ fn stepMeta(m: Map<String, Any>): Int {
     if nm != null {
         return showMeta(nm);
     }
-    print("none-m");
+    println!("none-m");
     return 1;
 }
 fn stepItems(m: Map<String, Any>): Int {
@@ -139,17 +139,17 @@ fn stepItems(m: Map<String, Any>): Int {
         showItems(itv);
         return stepMeta(m);
     }
-    print("none-i");
+    println!("none-i");
     return 1;
 }
 fn Main(): Int {
     let m = JSON.parseObject("\{\"count\": 42, \"items\": [10, 20], \"meta\": \{\"ok\": true}}");
     let cv = m.get("count");
     if cv != null {
-        print(cv);
+        println!(cv);
         return stepItems(m);
     }
-    print("none-c");
+    println!("none-c");
     return 1;
 }
 "#;
@@ -162,7 +162,7 @@ fn json_object_lookup_across_backends() {
 const ESCAPES: &str = r#"import { JSON } from "@std/json";
 fn Main(): Int {
     let doc = "\{\"q\": \"a\\\"b\\\\c\\nd\", \"tab\": \"x\\ty\"}";
-    print(JSON.stringify(JSON.parse(doc)));
+    println!(JSON.stringify(JSON.parse(doc)));
     return 0;
 }
 "#;
@@ -175,7 +175,7 @@ fn json_string_escapes_round_trip() {
 const BAD_UNQUOTED: &str = r#"import { JSON } from "@std/json";
 fn Main(): Int {
     let data: Any = JSON.parse("\{unquoted: 1}");
-    print(data);
+    println!(data);
     return 0;
 }
 "#;
@@ -183,7 +183,7 @@ fn Main(): Int {
 const BAD_TRUNCATED: &str = r#"import { JSON } from "@std/json";
 fn Main(): Int {
     let data: Any = JSON.parse("[");
-    print(data);
+    println!(data);
     return 0;
 }
 "#;
@@ -196,7 +196,7 @@ fn json_invalid_syntax_fails_cleanly() {
 
 fn deep_doc(depth: usize) -> String {
     format!(
-        "import {{ JSON }} from \"@std/json\";\nfn Main(): Int {{\n    print(JSON.stringify(JSON.parse(\"{}\")));\n    return 0;\n}}\n",
+        "import {{ JSON }} from \"@std/json\";\nfn Main(): Int {{\n    println!(JSON.stringify(JSON.parse(\"{}\")));\n    return 0;\n}}\n",
         "[".repeat(depth) + &"]".repeat(depth)
     )
 }
@@ -214,9 +214,9 @@ struct Point {
 }
 fn Main(): Int {
     let p = JSON.parse<Point>("\{\"y\": 7, \"x\": 3, \"label\": \"hi\", \"extra\": [1, 2]}");
-    print(p.x);
-    print(p.y);
-    print(p.label);
+    println!(p.x);
+    println!(p.y);
+    println!(p.label);
     return 0;
 }
 "#;
@@ -237,14 +237,14 @@ fn Main(): Int {
     let doc = "\{\"id\": 7, \"name\": \"name-7\", \"tags\": [\"a\", \"b\", \"c\"], \"score\": 1.5, \"ok\": true}";
     let t = JSON.parse<Item>(doc);
     let m = JSON.parseObject(doc);
-    print(t.id);
-    print(m.get("id"));
-    print(t.name);
-    print(m.get("name"));
-    print(t.score);
-    print(m.get("score"));
-    print(t.ok);
-    print(m.get("ok"));
+    println!(t.id);
+    println!(m.get("id"));
+    println!(t.name);
+    println!(m.get("name"));
+    println!(t.score);
+    println!(m.get("score"));
+    println!(t.ok);
+    println!(m.get("ok"));
     return 0;
 }
 "#;
@@ -266,10 +266,10 @@ struct Outer {
 }
 fn Main(): Int {
     let o = JSON.decode<Outer>("\{\"count\": 42, \"items\": [10, 20], \"meta\": \{\"ok\": true}}");
-    print(o.count);
-    print(o.items[1]);
+    println!(o.count);
+    println!(o.items[1]);
     let sub = JSON.asMap(o.meta);
-    print(sub.get("ok"));
+    println!(sub.get("ok"));
     return 0;
 }
 "#;
@@ -285,7 +285,7 @@ struct Point {
 }
 fn Main(): Int {
     let p = JSON.parse<Point>("[1, 2]");
-    print(p.x);
+    println!(p.x);
     return 0;
 }
 "#;
@@ -305,11 +305,11 @@ struct Rec {
 }
 fn Main(): Int {
     let r = JSON.parse<Rec>("\{\"neg\": -12, \"pi\": 3.25, \"esc\": \"a\\\"b\\\\c\\u00e9\", \"empty\": \{\"a\": []}, \"nest\": [[1], \{\"k\": null}]}");
-    print(r.neg);
-    print(r.pi);
-    print(r.esc);
-    print(JSON.stringify(r.empty));
-    print(JSON.stringify(r.nest));
+    println!(r.neg);
+    println!(r.pi);
+    println!(r.esc);
+    println!(JSON.stringify(r.empty));
+    println!(JSON.stringify(r.nest));
     return 0;
 }
 "#;

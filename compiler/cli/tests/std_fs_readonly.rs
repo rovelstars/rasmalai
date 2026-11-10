@@ -26,9 +26,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -65,7 +65,7 @@ fn fixture_dir(tag: &str) -> crate::scratch::Scratch {
 fn readonly_src(dir: &std::path::Path) -> String {
     let d = dir.to_string_lossy();
     format!(
-        "import fs, {{ FileStat }} from \"@std/fs\";\n\nfn Main(): Int {{\n    if !fs.exists(\"{d}/a.txt\") {{ return 1; }}\n    if !fs.isFile(\"{d}/a.txt\") {{ return 2; }}\n    if fs.isDir(\"{d}/a.txt\") {{ return 3; }}\n    if !fs.isDir(\"{d}/sub\") {{ return 4; }}\n    if fs.exists(\"{d}/missing.txt\") {{ return 5; }}\n    if fs.isFile(\"{d}/missing.txt\") {{ return 6; }}\n    if fs.isDir(\"{d}/missing.txt\") {{ return 7; }}\n    let st = fs.stat(\"{d}/a.txt\");\n    if st.isErr() {{ return 8; }}\n    let s: FileStat = st.unwrap();\n    if s.size != 5 {{ return 9; }}\n    if !s.isFile {{ return 10; }}\n    if s.isDir {{ return 11; }}\n    if s.modified <= 0 {{ return 12; }}\n    if fs.stat(\"{d}/missing.txt\").isOk() {{ return 13; }}\n    let rd = fs.readDir(\"{d}\");\n    if rd.isErr() {{ return 14; }}\n    let names: Array<String> = rd.unwrap();\n    if names.len() != 3 {{ return 15; }}\n    if names[0] != \"a.txt\" {{ return 16; }}\n    if names[1] != \"sub\" {{ return 17; }}\n    if names[2] != \"zeta.txt\" {{ return 18; }}\n    if fs.readDir(\"{d}/missing-dir\").isOk() {{ return 19; }}\n    let hits: Array<String> = fs.glob(\"{d}/*.txt\").unwrap();\n    if hits.len() != 2 {{ return 20; }}\n    if hits[0] != \"{d}/a.txt\" {{ return 21; }}\n    if hits[1] != \"{d}/zeta.txt\" {{ return 22; }}\n    let deep: Array<String> = fs.glob(\"{d}/**/*.rnx\").unwrap();\n    if deep.len() != 2 {{ return 23; }}\n    if deep[0] != \"{d}/sub/b.rnx\" {{ return 24; }}\n    if deep[1] != \"{d}/sub/c.rnx\" {{ return 25; }}\n    if fs.glob(\"\").isOk() {{ return 26; }}\n    if fs.readLink(\"{d}/missing.txt\").isOk() {{ return 27; }}\n    if fs.readLink(\"{d}/a.txt\").isOk() {{ return 28; }}\n    print(\"@std/fs readonly verification success\");\n    return 0;\n}}\n"
+        "import fs, {{ FileStat }} from \"@std/fs\";\n\nfn Main(): Int {{\n    if !fs.exists(\"{d}/a.txt\") {{ return 1; }}\n    if !fs.isFile(\"{d}/a.txt\") {{ return 2; }}\n    if fs.isDir(\"{d}/a.txt\") {{ return 3; }}\n    if !fs.isDir(\"{d}/sub\") {{ return 4; }}\n    if fs.exists(\"{d}/missing.txt\") {{ return 5; }}\n    if fs.isFile(\"{d}/missing.txt\") {{ return 6; }}\n    if fs.isDir(\"{d}/missing.txt\") {{ return 7; }}\n    let st = fs.stat(\"{d}/a.txt\");\n    if st.isErr() {{ return 8; }}\n    let s: FileStat = st.unwrap();\n    if s.size != 5 {{ return 9; }}\n    if !s.isFile {{ return 10; }}\n    if s.isDir {{ return 11; }}\n    if s.modified <= 0 {{ return 12; }}\n    if fs.stat(\"{d}/missing.txt\").isOk() {{ return 13; }}\n    let rd = fs.readDir(\"{d}\");\n    if rd.isErr() {{ return 14; }}\n    let names: Array<String> = rd.unwrap();\n    if names.len() != 3 {{ return 15; }}\n    if names[0] != \"a.txt\" {{ return 16; }}\n    if names[1] != \"sub\" {{ return 17; }}\n    if names[2] != \"zeta.txt\" {{ return 18; }}\n    if fs.readDir(\"{d}/missing-dir\").isOk() {{ return 19; }}\n    let hits: Array<String> = fs.glob(\"{d}/*.txt\").unwrap();\n    if hits.len() != 2 {{ return 20; }}\n    if hits[0] != \"{d}/a.txt\" {{ return 21; }}\n    if hits[1] != \"{d}/zeta.txt\" {{ return 22; }}\n    let deep: Array<String> = fs.glob(\"{d}/**/*.rnx\").unwrap();\n    if deep.len() != 2 {{ return 23; }}\n    if deep[0] != \"{d}/sub/b.rnx\" {{ return 24; }}\n    if deep[1] != \"{d}/sub/c.rnx\" {{ return 25; }}\n    if fs.glob(\"\").isOk() {{ return 26; }}\n    if fs.readLink(\"{d}/missing.txt\").isOk() {{ return 27; }}\n    if fs.readLink(\"{d}/a.txt\").isOk() {{ return 28; }}\n    println!(\"@std/fs readonly verification success\");\n    return 0;\n}}\n"
     )
 }
 
@@ -90,7 +90,7 @@ fn test_fs_readlink_all_backends() {
     symlink(&target, dir.join("link.txt")).unwrap();
     let d = dir.to_string_lossy();
     let src = format!(
-        "import fs, {{ FileStat }} from \"@std/fs\";\n\nfn Main(): Int {{\n    let link = fs.readLink(\"{d}/link.txt\");\n    if link.isErr() {{ return 1; }}\n    if link.unwrap() != \"{target}\" {{ return 2; }}\n    let st = fs.stat(\"{d}/link.txt\");\n    if st.isErr() {{ return 3; }}\n    let s: FileStat = st.unwrap();\n    if !s.isLink {{ return 4; }}\n    if s.isFile {{ return 5; }}\n    print(\"@std/fs readlink verification success\");\n    return 0;\n}}\n"
+        "import fs, {{ FileStat }} from \"@std/fs\";\n\nfn Main(): Int {{\n    let link = fs.readLink(\"{d}/link.txt\");\n    if link.isErr() {{ return 1; }}\n    if link.unwrap() != \"{target}\" {{ return 2; }}\n    let st = fs.stat(\"{d}/link.txt\");\n    if st.isErr() {{ return 3; }}\n    let s: FileStat = st.unwrap();\n    if !s.isLink {{ return 4; }}\n    if s.isFile {{ return 5; }}\n    println!(\"@std/fs readlink verification success\");\n    return 0;\n}}\n"
     );
     check_all_backends(
         &src,

@@ -101,45 +101,6 @@ impl<M: Module> FnLower<'_, M> {
                             !lir::temp_sweep::callee_may_consume(self.lir, *lid),
                         )
                     }
-                    CallTarget::Builtin(n) if n == "print" => {
-                        for (i, a) in args.iter().enumerate() {
-                            if i > 0 {
-                                let space = self.str_addr(b, " ")?;
-                                let payload = b.ins().iadd_imm_s(space, 32);
-                                let one = b.ins().iconst(types::I64, 1);
-                                let scallee = self.module.declare_func_in_func(self.print_str, &mut b.func);
-                                b.ins().call(scallee, &[payload, one]);
-                            }
-                            let v = self.val(b, *a);
-                            let t = if matches!(self.ftypes.get(*a as usize), Some(LirType::Error)) {
-                                let bit = b.ins().band_imm(v, 1);
-                                let is_obj = b.ins().icmp_imm_s(
-                                    cranelift_codegen::ir::condcodes::IntCC::NotEqual,
-                                    bit,
-                                    0,
-                                );
-                                let ptr_tag = b.ins().iconst(types::I32, runtime::native::TAG_PTR as i64);
-                                let str_tag = b.ins().iconst(types::I32, runtime::native::TAG_STR as i64);
-                                b.ins().select(is_obj, ptr_tag, str_tag)
-                            } else {
-                                let ty = self.ftypes.get(*a as usize).cloned().unwrap_or(LirType::Any);
-                                let tag = if matches!(ty, LirType::I8) {
-                                    runtime::native::TAG_INT as i64
-                                } else {
-                                    Self::print_tag(&ty)
-                                };
-                                b.ins().iconst(types::I32, tag)
-                            };
-                            let callee = self.module.declare_func_in_func(self.print_val, &mut b.func);
-                            b.ins().call(callee, &[v, t]);
-                        }
-                        let nl = self.str_addr(b, "\n")?;
-                        let payload = b.ins().iadd_imm_s(nl, 32);
-                        let one = b.ins().iconst(types::I64, 1);
-                        let callee = self.module.declare_func_in_func(self.print_str, &mut b.func);
-                        b.ins().call(callee, &[payload, one]);
-                        return Ok(());
-                    }
                     CallTarget::Builtin(n) if n == "__rnx_crypto_random_u64" => {
                         let callee = self.module.declare_func_in_func(self.crypto_random, &mut b.func);
                         let inst = b.ins().call(callee, &[]);
@@ -231,6 +192,14 @@ impl<M: Module> FnLower<'_, M> {
                             self.set(b, *d, r);
                             self.own(*d);
                         }
+                        return Ok(());
+                    }
+                    CallTarget::Builtin(n) if n == "__rnx_io_warn_missing_arg" => {
+                        let fid = *self.bytes_fns.get("rnx_io_warn_missing_arg").ok_or_else(|| {
+                            "cranelift subset: missing runtime `rnx_io_warn_missing_arg`".to_string()
+                        })?;
+                        let callee = self.module.declare_func_in_func(fid, &mut b.func);
+                        b.ins().call(callee, &[]);
                         return Ok(());
                     }
                     CallTarget::Builtin(n) if n == "__rnx_io_set_raw" => {

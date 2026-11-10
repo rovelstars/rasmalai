@@ -15,12 +15,12 @@ You only need a handful of shapes to direct a program: `if`, one kind of `for`, 
 ```rnx
 let score = 42;
 if score > 40 {
-    print("high");
+    println!("high");
 } else {
-    print("low");
+    println!("low");
 }
 let verdict = score > 90 ? "S" : "A";
-print(verdict);
+println!(verdict);
 ```
 
 That prints `high` and then `A`. Test for presence with `!= null`, which narrows the binding to the payload type inside the block:
@@ -28,9 +28,9 @@ That prints `high` and then `A`. Test for presence with `!= null`, which narrows
 ```rnx
 let v: Int? = 3;
 if v != null {
-    print("got {v}");
+    println!("got {v}");
 } else {
-    print("empty");
+    println!("empty");
 }
 ```
 
@@ -45,14 +45,14 @@ let total = 0;
 for x in [10, 20, 30] {
     total = total + x;
 }
-print(total);
+println!(total);
 ```
 
 That prints `60`. Need a sequence of numbers? Ranges are values too:
 
 ```rnx
 for i in 0..10 {
-    print(i);
+    println!(i);
 }
 ```
 
@@ -63,7 +63,7 @@ That prints `0` through `9`. Need a stride? Step it with `while`, covered in the
 ```rnx
 let names = ["al", "ore", "dust"];
 for i in 0..names.length() {
-    print("${i}: ${names[i]}");
+    println!("${i}: ${names[i]}");
 }
 ```
 
@@ -83,7 +83,7 @@ while true {
     if i >= 5 {
         break;
     }
-    print(i);
+    println!(i);
 }
 ```
 
@@ -102,8 +102,8 @@ fn level(score: Int): String {
     }
 }
 
-print(level(42));
-print(level(5));
+println!(level(42));
+println!(level(5));
 ```
 
 That prints `mid` and `low`. Switching over an enum with every variant covered needs no `default`. The checker knows the match is exhaustive. A non-exhaustive enum `switch` without `default` is a compile error naming the missing variants, which helps when the enum grows: add a variant and the compiler lists every `switch` you must update.
@@ -118,7 +118,7 @@ fn describe(s: Shape): String {
     }
 }
 
-print(describe(Shape.Circle(2.0)));
+println!(describe(Shape.Circle(2.0)));
 ```
 
 Variants construct with a dot (`Shape.Circle(...)`) and match with a leading dot (`.Circle(r)`), binding payloads inline. Guards refine a case further: `case is Foo if x > 1` only matches when both hold.
@@ -128,9 +128,9 @@ Variants construct with a dot (`Shape.Circle(...)`) and match with a leading dot
 `defer` schedules a block to run when the current scope exits: normal return, early `return`, or `throw`. Multiple defers run last-in, first-out:
 
 ```rnx
-defer { print("closed"); }
-defer { print("flushed"); }
-print("working");
+defer { println!("closed"); }
+defer { println!("flushed"); }
+println!("working");
 ```
 
 The relative order is `working`, `flushed`, `closed`. Defers wait until the scope ends, then run back-to-back in reverse. If you come from Go, this is the `defer` you know; if you come from Rust, it is `Drop` written out in the open, in order. You will use it for files, locks, and anything else that must be released no matter how the scope ends.

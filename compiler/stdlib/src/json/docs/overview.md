@@ -11,7 +11,7 @@ handles. Wrap an object handle in a `Map` with `parseObject` or
 ```rnx
 import { JSON } from "@std/json";
 
-print(JSON.stringify(JSON.parse("12345")));
+println!(JSON.stringify(JSON.parse("12345")));
 ```
 
 ## What is inside

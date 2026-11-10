@@ -48,10 +48,8 @@
 //! import { Dns } from "@std/net";
 //!
 //! let ip = await Dns.lookup("127.0.0.1");
-//! print(ip);
+//! println!(ip);
 //! ```
-import { Promise } from "@std/prelude";
-
 import {
     fn __rnx_dns_lookup_error(slot: Int): String,
     fn __rnx_dns_lookup_get(slot: Int): String,
@@ -180,8 +178,8 @@ class TcpStream {
     *  let listener = TcpListener.bind("127.0.0.1", 0);
     *  let client = await TcpStream.connect("127.0.0.1", listener.port());
     *  let server = await listener.accept();
-    *  print(await client.write([104, 105]));
-    *  print(await server.read(2));
+    *  println!(await client.write([104, 105]));
+    *  println!(await server.read(2));
     */
     fn read(max_bytes: Int): Promise<Array<Int>> {
         let h = this.handle;
@@ -216,8 +214,8 @@ class TcpStream {
     *  let listener = TcpListener.bind("127.0.0.1", 0);
     *  let client = await TcpStream.connect("127.0.0.1", listener.port());
     *  let server = await listener.accept();
-    *  print(await client.write([104, 105]));
-    *  print(await server.read(2));
+    *  println!(await client.write([104, 105]));
+    *  println!(await server.read(2));
     */
     fn write(bytes: Array<Int>): Promise<Int> {
         let h = this.handle;
@@ -246,7 +244,7 @@ class TcpStream {
     * import { TcpStream } from "@std/net";
     *
     * let wrapped = new TcpStream(5);
-    * print(wrapped.handleOf());
+    * println!(wrapped.handleOf());
     */
     fn handleOf(): Int {
         return this.handle;
@@ -328,7 +326,7 @@ class TcpListener {
     *  import { TcpListener } from "@std/net";
     *
     *  let listener = TcpListener.bind("127.0.0.1", 0);
-    *  print(listener.port() > 0);
+    *  println!(listener.port() > 0);
     *  listener.close();
     */
     static bind(host: String, port: Int): TcpListener {
@@ -359,7 +357,7 @@ class TcpListener {
     *  let listener = TcpListener.bind("127.0.0.1", 0);
     *  let client = await TcpStream.connect("127.0.0.1", listener.port());
     *  let server = await listener.accept();
-    *  print(server.handleOf() >= 0);
+    *  println!(server.handleOf() >= 0);
     */
     fn accept(): Promise<TcpStream> {
         let h = this.handle;
@@ -390,7 +388,7 @@ class TcpListener {
     *  import { TcpListener } from "@std/net";
     *
     *  let listener = TcpListener.bind("127.0.0.1", 0);
-    *  print(listener.port());
+    *  println!(listener.port());
     *  listener.close();
     */
     fn port(): Int {
@@ -480,7 +478,7 @@ class TlsStream {
     *
     *  let stream = await TcpStream.connect("example.com", 443);
     *  let tls = await TlsStream.connect(stream, "example.com");
-    *  print(await tls.write([104, 105]));
+    *  println!(await tls.write([104, 105]));
     *  tls.close();
     */
     static connect(stream: TcpStream, domain: String): Promise<TlsStream> {
@@ -524,8 +522,8 @@ class TlsStream {
     *
     *  let stream = await TcpStream.connect("example.com", 443);
     *  let tls = await TlsStream.connect(stream, "example.com");
-    *  print(await tls.write([104, 105]));
-    *  print(await tls.read(64));
+    *  println!(await tls.write([104, 105]));
+    *  println!(await tls.read(64));
     */
     fn read(max_bytes: Int): Promise<Array<Int>> {
         let h = this.handle;
@@ -559,7 +557,7 @@ class TlsStream {
     *
     *  let stream = await TcpStream.connect("example.com", 443);
     *  let tls = await TlsStream.connect(stream, "example.com");
-    *  print(await tls.write([104, 105]));
+    *  println!(await tls.write([104, 105]));
     *  tls.close();
     */
     fn write(bytes: Array<Int>): Promise<Int> {
@@ -585,7 +583,7 @@ class TlsStream {
     * import { TlsStream } from "@std/net";
     *
     * let wrapped = new TlsStream(4);
-    * print(wrapped.handleOf());
+    * println!(wrapped.handleOf());
     */
     fn handleOf(): Int {
         return this.handle;
@@ -642,9 +640,9 @@ class Dns {
     * @example
     * import { Dns } from "@std/net";
     *
-    * print(await Dns.lookup("127.0.0.1"));
-    * print(await Dns.lookup("::1"));
-    * print(await Dns.lookup("localhost"));
+    * println!(await Dns.lookup("127.0.0.1"));
+    * println!(await Dns.lookup("::1"));
+    * println!(await Dns.lookup("localhost"));
     */
     static fn lookup(host: String): Promise<String> {
         let slot = __rnx_dns_lookup_start(host);

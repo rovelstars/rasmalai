@@ -48,7 +48,7 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output, want_out.to_vec(), "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -84,7 +84,7 @@ fn Main(): Int {
     hs.push(Thread.spawn((): Int => worker()));
     let r = hs[0].join();
     let v = r.unwrap() as Int;
-    print(v);
+    println!(v);
     if v == 42 { return 42; }
     return 1;
 }
@@ -108,7 +108,7 @@ fn Main(): Int {
     let hs: Array<Thread> = [];
     hs.push(Thread.spawn(worker));
     let v = hs[0].join().unwrap() as Int;
-    print(v);
+    println!(v);
     if v == 42 { return 42; }
     return 1;
 }
@@ -142,7 +142,7 @@ fn Main(): Int {
     let i = 0;
     let total = xs[i].value() + xs[1].value();
     xs[i].bump(2);
-    print(total);
+    println!(total);
     if total == 40 && xs[i].value() == 22 { return 42; }
     return 1;
 }
@@ -174,7 +174,7 @@ fn Main(): Int {
     let grid = rows();
     grid[0][0].set(42);
     let v = grid[0][0].get();
-    print(v);
+    println!(v);
     if v == 42 { return 42; }
     return 1;
 }
@@ -187,7 +187,7 @@ fn nested_index_method_call_keeps_element_type() {
 
 #[test]
 fn untyped_empty_array_still_reports_e108_with_the_annotation_hint() {
-    let src = "fn worker(): Int { return 1; }\nfn Main(): Int {\n    let hs = [];\n    hs.push(Thread.spawn((): Int => worker()));\n    let r = hs[0].join();\n    print(\"joined\");\n    return 0;\n}\n";
+    let src = "fn worker(): Int { return 1; }\nfn Main(): Int {\n    let hs = [];\n    hs.push(Thread.spawn((): Int => worker()));\n    let r = hs[0].join();\n    println!(\"joined\");\n    return 0;\n}\n";
     let dir = crate::scratch::dir("array-elem-method-untyped");
     let main = dir.join("main.rnx");
     std::fs::write(&main, src).unwrap();

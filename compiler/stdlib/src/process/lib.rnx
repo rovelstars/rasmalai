@@ -20,8 +20,8 @@
 //! import { Process } from "@std/process";
 //!
 //! let out = Process.run("echo", ["hello"]);
-//! print(out.exitCode);
-//! print(out.stdoutText());
+//! println!(out.exitCode);
+//! println!(out.stdoutText());
 //! ```
 //!
 //! Spawning is subject to the `sys:exec` grant. Without it the runtime
@@ -103,7 +103,7 @@ class ProcessOutput {
     * import { Process } from "@std/process";
     *
     * let out = Process.run("echo", ["hi"]);
-    * print(out.stdoutText());
+    * println!(out.stdoutText());
     */
     fn stdoutText(): String {
         return this.stdout.readString(0, this.stdout.length());
@@ -116,7 +116,7 @@ class ProcessOutput {
     * import { Process } from "@std/process";
     *
     * let out = Process.run("sh", ["-c", "echo oops 1>&2"]);
-    * print(out.stderrText());
+    * println!(out.stderrText());
     */
     fn stderrText(): String {
         return this.stderr.readString(0, this.stderr.length());
@@ -138,7 +138,7 @@ class ProcessOutput {
  * env.set("GREETING", "hi");
  * let opts = new SpawnOptions(null, env, Stdio.Piped, Stdio.Piped, Stdio.Piped);
  * let out = Process.run("sh", ["-c", "echo $GREETING"], opts);
- * print(out.stdoutText());
+ * println!(out.stdoutText());
  * ```
  */
 class SpawnOptions {
@@ -220,8 +220,8 @@ class ChildProcess {
     * let child = Process.spawn("cat");
     * child.writeStdinText("ping\n");
     * child.closeStdin();
-    * print(child.readStdoutText());
-    * print(child.wait());
+    * println!(child.readStdoutText());
+    * println!(child.wait());
     */
     fn writeStdin(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Int {
         return __rnx_process_write_stdin(this.handle, buf.handle, offset, len);
@@ -238,9 +238,9 @@ class ChildProcess {
     *  import { Process } from "@std/process";
     *
     *  let child = Process.spawn("cat", []);
-    *  print(child.writeStdinText("hi"));
+    *  println!(child.writeStdinText("hi"));
     *  child.closeStdin();
-    *  print(child.readStdoutText());
+    *  println!(child.readStdoutText());
     */
     fn writeStdinText(text: String): Int {
         return this.writeStdin(ByteBuffer.fromString(text));
@@ -257,8 +257,8 @@ class ChildProcess {
     *
     *  let child = Process.spawn("cat", []);
     *  child.closeStdin();
-    *  print(child.readStdoutText());
-    *  print(child.wait());
+    *  println!(child.readStdoutText());
+    *  println!(child.wait());
     */
     fn closeStdin() {
         __rnx_process_close_stdin(this.handle);
@@ -281,9 +281,9 @@ class ChildProcess {
     *
     * let child = Process.spawn("echo", ["abc"]);
     * let buf = ByteBuffer.allocate(3);
-    * print(child.readStdout(buf));
-    * print(buf.readString(0, 3));
-    * print(child.wait());
+    * println!(child.readStdout(buf));
+    * println!(buf.readString(0, 3));
+    * println!(child.wait());
     */
     fn readStdout(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Int {
         return __rnx_process_read_stdout(this.handle, buf.handle, offset, len);
@@ -305,8 +305,8 @@ class ChildProcess {
     *
     *  let child = Process.spawn("echo", ["hi"]);
     *  let buf = ByteBuffer.allocate(16);
-    *  print(child.readStderr(buf));
-    *  print(child.wait());
+    *  println!(child.readStderr(buf));
+    *  println!(child.wait());
     */
     fn readStderr(buf: ByteBuffer, offset: Int = 0, len: Int = -1): Int {
         return __rnx_process_read_stderr(this.handle, buf.handle, offset, len);
@@ -324,8 +324,8 @@ class ChildProcess {
     *  import { Process } from "@std/process";
     *
     *  let child = Process.spawn("echo", ["hi"]);
-    *  print(child.readStdoutText());
-    *  print(child.wait());
+    *  println!(child.readStdoutText());
+    *  println!(child.wait());
     */
     fn readStdoutText(): String {
         let out = "";
@@ -349,8 +349,8 @@ class ChildProcess {
     *  import { Process } from "@std/process";
     *
     *  let child = Process.spawn("sh", ["-c", "echo bad 1>&2"]);
-    *  print(child.readStderrText());
-    *  print(child.wait());
+    *  println!(child.readStderrText());
+    *  println!(child.wait());
     */
     fn readStderrText(): String {
         let out = "";
@@ -375,7 +375,7 @@ class ChildProcess {
     * import { Process } from "@std/process";
     *
     * let child = Process.spawn("sh", ["-c", "echo hi"]);
-    * print(child.readStdoutText());
+    * println!(child.readStdoutText());
     * while child.tryWait() == null {
     * }
     */
@@ -398,7 +398,7 @@ class ChildProcess {
     *  import { Process } from "@std/process";
     *
     *  let child = Process.spawn("echo", ["hi"]);
-    *  print(child.wait());
+    *  println!(child.wait());
     */
     fn wait(): Int {
         return __rnx_process_wait(this.handle);
@@ -416,8 +416,8 @@ class ChildProcess {
     * import { Process } from "@std/process";
     *
     * let child = Process.spawn("sh", ["-c", "sleep 5"]);
-    * print(child.kill());
-    * print(child.wait());
+    * println!(child.kill());
+    * println!(child.wait());
     */
     fn kill(signal: Int = 15): Bool {
         return __rnx_process_kill(this.handle, signal) == 1;
@@ -436,7 +436,7 @@ class Process {
     * @example
     * import { Process } from "@std/process";
     *
-    * print(Process.args().length() > 0);
+    * println!(Process.args().length() > 0);
     */
     static args(): Array<String> {
         return Env.args();
@@ -454,7 +454,7 @@ class Process {
     * import { Process } from "@std/process";
     *
     * Process.setEnv("DEMO", "on");
-    * print(Process.env("DEMO"));
+    * println!(Process.env("DEMO"));
     */
     static env(key: String): String? {
         let table = Process.allEnv();
@@ -473,7 +473,7 @@ class Process {
     *  import { Process } from "@std/process";
     *
     *  Process.setEnv("DEMO", "on");
-    *  print(Process.env("DEMO"));
+    *  println!(Process.env("DEMO"));
     */
     static setEnv(key: String, value: String) {
         Env.set(key, value);
@@ -489,7 +489,7 @@ class Process {
     *
     *  Process.setEnv("DEMO_GONE", "on");
     *  Process.removeEnv("DEMO_GONE");
-    *  print(Process.env("DEMO_GONE"));
+    *  println!(Process.env("DEMO_GONE"));
     */
     static removeEnv(key: String) {
         __rnx_process_remove_env(key);
@@ -506,7 +506,7 @@ class Process {
     * import { Process } from "@std/process";
     *
     * Process.setEnv("COUNTED", "1");
-    * print(Process.allEnv().get("COUNTED"));
+    * println!(Process.allEnv().get("COUNTED"));
     */
     static allEnv(): Map<String, String> {
         let table = new Map<String, String>();
@@ -529,7 +529,7 @@ class Process {
     * @example
     * import { Process } from "@std/process";
     *
-    * print(Process.cwd().length() > 0);
+    * println!(Process.cwd().length() > 0);
     */
     static cwd(): String {
         return Env.cwd();
@@ -547,8 +547,8 @@ class Process {
     * import { Process } from "@std/process";
     *
     * let before = Process.cwd();
-    * print(Process.chdir("/tmp"));
-    * print(Process.chdir(before));
+    * println!(Process.chdir("/tmp"));
+    * println!(Process.chdir(before));
     */
     static chdir(path: String): Bool {
         return __rnx_process_chdir(path) == 1;
@@ -562,7 +562,7 @@ class Process {
     *  @example
     *  import { Process } from "@std/process";
     *
-    *  print(Process.pid() > 0);
+    *  println!(Process.pid() > 0);
     */
     static pid(): Int {
         return __rnx_process_pid();
@@ -601,8 +601,8 @@ class Process {
     * import { Process } from "@std/process";
     *
     * let child = Process.spawn("echo", ["streamed"]);
-    * print(child.readStdoutText());
-    * print(child.wait());
+    * println!(child.readStdoutText());
+    * println!(child.wait());
     */
     static spawn(
         command: String,
@@ -653,16 +653,16 @@ class Process {
     * import { Process } from "@std/process";
     *
     * let out = Process.run("sh", ["-c", "echo hi; echo bad 1>&2; exit 3"]);
-    * print(out.exitCode);
-    * print(out.stdoutText());
-    * print(out.stderrText());
+    * println!(out.exitCode);
+    * println!(out.stdoutText());
+    * println!(out.stderrText());
     * @example
     * import { Process, Stdio, SpawnOptions } from "@std/process";
     *
     * let opts = new SpawnOptions(null, null, Stdio.Piped, Stdio.Null, Stdio.Piped);
     * let out = Process.run("sh", ["-c", "echo hidden; echo shown 1>&2"], opts);
-    * print(out.stdoutText().length());
-    * print(out.stderrText());
+    * println!(out.stdoutText().length());
+    * println!(out.stderrText());
     */
     static run(
         command: String,
@@ -707,7 +707,7 @@ class Process {
     *
     *  let env = new Map<String, String>();
     *  env.set("A", "1");
-    *  print(Process.flattenEnv(env).join(","));
+    *  println!(Process.flattenEnv(env).join(","));
     */
     static flattenEnv(env: Map<String, String>): Array<String> {
         let pairs: Array<String> = [];
@@ -731,8 +731,8 @@ class Process {
     *  @example
     *  import { Process, Stdio } from "@std/process";
     *
-    *  print(Process.stdioMode(Stdio.Piped));
-    *  print(Process.stdioMode(Stdio.Null));
+    *  println!(Process.stdioMode(Stdio.Piped));
+    *  println!(Process.stdioMode(Stdio.Null));
     */
     static stdioMode(s: Stdio): Int {
         if s == Stdio.Piped {

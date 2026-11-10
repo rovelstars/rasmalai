@@ -2,6 +2,10 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
+#[cfg(test)]
+#[path = "../../testkit/source.rs"]
+mod source;
+
 use cranelift::jit::emit_object;
 
 fn scratch(tag: &str) -> crate::scratch::Scratch {
@@ -11,10 +15,7 @@ fn scratch(tag: &str) -> crate::scratch::Scratch {
 fn lower_src(src: &str, tag: &str) -> lir::instr::Module {
     let dir = scratch(&format!("src-{tag}"));
     std::fs::write(dir.join("main.rnx"), src).unwrap();
-    let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
-    let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
-    let d = frontend::desugar::desugar(&mut m);
-    assert!(d.is_empty(), "{d:?}");
+    let m = crate::source::resolve_file(&dir.join("main.rnx"));
     let out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     out
 }
@@ -83,11 +84,11 @@ fn llvm_exe(src: &str, tag: &str) -> (crate::scratch::Scratch, std::path::PathBu
     link_cc(&obj, tag)
 }
 
-const MATH_SRC: &str = "fn Fib(n: Int): Int { let a = 0 let b = 1 let i = 0 while i < n { let t = a + b a = b b = t i += 1 } return a } fn Double(x: Int): Int { return x * 2 } fn Pick(a: Int, b: Int): Int { return (a > b ? a : b) + Double(1) } fn Main(): Int { print(Fib(20)) print(Pick(3, 9) + Double(4)) return 0 }";
+const MATH_SRC: &str = "fn Fib(n: Int): Int { let a = 0 let b = 1 let i = 0 while i < n { let t = a + b a = b b = t i += 1 } return a } fn Double(x: Int): Int { return x * 2 } fn Pick(a: Int, b: Int): Int { return (a > b ? a : b) + Double(1) } fn Main(): Int { println!(Fib(20)) println!(Pick(3, 9) + Double(4)) return 0 }";
 
-const STRARR_SRC: &str = r#"fn Main(): Int { let greeting = "Hello"; let target = "World"; let msg = greeting + ", " + target + "!"; print(msg); let list = [10, 20, 30]; list.push(40); let sum = 0; for x in list { sum = sum + x; } print(sum); if msg == "Hello, World!" && sum == 100 && list.length == 4 { return 0; } return 1; }"#;
+const STRARR_SRC: &str = r#"fn Main(): Int { let greeting = "Hello"; let target = "World"; let msg = greeting + ", " + target + "!"; println!(msg); let list = [10, 20, 30]; list.push(40); let sum = 0; for x in list { sum = sum + x; } println!(sum); if msg == "Hello, World!" && sum == 100 && list.length == 4 { return 0; } return 1; }"#;
 
-const CLOSURE_SRC: &str = "fn Main(): Int { let f = (): Int => 42; let factor = 10; let mult = (x: Int): Int => x * factor; let r = f() + mult(5); print(r); if r == 92 { return 0; } return 1; }";
+const CLOSURE_SRC: &str = "fn Main(): Int { let f = (): Int => 42; let factor = 10; let mult = (x: Int): Int => x * factor; let r = f() + mult(5); println!(r); if r == 92 { return 0; } return 1; }";
 
 #[test]
 fn object_int_math_calls() {
@@ -126,7 +127,7 @@ fn object_closures() {
 
 #[test]
 fn object_backend_parity_mixed() {
-    let src = "class Point { let x: Int; let y: Int; init(x: Int, y: Int) { this.x = x; this.y = y; } fn sum(): Int { return this.x + this.y; } } fn Fib(n: Int): Int { if n < 2 { return n; } return Fib(n - 1) + Fib(n - 2); } fn Main(): Int { let pt = new Point(10, 32); let s = pt.sum() + Fib(15); print(s); let t = [1, 2, 3]; print(t.len()); let f = (x: Int): Int => x * 2; if f(21) != 42 { return 1; } print(42); return 0; }";
+    let src = "class Point { let x: Int; let y: Int; init(x: Int, y: Int) { this.x = x; this.y = y; } fn sum(): Int { return this.x + this.y; } } fn Fib(n: Int): Int { if n < 2 { return n; } return Fib(n - 1) + Fib(n - 2); } fn Main(): Int { let pt = new Point(10, 32); let s = pt.sum() + Fib(15); println!(s); let t = [1, 2, 3]; println!(t.len()); let f = (x: Int): Int => x * 2; if f(21) != 42 { return 1; } println!(42); return 0; }";
     let (_g, exe) = cl_exe(src, "parity", "Main");
     let (ccode, cout) = run_exe(&exe);
     let (_g, exe) = llvm_exe(src, "parity-llvm");
@@ -141,7 +142,7 @@ fn object_backend_parity_mixed() {
 
 #[test]
 fn object_lowercase_main_entry() {
-    let (_g, exe) = cl_exe("fn main(): Int { print(7) return 0 }", "entrymain", "main");
+    let (_g, exe) = cl_exe("fn main(): Int { println!(7) return 0 }", "entrymain", "main");
     let (code, out) = run_exe(&exe);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains('7'), "{out}");

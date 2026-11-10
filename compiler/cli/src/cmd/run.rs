@@ -41,7 +41,7 @@ pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: 
                     None => Err(cli::missing_lock()),
                 };
                 if let Err(e) = locked_ok {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
                 let ceiling_issues =
@@ -71,11 +71,7 @@ pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: 
             }
             let out = cli::run_files_cfg(&target.entry, &entry, args, opt_level, backend, &cfg);
             for line in &out.output {
-                if line.ends_with('\n') {
-                    print!("{line}");
-                } else {
-                    println!("{line}");
-                }
+                print!("{line}");
             }
             let theme = diagnostics::theme::AuraTheme::active();
             match out.outcome {

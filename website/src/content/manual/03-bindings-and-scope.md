@@ -15,7 +15,7 @@ icon: "KeyRound"
 let score = 0;
 score = score + 10;
 const maxRetries: Int = 3;
-print(score, maxRetries);
+println!(score, maxRetries);
 ```
 
 Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `>>>=`) updates a binding in place and is available on variables, fields, and index targets: `score += 10` adds and stores back. Prefix and postfix `++`/`--` adjust `Int` and `Float` operands by `1` (`1.0` for `Float`); the prefix form yields the new value while the postfix form yields the old one:
@@ -23,8 +23,8 @@ Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `>>>=`) updates
 ```rnx
 let n = 10;
 let old = n++;
-print(old, n);
-print(++n, n--, n);
+println!(old, n);
+println!(++n, n--, n);
 ```
 
 The operand must be a valid assignment target: a variable, a field (`obj.count++`), an index (`buf[i] += step`), or a dereferenced pointer (`(*p)++` inside `unsafe`). Mutating a `const` binding or incrementing a non-target such as `(a + b)` is an `E108` error. Compound index and member targets evaluate their base and index exactly once, so `items[next()]++` calls `next()` a single time.
@@ -85,7 +85,7 @@ const dbPath = "notes.txt";
 fn load(): String {
     return dbPath;
 }
-print(load());
+println!(load());
 ```
 
 Type annotations (`: Int`) are optional on bindings. Annotations on `const` items and function signatures convert would-be runtime confusion into compile-time errors.
@@ -98,9 +98,9 @@ Every block introduces a scope. A binding is visible from its declaration to the
 let x = 1;
 if true {
     let x = 2;
-    print(x);
+    println!(x);
 }
-print(x);
+println!(x);
 ```
 
 Function parameters behave as bindings scoped to the function body.
@@ -116,9 +116,9 @@ fn div_rem(num: Int, den: Int): (Int, Int) {
 
 let pair = (100, "items");
 let (total, unit) = pair;
-print(total, pair.1);
+println!(total, pair.1);
 let (q, r) = div_rem(10, 3);
-print(q, r);
+println!(q, r);
 ```
 
 ## Destructuring
@@ -130,13 +130,13 @@ record User(name: String, age: Int)
 
 let user = User("Al", 30);
 let { name, age: userAge } = user;
-print(name, userAge);
+println!(name, userAge);
 ```
 
 ```rnx
 let user = { id: 1, name: "Al", role: "admin" };
 let { id, ...meta } = user;
-print(id, meta.name);
+println!(id, meta.name);
 ```
 
 Arrays destructure positionally with an optional trailing rest binding. Short arrays yield typed defaults for missing positional slots (`0`, `false`, `""`) and an empty rest.
@@ -145,7 +145,7 @@ Arrays destructure positionally with an optional trailing rest binding. Short ar
 let a = [1, 2];
 let full = [0, ...a, 3];
 let [first, ...rest] = full;
-print(first, rest.length);
+println!(first, rest.length);
 ```
 
 `...` also spreads one array into another at construction. Destructuring in `for` bindings follows the same rules; see [Control Flow](/manual/04-control-flow).
@@ -160,17 +160,17 @@ Array element types are invariant when widening: a bare `Array` stores boxed ele
 let arr = [10, 20, 30];
 arr.push(40);
 arr[0] = 11;
-print(arr.length, arr[0], arr[3]);
-print(arr.pop(), arr.length);
+println!(arr.length, arr[0], arr[3]);
+println!(arr.pop(), arr.length);
 ```
 
 Out-of-bounds access aborts. Indexing with a range slices: arrays yield arrays, strings yield strings, and out-of-range bounds clamp. Printing an array renders its contents (`[10, 20, 30]`); `join` renders contents as flat text with a custom separator.
 
 ```rnx
 let a = [10, 20, 30, 40];
-print(a[1..3].length);
-print(a[..2].length);
-print("hello"[1..4]);
+println!(a[1..3].length);
+println!(a[..2].length);
+println!("hello"[1..4]);
 ```
 
 ## Summary

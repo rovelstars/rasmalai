@@ -6,7 +6,7 @@ Filesystem one-shots, file handles, and path helpers.
 import fs from "@std/fs";
 
 fs.writeText("hello.txt", "hello", .Overwrite);
-print(fs.readText("hello.txt").unwrapOr("missing"));
+println!(fs.readText("hello.txt").unwrapOr("missing"));
 ```
 
 ## What is inside

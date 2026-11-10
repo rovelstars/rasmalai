@@ -11,7 +11,7 @@ class. `print` stays in the prelude as a shim over `io.write`.
 import io from "@std/io";
 
 io.write("hello");
-print(io.width() > 0);
+println!(io.width() > 0);
 ```
 
 ## What is inside

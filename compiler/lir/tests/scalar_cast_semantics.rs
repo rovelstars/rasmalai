@@ -1,7 +1,8 @@
+#[path = "../src/test_support.rs"]
+mod support;
+
 fn lower_src(src: &str) -> Result<lir::instr::Module, diagnostics::Diagnostic> {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
-    let d = frontend::desugar::desugar(&mut m);
-    assert!(d.is_empty(), "{d:?}");
+    let m = support::resolve_for_lowering(src);
     lir::lower::lower(&m)
 }
 
@@ -51,7 +52,7 @@ fn same_kind_scalar_as_still_lowers() {
 
 #[test]
 fn byte_value_still_lowers_through_as() {
-    let m = lower_src("fn Main(): Int { let b = 65 as Byte print(\"b={b}\") return 0 }")
+    let m = lower_src("fn Main(): Int { let b = 65 as Byte println!(\"b={}\", b) return 0 }")
         .unwrap_or_else(|e| panic!("{e:?}"));
     let v = lir::verify::verify(&m);
     assert!(v.is_empty(), "{v:?}");

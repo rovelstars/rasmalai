@@ -40,7 +40,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -65,13 +65,13 @@ fn any_closure_scalar_results_print() {
     check_stdout_everywhere(
         "fn Main(): Int {\n\
         let fi = (): Int => 42;\n\
-        print(fi());\n\
+        println!(fi());\n\
         let fb = (): Bool => true;\n\
-        print(fb());\n\
+        println!(fb());\n\
         let ff = (): Float => 2.5;\n\
-        print(ff());\n\
+        println!(ff());\n\
         let fs = (): String => \"hi\";\n\
-        print(fs());\n\
+        println!(fs());\n\
         return 0;\n\
         }\n",
         "42\ntrue\n2.5\nhi\n",
@@ -85,11 +85,11 @@ fn any_closure_result_flows_through_locals() {
         "fn Main(): Int {\n\
         let f = (): Int => 42;\n\
         let r = f();\n\
-        print(r);\n\
+        println!(r);\n\
         let a: Any = f();\n\
-        print(a);\n\
+        println!(a);\n\
         assert(f() == 42, \"boxed exactly once\");\n\
-        print(((): Int => 7)());\n\
+        println!(((): Int => 7)());\n\
         return 0;\n\
         }\n",
         "42\n42\n7\n",
@@ -103,12 +103,12 @@ fn any_closure_result_nested_calls() {
         "fn Main(): Int {\n\
         let f = (): Int => 42;\n\
         let g = (): Any => f();\n\
-        print(g());\n\
+        println!(g());\n\
         let h = (x: Any): Any => x;\n\
-        print(h(f()));\n\
+        println!(h(f()));\n\
         let a: Array<Any> = [f(), g()];\n\
-        print(a[0]);\n\
-        print(a[1]);\n\
+        println!(a[0]);\n\
+        println!(a[1]);\n\
         return 0;\n\
         }\n",
         "42\n42\n42\n42\n",
@@ -124,9 +124,9 @@ fn any_closure_result_object_and_record() {
         }\n\
         fn Main(): Int {\n\
         let f = (): P => new P(1);\n\
-        print(f());\n\
+        println!(f());\n\
         let r = { cb: (): Int => 7 };\n\
-        print(r.cb());\n\
+        println!(r.cb());\n\
         return 0;\n\
         }\n",
         "P{x: 1}\n7\n",
@@ -141,10 +141,10 @@ fn any_stored_closure_map_and_result_map() {
         let nums = [1, 2, 3];\n\
         let triple = (x: Int): Int => x * 3;\n\
         let out = nums.map(triple);\n\
-        print(out[2]);\n\
+        println!(out[2]);\n\
         let ok: Result = Ok(7);\n\
         let m = ok.map((x: Int): Int => x + 1);\n\
-        print(m.unwrap());\n\
+        println!(m.unwrap());\n\
         return 0;\n\
         }\n",
         "9\n8\n",

@@ -29,9 +29,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -66,20 +66,20 @@ fn Main(): Int {
     io.write(true);
     io.writeRaw(ByteBuffer.fromString("AB"));
     io.writeError("err-line");
-    print("line-one");
-    print("a", 1, true);
-    print(io.width() > 0);
-    print(io.height() > 0);
-    print(io.isTTY() == io.isTTY());
-    print(io.width() == io.width());
-    print(io.height() == io.height());
+    println!("line-one");
+    println!("a", 1, true);
+    println!(io.width() > 0);
+    println!(io.height() > 0);
+    println!(io.isTTY() == io.isTTY());
+    println!(io.width() == io.width());
+    println!(io.height() == io.height());
     let oldNoColor = Env.get("NO_COLOR");
     let oldColorTerm = Env.get("COLORTERM");
     Env.set("NO_COLOR", "1");
     if !(io.colorProfile() == ColorLevel.Ascii) {
         return 13;
     }
-    print("profile-ascii");
+    println!("profile-ascii");
     Env.set("NO_COLOR", oldNoColor);
     Env.set("COLORTERM", "truecolor");
     let prof = io.colorProfile();
@@ -92,12 +92,12 @@ fn Main(): Int {
             return 16;
         }
     }
-    print("profile-cap");
+    println!("profile-cap");
     Env.set("COLORTERM", oldColorTerm);
     let r1 = io.setRawMode(true);
     let r2 = io.setRawMode(false);
-    print(r1.isOk() || r1.isErr());
-    print(r1.isErr() == r2.isErr());
+    println!(r1.isOk() || r1.isErr());
+    println!(r1.isErr() == r2.isErr());
     if r1.isOk() {
         if !(r1.unwrapOr(false) == true) {
             return 22;
@@ -107,7 +107,7 @@ fn Main(): Int {
         }
     }
     io.clear();
-    print("basics-ok");
+    println!("basics-ok");
     return 0;
 }
 "#
@@ -202,7 +202,7 @@ fn Main(): Int {
     if r1.isOk() || r2.isOk() {
         return 12;
     }
-    print("piped-ok");
+    println!("piped-ok");
     return 0;
 }
 "#

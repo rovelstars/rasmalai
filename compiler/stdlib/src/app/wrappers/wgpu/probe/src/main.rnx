@@ -12,18 +12,18 @@ import {
 fn Main(): Int {
     unsafe {
         let inst = wgpuInstanceCreate()
-        print("adapters:", wgpuAdapterCount(inst))
+        println!("adapters:", wgpuAdapterCount(inst))
         let name = ByteBuffer.allocate(256)
         let n = wgpuAdapterName(inst, 0, Pointer.fromAddress<Byte>(name.address()), 256)
-        print("name bytes:", n)
+        println!("name bytes:", n)
         let px = ByteBuffer.allocate(8)
         let rc = wgpuClearRgba(2, 1, 10, 20, 30, 255, Pointer.fromAddress<Byte>(px.address()))
-        print("rc:", rc, "rgba:", px.readUInt8(0), px.readUInt8(1), px.readUInt8(2), px.readUInt8(3))
+        println!("rc:", rc, "rgba:", px.readUInt8(0), px.readUInt8(1), px.readUInt8(2), px.readUInt8(3))
         let img = ByteBuffer.allocate(16 * 16 * 4)
         let tr = wgpuTriangle(16, 16, Pointer.fromAddress<Byte>(img.address()))
         let at = (8 * 16 + 8) * 4
-        print("triangle rc:", tr, "center:", img.readUInt8(at), img.readUInt8(at + 1), img.readUInt8(at + 2), img.readUInt8(at + 3))
-        print("abi:", wgpuAbiVersion())
+        println!("triangle rc:", tr, "center:", img.readUInt8(at), img.readUInt8(at + 1), img.readUInt8(at + 2), img.readUInt8(at + 3))
+        println!("abi:", wgpuAbiVersion())
         wgpuInstanceDestroy(inst)
     }
     return 0

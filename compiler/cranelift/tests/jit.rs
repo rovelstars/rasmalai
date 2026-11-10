@@ -2,6 +2,10 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
+#[cfg(test)]
+#[path = "../../testkit/source.rs"]
+mod source;
+
 use cranelift::jit::Jit;
 
 // Scratch names must be per-run. A fixed name lets two concurrent runs share
@@ -14,10 +18,7 @@ fn scratch_dir(tag: &str) -> crate::scratch::Scratch {
 fn module_of(src: &str, tag: &str) -> lir::instr::Module {
     let dir = crate::scratch::dir(&format!("harness-{tag}"));
     std::fs::write(dir.join("main.rnx"), src).unwrap();
-    let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
-    let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
-    let d = frontend::desugar::desugar(&mut m);
-    assert!(d.is_empty(), "{d:?}");
+    let m = crate::source::resolve_file(&dir.join("main.rnx"));
     let out = lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"));
     out
 }
@@ -73,7 +74,7 @@ fn jit_array_len_call_form() {
 
 #[test]
 fn jit_print_i64_via_runtime_symbol() {
-    let lir = jit_of("fn Main(): Int { print(42) return 7 }");
+    let lir = jit_of("fn Main(): Int { println!(42) return 7 }");
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 7);
 }
@@ -87,7 +88,7 @@ fn jit_class_point() {
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
 }
 
-const POINT_PROG: &str = "class Point { let x: Int; let y: Int; init(x: Int, y: Int) { this.x = x; this.y = y; } } fn Main(): Int { let pt = new Point(10, 32); print(pt.x + pt.y); return pt.x + pt.y; }";
+const POINT_PROG: &str = "class Point { let x: Int; let y: Int; init(x: Int, y: Int) { this.x = x; this.y = y; } } fn Main(): Int { let pt = new Point(10, 32); println!(pt.x + pt.y); return pt.x + pt.y; }";
 
 #[test]
 fn jit_point_print_and_return() {
@@ -123,14 +124,14 @@ fn jit_genref_expires() {
 
 #[test]
 fn jit_strings_concat_eq_print() {
-    let lir = jit_of(r#"fn Main(): Int { let greeting = "Hello"; let target = "World"; let msg = greeting + ", " + target + "!"; print(msg, 42); if msg == "Hello, World!" { return 42; } return 0; }"#);
+    let lir = jit_of(r#"fn Main(): Int { let greeting = "Hello"; let target = "World"; let msg = greeting + ", " + target + "!"; println!(msg, 42); if msg == "Hello, World!" { return 42; } return 0; }"#);
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
 }
 
 #[test]
 fn jit_string_interp_int() {
-    let lir = jit_of(r#"fn Main(): Int { let s = "n={40 + 2}!"; print(s); if s == "n=42!" { return 42; } return 0; }"#);
+    let lir = jit_of(r#"fn Main(): Int { let s = "n={40 + 2}!"; println!(s); if s == "n=42!" { return 42; } return 0; }"#);
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 42);
 }
@@ -144,21 +145,21 @@ fn jit_string_neq() {
 
 #[test]
 fn jit_string_inner_scope() {
-    let lir = jit_of(r#"fn Main(): Int { let t = 0; if t == 0 { let s = "a" + "b"; print(s); } return 7; }"#);
+    let lir = jit_of(r#"fn Main(): Int { let t = 0; if t == 0 { let s = "a" + "b"; println!(s); } return 7; }"#);
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 7);
 }
 
 #[test]
 fn jit_string_field() {
-    let lir = jit_of(r#"class C { let s: String; init(s: String) { this.s = s; } fn get(): String { return this.s; } } fn Main(): Int { let c = new C("xy"); print(c.get()); if c.get() == "xy" { return 9; } return 0; }"#);
+    let lir = jit_of(r#"class C { let s: String; init(s: String) { this.s = s; } fn get(): String { return this.s; } } fn Main(): Int { let c = new C("xy"); println!(c.get()); if c.get() == "xy" { return 9; } return 0; }"#);
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 9);
 }
 
 #[test]
 fn jit_bool_interp() {
-    let lir = jit_of(r#"fn Main(): Int { let s = "v={1 == 1}!"; print(s); if s == "v=true!" { return 5; } return 0; }"#);
+    let lir = jit_of(r#"fn Main(): Int { let s = "v={1 == 1}!"; println!(s); if s == "v=true!" { return 5; } return 0; }"#);
     let mut jit = Jit::compile(&lir).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), 5);
 }

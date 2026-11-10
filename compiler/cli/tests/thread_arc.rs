@@ -12,7 +12,7 @@ const STD_TOPS: &[&str] = &[
     "@std/fs", "@std/bytes", "@std/time", "@std/random",
     "@std/sync", "@std/env", "@std/process", "@std/os",
     "@std/testing", "@std/web", "@std/net", "@std/json",
-    "@std/io",
+    "@std/io", "@std/async", "@std/log", "@std/foundation",
 ];
 
 static STAGED_STD: std::sync::OnceLock<crate::scratch::Scratch> = std::sync::OnceLock::new();
@@ -67,9 +67,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -93,7 +93,7 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     );
 }
 
-const HANDOFF_SRC: &str = "import { Channel } from \"@std/sync\";\n\nclass Message {\n    let text: String;\n    let code: Int;\n    init(t: String, c: Int) {\n        this.text = t;\n        this.code = c;\n    }\n}\n\nfn worker(): Int {\n    let chan = Channel.byId(101);\n    let msg = chan.recv() as Message;\n    print(\"Worker received:\", msg.text, msg.code);\n    return msg.code;\n}\n\nfn Main(): Int {\n    let chan = Channel.byId(101);\n    let th = Thread.spawn(worker);\n    let payload = new Message(\"ping\", 42);\n    chan.send(payload);\n    th.join();\n    return 42;\n}\n";
+const HANDOFF_SRC: &str = "import { Channel } from \"@std/sync\";\n\nclass Message {\n    let text: String;\n    let code: Int;\n    init(t: String, c: Int) {\n        this.text = t;\n        this.code = c;\n    }\n}\n\nfn worker(): Int {\n    let chan = Channel.byId(101);\n    let msg = chan.recv() as Message;\n    println!(\"Worker received:\", msg.text, msg.code);\n    return msg.code;\n}\n\nfn Main(): Int {\n    let chan = Channel.byId(101);\n    let th = Thread.spawn(worker);\n    let payload = new Message(\"ping\", 42);\n    chan.send(payload);\n    th.join();\n    return 42;\n}\n";
 
 #[test]
 fn test_channel_object_handoff() {

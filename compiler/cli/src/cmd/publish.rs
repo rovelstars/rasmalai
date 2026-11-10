@@ -8,7 +8,7 @@ fn run_artifact_pipeline(
     if cfg.bindgen.is_some()
         && let Err(e) = cli::task::run_bindgen_driver(dir, cfg)
     {
-        println!("{e}");
+        eprintln!("{e}");
         std::process::exit(1);
     }
     let inputs = match cli::publish::collect_pipeline_inputs(dir, cfg) {
@@ -19,14 +19,14 @@ fn run_artifact_pipeline(
             std::process::exit(1);
         }
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
     let assembly = match frontend::oci::assemble_index(&inputs) {
         Ok(assembly) => assembly,
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -44,12 +44,12 @@ fn run_artifact_pipeline(
     let (_, repo) = match cli::publish::artifact_repo_parts(bare) {
         Ok(parts) => parts,
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
     if let Err(e) = cli::publish::push_assembly(base, &repo, push_token, &assembly) {
-        println!("{e}");
+        eprintln!("{e}");
         std::process::exit(1);
     }
     eprintln!("notice: pushed artifact image for `{bare}` ({} file(s), index {})", inputs.len(), assembly.digest);
@@ -74,7 +74,7 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
     let targets = match cli::resolve_pack_targets(&cwd, None) {
         Ok(t) => t,
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -97,7 +97,7 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
                 std::process::exit(1);
             }
             Err(e) => {
-                println!("{e}");
+                eprintln!("{e}");
                 std::process::exit(1);
             }
         },
@@ -105,7 +105,7 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
         (None, Some(raw)) => match cli::publish::parse_artifact_digest(&raw) {
             Ok(d) => Some(d),
             Err(e) => {
-                println!("{e}");
+                eprintln!("{e}");
                 std::process::exit(1);
             }
         },
@@ -140,7 +140,7 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
                 }
                 let hexes = cli::publish::index_blob_hexes(bare, &bytes);
                 if let Err(e) = cli::publish::cross_check_local_artifacts(dir, &hexes) {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             }
@@ -154,17 +154,17 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
         workspace: None,
     };
     if let Err(e) = cli::publish::publish_license(cfg, dir) {
-        println!("{e}");
+        eprintln!("{e}");
         std::process::exit(1);
     }
     if let Err(e) = cli::publish::gate_formatted(dir, &manifest) {
-        println!("{e}");
+        eprintln!("{e}");
         std::process::exit(1);
     }
     let files = match cli::publish::collect_publish_files(dir, &manifest) {
         Ok(f) => f,
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -187,7 +187,7 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
                 std::process::exit(1);
             }
             Err(e) => {
-                println!("{e}");
+                eprintln!("{e}");
                 std::process::exit(1);
             }
         }
@@ -195,7 +195,7 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
     let docs = match cli::publish::package_docs(dir, &manifest) {
         Ok(d) => d,
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -203,7 +203,7 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
     let guides = match cli::publish::package_guides(dir, &manifest) {
         Ok(g) => g,
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -231,7 +231,7 @@ pub(super) fn run_publish(registry: String, token: Option<String>, artifact: Opt
             std::process::exit(1);
         }
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }

@@ -47,7 +47,7 @@ let total = 0;
 for e in edges {
     total = total + e.weight;
 }
-print(total);
+println!(total);
 ```
 
 Shared structure that would cycle in Rust uses `GenRef<T>` handles here:
@@ -82,9 +82,9 @@ fn main() {
 ```
 
 ```rnx
-defer { print("conn closed"); }
-defer { print("txn committed"); }
-print("query ran");
+defer { println!("conn closed"); }
+defer { println!("txn committed"); }
+println!("query ran");
 ```
 
 Output order is `query ran`, `txn committed`, `conn closed`: last-in,
@@ -126,7 +126,7 @@ fn area(s: Shape): Float {
     }
 }
 
-print(area(Shape.Rect(3.0, 4.0)));
+println!(area(Shape.Rect(3.0, 4.0)));
 ```
 
 ## Error handling
@@ -159,9 +159,9 @@ fn risky(ok: Bool): Int throws {
 }
 
 try {
-    print(risky(true));
+    println!(risky(true));
 } catch (err) {
-    print("failed");
+    println!("failed");
 }
 ```
 

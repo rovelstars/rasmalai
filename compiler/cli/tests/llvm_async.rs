@@ -39,7 +39,7 @@ fn expect_ok(dir_label: &str, src: &str, want: &str) {
 fn async_array_return_and_use() {
     expect_ok(
         "arr",
-        "async fn maker(): Promise<Array<Int>> {\n    let out: Array<Int> = [1, 2];\n    return out;\n}\nlet a: Array<Int> = await maker();\nprint(a.length());\n",
+        "async fn maker(): Promise<Array<Int>> {\n    let out: Array<Int> = [1, 2];\n    return out;\n}\nlet a: Array<Int> = await maker();\nprintln!(a.length());\n",
         "2\n",
     );
 }
@@ -48,7 +48,7 @@ fn async_array_return_and_use() {
 fn async_object_return_and_member() {
     expect_ok(
         "obj",
-        "class Box {\n    let v: Int = 0;\n    init(v: Int) { this.v = v; }\n}\nasync fn maker(): Promise<Box> {\n    let out: Box = new Box(9);\n    return out;\n}\nlet a: Box = await maker();\nprint(a.v);\n",
+        "class Box {\n    let v: Int = 0;\n    init(v: Int) { this.v = v; }\n}\nasync fn maker(): Promise<Box> {\n    let out: Box = new Box(9);\n    return out;\n}\nlet a: Box = await maker();\nprintln!(a.v);\n",
         "9\n",
     );
 }
@@ -57,7 +57,7 @@ fn async_object_return_and_member() {
 fn async_capture_loop_data_integrity() {
     expect_ok(
         "caploop",
-        "async fn fetchData(n: Int): Promise<Array<Int>> {\n    let out: Array<Int> = [];\n    let i = 0;\n    while i < n {\n        out.push(i * 3 + 1);\n        i = i + 1;\n    }\n    return out;\n}\nasync fn useData(tag: String, seed: Int): Promise<Int> {\n    let data: Array<Int> = await fetchData(seed);\n    let s = 0;\n    let i = 0;\n    while i < data.length() {\n        s = s + data[i];\n        i = i + 1;\n    }\n    print(tag);\n    return s;\n}\nlet a: Int = await useData(\"got\", 4);\nprint(a);\n",
+        "async fn fetchData(n: Int): Promise<Array<Int>> {\n    let out: Array<Int> = [];\n    let i = 0;\n    while i < n {\n        out.push(i * 3 + 1);\n        i = i + 1;\n    }\n    return out;\n}\nasync fn useData(tag: String, seed: Int): Promise<Int> {\n    let data: Array<Int> = await fetchData(seed);\n    let s = 0;\n    let i = 0;\n    while i < data.length() {\n        s = s + data[i];\n        i = i + 1;\n    }\n    println!(tag);\n    return s;\n}\nlet a: Int = await useData(\"got\", 4);\nprintln!(a);\n",
         "got\n22\n",
     );
 }
@@ -66,7 +66,7 @@ fn async_capture_loop_data_integrity() {
 fn async_erased_generic_container() {
     expect_ok(
         "gen",
-        "fn Main(): Int {\n    let tmp: Array<Int> = [1, 2];\n    let o: Array<Int>? = tmp;\n    let e: Array<Int> = [];\n    let a: Array<Int> = o ?? e;\n    print(a.length());\n    let n: Array<Int>? = null;\n    let b: Array<Int> = n ?? e;\n    print(b.length());\n    return 0;\n}\n",
+        "fn Main(): Int {\n    let tmp: Array<Int> = [1, 2];\n    let o: Array<Int>? = tmp;\n    let e: Array<Int> = [];\n    let a: Array<Int> = o ?? e;\n    println!(a.length());\n    let n: Array<Int>? = null;\n    let b: Array<Int> = n ?? e;\n    println!(b.length());\n    return 0;\n}\n",
         "2\n0\n",
     );
 }
@@ -75,7 +75,7 @@ fn async_erased_generic_container() {
 fn async_string_capture() {
     expect_ok(
         "str",
-        "async fn maker(): Promise<String> {\n    let out: String = \"hello\";\n    return out;\n}\nlet a: String = await maker();\nprint(a.length());\n",
+        "async fn maker(): Promise<String> {\n    let out: String = \"hello\";\n    return out;\n}\nlet a: String = await maker();\nprintln!(a.length());\n",
         "5\n",
     );
 }

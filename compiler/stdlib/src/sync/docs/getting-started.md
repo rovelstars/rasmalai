@@ -14,7 +14,7 @@ Paste it into a file or run it straight in the playground:
 import { AtomicInt } from "@std/sync";
 
 let a = AtomicInt.byId(101);
-print(a.get());
+println!(a.get());
 ```
 
 ## Keep going

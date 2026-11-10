@@ -489,7 +489,7 @@ mod tests {
                         Instr::Call {span: UNKNOWN_SPAN, 
                             dsts: vec![],
                             err: None,
-                            target: CallTarget::Builtin("print".to_string()),
+                            target: CallTarget::Builtin("__rnx_io_pretty".to_string()),
                             args: Vec::new(),
                         },
                         Instr::GetField {span: UNKNOWN_SPAN,  dst: 1, obj: 0, field: 0 },
@@ -579,7 +579,7 @@ mod tests {
             span: UNKNOWN_SPAN,
             dsts: vec![],
             err: None,
-            target: CallTarget::Builtin("print".to_string()),
+            target: CallTarget::Builtin("__rnx_io_pretty".to_string()),
             args: Vec::new(),
         }
     }

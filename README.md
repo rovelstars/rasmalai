@@ -83,6 +83,16 @@ cargo build --release
 
 The binary lands at `./target/release/rnx`.
 
+Building from a checkout uses `compiler/stdlib/src` as the standard library source.
+The repository-root `.cargo/config.toml` sets `RNX_VENDOR_DIR` to that directory as
+a path relative to the repository root, so `cargo run` and `cargo test` resolve
+every `@std/*` import from the checkout without an export. The setting does not
+force, so an explicit `RNX_VENDOR_DIR` in your shell wins.
+
+An installed `rnx` binary carries no library sources. Consumers installed from
+the registry resolve `@std/*` from the registry cache; only repository
+development and its tests read the checkout tree.
+
 The installer also seeds the standard library into the global cache
 (`~/.cache/rnx`, or `$RNX_CACHE_HOME` when set) by running
 `rnx download` for you: the `rnx` binary carries no library sources, so

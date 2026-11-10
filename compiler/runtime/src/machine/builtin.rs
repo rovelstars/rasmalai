@@ -3,11 +3,6 @@ use super::*;
 impl<'a> Machine<'a> {
     pub(super) fn builtin(&mut self, name: &str, args: Vec<Value>, span: Span) -> Result<Value, ExecError> {
         match name {
-            "print" => {
-                let line: Vec<String> = args.iter().map(|v| self.to_pretty_colored(v, 1)).collect();
-                self.output.push(line.join(" "));
-                Ok(Value::Null)
-            }
             "streq" => {
                 let eq = match args.as_slice() {
                     [a, b] => match (a, b) {
@@ -129,6 +124,13 @@ impl<'a> Machine<'a> {
                 [Value::Int(fd)] => Ok(Value::Bool(crate::native::io_is_tty_impl(*fd))),
                 _ => Err(ExecError::Fatal("__rnx_io_is_tty(fd) only".to_string())),
             },
+            "__rnx_io_warn_missing_arg" => {
+                if !args.is_empty() {
+                    return Err(self.native_arity_error(span));
+                }
+                crate::native::rnx_io_warn_missing_arg();
+                Ok(Value::Null)
+            }
             "__rnx_io_winsize" => {
                 if !args.is_empty() {
                     return Err(self.native_arity_error(span));

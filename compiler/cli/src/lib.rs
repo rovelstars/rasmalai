@@ -232,6 +232,7 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::E121 => "rename the existing member or drop the derive",
         Code::E122 => "keep comptime pure: literals, TypeInfo, and file bytes via EmbedBytes! only",
         Code::E123 => "fix the asserted expression or drop the StaticAssert!",
+        Code::E124 => "run `rnx sysroot add <triple>` to install the target pack, or `rnx sysroot verify <triple>` to rehash an installed one",
         Code::E402 => "align the file schema with the declared record type",
         Code::E501 => "pass --token <token> or set RNX_TOKEN in your environment",
         Code::S101 => "approve the capability and re-lock, or remove the offending use",
@@ -658,7 +659,12 @@ fn collect_exports(
             frontend::ast::Decl::Fn(f) => f,
             _ => continue,
         };
-        if f.access != frontend::ast::Access::Export || f.is_test {
+        if f.access != frontend::ast::Access::Export || f.is_test || f.is_macro {
+            continue;
+        }
+        if let Some(path) = diagnostics::decl_file(files, decl.span)
+            && path.to_string_lossy().starts_with("@std/")
+        {
             continue;
         }
         if let Some(surface) = cabi_surface {
@@ -765,13 +771,9 @@ fn collect_exports(
 }
 
 pub fn validate_target(triple: &str) -> Result<(), diagnostics::Diagnostic> {
-    match triple {
-        "x86_64-unknown-linux-gnu" | "aarch64-unknown-linux-gnu" | "x86_64-unknown-linux-musl" => Ok(()),
-        _ => Err(diagnostics::Diagnostic::new(
-            diagnostics::Code::E108,
-            format!("unsupported target `{triple}`; expected x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, or x86_64-unknown-linux-musl"),
-        )),
-    }
+    sysroot::target::Target::parse(triple)
+        .map(|_| ())
+        .map_err(|e| diagnostics::Diagnostic::new(diagnostics::Code::E108, e.to_string()))
 }
 
 pub fn build_lib_files(
@@ -985,8 +987,28 @@ pub fn resolve_doc_targets(
             let mut extra: Vec<(String, std::path::PathBuf, frontend::project::ProjectConfig)> =
                 Vec::new();
             for (_, dir, cfg) in &packages {
-                for dep in cfg.dependencies.values() {
-                    if let frontend::project::DependencySpec::Path { path, .. } = dep {
+                for (dep_name, dep) in &cfg.dependencies {
+                    let path = match dep {
+                        frontend::project::DependencySpec::Path { path, .. } => Some(path.clone()),
+                        frontend::project::DependencySpec::Alias { .. } => {
+                            let scope = frontend::project::find_workspace_root(dir)
+                                .unwrap_or_else(|| dir.clone());
+                            match frontend::modules::resolve_alias_spec(
+                                &scope,
+                                cfg,
+                                dep_name,
+                                &mut Vec::new(),
+                            ) {
+                                Ok((
+                                    _,
+                                    frontend::project::DependencySpec::Path { path, .. },
+                                )) => Some(path),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(path) = path {
                         let dep_dir = dir.join(path);
                         if let Ok(Some(dcfg)) =
                             frontend::project::ProjectConfig::load_from_dir(&dep_dir)
@@ -1021,8 +1043,27 @@ pub fn resolve_doc_targets(
         let mut packages = vec![(cfg.name.clone(), proj_root.clone(), cfg)];
         if !no_deps {
             let (_, dir, cfg) = &packages[0].clone();
-            for dep in cfg.dependencies.values() {
-                if let frontend::project::DependencySpec::Path { path, .. } = dep {
+            for (dep_name, dep) in &cfg.dependencies {
+                let path = match dep {
+                    frontend::project::DependencySpec::Path { path, .. } => Some(path.clone()),
+                    frontend::project::DependencySpec::Alias { .. } => {
+                        let scope = frontend::project::find_workspace_root(dir)
+                            .unwrap_or_else(|| dir.clone());
+                        match frontend::modules::resolve_alias_spec(
+                            &scope,
+                            cfg,
+                            dep_name,
+                            &mut Vec::new(),
+                        ) {
+                            Ok((_, frontend::project::DependencySpec::Path { path, .. })) => {
+                                Some(path)
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(path) = path {
                     let dep_dir = dir.join(path);
                     if let Ok(Some(dcfg)) = frontend::project::ProjectConfig::load_from_dir(&dep_dir) {
                         if !dcfg.name.is_empty() {
@@ -1696,6 +1737,8 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
             version: "0.1.0".to_string(),
             description: String::new(),
             engine: String::new(),
+            targets: Vec::new(),
+            capabilities: Vec::new(),
             entries: frontend::project::Entries {
                 main: frontend::project::DEFAULT_ENTRY.to_string(),
                 lib: None,
@@ -1727,7 +1770,7 @@ pub fn init_project(name: &str, cwd: &std::path::Path) -> Result<std::path::Path
     ensure_gitignore_entry(&root.join(".gitignore"))
         .map_err(|e| format!("cannot write .gitignore: {e}"))?;
     let main = format!(
-        "fn Main(): Int {{\n    print(\"Hello from {name}!\");\n    return 0;\n}}\n"
+        "fn Main(): Int {{\n    println!(\"Hello from {name}!\");\n    return 0;\n}}\n"
     );
     std::fs::write(root.join(frontend::project::DEFAULT_ENTRY), main)
         .map_err(|e| format!("cannot write src/main.rnx: {e}"))?;
@@ -1891,6 +1934,15 @@ pub fn lock_scope_with(
     package: Option<&str>,
     prefer: frontend::native::NativePrefer,
 ) -> Result<usize, Diagnostic> {
+    lock_scope_with_target(path, package, prefer, None)
+}
+
+pub fn lock_scope_with_target(
+    path: Option<&str>,
+    package: Option<&str>,
+    prefer: frontend::native::NativePrefer,
+    target: Option<&str>,
+) -> Result<usize, Diagnostic> {
     let scope_root = match (path, package) {
         (Some(p), _) => {
             let target = resolve_scope_target(Some(p), None)?;
@@ -1908,18 +1960,37 @@ pub fn lock_scope_with(
         }
     };
     let manifest = frontend::project::load_manifest(&scope_root)?.ok_or_else(no_manifest)?;
-    let lock = match manifest.workspace {
+    let mut targets: Vec<String> = manifest
+        .project
+        .as_ref()
+        .map(|cfg| cfg.targets.clone())
+        .unwrap_or_default();
+    let mut lock = match manifest.workspace {
         Some(ws) => {
             let members = frontend::project::resolve_workspace_members(&scope_root, &ws)?;
+            for (_, cfg) in members.values() {
+                targets.extend(cfg.targets.iter().cloned());
+            }
             frontend::deplock::ProjectDepLock::resolve_workspace_with(&scope_root, &members, prefer)?
         }
         None => {
             let cfg = manifest.project.ok_or_else(|| {
                 Diagnostic::new(Code::E108, format!("{}: missing [project] section", scope_root.display()))
             })?;
+            targets.extend(cfg.targets.iter().cloned());
             frontend::deplock::ProjectDepLock::resolve_with(&scope_root, &cfg, prefer)?
         }
     };
+    targets.sort();
+    targets.dedup();
+    if let Some(triple) = target {
+        let chosen = sysroot::target::select_target(Some(triple), &targets)
+            .map_err(|e| Diagnostic::new(Code::E108, e.to_string()))?;
+        if !targets.contains(&chosen.triple) {
+            targets.push(chosen.triple);
+        }
+    }
+    lock.pin_sysroots(&targets);
     let count = lock.packages.len();
     lock.write(&scope_root)?;
     Ok(count)
@@ -2902,6 +2973,7 @@ fn record_lock_entry(
         frontend::deplock::ProjectDepLock {
             version: frontend::deplock::LOCK_VERSION,
             packages: Vec::new(),
+            sysroots: Default::default(),
         },
     );
     let checksum = frontend::checksum::compute_package_checksum(dep_dir)?;
@@ -2914,6 +2986,7 @@ fn record_lock_entry(
     lock.packages.retain(|p| p.name != analysis.name);
     lock.packages.push(frontend::deplock::LockedPackage {
         name: analysis.name.clone(),
+        alias: None,
         version: analysis.version.clone(),
         source: format!("path:{rel}"),
         checksum,
@@ -2944,6 +3017,7 @@ fn ensure_root_entry(
     let root_license = Some(frontend::license::resolve_package_license(root, config.license.as_deref()));
     lock.packages.push(frontend::deplock::LockedPackage {
         name: config.name,
+        alias: None,
         version: config.version,
         source: "root".to_string(),
         checksum,

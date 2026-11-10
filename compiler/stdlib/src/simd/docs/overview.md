@@ -11,7 +11,7 @@ no ARC retain or release.
 import { Vec4f } from "@std/simd";
 
 let v = Vec4f.splat(2.0);
-print(v.dot(v));
+println!(v.dot(v));
 ```
 
 ## What is inside

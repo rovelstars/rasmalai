@@ -7,7 +7,7 @@ icon: "Package"
 
 # Packages and Registries
 
-A package is a directory with a `Project.config` manifest. The manifest names the package, lists its dependencies, and optionally points at registries. This page covers how names work, what the registry guarantees, the five ways a dependency can name its source, the exact subset of rnx the manifest may use, and a full sqlite3 example.
+A package is a directory with a `Project.config` manifest. The manifest names the package, lists its dependencies, and optionally points at registries. This page covers how names work, what the registry guarantees, the six ways a dependency can name its source, the exact subset of rnx the manifest may use, and a full sqlite3 example.
 
 ## Names and scopes
 
@@ -321,7 +321,7 @@ Locked builds pin the artifact like the version: `Project.deplock` records an `a
 
 ## Import sources
 
-`dependencies` maps a package name to one of five source shapes. The key must be the dependency's own `project.name`.
+`dependencies` maps a package name to one of six source shapes. The key must be the dependency's own `project.name`, except for an alias, where the key is the name importers use.
 
 A registry requirement is a range string:
 
@@ -373,6 +373,50 @@ export default {
     }
 }
 ```
+
+An alias points one package name at another package:
+
+```rnx
+export default {
+    project: { name: "boot", version: "0.1.0" },
+    dependencies: {
+        "@std/prelude": { alias: "@uefi/prelude" },
+        "@uefi/prelude": { path: "../uefi-prelude" }
+    }
+}
+```
+
+Here `import { ... } from "@std/prelude"` loads the package declared as `@uefi/prelude` from `../uefi-prelude`. The alias keeps working if the target moves to another source, because the target's own entry decides where it comes from.
+
+`alias` is the only source key an alias object may carry. Adding `path`, `git`, `url`, `native`, `system`, `from`, `checksum`, `rev`, `tag`, `branch`, or `link` to the same object fails as `E108` naming both keys. The target must be a valid package name: lowercase letters, digits, and hyphens, optionally under an `@scope/`.
+
+Resolution order is fixed:
+
+1. If `dependencies` declares the target package, that entry wins.
+2. Otherwise, an inline `version` fetches the target from the registry:
+   ```rnx
+   "@std/prelude": { alias: "@uefi/prelude", version: "0.2.2" }
+   ```
+3. Otherwise the lock's version for the alias is used. With no locked version the build fails as `E115` and asks you to run `rnx lock`.
+
+Aliases may chain, for example `a -> b -> c`, up to 16 links. A cycle or an over-deep chain fails as `E108` and prints the whole chain. An alias carries no `link` preference of its own; the resolved package carries its own.
+
+`rnx lock` records the alias key as `name`, the target in an `alias` field, and the target's real package and source in `source`:
+
+```rnx
+{
+    name: "@std/prelude",
+    alias: "@uefi/prelude",
+    version: "0.2.2",
+    source: "registry:@uefi/prelude@0.2.2",
+    checksum: "sha256:...",
+    dependencies: [],
+    tier: "pure",
+    capabilities: []
+}
+```
+
+A lock entry whose `alias` and `source` disagree is rejected at verify time.
 
 ## Local source overrides
 
@@ -481,7 +525,7 @@ export default {
 ```rnx
 import { sqlite3_open } from "sqlite3";
 
-print(sqlite3_open);
+println!(sqlite3_open);
 ```
 
 Publish with `rnx pack` then `rnx publish` as above; once registry fetching lands, the same name works as a `"^3.53.4"` range without the path line. The `unsafe:ffi` permission stays in the manifest: foreign calls need it, and `rnx audit` reports it. When a grant needs justification, declare it as `{ perm: "unsafe:ffi", reason: "calls into libsqlite3" }` instead of the bare string; the registry stores the reason and the package page lists it beside the grant.
@@ -496,5 +540,5 @@ Publish with `rnx pack` then `rnx publish` as above; once registry fetching land
 - Yank keeps a version installable-but-deprecated; takedown answers 410 forever; both burn the number.
 - Reads are anonymous under fixed `/api` paths; resolve takes requirements plus a have-list and returns integrity inline.
 - `rnx publish` posts bytes with five exact headers and `--token`/`RNX_TOKEN` auth.
-- Dependencies come from registries, paths, git, tarballs, or native libraries; bare imports use `entries.main` with an `entries.lib` fallback.
+- Dependencies come from registries, paths, git, tarballs, native libraries, or aliases; bare imports use `entries.main` with an `entries.lib` fallback.
 - `Project.config` allows only `const` plus one `export default` over values, comparisons, ternaries, `switch`, and `target`; everything else is `E108`.

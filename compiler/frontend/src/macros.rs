@@ -189,10 +189,212 @@ const KNOWN_ATTRS: &[&str] = &[
     "FastMath",
     "AllowUnsafe",
     "PgoScenario",
+    "Macro",
 ];
 
-pub fn is_phase_a_macro(name: &str) -> bool {
+pub fn is_syntax_macro(name: &str) -> bool {
     matches!(name, "vec" | "EmbedBytes")
+}
+
+#[derive(Clone, Copy)]
+struct FnKind {
+    is_macro: bool,
+    def_span: Span,
+}
+
+fn fn_table(module: &A::Module) -> (BTreeMap<String, FnKind>, BTreeMap<String, String>) {
+    let mut fns: BTreeMap<String, FnKind> = BTreeMap::new();
+    let mut shorts: BTreeMap<String, String> = BTreeMap::new();
+    let mut short_owner: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for decl in &module.decls {
+        let A::Decl::Fn(f) = &decl.node else {
+            continue;
+        };
+        fns.insert(
+            f.name.clone(),
+            FnKind {
+                is_macro: f.is_macro,
+                def_span: decl.span,
+            },
+        );
+        let short = f.name.rsplit('.').next().unwrap_or(&f.name).to_string();
+        if short == f.name {
+            continue;
+        }
+        match short_owner.get_mut(&short) {
+            Some(owner) => *owner = None,
+            None => {
+                short_owner.insert(short.clone(), Some(f.name.clone()));
+            }
+        }
+    }
+    for (short, owner) in short_owner {
+        if let Some(full) = owner {
+            shorts.insert(short, full);
+        }
+    }
+    (fns, shorts)
+}
+
+fn macro_attr<'a>(attrs: &'a [A::Attr]) -> Vec<&'a A::Attr> {
+    attrs.iter().filter(|a| a.name == "Macro").collect()
+}
+
+fn macro_attr_misuse(attrs: &[A::Attr], where_: &str, diags: &mut Vec<Diagnostic>) -> bool {
+    let found = macro_attr(attrs);
+    if found.is_empty() {
+        return false;
+    }
+    for attr in &found {
+        if !attr.args.is_empty() {
+            diags.push(
+                Diagnostic::new(
+                    Code::E108,
+                    "`#[Macro]` takes no arguments",
+                )
+                .with_span(attr.span)
+                .with_hint("write `#[Macro]` on its own"),
+            );
+        }
+    }
+    if found.len() > 1 {
+        diags.push(
+            Diagnostic::new(Code::E108, "duplicate `#[Macro]` attribute")
+                .with_span(found[1].span)
+                .with_hint("mark the function once"),
+        );
+    }
+    if where_ != "fn" {
+        diags.push(
+            Diagnostic::new(
+                Code::E108,
+                format!("`#[Macro]` is only valid on a top-level function, not a {where_}"),
+            )
+            .with_span(found[0].span)
+            .with_hint("move the macro function to the module scope and export it"),
+        );
+    }
+    true
+}
+
+fn array_any_ty(t: &A::Type) -> bool {
+    t.fn_sig.is_none()
+        && t.tuple.is_empty()
+        && !t.nullable
+        && t.path.last().is_some_and(|p| p.rsplit('.').next() == Some("Array"))
+        && t.args.len() == 1
+        && {
+            let inner = &t.args[0];
+            inner.fn_sig.is_none()
+                && inner.tuple.is_empty()
+                && !inner.nullable
+                && inner.path.last().is_some_and(|p| p.rsplit('.').next() == Some("Any"))
+                && inner.args.is_empty()
+        }
+}
+
+fn void_or_any(t: &A::Type) -> bool {
+    t.fn_sig.is_none()
+        && t.tuple.is_empty()
+        && !t.nullable
+        && t.path.last().is_some_and(|p| {
+            let short = p.rsplit('.').next().unwrap_or(p);
+            short == "Void" || short == "Any"
+        })
+}
+
+fn validate_macro_signature(f: &A::FnDecl, span: Span, diags: &mut Vec<Diagnostic>) {
+    let short = f.name.rsplit('.').next().unwrap_or(&f.name);
+    if f.params.len() != 1 || !f.params[0].ty.as_ref().is_some_and(array_any_ty) {
+        let got = if f.params.is_empty() {
+            "none".to_string()
+        } else {
+            f.params
+                .iter()
+                .map(|p| p.ty.as_ref().map(type_to_string).unwrap_or_else(|| "Any".to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        diags.push(
+            Diagnostic::new(
+                Code::E108,
+                format!(
+                    "macro function `{short}` needs exactly one parameter of type `Array<Any>`, found ({got})"
+                ),
+            )
+            .with_span(span)
+            .with_hint("write `fn name(args: Array<Any>)` and read each argument from `args`"),
+        );
+    }
+    if let Some(ret) = f.ret.as_ref()
+        && !void_or_any(ret)
+    {
+        diags.push(
+            Diagnostic::new(
+                Code::E108,
+                format!(
+                    "macro function `{short}` must return `Void` or `Any`, found `{}`",
+                    type_to_string(ret)
+                ),
+            )
+            .with_span(span)
+            .with_hint("omit the return type or declare `Void` or `Any`"),
+        );
+    }
+}
+
+fn validate_macro_members(
+    members: &[A::Spanned<A::ClassMember>],
+    where_: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for member in members {
+        match &member.node {
+            A::ClassMember::Method(f) => {
+                macro_attr_misuse(&f.attrs, where_, diags);
+            }
+            A::ClassMember::Field(f) => {
+                macro_attr_misuse(&f.attrs, "field", diags);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn validate_macro_decls(module: &A::Module, diags: &mut Vec<Diagnostic>) {
+    for decl in &module.decls {
+        match &decl.node {
+            A::Decl::Fn(f) => {
+                if f.is_test || f.is_bench {
+                    if !macro_attr(&f.attrs).is_empty() {
+                        macro_attr_misuse(&f.attrs, "test or bench function", diags);
+                    }
+                    continue;
+                }
+                if macro_attr_misuse(&f.attrs, "fn", diags) {
+                    validate_macro_signature(f, decl.span, diags);
+                }
+            }
+            A::Decl::Class { attrs, members, .. }
+            | A::Decl::Struct { attrs, members, .. } => {
+                macro_attr_misuse(attrs, "type", diags);
+                validate_macro_members(members, "method", diags);
+            }
+            A::Decl::Trait { members, .. } | A::Decl::Interface { members, .. } => {
+                validate_macro_members(members, "method", diags);
+            }
+            A::Decl::Extension { members, .. } => {
+                validate_macro_members(members, "method", diags);
+            }
+            A::Decl::Enum { attrs, .. } => {
+                macro_attr_misuse(attrs, "enum", diags);
+            }
+            A::Decl::Record { attrs, .. } => {
+                macro_attr_misuse(attrs, "record", diags);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn macro_key_args(args: &[A::Spanned<A::Expr>]) -> String {
@@ -201,6 +403,9 @@ fn macro_key_args(args: &[A::Spanned<A::Expr>]) -> String {
 
 struct PassCtx<'a> {
     opts: &'a mut MacroOptions,
+    fns: &'a BTreeMap<String, FnKind>,
+    shorts: &'a BTreeMap<String, String>,
+    check_calls: bool,
     diags: Vec<Diagnostic>,
     changed: bool,
     node_count: usize,
@@ -224,18 +429,42 @@ impl PassCtx<'_> {
     }
 }
 
-pub fn expand_phase_a(
+/// Expand syntax macros and comptime macros in order. Callers that resolve a
+/// module and then lower it must run both passes; skipping the syntax pass
+/// leaves `println!` as an unresolved call.
+pub fn expand_module(module: &mut A::Module, base_dir: PathBuf) -> Vec<Diagnostic> {
+    let mut opts = MacroOptions::new(base_dir);
+    let mut diags = expand_syntax(module, &mut opts);
+    if diags.iter().any(|d| !d.code.is_warning()) {
+        return diags;
+    }
+    diags.extend(expand_comptime(module, &mut opts, None));
+    diags
+}
+
+pub fn expand_syntax(
     module: &mut A::Module,
     opts: &mut MacroOptions,
 ) -> Vec<Diagnostic> {
     if let Some(dir) = opts.dump_dir.clone() {
         let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("phase-a.before"), format!("{module:#?}"));
+        let _ = std::fs::write(dir.join("syntax.before"), format!("{module:#?}"));
     }
     let mut diags = Vec::new();
+    let (fns, shorts) = fn_table(module);
+    validate_macro_decls(module, &mut diags);
+    if diags.iter().any(|d| !d.code.is_warning()) {
+        if let Some(dir) = opts.dump_dir.clone() {
+            let _ = std::fs::write(dir.join("syntax.after"), format!("{module:#?}"));
+        }
+        return diags;
+    }
     for iter in 0..ITER_CAP {
         let mut ctx = PassCtx {
             opts,
+            fns: &fns,
+            shorts: &shorts,
+            check_calls: iter == 0,
             diags: Vec::new(),
             changed: false,
             node_count: 0,
@@ -271,7 +500,7 @@ pub fn expand_phase_a(
         }
     }
     if let Some(dir) = opts.dump_dir.clone() {
-        let _ = std::fs::write(dir.join("phase-a.after"), format!("{module:#?}"));
+        let _ = std::fs::write(dir.join("syntax.after"), format!("{module:#?}"));
     }
     diags
 }
@@ -409,28 +638,95 @@ fn rewrite_stmt_a(stmt: &mut A::Stmt, ctx: &mut PassCtx) {
     }
 }
 
+fn call_macro_expr(name: &str, args: &[A::Spanned<A::Expr>], span: Span) -> A::Expr {
+    A::Expr::Call {
+        callee: Box::new(A::sp(A::Expr::Ident(name.to_string()), span)),
+        type_args: Vec::new(),
+        args: vec![A::CallArg {
+            name: None,
+            value: A::sp(array_of(args.to_vec()), span),
+        }],
+        trailing: None,
+    }
+}
+
 fn rewrite_expr_a(expr: &mut A::Expr, span: Span, ctx: &mut PassCtx) {
     if ctx.capped {
+        return;
+    }
+    if ctx.check_calls
+        && !(span.start == 0 && span.end == 0)
+        && let A::Expr::Call { callee, .. } = expr
+        && let A::Expr::Ident(name) = &callee.node
+        && let Some(kind) = ctx.fns.get(name)
+        && kind.is_macro
+    {
+        let short = name.rsplit('.').next().unwrap_or(name);
+        ctx.diags.push(
+            Diagnostic::new(
+                Code::E108,
+                format!("`{short}` is a call macro; call it with `!`"),
+            )
+            .with_span(span)
+            .with_hint(format!(
+                "write `{short}!(...)`; macro function defined at {}..{}",
+                kind.def_span.start, kind.def_span.end
+            )),
+        );
         return;
     }
     recurse_expr_a(expr, ctx);
     if ctx.capped {
         return;
     }
-    let (name, args) = match expr {
-        A::Expr::Macro { name, args, .. } if is_phase_a_macro(name) => {
-            (name.clone(), args.clone())
-        }
-        _ => return,
+    let A::Expr::Macro { name, args, .. } = expr else {
+        return;
     };
-    match expand_builtin_a(&name, &args, span, ctx.opts) {
-        Ok(Some(new_expr)) => {
-            ctx.add_nodes(crate::semantic_tokens::expr_node_count(&new_expr), span);
-            *expr = new_expr;
-            ctx.changed = true;
+    if is_syntax_macro(name) {
+        let name = name.clone();
+        let args = args.clone();
+        match expand_builtin_a(&name, &args, span, ctx.opts) {
+            Ok(Some(new_expr)) => {
+                ctx.add_nodes(crate::semantic_tokens::expr_node_count(&new_expr), span);
+                *expr = new_expr;
+                ctx.changed = true;
+            }
+            Ok(None) => {}
+            Err(d) => ctx.diags.push(d),
         }
-        Ok(None) => {}
-        Err(d) => ctx.diags.push(d),
+        return;
+    }
+    let resolved = ctx
+        .fns
+        .get_key_value(name.as_str())
+        .or_else(|| {
+            ctx.shorts
+                .get(name.as_str())
+                .and_then(|full| ctx.fns.get_key_value(full.as_str()))
+        });
+    let Some((full, kind)) = resolved else {
+        return;
+    };
+    let full = full.clone();
+    let kind = *kind;
+    if kind.is_macro {
+        let new_expr = call_macro_expr(&full, args, span);
+        ctx.add_nodes(crate::semantic_tokens::expr_node_count(&new_expr), span);
+        *expr = new_expr;
+        ctx.changed = true;
+    } else {
+        let short = full.rsplit('.').next().unwrap_or(&full);
+        ctx.diags.push(
+            Diagnostic::new(
+                Code::E108,
+                format!("`{short}` is not a call macro; remove `!`"),
+            )
+            .with_span(span)
+            .with_hint(format!(
+                "write `{short}(...)`; defined at {}..{}",
+                kind.def_span.start, kind.def_span.end
+            )),
+        );
     }
 }
 
@@ -843,6 +1139,7 @@ fn debug_method(shape: &TypeShape, use_span: Span) -> A::FnDecl {
         is_static: false,
         is_test: false,
         is_bench: false,
+        is_macro: false,
         body: A::FnBody::Block(A::Block {
             stmts: vec![A::sp(
                 A::Stmt::Return(Some(A::sp(A::Expr::Interp(parts), use_span))),
@@ -902,6 +1199,7 @@ fn clone_method(shape: &TypeShape, use_span: Span, is_class: bool) -> A::FnDecl 
         is_static: false,
         is_test: false,
         is_bench: false,
+        is_macro: false,
         body: A::FnBody::Block(A::Block {
             stmts: vec![A::sp(
                 A::Stmt::Return(Some(A::sp(ctor, use_span))),
@@ -1228,14 +1526,14 @@ fn strip_consumed_derives(node: &mut A::Decl, consumed: &[String]) {
     }
 }
 
-pub fn expand_phase_b(
+pub fn expand_comptime(
     module: &mut A::Module,
     opts: &mut MacroOptions,
     runner: Option<&dyn ComptimeRunner>,
 ) -> Vec<Diagnostic> {
     if let Some(dir) = opts.dump_dir.clone() {
         let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("phase-b.before"), format!("{module:#?}"));
+        let _ = std::fs::write(dir.join("comptime.before"), format!("{module:#?}"));
     }
     let mut diags = Vec::new();
     let mut comptime_fns: BTreeMap<String, Span> = BTreeMap::new();
@@ -1403,7 +1701,7 @@ pub fn expand_phase_b(
     }
     diags.append(&mut bctx.diags);
     if let Some(dir) = opts.dump_dir.clone() {
-        let _ = std::fs::write(dir.join("phase-b.after"), format!("{module:#?}"));
+        let _ = std::fs::write(dir.join("comptime.after"), format!("{module:#?}"));
     }
     diags
 }

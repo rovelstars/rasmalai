@@ -11,7 +11,7 @@ import { Map } from "@std/collections";
 
 let m = new Map<String, Int>();
 m.set("a", 1);
-print(m.get("a") ?? -1);
+println!(m.get("a") ?? -1);
 ```
 
 ## What is inside

@@ -4,7 +4,7 @@ impl<'a> Builder<'a> {
     pub(super) fn any_box_tag(ty: &LirType) -> Option<i64> {
         // Must match TAG_INT/TAG_BOOL/TAG_FLOAT/TAG_STR in runtime native.rs.
         match ty {
-            LirType::I64 => Some(0),
+            LirType::I64 | LirType::I8 => Some(0),
             LirType::Bool => Some(1),
             LirType::F64(_) => Some(2),
             LirType::Str => Some(3),
@@ -25,11 +25,20 @@ impl<'a> Builder<'a> {
     }
 
     pub(super) fn emit_any_unbox(&mut self, dst: Local, src: Local, span: Span) {
+        let target = if self.func.locals.get(dst as usize) == Some(&LirType::Str) {
+            // A string unbox must hand the destination its own reference:
+            // the `Any` source may be a temporary that dies before the
+            // destination is stored or read. `__rnx_any_unbox_heap` retains
+            // the string payload; plain `__rnx_any_unbox` borrows it.
+            "__rnx_any_unbox_heap"
+        } else {
+            "__rnx_any_unbox"
+        };
         self.emit(Instr::Call {
             span,
             dsts: vec![dst],
             err: None,
-            target: CallTarget::Builtin("__rnx_any_unbox".to_string()),
+            target: CallTarget::Builtin(target.to_string()),
             args: vec![src],
         });
     }

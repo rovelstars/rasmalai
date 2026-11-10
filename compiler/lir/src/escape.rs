@@ -617,7 +617,7 @@ mod tests {
         module.functions[0].blocks[0].instrs.push(Instr::Call {span: UNKNOWN_SPAN,
             dsts: vec![],
             err: None,
-            target: CallTarget::Builtin("print".to_string()),
+            target: CallTarget::Builtin("__rnx_io_pretty".to_string()),
             args: vec![1],
         });
         let states = compute_escape_states(&module, &module.functions[0]);

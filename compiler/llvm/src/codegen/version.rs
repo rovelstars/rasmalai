@@ -34,7 +34,11 @@ pub(super) fn synthesize_stub(
     tier_fn: FunctionValue,
 ) -> Result<(), Diagnostic> {
     if targets.len() != VERSIONS.len() {
-        return Err(err(format!("want {} versions, got {}", VERSIONS.len(), targets.len())));
+        return Err(err(format!(
+            "want {} versions, got {}",
+            VERSIONS.len(),
+            targets.len()
+        )));
     }
     let builder = context.create_builder();
     let entry = context.append_basic_block(stub, "tier_entry");
@@ -62,17 +66,27 @@ pub(super) fn synthesize_stub(
             .map_err(err)
     };
     let go_v4 = at_least(VERSIONS[3].2)?;
-    builder.build_conditional_branch(go_v4, v4_bb, below_v4).map_err(err)?;
+    builder
+        .build_conditional_branch(go_v4, v4_bb, below_v4)
+        .map_err(err)?;
     builder.position_at_end(below_v4);
     let go_v3 = at_least(VERSIONS[2].2)?;
-    builder.build_conditional_branch(go_v3, v3_bb, below_v3).map_err(err)?;
+    builder
+        .build_conditional_branch(go_v3, v3_bb, below_v3)
+        .map_err(err)?;
     builder.position_at_end(below_v3);
     let go_v2 = at_least(VERSIONS[1].2)?;
-    builder.build_conditional_branch(go_v2, v2_bb, v0_bb).map_err(err)?;
-    let args: Vec<BasicMetadataValueEnum> =
-        stub.get_params().iter().map(|p| (*p).into()).collect();
+    builder
+        .build_conditional_branch(go_v2, v2_bb, v0_bb)
+        .map_err(err)?;
+    let args: Vec<BasicMetadataValueEnum> = stub.get_params().iter().map(|p| (*p).into()).collect();
     let returns_value = stub.get_type().get_return_type().is_some();
-    let order = [(v4_bb, targets[3]), (v3_bb, targets[2]), (v2_bb, targets[1]), (v0_bb, targets[0])];
+    let order = [
+        (v4_bb, targets[3]),
+        (v3_bb, targets[2]),
+        (v2_bb, targets[1]),
+        (v0_bb, targets[0]),
+    ];
     for (bb, ver) in order {
         builder.position_at_end(bb);
         let site = builder.build_call(ver, &args, "r").map_err(err)?;

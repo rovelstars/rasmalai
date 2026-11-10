@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -69,7 +69,7 @@ fn promise_resolve_churn_sequential() {
         total = total + step(i).wait().unwrap();\n\
         i = i + 1;\n\
         }\n\
-        print(total);\n\
+        println!(total);\n\
         return 0;\n\
         }\n",
         0,
@@ -94,7 +94,7 @@ fn pool_submit_closure_churn_parallel() {
         }\n\
         pool.join();\n\
         pool.shutdown();\n\
-        print(AtomicInt.byId(9012).get());\n\
+        println!(AtomicInt.byId(9012).get());\n\
         return 0;\n\
         }\n",
         0,
@@ -116,7 +116,7 @@ fn spawn_join_closure_churn_sequential() {
         total = total + res.unwrap();\n\
         i = i + 1;\n\
         }\n\
-        print(total);\n\
+        println!(total);\n\
         return 0;\n\
         }\n",
         0,

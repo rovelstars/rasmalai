@@ -28,7 +28,7 @@ fn has_defer(block: &Block) -> bool {
 #[test]
 fn finally_is_not_left_on_the_try_or_turned_into_a_function_defer() {
     let mut module = parse(
-        "fn F(): Int { try { print(\"body\") } catch (e) { print(\"caught\") } finally { print(\"cleanup\") } print(\"after\"); return 0; }",
+        "fn F(): Int { try { println!(\"body\") } catch (e) { println!(\"caught\") } finally { println!(\"cleanup\") } println!(\"after\"); return 0; }",
     );
     assert!(desugar(&mut module).is_empty());
     let body = fn_body(&module, "F");
@@ -60,7 +60,7 @@ fn finally_is_not_left_on_the_try_or_turned_into_a_function_defer() {
 #[test]
 fn finally_copies_precede_return_and_escaping_throw() {
     let mut module = parse(
-        "fn F(): Int throws { try { return 1; } catch (e) { throw \"again\"; } finally { print(\"cleanup\"); } }",
+        "fn F(): Int throws { try { return 1; } catch (e) { throw \"again\"; } finally { println!(\"cleanup\"); } }",
     );
     assert!(desugar(&mut module).is_empty());
     let body = fn_body(&module, "F");
@@ -101,7 +101,7 @@ fn finally_copies_precede_return_and_escaping_throw() {
 #[test]
 fn finally_guards_question_mark_with_the_cleanup_arm() {
     let mut module = parse(
-        "fn F(): Result<Int, String> { try { let x = risky()?; return Ok(x); } finally { print(\"cleanup\"); } }",
+        "fn F(): Result<Int, String> { try { let x = risky()?; return Ok(x); } finally { println!(\"cleanup\"); } }",
     );
     assert!(desugar(&mut module).is_empty());
     let body = fn_body(&module, "F");

@@ -215,8 +215,8 @@ d.fillRect(0x14161AFF, 0.0, 0.0, 320.0, 240.0)
 d.roundRect(0x1E2128FF, 16.0, 16.0, 120.0, 40.0, 8.0)
 d.textRun(0xE6E7EBFF, 28.0, 28.0, 14.0, "Hello")
 let bytes = d.finish(320, 240)
-print(bytes.length())
-print(Display.textOf(bytes))
+println!(bytes.length())
+println!(Display.textOf(bytes))
 ```
 
 Images are views. `pngSize` reads the IHDR header, and `Image` fits the decoded
@@ -318,7 +318,7 @@ are merged and the window renders only those regions into a persistent target.
 ```rnx
 let app = App.launch("Settings", 800, 600, view)
 let frame = app.frame()
-print(frame.damage().count())
+println!(frame.damage().count())
 ```
 
 ## Text layout
@@ -668,8 +668,8 @@ fn Main(): Int {
     })
     let frame = app.frame()
     let surface = app.draw(frame)
-    print(frame.records(), frame.bytes())
-    print(surface.rgbaAt(2, 2))
+    println!(frame.records(), frame.bytes())
+    println!(surface.rgbaAt(2, 2))
     return 0
 }
 ```

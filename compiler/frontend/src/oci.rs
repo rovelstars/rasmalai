@@ -3,7 +3,7 @@ use crate::fetch::{parse_json, JsonValue};
 use diagnostics::{Code, Diagnostic};
 use flate2::read::GzDecoder;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 pub const OCI_INDEX_CAP: usize = 1024 * 1024;
@@ -141,6 +141,7 @@ fn role_allowed(kind: &str, role: &str) -> bool {
         "binary" => role == "runtime" || role == "wasm",
         "bindings" => role == "bindgen",
         "media" => role == "media",
+        "sysroot" => role == "sysroot",
         _ => false,
     }
 }
@@ -225,9 +226,9 @@ fn check_descriptor(bare: &str, item: &JsonValue) -> Result<OciDescriptor, Diagn
     let generator = str_field("run.rasmalai.generator");
     let upstream = str_field("run.rasmalai.upstream");
     let title = str_field("org.opencontainers.image.title");
-    if kind != "binary" && kind != "bindings" && kind != "media" {
+    if kind != "binary" && kind != "bindings" && kind != "media" && kind != "sysroot" {
         return Err(bad(format!(
-            "E108: artifact descriptor {digest} carries a bad run.rasmalai.kind `{}` (ref `{bare}`; expected `binary`, `bindings` or `media`)",
+            "E108: artifact descriptor {digest} carries a bad run.rasmalai.kind `{}` (ref `{bare}`; expected `binary`, `bindings`, `media` or `sysroot`)",
             if kind.is_empty() { "missing" } else { kind }
         )));
     }
@@ -235,6 +236,7 @@ fn check_descriptor(bare: &str, item: &JsonValue) -> Result<OciDescriptor, Diagn
         let admitted = match kind {
             "binary" => "runtime, wasm",
             "bindings" => "bindgen",
+            "sysroot" => "sysroot",
             _ => "media",
         };
         return Err(bad(format!(
@@ -402,7 +404,7 @@ fn fetch_manifest(bare: &str, digest: &str) -> Result<JsonValue, Diagnostic> {
     })
 }
 
-fn manifest_layer_digests(manifest: &JsonValue) -> Result<Vec<String>, Diagnostic> {
+pub fn manifest_layer_digests(manifest: &JsonValue) -> Result<Vec<String>, Diagnostic> {
     let layers = match manifest.get("layers").and_then(|l| l.as_array()) {
         Some(layers) if !layers.is_empty() => layers,
         _ => {
@@ -594,6 +596,219 @@ pub fn fetch_blob(bare: &str, digest: &str) -> Result<Vec<u8>, Diagnostic> {
     Ok(bytes)
 }
 
+pub fn sysroot_oci() -> String {
+    match std::env::var("RNX_SYSROOT_OCI") {
+        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => "ghcr.io/rovelstars/rnx-sysroot".to_string(),
+    }
+}
+
+pub fn sysroot_tag(version: &str, triple: &str) -> String {
+    format!("rnx-{version}-{triple}")
+}
+
+#[derive(Debug, Clone)]
+pub struct DownloadedSysroot {
+    pub dir: PathBuf,
+    pub digest: String,
+    pub target: String,
+    pub index_digest: String,
+    pub manifest_digest: String,
+}
+
+fn pack_error(context: &str, err: Diagnostic) -> Diagnostic {
+    let message = err.message.strip_prefix("E108: ").unwrap_or(&err.message);
+    Diagnostic::new(Code::E124, format!("{context}: {message}"))
+}
+
+fn clean_extract_path(rel: &str, what: &str) -> Result<(), Diagnostic> {
+    sysroot::pack::validate_rel_path(rel).map_err(|e| {
+        Diagnostic::new(
+            Code::E124,
+            format!("target pack {what} `{rel}` is unsafe: {e}"),
+        )
+    })
+}
+
+pub fn extract_pack_archive(bytes: &[u8], dest: &Path) -> Result<(), Diagnostic> {
+    let bad = |message: String| Diagnostic::new(Code::E124, message);
+    let reader: Box<dyn Read> = if bytes.starts_with(&[0x1f, 0x8b]) {
+        Box::new(GzDecoder::new(Cursor::new(bytes)))
+    } else {
+        Box::new(Cursor::new(bytes))
+    };
+    let mut archive = tar::Archive::new(reader);
+    let entries = archive
+        .entries()
+        .map_err(|e| bad(format!("target pack archive is not a tar stream: {e}")))?;
+    for entry in entries {
+        let mut entry =
+            entry.map_err(|e| bad(format!("target pack archive is unreadable: {e}")))?;
+        let path = entry
+            .path()
+            .map_err(|e| bad(format!("target pack archive entry has a bad path: {e}")))?;
+        let rel = path.to_string_lossy().replace('\\', "/");
+        let kind = entry.header().entry_type();
+        match kind {
+            tar::EntryType::Regular | tar::EntryType::Continuous | tar::EntryType::Directory => {
+                clean_extract_path(&rel, "archive entry")?;
+            }
+            tar::EntryType::Symlink => {
+                return Err(bad(format!(
+                    "target pack archive entry `{rel}` is a symlink; packs carry plain files only"
+                )));
+            }
+            tar::EntryType::Link => {
+                let target = entry
+                    .link_name()
+                    .map_err(|e| bad(format!("target pack archive entry `{rel}` has a bad link: {e}")))?
+                    .map(|name| name.to_string_lossy().replace('\\', "/"));
+                let Some(target) = target else {
+                    return Err(bad(format!(
+                        "target pack archive entry `{rel}` is a hardlink with no target"
+                    )));
+                };
+                clean_extract_path(&target, "hardlink target")?;
+            }
+            tar::EntryType::XHeader
+            | tar::EntryType::XGlobalHeader
+            | tar::EntryType::GNULongName
+            | tar::EntryType::GNULongLink => continue,
+            other => {
+                return Err(bad(format!(
+                    "target pack archive entry `{rel}` has unsupported type `{other:?}`"
+                )));
+            }
+        }
+        entry.unpack_in(dest).map_err(|e| {
+            bad(format!("cannot extract target pack archive entry `{rel}`: {e}"))
+        })?;
+    }
+    Ok(())
+}
+
+pub fn download_sysroot(
+    bare: &str,
+    tag: &str,
+    triple: &str,
+    expected: Option<&str>,
+) -> Result<DownloadedSysroot, Diagnostic> {
+    let context = format!("target pack image `{bare}:{tag}`");
+    let (index_bytes, index_digest) = fetch_manifest_ref(bare, tag)
+        .map_err(|e| pack_error(&context, e))?;
+    let index = parse_index(bare, tag, &index_bytes, &index_digest)
+        .map_err(|e| pack_error(&context, e))?;
+    let descriptor = index
+        .descriptors
+        .iter()
+        .find(|descriptor| descriptor.role == "sysroot" && descriptor.target == triple)
+        .ok_or_else(|| {
+            Diagnostic::new(
+                Code::E124,
+                format!("{context} carries no `sysroot` manifest for target `{triple}`"),
+            )
+        })?
+        .clone();
+    let (manifest_bytes, manifest_digest) = fetch_manifest_ref(bare, &descriptor.digest)
+        .map_err(|e| pack_error(&context, e))?;
+    if manifest_digest != descriptor.digest {
+        return Err(Diagnostic::new(
+            Code::E124,
+            format!(
+                "{context}: manifest digest mismatch (descriptor {}, origin serves {manifest_digest})",
+                descriptor.digest
+            ),
+        ));
+    }
+    let manifest = parse_json(&manifest_bytes)
+        .map_err(|_| Diagnostic::new(Code::E124, format!("{context}: manifest is not valid JSON")))?;
+    let layers = manifest_layer_digests(&manifest)
+        .map_err(|e| pack_error(&context, e))?;
+    if layers.len() != 1 {
+        return Err(Diagnostic::new(
+            Code::E124,
+            format!(
+                "{context}: expected one sysroot layer, found {}",
+                layers.len()
+            ),
+        ));
+    }
+    let blob = fetch_blob(bare, &layers[0]).map_err(|e| pack_error(&context, e))?;
+    let store = sysroot::store::Store::default_store();
+    let dir = store
+        .staging_dir()
+        .map_err(|e| e.diagnostic())?;
+    if let Err(e) = extract_pack_archive(&blob, &dir) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(e);
+    }
+    let pack = match sysroot::pack::Pack::load(&dir) {
+        Ok(pack) => pack,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(e.diagnostic());
+        }
+    };
+    if pack.target.triple != triple {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(Diagnostic::new(
+            Code::E124,
+            format!(
+                "{context}: pack target `{}` does not match requested `{triple}`",
+                pack.target.triple
+            ),
+        ));
+    }
+    let digest = pack.manifest.integrity.digest.clone();
+    if let Some(want) = expected
+        && want != digest
+    {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(Diagnostic::new(
+            Code::E124,
+            format!("{context}: digest mismatch (expected {want}, pack is {digest})"),
+        ));
+    }
+    Ok(DownloadedSysroot {
+        dir,
+        digest,
+        target: pack.target.triple.clone(),
+        index_digest,
+        manifest_digest,
+    })
+}
+
+pub fn archive_pack_dir(dir: &Path) -> Result<Vec<u8>, Diagnostic> {
+    let files = sysroot::pack::pack_files(dir).map_err(|e| e.diagnostic())?;
+    let mut tar = tar::Builder::new(Vec::new());
+    for rel in files {
+        let bytes = std::fs::read(dir.join(&rel)).map_err(|e| {
+            Diagnostic::new(Code::E124, format!("cannot read `{rel}` for the pack archive: {e}"))
+        })?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_cksum();
+        tar.append_data(&mut header, &rel, bytes.as_slice()).map_err(|e| {
+            Diagnostic::new(Code::E124, format!("cannot add `{rel}` to the pack archive: {e}"))
+        })?;
+    }
+    let tar_bytes = tar
+        .into_inner()
+        .map_err(|e| Diagnostic::new(Code::E124, format!("cannot finish the pack archive: {e}")))?;
+    let mut encoder =
+        flate2::GzBuilder::new().mtime(0).write(Vec::new(), flate2::Compression::best());
+    encoder
+        .write_all(&tar_bytes)
+        .map_err(|e| Diagnostic::new(Code::E124, format!("cannot gzip the pack archive: {e}")))?;
+    encoder
+        .finish()
+        .map_err(|e| Diagnostic::new(Code::E124, format!("cannot gzip the pack archive: {e}")))
+}
+
 #[derive(Debug, Clone)]
 pub struct AssembleInput {
     pub role: String,
@@ -670,6 +885,7 @@ pub fn assemble_index(inputs: &[AssembleInput]) -> Result<Assembly, Diagnostic> 
                 match input.kind.as_str() {
                     "binary" => "runtime, wasm",
                     "bindings" => "bindgen",
+                    "sysroot" => "sysroot",
                     _ => "media",
                 },
                 input.role,
@@ -1450,6 +1666,127 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read(out.join("hello.txt")).unwrap(), data);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tar_bytes(entries: Vec<(&str, tar::EntryType, Option<&str>, &[u8])>) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, kind, link, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(kind);
+            let bytes = header.as_mut_bytes();
+            bytes[..path.len()].copy_from_slice(path.as_bytes());
+            if let Some(link) = link {
+                bytes[157..157 + link.len()].copy_from_slice(link.as_bytes());
+            }
+            header.set_cksum();
+            builder.append(&header, data).unwrap();
+        }
+        builder.into_inner().unwrap()
+    }
+
+    #[test]
+    fn pack_archive_extracts_plain_files() {
+        let dir = crate::scratch::dir("pack-archive-ok");
+        let bytes = tar_bytes(vec![
+            ("sysroot.json", tar::EntryType::Regular, None, b"{}".as_slice()),
+            ("lib/libc.a", tar::EntryType::Regular, None, b"libc".as_slice()),
+        ]);
+        extract_pack_archive(&bytes, &dir).unwrap();
+        assert_eq!(std::fs::read(dir.join("lib/libc.a")).unwrap(), b"libc");
+    }
+
+    #[test]
+    fn pack_archive_rejects_unsafe_entries() {
+        let cases = vec![
+            (
+                "parent",
+                tar_bytes(vec![("../escape", tar::EntryType::Regular, None, b"x".as_slice())]),
+                "unsafe",
+            ),
+            (
+                "absolute",
+                tar_bytes(vec![("/etc/passwd", tar::EntryType::Regular, None, b"x".as_slice())]),
+                "absolute",
+            ),
+            (
+                "symlink",
+                tar_bytes(vec![(
+                    "link.a",
+                    tar::EntryType::Symlink,
+                    Some("libc.a"),
+                    b"".as_slice(),
+                )]),
+                "symlink",
+            ),
+            (
+                "hardlink",
+                tar_bytes(vec![(
+                    "hard.a",
+                    tar::EntryType::Link,
+                    Some("../escape.a"),
+                    b"".as_slice(),
+                )]),
+                "unsafe",
+            ),
+            (
+                "fifo",
+                tar_bytes(vec![("pipe", tar::EntryType::Fifo, None, b"".as_slice())]),
+                "unsupported type",
+            ),
+        ];
+        for (tag, bytes, needle) in cases {
+            let dir = crate::scratch::dir(&format!("pack-archive-{tag}"));
+            let err = extract_pack_archive(&bytes, &dir).unwrap_err();
+            assert_eq!(err.code, diagnostics::Code::E124, "{tag}");
+            assert!(err.message.contains(needle), "{tag}: {}", err.message);
+        }
+    }
+
+    #[test]
+    fn parse_accepts_a_sysroot_image_and_keeps_role_checks() {
+        let descriptor = descriptor_json(
+            &format!("sha256:{}", manifest_hex()),
+            "sysroot",
+            "sysroot",
+            "sysroot.tar.gz",
+            None,
+        );
+        let index = format!("{{\"schemaVersion\": 2, \"manifests\": [{descriptor}]}}").into_bytes();
+        let digest = format!("sha256:{}", Sha256::hexdigest(&index));
+        let parsed = parse_index("example.invalid/rovelstars/rnx-sysroot", "rnx-0.2.1-x86_64-unknown-linux-gnu", &index, &digest).unwrap();
+        assert_eq!(parsed.descriptors.len(), 1);
+        assert_eq!(parsed.descriptors[0].kind, "sysroot");
+        assert_eq!(parsed.descriptors[0].role, "sysroot");
+
+        let bad = descriptor_json(
+            &format!("sha256:{}", manifest_hex()),
+            "runtime",
+            "sysroot",
+            "sysroot.tar.gz",
+            None,
+        );
+        let index = format!("{{\"schemaVersion\": 2, \"manifests\": [{bad}]}}").into_bytes();
+        let digest = format!("sha256:{}", Sha256::hexdigest(&index));
+        let err = parse_index("example.invalid/rovelstars/rnx-sysroot", "latest", &index, &digest).unwrap_err();
+        assert_eq!(err.code, diagnostics::Code::E108);
+        assert!(err.message.contains("role"), "{}", err.message);
+    }
+
+    #[test]
+    fn archive_pack_dir_is_deterministic_and_round_trips() {
+        let dir = crate::scratch::dir("pack-archive-roundtrip");
+        std::fs::write(dir.join("sysroot.json"), b"{}").unwrap();
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(dir.join("lib/libc.a"), b"libc").unwrap();
+        let first = archive_pack_dir(&dir).unwrap();
+        let second = archive_pack_dir(&dir).unwrap();
+        assert_eq!(first, second);
+        let dest = crate::scratch::dir("pack-archive-dest");
+        extract_pack_archive(&first, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("lib/libc.a")).unwrap(), b"libc");
+        assert_eq!(std::fs::read(dest.join("sysroot.json")).unwrap(), b"{}");
     }
 
 }

@@ -14,9 +14,9 @@ Paste it into a file or run it straight in the playground:
 import { Env } from "@std/env";
 
 Env.set("GREETING", "hi");
-print(Env.get("GREETING"));
-print(Env.args().len() > 0);
-print(Env.cwd().len() > 0);
+println!(Env.get("GREETING"));
+println!(Env.args().len() > 0);
+println!(Env.cwd().len() > 0);
 ```
 
 ## Keep going

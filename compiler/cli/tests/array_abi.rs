@@ -40,9 +40,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -81,7 +81,7 @@ fn direct_param_read_and_mutation() {
         let readback = mutate(arr);\n\
         assert(readback == 999, \"return\");\n\
         assert(arr[0] == 999, \"alias\");\n\
-        print(\"abi-ok\");\n\
+        println!(\"abi-ok\");\n\
         return 0;\n\
         }\n",
         0,
@@ -104,7 +104,7 @@ fn multiple_params_mixed_types() {
         assert(b[0] == 0, \"untouched\");\n\
         assert(b[1] == 42, \"copied\");\n\
         assert(a[0] == 42, \"source intact\");\n\
-        print(\"multi-ok\");\n\
+        println!(\"multi-ok\");\n\
         return 0;\n\
         }\n",
         0,
@@ -133,7 +133,7 @@ fn chained_calls_three_levels() {
         let r = levelA(v);\n\
         assert(r == 111, \"chain return\");\n\
         assert(v[0] == 111, \"chain alias\");\n\
-        print(\"chain-ok\");\n\
+        println!(\"chain-ok\");\n\
         return 0;\n\
         }\n",
         0,
@@ -151,8 +151,8 @@ fn bare_array_param_over_typed_array_rejected() {
         }\n\
         fn Main(): Int {\n\
         let cc = [0];\n\
-        print(bump(cc));\n\
-        print(cc[0]);\n\
+        println!(bump(cc));\n\
+        println!(cc[0]);\n\
         return 0;\n\
         }\n",
         "view",
@@ -167,7 +167,7 @@ fn bare_array_alias_of_typed_array_rejected() {
         "fn Main(): Int {\n\
         let typedArr = [1, 2];\n\
         let wide: Array = typedArr;\n\
-        print(wide[0]);\n\
+        println!(wide[0]);\n\
         return 0;\n\
         }\n",
         "alias",
@@ -189,7 +189,7 @@ fn fresh_literal_views_still_allowed() {
         let out: Array<Int> = [];\n\
         out.push(9);\n\
         assert(out[0] == 9, \"empty literal annotate\");\n\
-        print(\"fresh-ok\");\n\
+        println!(\"fresh-ok\");\n\
         return 0;\n\
         }\n",
         0,

@@ -377,7 +377,8 @@ pub fn publish_facts(text: &str) -> Result<PublishFacts, Diagnostic> {
             }
             super::DependencySpec::Path { .. }
             | super::DependencySpec::Git { .. }
-            | super::DependencySpec::Native { .. } => {}
+            | super::DependencySpec::Native { .. }
+            | super::DependencySpec::Alias { .. } => {}
         }
     }
     let redacted = redact_project_version(text)?;

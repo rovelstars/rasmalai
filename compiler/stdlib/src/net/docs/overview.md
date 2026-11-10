@@ -12,7 +12,7 @@ opens nothing and reads nothing.
 import { TcpListener } from "@std/net";
 
 let listener = TcpListener.bind("127.0.0.1", 0);
-print(listener.port() > 0);
+println!(listener.port() > 0);
 listener.close();
 ```
 

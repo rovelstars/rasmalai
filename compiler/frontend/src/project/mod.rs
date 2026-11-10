@@ -15,6 +15,7 @@ pub enum DependencySpec {
     Git { git: String, rev: String, link: crate::license::LinkPreference },
     Url { version: String, url: String, checksum: Option<String>, link: crate::license::LinkPreference },
     Native { lib: String, system: bool, path: Option<PathBuf>, version: Option<String>, from: Option<String>, link: crate::license::LinkPreference },
+    Alias { package: String, version: Option<String> },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -205,6 +206,8 @@ pub struct ProjectConfig {
     pub version: String,
     pub description: String,
     pub engine: String,
+    pub targets: Vec<String>,
+    pub capabilities: Vec<String>,
     pub entries: Entries,
     pub registry: Option<RegistryConfig>,
     pub registries: BTreeMap<String, RegistryConfig>,
@@ -506,8 +509,40 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
                 Some(ConfigValue::String(s)) => Some(s.clone()),
                 _ => None,
             };
-            let _ = fields;
             let has = |key: &str| obj_get(val, key).is_some();
+            if has("alias") {
+                for (key, _) in fields {
+                    if key != "alias" && key != "version" {
+                        return Err(format!(
+                            "dependency `{name}`: `alias` cannot combine with `{key}`"
+                        ));
+                    }
+                }
+                let package = match obj_get(val, "alias") {
+                    Some(ConfigValue::String(s)) if !s.is_empty() => s.clone(),
+                    Some(ConfigValue::String(_)) => {
+                        return Err(format!("dependency `{name}`: `alias` must not be empty"));
+                    }
+                    Some(_) => return Err(format!("dependency `{name}`: `alias` must be a string")),
+                    None => return Err(format!("dependency `{name}`: missing field `alias`")),
+                };
+                if !is_package_name(&package) {
+                    return Err(format!(
+                        "dependency `{name}`: `alias` `{package}` is not a valid package name (expected `name` or `@scope/name`, lowercase letters, digits, hyphens)"
+                    ));
+                }
+                let version = match obj_get(val, "version") {
+                    Some(ConfigValue::String(s)) => {
+                        if !crate::fetch::is_valid_range(s) {
+                            return Err(format!("dependency `{name}`: `version` `{s}` is not a valid range (expected `*`, `^1.2.0`, `~1.2.0`, `>=1.2.0`, or an exact `1.2.0`)"));
+                        }
+                        Some(s.clone())
+                    }
+                    Some(_) => return Err(format!("dependency `{name}`: `version` must be a string")),
+                    None => None,
+                };
+                return Ok(DependencySpec::Alias { package, version });
+            }
             let has_path = has("path");
             let has_git = has("git");
             let has_url = has("url");
@@ -634,7 +669,7 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
                 };
             }
             Err(format!(
-                "dependency `{name}`: expected a version string, `{{ path = ... }}`, `{{ git = ..., rev/tag/branch = ... }}`, `{{ version = ..., url = ... }}`, or `{{ native = ... }}`"
+                "dependency `{name}`: expected a version string, `{{ path = ... }}`, `{{ git = ..., rev/tag/branch = ... }}`, `{{ version = ..., url = ... }}`, `{{ native = ... }}`, or `{{ alias = ... }}`"
             ))
         }
         _ => Err(format!(
@@ -1297,6 +1332,56 @@ pub(crate) fn parse_manifest_with(
             }
             let engine = opt_str(obj, "engine", "")?;
             let description = opt_str(obj, "description", "")?;
+            let targets = match obj_get(obj, "targets") {
+                Some(ConfigValue::Array(items)) => {
+                    let mut targets = Vec::with_capacity(items.len());
+                    for item in items {
+                        match item {
+                            ConfigValue::String(triple) => {
+                                sysroot::target::Target::parse(triple).map_err(|e| {
+                                    format!("field `project.targets`: {e}")
+                                })?;
+                                targets.push(triple.clone());
+                            }
+                            _ => {
+                                return Err(
+                                    "field `project.targets` must be an array of strings"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                    targets
+                }
+                Some(_) => {
+                    return Err("field `project.targets` must be an array of strings".to_string());
+                }
+                None => Vec::new(),
+            };
+            let capabilities = match obj_get(top, "capabilities") {
+                Some(ConfigValue::Array(items)) => {
+                    let mut capabilities = Vec::with_capacity(items.len());
+                    for item in items {
+                        match item {
+                            ConfigValue::String(name) => {
+                                name.parse::<sysroot::target::Capability>()
+                                    .map_err(|e| format!("field `capabilities`: {e}"))?;
+                                capabilities.push(name.clone());
+                            }
+                            _ => {
+                                return Err(
+                                    "field `capabilities` must be an array of strings".to_string(),
+                                );
+                            }
+                        }
+                    }
+                    capabilities
+                }
+                Some(_) => {
+                    return Err("field `capabilities` must be an array of strings".to_string());
+                }
+                None => Vec::new(),
+            };
             if obj_get(top, "entry").is_some() {
                 return Err("`entry` was removed, use `entries.main`".to_string());
             }
@@ -1438,6 +1523,8 @@ pub(crate) fn parse_manifest_with(
                 version,
                 description,
                 engine,
+                targets,
+                capabilities,
                 entries,
                 registry,
                 registries,
@@ -1481,12 +1568,12 @@ pub struct ManifestIssue {
     pub message: String,
 }
 
-const PROJECT_KEYS: &[&str] = &["name", "version", "description", "engine"];
+const PROJECT_KEYS: &[&str] = &["name", "version", "description", "engine", "targets"];
 const ENTRIES_KEYS: &[&str] = &["main", "lib", "cabi", "docs", "bins"];
 const REGISTRY_KEYS: &[&str] = &["url", "token_env", "ca_cert"];
 const WORKSPACE_KEYS: &[&str] = &["members"];
-const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system", "from", "link"];
-const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts", "native", "patch", "tasks", "bindgen", "license"];
+const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system", "from", "link", "alias"];
+const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts", "native", "patch", "tasks", "bindgen", "license", "capabilities"];
 
 fn span_line(text: &str, offset: u32) -> usize {
     let off = (offset as usize).min(text.len());
@@ -1521,6 +1608,14 @@ fn manifest_to_rnx_inner(manifest: &Manifest, strip_aux: bool) -> String {
         }
         if !p.description.is_empty() {
             fields.push(format!("description: {}", crate::deplock::rnx_string(&p.description)));
+        }
+        if !p.targets.is_empty() {
+            let targets: Vec<String> = p
+                .targets
+                .iter()
+                .map(|triple| crate::deplock::rnx_string(triple))
+                .collect();
+            fields.push(format!("targets: [{}]", targets.join(", ")));
         }
         out.push_str("    project: {\n");
         for (i, f) in fields.iter().enumerate() {
@@ -1576,6 +1671,16 @@ fn manifest_to_rnx_inner(manifest: &Manifest, strip_aux: bool) -> String {
         }
     }
     if let Some(p) = &manifest.project {
+        if !p.capabilities.is_empty() {
+            out.push_str("    capabilities: [");
+            for (i, capability) in p.capabilities.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&crate::deplock::rnx_string(capability));
+            }
+            out.push_str("],\n");
+        }
         if !p.dependencies.is_empty() {
             out.push_str("    dependencies: {\n");
             let mut deps: Vec<(&String, &DependencySpec)> = p.dependencies.iter().collect();
@@ -1963,6 +2068,14 @@ fn dep_to_rnx(spec: &DependencySpec) -> String {
             s.push_str(" }");
             s
         }
+        DependencySpec::Alias { package, version } => {
+            let mut s = format!("{{ alias: {}", crate::deplock::rnx_string(package));
+            if let Some(v) = version {
+                s.push_str(&format!(", version: {}", crate::deplock::rnx_string(v)));
+            }
+            s.push_str(" }");
+            s
+        }
     }
 }
 
@@ -1981,10 +2094,10 @@ pub fn manifest_keys(section: &str) -> &'static [&'static str] {
 
 pub fn manifest_section_doc(section: &str) -> Option<&'static str> {
     match section {
-        "project" => Some("Package identity: `name` and `version` are required, `engine` states the minimum toolchain requirement."),
+        "project" => Some("Package identity: `name` and `version` are required, `engine` states the minimum toolchain requirement, and `targets` lists the built-in triples the package supports."),
         "entries" => Some("Entry points: `main` defaults to `src/main.rnx`, `lib` names the library file, `docs` the guides folder, `bins` extra tool shims."),
         "registry" => Some("Default registry for unscoped packages: `url` is required, `token_env` names the auth token env var."),
-        "dependencies" => Some("Semver (`\"^1.2.0\"`), path (`\"libs/x\"` or `{ path = \"...\" }`), git (`{ git = \"<url>\", rev/tag/branch = \"...\" }`), tarball (`{ version = \"...\", url = \"...\", checksum = \"...\" }`), or native (`{ native = \"z\", system = true }`, plus `version` constraints and `from` image titles)."),
+        "dependencies" => Some("Semver (`\"^1.2.0\"`), path (`\"libs/x\"` or `{ path = \"...\" }`), git (`{ git = \"<url>\", rev/tag/branch = \"...\" }`), tarball (`{ version = \"...\", url = \"...\", checksum = \"...\" }`), native (`{ native = \"z\", system = true }`, plus `version` constraints and `from` image titles), or alias (`{ alias = \"@uefi/prelude\", version = \"0.2.2\" }`)."),
         "workspace" => Some("Monorepo members: `members = [\"alpha\", \"beta\"]` or globs like `[\"crates/*\"]`."),
         "permissions" => Some("Security ceiling: an array of capability strings the package and its dependencies may use."),
         "keywords" => Some("Search keywords: an array of up to 12 lowercase/digit/hyphen tags, 24 characters each, mirroring npm keywords."),
@@ -2005,6 +2118,7 @@ pub fn manifest_field_doc(section: &str, key: &str) -> Option<&'static str> {
         ("project", "version") => Some("Package version as `major.minor.patch`."),
         ("project", "description") => Some("One-line package summary shown by `rnx doc`."),
         ("project", "engine") => Some("Minimum toolchain requirement, e.g. `>=0.4.0`."),
+        ("project", "targets") => Some("Built-in target triples the package supports; `--target` must be one of them."),
         ("entries", "main") => Some("Main entry file, defaults to `src/main.rnx`."),
         ("entries", "lib") => Some("Library entry file for `import \"pkg\"` consumers."),
         ("entries", "cabi") => Some("C surface file: only its `export fn` declarations become C symbols in `rnx build --lib`."),
@@ -2103,6 +2217,37 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
             }
         }
     }
+    match obj_get(top, "capabilities") {
+        Some(ConfigValue::Array(items)) => {
+            for item in items {
+                match item {
+                    ConfigValue::String(name) => {
+                        if name.parse::<sysroot::target::Capability>().is_err() {
+                            out.push(ManifestIssue {
+                                line: field_line(text, &module, &[], "capabilities"),
+                                error: true,
+                                code: Code::E108,
+                                message: format!("unknown capability `{name}`"),
+                            });
+                        }
+                    }
+                    _ => out.push(ManifestIssue {
+                        line: field_line(text, &module, &[], "capabilities"),
+                        error: true,
+                        code: Code::E108,
+                        message: "field `capabilities` must be an array of strings".to_string(),
+                    }),
+                }
+            }
+        }
+        Some(_) => out.push(ManifestIssue {
+            line: field_line(text, &module, &[], "capabilities"),
+            error: true,
+            code: Code::E108,
+            message: "field `capabilities` must be an array of strings".to_string(),
+        }),
+        None => {}
+    }
     match obj_get(top, "project") {
         None => out.push(ManifestIssue {
             line: 0,
@@ -2180,6 +2325,38 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
                     code: Code::E108,
                     message: "field `project.version` must be a string".to_string(),
                 }),
+            }
+            match obj_get(obj, "targets") {
+                Some(ConfigValue::Array(items)) => {
+                    for item in items {
+                        match item {
+                            ConfigValue::String(triple) => {
+                                if let Err(e) = sysroot::target::Target::parse(triple) {
+                                    out.push(ManifestIssue {
+                                        line: field_line(text, &module, &["project"], "targets"),
+                                        error: true,
+                                        code: Code::E108,
+                                        message: format!("field `project.targets`: {e}"),
+                                    });
+                                }
+                            }
+                            _ => out.push(ManifestIssue {
+                                line: field_line(text, &module, &["project"], "targets"),
+                                error: true,
+                                code: Code::E108,
+                                message: "field `project.targets` must be an array of strings"
+                                    .to_string(),
+                            }),
+                        }
+                    }
+                }
+                Some(_) => out.push(ManifestIssue {
+                    line: field_line(text, &module, &["project"], "targets"),
+                    error: true,
+                    code: Code::E108,
+                    message: "field `project.targets` must be an array of strings".to_string(),
+                }),
+                None => {}
             }
             if let Some(root) = root {
                 let entries_val = obj_get(top, "entries");
@@ -2347,6 +2524,7 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
                 Ok(DependencySpec::Semver { .. }) => {}
                 Ok(DependencySpec::Url { .. }) => {}
                 Ok(DependencySpec::Native { .. }) => {}
+                Ok(DependencySpec::Alias { .. }) => {}
                 Err(msg) => out.push(ManifestIssue {
                     line: 0,
                     error: true,

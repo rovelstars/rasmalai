@@ -44,6 +44,6 @@ fn Main(): Int {
         total = total + c[t];
         t = t + 1;
     }
-    print("RESULT checksum", total);
+    println!("RESULT checksum", total);
     return 0;
 }

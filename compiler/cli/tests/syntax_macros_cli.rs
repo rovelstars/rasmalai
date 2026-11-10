@@ -20,10 +20,10 @@ fn run(args: &[&str], dir: &Path, envs: &[(&str, &str)]) -> Output {
 
 #[test]
 fn vec_macro_builds_and_runs_from_the_cli() {
-    let dir = crate::scratch::dir("phase-a-vec");
+    let dir = crate::scratch::dir("syntax-vec");
     std::fs::write(
         dir.join("main.rnx"),
-        "fn Main(): Int {\n    let v = vec![1, 2, 3]\n    print(\"len={v.len()} sum={v[0] + v[1] + v[2]}\")\n    return 0\n}\n",
+        "fn Main(): Int {\n    let v = vec![1, 2, 3]\n    println!(\"len={v.len()} sum={v[0] + v[1] + v[2]}\")\n    return 0\n}\n",
     )
     .unwrap();
 
@@ -45,11 +45,11 @@ fn vec_macro_builds_and_runs_from_the_cli() {
 
 #[test]
 fn embed_bytes_macro_builds_and_runs_from_the_cli() {
-    let dir = crate::scratch::dir("phase-a-embed");
+    let dir = crate::scratch::dir("syntax-embed");
     std::fs::write(dir.join("blob.bin"), [1u8, 2, 3, 4]).unwrap();
     std::fs::write(
         dir.join("main.rnx"),
-        "fn Main(): Int {\n    let b = EmbedBytes!(\"blob.bin\")\n    print(\"len={b.len()} first={b[0]} last={b[3]}\")\n    return 0\n}\n",
+        "fn Main(): Int {\n    let b = EmbedBytes!(\"blob.bin\")\n    println!(\"len={b.len()} first={b[0]} last={b[3]}\")\n    return 0\n}\n",
     )
     .unwrap();
 
@@ -71,7 +71,7 @@ fn embed_bytes_macro_builds_and_runs_from_the_cli() {
 
 #[test]
 fn unknown_macro_still_reports_e303() {
-    let dir = crate::scratch::dir("phase-a-unknown");
+    let dir = crate::scratch::dir("syntax-unknown");
     std::fs::write(
         dir.join("main.rnx"),
         "fn Main(): Int {\n    let v = BogusMacro![1]\n    return 0\n}\n",

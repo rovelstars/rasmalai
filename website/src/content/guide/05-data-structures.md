@@ -20,7 +20,7 @@ struct Vec3 {
 }
 
 let v = Vec3(1.0, 2.0, 3.0);
-print(v.x, v.y, v.z);
+println!(v.x, v.y, v.z);
 ```
 
 That prints `1.0 2.0 3.0`. `init(params)` runs at construction when you need more than the memberwise default (validation, derived fields, resource acquisition), and `deinit` runs at destruction for manual teardown. Structs are value types: assigning one copies it.
@@ -44,7 +44,7 @@ class Meter {
 }
 
 let m = new Meter(20);
-print(m.bump(22));
+println!(m.bump(22));
 ```
 
 That prints `42`. Notice the two differences from structs: construction uses `new`, and `let m2 = m` would share the object rather than copy it. Functions defined inside a type take an implicit receiver and are called with dot syntax; inside the body, `this` refers to the receiver. `static` methods call on the type itself with no receiver, like `AtomicInt.byId(1)`.
@@ -60,14 +60,14 @@ record Point(x: Float, y: Float)
 
 let a = Point(1.0, 2.0);
 let b = a;
-print(b.x, b.y);
+println!(b.x, b.y);
 ```
 
 That prints `1.0 2.0`. Use records for coordinates, colors, and messages: data that flows through functions without ever needing behavior attached. Anonymous records skip the declaration entirely:
 
 ```rnx
 let user = { id: 1, name: "Al" };
-print(user.id, user.name);
+println!(user.id, user.name);
 ```
 
 That prints `1 Al`. Handy for a quick bundle of values, but give the shape a name once it crosses a function boundary. Your callers will thank you.
@@ -87,7 +87,7 @@ fn area(s: Shape): Float {
     }
 }
 
-print(area(Shape.Rect(3.0, 4.0)));
+println!(area(Shape.Rect(3.0, 4.0)));
 ```
 
 That prints `12.0`. Variants construct with a dot (`Shape.Rect(...)`) and match with a leading dot (`.Rect(w, h)`), binding payloads inline. The payoff for the closed list: add a variant later and the compiler points at every `switch` you must update.
@@ -106,7 +106,7 @@ class Bot with Named {
     init(tag: String) { this.tag = tag; }
 }
 
-print(new Bot("ore").label());
+println!(new Bot("ore").label());
 ```
 
 That prints `unnamed`. `Bot` never defined `label`, so the trait default fills in. Generic code depends on behavior, not concrete types: a function taking `Named` accepts any class that adopts it.
@@ -120,7 +120,7 @@ extension String {
     }
 }
 
-print("hi".double());
+println!("hi".double());
 ```
 
 That prints `hihi`. Types also overload operators by defining `op_add`, `op_sub`, `op_mul`, `op_div`, `op_index`, and friends. `a + b` desugars statically to `a.op_add(b)`. The exact desugaring table is normative in the [Language Manual](/manual/09-extensions-and-operators).

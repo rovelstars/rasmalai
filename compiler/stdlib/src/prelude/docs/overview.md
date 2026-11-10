@@ -3,45 +3,48 @@
 Names every compilation unit sees without an import.
 
 An explicit declaration or an import always shadows a prelude name. The
-class stubs below are catalog-only: the frontend parses them once per
-session as a fallback scope and emits no code for them. Three items are
-real, though. `Result` is a generic enum merged into every program as
-`std.prelude.Result`, `Promise` and `ArrayIter` carry their bodies here,
-and the `Array` and `String` extensions below are compiled into every
-program too. `Map` and `Set` are stubs; their bodies live in
-`@std/collections`.
+foundation types come from `@std/foundation`: `Int`, `Float`, `FastFloat`,
+`Bool`, `String`, `Char`, `Array`, `Map`, `Set`, `Error`, `Any`, `Void`,
+`GenRef`, `Result`, `Iterator`, `Iterable`, and `ArrayIter`, plus the Array
+and String extension methods. This package re-exports those names and adds
+`Date` from `@std/time`, `Promise` and friends from `@std/async`, `RnxHost`
+from `@std/env`, the print and log macros, and the `IO`, `Thread`, and
+`ThreadPool` catalog stubs.
+
+`Map` and `Set` are catalog stubs here; their bodies live in
+`@std/collections`. A target prelude can replace this package and provide
+only the catalog it supports.
 
 ```rnx
-print("no import needed");
+println!("no import needed");
 let found = [1, 2, 3].find((n) => n > 1);
-print(found.unwrap(), typeOf(found));
+println!(found ?? -1, typeOf(found));
 ```
 
 ## What is inside
 
-- `Int`
-- `Float`
-- `FastFloat`
-- `Bool`
-- `String`
-- `Char`
-- `Array`
-- `Map`
-- `Set`
+Foundation re-exports:
+
+- `Int`, `Float`, `FastFloat`, `Bool`, `String`, `Char`
+- `Array`, `Map`, `Set`, `Error`, `Any`, `Void`, `GenRef`
+- `Result`, `Iterator`, `Iterable`, `ArrayIter`
+
+Prelude-only names:
+
 - `Date`
-- `Error`
-- `Any`
-- `Void`
-- `GenRef`
-- `Result`
-- `ArrayIter`
-- `PromiseResult`
-- `PromiseWithResolvers`
-- `Promise`
+- `Promise`, `PromiseResult`, `PromiseWithResolvers`
 - `RnxHost`
+- `print`, `println`, `eprint`, `eprintln`
+- `log`, `debug`, `info`, `warn`, `error`
+- `IO`, `Thread`, `ThreadPool`
 
 ## When to use
 
-The prelude is already imported everywhere: every file sees Option, Result, Array, Map, print, assert, and the Array/String extension methods with no import. Reference @std/prelude explicitly only to disambiguate a shadowed name.
+The prelude is already imported everywhere: every file sees the foundation
+types, `Date`, `Promise`, the Array and String extension methods, `assert`,
+and `typeOf` with no import. Reference `@std/prelude` explicitly only to
+disambiguate a shadowed name.
 
-It covers: Int/Float/Bool/String/Array/Map/Set; print/assert/typeOf intrinsics; Option/Result/Iterator; Array/String extensions.
+A barebones target ships its own prelude package and selects it through the
+project alias or the target descriptor. The catalog names must still be
+present; `@uefi/prelude` is the worked example.

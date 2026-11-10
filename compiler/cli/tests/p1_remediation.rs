@@ -29,9 +29,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -58,7 +58,7 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
     );
 }
 
-const ANY_CHURN_SRC: &str = "import { Map } from \"@std/collections\";\nfn hammer(m: Map, n: Int): Int {\n    let i = 0;\n    while i < n {\n        let v: Any = i;\n        m.set(1, v);\n        let g = m.get(1) ?? -1;\n        i = i + 1;\n    }\n    return 0;\n}\nfn Main(): Int {\n    let m = new Map();\n    m.set(1, 0);\n    let h0 = Thread.spawn((): Int => hammer(m, 1500));\n    let h1 = Thread.spawn((): Int => hammer(m, 1500));\n    let h2 = Thread.spawn((): Int => hammer(m, 1500));\n    let h3 = Thread.spawn((): Int => hammer(m, 1500));\n    let r = h0.join().unwrap() + h1.join().unwrap() + h2.join().unwrap() + h3.join().unwrap();\n    if r != 0 {\n        return 3;\n    }\n    if m.len() != 1 {\n        return 1;\n    }\n    print(\"any box churn ok\");\n    return 42;\n}\n";
+const ANY_CHURN_SRC: &str = "import { Map } from \"@std/collections\";\nfn hammer(m: Map, n: Int): Int {\n    let i = 0;\n    while i < n {\n        let v: Any = i;\n        m.set(1, v);\n        let g = m.get(1) ?? -1;\n        i = i + 1;\n    }\n    return 0;\n}\nfn Main(): Int {\n    let m = new Map();\n    m.set(1, 0);\n    let h0 = Thread.spawn((): Int => hammer(m, 1500));\n    let h1 = Thread.spawn((): Int => hammer(m, 1500));\n    let h2 = Thread.spawn((): Int => hammer(m, 1500));\n    let h3 = Thread.spawn((): Int => hammer(m, 1500));\n    let r = h0.join().unwrap() + h1.join().unwrap() + h2.join().unwrap() + h3.join().unwrap();\n    if r != 0 {\n        return 3;\n    }\n    if m.len() != 1 {\n        return 1;\n    }\n    println!(\"any box churn ok\");\n    return 42;\n}\n";
 
 #[test]
 fn test_shared_any_box_churn_across_threads() {

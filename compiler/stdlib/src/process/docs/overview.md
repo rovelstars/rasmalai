@@ -10,7 +10,7 @@ ways to start a child:
 import { Process } from "@std/process";
 
 let out = Process.run("echo", ["hi"]);
-print(out.exitCode);
+println!(out.exitCode);
 ```
 
 ## What is inside

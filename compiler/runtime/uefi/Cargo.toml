@@ -1,0 +1,25 @@
+[package]
+name = "runtime-uefi"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Detached helper workspace: this crate is built for x86_64-unknown-uefi and
+# must not join the host workspace, whose `cargo test` builds host artifacts
+# only.
+[workspace]
+
+[lib]
+name = "runtime_native"
+path = "src/lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+panic = "abort"
+debug = false
+incremental = false
+strip = "debuginfo"

@@ -50,7 +50,7 @@ async fn total(n: Int): Promise<Int> {
     return sum;
 }
 
-print(await total(10));
+println!(await total(10));
 "#;
 
 #[test]
@@ -91,8 +91,8 @@ async fn consume(): Promise<Int> {
     return sum;
 }
 
-print(await fsum([1, 2, 3, 4]));
-print(await consume());
+println!(await fsum([1, 2, 3, 4]));
+println!(await consume());
 "#;
 
 #[test]
@@ -108,7 +108,7 @@ const STILL_REJECTED: &str = r#"async fn bad(n: Int): Promise<Int> {
     return i;
 }
 
-print(await bad(3));
+println!(await bad(3));
 "#;
 
 #[test]
@@ -135,8 +135,8 @@ async fn loadVar(): String {
     return r.unwrapOr("d");
 }
 
-print(await load());
-print(await loadVar());
+println!(await load());
+println!(await loadVar());
 "#;
 
 #[test]

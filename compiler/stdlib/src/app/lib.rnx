@@ -4577,14 +4577,14 @@ pub class Driver {
             if ok {
                 word = "ok"
             }
-            print("ui.step " + i.toString() + " " + step + " " + word)
+            println!("ui.step " + i.toString() + " " + step + " " + word)
             if !ok {
-                print("ui.result fail " + step)
+                println!("ui.result fail " + step)
                 return 1
             }
             i += 1
         }
-        print("ui.result ok")
+        println!("ui.result ok")
         return 0
     }
 
@@ -4607,11 +4607,11 @@ pub class Driver {
             return this.screenshot(path)
         }
         if verb == "stats" {
-            print("ui.stats", this.stats())
+            println!("ui.stats", this.stats())
             return true
         }
         if verb == "timeline" {
-            print("ui.timeline " + this.timeline())
+            println!("ui.timeline " + this.timeline())
             return true
         }
         if verb == "announce" {

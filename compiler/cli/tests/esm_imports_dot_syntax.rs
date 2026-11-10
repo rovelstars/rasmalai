@@ -42,7 +42,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -112,7 +112,7 @@ fn esm_default_and_namespace() {
         testing.blackBox(1);\n\
         t2.blackBox(2);\n\
         t3.blackBox(3);\n\
-        print(blackBox(4));\n\
+        println!(blackBox(4));\n\
         return 0;\n\
         }\n",
         "4\n",
@@ -125,7 +125,7 @@ fn esm_bare_std_prefix() {
     check_stdout_everywhere(
         "import { blackBox } from \"std/testing\";\n\
         fn Main(): Int {\n\
-        print(blackBox(9));\n\
+        println!(blackBox(9));\n\
         return 0;\n\
         }\n",
         "9\n",
@@ -141,7 +141,7 @@ fn esm_relative_and_side_effect() {
             ("src/util.rnx", "pub fn helper(): Int {\n    return 41;\n}\n"),
             (
                 "src/main.rnx",
-                "import \"./util\";\nimport { helper } from \"./util\";\nfn Main(): Int {\n    print(helper() + 1);\n    return 0;\n}\n",
+                "import \"./util\";\nimport { helper } from \"./util\";\nfn Main(): Int {\n    println!(helper() + 1);\n    return 0;\n}\n",
             ),
         ],
     );
@@ -171,13 +171,13 @@ fn dot_enum_variants() {
         let s1 = Status.Idle;\n\
         let s2 = Status.Running(1024);\n\
         let s3 = Status.Failed(\"oom\");\n\
-        print(check_status(s1));\n\
-        print(check_status(s2));\n\
-        print(check_status(s3));\n\
+        println!(check_status(s1));\n\
+        println!(check_status(s2));\n\
+        println!(check_status(s3));\n\
         let opt: Int? = 42;\n\
-        print(opt ?? -1);\n\
+        println!(opt ?? -1);\n\
         let flag: Int? = 100;\n\
-        print(flag ?? -1);\n\
+        println!(flag ?? -1);\n\
         return 0;\n\
         }\n",
         "idle\nrunning\nerror\n42\n100\n",
@@ -192,8 +192,8 @@ fn generic_no_turbofish() {
         return val;\n\
         }\n\
         fn Main(): Int {\n\
-        print(identity(42));\n\
-        print(identity<String>(\"clean\"));\n\
+        println!(identity(42));\n\
+        println!(identity<String>(\"clean\"));\n\
         return 0;\n\
         }\n",
         "42\nclean\n",
@@ -213,7 +213,7 @@ fn err_double_colon() {
 #[test]
 fn err_turbofish() {
     check_fails_with(
-        "fn identity<T>(val: T): T {\n    return val;\n}\nfn Main(): Int {\n    print(identity::<Int>(1));\n    return 0;\n}\n",
+        "fn identity<T>(val: T): T {\n    return val;\n}\nfn Main(): Int {\n    println!(identity::<Int>(1));\n    return 0;\n}\n",
         &["E005"],
         "turbofish",
     );

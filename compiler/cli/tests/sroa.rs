@@ -4,7 +4,10 @@ mod scratch;
 
 use lir::instr::Instr;
 
+static LOWER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn lower_file(path: &std::path::Path) -> lir::instr::Module {
+    let _guard = LOWER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let graph = frontend::modules::ModuleGraph::build(path).unwrap_or_else(|e| panic!("{e}"));
     let mut m = graph.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
@@ -13,7 +16,19 @@ fn lower_file(path: &std::path::Path) -> lir::instr::Module {
 }
 
 fn lower_src(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
+    let _guard = LOWER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = if src.contains("println!") || src.contains("print!") {
+        let mut m = frontend::modules::ModuleGraph::from_source(src)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut opts = frontend::macros::MacroOptions::new(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        );
+        let expanded = frontend::macros::expand_syntax(&mut m, &mut opts);
+        assert!(expanded.iter().all(|d| d.code.is_warning()), "{expanded:?}");
+        m
+    } else {
+        frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"))
+    };
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"))
@@ -91,13 +106,13 @@ fn test_sroa_with_mutation() {
     }
 }
 
-const LOOP_SRC: &str = "import { Vec2 } from \"@std/math\";\nfn Main(): Int {\n    let total = 0.0;\n    let i = 0;\n    while i < 3 {\n        let a = new Vec2(1.0, 2.0);\n        let b = new Vec2(3.0, 4.0);\n        let d = a.dot(b);\n        let len = a.length();\n        if d > 10.0 && len > 2.0 {\n            total = total + d;\n        }\n        i = i + 1;\n    }\n    total = total + 9.0;\n    print(\"sroa success:\", Int(total));\n    return Int(total);\n}\n";
+const LOOP_SRC: &str = "import { Vec2 } from \"@std/math\";\nfn Main(): Int {\n    let total = 0.0;\n    let i = 0;\n    while i < 3 {\n        let a = new Vec2(1.0, 2.0);\n        let b = new Vec2(3.0, 4.0);\n        let d = a.dot(b);\n        let len = a.length();\n        if d > 10.0 && len > 2.0 {\n            total = total + d;\n        }\n        i = i + 1;\n    }\n    total = total + 9.0;\n    println!(\"sroa success:\", Int(total));\n    return Int(total);\n}\n";
 
 #[test]
 fn test_cross_backend_sroa_execution() {
     let (_g, path) = fixture("loop", "main.rnx", LOOP_SRC);
     let out = cli::run_files(path.to_str().unwrap(), "Main", vec![]);
-    assert_eq!(out.output, vec!["sroa success: 42".to_string()]);
+    assert_eq!(out.output, vec!["sroa success: 42\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(42)) => {}
         other => panic!("{other:?}"),
@@ -121,7 +136,7 @@ fn test_cross_backend_sroa_execution() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
-const OPAQUE_SRC: &str = "class Box {\n    let v: Int;\n    init(v: Int) { this.v = v; }\n}\nfn useBox(b: Box): Int {\n    print(\"use\");\n    return b.v;\n}\nfn Main(): Int {\n    let b = new Box(21);\n    let r = useBox(b);\n    return r * 2;\n}\n";
+const OPAQUE_SRC: &str = "class Box {\n    let v: Int;\n    init(v: Int) { this.v = v; }\n}\nfn useBox(b: Box): Int {\n    println!(\"use\");\n    return b.v;\n}\nfn Main(): Int {\n    let b = new Box(21);\n    let r = useBox(b);\n    return r * 2;\n}\n";
 
 #[test]
 fn test_disqualified_aggregate_retains_stack_alloc() {
@@ -134,7 +149,7 @@ fn test_disqualified_aggregate_retains_stack_alloc() {
         .flat_map(|b| b.instrs.iter())
         .any(|i| matches!(i, Instr::StackAlloc { .. })));
     let out = cli::run_source(OPAQUE_SRC, "Main", vec![]);
-    assert_eq!(out.output, vec!["use".to_string()]);
+    assert_eq!(out.output, vec!["use\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(42)) => {}
         other => panic!("{other:?}"),

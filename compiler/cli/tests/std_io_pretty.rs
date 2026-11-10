@@ -70,11 +70,11 @@ class Point {
 }
 
 fn Main(): Int {
-    print("hi", 42, true);
+    println!("hi", 42, true);
     io.write(2.0);
     io.write(null);
     io.write([1, 2, 3]);
-    print([1, 2], "x");
+    println!([1, 2], "x");
     io.write([[1, 2], [3]]);
     let mixed: Array<Any> = [];
     mixed.push(1);
@@ -93,7 +93,7 @@ fn Main(): Int {
     io.write(e);
     let p = new Point(1, 2);
     io.write(p);
-    print(p);
+    println!(p);
     let nested = new Map<String, Any>();
     nested.set("p", p);
     nested.set("n", 5);

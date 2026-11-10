@@ -6,8 +6,8 @@ degrees into radians with value * Math.PI() / 180.0.
 ```rnx
 import { Math, Vec2 } from "@std/math";
 
-print(new Vec2(3.0, 4.0).length());
-print(Math.PI());
+println!(new Vec2(3.0, 4.0).length());
+println!(Math.PI());
 ```
 
 ## What is inside

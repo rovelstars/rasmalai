@@ -2713,12 +2713,16 @@ pub unsafe extern "C" fn rnx_any_unbox(any: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rnx_any_unbox_heap(any: u64) -> u64 {
-    match any_box_addr(any) {
+    let payload = match any_box_addr(any) {
         Some(addr) if (any & ANY_BOX_MASK) as u32 == ANY_BOX_STR as u32 => unsafe {
             ((addr as *const u8).add(8) as *const u64).read_unaligned()
         },
         _ => any,
+    };
+    if payload != 0 && payload % 8 == 0 {
+        retain_count(payload as *mut u8);
     }
+    payload
 }
 
 #[unsafe(no_mangle)]
@@ -3894,6 +3898,32 @@ mod any_box_tests {
             assert_eq!(rnx_any_unbox(b), 7);
             rnx_any_release(b);
             rnx_any_release(b);
+        }
+    }
+
+    #[test]
+    fn heap_unbox_retains_string_payload() {
+        unsafe {
+            let s = alloc_str("owned");
+            let b = rnx_any_box(TAG_STR, s as u64);
+            let got = rnx_any_unbox_heap(b);
+            assert_eq!(got, s as u64);
+            rnx_any_release(b);
+            assert_eq!(str_bytes(got as *const u8), b"owned");
+            rnx_release_str(s);
+            rnx_release_str(got as *mut u8);
+        }
+    }
+
+    #[test]
+    fn heap_unbox_retains_raw_string() {
+        unsafe {
+            let s = alloc_str("raw");
+            let got = rnx_any_unbox_heap(s as u64);
+            assert_eq!(got, s as u64);
+            rnx_release_str(s);
+            assert_eq!(str_bytes(got as *const u8), b"raw");
+            rnx_release_str(got as *mut u8);
         }
     }
 

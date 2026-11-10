@@ -21,7 +21,7 @@ Two positions already name the enum, so only the variant has to follow the leadi
 
 ```rnx
 let r: Result<Int, String> = .Err("bad");
-print(r.isErr());
+println!(r.isErr());
 ```
 
 Argument inference reaches the same way through a method, a `static fn`, and an `init` parameter:
@@ -45,7 +45,7 @@ class Canvas {
 }
 
 let canvas = new Canvas(.Blue);
-print(paint(.Green), canvas.setMode(.Red), Canvas.withColor(.Green));
+println!(paint(.Green), canvas.setMode(.Red), Canvas.withColor(.Green));
 ```
 
 That prints `2 1 2`. A name the enum does not declare is a compile-time `error[E108]: unknown variant`, and the message names both the variant and its enum. `let bg: Color = .Nope;` and `paint(.Nope)` both fail that way, with a pointer at the dot.
@@ -59,7 +59,7 @@ let w = File.create("/tmp/rnx-dot.txt", .Overwrite);
 w.writeText("hi");
 w.close();
 let r = File.open("/tmp/rnx-dot.txt", .Read);
-print(r.readText().unwrapOr("?"));
+println!(r.readText().unwrapOr("?"));
 r.close();
 ```
 
@@ -80,8 +80,8 @@ fn area(s: Shape): Float {
     }
 }
 
-print(area(Shape.Circle(2.0)));
-print(area(Shape.Rect(3.0, 4.0)));
+println!(area(Shape.Circle(2.0)));
+println!(area(Shape.Rect(3.0, 4.0)));
 ```
 
 Guards narrow a case further (`case .Circle(r) if r > 0`) and observe payload bindings; `default` catches everything the listed patterns miss. Payload arity is checked at construction: `Circle(1.0, 2.0)` against a one-payload variant fails immediately.
@@ -99,7 +99,7 @@ fn kind(code: Int): String {
     }
 }
 
-print(kind(42), kind(404));
+println!(kind(42), kind(404));
 ```
 
 ```rnx
@@ -111,17 +111,17 @@ class IoError {
 fn Main(): Int {
     let e = new IoError("disk gone");
     if e is IoError {
-        print("io");
+        println!("io");
     }
     try {
         throw new IoError("disk gone");
     } catch (err) {
         switch err {
             case is IoError:
-                print("caught io");
+                println!("caught io");
                 pass;
             default:
-                print("caught other");
+                println!("caught other");
                 pass;
         }
     }

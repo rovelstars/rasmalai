@@ -25,7 +25,7 @@ fn tmp() -> crate::scratch::Scratch {
 fn expand_a(src: &str, dir: &std::path::Path) -> (A::Module, Vec<diagnostics::Diagnostic>) {
     let mut m = parse(src);
     let mut opts = opts_in(dir);
-    let diags = macros::expand_phase_a(&mut m, &mut opts);
+    let diags = macros::expand_syntax(&mut m, &mut opts);
     (m, diags)
 }
 
@@ -73,7 +73,7 @@ impl ComptimeRunner for FakeRunner {
 }
 
 #[test]
-fn phase_a_vec_bracket_expands() {
+fn syntax_vec_bracket_expands() {
     let dir = tmp();
     let (m, diags) = expand_a("fn Main(): Int { let v = vec![1, 2, 3]; return v[0]; }", &dir);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
@@ -83,7 +83,7 @@ fn phase_a_vec_bracket_expands() {
 }
 
 #[test]
-fn phase_a_vec_paren_expands() {
+fn syntax_vec_paren_expands() {
     let dir = tmp();
     let (m, diags) = expand_a("fn Main(): Int { let v = vec!(1); return v[0]; }", &dir);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
@@ -93,7 +93,7 @@ fn phase_a_vec_paren_expands() {
 }
 
 #[test]
-fn phase_a_unknown_macro_untouched() {
+fn syntax_unknown_macro_untouched() {
     let dir = tmp();
     let (m, diags) = expand_a("fn Main(): Int { return Foo!(1); }", &dir);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
@@ -101,7 +101,7 @@ fn phase_a_unknown_macro_untouched() {
 }
 
 #[test]
-fn phase_a_embed_bytes_splices_ints() {
+fn syntax_embed_bytes_splices_ints() {
     let dir = tmp();
     std::fs::write(dir.join("icon.bin"), [7u8, 8, 9]).unwrap();
     let (m, diags) = expand_a(
@@ -115,12 +115,12 @@ fn phase_a_embed_bytes_splices_ints() {
 }
 
 #[test]
-fn phase_a_embed_cache_key_includes_file_hash() {
+fn syntax_embed_cache_key_includes_file_hash() {
     let dir = tmp();
     std::fs::write(dir.join("a.bin"), [1u8]).unwrap();
     let mut opts = opts_in(&dir);
     let mut m1 = parse("fn Main(): Int { let b = EmbedBytes!(\"a.bin\"); return b[0]; }");
-    let d1 = macros::expand_phase_a(&mut m1, &mut opts);
+    let d1 = macros::expand_syntax(&mut m1, &mut opts);
     assert!(hard_errors(&d1).is_empty(), "{d1:?}");
     let first = format!("{m1:?}");
     assert!(first.contains("Int(1)"), "{first}");
@@ -128,7 +128,7 @@ fn phase_a_embed_cache_key_includes_file_hash() {
 
     std::fs::write(dir.join("a.bin"), [2u8]).unwrap();
     let mut m2 = parse("fn Main(): Int { let b = EmbedBytes!(\"a.bin\"); return b[0]; }");
-    let d2 = macros::expand_phase_a(&mut m2, &mut opts);
+    let d2 = macros::expand_syntax(&mut m2, &mut opts);
     assert!(hard_errors(&d2).is_empty(), "{d2:?}");
     let second = format!("{m2:?}");
     assert!(second.contains("Int(2)"), "{second}");
@@ -137,14 +137,14 @@ fn phase_a_embed_cache_key_includes_file_hash() {
     std::fs::write(dir.join("a.bin"), [2u8]).unwrap();
     let before = opts.cache.len();
     let mut m3 = parse("fn Main(): Int { let b = EmbedBytes!(\"a.bin\"); return b[0]; }");
-    let d3 = macros::expand_phase_a(&mut m3, &mut opts);
+    let d3 = macros::expand_syntax(&mut m3, &mut opts);
     assert!(hard_errors(&d3).is_empty(), "{d3:?}");
     assert_eq!(opts.cache.len(), before);
     assert_eq!(format!("{m3:?}"), second);
 }
 
 #[test]
-fn phase_a_embed_rejects_missing_absolute_escape() {
+fn syntax_embed_rejects_missing_absolute_escape() {
     let dir = tmp();
     let (_, missing) = expand_a("fn Main(): Int { return EmbedBytes!(\"nope.bin\")[0]; }", &dir);
     assert!(missing.iter().any(|d| d.code == Code::E122), "{missing:?}");
@@ -155,7 +155,7 @@ fn phase_a_embed_rejects_missing_absolute_escape() {
 }
 
 #[test]
-fn phase_a_embed_nonliteral_rejected() {
+fn syntax_embed_nonliteral_rejected() {
     let dir = tmp();
     let (_, diags) = expand_a(
         "fn Main(): Int { let p = \"a.bin\"; return EmbedBytes!(p)[0]; }",
@@ -165,7 +165,7 @@ fn phase_a_embed_nonliteral_rejected() {
 }
 
 #[test]
-fn phase_a_span_attribution_is_use_site() {
+fn syntax_span_attribution_is_use_site() {
     let dir = tmp();
     let src = "fn Main(): Int { return vec![5][0]; }";
     let mut m = parse(src);
@@ -183,7 +183,7 @@ fn phase_a_span_attribution_is_use_site() {
         _ => panic!("shape"),
     };
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_a(&mut m, &mut opts);
+    let diags = macros::expand_syntax(&mut m, &mut opts);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     match &m.decls[0].node {
         A::Decl::Fn(f) => match &f.body {
@@ -201,7 +201,7 @@ fn phase_a_span_attribution_is_use_site() {
 }
 
 #[test]
-fn phase_a_nested_macros_converge() {
+fn syntax_nested_macros_converge() {
     let dir = tmp();
     let (m, diags) = expand_a("fn Main(): Int { let v = vec![vec![1][0], vec![2][0]]; return v[0]; }", &dir);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
@@ -209,7 +209,7 @@ fn phase_a_nested_macros_converge() {
 }
 
 #[test]
-fn phase_a_node_cap_trips() {
+fn syntax_node_cap_trips() {
     let dir = tmp();
     let mut items = String::new();
     for i in 0..(NODE_CAP + 1) {
@@ -224,7 +224,7 @@ fn phase_a_node_cap_trips() {
 }
 
 #[test]
-fn phase_a_large_source_does_not_trip_the_cap() {
+fn syntax_large_source_does_not_trip_the_cap() {
     let dir = tmp();
     let mut body = String::new();
     for i in 0..(NODE_CAP + 1) {
@@ -236,7 +236,7 @@ fn phase_a_large_source_does_not_trip_the_cap() {
 }
 
 #[test]
-fn phase_a_iter_cap_is_eight() {
+fn syntax_iter_cap_is_eight() {
     assert_eq!(ITER_CAP, 8);
 }
 
@@ -245,7 +245,7 @@ fn static_assert_pass_erases_to_true() {
     let dir = tmp();
     let mut m = parse("fn Main(): Int { StaticAssert!(1 + 1 == 2, \"math\"); return 1; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     assert!(!has_macro(&m, "StaticAssert"));
 }
@@ -255,7 +255,7 @@ fn static_assert_fail_reports_e123_with_span() {
     let dir = tmp();
     let mut m = parse("fn Main(): Int { StaticAssert!(1 == 2, \"boom\"); return 1; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     let errs = hard_errors(&diags);
     assert_eq!(errs.len(), 1);
     assert_eq!(errs[0].code, Code::E123);
@@ -268,7 +268,7 @@ fn static_assert_nonconst_is_e123() {
     let dir = tmp();
     let mut m = parse("fn Main(x: Int): Int { StaticAssert!(x, \"no\"); return 1; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(diags.iter().any(|d| d.code == Code::E123), "{diags:?}");
 }
 
@@ -277,7 +277,7 @@ fn comptime_const_splice_in_static() {
     let dir = tmp();
     let mut m = parse("const N: Int = CompTime!(6 * 7); fn Main(): Int { return N; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     match &m.decls[0].node {
         A::Decl::Const { value, .. } => assert!(matches!(value.node, A::Expr::Int(42)), "{:?}", value.node),
@@ -290,7 +290,7 @@ fn comptime_unknown_fn_is_e122() {
     let dir = tmp();
     let mut m = parse("const N: Int = CompTime!(Missing(1)); fn Main(): Int { return N; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(diags.iter().any(|d| d.code == Code::E122), "{diags:?}");
 }
 
@@ -299,7 +299,7 @@ fn derive_clone_debug_struct() {
     let dir = tmp();
     let mut m = parse("#[Derive(Clone, Debug)] struct Pair { let a: Int; let b: Int } fn Main(): Int { return 0; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     match &m.decls[0].node {
         A::Decl::Struct { members, attrs, .. } => {
@@ -323,7 +323,7 @@ fn derive_collision_is_e121_at_existing_member() {
     let dir = tmp();
     let mut m = parse("#[Derive(Clone)] struct S { let a: Int fn clone(): S { return S(this.a); } } fn Main(): Int { return 0; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     let err = diags.iter().find(|d| d.code == Code::E121).expect("{diags:?}");
     assert!(err.message.contains("derive at"), "{}", err.message);
     assert!(err.span.is_some());
@@ -334,7 +334,7 @@ fn derive_unknown_name_fails_closed() {
     let dir = tmp();
     let mut m = parse("#[Derive(Foo)] struct S { let a: Int } fn Main(): Int { return 0; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(diags.iter().any(|d| d.code == Code::E108 && d.message.contains("Foo")), "{diags:?}");
 }
 
@@ -343,7 +343,7 @@ fn derive_serde_is_out_of_scope() {
     let dir = tmp();
     let mut m = parse("#[Derive(Serde)] struct S { let a: Int } fn Main(): Int { return 0; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(diags.iter().any(|d| d.code == Code::E108 && d.message.contains("Serde")), "{diags:?}");
 }
 
@@ -352,11 +352,11 @@ fn closed_namespace_rejects_unknown_attr() {
     let dir = tmp();
     let mut m = parse("#[Bogus] struct S { let a: Int } fn Main(): Int { return 0; }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(diags.iter().any(|d| d.code == Code::E108 && d.message.contains("Bogus")), "{diags:?}");
     let mut m = parse("#[Bogus] fn F(): Int { return 1; } fn Main(): Int { return F(); }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(diags.iter().any(|d| d.code == Code::E108 && d.message.contains("Bogus")), "{diags:?}");
 }
 
@@ -365,7 +365,7 @@ fn known_attrs_pass_closed_check() {
     let dir = tmp();
     let mut m = parse("#[Allow(CyclicReference)] struct S { let a: Int } #[Inline(Always)] fn F(): Int { return 1; } fn Main(): Int { return F(); }");
     let mut opts = opts_in(&dir);
-    let diags = macros::expand_phase_b(&mut m, &mut opts, None);
+    let diags = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
 }
 
@@ -375,7 +375,7 @@ fn user_derive_runs_once_with_typeinfo() {
     let mut m = parse("#[CompTime] fn Describe(info: Array<String>): Array<String> { return info; } #[Derive(Describe)] struct Point { let x: Int; let y: String } fn Main(): Int { return 0; }");
     let mut opts = opts_in(&dir);
     let runner = FakeRunner::with_method("fn describe(): String { return \"Point\"; }");
-    let diags = macros::expand_phase_b(&mut m, &mut opts, Some(&runner));
+    let diags = macros::expand_comptime(&mut m, &mut opts, Some(&runner));
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     assert_eq!(runner.calls.borrow().len(), 1);
     let (name, args) = &runner.calls.borrow()[0];
@@ -396,7 +396,7 @@ fn user_derive_runs_once_with_typeinfo() {
         }
         _ => panic!("typeinfo shape"),
     }
-    let diags = macros::expand_phase_b(&mut m, &mut opts, Some(&runner));
+    let diags = macros::expand_comptime(&mut m, &mut opts, Some(&runner));
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     assert_eq!(runner.calls.borrow().len(), 1);
     match &m.decls[1].node {
@@ -413,7 +413,7 @@ fn hygiene_renames_generated_locals() {
     let mut m = parse("#[CompTime] fn Describe(info: Array<String>): Array<String> { return info; } #[Derive(Describe)] struct S { let a: Int } fn Main(): Int { let tmp = 41; return tmp; }");
     let mut opts = opts_in(&dir);
     let runner = FakeRunner::with_method("fn m(): Int { let tmp = 1; return tmp; }");
-    let diags = macros::expand_phase_b(&mut m, &mut opts, Some(&runner));
+    let diags = macros::expand_comptime(&mut m, &mut opts, Some(&runner));
     assert!(hard_errors(&diags).is_empty(), "{diags:?}");
     match &m.decls[1].node {
         A::Decl::Struct { members, .. } => match &members[1].node {
@@ -441,9 +441,9 @@ fn expansions_are_deterministic() {
     let run = || {
         let mut m = parse(src);
         let mut opts = opts_in(&dir);
-        let d1 = macros::expand_phase_a(&mut m, &mut opts);
+        let d1 = macros::expand_syntax(&mut m, &mut opts);
         assert!(hard_errors(&d1).is_empty(), "{d1:?}");
-        let d2 = macros::expand_phase_b(&mut m, &mut opts, None);
+        let d2 = macros::expand_comptime(&mut m, &mut opts, None);
         assert!(hard_errors(&d2).is_empty(), "{d2:?}");
         format!("{m:?}")
     };
@@ -456,32 +456,27 @@ fn zero_cost_derive_free_build_never_runs_comptime() {
     let dir = tmp();
     let mut m = parse("fn Main(): Int { let v = vec![1]; return v[0]; }");
     let mut opts = opts_in(&dir);
-    let d1 = macros::expand_phase_a(&mut m, &mut opts);
+    let d1 = macros::expand_syntax(&mut m, &mut opts);
     assert!(hard_errors(&d1).is_empty(), "{d1:?}");
-    let d2 = macros::expand_phase_b(&mut m, &mut opts, None);
+    let d2 = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(hard_errors(&d2).is_empty(), "{d2:?}");
     assert_eq!(macros::comptime_runs(), 0);
 }
 
 #[test]
-fn print_stays_prelude_function_not_macro() {
-    let m = parse("fn Main(): Int { print(\"hi\"); return 0; }");
-    match &m.decls[0].node {
-        A::Decl::Fn(f) => match &f.body {
-            A::FnBody::Block(b) => match &b.stmts[0].node {
-                A::Stmt::Expr(e) => assert!(matches!(e.node, A::Expr::Call { .. }), "{:?}", e.node),
-                _ => panic!("shape"),
-            },
-            _ => panic!("shape"),
-        },
-        _ => panic!("shape"),
-    }
-    let m = parse("fn Main(): Int { print(\"hi\"); return 0; }");
+fn print_call_without_bang_is_e108() {
+    let m = parse("fn Main(): Int { println!(\"hi\"); return 0; }");
     let errs: Vec<_> = frontend::semantic::check(&m)
         .into_iter()
         .filter(|d| !d.code.is_warning())
         .collect();
     assert!(errs.is_empty(), "{errs:?}");
+    let m = parse("fn Main(): Int { print(\"hi\"); return 0; }");
+    let errs: Vec<_> = frontend::semantic::check(&m)
+        .into_iter()
+        .filter(|d| !d.code.is_warning())
+        .collect();
+    assert!(errs.iter().any(|d| d.code == Code::E108 && d.message.contains("print!")), "{errs:?}");
 }
 
 #[test]
@@ -500,11 +495,11 @@ fn expand_dump_writes_before_after() {
     let mut m = parse("fn Main(): Int { let v = vec![1]; StaticAssert!(true, \"x\"); return v[0]; }");
     let mut opts = opts_in(&dir);
     opts.dump_dir = Some(dump.clone());
-    let d1 = macros::expand_phase_a(&mut m, &mut opts);
+    let d1 = macros::expand_syntax(&mut m, &mut opts);
     assert!(hard_errors(&d1).is_empty(), "{d1:?}");
-    let d2 = macros::expand_phase_b(&mut m, &mut opts, None);
+    let d2 = macros::expand_comptime(&mut m, &mut opts, None);
     assert!(hard_errors(&d2).is_empty(), "{d2:?}");
-    for f in ["phase-a.before", "phase-a.after", "phase-b.before", "phase-b.after"] {
+    for f in ["syntax.before", "syntax.after", "comptime.before", "comptime.after"] {
         assert!(dump.join(f).is_file(), "{f}");
     }
 }
@@ -516,4 +511,114 @@ fn comptime_toolchain_is_versioned() {
     assert!(macros::FUEL_STEPS == 1_000_000);
     assert!(macros::CALL_DEPTH_MAX == 64);
     assert!(macros::NODE_CAP == 10_000);
+}
+
+fn main_body(m: &A::Module) -> &A::Block {
+    m.decls
+        .iter()
+        .find_map(|d| match &d.node {
+            A::Decl::Fn(f) if f.name == "Main" => match &f.body {
+                A::FnBody::Block(b) => Some(b),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("Main body")
+}
+
+#[test]
+fn call_macro_rewrites_to_one_array_argument() {
+    let dir = tmp();
+    let (m, diags) = expand_a(
+        "#[Macro]\nfn println(args: Array<Any>) {}\nfn Main(): Int { println!(\"x = {}\", 10); return 0; }",
+        &dir,
+    );
+    assert!(hard_errors(&diags).is_empty(), "{diags:?}");
+    let body = main_body(&m);
+    let A::Stmt::Expr(e) = &body.stmts[0].node else {
+        panic!("expected expression statement");
+    };
+    let A::Expr::Call { callee, args, .. } = &e.node else {
+        panic!("expected rewritten call, got {:?}", e.node);
+    };
+    assert!(matches!(&callee.node, A::Expr::Ident(n) if n == "println"));
+    assert_eq!(args.len(), 1);
+    let A::Expr::Array(items) = &args[0].value.node else {
+        panic!("expected array argument");
+    };
+    assert_eq!(items.len(), 2);
+}
+
+#[test]
+fn call_macro_without_bang_is_e108() {
+    let dir = tmp();
+    let (_, diags) = expand_a(
+        "#[Macro]\nfn log(args: Array<Any>) {}\nfn Main(): Int { log(\"x\"); return 0; }",
+        &dir,
+    );
+    let errs = hard_errors(&diags);
+    assert_eq!(errs.len(), 1, "{diags:?}");
+    assert_eq!(errs[0].code, Code::E108);
+    assert!(errs[0].message.contains("call macro"), "{}", errs[0].message);
+    assert!(errs[0].hint.clone().unwrap_or_default().contains("log!("), "{:?}", errs[0].hint);
+}
+
+#[test]
+fn bang_on_a_plain_function_is_e108() {
+    let dir = tmp();
+    let (_, diags) = expand_a(
+        "fn helper(x: Int): Int { return x; }\nfn Main(): Int { return helper!(1); }",
+        &dir,
+    );
+    let errs = hard_errors(&diags);
+    assert_eq!(errs.len(), 1, "{diags:?}");
+    assert_eq!(errs[0].code, Code::E108);
+    assert!(errs[0].message.contains("remove `!`"), "{}", errs[0].message);
+}
+
+#[test]
+fn macro_signature_is_validated_once() {
+    let dir = tmp();
+    let (_, diags) = expand_a(
+        "#[Macro]\nfn bad(a: Int): Int { return a; }\nfn Main(): Int { return 0; }",
+        &dir,
+    );
+    let errs = hard_errors(&diags);
+    assert_eq!(errs.len(), 2, "{diags:?}");
+    assert!(errs[0].message.contains("Array<Any>"), "{}", errs[0].message);
+    assert!(errs[1].message.contains("Void") && errs[1].message.contains("Any"), "{}", errs[1].message);
+}
+
+#[test]
+fn macro_attribute_is_rejected_outside_a_top_level_function() {
+    let dir = tmp();
+    let (_, diags) = expand_a("#[Macro]\nclass Thing {}\nfn Main(): Int { return 0; }", &dir);
+    let errs = hard_errors(&diags);
+    assert_eq!(errs.len(), 1, "{diags:?}");
+    assert_eq!(errs[0].code, Code::E108);
+    assert!(errs[0].message.contains("#[Macro]"), "{}", errs[0].message);
+}
+
+#[test]
+fn macro_attribute_arguments_are_rejected() {
+    let dir = tmp();
+    let (_, diags) = expand_a(
+        "#[Macro(nope)]\nfn log(args: Array<Any>) {}\nfn Main(): Int { return 0; }",
+        &dir,
+    );
+    let errs = hard_errors(&diags);
+    assert_eq!(errs.len(), 1, "{diags:?}");
+    assert!(errs[0].message.contains("takes no arguments"), "{}", errs[0].message);
+}
+
+#[test]
+fn duplicate_macro_attribute_is_rejected() {
+    let dir = tmp();
+    let (_, diags) = expand_a(
+        "#[Macro]\n#[Macro]\nfn log(args: Array<Any>) {}\nfn Main(): Int { return 0; }",
+        &dir,
+    );
+    let errs = hard_errors(&diags);
+    assert_eq!(errs.len(), 1, "{diags:?}");
+    assert!(errs[0].message.contains("duplicate"), "{}", errs[0].message);
 }

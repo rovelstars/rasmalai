@@ -17,7 +17,7 @@ One thread is easy to reason about and slow at scale. Rasmalai threads share mem
 let factor = 2;
 let handle = Thread.spawn(() => 21 * factor);
 let res = handle.join();
-print(res.unwrap());
+println!(res.unwrap());
 ```
 
 Handles have a nameable type: `import { Thread } from "@std/sync"` and store them in an `Array<Thread>`, then join each element. Spawning inside the loop and joining immediately serializes the workers, so programs spawn every handle first and join afterwards:
@@ -53,7 +53,7 @@ import { AtomicInt } from "@std/sync";
 
 let c = AtomicInt.byId(1);
 c.set(40);
-print(c.fetchAdd(2), c.get());
+println!(c.fetchAdd(2), c.get());
 ```
 
 > [!WARNING]
@@ -75,8 +75,8 @@ fn Main(): Int {
     let totals = new Map<Int, Int>();
     let a = Thread.spawn((): Int => fill(totals, 0));
     let b = Thread.spawn((): Int => fill(totals, 1000));
-    print("a=${a.join().unwrap()} b=${b.join().unwrap()}");
-    print("len=${totals.len()} (expected 2000)");
+    println!("a=${a.join().unwrap()} b=${b.join().unwrap()}");
+    println!("len=${totals.len()} (expected 2000)");
     return 0;
 }
 ```
@@ -147,7 +147,7 @@ assert(sum == 4, "all workers");
 let pool = ThreadPool.new(4);
 let task = pool.submit(() => "done".concat("!"));
 let out = task.join();
-print(out.unwrap());
+println!(out.unwrap());
 pool.shutdown();
 ```
 

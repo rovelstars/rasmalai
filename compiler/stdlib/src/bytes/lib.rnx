@@ -125,7 +125,7 @@ class ByteBuffer {
     * import { ByteBuffer } from "@std/bytes";
     *
     * let b = ByteBuffer.allocate(4);
-    * print(b.length(), b.capacity(), b.readUInt8(3));
+    * println!(b.length(), b.capacity(), b.readUInt8(3));
     */
     static allocate(capacity: Int): ByteBuffer {
         return new ByteBuffer(__rnx_bytes_alloc(capacity));
@@ -146,7 +146,7 @@ class ByteBuffer {
     * import { ByteBuffer } from "@std/bytes";
     *
     * let b = ByteBuffer.fromString("hi");
-    * print(b.length(), b.readString(0, b.length()));
+    * println!(b.length(), b.readString(0, b.length()));
     */
     static fromString(str: String): ByteBuffer {
         let b = ByteBuffer.allocate(utf8Len(str));
@@ -166,7 +166,7 @@ class ByteBuffer {
     * import { ByteBuffer } from "@std/bytes";
     *
     * let b = ByteBuffer.fromArray([0, 127, 128, 255]);
-    * print(b.length(), b.readUInt8(2), b.readInt8(2));
+    * println!(b.length(), b.readUInt8(2), b.readInt8(2));
     */
     static fromArray(bytes: Array<Int>): ByteBuffer {
         let b = ByteBuffer.allocate(bytes.length());
@@ -188,7 +188,7 @@ class ByteBuffer {
     *  @example
     *  import { ByteBuffer } from "@std/bytes";
     *
-    *  print(ByteBuffer.allocate(4).length());
+    *  println!(ByteBuffer.allocate(4).length());
     */
     fn length(): Int {
         return __rnx_bytes_len(this.handle);
@@ -204,7 +204,7 @@ class ByteBuffer {
     *  @example
     *  import { ByteBuffer } from "@std/bytes";
     *
-    *  print(ByteBuffer.allocate(4).capacity());
+    *  println!(ByteBuffer.allocate(4).capacity());
     */
     fn capacity(): Int {
         return __rnx_bytes_cap(this.handle);
@@ -228,7 +228,7 @@ class ByteBuffer {
     * unsafe {
     *     let p = Pointer.fromAddress<Byte>(b.address());
     *     p.write(9);
-    *     print(b.readUInt8(0), p.read());
+    *     println!(b.readUInt8(0), p.read());
     * }
     */
     fn address(): Int {
@@ -253,7 +253,7 @@ class ByteBuffer {
     *
     * let b = ByteBuffer.fromArray([0, 1, 2, 3, 4]);
     * let mid = b.slice(1, 3);
-    * print(mid.length(), mid.readUInt8(0), mid.readUInt8(1));
+    * println!(mid.length(), mid.readUInt8(0), mid.readUInt8(1));
     */
     fn slice(start: Int, end: Int): ByteBuffer {
         let out = ByteBuffer.allocate(end - start);
@@ -284,7 +284,7 @@ class ByteBuffer {
     *
     * let b = ByteBuffer.fromArray([0, 1, 2, 3, 4, 5]);
     * b.copyWithin(1, 0, 4);
-    * print(b.readUInt8(0), b.readUInt8(1), b.readUInt8(4));
+    * println!(b.readUInt8(0), b.readUInt8(1), b.readUInt8(4));
     */
     fn copyWithin(target: Int, start: Int, end: Int): ByteBuffer {
         __rnx_bytes_copy_within(this.handle, target, start, end);
@@ -303,7 +303,7 @@ class ByteBuffer {
     *
     * let b = ByteBuffer.allocate(1);
     * b.writeUInt8(0, 255);
-    * print(b.readInt8(0), b.readUInt8(0));
+    * println!(b.readInt8(0), b.readUInt8(0));
     */
     fn readInt8(offset: Int): Int {
         return __rnx_bytes_read_i8(this.handle, offset);
@@ -318,7 +318,7 @@ class ByteBuffer {
     *  @example
     *  import { ByteBuffer } from "@std/bytes";
     *
-    *  print(ByteBuffer.fromArray([10, 200]).readUInt8(1));
+    *  println!(ByteBuffer.fromArray([10, 200]).readUInt8(1));
     */
     fn readUInt8(offset: Int): Int {
         return __rnx_bytes_read_u8(this.handle, offset);
@@ -340,7 +340,7 @@ class ByteBuffer {
     * let b = ByteBuffer.allocate(2);
     * b.writeInt8(0, 300);
     * b.writeUInt8(1, -1);
-    * print(b.readUInt8(0), b.readUInt8(1));
+    * println!(b.readUInt8(0), b.readUInt8(1));
     */
     fn writeInt8(offset: Int, val: Int): Void {
         __rnx_bytes_write_u8(this.handle, offset, val);
@@ -361,7 +361,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(1);
     *  b.writeUInt8(0, 300);
-    *  print(b.readUInt8(0));
+    *  println!(b.readUInt8(0));
     */
     fn writeUInt8(offset: Int, val: Int): Void {
         __rnx_bytes_write_u8(this.handle, offset, val);
@@ -380,7 +380,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(2);
     *  b.writeInt16LE(0, 0x1234);
-    *  print(b.readInt16LE(0));
+    *  println!(b.readInt16LE(0));
     */
     fn readInt16LE(offset: Int): Int {
         return __rnx_bytes_read_i16le(this.handle, offset);
@@ -399,7 +399,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(2);
     *  b.writeInt16BE(0, 0x1234);
-    *  print(b.readInt16BE(0));
+    *  println!(b.readInt16BE(0));
     */
     fn readInt16BE(offset: Int): Int {
         return __rnx_bytes_read_i16be(this.handle, offset);
@@ -418,7 +418,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(2);
     *  b.writeUInt16LE(0, 70000);
-    *  print(b.readUInt16LE(0));
+    *  println!(b.readUInt16LE(0));
     */
     fn readUInt16LE(offset: Int): Int {
         return __rnx_bytes_read_u16le(this.handle, offset);
@@ -440,7 +440,7 @@ class ByteBuffer {
     *
     * let b = ByteBuffer.allocate(2);
     * b.writeUInt16BE(0, 0x1234);
-    * print(b.readUInt8(0), b.readUInt8(1), b.readUInt16BE(0));
+    * println!(b.readUInt8(0), b.readUInt8(1), b.readUInt16BE(0));
     */
     fn readUInt16BE(offset: Int): Int {
         return __rnx_bytes_read_u16be(this.handle, offset);
@@ -459,7 +459,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(2);
     *  b.writeInt16LE(0, 0x1234);
-    *  print(b.readInt16LE(0), b.readUInt8(0));
+    *  println!(b.readInt16LE(0), b.readUInt8(0));
     */
     fn writeInt16LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u16le(this.handle, offset, val);
@@ -478,7 +478,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(2);
     *  b.writeInt16BE(0, 0x1234);
-    *  print(b.readInt16BE(0), b.readUInt8(0));
+    *  println!(b.readInt16BE(0), b.readUInt8(0));
     */
     fn writeInt16BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u16be(this.handle, offset, val);
@@ -498,7 +498,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(2);
     *  b.writeUInt16LE(0, 70000);
-    *  print(b.readUInt16LE(0));
+    *  println!(b.readUInt16LE(0));
     */
     fn writeUInt16LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u16le(this.handle, offset, val);
@@ -517,7 +517,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(2);
     *  b.writeUInt16BE(0, 0x1234);
-    *  print(b.readUInt16BE(0), b.readUInt8(0));
+    *  println!(b.readUInt16BE(0), b.readUInt8(0));
     */
     fn writeUInt16BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u16be(this.handle, offset, val);
@@ -536,7 +536,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeInt32LE(0, 0x12345678);
-    *  print(b.readInt32LE(0));
+    *  println!(b.readInt32LE(0));
     */
     fn readInt32LE(offset: Int): Int {
         return __rnx_bytes_read_i32le(this.handle, offset);
@@ -555,7 +555,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeInt32BE(0, 0x12345678);
-    *  print(b.readInt32BE(0));
+    *  println!(b.readInt32BE(0));
     */
     fn readInt32BE(offset: Int): Int {
         return __rnx_bytes_read_i32be(this.handle, offset);
@@ -577,7 +577,7 @@ class ByteBuffer {
     *
     * let b = ByteBuffer.allocate(4);
     * b.writeInt32LE(0, -1);
-    * print(b.readUInt32LE(0), b.readInt32LE(0));
+    * println!(b.readUInt32LE(0), b.readInt32LE(0));
     */
     fn readUInt32LE(offset: Int): Int {
         return __rnx_bytes_read_u32le(this.handle, offset);
@@ -596,7 +596,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeUInt32BE(0, 0x12345678);
-    *  print(b.readUInt32BE(0));
+    *  println!(b.readUInt32BE(0));
     */
     fn readUInt32BE(offset: Int): Int {
         return __rnx_bytes_read_u32be(this.handle, offset);
@@ -615,7 +615,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeInt32LE(0, 0x12345678);
-    *  print(b.readInt32LE(0), b.readUInt8(0));
+    *  println!(b.readInt32LE(0), b.readUInt8(0));
     */
     fn writeInt32LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u32le(this.handle, offset, val);
@@ -634,7 +634,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeInt32BE(0, 0x12345678);
-    *  print(b.readInt32BE(0), b.readUInt8(0));
+    *  println!(b.readInt32BE(0), b.readUInt8(0));
     */
     fn writeInt32BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u32be(this.handle, offset, val);
@@ -654,7 +654,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeUInt32LE(0, 0x12345678);
-    *  print(b.readUInt32LE(0));
+    *  println!(b.readUInt32LE(0));
     */
     fn writeUInt32LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u32le(this.handle, offset, val);
@@ -673,7 +673,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeUInt32BE(0, 0x12345678);
-    *  print(b.readUInt32BE(0));
+    *  println!(b.readUInt32BE(0));
     */
     fn writeUInt32BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u32be(this.handle, offset, val);
@@ -696,7 +696,7 @@ class ByteBuffer {
     *
     * let b = ByteBuffer.allocate(8);
     * b.writeInt64LE(0, -2);
-    * print(b.readInt64LE(0), b.readUInt8(0), b.readUInt8(7));
+    * println!(b.readInt64LE(0), b.readUInt8(0), b.readUInt8(7));
     */
     fn readInt64LE(offset: Int): Int {
         return __rnx_bytes_read_i64le(this.handle, offset);
@@ -715,7 +715,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(8);
     *  b.writeInt64BE(0, 123456789);
-    *  print(b.readInt64BE(0));
+    *  println!(b.readInt64BE(0));
     */
     fn readInt64BE(offset: Int): Int {
         return __rnx_bytes_read_i64be(this.handle, offset);
@@ -732,7 +732,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(8);
     *  b.writeInt64LE(0, 123456789);
-    *  print(b.readInt64LE(0));
+    *  println!(b.readInt64LE(0));
     */
     fn writeInt64LE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u64le(this.handle, offset, val);
@@ -749,7 +749,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(8);
     *  b.writeInt64BE(0, 123456789);
-    *  print(b.readInt64BE(0), b.readUInt8(0));
+    *  println!(b.readInt64BE(0), b.readUInt8(0));
     */
     fn writeInt64BE(offset: Int, val: Int): Void {
         __rnx_bytes_write_u64be(this.handle, offset, val);
@@ -768,7 +768,7 @@ class ByteBuffer {
     *
     * let b = ByteBuffer.allocate(4);
     * b.writeFloat32LE(0, 1.5);
-    * print(b.readFloat32LE(0), b.readUInt8(0), b.readUInt8(3));
+    * println!(b.readFloat32LE(0), b.readUInt8(0), b.readUInt8(3));
     */
     fn readFloat32LE(offset: Int): Float {
         return __rnx_bytes_read_f32le(this.handle, offset);
@@ -787,7 +787,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeFloat32BE(0, 1.5);
-    *  print(b.readFloat32BE(0));
+    *  println!(b.readFloat32BE(0));
     */
     fn readFloat32BE(offset: Int): Float {
         return __rnx_bytes_read_f32be(this.handle, offset);
@@ -808,7 +808,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeFloat32LE(0, 1.5);
-    *  print(b.readFloat32LE(0));
+    *  println!(b.readFloat32LE(0));
     */
     fn writeFloat32LE(offset: Int, val: Float): Void {
         __rnx_bytes_write_f32le(this.handle, offset, val);
@@ -826,7 +826,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(4);
     *  b.writeFloat32BE(0, 1.5);
-    *  print(b.readFloat32BE(0), b.readUInt8(0));
+    *  println!(b.readFloat32BE(0), b.readUInt8(0));
     */
     fn writeFloat32BE(offset: Int, val: Float): Void {
         __rnx_bytes_write_f32be(this.handle, offset, val);
@@ -844,7 +844,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(8);
     *  b.writeFloat64LE(0, 0.1);
-    *  print(b.readFloat64LE(0));
+    *  println!(b.readFloat64LE(0));
     */
     fn readFloat64LE(offset: Int): Float {
         return __rnx_bytes_read_f64le(this.handle, offset);
@@ -866,7 +866,7 @@ class ByteBuffer {
     *
     * let b = ByteBuffer.allocate(8);
     * b.writeFloat64BE(0, 1.0);
-    * print(b.readFloat64BE(0), b.readUInt8(0), b.readUInt8(7));
+    * println!(b.readFloat64BE(0), b.readUInt8(0), b.readUInt8(7));
     */
     fn readFloat64BE(offset: Int): Float {
         return __rnx_bytes_read_f64be(this.handle, offset);
@@ -884,7 +884,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(8);
     *  b.writeFloat64LE(0, 0.1);
-    *  print(b.readFloat64LE(0));
+    *  println!(b.readFloat64LE(0));
     */
     fn writeFloat64LE(offset: Int, val: Float): Void {
         __rnx_bytes_write_f64le(this.handle, offset, val);
@@ -902,7 +902,7 @@ class ByteBuffer {
     *
     *  let b = ByteBuffer.allocate(8);
     *  b.writeFloat64BE(0, 0.1);
-    *  print(b.readFloat64BE(0));
+    *  println!(b.readFloat64BE(0));
     */
     fn writeFloat64BE(offset: Int, val: Float): Void {
         __rnx_bytes_write_f64be(this.handle, offset, val);
@@ -925,7 +925,7 @@ class ByteBuffer {
     * import { ByteBuffer } from "@std/bytes";
     *
     * let b = ByteBuffer.fromString("ok");
-    * print(b.readString(0, 2));
+    * println!(b.readString(0, 2));
     */
     fn readString(offset: Int, length: Int): String {
         return __rnx_bytes_read_string(this.handle, offset, length);
@@ -949,7 +949,7 @@ class ByteBuffer {
     *
     * let b = ByteBuffer.allocate(8);
     * let n = b.writeString(0, "hi");
-    * print(n, b.readUInt8(0), b.readUInt8(1), b.readString(0, n));
+    * println!(n, b.readUInt8(0), b.readUInt8(1), b.readString(0, n));
     */
     fn writeString(offset: Int, str: String): Int {
         return __rnx_bytes_write_string(this.handle, offset, str);

@@ -14,9 +14,9 @@ Paste it into a file or run it straight in the playground:
 import fs, { Path } from "@std/fs";
 
 fs.writeText("hello.txt", "hello", .Overwrite);
-print(fs.readText("hello.txt").unwrapOr("missing"));
-print(Path.join("a", "b"));
-print(fs.exists("hello.txt"));
+println!(fs.readText("hello.txt").unwrapOr("missing"));
+println!(Path.join("a", "b"));
+println!(fs.exists("hello.txt"));
 ```
 
 ## Keep going

@@ -296,15 +296,37 @@ impl<'a> Builder<'a> {
 
     pub(super) fn lower_expr_array(&mut self, items: &Vec<A::ArrayElem>, span: Span) -> Result<(Local, Simple), Diagnostic> {
 
-        let mut elem_ty = LirType::Any;
+        let forced = self.array_elem_hint.take();
+        let mut elem_ty = forced.clone().unwrap_or(LirType::Any);
         let mut lowered: Vec<(Option<Local>, Local, Span)> = Vec::with_capacity(items.len());
         for i in items {
-            let (v, _) = self.lower_expr(&i.expr.node, i.expr.span)?;
+            let (mut v, _) = self.lower_expr(&i.expr.node, i.expr.span)?;
+            if forced.is_some() && self.records.contains_key(&v) {
+                v = self.record_to_str(v, i.expr.span);
+            }
+            if forced.is_some()
+                && matches!(self.func.locals.get(v as usize), Some(LirType::Str))
+            {
+                let empty = self.local(LirType::Str);
+                self.emit(Instr::Const {
+                    span: i.expr.span,
+                    dst: empty,
+                    lit: Lit::Str(String::new()),
+                });
+                let copy = self.local(LirType::Str);
+                self.emit(Instr::Concat {
+                    span: i.expr.span,
+                    dst: copy,
+                    lhs: empty,
+                    rhs: v,
+                });
+                v = copy;
+            }
             self.deny_tuple(v, "in an array literal", i.expr.span)?;
             if i.spread {
                 match self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any) {
                     LirType::Array(inner) => {
-                        if elem_ty == LirType::Any && *inner != LirType::Any {
+                        if forced.is_none() && elem_ty == LirType::Any && *inner != LirType::Any {
                             elem_ty = (*inner).clone();
                         }
                         lowered.push((None, v, i.expr.span));
@@ -319,7 +341,7 @@ impl<'a> Builder<'a> {
                 }
             } else {
                 let vt = self.func.locals[v as usize].clone();
-                if elem_ty == LirType::Any && vt != LirType::Any {
+                if forced.is_none() && elem_ty == LirType::Any && vt != LirType::Any {
                     elem_ty = vt;
                 }
                 lowered.push((Some(v), v, i.expr.span));

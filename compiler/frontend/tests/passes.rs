@@ -191,7 +191,7 @@ fn await_inside_if_allowed() {
 
 #[test]
 fn async_main_without_return_fulfills_zero() {
-    let mut m = parse("async fn main(){ print(\"hello\") }");
+    let mut m = parse("async fn main(){ println!(\"hello\") }");
     assert!(frontend::desugar::desugar(&mut m).is_empty());
     let inner = m.decls.iter().find_map(|d| match &d.node {
         frontend::ast::Decl::Fn(f) if f.name == "__main_async" => Some(f),

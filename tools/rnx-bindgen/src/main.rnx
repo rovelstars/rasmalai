@@ -13,14 +13,14 @@ import {
 } from "@std/fs";
 
 fn usage(): Int {
-    print("usage: rnx-bindgen --header <file.h> --native-lib <lib> --pkg-name <name> --out <dir> [--pkg-version <ver>] [--prefix <pfx>]... [--skip <name>]... [--include <dir>]... [--clang-flags \"<flags>\"]");
+    println!("usage: rnx-bindgen --header <file.h> --native-lib <lib> --pkg-name <name> --out <dir> [--pkg-version <ver>] [--prefix <pfx>]... [--skip <name>]... [--include <dir>]... [--clang-flags \"<flags>\"]");
     return 2;
 }
 
 fn readHeader(path: String): String {
     let f = File.open(path, OpenMode.Read);
     if !f.isOpen {
-        print("rnx-bindgen: cannot read " + path);
+        println!("rnx-bindgen: cannot read " + path);
         return "";
     }
     let text = f.readText().unwrapOr("");
@@ -70,7 +70,7 @@ fn Main(): Int {
             rawFlags = args[i + 1];
             i = i + 2;
         } else {
-            print("rnx-bindgen: unknown argument: " + a);
+            println!("rnx-bindgen: unknown argument: " + a);
             return usage();
         }
     }
@@ -92,7 +92,7 @@ fn Main(): Int {
     }
     let fns = kept;
     if fns.length() == 0 {
-        print("rnx-bindgen: no matching functions found in " + header);
+        println!("rnx-bindgen: no matching functions found in " + header);
         return 1;
     }
     let structs = extractStructs(ast, prefixes);

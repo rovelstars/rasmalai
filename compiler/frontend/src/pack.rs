@@ -829,6 +829,8 @@ mod tests {
             version: "0.1.0".to_string(),
             description: String::new(),
             engine: String::new(),
+            targets: Vec::new(),
+            capabilities: Vec::new(),
             entries: crate::project::Entries {
                 main: "src/lib.rnx".to_string(),
                 lib: None,
@@ -1006,7 +1008,7 @@ mod tests {
             pin,
             &"ef".repeat(32),
             "",
-            "export fn hello(): Int { return 1; }\n",
+            crate::fetch::testkit::minimal_prelude_source(),
         );
         let dir = fixture_bindgen_dir("gendocs", "            \"src/gen\": { title: \"sqlite3.rnx\" }");
         std::fs::create_dir_all(dir.join("src").join("gen")).unwrap();

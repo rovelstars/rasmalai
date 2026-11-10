@@ -4,8 +4,22 @@ mod scratch;
 
 use lir::instr::Instr;
 
+static LOWER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn lower_src(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
+    let _guard = LOWER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = if src.contains("println!") || src.contains("print!") {
+        let mut m = frontend::modules::ModuleGraph::from_source(src)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut opts = frontend::macros::MacroOptions::new(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        );
+        let expanded = frontend::macros::expand_syntax(&mut m, &mut opts);
+        assert!(expanded.iter().all(|d| d.code.is_warning()), "{expanded:?}");
+        m
+    } else {
+        frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"))
+    };
     let d = frontend::desugar::desugar(&mut m);
     assert!(d.is_empty(), "{d:?}");
     lir::lower::lower(&m).unwrap_or_else(|e| panic!("{e}"))
@@ -62,12 +76,12 @@ fn test_escaping_reference_balanced_arc() {
     }
 }
 
-const LOOP_SRC: &str = "class Box {\n    let v: Int;\n    init(v: Int) { this.v = v; }\n}\nfn get2(b: Box): Int {\n    return b.v;\n}\nfn Main(): Int {\n    let b = new Box(6);\n    let s = 0;\n    let i = 0;\n    while i < 7 {\n        s = s + get2(b);\n        i = i + 1;\n    }\n    print(\"arc success:\", s);\n    return s;\n}\n";
+const LOOP_SRC: &str = "class Box {\n    let v: Int;\n    init(v: Int) { this.v = v; }\n}\nfn get2(b: Box): Int {\n    return b.v;\n}\nfn Main(): Int {\n    let b = new Box(6);\n    let s = 0;\n    let i = 0;\n    while i < 7 {\n        s = s + get2(b);\n        i = i + 1;\n    }\n    println!(\"arc success:\", s);\n    return s;\n}\n";
 
 #[test]
 fn test_cross_backend_arc_opt_execution() {
     let out = cli::run_source(LOOP_SRC, "Main", vec![]);
-    assert_eq!(out.output, vec!["arc success: 42".to_string()]);
+    assert_eq!(out.output, vec!["arc success: 42\n".to_string()]);
     match out.outcome {
         cli::RunOutcome::Value(runtime::value::Value::Int(42)) => {}
         other => panic!("{other:?}"),

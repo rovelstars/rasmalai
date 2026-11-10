@@ -32,7 +32,7 @@ const DENY_SUBSTRINGS: &[&str] = &[
     "prompt",
 ];
 
-const DENY_EXACT: &[&str] = &["print"];
+const DENY_EXACT: &[&str] = &[];
 
 fn denied_name(name: &str) -> bool {
     if DENY_EXACT.contains(&name) {
@@ -90,6 +90,7 @@ impl InterpComptime {
                 .collect(),
             docs: String::new(),
             warnings: Vec::new(),
+            explicit_std_collections: false,
         };
         let lir = lir::lower::lower(&snapshot).map_err(|e| {
             Diagnostic::new(
@@ -147,7 +148,7 @@ impl InterpComptime {
                 format!("comptime forbids foreign calls (`{lib}.{symbol}`)"),
             )
             .with_span(use_span)
-            .with_hint("file bytes enter only through Phase-A EmbedBytes!")),
+            .with_hint("file bytes enter only through syntax expansion's EmbedBytes!")),
             CallTarget::Builtin(name) => {
                 if denied_name(name) {
                     return Err(Diagnostic::new(

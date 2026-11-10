@@ -74,6 +74,6 @@ fn Main(): Int {
         vv = vv + v[j] * v[j];
         j = j + 1;
     }
-    print("RESULT checksum", Math.sqrt((vBv / vv).asStrict()).asFast());
+    println!("RESULT checksum", Math.sqrt((vBv / vv).asStrict()).asFast());
     return 0;
 }

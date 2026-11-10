@@ -586,6 +586,25 @@ fn dep_dirs(root: &Path, config: &ProjectConfig) -> Vec<DepDir> {
             }
             DependencySpec::Semver { .. } | DependencySpec::Url { .. } => None,
             DependencySpec::Native { path, .. } => path.as_ref().map(|p| root.join(p)),
+            DependencySpec::Alias { .. } => {
+                let scope_root =
+                    project::find_workspace_root(root).unwrap_or_else(|| root.to_path_buf());
+                match crate::modules::resolve_alias_spec(&scope_root, config, name, &mut Vec::new()) {
+                    Ok((_, DependencySpec::Path { path, .. })) => Some(root.join(path)),
+                    Ok((real, DependencySpec::Git { .. })) => {
+                        let vendor = root.join(crate::fetch::VENDOR_DIR).join(&real);
+                        if vendor.join("Project.config").is_file() {
+                            Some(vendor)
+                        } else {
+                            git_cache_dir(root, &real)
+                        }
+                    }
+                    Ok((_, DependencySpec::Native { path, .. })) => {
+                        path.as_ref().map(|p| root.join(p))
+                    }
+                    _ => None,
+                }
+            }
         };
         if let Some(dir) = dir {
             let canon = std::fs::canonicalize(&dir).unwrap_or(dir);
@@ -988,6 +1007,42 @@ fn analyze_dep_effective(
             project::DependencySpec::Semver { .. }
             | project::DependencySpec::Url { .. }
             | project::DependencySpec::Native { .. } => {}
+            project::DependencySpec::Alias { .. } => {
+                let scope_root =
+                    project::find_workspace_root(dir).unwrap_or_else(|| dir.to_path_buf());
+                match crate::modules::resolve_alias_spec(
+                    &scope_root,
+                    &config,
+                    name,
+                    &mut Vec::new(),
+                ) {
+                    Ok((_, project::DependencySpec::Path { path, .. })) => {
+                        let resolved = std::fs::canonicalize(dir.join(path)).map_err(|_| {
+                            Diagnostic::new(
+                                Code::E108,
+                                format!("cannot resolve package `{name}`"),
+                            )
+                        })?;
+                        sub.insert(name.clone(), resolved);
+                    }
+                    Ok((real, project::DependencySpec::Git { .. })) => {
+                        let vendor = dir.join(crate::fetch::VENDOR_DIR).join(&real);
+                        if vendor.join(project::MANIFEST_FILE).is_file() {
+                            if let Ok(resolved) = std::fs::canonicalize(&vendor) {
+                                sub.insert(name.clone(), resolved);
+                            }
+                        } else if let Some(cached) = git_cache_dir(dir, &real) {
+                            sub.insert(name.clone(), cached);
+                        }
+                    }
+                    Ok((_, project::DependencySpec::Native { path: Some(path), .. })) => {
+                        if let Ok(resolved) = std::fs::canonicalize(dir.join(path)) {
+                            sub.insert(name.clone(), resolved);
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
     for subdir in sub.values() {

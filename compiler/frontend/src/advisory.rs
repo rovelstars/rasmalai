@@ -331,8 +331,10 @@ mod tests {
     fn lock_with(version: &str, artifact: Option<&str>) -> ProjectDepLock {
         ProjectDepLock {
             version: crate::deplock::LOCK_VERSION,
+            sysroots: Default::default(),
             packages: vec![crate::deplock::LockedPackage {
                 name: "@acme/widget".to_string(),
+                alias: None,
                 version: version.to_string(),
                 source: format!("registry:@acme/widget@{version}"),
                 checksum: "x".to_string(),
@@ -438,8 +440,10 @@ mod tests {
     fn lock_matching_skips_non_registry_sources() {
         let lock = ProjectDepLock {
             version: crate::deplock::LOCK_VERSION,
+            sysroots: Default::default(),
             packages: vec![crate::deplock::LockedPackage {
                 name: "@acme/widget".to_string(),
+                alias: None,
                 version: "1.0.0".to_string(),
                 source: "path:../widget".to_string(),
                 checksum: "x".to_string(),

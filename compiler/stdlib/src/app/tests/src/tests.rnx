@@ -241,7 +241,7 @@ fn check(ok: Bool, msg: String, failed: Int): Int {
     if ok {
         return failed
     }
-    print("FAIL:", msg)
+    println!("FAIL:", msg)
     return failed + 1
 }
 
@@ -1438,7 +1438,7 @@ fn testPresenceAndGoldens(failed: Int): Int {
     perf.layout(proot, 320)
     let perfList = Painter.paint(perf, 320, 2000, Theme.dark())
     let perfMs = (Clock.mono().nanos - perfStart) / 1000000
-    print("budget 1k frame ms:", perfMs)
+    println!("budget 1k frame ms:", perfMs)
     failed = check(perf.len() >= 1000, "1k frame built", failed)
     failed = check(perfMs < 500, "1k frame under 500 ms: " + perfMs.toString(), failed)
 
@@ -1464,7 +1464,7 @@ fn testPresenceAndGoldens(failed: Int): Int {
         vr += 1
     }
     let vms = (Clock.mono().nanos - vstart) / 1000000
-    print("budget 10k scroll ms:", vms, "nodes:", vtree.len())
+    println!("budget 10k scroll ms:", vms, "nodes:", vtree.len())
     failed = check(vtree.len() < 40, "10k scroll keeps the arena small: " + vtree.len().toString(), failed)
     failed = check(vms < 2000, "10k scroll under 2000 ms: " + vms.toString(), failed)
 
@@ -3381,7 +3381,7 @@ fn Main(): Int {
     failed = testMediaPlayback(failed)
 
     if failed == 0 {
-        print("app tests: ok")
+        println!("app tests: ok")
     }
     return failed
 }

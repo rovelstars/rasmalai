@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -86,7 +86,7 @@ fn new_basic_instantiation() {
         }\n\
         fn Main(): Int {\n\
         let m = new Meter(21);\n\
-        print(m.get());\n\
+        println!(m.get());\n\
         return 0;\n\
         }\n",
         0,
@@ -108,8 +108,8 @@ fn new_inheritance_runs_child_constructor() {
         }\n\
         fn Main(): Int {\n\
         let c = new Child(20, 22);\n\
-        print(c.x);\n\
-        print(c.y);\n\
+        println!(c.x);\n\
+        println!(c.y);\n\
         return 0;\n\
         }\n",
         0,
@@ -147,7 +147,7 @@ fn new_default_field_construction() {
         }\n\
         fn Main(): Int {\n\
         let p = new Pair(20, 22);\n\
-        print(p.a + p.b);\n\
+        println!(p.a + p.b);\n\
         return 0;\n\
         }\n",
         0,
@@ -221,7 +221,7 @@ fn init_is_clean() {
         }\n\
         fn Main(): Int {\n\
         let m = new Meter(20);\n\
-        print(m.v);\n\
+        println!(m.v);\n\
         return 0;\n\
         }\n",
     );

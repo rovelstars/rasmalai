@@ -8,7 +8,7 @@ const STD_TOPS: &[&str] = &[
     "@std/fs", "@std/bytes", "@std/time", "@std/random",
     "@std/sync", "@std/env", "@std/process", "@std/os",
     "@std/testing", "@std/web", "@std/net", "@std/json",
-    "@std/io",
+    "@std/io", "@std/async", "@std/log", "@std/foundation",
 ];
 
 static STAGED_STD: std::sync::OnceLock<crate::scratch::Scratch> = std::sync::OnceLock::new();
@@ -76,7 +76,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -101,16 +101,16 @@ fn any_scalars_print_across_backends() {
     check_stdout_everywhere(
         "fn Main(): Int {\n\
         let opt_int: Int? = 42;\n\
-        print(opt_int ?? -1);\n\
+        println!(opt_int ?? -1);\n\
         let opt_bool: Bool? = true;\n\
-        print(opt_bool ?? false);\n\
+        println!(opt_bool ?? false);\n\
         let opt_float: Float? = 2.5;\n\
-        print(opt_float ?? 0.0);\n\
+        println!(opt_float ?? 0.0);\n\
         let arr = [100, 200];\n\
         let popped = arr.pop();\n\
-        print(popped ?? -1);\n\
+        println!(popped ?? -1);\n\
         let res: Result = Ok(7);\n\
-        print(res.unwrap());\n\
+        println!(res.unwrap());\n\
         return 0;\n\
         }\n",
         "42\ntrue\n2.5\n200\n7\n",
@@ -124,10 +124,10 @@ fn any_arithmetic_and_equality_still_work() {
         "fn Main(): Int {\n\
         let o: Int? = 40;\n\
         let v = o ?? -1;\n\
-        print(v + 2);\n\
-        print(v == 40);\n\
+        println!(v + 2);\n\
+        println!(v == 40);\n\
         let w: Int = v;\n\
-        print(w + 1);\n\
+        println!(w + 1);\n\
         return 0;\n\
         }\n",
         "42\ntrue\n41\n",
@@ -142,14 +142,14 @@ fn any_thread_and_channel_values_print() {
         fn Main(): Int {\n\
         let handle = Thread.spawn(() => 1337);\n\
         let res = handle.join();\n\
-        print(res.unwrap());\n\
+        println!(res.unwrap());\n\
         let ch = Channel.byId(77);\n\
         ch.send(41);\n\
         let v: Any = ch.recv();\n\
-        print(v);\n\
+        println!(v);\n\
         let pool = ThreadPool.new(2);\n\
         let t = pool.submit(() => 7);\n\
-        print(t.join().unwrap());\n\
+        println!(t.join().unwrap());\n\
         pool.shutdown();\n\
         return 0;\n\
         }\n",
@@ -176,7 +176,7 @@ fn any_no_leak_on_roundtrip() {
             i = i + 1;\n\
         }\n\
         let after = liveCount();\n\
-        print(after - before);\n\
+        println!(after - before);\n\
         return 0;\n\
         }\n",
         "0\n",

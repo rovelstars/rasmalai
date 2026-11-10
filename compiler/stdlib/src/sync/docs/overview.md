@@ -12,7 +12,7 @@ always name the same object. The registries are separate per type: an
 import { AtomicInt } from "@std/sync";
 
 let a = AtomicInt.byId(101);
-print(a.get());
+println!(a.get());
 ```
 
 ## What is inside

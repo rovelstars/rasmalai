@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -83,12 +83,12 @@ const ANIMAL_SRC: &str = "class Animal {\n\
     }\n\
     fn Main(): Int {\n\
     let d = new Dog(\"rex\", \"collie\");\n\
-    print(d.name);\n\
-    print(d.breed);\n\
-    print(d.speak());\n\
-    print(d is Dog);\n\
-    print(d is Animal);\n\
-    print(d is String);\n\
+    println!(d.name);\n\
+    println!(d.breed);\n\
+    println!(d.speak());\n\
+    println!(d is Dog);\n\
+    println!(d is Animal);\n\
+    println!(d is String);\n\
     return 0;\n\
     }\n";
 
@@ -126,14 +126,14 @@ fn base_method_runs_on_child_layout() {
         }\n\
         fn Main(): Int {\n\
         let c = new Child(21);\n\
-        print(c.get());\n\
-        print(c.y);\n\
-        print(c.x);\n\
+        println!(c.get());\n\
+        println!(c.y);\n\
+        println!(c.x);\n\
         let g = new GrandChild(5);\n\
-        print(g.get());\n\
-        print(g is Base);\n\
-        print(g is Child);\n\
-        print(g is GrandChild);\n\
+        println!(g.get());\n\
+        println!(g is Base);\n\
+        println!(g is Child);\n\
+        println!(g is GrandChild);\n\
         return 0;\n\
         }\n",
         0,
@@ -169,8 +169,8 @@ fn interface_adoption_inherited() {
         }\n\
         fn Main(): Int {\n\
         let c = new Child(21);\n\
-        print(useIt(c));\n\
-        print(c is HasX);\n\
+        println!(useIt(c));\n\
+        println!(c is HasX);\n\
         return 0;\n\
         }\n",
         0,
@@ -183,10 +183,10 @@ fn interface_adoption_inherited() {
 fn local_trait_composition() {
     check_all_backends(
         "trait Clickable {\n\
-        fn onClick() { print(\"clicked\"); }\n\
+        fn onClick() { println!(\"clicked\"); }\n\
         }\n\
         class Button with Clickable {\n\
-        fn onClick() { print(\"pressed\"); }\n\
+        fn onClick() { println!(\"pressed\"); }\n\
         }\n\
         trait Named {\n\
         let label: String = \"anon\";\n\
@@ -198,8 +198,8 @@ fn local_trait_composition() {
         let b = new Button();\n\
         b.onClick();\n\
         let i = new Item();\n\
-        print(i.describe());\n\
-        print(i.label);\n\
+        println!(i.describe());\n\
+        println!(i.label);\n\
         return 0;\n\
         }\n",
         0,

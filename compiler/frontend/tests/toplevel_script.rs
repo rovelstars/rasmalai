@@ -20,20 +20,20 @@ fn has_async_main(m: &frontend::ast::Module) -> bool {
 
 #[test]
 fn top_level_statements_parse_as_decls() {
-    let m = parse("let a = 10;\nprint(a);\n");
+    let m = parse("let a = 10;\nprintln!(a);\n");
     assert_eq!(m.decls.len(), 2);
     assert!(m.decls.iter().all(|d| matches!(&d.node, Decl::Stmt(_))));
 }
 
 #[test]
 fn top_level_await_parses() {
-    let m = parse("let data = await Promise.resolve(42);\nprint(data);\n");
+    let m = parse("let data = await Promise.resolve(42);\nprintln!(data);\n");
     assert_eq!(m.decls.len(), 2);
 }
 
 #[test]
 fn desugar_synthesizes_sync_main_without_await() {
-    let mut m = parse("let a = 10;\nlet b = 20;\nprint(a + b);\n");
+    let mut m = parse("let a = 10;\nlet b = 20;\nprintln!(a + b);\n");
     let diags = desugar(&mut m);
     assert!(diags.is_empty(), "{diags:?}");
     assert!(has_async_main(&m));
@@ -44,7 +44,7 @@ fn desugar_synthesizes_sync_main_without_await() {
 
 #[test]
 fn desugar_top_await_has_no_e109() {
-    let mut m = parse("let data = await Promise.resolve(42);\nprint(data);\n");
+    let mut m = parse("let data = await Promise.resolve(42);\nprintln!(data);\n");
     let diags = desugar(&mut m);
     assert!(!diags.iter().any(|d| d.code.as_str() == "E109"), "{diags:?}");
     assert!(has_async_main(&m));
@@ -52,7 +52,7 @@ fn desugar_top_await_has_no_e109() {
 
 #[test]
 fn desugar_keeps_top_return_and_appends_default() {
-    let mut m = parse("print(1);\nreturn 7;\n");
+    let mut m = parse("println!(1);\nreturn 7;\n");
     let diags = desugar(&mut m);
     assert!(diags.is_empty(), "{diags:?}");
     let f = m.decls.iter().find_map(|d| match &d.node {
@@ -69,7 +69,7 @@ fn desugar_keeps_top_return_and_appends_default() {
 
 #[test]
 fn desugar_top_await_synthesizes_async_main() {
-    let mut m = parse("let data = await Promise.resolve(42);\nprint(data);\n");
+    let mut m = parse("let data = await Promise.resolve(42);\nprintln!(data);\n");
     let diags = desugar(&mut m);
     assert!(!diags.iter().any(|d| d.code.as_str() == "E109"), "{diags:?}");
     let f = m.decls.iter().find_map(|d| match &d.node {
@@ -87,7 +87,7 @@ fn desugar_top_await_synthesizes_async_main() {
 fn desugar_sync_closure_await_stays_sync_main() {
     // Await quarantined inside a sync closure is that closure's own error;
     // it must not drag the top-level script into the async path.
-    let mut m = parse("let f = () => 1;\nprint(f());\n");
+    let mut m = parse("let f = () => 1;\nprintln!(f());\n");
     let diags = desugar(&mut m);
     assert!(diags.is_empty(), "{diags:?}");
     assert!(m.decls.iter().any(|d| matches!(&d.node, Decl::Fn(f) if f.name == "Main" && !f.is_async)));
@@ -104,7 +104,7 @@ fn desugar_no_main_no_top_leaves_module_alone() {
 
 #[test]
 fn explicit_main_plus_top_level_is_e108() {
-    let mut m = parse("print(1);\nfn Main(): Int {\n    return 0;\n}\n");
+    let mut m = parse("println!(1);\nfn Main(): Int {\n    return 0;\n}\n");
     let diags = desugar(&mut m);
     assert!(diags.iter().any(|d| d.code.as_str() == "E108"), "{diags:?}");
 }
@@ -127,7 +127,7 @@ fn imported_imperative_statement_is_e112() {
                 path: helper,
                 key: "helpers".to_string(),
                 kind: ModuleKind::Imported,
-                module: parse("fn helper(): Int {\n    return 1;\n}\nprint(\"leak\");\n"),
+                module: parse("fn helper(): Int {\n    return 1;\n}\nprintln!(\"leak\");\n"),
             },
         ],
     };
@@ -201,7 +201,7 @@ fn valid_declarative_import_resolves() {
         "decl",
         &[
             ("helpers.rnx", "class Foo {\n    let x: Int;\n    init(x: Int) {\n        this.x = x;\n    }\n}\n\nfn bar(): Int {\n    return 41;\n}\n\nconst MAX = 100;\n"),
-            ("main.rnx", "import { bar } from \"./helpers\";\n\nfn Main(): Int {\n    print(bar());\n    return 0;\n}\n"),
+            ("main.rnx", "import { bar } from \"./helpers\";\n\nfn Main(): Int {\n    println!(bar());\n    return 0;\n}\n"),
         ],
     );
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e:?}"));
@@ -212,7 +212,7 @@ fn valid_declarative_import_resolves() {
 
 #[test]
 fn entry_top_level_survives_build() {
-    let dir = write_tree("entry", &[("main.rnx", "let a = 10;\nprint(a);\n")]);
+    let dir = write_tree("entry", &[("main.rnx", "let a = 10;\nprintln!(a);\n")]);
     let g = ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e:?}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let diags = desugar(&mut m);
@@ -224,44 +224,48 @@ fn merged(src: &str) -> frontend::ast::Module {
     ModuleGraph::from_source(src).unwrap_or_else(|e| panic!("{e}"))
 }
 
-fn contains_rnx_host_new(m: &frontend::ast::Module) -> bool {
-    fn expr(e: &frontend::ast::Expr) -> bool {
+fn contains_rnx_host_new(m: &frontend::ast::Module, target: &str) -> bool {
+    fn expr(e: &frontend::ast::Expr, target: &str) -> bool {
         match e {
-            frontend::ast::Expr::New { target, .. } => target == "std.prelude.RnxHost",
+            frontend::ast::Expr::New { target: t, .. } => t == target,
             _ => false,
         }
     }
-    fn ex(e: &frontend::ast::Spanned<frontend::ast::Expr>) -> bool {
-        expr(&e.node)
+    fn ex(e: &frontend::ast::Spanned<frontend::ast::Expr>, target: &str) -> bool {
+        expr(&e.node, target)
             || match &e.node {
-                frontend::ast::Expr::Member { base, .. } => ex(base),
+                frontend::ast::Expr::Member { base, .. } => ex(base, target),
                 frontend::ast::Expr::Call { callee, args, .. } => {
-                    ex(callee) || args.iter().any(|a| ex(&a.value))
+                    ex(callee, target) || args.iter().any(|a| ex(&a.value, target))
                 }
+                frontend::ast::Expr::Array(items) => items.iter().any(|a| ex(&a.expr, target)),
+                frontend::ast::Expr::Macro { args, .. } => args.iter().any(|a| ex(a, target)),
                 _ => false,
             }
     }
     m.decls.iter().any(|d| match &d.node {
         Decl::Fn(f) => match &f.body {
             frontend::ast::FnBody::Block(b) => b.stmts.iter().any(|s| match &s.node {
-                frontend::ast::Stmt::Expr(e) => ex(e),
+                frontend::ast::Stmt::Expr(e) => ex(e, target),
                 _ => false,
             }),
             _ => false,
         },
-        Decl::Stmt(s) => matches!(&s.node, frontend::ast::Stmt::Expr(e) if ex(e)),
+        Decl::Stmt(s) => matches!(&s.node, frontend::ast::Stmt::Expr(e) if ex(e, target)),
         _ => false,
     })
 }
 
 #[test]
 fn ambient_rnx_rewrites_to_host_new() {
-    let m = merged("fn Main(): Int {\n    print(rnx.version);\n    return 0;\n}\n");
-    assert!(contains_rnx_host_new(&m));
+    let m = merged("fn Main(): Int {\n    println!(rnx.version);\n    return 0;\n}\n");
+    let target = frontend::prelude::canonical_path("RnxHost").expect("prelude provides RnxHost");
+    assert!(contains_rnx_host_new(&m, &target));
 }
 
 #[test]
 fn shadowed_rnx_keeps_user_binding() {
-    let m = merged("fn Main(): Int {\n    let rnx = 5;\n    print(rnx);\n    return 0;\n}\n");
-    assert!(!contains_rnx_host_new(&m));
+    let m = merged("fn Main(): Int {\n    let rnx = 5;\n    println!(rnx);\n    return 0;\n}\n");
+    let target = frontend::prelude::canonical_path("RnxHost").expect("prelude provides RnxHost");
+    assert!(!contains_rnx_host_new(&m, &target));
 }

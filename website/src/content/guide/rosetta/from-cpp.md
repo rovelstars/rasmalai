@@ -43,7 +43,7 @@ import { Vec4f } from "@std/simd";
 let a = new Vec4f(1.0, 2.0, 3.0, 4.0);
 let b = Vec4f.splat(2.0);
 let c = a * b;
-print(c.x(), c.w());
+println!(c.x(), c.w());
 ```
 
 ## Bounds checked, then proven away
@@ -71,7 +71,7 @@ let sum = 0;
 for x in arr {
     sum = sum + x;
 }
-print(sum, arr[2]);
+println!(sum, arr[2]);
 ```
 
 ## Allocation without malloc/free
@@ -115,7 +115,7 @@ fn total(n: Int): Int {
     return sum;
 }
 
-print(total(5));
+println!(total(5));
 ```
 
 The optimizer and the ABI stay; the undefined behavior goes. Next: the [Guide](/guide/01-introduction) from the top, or the [Manual](/manual/11-memory-and-arc) for exact memory semantics.

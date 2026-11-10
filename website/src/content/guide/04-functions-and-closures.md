@@ -18,11 +18,11 @@ fn add(a: Int, b: Int): Int {
 }
 
 fn greet(name: String) {
-    print("hello,", name);
+    println!("hello,", name);
 }
 
 greet("ore");
-print(add(20, 22));
+println!(add(20, 22));
 ```
 
 That prints `hello, ore` and `42`. Two rules to internalize now: arguments evaluate left to right, and a function declaring `: Int` must `return` an `Int` on every path. The checker catches mismatches before any code runs.
@@ -37,9 +37,9 @@ fn configure(host: String, port: Int = 8080, secure: Bool = false): String {
     return "${scheme}://${host}:${port}";
 }
 
-print(configure("api.dev"));
-print(configure("api.dev", secure: true));
-print(configure("api.dev", port: 9000, secure: true));
+println!(configure("api.dev"));
+println!(configure("api.dev", secure: true));
+println!(configure("api.dev", port: 9000, secure: true));
 ```
 
 That prints `http://api.dev:8080`, `https://api.dev:8080`, and `https://api.dev:9000`. Named arguments shine at call sites with several same-typed parameters. `port: 9000` cannot be silently swapped with another `Int` the way a bare positional can.
@@ -53,7 +53,7 @@ A lambda is `(params) => body`, or the single-identifier shorthand `x => body`. 
 ```rnx
 let factor = 10;
 let mult = (x: Int) => x * factor;
-print(mult(5));
+println!(mult(5));
 ```
 
 That prints `50`. Arrays consume closures directly. This is the shape you will use daily:
@@ -62,15 +62,15 @@ That prints `50`. Arrays consume closures directly. This is the shape you will u
 let nums = [1, 2, 3, 4, 5];
 let doubled = nums.map((x: Int) => x * 2);
 let evens = nums.filter((x: Int) => x % 2 == 0);
-print(doubled);
-print(evens);
+println!(doubled);
+println!(evens);
 ```
 
 That prints `[2, 4, 6, 8, 10]` and `[2, 4]`. Parameter annotations can be omitted when the call site already knows the shape. `map` and `filter` infer the element type from the receiver:
 
 ```rnx
 let nums = [1, 2, 3];
-print(nums.map((n) => n * 2));
+println!(nums.map((n) => n * 2));
 ```
 
 > [!NOTE]
@@ -85,8 +85,8 @@ fn identity<T>(val: T): T {
     return val;
 }
 
-print(identity(42));
-print(identity("hi"));
+println!(identity(42));
+println!(identity("hi"));
 ```
 
 That prints `42` and `hi`. You do not write the type arguments at the call site; the compiler reads them off the values you pass.
@@ -102,9 +102,9 @@ fn load(ok: Bool): Int throws {
 }
 
 try {
-    print(load(true));
+    println!(load(true));
 } catch (err) {
-    print("failed");
+    println!("failed");
 }
 ```
 

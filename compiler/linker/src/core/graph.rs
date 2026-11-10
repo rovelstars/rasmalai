@@ -126,6 +126,7 @@ pub struct GotSlot {
     pub key: GotKey,
     pub ifunc: bool,
     pub dynamic: bool,
+    pub tls_ie: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1063,6 +1064,7 @@ pub fn plan_slots(
         tls_want: u64,
         tls_pair: Option<String>,
         tls_missing: bool,
+        tls_ie: bool,
         relax: bool,
     }
     enum SlotItem {
@@ -1115,6 +1117,7 @@ pub fn plan_slots(
                 tls_want: 0,
                 tls_pair: None,
                 tls_missing: false,
+                tls_ie: t.tls,
                 relax: false,
             };
             if relax
@@ -1215,11 +1218,11 @@ pub fn plan_slots(
                 }
             }
             Plan::Got => {
-                intern_got(g, s.key.unwrap(), false, s.dynamic);
+                intern_got(g, s.key.unwrap(), false, s.dynamic, s.tls_ie);
             }
             Plan::Plt => {
                 if let Some(key) = s.key {
-                    intern_got(g, key, s.ifunc, s.dynamic);
+                    intern_got(g, key, s.ifunc, s.dynamic, s.tls_ie);
                 } else {
                     intern_plt(g, &s.name.unwrap(), s.ifunc);
                 }
@@ -1242,10 +1245,10 @@ pub fn plan_slots(
                 g.consumed_call.insert((s.oi, s.si, s.tls_want));
             }
             Plan::IFuncGot => {
-                intern_got(g, s.key.unwrap(), true, false);
+                intern_got(g, s.key.unwrap(), true, false, false);
             }
             Plan::IFuncPlt => {
-                let gi = intern_got(g, s.key.unwrap(), true, false);
+                let gi = intern_got(g, s.key.unwrap(), true, false, false);
                 let pi = intern_plt(g, &s.name.unwrap(), true);
                 g.plt_got.insert(pi, gi);
             }
@@ -1264,7 +1267,7 @@ pub fn got_key(g: &Graph, t: &TargetSym) -> GotKey {
     }
 }
 
-fn intern_got(g: &mut Graph, key: GotKey, ifunc: bool, dynamic: bool) -> usize {
+fn intern_got(g: &mut Graph, key: GotKey, ifunc: bool, dynamic: bool, tls_ie: bool) -> usize {
     if let Some(&idx) = g.got_index.get(&key) {
         if ifunc {
             g.got[idx].ifunc = true;
@@ -1272,11 +1275,14 @@ fn intern_got(g: &mut Graph, key: GotKey, ifunc: bool, dynamic: bool) -> usize {
         if dynamic {
             g.got[idx].dynamic = true;
         }
+        if tls_ie {
+            g.got[idx].tls_ie = true;
+        }
         return idx;
     }
     let idx = g.got.len();
     g.got_index.insert(key.clone(), idx);
-    g.got.push(GotSlot { key, ifunc, dynamic });
+    g.got.push(GotSlot { key, ifunc, dynamic, tls_ie });
     idx
 }
 

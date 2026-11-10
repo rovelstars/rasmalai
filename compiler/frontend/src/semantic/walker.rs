@@ -2,7 +2,7 @@ use crate::ast::*;
 use diagnostics::{Code, Diagnostic, Span};
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use super::{ScopeCheck, VarInfo, SCOPE_BUILTINS, array_elem, builtin_method_sig, canon_ty, is_higher_order, is_removed_poll_base, promise_inner, removed_replacement, starts_uppercase, ty_name};
+use super::{ScopeCheck, VarInfo, array_elem, builtin_method_sig, canon_ty, is_higher_order, is_removed_poll_base, promise_inner, removed_replacement, scope_builtin, starts_uppercase, ty_name};
 
 // The parser bounds nested expressions, but member, index, call, and cast
 // chains are built iteratively and can be arbitrarily long. The walker
@@ -42,7 +42,7 @@ impl<'a> ScopeCheck<'a> {
                 return Some(info.ty.clone());
             }
         }
-        if self.globals.contains(name) || SCOPE_BUILTINS.contains(&name) {
+        if self.globals.contains(name) || scope_builtin(name) {
             return Some(None);
         }
         if crate::prelude::provides(name) {
@@ -66,7 +66,7 @@ impl<'a> ScopeCheck<'a> {
                 return true;
             }
         }
-        if self.globals.contains(name) || SCOPE_BUILTINS.contains(&name) {
+        if self.globals.contains(name) || scope_builtin(name) {
             return true;
         }
         if crate::prelude::provides(name) {
@@ -79,7 +79,7 @@ impl<'a> ScopeCheck<'a> {
     fn shadowed(&self, name: &str) -> bool {
         self.scopes.iter().rev().any(|s| s.contains_key(name))
             || self.globals.contains(name)
-            || SCOPE_BUILTINS.contains(&name)
+            || scope_builtin(name)
     }
 
     fn shadowed_local(&self, name: &str) -> bool {
@@ -400,7 +400,12 @@ impl<'a> ScopeCheck<'a> {
 
     fn check_ctor_arity(&mut self, target: &str, args: &[CallArg], span: Span) {
         let short = crate::prelude::short_name(target);
-        let Some((mandatory, total)) = self.ctors.get(short).cloned() else {
+        let Some((mandatory, total)) = self
+            .ctors
+            .get(target)
+            .or_else(|| self.ctors.get(short))
+            .cloned()
+        else {
             return;
         };
         if args.len() >= mandatory && args.len() <= total {
@@ -920,6 +925,23 @@ impl<'a> ScopeCheck<'a> {
                 let mut params: Option<Vec<(String, Option<String>)>> = None;
                 match &callee.node {
                     Expr::Ident(n) => {
+                        if n == "print" && !self.shadowed_local(n) && !self.globals.contains(n) {
+                            self.diags.push(
+                                Diagnostic::new(
+                                    Code::E108,
+                                    "`print` is not a function; use the `print!` macro",
+                                )
+                                .with_span(self.span(callee.span))
+                                .with_hint("write `print!(...)`; use `println!` when you need a newline"),
+                            );
+                            for a in args {
+                                self.walk_expr(&a.value);
+                            }
+                            if let Some(b) = trailing {
+                                self.walk_block(b);
+                            }
+                            return;
+                        }
                         if n == "Some" || n == "None" {
                             self.deny_removed_value(n, callee.span);
                         }
@@ -1065,7 +1087,13 @@ impl<'a> ScopeCheck<'a> {
                 }
                 self.check_ctor_arity(target, args, e.span);
                 let short = crate::prelude::short_name(target).to_string();
-                self.walk_args_with(self.ctor_params.get(&short).cloned(), args);
+                self.walk_args_with(
+                    self.ctor_params
+                        .get(target)
+                        .or_else(|| self.ctor_params.get(&short))
+                        .cloned(),
+                    args,
+                );
             }
             Expr::Index { base, index } => {
                 self.walk_expr(base);
@@ -1158,11 +1186,9 @@ impl<'a> ScopeCheck<'a> {
                 self.walk_expr(base);
             }
             Expr::ImplicitMember(path) => self.check_implicit_member(path, e.span),
-            Expr::Macro { name, args, .. } => {
-                if name == "Assert" || name == "PanicIf" {
-                    for a in args {
-                        self.walk_expr(a);
-                    }
+            Expr::Macro { args, .. } => {
+                for a in args {
+                    self.walk_expr(a);
                 }
             }
             Expr::Closure { decay, params, ret, body, .. } => {

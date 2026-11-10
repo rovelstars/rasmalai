@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -185,35 +185,13 @@ const RESOURCE_STDLIB_SUFFIX: &str = ".json";
 
 static STDLIB_API: OnceLock<Result<serde_json::Value, String>> = OnceLock::new();
 
-fn load_stdlib_api() -> Result<serde_json::Value, String> {
-    let mut candidates: Vec<String> = Vec::new();
-    if let Ok(p) = std::env::var("RNX_STDLIB_API") {
-        candidates.push(p);
-    }
-    candidates.push(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../website/static/data/api.json"
-    )
-    .to_string());
-    candidates.push("website/static/data/api.json".to_string());
-    candidates.push("../website/static/data/api.json".to_string());
-    for path in &candidates {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                return serde_json::from_str(&text)
-                    .map_err(|e| format!("cannot parse `{path}`: {e}"));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(format!("cannot read `{path}`: {e}")),
-        }
-    }
-    Err("stdlib api.json not found; set RNX_STDLIB_API or regenerate it with \
-        `cargo run -p cli -- doc --json --stdlib`"
-        .to_string())
-}
+const STDLIB_CATALOG_SUBDIR: &str = "mcp";
+const STDLIB_CATALOG_FILE: &str = "stdlib-api.json";
 
-fn stdlib_api() -> &'static Result<serde_json::Value, String> {
-    STDLIB_API.get_or_init(load_stdlib_api)
+fn stdlib_catalog_path() -> PathBuf {
+    frontend::cache::global_cache_dir()
+        .join(STDLIB_CATALOG_SUBDIR)
+        .join(STDLIB_CATALOG_FILE)
 }
 
 fn stdlib_module_names(api: &serde_json::Value) -> Vec<String> {
@@ -227,6 +205,129 @@ fn stdlib_module_names(api: &serde_json::Value) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+fn expected_module_names() -> Vec<String> {
+    let mut names: Vec<String> = stdlib::MODULES.iter().map(|m| m.to_string()).collect();
+    names.sort();
+    names
+}
+
+fn newest_source_mtime(dir: &Path, newest: &mut Option<std::time::SystemTime>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => newest_source_mtime(&path, newest),
+            Ok(ft) if ft.is_file() => {
+                if !path.extension().is_some_and(|e| e == "rnx") {
+                    continue;
+                }
+                if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                    if newest.is_none_or(|current| modified > current) {
+                        *newest = Some(modified);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn stdlib_sources_mtime() -> Option<std::time::SystemTime> {
+    let cwd = std::env::current_dir().ok()?;
+    let anchor = frontend::fetch::cache_anchor(&cwd);
+    let mut newest = None;
+    for name in stdlib::MODULES {
+        let top = name.split('/').next().unwrap_or(name);
+        let pkg = format!("@std/{top}");
+        let Some(dir) = frontend::fetch::local_override_dir(&pkg, &anchor) else {
+            continue;
+        };
+        newest_source_mtime(&dir, &mut newest);
+    }
+    newest
+}
+
+fn read_stdlib_catalog(path: &Path) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let api: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let generated = stdlib_module_names(&api);
+    if generated != expected_module_names() {
+        return None;
+    }
+    let modified = path.metadata().and_then(|m| m.modified()).ok();
+    if let (Some(sources), Some(modified)) = (stdlib_sources_mtime(), modified)
+        && modified < sources
+    {
+        return None;
+    }
+    Some(api)
+}
+
+fn generate_stdlib_catalog(path: &Path) -> Result<serde_json::Value, String> {
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("stdlib catalog path `{}` has no parent", path.display()))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("cannot create `{}`: {e}", dir.display()))?;
+    let tmp_dir = dir.join(format!(
+        ".{STDLIB_CATALOG_FILE}.{}.{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    let generated = docgen::generate_stdlib_docs_json_local(&tmp_dir).map_err(|e| {
+        format!(
+            "cannot generate the stdlib catalog from local sources: {e}; \
+             set RNX_STDLIB_API to an explicit api.json path to override"
+        )
+    })?;
+    let text = std::fs::read_to_string(&generated)
+        .map_err(|e| format!("cannot read `{}`: {e}", generated.display()))?;
+    let api: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("cannot parse `{}`: {e}", generated.display()))?;
+    let documented = stdlib_module_names(&api);
+    let expected = expected_module_names();
+    if documented != expected {
+        let missing: Vec<String> = expected
+            .iter()
+            .filter(|m| !documented.contains(m))
+            .cloned()
+            .collect();
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "generated stdlib catalog is missing modules [{}]; \
+             the stdlib sources are incomplete or stale",
+            missing.join(", ")
+        ));
+    }
+    std::fs::rename(&generated, path)
+        .map_err(|e| format!("cannot publish `{}`: {e}", path.display()))?;
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    Ok(api)
+}
+
+fn load_stdlib_api() -> Result<serde_json::Value, String> {
+    if let Some(p) = std::env::var("RNX_STDLIB_API")
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+    {
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("cannot read `{p}`: {e}"))?;
+        return serde_json::from_str(&text).map_err(|e| format!("cannot parse `{p}`: {e}"));
+    }
+    let path = stdlib_catalog_path();
+    if let Some(api) = read_stdlib_catalog(&path) {
+        return Ok(api);
+    }
+    generate_stdlib_catalog(&path)
+}
+
+fn stdlib_api() -> &'static Result<serde_json::Value, String> {
+    STDLIB_API.get_or_init(load_stdlib_api)
 }
 
 fn lookup_symbol(api: &serde_json::Value, query: &str, module: Option<&str>, limit: usize) -> String {
@@ -2004,14 +2105,14 @@ fn resource_entries() -> Vec<Resource> {
             entries.push((
                 RESOURCE_STDLIB_API.to_string(),
                 "Rasmalai stdlib API".to_string(),
-                "Complete @std/* symbol catalog as JSON (~336 KB; heavy: prefer rasmalai_lookup_symbol or a per-module resource).".to_string(),
+                "Complete @std/* symbol catalog as JSON (heavy: prefer rasmalai_lookup_symbol or a per-module resource).".to_string(),
             ));
         }
         Err(_) => {
             entries.push((
                 RESOURCE_STDLIB_API.to_string(),
                 "Rasmalai stdlib API".to_string(),
-                "Complete @std/* symbol catalog as JSON (unavailable: regenerate with `cargo run -p cli -- doc --json --stdlib`).".to_string(),
+                "Complete @std/* symbol catalog as JSON (unavailable: no local stdlib sources and RNX_STDLIB_API is unset).".to_string(),
             ));
         }
     }
@@ -2037,16 +2138,12 @@ fn read_resource_text(uri: &str) -> Result<(String, String), McpError> {
         RESOURCE_MANIFEST => Ok((MANIFEST_SPEC.to_string(), "text/markdown".to_string())),
         RESOURCE_PACKAGES => Ok((PACKAGES_SPEC.to_string(), "text/markdown".to_string())),
         RESOURCE_STDLIB_API => {
-            let path = std::env::var("RNX_STDLIB_API").unwrap_or_else(|_| {
-                concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../website/static/data/api.json"
-                )
-                .to_string()
-            });
-            std::fs::read_to_string(&path)
-                .map(|text| (text, "application/json".to_string()))
-                .map_err(|e| McpError::internal_error(format!("cannot read stdlib api.json: {e}"), None))
+            let api = stdlib_api()
+                .as_ref()
+                .map_err(|e| McpError::internal_error(e.clone(), None))?;
+            let text = serde_json::to_string(api)
+                .map_err(|e| McpError::internal_error(format!("cannot serialize stdlib catalog: {e}"), None))?;
+            Ok((text, "application/json".to_string()))
         }
         _ => {
             if let Some(rest) = uri.strip_prefix(RESOURCE_STDLIB_PREFIX)

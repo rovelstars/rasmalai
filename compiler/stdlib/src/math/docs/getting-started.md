@@ -14,8 +14,8 @@ Paste it into a file or run it straight in the playground:
 import { Math, Vec2 } from "@std/math";
 
 let v = new Vec2(3.0, 4.0);
-print(v.length());
-print(Math.sin(Math.PI() / 2.0));
+println!(v.length());
+println!(Math.sin(Math.PI() / 2.0));
 ```
 
 ## Keep going

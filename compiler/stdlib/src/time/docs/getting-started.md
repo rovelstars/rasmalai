@@ -15,7 +15,7 @@ import { Clock } from "@std/time";
 
 let c = Clock.virtual(0);
 c.tick(2500000);
-print(c.now().toMillis());
+println!(c.now().toMillis());
 ```
 
 ## Keep going

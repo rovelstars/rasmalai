@@ -46,7 +46,7 @@ fn dbl(v: Vec4f): Vec4f {
     return v * Vec4f.splat(2.0);
 }
 
-print(dbl(new Vec4f(1.0, 2.0, 3.0, 4.0)).get(2));
+println!(dbl(new Vec4f(1.0, 2.0, 3.0, 4.0)).get(2));
 ```
 
 ## C-ABI: headers in, symbols out

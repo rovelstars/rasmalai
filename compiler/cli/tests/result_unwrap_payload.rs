@@ -50,7 +50,7 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output, want_out.to_vec(), "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -95,11 +95,11 @@ fn Main(): Int {
     let path = "PAYLOAD_PATH";
     if fs.writeText(path, "rasmalai", .Overwrite).isErr() { return 1; }
     let text = fs.readText(path).unwrapOr("");
-    print(text.len());
+    println!(text.len());
     if text.trim().len() != 8 { return 2; }
     if fs.readText(path).unwrapOr("").len() != 8 { return 6; }
     let raw = fs.readText(path).unwrap();
-    print(raw.slice(0, 3));
+    println!(raw.slice(0, 3));
     let ok = Result.Ok("payload");
     if ok.unwrap().len() != 7 { return 3; }
     let mapped = Result.Ok("ab").map((s: String): String => s + "!").unwrap();
@@ -124,20 +124,20 @@ fn num(ok: Bool): Result<Int, String> {
 
 fn Main(): Int {
     let annotated: String = text(true).unwrap();
-    print(annotated.len());
+    println!(annotated.len());
     let annotatedOr: String = text(false).unwrapOr("xyz");
-    print(annotatedOr.len());
+    println!(annotatedOr.len());
     let inferred = text(true).unwrap();
-    print(inferred.trim().len());
+    println!(inferred.trim().len());
     let inferredOr = text(false).unwrapOr("wxyz");
-    print(inferredOr.len());
+    println!(inferredOr.len());
     let ni: Int = num(true).unwrap();
     let nio: Int = num(false).unwrapOr(7);
-    print(ni + nio);
+    println!(ni + nio);
     let inferredInt = num(true).unwrap();
     let inferredOrInt = num(false).unwrapOr(1);
-    print(inferredInt + inferredOrInt);
-    print(num(true).unwrap().toString().len());
+    println!(inferredInt + inferredOrInt);
+    println!(num(true).unwrap().toString().len());
     return 0;
 }
 "#;

@@ -109,15 +109,15 @@ fn try_catch_finally_order() {
   } catch (err) {
     return 2
   } finally {
-    print("fin")
+    println!("fin")
   }
 }"#;
     let (r, out) = run(src, "F", vec![Value::Int(0)]);
     assert_eq!(r, Ok(Value::Int(1)));
-    assert_eq!(out, vec!["fin".to_string()]);
+    assert_eq!(out, vec!["fin\n".to_string()]);
     let (r, out) = run(src, "F", vec![Value::Int(1)]);
     assert_eq!(r, Ok(Value::Int(2)));
-    assert_eq!(out, vec!["fin".to_string()]);
+    assert_eq!(out, vec!["fin\n".to_string()]);
 }
 
 #[test]
@@ -134,13 +134,13 @@ fn Outer(): Int { try { return Inner() } catch (err) { throw } }"#;
 #[test]
 fn defer_lifo() {
     let src = r#"fn F(): Int {
-  defer { print("first") }
-  defer { print("second") }
+  defer { println!("first") }
+  defer { println!("second") }
   return 3
 }"#;
     let (r, out) = run(src, "F", vec![]);
     assert_eq!(r, Ok(Value::Int(3)));
-    assert_eq!(out, vec!["second".to_string(), "first".to_string()]);
+    assert_eq!(out, vec!["second\n".to_string(), "first\n".to_string()]);
 }
 
 #[test]
@@ -319,17 +319,17 @@ fn unsafe_pointer_ops() {
 
 #[test]
 fn print_captures_output() {
-    let (r, out) = run("fn Main(): Int { print(42) return 7 }", "Main", vec![]);
+    let (r, out) = run("fn Main(): Int { println!(42) return 7 }", "Main", vec![]);
     assert_eq!(r, Ok(Value::Int(7)));
-    assert_eq!(out, vec!["42".to_string()]);
+    assert_eq!(out, vec!["42\n".to_string()]);
 }
 
 #[test]
 fn point_print_and_return() {
-    let src = "class Point { let x: Int; let y: Int; init(x: Int, y: Int) { this.x = x; this.y = y; } } fn Main(): Int { let pt = new Point(10, 32); print(pt.x + pt.y); return pt.x + pt.y; }";
+    let src = "class Point { let x: Int; let y: Int; init(x: Int, y: Int) { this.x = x; this.y = y; } } fn Main(): Int { let pt = new Point(10, 32); println!(pt.x + pt.y); return pt.x + pt.y; }";
     let (r, out) = run(src, "Main", vec![]);
     assert_eq!(r, Ok(Value::Int(42)));
-    assert_eq!(out, vec!["42".to_string()]);
+    assert_eq!(out, vec!["42\n".to_string()]);
 }
 
 fn live_slots(src: &str, func: &str) -> (Result<Value, ExecError>, usize) {
@@ -360,10 +360,10 @@ fn genref_expires_after_scope() {
 
 #[test]
 fn strings_concat_eq_print_backend() {
-    let src = r#"fn Main(): Int { let greeting = "Hello"; let target = "World"; let msg = greeting + ", " + target + "!"; print(msg, 42); if msg == "Hello, World!" { return 42; } return 0; }"#;
+    let src = r#"fn Main(): Int { let greeting = "Hello"; let target = "World"; let msg = greeting + ", " + target + "!"; println!(msg, 42); if msg == "Hello, World!" { return 42; } return 0; }"#;
     let (r, out) = run(src, "Main", vec![]);
     assert_eq!(r, Ok(Value::Int(42)));
-    assert_eq!(out, vec!["Hello, World! 42".to_string()]);
+    assert_eq!(out, vec!["Hello, World! 42\n".to_string()]);
 }
 
 const ARRAY_PROG: &str = "fn Main(): Int { let list = [10, 20, 30]; list.push(40); let sum = 0; for x in list { sum = sum + x; } if sum == 100 && list.length == 4 { return 42; } return 0; }";
@@ -420,7 +420,7 @@ fn array_set_replaces_element() {
 
 #[test]
 fn e2e_float_task_program() {
-    let src = "fn Main(): Int { let a: Float = 10.5; let b: Float = 20.25; let c = a * 2.0 + b; let fast_c = c.asFast(); let scaled = fast_c * 2.0.asFast(); let result = Int(scaled.asStrict()) / 2; if result == 41 { print(\"Float math verified:\", c); return 42; } return 0; }";
+    let src = "fn Main(): Int { let a: Float = 10.5; let b: Float = 20.25; let c = a * 2.0 + b; let fast_c = c.asFast(); let scaled = fast_c * 2.0.asFast(); let result = Int(scaled.asStrict()) / 2; if result == 41 { println!(\"Float math verified:\", c); return 42; } return 0; }";
     let (r, out) = run(src, "Main", vec![]);
     assert_eq!(r.unwrap(), Value::Int(42));
     assert!(out.iter().any(|l| l.contains("Float math verified: 41.25")));
@@ -443,7 +443,7 @@ fn enum_owned_payload_no_leak() {
 #[test]
 fn thread_spawn_join_e2e() {
     let dir = crate::scratch::dir("rt");
-    std::fs::write(dir.join("main.rnx"), "fn worker(): Int { let sum = 0 let i = 0 while i < 1000 { sum = sum + 1 i = i + 1 } return sum } fn Main(): Int { let handle = Thread.spawn(worker) let res = handle.join().unwrap() if res == 1000 { print(\"Thread execution success:\", res) return 42 } return 0 }").unwrap();
+    std::fs::write(dir.join("main.rnx"), "fn worker(): Int { let sum = 0 let i = 0 while i < 1000 { sum = sum + 1 i = i + 1 } return sum } fn Main(): Int { let handle = Thread.spawn(worker) let res = handle.join().unwrap() if res == 1000 { println!(\"Thread execution success:\", res) return 42 } return 0 }").unwrap();
     let g = frontend::modules::ModuleGraph::build(&dir.join("main.rnx")).unwrap_or_else(|e| panic!("{e}"));
     let mut m = g.resolve().unwrap_or_else(|e| panic!("{e}"));
     let d = frontend::desugar::desugar(&mut m);
@@ -609,7 +609,7 @@ fn ns_run(main_src: &str, tag: &str) -> (Result<Value, ExecError>, Vec<String>) 
 
 #[test]
 fn namespace_print_shows_exports() {
-    let (r, out) = ns_run("import ns from \"./lib\";\nfn Main(): Int { print(ns); return 42; }\n", "print");
+    let (r, out) = ns_run("import ns from \"./lib\";\nfn Main(): Int { println!(ns); return 42; }\n", "print");
     assert_eq!(r.unwrap(), Value::Int(42));
     let line = out.join("\n");
     assert!(line.contains("[Module ns]"), "{line}");
@@ -621,7 +621,7 @@ fn namespace_print_shows_exports() {
 
 #[test]
 fn namespace_assigned_alias_calls() {
-    let (r, out) = ns_run("import ns from \"./lib\";\nfn Main(): Int { let alias = ns; print(alias); return alias.helper(21); }\n", "alias");
+    let (r, out) = ns_run("import ns from \"./lib\";\nfn Main(): Int { let alias = ns; println!(alias); return alias.helper(21); }\n", "alias");
     assert_eq!(r.unwrap(), Value::Int(42));
     assert!(out.join("\n").contains("[Module ns]"));
 }

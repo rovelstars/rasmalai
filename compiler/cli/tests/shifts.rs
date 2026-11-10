@@ -40,7 +40,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -69,7 +69,7 @@ fn shift_arithmetic_logical_and_masking() {
         assert((-1) >>> 1 == 0x7FFFFFFFFFFFFFFF, \"zshr zero-fills\");\n\
         assert(1 << 67 == 8, \"shift amount masks to 6 bits\");\n\
         assert((-1) >>> 66 == 0x3FFFFFFFFFFFFFFF, \"zshr masks too\");\n\
-        print(\"shifts ok\");\n\
+        println!(\"shifts ok\");\n\
         return 0;\n\
         }\n",
         "shifts ok\n",
@@ -93,7 +93,7 @@ fn shift_precedence_and_compound_assign() {
         assert(x == 2, \"zshreq\");\n\
         let nested: Array<Array<Int>> = [[1], [2, 3]];\n\
         assert(nested[1][0] == 2, \"nested generics still parse\");\n\
-        print(\"prec ok\");\n\
+        println!(\"prec ok\");\n\
         return 0;\n\
         }\n",
         "prec ok\n",

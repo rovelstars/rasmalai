@@ -34,8 +34,8 @@ import {
 * @example
 * import { OS } from "@std/os";
 *
-* print(OS.platform());
-* print(OS.arch());
+* println!(OS.platform());
+* println!(OS.arch());
 */
 class OS {
     /**
@@ -50,7 +50,7 @@ class OS {
     * import { OS } from "@std/os";
     *
     * if (OS.platform() == "windows") {
-    *     print("windows path separator rules");
+    *     println!("windows path separator rules");
     * }
     */
     static platform(): String {
@@ -68,7 +68,7 @@ class OS {
     * import { OS } from "@std/os";
     *
     * let is64 = OS.arch() == "x86_64" || OS.arch() == "aarch64";
-    * print(is64);
+    * println!(is64);
     */
     static arch(): String {
         return __rnx_os_arch();
@@ -85,7 +85,7 @@ class OS {
     * @example
     * import { OS } from "@std/os";
     *
-    * print(OS.hostname() != "unknown");
+    * println!(OS.hostname() != "unknown");
     */
     static hostname(): String {
         return __rnx_os_hostname();
@@ -103,7 +103,7 @@ class OS {
     * @example
     * import { OS } from "@std/os";
     *
-    * print(OS.tmpdir());
+    * println!(OS.tmpdir());
     */
     static tmpdir(): String {
         return __rnx_os_tmpdir();
@@ -122,7 +122,7 @@ class OS {
     *
     * let home = OS.homedir();
     * if (home == "") {
-    *     print("no home directory in this environment");
+    *     println!("no home directory in this environment");
     * }
     */
     static homedir(): String {
@@ -143,7 +143,7 @@ class OS {
     * import { OS } from "@std/os";
     *
     * let workers = OS.cpuCount();
-    * print(workers);
+    * println!(workers);
     */
     static cpuCount(): Int {
         return __rnx_os_cpu_count();
@@ -162,7 +162,7 @@ class OS {
     *
     * let seconds = OS.uptime();
     * if (seconds > 0.0) {
-    *     print("host has been up for a while");
+    *     println!("host has been up for a while");
     * }
     */
     static uptime(): Float {
@@ -182,7 +182,7 @@ class OS {
     * import { OS } from "@std/os";
     *
     * let header = "name" + OS.eol() + "value" + OS.eol();
-    * print(header);
+    * println!(header);
     */
     static eol(): String {
         if OS.platform() == "windows" {

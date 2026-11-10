@@ -37,11 +37,9 @@
 //! jobs.send("first");
 //! jobs.send("second");
 //!
-//! print(counter.fetchAdd(5), counter.get());
-//! print("queued:", jobs.len(), "took:", jobs.tryRecv());
+//! println!(counter.fetchAdd(5), counter.get());
+//! println!("queued:", jobs.len(), "took:", jobs.tryRecv());
 //! ```
-import { Result } from "@std/prelude";
-
 import {
     fn __rnx_barrier_wait(id: Int, count: Int): Bool,
     fn __rnx_condvar_notify_all(id: Int): Void,
@@ -91,7 +89,7 @@ import {
 *
 * let a = AtomicInt.byId(11);
 * a.set(41);
-* print(a.get() + 1);
+* println!(a.get() + 1);
 * ```
 */
 class AtomicInt {
@@ -113,7 +111,7 @@ class AtomicInt {
     * import { AtomicInt } from "@std/sync";
     *
     * let a = AtomicInt.byId(101);
-    * print(a.get());
+    * println!(a.get());
     */
     static byId(id: Int): AtomicInt {
         return new AtomicInt(id);
@@ -128,7 +126,7 @@ class AtomicInt {
     *
     * let a = AtomicInt.byId(11);
     * a.set(41);
-    * print(a.get() + 1);
+    * println!(a.get() + 1);
     */
     get(): Int {
         return __rnx_sync_atomic_get(this.id);
@@ -143,7 +141,7 @@ class AtomicInt {
     *
     * let a = AtomicInt.byId(102);
     * a.set(41);
-    * print(a.get());
+    * println!(a.get());
     */
     set(val: Int) {
         __rnx_sync_atomic_set(this.id, val);
@@ -163,7 +161,7 @@ class AtomicInt {
     *
     * let a = AtomicInt.byId(1);
     * a.set(10);
-    * print(a.fetchAdd(5), a.get());
+    * println!(a.fetchAdd(5), a.get());
     */
     fetchAdd(delta: Int): Int {
         return __rnx_sync_atomic_fetch_add(this.id, delta);
@@ -185,8 +183,8 @@ class AtomicInt {
     *
     * let slot = AtomicInt.byId(8);
     * slot.set(1);
-    * print(slot.cas(1, 2), slot.get());
-    * print(slot.cas(1, 3), slot.get());
+    * println!(slot.cas(1, 2), slot.get());
+    * println!(slot.cas(1, 3), slot.get());
     */
     cas(expected: Int, newVal: Int): Bool {
         return __rnx_sync_atomic_cas(this.id, expected, newVal);
@@ -223,10 +221,10 @@ class AtomicInt {
 * let jobs = Channel.byId(9);
 * jobs.send(7);
 * jobs.send(8);
-* print("queued:", jobs.len());
-* print("took:", jobs.tryRecv());
-* print("next:", jobs.recv());
-* print("empty:", jobs.tryRecv());
+* println!("queued:", jobs.len());
+* println!("took:", jobs.tryRecv());
+* println!("next:", jobs.recv());
+* println!("empty:", jobs.tryRecv());
 * ```
 */
 class Channel {
@@ -249,7 +247,7 @@ class Channel {
     *
     * let jobs = Channel.byId(103);
     * jobs.send(7);
-    * print(jobs.len());
+    * println!(jobs.len());
     */
     static byId(id: Int): Channel {
         return new Channel(id);
@@ -269,8 +267,8 @@ class Channel {
     * let jobs = Channel.byId(9);
     * jobs.send(7);
     * jobs.send(8);
-    * print("queued:", jobs.len());
-    * print("took:", jobs.tryRecv());
+    * println!("queued:", jobs.len());
+    * println!("took:", jobs.tryRecv());
     */
     send(val: Any): Void {
         __rnx_sync_channel_send(this.id, val);
@@ -295,8 +293,8 @@ class Channel {
     *
     * let inbox = Channel.byId(3);
     * let worker = Thread.spawn(produce);
-    * print("received:", inbox.recv());
-    * print("worker done:", worker.join().unwrap());
+    * println!("received:", inbox.recv());
+    * println!("worker done:", worker.join().unwrap());
     */
     recv(): Any {
         return __rnx_sync_channel_recv(this.id);
@@ -316,7 +314,7 @@ class Channel {
     *
     * let jobs = Channel.byId(9);
     * jobs.send(7);
-    * print(jobs.tryRecv(), jobs.tryRecv());
+    * println!(jobs.tryRecv(), jobs.tryRecv());
     */
     tryRecv(): Int {
         return __rnx_sync_channel_try_recv(this.id);
@@ -333,7 +331,7 @@ class Channel {
     * let jobs = Channel.byId(103);
     * jobs.send(7);
     * jobs.send(8);
-    * print(jobs.len());
+    * println!(jobs.len());
     */
     len(): Int {
         return __rnx_sync_channel_len(this.id);
@@ -352,7 +350,7 @@ class Channel {
     *  let jobs = Channel.byId(103);
     *  jobs.send(7);
     *  jobs.close();
-    *  print(jobs.len());
+    *  println!(jobs.len());
     */
     close(): Void {
         __rnx_sync_channel_drop(this.id);
@@ -379,7 +377,7 @@ class Channel {
 * let m = Mutex.byId(31);
 * m.lock();
 * m.unlock();
-* print(m.tryLock());
+* println!(m.tryLock());
 * m.unlock();
 * ```
 */
@@ -421,7 +419,7 @@ class Mutex {
     * let m = Mutex.byId(31);
     * m.lock();
     * m.unlock();
-    * print(m.tryLock());
+    * println!(m.tryLock());
     * m.unlock();
     */
     lock(): Void {
@@ -439,7 +437,7 @@ class Mutex {
     *  let m = Mutex.byId(104);
     *  m.lock();
     *  m.unlock();
-    *  print(m.tryLock());
+    *  println!(m.tryLock());
     *  m.unlock();
     */
     unlock(): Void {
@@ -461,7 +459,7 @@ class Mutex {
     * let a = Mutex.byId(31);
     * let b = Mutex.byId(31);
     * a.lock();
-    * print(b.tryLock());
+    * println!(b.tryLock());
     * a.unlock();
     */
     tryLock(): Bool {
@@ -490,10 +488,10 @@ class Mutex {
 *
 * let r = RwLock.byId(41);
 * r.writeLock();
-* print("read while writer:", r.tryReadLock());
-* print("second writer:", r.tryWriteLock());
+* println!("read while writer:", r.tryReadLock());
+* println!("second writer:", r.tryWriteLock());
 * r.writeUnlock();
-* print("read when free:", r.tryReadLock());
+* println!("read when free:", r.tryReadLock());
 * r.readUnlock();
 * ```
 */
@@ -585,7 +583,7 @@ class RwLock {
     *  let r = RwLock.byId(105);
     *  r.writeLock();
     *  r.writeUnlock();
-    *  print(r.tryWriteLock());
+    *  println!(r.tryWriteLock());
     *  r.writeUnlock();
     */
     writeUnlock(): Void {
@@ -605,7 +603,7 @@ class RwLock {
     *
     * let r = RwLock.byId(41);
     * r.writeLock();
-    * print(r.tryReadLock());
+    * println!(r.tryReadLock());
     * r.writeUnlock();
     */
     tryReadLock(): Bool {
@@ -625,7 +623,7 @@ class RwLock {
     * import { RwLock } from "@std/sync";
     *
     * let r = RwLock.byId(41);
-    * print(r.tryWriteLock());
+    * println!(r.tryWriteLock());
     * r.writeUnlock();
     */
     tryWriteLock(): Bool {
@@ -653,10 +651,10 @@ class RwLock {
 * let m = Mutex.byId(51);
 * let c = Condvar.byId(51);
 * m.lock();
-* print("woken:", c.waitTimeout(m, 30));
+* println!("woken:", c.waitTimeout(m, 30));
 * m.unlock();
 * c.notifyAll();
-* print("notify with no waiters is a no-op");
+* println!("notify with no waiters is a no-op");
 * ```
 */
 class Condvar {
@@ -725,7 +723,7 @@ class Condvar {
     * let m = Mutex.byId(51);
     * let c = Condvar.byId(51);
     * m.lock();
-    * print("woken:", c.waitTimeout(m, 30));
+    * println!("woken:", c.waitTimeout(m, 30));
     * m.unlock();
     */
     waitTimeout(m: Mutex, millis: Int): Bool {
@@ -790,10 +788,10 @@ class Condvar {
 * import { Barrier } from "@std/sync";
 *
 * let solo = Barrier.byId(61, 1);
-* print("first generation:", solo.wait());
-* print("gate resets:", solo.wait());
+* println!("first generation:", solo.wait());
+* println!("gate resets:", solo.wait());
 * let pair = Barrier.byId(62, 2);
-* print("two parties required:", pair.count);
+* println!("two parties required:", pair.count);
 * ```
 */
 class Barrier {
@@ -829,8 +827,8 @@ class Barrier {
     * import { Barrier } from "@std/sync";
     *
     * let solo = Barrier.byId(61, 1);
-    * print("first generation:", solo.wait());
-    * print("gate resets:", solo.wait());
+    * println!("first generation:", solo.wait());
+    * println!("gate resets:", solo.wait());
     */
     static byId(id: Int, count: Int): Barrier {
         if count <= 0 {
@@ -854,7 +852,7 @@ class Barrier {
     * import { Barrier } from "@std/sync";
     *
     * let solo = Barrier.byId(61, 1);
-    * print("leader:", solo.wait());
+    * println!("leader:", solo.wait());
     */
     wait(): Bool {
         return __rnx_barrier_wait(this.id, this.count);
@@ -890,7 +888,7 @@ class Barrier {
 * }
 * let workers: Array<Thread> = [];
 * workers.push(Thread.spawn(worker));
-* print(workers[0].join().unwrap());
+* println!(workers[0].join().unwrap());
 * ```
 */
 class Thread {
@@ -940,7 +938,7 @@ class Thread {
     * }
     * let workers: Array<Thread> = [];
     * workers.push(Thread.spawn(worker));
-    * print(workers[0].join().unwrap());
+    * println!(workers[0].join().unwrap());
     */
     join(): Result<Any, String> {
         let v = __rnx_thread_join_val(this.id);

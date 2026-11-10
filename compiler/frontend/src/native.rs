@@ -108,6 +108,18 @@ fn offline_dep_dir(
     locked: &std::collections::BTreeMap<String, String>,
     entry_cfg: &crate::project::ProjectConfig,
 ) -> Option<std::path::PathBuf> {
+    if matches!(spec, crate::project::DependencySpec::Alias { .. }) {
+        let scope_root = crate::project::find_workspace_root(pkg_dir)
+            .unwrap_or_else(|| pkg_dir.to_path_buf());
+        let (real, resolved) = crate::modules::resolve_alias_spec(
+            &scope_root,
+            entry_cfg,
+            dep_name,
+            &mut Vec::new(),
+        )
+        .ok()?;
+        return offline_dep_dir(pkg_dir, &real, &resolved, locked, entry_cfg);
+    }
     let offline = match spec {
         crate::project::DependencySpec::Path { path, .. } => std::fs::canonicalize(pkg_dir.join(path)).ok(),
         crate::project::DependencySpec::Git { rev, .. } => {
@@ -136,6 +148,7 @@ fn offline_dep_dir(
             std::fs::canonicalize(&dir).ok()
         }
         crate::project::DependencySpec::Url { .. } | crate::project::DependencySpec::Native { .. } => None,
+        crate::project::DependencySpec::Alias { .. } => None,
     };
     if offline.is_some() {
         return offline;

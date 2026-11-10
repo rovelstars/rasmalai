@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -68,14 +68,14 @@ fn cross_function_throws_propagate() {
         }\n\
         fn Main(): Int {\n\
         try {\n\
-        print(root(true));\n\
+        println!(root(true));\n\
         } catch (err) {\n\
-        print(\"failed\");\n\
+        println!(\"failed\");\n\
         }\n\
         try {\n\
-        print(root(false));\n\
+        println!(root(false));\n\
         } catch (err) {\n\
-        print(\"failed\");\n\
+        println!(\"failed\");\n\
         }\n\
         return 0;\n\
         }\n",
@@ -101,20 +101,20 @@ fn class_payload_is_dispatch() {
         throw new ParseError(\"bad header\");\n\
         } catch (err) {\n\
         if err is ParseError {\n\
-        print(\"parse\");\n\
+        println!(\"parse\");\n\
         } else {\n\
-        print(\"other\");\n\
+        println!(\"other\");\n\
         }\n\
         }\n\
         try {\n\
         throw new IoError(\"disk gone\");\n\
         } catch (err) {\n\
         if err is ParseError {\n\
-        print(\"parse\");\n\
+        println!(\"parse\");\n\
         } else if err is IoError {\n\
-        print(\"io\");\n\
+        println!(\"io\");\n\
         } else {\n\
-        print(\"other\");\n\
+        println!(\"other\");\n\
         }\n\
         }\n\
         return 0;\n\
@@ -141,14 +141,14 @@ fn caught_fields_accessible_after_narrow() {
         }\n\
         fn Main(): Int {\n\
         try {\n\
-        print(check(-7));\n\
+        println!(check(-7));\n\
         } catch (err) {\n\
         if err is ValidationError {\n\
-        print(err.field);\n\
-        print(err.code);\n\
+        println!(err.field);\n\
+        println!(err.code);\n\
         }\n\
         }\n\
-        print(check(3));\n\
+        println!(check(3));\n\
         return 0;\n\
         }\n",
         0,
@@ -172,10 +172,10 @@ fn thrown_subclass_matches_base_check() {
         throw new Child(9);\n\
         } catch (err) {\n\
         if err is Base {\n\
-        print(\"base\");\n\
+        println!(\"base\");\n\
         }\n\
         if err is Child {\n\
-        print(\"child\");\n\
+        println!(\"child\");\n\
         }\n\
         }\n\
         return 0;\n\
@@ -189,13 +189,13 @@ fn thrown_subclass_matches_base_check() {
 #[test]
 fn top_level_try_catch() {
     check_all_backends(
-        "print(\"before\");\n\
+        "println!(\"before\");\n\
         try {\n\
         throw \"down\";\n\
         } catch (err) {\n\
-        print(\"in catch\");\n\
+        println!(\"in catch\");\n\
         }\n\
-        print(\"after\");\n",
+        println!(\"after\");\n",
         0,
         &[
             "before".to_string(),
@@ -220,8 +220,8 @@ fn async_try_catch() {
         }\n\
         }\n\
         fn Main(): Int {\n\
-        print(worker(true).wait().unwrapOr(-1));\n\
-        print(worker(false).wait().unwrapOr(-1));\n\
+        println!(worker(true).wait().unwrapOr(-1));\n\
+        println!(worker(false).wait().unwrapOr(-1));\n\
         return 0;\n\
         }\n",
         0,
@@ -237,7 +237,7 @@ fn string_concat_over_caught_error() {
         try {\n\
         throw \"down\";\n\
         } catch (err) {\n\
-        print(\"caught: \" + err);\n\
+        println!(\"caught: \" + err);\n\
         }\n\
         return 0;\n\
         }\n",
@@ -253,7 +253,7 @@ fn uncaught_string_error_fails_everywhere() {
         throw \"kaboom\";\n\
         }\n\
         fn Main(): Int {\n\
-        print(boom());\n\
+        println!(boom());\n\
         return 0;\n\
         }\n";
     let (module, dir) = resolve_src(src, "uncaught");

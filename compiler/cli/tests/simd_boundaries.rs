@@ -29,20 +29,20 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
     assert_eq!(llvm::codegen::execute(leaked, "Main").unwrap(), want, "llvm {tag}");
 }
 
-const PARAM_SRC: &str = "import { Vec4f } from \"@std/simd\";\n\nfn dbl(v: Vec4f): Vec4f {\n    return v * Vec4f.splat(2.0);\n}\n\nfn Main(): Int {\n    let got = Int(dbl(new Vec4f(1.0, 2.0, 3.0, 4.0)).get(2));\n    print(\"param:\", got);\n    if got == 6 {\n        return 42;\n    }\n    return 1;\n}\n";
+const PARAM_SRC: &str = "import { Vec4f } from \"@std/simd\";\n\nfn dbl(v: Vec4f): Vec4f {\n    return v * Vec4f.splat(2.0);\n}\n\nfn Main(): Int {\n    let got = Int(dbl(new Vec4f(1.0, 2.0, 3.0, 4.0)).get(2));\n    println!(\"param:\", got);\n    if got == 6 {\n        return 42;\n    }\n    return 1;\n}\n";
 
-const RETURN_SRC: &str = "import { Vec4f } from \"@std/simd\";\n\nfn mk(a: Float): Vec4f {\n    return new Vec4f(a, a, a, a);\n}\n\nfn Main(): Int {\n    let got = Int(mk(3.0).get(1));\n    print(\"return:\", got);\n    if got == 3 {\n        return 42;\n    }\n    return 1;\n}\n";
+const RETURN_SRC: &str = "import { Vec4f } from \"@std/simd\";\n\nfn mk(a: Float): Vec4f {\n    return new Vec4f(a, a, a, a);\n}\n\nfn Main(): Int {\n    let got = Int(mk(3.0).get(1));\n    println!(\"return:\", got);\n    if got == 3 {\n        return 42;\n    }\n    return 1;\n}\n";
 
-const SQRT_SRC: &str = "import { Vec4f } from \"@std/simd\";\n\nfn Main(): Int {\n    let r = new Vec4f(4.0, 9.0, 16.0, 25.0).sqrt();\n    let a = Int(r.x());\n    let b = Int(r.y());\n    let c = Int(r.get(2));\n    let d = Int(r.w());\n    print(\"sqrt:\", a, b, c, d);\n    if a == 2 && b == 3 && c == 4 && d == 5 {\n        return 42;\n    }\n    return 1;\n}\n";
+const SQRT_SRC: &str = "import { Vec4f } from \"@std/simd\";\n\nfn Main(): Int {\n    let r = new Vec4f(4.0, 9.0, 16.0, 25.0).sqrt();\n    let a = Int(r.x());\n    let b = Int(r.y());\n    let c = Int(r.get(2));\n    let d = Int(r.w());\n    println!(\"sqrt:\", a, b, c, d);\n    if a == 2 && b == 3 && c == 4 && d == 5 {\n        return 42;\n    }\n    return 1;\n}\n";
 
 #[test]
 fn test_vec4f_argument_crosses_function_boundary() {

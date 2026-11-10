@@ -40,7 +40,7 @@ fn check_stdout_everywhere(src: &str, want: &str, tag: &str) {
         runtime::value::Value::Int(0) => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    assert_eq!(machine.output.join("\n") + "\n", want, "interpreter {tag} stdout");
+    assert_eq!(machine.output.concat(), want, "interpreter {tag} stdout");
 
     let rnx = env!("CARGO_BIN_EXE_rnx");
     for backend in ["cranelift", "llvm"] {
@@ -99,7 +99,7 @@ fn ergo_full_verification() {
         let interp = \"value is ${count}\";\n\
         assert(interp == \"value is 42\", \"string interpolation\");\n\
         let opt_str: String? = \"rasmalai\";\n\
-        print(opt_str ?? \"fallback\");\n\
+        println!(opt_str ?? \"fallback\");\n\
         let pair = (100, \"items\");\n\
         let (total, unit) = pair;\n\
         assert(total == 100 && unit == \"items\", \"tuple destructure\");\n\
@@ -122,7 +122,7 @@ fn ergo_switch_expr_variants() {
         }\n\
         fn Main(): Int {\n\
         let s: Status = Status.Active(7);\n\
-        print(switch s {\n\
+        println!(switch s {\n\
             case .Active(id): id,\n\
             case .Inactive: 0,\n\
         });\n\
@@ -130,7 +130,7 @@ fn ergo_switch_expr_variants() {
             case 1: \"one\",\n\
             default: \"many\",\n\
         };\n\
-        print(t);\n\
+        println!(t);\n\
         return 0;\n\
         }\n",
         "7\none\n",
@@ -143,12 +143,12 @@ fn ergo_tuple_index_and_annotate() {
     check_stdout_everywhere(
         "fn Main(): Int {\n\
         let p: (Int, String) = (1, \"a\");\n\
-        print(p.0);\n\
-        print(p.1);\n\
+        println!(p.0);\n\
+        println!(p.1);\n\
         let q = p;\n\
         let (x, y) = q;\n\
-        print(x + 1);\n\
-        print(y);\n\
+        println!(x + 1);\n\
+        println!(y);\n\
         return 0;\n\
         }\n",
         "1\na\n2\na\n",
@@ -161,7 +161,7 @@ fn err_tuple_index_oob() {
     check_fails_with(
         "fn Main(): Int {\n\
         let p = (1, 2);\n\
-        print(p.5);\n\
+        println!(p.5);\n\
         return 0;\n\
         }\n",
         &["E108", "out of bounds"],
@@ -248,8 +248,8 @@ fn tuple_across_fn_now_allowed() {
         }\n\
         fn Main(): Int {\n\
         let (q, r) = div_rem(10, 3);\n\
-        print(q);\n\
-        print(r);\n\
+        println!(q);\n\
+        println!(r);\n\
         return 0;\n\
         }\n",
         "3\n1\n",

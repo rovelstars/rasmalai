@@ -61,16 +61,22 @@ pub fn check_with_files_surface_misuse(
     diags
 }
 pub(crate) const SCOPE_BUILTINS: &[&str] = &[
-    "print",
     "assert",
     "typeOf",
-    "IO",
-    "Thread",
-    "ThreadPool",
     "Pointer",
     "Address",
     "__testCheck",
 ];
+
+pub(crate) fn scope_builtin(name: &str) -> bool {
+    if SCOPE_BUILTINS.contains(&name) {
+        return true;
+    }
+    if matches!(name, "IO" | "Thread" | "ThreadPool") {
+        return crate::modules::selected_prelude().is_none() || crate::prelude::provides(name);
+    }
+    false
+}
 
 fn starts_uppercase(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
@@ -613,14 +619,14 @@ fn run_scope_check_with<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck
                 ClassMember::Init { params, .. } => {
                     let total = params.len();
                     let mandatory = params.iter().filter(|p| p.default.is_none()).count();
+                    let tys: Vec<(String, Option<String>)> = params
+                        .iter()
+                        .map(|p| (p.name.clone(), p.ty.as_ref().and_then(ty_name)))
+                        .collect();
+                    ctors.insert(name.clone(), (mandatory, total));
+                    ctor_params.insert(name.clone(), tys.clone());
                     ctors.insert(cshort.clone(), (mandatory, total));
-                    ctor_params.insert(
-                        cshort.clone(),
-                        params
-                            .iter()
-                            .map(|p| (p.name.clone(), p.ty.as_ref().and_then(ty_name)))
-                            .collect(),
-                    );
+                    ctor_params.insert(cshort.clone(), tys);
                 }
                 _ => {}
             }
@@ -849,6 +855,9 @@ fn check_export_cabi(
             _ => continue,
         };
         if f.access != Access::Export || f.is_test {
+            continue;
+        }
+        if f.is_macro {
             continue;
         }
         if in_surface {

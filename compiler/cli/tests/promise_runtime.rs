@@ -28,9 +28,9 @@ fn check_all_backends(src: &str, want: i64, want_out: &[String], tag: &str) {
         runtime::value::Value::Int(v) if v == want => {}
         other => panic!("interpreter {tag}: {other:?}"),
     }
-    let got = machine.output.clone();
+    let got = machine.output.concat();
     let want_out: Vec<String> = want_out.to_vec();
-    assert_eq!(got, want_out, "interpreter {tag} stdout");
+    assert_eq!(got, want_out.join("\n") + if want_out.is_empty() { "" } else { "\n" }, "interpreter {tag} stdout");
 
     let mut jit = cranelift::jit::Jit::compile(leaked).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(jit.call("Main", &[]).unwrap(), want, "cranelift {tag}");
@@ -58,11 +58,11 @@ fn resolve_and_reject_unwrap_via_wait() {
     check_all_backends(
         "fn Main(): Int {\n\
         let a: Result<Int, String> = Promise.resolve(41).wait();\n\
-        print(a.unwrap());\n\
+        println!(a.unwrap());\n\
         let b: Result<Int, String> = Promise.reject<Int>(\"boom\").wait();\n\
         switch b {\n\
-        case .Ok(v): print(v); pass;\n\
-        case .Err(e): print(e); pass;\n\
+        case .Ok(v): println!(v); pass;\n\
+        case .Err(e): println!(e); pass;\n\
         }\n\
         return 0;\n\
         }\n",
@@ -77,11 +77,11 @@ fn then_catch_finally_chains() {
     check_all_backends(
         "fn Main(): Int {\n\
         let a: Result<Int, String> = Promise.resolve(20).then<Int>((v) => v + 1).wait();\n\
-        print(a.unwrap());\n\
+        println!(a.unwrap());\n\
         let b: Result<Int, String> = Promise.reject<Int>(\"x\").catchReject<Int>((e) => 99).wait();\n\
-        print(b.unwrap());\n\
-        let c: Result<Int, String> = Promise.resolve(7).finallyDo(() => print(\"fin\")).wait();\n\
-        print(c.unwrap());\n\
+        println!(b.unwrap());\n\
+        let c: Result<Int, String> = Promise.resolve(7).finallyDo(() => println!(\"fin\")).wait();\n\
+        println!(c.unwrap());\n\
         return 0;\n\
         }\n",
         0,
@@ -102,9 +102,9 @@ fn all_preserves_index_order() {
         let ps: Array<Promise<Int>> = [Promise.resolve(1), Promise.resolve(2), Promise.resolve(3)];\n\
         let all: Result<Array<Int>, String> = Promise.all<Int>(ps).wait();\n\
         let got = all.unwrap();\n\
-        print(got[0]);\n\
-        print(got[1]);\n\
-        print(got[2]);\n\
+        println!(got[0]);\n\
+        println!(got[1]);\n\
+        println!(got[2]);\n\
         return 0;\n\
         }\n",
         0,
@@ -118,7 +118,7 @@ fn race_settles_first() {
     check_all_backends(
         "fn Main(): Int {\n\
         let ps: Array<Promise<Int>> = [Promise.resolve(1), Promise.resolve(2)];\n\
-        print(Promise.race<Int>(ps).wait().unwrap());\n\
+        println!(Promise.race<Int>(ps).wait().unwrap());\n\
         return 0;\n\
         }\n",
         0,
@@ -134,15 +134,15 @@ fn all_settled_keeps_values_and_reasons() {
         let ps: Array<Promise<Int>> = [Promise.resolve(5), Promise.reject<Int>(\"bad\")];\n\
         let all: Result<Array<PromiseResult<Int>>, String> = Promise.allSettled<Int>(ps).wait();\n\
         let got: Array<PromiseResult<Int>> = all.unwrap();\n\
-        print(got[0].status);\n\
+        println!(got[0].status);\n\
         let v0 = got[0].value;\n\
         if v0 == null {\n\
-        print(-1);\n\
+        println!(-1);\n\
         } else {\n\
-        print(v0);\n\
+        println!(v0);\n\
         }\n\
-        print(got[1].status);\n\
-        print(got[1].reason);\n\
+        println!(got[1].status);\n\
+        println!(got[1].reason);\n\
         return 0;\n\
         }\n",
         0,
@@ -162,12 +162,12 @@ fn any_first_success_and_aggregate_failure() {
         "fn Main(): Int {\n\
         let mixed: Array<Promise<Int>> = [Promise.reject<Int>(\"no\"), Promise.resolve(5)];\n\
         let first: Result<Int, String> = Promise.any<Int>(mixed).wait();\n\
-        print(first.unwrap());\n\
+        println!(first.unwrap());\n\
         let doomed: Array<Promise<Int>> = [Promise.reject<Int>(\"a\"), Promise.reject<Int>(\"b\")];\n\
         let last: Result<Int, String> = Promise.any<Int>(doomed).wait();\n\
         switch last {\n\
-        case .Ok(v): print(v); pass;\n\
-        case .Err(e): print(e); pass;\n\
+        case .Ok(v): println!(v); pass;\n\
+        case .Err(e): println!(e); pass;\n\
         }\n\
         return 0;\n\
         }\n",
@@ -195,8 +195,8 @@ fn with_resolvers_settles_from_worker_thread() {
         let h = Thread.spawn((): Int => settler(wr));\n\
         let r: Result<Int, String> = wr.promise.wait();\n\
         h.join();\n\
-        print(r.unwrap());\n\
-        print(AtomicInt.byId(70001).get());\n\
+        println!(r.unwrap());\n\
+        println!(AtomicInt.byId(70001).get());\n\
         return 0;\n\
         }\n",
         0,
@@ -223,7 +223,7 @@ fn wait_blocks_until_settlement() {
         let r: Result<Int, String> = wr.promise.wait();\n\
         let dt = Clock.mono().toMillis() - t0;\n\
         h.join();\n\
-        print(r.unwrap());\n\
+        println!(r.unwrap());\n\
         assert(dt >= 100, \"wait returned before settlement\");\n\
         return 0;\n\
         }\n",

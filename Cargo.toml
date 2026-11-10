@@ -16,6 +16,8 @@ members = [
 ]
 exclude = [
     "compiler/runtime/bundle",
+    "compiler/runtime/uefi",
+    "compiler/runtime/wasi",
 ]
 
 [workspace.package]

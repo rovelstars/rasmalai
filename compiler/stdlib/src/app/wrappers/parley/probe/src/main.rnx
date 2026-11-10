@@ -22,11 +22,11 @@ fn clustersOf(s: String, size: Float) {
     unsafe {
         n = parleyClusters(Pointer.fromAddress<Byte>(b.address()), b.length(), size, Pointer.fromAddress<Byte>(out.address()), 64)
     }
-    print("clusters:", n)
+    println!("clusters:", n)
     let i = 0
     while i < n && i < 3 {
         let o = i * 16
-        print("c", i, "range:", out.readInt32LE(o), out.readInt32LE(o + 4), "advance:", out.readFloat64LE(o + 8))
+        println!("c", i, "range:", out.readInt32LE(o), out.readInt32LE(o + 4), "advance:", out.readFloat64LE(o + 8))
         i += 1
     }
 }
@@ -46,29 +46,29 @@ fn layoutOf(s: String, size: Float, maxWidth: Float, maxLines: Int, wrap: Bool, 
     unsafe {
         n = parleyLayout(Pointer.fromAddress<Byte>(b.address()), b.length(), size, maxWidth, maxLines, wrapFlag, flag, Pointer.fromAddress<Byte>(out.address()), 16 * 24)
     }
-    print("rows:", n)
+    println!("rows:", n)
     let i = 0
     while i < n {
         let o = i * 24
-        print("row", i, "chars:", out.readUInt32LE(o), out.readUInt32LE(o + 4), "flags:", out.readUInt32LE(o + 8), "width:", out.readFloat32LE(o + 12))
+        println!("row", i, "chars:", out.readUInt32LE(o), out.readUInt32LE(o + 4), "flags:", out.readUInt32LE(o + 8), "width:", out.readFloat32LE(o + 12))
         i += 1
     }
 }
 
 fn Main(): Int {
     clustersOf("Hi", 16.0)
-    print("hello 16:", widthOf("Hello", 16.0))
-    print("hello 32:", widthOf("Hello", 32.0))
-    print("long 16:", widthOf("Hello world", 16.0))
+    println!("hello 16:", widthOf("Hello", 16.0))
+    println!("hello 32:", widthOf("Hello", 32.0))
+    println!("long 16:", widthOf("Hello world", 16.0))
     let accent = ByteBuffer.fromString("e\u{301}x")
     unsafe {
-        print("grapheme next:", parleyGraphemeNext(Pointer.fromAddress<Byte>(accent.address()), accent.length(), 0))
-        print("grapheme prev:", parleyGraphemePrev(Pointer.fromAddress<Byte>(accent.address()), accent.length(), 2))
+        println!("grapheme next:", parleyGraphemeNext(Pointer.fromAddress<Byte>(accent.address()), accent.length(), 0))
+        println!("grapheme prev:", parleyGraphemePrev(Pointer.fromAddress<Byte>(accent.address()), accent.length(), 2))
     }
     layoutOf("hello world from rasmalai", 14.0, 90.0, 0, true, false)
     layoutOf("hello world from rasmalai", 14.0, 70.0, 1, false, true)
     unsafe {
-        print("abi:", parleyAbiVersion())
+        println!("abi:", parleyAbiVersion())
     }
     return 0
 }

@@ -8,7 +8,7 @@ pub(super) fn run_vendor(packages: Vec<String>, dir: Option<std::path::PathBuf>)
             println!("Vendored {} packages into {}", names.len(), dest.display());
         }
         Err(e) => {
-            println!("{e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }

@@ -1,9 +1,10 @@
 use lir::{lower, reach, verify};
 
+#[path = "../src/test_support.rs"]
+mod support;
+
 fn compile(src: &str) -> lir::instr::Module {
-    let mut m = frontend::parser::Parser::parse_module(src).unwrap_or_else(|e| panic!("{e}"));
-    let d = frontend::desugar::desugar(&mut m);
-    assert!(d.is_empty(), "{d:?}");
+    let m = support::resolve_for_lowering(src);
     lower::lower(&m).unwrap_or_else(|e| panic!("{e}"))
 }
 

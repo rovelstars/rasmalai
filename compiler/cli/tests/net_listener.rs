@@ -118,20 +118,20 @@ const ECHO_ONCE: &str = r#"fn echoOne(lh: Int): Int {
 
 let listener = TcpListener.bind("127.0.0.1", 0);
 let port = listener.port();
-print(port > 0);
+println!(port > 0);
 let srv = Thread.spawn((): Int => echoOne(listener.handle));
 let c: TcpStream = await TcpStream.connect("127.0.0.1", port);
 let ping: Array<Int> = [112, 105, 110, 103];
-print(await c.write(ping));
+println!(await c.write(ping));
 let back: Array<Int> = await drain(c, 4);
-print(back.length());
-print(back[0]);
-print(back[1]);
-print(back[2]);
-print(back[3]);
+println!(back.length());
+println!(back[0]);
+println!(back[1]);
+println!(back[2]);
+println!(back[3]);
 c.close();
 let done = srv.join().unwrap();
-print(done);
+println!(done);
 listener.close();
 "#;
 
@@ -182,8 +182,8 @@ async fn dialAll(port: Int, i: Int, ok: Int): Promise<Int> {
 
 let ok: Int = await dialAll(port, 0, 0);
 let done = srv.join().unwrap();
-print(ok);
-print(done);
+println!(ok);
+println!(done);
 listener.close();
 "#;
 

@@ -26,8 +26,8 @@ fn Main(): Int {
     unsafe {
         rc = velloRender(128, 96, Pointer.fromAddress<Byte>(list.address()), list.length(), Pointer.fromAddress<Byte>(px.address()))
     }
-    print("rc:", rc, "records:", d.recordCount(), "bytes:", list.length())
-    print("corner:", pixelAt(px, 2, 2))
+    println!("rc:", rc, "records:", d.recordCount(), "bytes:", list.length())
+    println!("corner:", pixelAt(px, 2, 2))
 
     let ink = false
     let y = 16
@@ -42,7 +42,7 @@ fn Main(): Int {
         }
         y += 1
     }
-    print("heading ink:", ink)
+    println!("heading ink:", ink)
     let extra = DisplayList.createDefault()
     extra.fillRect(rgba(20, 22, 26, 255), 0.0, 0.0, 128.0, 96.0)
     extra.roundRect(rgba(200, 50, 50, 255), 10.0, 10.0, 20.0, 20.0, 8.0)
@@ -63,13 +63,13 @@ fn Main(): Int {
     unsafe {
         erc = velloRender(128, 96, Pointer.fromAddress<Byte>(elist.address()), elist.length(), Pointer.fromAddress<Byte>(epx.address()))
     }
-    print("extra rc:", erc)
-    print("round center:", pixelAt(epx, 20, 20), "corner:", pixelAt(epx, 11, 11))
-    print("moved:", pixelAt(epx, 55, 5), "origin:", pixelAt(epx, 5, 5))
-    print("image:", pixelAt(epx, 105, 55))
-    print("poly center:", pixelAt(epx, 95, 25), "outside:", pixelAt(epx, 60, 60))
+    println!("extra rc:", erc)
+    println!("round center:", pixelAt(epx, 20, 20), "corner:", pixelAt(epx, 11, 11))
+    println!("moved:", pixelAt(epx, 55, 5), "origin:", pixelAt(epx, 5, 5))
+    println!("image:", pixelAt(epx, 105, 55))
+    println!("poly center:", pixelAt(epx, 95, 25), "outside:", pixelAt(epx, 60, 60))
     unsafe {
-        print("abi:", velloAbiVersion())
+        println!("abi:", velloAbiVersion())
     }
     return 0
 }

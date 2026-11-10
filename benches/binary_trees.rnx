@@ -46,7 +46,7 @@ fn oneTree(depth: Int, item: Int): Int {
 }
 
 fn treePhase(minDepth: Int, maxDepth: Int): Int {
-    print("RESULT stretch", oneTree(maxDepth + 1, 0));
+    println!("RESULT stretch", oneTree(maxDepth + 1, 0));
     let llItems: Array<Int> = [];
     let llLefts: Array<Int> = [];
     let llRights: Array<Int> = [];
@@ -68,10 +68,10 @@ fn treePhase(minDepth: Int, maxDepth: Int): Int {
             i = i + 1;
         }
         total = total + acc;
-        print("RESULT depth", d, acc);
+        println!("RESULT depth", d, acc);
         d = d + 2;
     }
-    print("RESULT longlived", checkTree(llItems, llLefts, llRights, longlived));
+    println!("RESULT longlived", checkTree(llItems, llLefts, llRights, longlived));
     return total;
 }
 
@@ -104,12 +104,12 @@ fn Main(): Int {
     let t0 = Clock.mono().nanos;
     let loopSum = treePhase(minDepth, maxDepth);
     let t1 = Clock.mono().nanos;
-    print("RESULT looptotal", loopSum);
-    print("RESULT treems", (t1 - t0) / 1000000);
+    println!("RESULT looptotal", loopSum);
+    println!("RESULT treems", (t1 - t0) / 1000000);
     let c0 = Clock.mono().nanos;
     let mix = objectChurn(churn);
     let c1 = Clock.mono().nanos;
-    print("RESULT churnmix", mix);
-    print("RESULT churnms", (c1 - c0) / 1000000);
+    println!("RESULT churnmix", mix);
+    println!("RESULT churnms", (c1 - c0) / 1000000);
     return 0;
 }

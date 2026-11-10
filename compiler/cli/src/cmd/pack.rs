@@ -7,7 +7,7 @@ pub(super) fn run_pack(package: Option<String>, out_dir: Option<std::path::PathB
             let targets = match cli::resolve_pack_targets(&cwd, package.as_deref()) {
                 Ok(t) => t,
                 Err(e) => {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             };
@@ -43,7 +43,7 @@ pub(super) fn run_pack(package: Option<String>, out_dir: Option<std::path::PathB
                     }
                 }
                 Err(e) => {
-                    println!("{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             }

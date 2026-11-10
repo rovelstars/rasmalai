@@ -13,9 +13,9 @@ Paste it into a file or run it straight in the playground:
 ```rnx
 import { JSON } from "@std/json";
 
-print(JSON.stringify(JSON.parse("12345")));
+println!(JSON.stringify(JSON.parse("12345")));
 let obj = JSON.parseObject("{\"count\": 41}");
-print(obj.get("count"));
+println!(obj.get("count"));
 ```
 
 ## Keep going

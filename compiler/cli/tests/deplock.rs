@@ -49,7 +49,7 @@ fn test_rnx_lock_generation() {
     let app = base.join("app");
     lock(&app);
     let text = std::fs::read_to_string(app.join("Project.deplock")).unwrap();
-    assert!(text.contains("version: 2"), "{text}");
+    assert!(text.contains("version: 3"), "{text}");
     let app_pos = text.find("name: \"app\"").unwrap();
     let dep_pos = text.find("name: \"dep_math\"").unwrap();
     assert!(app_pos < dep_pos, "packages sorted by name:\n{text}");

@@ -469,65 +469,6 @@ impl<'a> Builder<'a> {
                 if let Some(fid) = self.module.foreign_index.get(n).copied() {
                     return self.call_foreign(fid, args, span);
                 }
-                if n == "print" {
-                    let mut argv = Vec::with_capacity(args.len());
-                    for a in args {
-                        let v = self.lower_expr(&a.value.node, a.value.span)?.0;
-                        if self.records.contains_key(&v) {
-                            argv.push(self.record_to_str(v, a.value.span));
-                        } else if self.nub_has(v) {
-                            let pa = self.local(LirType::Any);
-                            self.emit(Instr::Copy { span: a.value.span, dst: pa, src: v });
-                            argv.push(pa);
-                        } else {
-                            argv.push(v);
-                        }
-                    }
-                    if let Some(id) = self.module.fn_index.get("std.io.write").copied() {
-                        let mut joined: Option<Local> = None;
-                        for v in argv {
-                            let av = self.coerce_to_slot(v, &LirType::Any, span);
-                            let fd = self.const_int(1, span);
-                            let s = self.local(LirType::Str);
-                            self.emit(Instr::Call { span,
-                                dsts: vec![s],
-                                err: None,
-                                target: CallTarget::Builtin("__rnx_io_pretty".to_string()),
-                                args: vec![av, fd],
-                            });
-                            joined = Some(match joined {
-                                None => s,
-                                Some(acc) => {
-                                    let gap = self.local(LirType::Str);
-                                    self.emit(Instr::Const { span,  dst: gap, lit: Lit::Str(" ".to_string()) });
-                                    let pair = self.local(LirType::Str);
-                                    self.emit(Instr::Concat { span,  dst: pair, lhs: acc, rhs: gap });
-                                    let both = self.local(LirType::Str);
-                                    self.emit(Instr::Concat { span,  dst: both, lhs: pair, rhs: s });
-                                    both
-                                }
-                            });
-                        }
-                        let text = match joined {
-                            Some(j) => j,
-                            None => {
-                                let e = self.local(LirType::Str);
-                                self.emit(Instr::Const { span,  dst: e, lit: Lit::Str(String::new()) });
-                                e
-                            }
-                        };
-                        return self.call_fn(id, targs, vec![text], &BTreeMap::new(), span);
-                    }
-                    self.emit(Instr::Call { span, 
-                        dsts: vec![],
-                        err: None,
-                        target: CallTarget::Builtin("print".to_string()),
-                        args: argv,
-                    });
-                    let dst = self.local(LirType::Null);
-                    self.emit(Instr::Const { span,  dst, lit: Lit::Null });
-                    return Ok((dst, Simple::Other));
-                }
                 if n == "assert" {
                     if args.len() != 2 {
                         return self.fail(self.err(
@@ -1143,44 +1084,72 @@ impl<'a> Builder<'a> {
         ei: usize,
         arg: &A::CallArg,
     ) -> Result<Option<(Local, Simple)>, Diagnostic> {
-        match &arg.value.node {
+        self.try_lower_expected_enum(ei, &arg.value)
+    }
+
+    fn variant_name_free(&self, name: &str) -> bool {
+        self.lookup(name).is_none()
+            && !self.module.fn_index.contains_key(name)
+            && !self.module.class_index.contains_key(name)
+            && !self.module.interface_index.contains_key(name)
+            && !self.module.enum_index.contains_key(name)
+            && !self.module.enums.iter().any(|e| e.name == name)
+    }
+
+    pub(super) fn try_lower_expected_enum(
+        &mut self,
+        ei: usize,
+        value: &A::Spanned<A::Expr>,
+    ) -> Result<Option<(Local, Simple)>, Diagnostic> {
+        let unit = |this: &mut Self, vname: &str| -> Result<Option<(Local, Simple)>, Diagnostic> {
+            if this.module.enums[ei].variant_index.get(vname).is_none() {
+                return Ok(None);
+            }
+            let vi = this.module.enums[ei].variant_index[vname];
+            let arity = this.module.enums[ei].variants[vi].payload.len();
+            if arity != 0 {
+                return this.fail(this.err(
+                    Code::E108,
+                    format!("variant `{vname}` takes {arity} payload args, use `{vname}(...)`"),
+                    value.span,
+                ));
+            }
+            let dst = this.local(LirType::Enum(ei));
+            this.emit(Instr::EnumNew {
+                span: value.span,
+                dst,
+                enu: ei,
+                variant: vi,
+                payload: Vec::new(),
+            });
+            Ok(Some((dst, Simple::Other)))
+        };
+
+        match &value.node {
             A::Expr::ImplicitMember(path) => {
                 let vname = path.last().cloned().unwrap_or_default();
-                let vi = self.module.enums[ei]
-                    .variant_index
-                    .get(&vname)
-                    .copied()
-                    .ok_or_else(|| self.unknown_variant(&vname, arg.value.span))?;
-                let arity = self.module.enums[ei].variants[vi].payload.len();
-                if arity != 0 {
-                    return self.fail(self.err(
-                        Code::E108,
-                        format!("variant `.{vname}` takes {arity} payload args, use `.{vname}(...)`"),
-                        arg.value.span,
-                    ));
+                if !self.module.enums[ei].variant_index.contains_key(&vname) {
+                    return Err(self.unknown_variant(&vname, value.span));
                 }
-                let dst = self.local(LirType::Enum(ei));
-                self.emit(Instr::EnumNew { span: arg.value.span,
-                    dst,
-                    enu: ei,
-                    variant: vi,
-                    payload: Vec::new(),
-                });
-                Ok(Some((dst, Simple::Other)))
+                unit(self, &vname)
             }
-            A::Expr::Call { callee, args: pargs, trailing: None, .. }
-                if matches!(&callee.node, A::Expr::ImplicitMember(_)) =>
-            {
-                let vname = match &callee.node {
-                    A::Expr::ImplicitMember(p) => p.last().cloned().unwrap_or_default(),
-                    _ => String::new(),
+            A::Expr::Ident(name) if self.variant_name_free(name) => unit(self, name),
+            A::Expr::Call { callee, args: pargs, trailing: None, .. } => {
+                let (vname, implicit) = match &callee.node {
+                    A::Expr::ImplicitMember(path) => {
+                        (path.last().cloned().unwrap_or_default(), true)
+                    }
+                    A::Expr::Ident(name) if self.variant_name_free(name) => (name.clone(), false),
+                    _ => return Ok(None),
                 };
-                let vi = self.module.enums[ei]
-                    .variant_index
-                    .get(&vname)
-                    .copied()
-                    .ok_or_else(|| self.unknown_variant(&vname, arg.value.span))?;
-                self.lower_enum_construct(ei, vi, pargs, arg.value.span).map(Some)
+                if !self.module.enums[ei].variant_index.contains_key(&vname) {
+                    if implicit {
+                        return Err(self.unknown_variant(&vname, value.span));
+                    }
+                    return Ok(None);
+                }
+                let vi = self.module.enums[ei].variant_index[&vname];
+                self.lower_enum_construct(ei, vi, pargs, value.span).map(Some)
             }
             _ => Ok(None),
         }
@@ -1207,6 +1176,14 @@ impl<'a> Builder<'a> {
         match declared {
             Some(d) => {
                 let slot = self.resolve_here(d);
+                if matches!(&slot, LirType::Array(inner) if matches!(**inner, LirType::Any))
+                    && matches!(arg.value.node, A::Expr::Array(_))
+                {
+                    let prev = self.array_elem_hint.replace(LirType::Any);
+                    let out = self.lower_expr(&arg.value.node, arg.value.span);
+                    self.array_elem_hint = prev;
+                    return out;
+                }
                 self.lower_arg_with_slot(&slot, arg)
             }
             None => self.lower_expr(&arg.value.node, arg.value.span),
@@ -1732,23 +1709,27 @@ impl<'a> Builder<'a> {
         entries: &[A::MapEntry],
         span: Span,
     ) -> Result<(Local, Simple), Diagnostic> {
-        let ci = match self
+        let Some(ci) = self
             .module
             .class_index
             .iter()
             .filter(|(n, _)| short_name(n) == "Map")
             .map(|(_, ci)| *ci)
             .find(|ci| self.module.classes[*ci].field_index.contains_key("handle"))
-        {
-            Some(ci) => ci,
-            None => {
-                return self.fail(self.err(
-                    Code::E108,
-                    "map literals need `import { Map } from \"@std/collections\"`",
-                    span,
-                ));
-            }
+        else {
+            return self.fail(self.err(
+                Code::E108,
+                "map literals need `import { Map } from \"@std/collections\"`",
+                span,
+            ));
         };
+        if self.module.classes[ci].name == "std.collections.Map" && !self.explicit_std_collections {
+            return self.fail(self.err(
+                Code::E108,
+                "map literals need `import { Map } from \"@std/collections\"`",
+                span,
+            ));
+        }
         let (cname, handle_field) = {
             let class = &self.module.classes[ci];
             (class.name.clone(), class.field_index["handle"])
@@ -1911,6 +1892,22 @@ impl<'a> Builder<'a> {
         args: &[A::Spanned<A::Expr>],
         span: Span,
     ) -> Result<(Local, Simple), Diagnostic> {
+        if self.macro_fns.contains(name) {
+            let array = A::Expr::Array(
+                args.iter()
+                    .map(|arg| A::ArrayElem {
+                        spread: false,
+                        expr: arg.clone(),
+                    })
+                    .collect(),
+            );
+            let callee = A::sp(A::Expr::Ident(name.to_string()), span);
+            let arg = A::CallArg {
+                name: None,
+                value: A::sp(array, span),
+            };
+            return self.lower_call(&callee, &[], &[arg], span);
+        }
         match name {
             "Assert" => {
                 if args.is_empty() {
@@ -1961,7 +1958,7 @@ impl<'a> Builder<'a> {
             "EmbedBytes" => {
                 return self.fail(self.err(
                     Code::E122,
-                    "`EmbedBytes!` must expand in Phase A before lowering",
+                    "`EmbedBytes!` must expand during syntax expansion before lowering",
                     span,
                 ));
             }
