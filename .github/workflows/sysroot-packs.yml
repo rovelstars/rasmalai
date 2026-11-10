@@ -96,15 +96,15 @@ jobs:
           triple=x86_64-unknown-linux-musl
           archive=compiler/runtime/bundle/target/$triple/release/libruntime_native.a
           [ -f "$archive" ] || { echo "no runtime archive at $archive"; exit 1; }
-          gcc_dir="$(dirname "$(find /usr/lib/gcc/x86_64-linux-gnu -name crtbeginT.o -print -quit)")"
+          rust_sysroot="$(rustc --print sysroot)/lib/rustlib/$triple/lib/self-contained"
           builtins="$(find /usr/lib/llvm-22 /usr/lib/clang -name 'libclang_rt.builtins-x86_64.a' -print -quit)"
-          [ -d "$gcc_dir" ] || { echo "no GCC crtbeginT.o directory"; exit 1; }
+          [ -d "$rust_sysroot" ] || { echo "no Rust self-contained musl sysroot"; exit 1; }
+          [ -f "$rust_sysroot/libc.a" ] || { echo "no musl libc.a in the Rust sysroot"; exit 1; }
           [ -n "$builtins" ] || { echo "no compiler-rt x86_64 builtins"; exit 1; }
 
           pack="$RUNNER_TEMP/musl-pack"
           ./target/release/rnx sysroot build "$triple" \
-            --from /usr/lib/x86_64-linux-musl \
-            --from "$gcc_dir" \
+            --from "$rust_sysroot" \
             --runtime "$archive" \
             --builtins "$builtins" \
             --out "$pack" \
@@ -223,10 +223,17 @@ jobs:
             /usr/share/OVMF/x64/OVMF.4m.fd \
             /usr/share/edk2/ovmf/OVMF_CODE.fd \
             /usr/share/OVMF/OVMF_CODE.fd \
-            /usr/share/edk2/x64/OVMF_CODE.4m.fd; do
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.4m.fd \
+            /usr/share/edk2/x64/OVMF_CODE.4m.fd \
+            /usr/share/qemu/OVMF.fd; do
             if [ -f "$candidate" ]; then firmware="$candidate"; break; fi
           done
+          if [ -z "$firmware" ]; then
+            firmware="$(find /usr/share -name 'OVMF*.fd' -print -quit)"
+          fi
           [ -n "$firmware" ] || { echo "no OVMF firmware"; exit 1; }
+          echo "firmware: $firmware"
 
           esp="$RUNNER_TEMP/esp"
           rm -rf "$esp"
