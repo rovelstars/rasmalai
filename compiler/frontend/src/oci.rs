@@ -9,6 +9,9 @@ use std::path::{Component, Path, PathBuf};
 pub const OCI_INDEX_CAP: usize = 1024 * 1024;
 pub const OCI_MANIFEST_CAP: usize = 1024 * 1024;
 pub const OCI_BLOB_CAP: usize = 256 * 1024 * 1024;
+pub const OCI_TOKEN_ENV: &str = "RNX_OCI_PUSH_TOKEN";
+pub const OCI_USERNAME_ENV: &str = "RNX_OCI_PUSH_USERNAME";
+pub const PUSH_URL_ENV: &str = "RNX_OCI_PUSH_URL";
 const OCI_FETCH_WIDTH: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +92,49 @@ fn http_get(url: &str, accept: &str, cap: usize, what: &str) -> Result<Vec<u8>, 
                 format!("artifact origin unreachable ({what}: {e})"),
             )
         })?;
+    if response.status().as_u16() != 401 {
+        return read_artifact_response(response, cap, what);
+    }
+    let challenge = response
+        .headers()
+        .get("www-authenticate")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let credentials = oci_credentials().ok_or_else(|| {
+        Diagnostic::new(
+            Code::E108,
+            format!(
+                "artifact origin requires authentication ({what} answered HTTP 401)"
+            ),
+        )
+        .with_hint(format!(
+            "set {} to a registry token, and {} when the registry needs a username",
+            OCI_TOKEN_ENV, OCI_USERNAME_ENV
+        ))
+    })?;
+    let bearer = registry_token(&client, &challenge, &credentials)
+        .map_err(|e| Diagnostic::new(Code::E108, format!("artifact authentication failed: {}", e.message)))?;
+    let response = client
+        .get(url)
+        .header("Accept", accept)
+        .bearer_auth(bearer)
+        .send()
+        .map_err(|e| {
+            Diagnostic::new(
+                Code::E108,
+                format!("artifact origin unreachable ({what}: {e})"),
+            )
+        })?;
+    read_artifact_response(response, cap, what)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_artifact_response(
+    response: reqwest::blocking::Response,
+    cap: usize,
+    what: &str,
+) -> Result<Vec<u8>, Diagnostic> {
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         return Err(Diagnostic::new(
@@ -114,6 +160,128 @@ fn http_get(url: &str, accept: &str, cap: usize, what: &str) -> Result<Vec<u8>, 
         ));
     }
     Ok(bytes)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn oci_credentials() -> Option<(String, String)> {
+    let token = std::env::var(OCI_TOKEN_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())?;
+    let username = std::env::var(OCI_USERNAME_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_default();
+    Some((username, token))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn registry_token(
+    client: &reqwest::blocking::Client,
+    challenge: &str,
+    credentials: &(String, String),
+) -> Result<String, Diagnostic> {
+    let (realm, service, scope) = parse_bearer_challenge(challenge);
+    if realm.is_empty() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            "registry returned HTTP 401 without a bearer challenge",
+        ));
+    }
+    let mut url = realm;
+    let mut separator = if url.contains('?') { '&' } else { '?' };
+    if !service.is_empty() {
+        url.push(separator);
+        url.push_str("service=");
+        url.push_str(&encode_query(&service));
+        separator = '&';
+    }
+    if !scope.is_empty() {
+        url.push(separator);
+        url.push_str("scope=");
+        url.push_str(&encode_query(&scope));
+    }
+    let mut request = client.get(&url);
+    if !credentials.0.is_empty() {
+        request = request.basic_auth(&credentials.0, Some(&credentials.1));
+    }
+    let response = request.send().map_err(|e| {
+        Diagnostic::new(Code::E108, format!("token endpoint unreachable: {e}"))
+    })?;
+    if !response.status().is_success() {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("token endpoint answered HTTP {}", response.status().as_u16()),
+        ));
+    }
+    let bytes = response.bytes().map_err(|e| {
+        Diagnostic::new(Code::E108, format!("cannot read the token response: {e}"))
+    })?;
+    let value: JsonValue = parse_json(&bytes)
+        .map_err(|_| Diagnostic::new(Code::E108, "token response is not JSON"))?;
+    value
+        .get("token")
+        .or_else(|| value.get("access_token"))
+        .and_then(|token| token.as_str())
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| Diagnostic::new(Code::E108, "token response carries no token"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_bearer_challenge(value: &str) -> (String, String, String) {
+    let rest = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .unwrap_or(value);
+    let mut realm = String::new();
+    let mut service = String::new();
+    let mut scope = String::new();
+    let mut quoted = false;
+    let mut current = String::new();
+    let mut parts = Vec::new();
+    for c in rest.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                current.push(c);
+            }
+            ',' if !quoted => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    for part in parts {
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').to_string();
+        match key.trim().to_ascii_lowercase().as_str() {
+            "realm" => realm = value,
+            "service" => service = value,
+            "scope" => scope = value,
+            _ => {}
+        }
+    }
+    (realm, service, scope)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -818,6 +986,7 @@ pub struct AssembleInput {
     pub platform: Option<(String, String)>,
     pub generator: String,
     pub upstream: String,
+    pub source: Option<String>,
     pub bytes: Vec<u8>,
 }
 
@@ -935,9 +1104,20 @@ pub fn assemble_index(inputs: &[AssembleInput]) -> Result<Assembly, Diagnostic> 
     let mut manifests: Vec<(String, Vec<u8>)> = Vec::with_capacity(layers.len());
     for (blob_digest, input) in &layers {
         blob_map.insert(blob_digest.clone(), input.bytes.clone());
+        let manifest_annotations = input
+            .source
+            .as_deref()
+            .map(|source| {
+                format!(
+                    ", \"annotations\": {{\"org.opencontainers.image.source\": \"{}\"}}",
+                    json_escape(source)
+                )
+            })
+            .unwrap_or_default();
         let manifest = format!(
-            "{{\"schemaVersion\": 2, \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\", \"config\": {{\"mediaType\": \"application/vnd.oci.image.config.v1+json\", \"digest\": \"{config_digest}\", \"size\": 2}}, \"layers\": [{{\"mediaType\": \"application/vnd.oci.image.layer.v1.tar\", \"digest\": \"{blob_digest}\", \"size\": {}}}]}}",
-            input.bytes.len()
+            "{{\"schemaVersion\": 2, \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\", \"config\": {{\"mediaType\": \"application/vnd.oci.image.config.v1+json\", \"digest\": \"{config_digest}\", \"size\": 2}}, \"layers\": [{{\"mediaType\": \"application/vnd.oci.image.layer.v1.tar\", \"digest\": \"{blob_digest}\", \"size\": {}}}]{} }}",
+            input.bytes.len(),
+            manifest_annotations
         );
         let manifest_digest = format!("sha256:{}", Sha256::hexdigest(manifest.as_bytes()));
         let platform = match &input.platform {
@@ -955,6 +1135,9 @@ pub fn assemble_index(inputs: &[AssembleInput]) -> Result<Assembly, Diagnostic> 
         ann.insert("run.rasmalai.role", &input.role);
         ann.insert("run.rasmalai.target", &input.target);
         ann.insert("run.rasmalai.upstream", &input.upstream);
+        if let Some(source) = input.source.as_deref() {
+            ann.insert("org.opencontainers.image.source", source);
+        }
         let ann_json: Vec<String> = ann
             .iter()
             .map(|(k, v)| format!("\"{}\": \"{}\"", json_escape(k), json_escape(v)))
@@ -968,8 +1151,18 @@ pub fn assemble_index(inputs: &[AssembleInput]) -> Result<Assembly, Diagnostic> 
         manifests.push((manifest_digest, manifest.into_bytes()));
     }
     descriptors.sort();
+    let annotations = inputs
+        .iter()
+        .find_map(|input| input.source.as_deref())
+        .map(|source| {
+            format!(
+                ", \"annotations\": {{\"org.opencontainers.image.source\": \"{}\"}}",
+                json_escape(source)
+            )
+        })
+        .unwrap_or_default();
     let index = format!(
-        "{{\"schemaVersion\": 2, \"manifests\": [{}]}}",
+        "{{\"schemaVersion\": 2, \"manifests\": [{}]{annotations}}}",
         descriptors.join(", ")
     );
     let index_bytes = index.into_bytes();
@@ -1547,8 +1740,27 @@ mod tests {
             platform: platform_for_triple(target),
             generator: "rnx-bindgen 0.1.0".to_string(),
             upstream: format!("sqlite@sha256:{}", "cd".repeat(32)),
+            source: None,
             bytes: format!("contents of {title}").into_bytes(),
         }
+    }
+
+    #[test]
+    fn assemble_index_links_the_source_repository() {
+        let mut input = assemble_input("sysroot", "sysroot.tar.gz", "sysroot", "x86_64-unknown-linux-musl");
+        input.source = Some("https://github.com/rovelstars/rasmalai".to_string());
+        let assembly = assemble_index(&[input]).unwrap();
+        let index = String::from_utf8_lossy(&assembly.index_bytes);
+        assert!(
+            index.contains("org.opencontainers.image.source"),
+            "{index}"
+        );
+        assert!(index.contains("https://github.com/rovelstars/rasmalai"), "{index}");
+        let manifest = String::from_utf8_lossy(&assembly.manifests[0].1);
+        assert!(
+            manifest.contains("https://github.com/rovelstars/rasmalai"),
+            "{manifest}"
+        );
     }
 
     #[test]

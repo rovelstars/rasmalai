@@ -215,6 +215,7 @@ pub fn collect_pipeline_inputs(
                 platform: frontend::oci::platform_for_triple(&target),
                 generator: frontend::bindgen::generator_string(),
                 upstream: upstream.clone(),
+                source: None,
                 bytes,
             });
         }
@@ -280,6 +281,7 @@ pub fn collect_pipeline_inputs(
                 platform: frontend::oci::platform_for_triple(target),
                 generator: format!("rnx-publish {}", env!("CARGO_PKG_VERSION")),
                 upstream,
+                source: None,
                 bytes,
             });
         }
@@ -287,40 +289,224 @@ pub fn collect_pipeline_inputs(
     Ok(inputs)
 }
 
-fn push_request(
-    agent: &ureq::Agent,
-    method: &str,
-    url: &str,
-    token: Option<&str>,
-    content_type: &str,
-    body: &[u8],
-) -> Result<(u16, Vec<(String, String)>, Vec<u8>), Diagnostic> {
-    let mut req = match method {
-        "POST" => agent.post(url),
-        _ => agent.put(url),
-    };
-    if let Some(t) = token {
-        req = req.header("Authorization", &format!("Bearer {t}"));
-    }
-    let mut response = req
-        .header("Content-Type", content_type)
-        .send(body)
-        .map_err(|e| Diagnostic::new(Code::E108, format!("artifact push failed ({method} {url}): {e}")))?;
-    let status = response.status().as_u16();
-    let mut headers = Vec::new();
-    for name in ["location", "docker-content-digest"] {
-        if let Some(value) = response.headers().get(name) {
-            headers.push((name.to_string(), value.to_str().unwrap_or_default().to_string()));
+pub struct PushAuth<'a> {
+    pub username: Option<&'a str>,
+    pub token: &'a str,
+}
+
+struct PushClient<'a> {
+    agent: ureq::Agent,
+    auth: Option<PushAuth<'a>>,
+    tokens: std::cell::RefCell<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Default)]
+struct BearerChallenge {
+    realm: String,
+    service: String,
+    scope: String,
+}
+
+impl<'a> PushClient<'a> {
+    fn new(auth: Option<PushAuth<'a>>) -> PushClient<'a> {
+        let config = ureq::config::Config::builder()
+            .timeout_global(Some(std::time::Duration::from_secs(60)))
+            .http_status_as_error(false)
+            .build();
+        PushClient {
+            agent: config.into(),
+            auth,
+            tokens: std::cell::RefCell::new(BTreeMap::new()),
         }
     }
-    let bytes = response.body_mut().read_to_vec().unwrap_or_default();
-    Ok((status, headers, bytes))
+
+    fn request(
+        &self,
+        method: &str,
+        url: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), Diagnostic> {
+        let (status, headers, bytes) = self.raw(method, url, None, content_type, body)?;
+        if status != 401 {
+            return Ok((status, headers, bytes));
+        }
+        let Some(auth) = &self.auth else {
+            return Ok((status, headers, bytes));
+        };
+        let challenge = headers
+            .iter()
+            .find(|(name, _)| name == "www-authenticate")
+            .map(|(_, value)| parse_bearer_challenge(value))
+            .unwrap_or_default();
+        if challenge.realm.is_empty() {
+            return Ok((status, headers, bytes));
+        }
+        let token = self.token_for(auth, &challenge)?;
+        self.raw(method, url, Some(&token), content_type, body)
+    }
+
+    fn token_for(&self, auth: &PushAuth<'_>, challenge: &BearerChallenge) -> Result<String, Diagnostic> {
+        let key = format!("{}|{}", challenge.realm, challenge.scope);
+        if let Some(token) = self.tokens.borrow().get(&key) {
+            return Ok(token.clone());
+        }
+        let mut url = challenge.realm.clone();
+        let mut sep = if url.contains('?') { '&' } else { '?' };
+        if !challenge.service.is_empty() {
+            url.push(sep);
+            url.push_str("service=");
+            url.push_str(&encode_query(&challenge.service));
+            sep = '&';
+        }
+        if !challenge.scope.is_empty() {
+            url.push(sep);
+            url.push_str("scope=");
+            url.push_str(&encode_query(&challenge.scope));
+        }
+        let mut request = self.agent.get(&url);
+        if let Some(username) = auth.username {
+            request = request.header("Authorization", &basic_auth(username, auth.token));
+        }
+        let mut response = request.call().map_err(|e| {
+            Diagnostic::new(Code::E108, format!("artifact push failed (token exchange: {e})"))
+        })?;
+        let status = response.status().as_u16();
+        let bytes = response.body_mut().read_to_vec().unwrap_or_default();
+        if !(200..300).contains(&status) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("artifact push failed (token exchange answered HTTP {status})"),
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+            Diagnostic::new(Code::E108, format!("artifact push failed (token response is not JSON: {e})"))
+        })?;
+        let token = value
+            .get("token")
+            .or_else(|| value.get("access_token"))
+            .and_then(|value| value.as_str())
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| {
+                Diagnostic::new(Code::E108, "artifact push failed (token response carries no token)")
+            })?
+            .to_string();
+        self.tokens.borrow_mut().insert(key, token.clone());
+        Ok(token)
+    }
+
+    fn raw(
+        &self,
+        method: &str,
+        url: &str,
+        token: Option<&str>,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), Diagnostic> {
+        let mut req = match method {
+            "POST" => self.agent.post(url),
+            _ => self.agent.put(url),
+        };
+        if let Some(token) = token.or_else(|| self.auth.as_ref().map(|auth| auth.token)) {
+            req = req.header("Authorization", &format!("Bearer {token}"));
+        }
+        let mut response = req
+            .header("Content-Type", content_type)
+            .send(body)
+            .map_err(|e| Diagnostic::new(Code::E108, format!("artifact push failed ({method} {url}): {e}")))?;
+        let status = response.status().as_u16();
+        let mut headers = Vec::new();
+        for name in ["location", "docker-content-digest", "www-authenticate"] {
+            if let Some(value) = response.headers().get(name) {
+                headers.push((name.to_string(), value.to_str().unwrap_or_default().to_string()));
+            }
+        }
+        let bytes = response.body_mut().read_to_vec().unwrap_or_default();
+        Ok((status, headers, bytes))
+    }
+}
+
+fn parse_bearer_challenge(value: &str) -> BearerChallenge {
+    let rest = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .unwrap_or(value);
+    let mut challenge = BearerChallenge::default();
+    for part in split_quoted(rest, ',') {
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').to_string();
+        match key.trim().to_ascii_lowercase().as_str() {
+            "realm" => challenge.realm = value,
+            "service" => challenge.service = value,
+            "scope" => challenge.scope = value,
+            _ => {}
+        }
+    }
+    challenge
+}
+
+fn split_quoted(value: &str, separator: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for c in value.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                current.push(c);
+            }
+            c if c == separator && !quoted => {
+                out.push(current.trim().to_string());
+                current.clear();
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_string());
+    }
+    out
+}
+
+fn encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn basic_auth(username: &str, token: &str) -> String {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{username}:{token}"));
+    format!("Basic {encoded}")
 }
 
 pub fn push_assembly(
     base_url: &str,
     repo: &str,
     token: Option<&str>,
+    assembly: &frontend::oci::Assembly,
+) -> Result<(), Diagnostic> {
+    let auth = token.map(|token| PushAuth {
+        username: None,
+        token,
+    });
+    push_assembly_as(base_url, repo, "latest", auth, assembly)
+}
+
+pub fn push_assembly_as(
+    base_url: &str,
+    repo: &str,
+    reference: &str,
+    auth: Option<PushAuth<'_>>,
     assembly: &frontend::oci::Assembly,
 ) -> Result<(), Diagnostic> {
     let base = base_url.trim().trim_end_matches('/').to_string();
@@ -330,14 +516,16 @@ pub fn push_assembly(
             format!("artifact push failed: push URL `{base}` must start with `http://` or `https://`"),
         ));
     }
-    let config = ureq::config::Config::builder()
-        .timeout_global(Some(std::time::Duration::from_secs(60)))
-        .http_status_as_error(false)
-        .build();
-    let agent: ureq::Agent = config.into();
+    if reference.is_empty() || reference.contains('/') || reference.contains(' ') {
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!("artifact push failed: `{reference}` is not a valid tag"),
+        ));
+    }
+    let client = PushClient::new(auth);
     for (digest, bytes) in assembly.blobs.iter() {
         let mono = format!("{base}/v2/{repo}/blobs/uploads/?digest={digest}");
-        let (status, headers, _) = push_request(&agent, "POST", &mono, token, "application/octet-stream", bytes)?;
+        let (status, headers, _) = client.request("POST", &mono, "application/octet-stream", bytes)?;
         if status == 201 {
             continue;
         }
@@ -353,7 +541,7 @@ pub fn push_assembly(
         };
         let resume = if location.contains("digest=") { location } else { format!("{location}&digest={digest}") };
         let resume = if resume.starts_with("http") { resume } else { format!("{base}{resume}") };
-        let (status, _, _) = push_request(&agent, "PUT", &resume, token, "application/octet-stream", bytes)?;
+        let (status, _, _) = client.request("PUT", &resume, "application/octet-stream", bytes)?;
         if !(200..300).contains(&status) {
             return Err(Diagnostic::new(
                 Code::E108,
@@ -363,7 +551,7 @@ pub fn push_assembly(
     }
     for (digest, bytes) in assembly.manifests.iter() {
         let url = format!("{base}/v2/{repo}/manifests/{digest}");
-        let (status, _, _) = push_request(&agent, "PUT", &url, token, "application/vnd.oci.image.manifest.v1+json", bytes)?;
+        let (status, _, _) = client.request("PUT", &url, "application/vnd.oci.image.manifest.v1+json", bytes)?;
         if !(200..300).contains(&status) {
             return Err(Diagnostic::new(
                 Code::E108,
@@ -371,8 +559,8 @@ pub fn push_assembly(
             ));
         }
     }
-    let url = format!("{base}/v2/{repo}/manifests/latest");
-    let (status, _, _) = push_request(&agent, "PUT", &url, token, "application/vnd.oci.image.index.v1+json", &assembly.index_bytes)?;
+    let url = format!("{base}/v2/{repo}/manifests/{reference}");
+    let (status, _, _) = client.request("PUT", &url, "application/vnd.oci.image.index.v1+json", &assembly.index_bytes)?;
     if !(200..300).contains(&status) {
         return Err(Diagnostic::new(
             Code::E108,
@@ -1213,6 +1401,7 @@ mod tests {
             platform: Some(("linux".to_string(), "amd64".to_string())),
             generator: "rnx-publish 0.1.0".to_string(),
             upstream: format!("demo@sha256:{}", "ab".repeat(32)),
+            source: None,
             bytes: b"fake staged bytes".to_vec(),
         }]
     }
@@ -1236,6 +1425,44 @@ mod tests {
         drop(manifests);
         let hexes = frontend::oci::assembly_blob_hexes(&assembly);
         assert_eq!(cross_check_local_artifacts(&dir, &hexes).unwrap(), 0);
+    }
+
+    #[test]
+    fn bearer_challenge_survives_a_comma_in_scope() {
+        let challenge = parse_bearer_challenge(
+            "Bearer realm=\"https://ghcr.io/token\",service=\"ghcr.io\",scope=\"repository:rovelstars/rnx-sysroot:push,pull\"",
+        );
+        assert_eq!(challenge.realm, "https://ghcr.io/token");
+        assert_eq!(challenge.service, "ghcr.io");
+        assert_eq!(challenge.scope, "repository:rovelstars/rnx-sysroot:push,pull");
+    }
+
+    #[test]
+    fn query_encoding_keeps_the_scope_value_intact() {
+        assert_eq!(
+            encode_query("repository:rovelstars/rnx-sysroot:push,pull"),
+            "repository%3Arovelstars%2Frnx-sysroot%3Apush%2Cpull"
+        );
+    }
+
+    #[test]
+    fn push_assembly_as_uses_the_requested_tag() {
+        let assembly = frontend::oci::assemble_index(&push_inputs()).unwrap();
+        let origin = start_push_origin();
+        push_assembly_as(
+            &origin.base,
+            "org/demo",
+            "rnx-0.2.1-x86_64-unknown-linux-gnu",
+            None,
+            &assembly,
+        )
+        .unwrap();
+        let manifests = origin.manifests.lock().unwrap();
+        assert!(
+            manifests.contains_key("rnx-0.2.1-x86_64-unknown-linux-gnu"),
+            "{manifests:?}"
+        );
+        assert!(!manifests.contains_key("latest"), "{manifests:?}");
     }
 
     #[test]
