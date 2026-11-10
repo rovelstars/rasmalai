@@ -162,10 +162,28 @@ jobs:
       - name: Smoke test
         if: ${{ matrix.leg == 'x86_64-windows' }}
         shell: msys2 {0}
+        env:
+          RUST_BACKTRACE: full
         run: |
-          ./target/x86_64-pc-windows-gnu/release/rnx.exe --version
+          set +e
+          rnx=./target/x86_64-pc-windows-gnu/release/rnx.exe
+          "$rnx" --version
           echo 'println!("release-ok");' > /tmp/smoke.rnx
-          ./target/x86_64-pc-windows-gnu/release/rnx.exe run /tmp/smoke.rnx
+          "$rnx" --no-color check /tmp/smoke.rnx
+          echo "check exit=$?"
+          out="$("$rnx" --no-color build /tmp/smoke.rnx 2>&1)"
+          echo "$out"
+          echo "build exit=$?"
+          art="$(printf '%s\n' "$out" | sed -n 's/^artifact: //p' | tail -1 | sed 's/ (fresh)$//')"
+          echo "artifact=$art"
+          if [ -n "$art" ] && [ -f "$art" ]; then
+            "$art"
+            echo "artifact exit=$?"
+            gdb -batch -ex run -ex bt --args "$art"
+          fi
+          "$rnx" --no-color run /tmp/smoke.rnx
+          echo "run exit=$?"
+          gdb -batch -ex run -ex bt --args "$rnx" --no-color check /tmp/smoke.rnx
 
       - name: Package tarball
         if: ${{ matrix.leg == 'x86_64-linux' || matrix.leg == 'aarch64-linux' }}
