@@ -97,7 +97,7 @@ jobs:
           command -v ld >/dev/null || { echo "no ld on PATH"; exit 1; }
           command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
 
-      - name: Prepare docs and offline probe
+      - name: Prepare offline probe
         if: matrix.shard == 1
         run: |
           # The standard library comes from the repository checkout
@@ -108,7 +108,6 @@ jobs:
           export RNX_VENDOR_DIR="$GITHUB_WORKSPACE/compiler/stdlib/src"
           export RNX_CACHE_HOME="${{ runner.temp }}/rnx-empty-cache"
           mkdir -p "$RNX_CACHE_HOME"
-          cargo run -q -p cli --release -- doc --json --stdlib --out-dir website/static/data
           mkdir -p "${{ runner.temp }}/offline-probe/src"
           cat > "${{ runner.temp }}/offline-probe/Project.config" <<'EOF'
           export default {

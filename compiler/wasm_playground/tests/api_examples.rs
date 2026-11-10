@@ -1,6 +1,15 @@
 fn api_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../website/static/data/api.json")
+    let dir = std::env::temp_dir().join(format!(
+        "rnx-api-examples-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    docgen::generate_stdlib_docs_json_local(&dir)
+        .unwrap_or_else(|e| panic!("cannot generate the stdlib catalog: {e}"))
 }
 
 fn host_skip(module: &str) -> Option<String> {
@@ -25,10 +34,12 @@ fn host_skip(module: &str) -> Option<String> {
 }
 
 fn examples() -> Vec<(String, String)> {
-    let text = match std::fs::read_to_string(api_path()) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
+    let path = api_path();
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::remove_dir_all(parent);
+    }
     let doc: serde_json::Value = serde_json::from_str(&text).expect("api.json parses");
     let mut out = Vec::new();
     let modules = doc.get("modules").and_then(|m| m.as_array()).cloned().unwrap_or_default();
@@ -80,10 +91,10 @@ fn examples() -> Vec<(String, String)> {
 #[test]
 fn api_examples_run_clean() {
     let cases = examples();
-    if cases.is_empty() {
-        eprintln!("api.json absent, skipping doc snippet run");
-        return;
-    }
+    assert!(
+        !cases.is_empty(),
+        "the stdlib catalog carries no documentation examples"
+    );
     for (ctx, code) in &cases {
         if code.contains("exit(") {
             continue;
