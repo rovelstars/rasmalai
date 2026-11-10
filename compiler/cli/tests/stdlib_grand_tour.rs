@@ -46,8 +46,18 @@ fn grand_tour_interpreter_and_native_binary() {
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
-    let meta = std::fs::metadata(&bin).unwrap();
-    assert!(meta.len() < 1_000_000, "dev binary links the runtime dynamically, not the archive");
+    // Fresh CI builds may not have the dev shared runtime next to the
+    // compiler, in which case the dev build statically links the archive
+    // by design. Assert the dynamic link only when the shared runtime is
+    // actually available.
+    let shared = std::path::Path::new(rnx)
+        .parent()
+        .map(|d| d.join("libruntime_native.so").is_file())
+        .unwrap_or(false);
+    if shared {
+        let meta = std::fs::metadata(&bin).unwrap();
+        assert!(meta.len() < 1_000_000, "dev binary links the runtime dynamically, not the archive");
+    }
     let run = std::process::Command::new(&bin).current_dir(&dir).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), EXPECTED);
