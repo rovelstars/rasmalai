@@ -316,7 +316,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 );
                 std::process::exit(1);
             }
-            let resolved_pack = if emit_obj && (object_macho || object_coff || object_wasm) {
+            let resolved_pack = if emit_obj {
                 None
             } else {
                 match super::resolve_target_pack(&root, &selected_target, &host) {
