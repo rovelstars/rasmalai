@@ -79,6 +79,10 @@ jobs:
             target: aarch64-macos
     env:
       TARGET: ${{ matrix.target }}
+      # Build and smoke tests compile against the checkout, never the
+      # registry. A tag push publishes @std/* only after every leg is
+      # green, so the registry still has the previous version here.
+      RNX_VENDOR_DIR: ${{ github.workspace }}/compiler/stdlib/src
     steps:
       - uses: actions/checkout@v5
         with:
@@ -152,7 +156,7 @@ jobs:
         if: ${{ matrix.leg != 'x86_64-windows' }}
         run: |
           ./target/release/rnx --version
-          echo 'print("release-ok");' > /tmp/smoke.rnx
+          echo 'println!("release-ok");' > /tmp/smoke.rnx
           ./target/release/rnx run /tmp/smoke.rnx
 
       - name: Smoke test
@@ -160,7 +164,7 @@ jobs:
         shell: msys2 {0}
         run: |
           ./target/x86_64-pc-windows-gnu/release/rnx.exe --version
-          echo 'print("release-ok");' > /tmp/smoke.rnx
+          echo 'println!("release-ok");' > /tmp/smoke.rnx
           ./target/x86_64-pc-windows-gnu/release/rnx.exe run /tmp/smoke.rnx
 
       - name: Package tarball
@@ -253,6 +257,9 @@ jobs:
     needs: publish
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # No RNX_VENDOR_DIR here on purpose: this job publishes the checkout's
+    # own stdlib, and its retry loop resolves each package's @std deps from
+    # the registry as the previous ones land.
     steps:
       - uses: actions/checkout@v5
 
