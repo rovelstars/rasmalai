@@ -20,7 +20,7 @@ export interface ChunkEntry {
 export const STD_DB = 'rnx-engine';
 export const STD_STORE = 'std';
 const STD_KEY_PREFIX = 'std::';
-const MAX_STD_MODULE_BYTES = 1024 * 1024;
+const MAX_STD_MODULE_BYTES = 2 * 1024 * 1024;
 const PREFETCH_ROUNDS = 8;
 
 export const PROD_REGISTRY = CANONICAL_ORIGIN;

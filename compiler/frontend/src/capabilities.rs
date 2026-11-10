@@ -6,9 +6,9 @@ use diagnostics::{Code, Diagnostic, Span};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-// Large standard-library modules (the UI core is thousands of lines) need more
+// Large standard-library modules (the UI core is over a mebibyte) need more
 // than the original 500k. The cap is a safety net, not a size limit.
-pub const DEFAULT_FUEL: u64 = 2_000_000;
+pub const DEFAULT_FUEL: u64 = 8_000_000;
 const SNIPPET_MAX: usize = 80;
 const SIG_MAX: usize = 96;
 

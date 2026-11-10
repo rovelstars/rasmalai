@@ -13,7 +13,7 @@
 // Uses `target/release/rnx` when present, otherwise `cargo run -q -p cli`.
 import { readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -83,16 +83,67 @@ const PERMISSIONS = {
 	process: [
 		{ perm: 'env:read:*', reason: 'flattenEnv reads caller-provided keys' },
 		{ perm: 'sys:exec:*', reason: 'Process.spawn and Process.run execute caller-provided binaries' }
-	]
+	],
+	log: [
+		'term:write',
+		{ perm: 'env:read:RNX_LOG', reason: 'RNX_LOG selects the log threshold' },
+		{ perm: 'fs:read:*', reason: 'stderr handles read through @std/fs' },
+		{ perm: 'fs:write:*', reason: 'stderr handles write through @std/fs' },
+		{ perm: 'unsafe:raw_memory', reason: 'stderr file handles include raw-memory mappings' }
+	],
+	prelude: [
+		'term:write',
+		{ perm: 'env:read:*', reason: 're-exported io and log read environment keys' },
+		{ perm: 'fs:read:*', reason: 're-exported io handles read through @std/fs' },
+		{ perm: 'fs:write:*', reason: 're-exported io handles write through @std/fs' },
+		{ perm: 'unsafe:raw_memory', reason: 're-exported io handles include raw-memory mappings' }
+	],
+	app: [
+		'term:write',
+		'fs:delegated',
+		{ perm: 'fs:read:*', reason: 'AppFiles reads caller-provided paths' },
+		{ perm: 'fs:write:*', reason: 'AppFiles and AppBundle write caller-provided paths' },
+		{ perm: 'unsafe:ffi', reason: 'app wraps the native host and text ABIs' },
+		{ perm: 'unsafe:raw_memory', reason: 'frame and packet buffers cross the C ABI' },
+		{ perm: 'env:read:RNX_SURFACE_SOCKET', reason: 'selects the surface socket transport' },
+		{ perm: 'env:read:RNX_UI_SCRIPT', reason: 'selects the headless UI script' },
+		{ perm: 'env:read:RNX_INSPECT', reason: 'enables the node inspector overlay' }
+	],
+	uefi: ['term:write'],
+	wasi: ['term:write']
 };
 
-function renderPermissions(name) {
-	const decls = PERMISSIONS[name];
-	if (!decls) return '';
+function renderPermissions(name, manifest) {
+	const decls = manifest?.permissions ?? PERMISSIONS[name];
+	if (!decls || decls.length === 0) return '';
 	const items = decls.map((d) =>
 		typeof d === 'string' ? JSON.stringify(d) : `{ perm: ${JSON.stringify(d.perm)}, reason: ${JSON.stringify(d.reason)} }`
 	);
 	return `,\n    permissions: [${items.join(', ')}]`;
+}
+
+// Native and system dependencies survive; path dependencies point at the
+// checkout and cannot travel with the published package.
+function renderDependencies(manifest) {
+	const deps = manifest?.dependencies ?? {};
+	const keep = Object.entries(deps).filter(([, v]) => !(v && typeof v === 'object' && 'path' in v));
+	if (keep.length === 0) return '';
+	const items = keep.map(([key, value]) => `${JSON.stringify(key)}: ${JSON.stringify(value)}`);
+	return `,\n    dependencies: { ${items.join(', ')} }`;
+}
+
+async function sourceManifest(name) {
+	const src = join(stdDir, name, 'Project.config');
+	if (!existsSync(src)) return null;
+	mkdirSync(stage, { recursive: true });
+	const tmp = join(stage, `${name.replace('/', '_')}.manifest.mjs`);
+	writeFileSync(tmp, readFileSync(src, 'utf8'));
+	try {
+		const mod = await import(pathToFileURL(tmp).href);
+		return mod.default ?? null;
+	} finally {
+		rmSync(tmp, { force: true });
+	}
 }
 
 const moduleBlurb = (name) => {
@@ -135,11 +186,12 @@ while (pending.length > 0) {
 			cpSync(join(stdDir, name, sub), join(dir, 'src', sub));
 		}
 		if (!existsSync(join(dir, 'Project.config'))) {
+			const manifest = await sourceManifest(name);
 			writeFileSync(join(dir, 'README.md'), `# ${full}\n\n${moduleBlurb(name)}\n`);
 			cpSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'));
 			writeFileSync(
 				join(dir, 'Project.config'),
-				`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))},\n        engine: ">=${cliVersion}"\n    },\n    entries: {\n        main: "src/lib.rnx",\n        docs: "docs"\n    }${renderPermissions(name)}\n}\n`
+				`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))},\n        engine: ">=${cliVersion}"\n    },\n    entries: {\n        main: "src/lib.rnx",\n        docs: "docs"\n    }${renderDependencies(manifest)}${renderPermissions(name, manifest)}\n}\n`
 			);
 			rnx(['fmt', join(dir, 'Project.config')], dir);
 			for (const f of [join(dir, 'src', 'lib.rnx'), ...(SUBMODULES[name] ?? []).map((s) => join(dir, 'src', s))]) {

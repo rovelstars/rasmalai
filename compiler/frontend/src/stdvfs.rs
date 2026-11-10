@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 static VFS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
-pub const MAX_STD_MODULE_BYTES: usize = 1024 * 1024;
+pub const MAX_STD_MODULE_BYTES: usize = 2 * 1024 * 1024;
 
 pub fn pin_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
