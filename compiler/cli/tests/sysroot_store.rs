@@ -366,13 +366,7 @@ fn offline_and_ci_missing_pack_fail_e124() {
         &root,
         &no_ci,
         &[("CI", "1")],
-        &[
-            "build",
-            main.to_str().unwrap(),
-            "--emit-obj",
-            "--target",
-            MUSL,
-        ],
+        &["build", main.to_str().unwrap(), "--target", MUSL],
     );
     assert_eq!(build.status.code(), Some(1), "{}", combined(&build));
     assert!(stderr(&build).contains("E124"), "{}", stderr(&build));
@@ -386,17 +380,34 @@ fn offline_and_ci_missing_pack_fail_e124() {
     let build = run(
         &root,
         &offline,
+        &["build", main.to_str().unwrap(), "--target", MUSL, "--offline"],
+    );
+    assert_eq!(build.status.code(), Some(1), "{}", combined(&build));
+    assert!(stderr(&build).contains("E124"), "{}", stderr(&build));
+}
+
+#[test]
+fn emit_obj_needs_no_target_pack() {
+    let (root, main) = project("emit-no-pack", Some(&format!("\"{MUSL}\"")));
+    let out = run_in(
+        &root,
+        &cache("emit-no-pack"),
+        &[("CI", "1")],
         &[
             "build",
             main.to_str().unwrap(),
             "--emit-obj",
             "--target",
             MUSL,
-            "--offline",
         ],
     );
-    assert_eq!(build.status.code(), Some(1), "{}", combined(&build));
-    assert!(stderr(&build).contains("E124"), "{}", stderr(&build));
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(!stderr(&out).contains("E124"), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains(".o"),
+        "{}",
+        stdout(&out)
+    );
 }
 
 #[test]
