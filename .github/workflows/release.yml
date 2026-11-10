@@ -257,9 +257,11 @@ jobs:
     needs: publish
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    # No RNX_VENDOR_DIR here on purpose: this job publishes the checkout's
-    # own stdlib, and its retry loop resolves each package's @std deps from
-    # the registry as the previous ones land.
+    # The version being published is not in the registry yet, so @std
+    # imports resolve from the checkout. The retry loop still handles a
+    # package whose docs were produced before its own deps landed.
+    env:
+      RNX_VENDOR_DIR: ${{ github.workspace }}/compiler/stdlib/src
     steps:
       - uses: actions/checkout@v5
 
