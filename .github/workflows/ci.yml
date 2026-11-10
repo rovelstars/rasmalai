@@ -90,25 +90,14 @@ jobs:
           command -v ld.lld >/dev/null || ln -sf /usr/lib/llvm-22/bin/ld.lld /usr/local/bin/ld.lld
           sudo sysctl -w kernel.core_pattern='/tmp/rnx-core-%e-%p' >/dev/null
           ulimit -c unlimited
-          # The standard library comes from the repo, never the network:
-          # stage the checkout sources into a vendor tree with zero
-          # network (every @std/* package named explicitly), so the suite
-          # below resolves @std/* with no registry access. Then resolve
-          # a probe build straight from that staged tree through the
-          # vendor override. A dead registry URL from here on, so any
-          # network access fails loud instead of silently fetching. The
-          # nextest suite itself runs without this override and keeps
-          # exercising the registry paths with mocks.
-          cargo run -q -p cli -- vendor \
-            @std/prelude @std/simd @std/collections @std/math \
-            @std/fs @std/bytes @std/time @std/random \
-            @std/sync @std/env @std/process @std/os \
-            @std/testing @std/web @std/net @std/json @std/io \
-            --dir "${{ runner.temp }}/std-vendor"
-          export RNX_VENDOR_DIR="${{ runner.temp }}/std-vendor"
-          export RNX_REGISTRY="http://127.0.0.1:9"
+          # The standard library comes from the repository checkout
+          # directly. There is no vendor staging step, no registry
+          # download, and no package list to keep in sync as modules are
+          # added. The checkout is the source of truth for local
+          # development and for CI.
+          export RNX_VENDOR_DIR="$GITHUB_WORKSPACE/compiler/stdlib/src"
           export RNX_CACHE_HOME="${{ runner.temp }}/rnx-empty-cache"
-          mkdir -p "${{ runner.temp }}/rnx-empty-cache"
+          mkdir -p "$RNX_CACHE_HOME"
           cargo run -q -p cli -- doc --json --stdlib --out-dir website/static/data
           mkdir -p "${{ runner.temp }}/offline-probe/src"
           cat > "${{ runner.temp }}/offline-probe/Project.config" <<'EOF'
@@ -125,9 +114,10 @@ jobs:
               return clock.now().toMillis();
           }
           EOF
-          # The staged tree alone (empty cache, dead registry) resolves
-          # through the local-source override and warns once per package.
-          cargo run -q -p cli -- build "${{ runner.temp }}/offline-probe/src/main.rnx" 2>"${{ runner.temp }}/probe-stderr.txt"
+          # The checkout alone (empty cache, dead registry for this one
+          # command) resolves through the local-source override and
+          # warns once per package.
+          RNX_REGISTRY="http://127.0.0.1:9" cargo run -q -p cli -- build "${{ runner.temp }}/offline-probe/src/main.rnx" 2>"${{ runner.temp }}/probe-stderr.txt"
           grep -q "using local source" "${{ runner.temp }}/probe-stderr.txt" || { echo "probe build printed no local-source warning"; cat "${{ runner.temp }}/probe-stderr.txt"; exit 1; }
           set +e
           "${{ runner.temp }}/offline-probe/.rnx-cache/build/dev/probe"
@@ -136,17 +126,11 @@ jobs:
           [ "$code" -eq 2 ] || { echo "probe binary returned $code (want 2)"; exit 1; }
           unset RNX_CACHE_HOME RNX_REGISTRY
           # RNX_VENDOR_DIR stays exported for the suite below: the
-          # standard library under test is the checkout staged above,
+          # standard library under test is the repository checkout,
           # never the registry cache, so `@std/*` resolution exercises
           # the edited sources (including declared `from runtime`
-          # imports) with no registry access. Tests that assert clean
-          # stderr filter the one-time "using local source" warning.
-          # Warm the global registry cache for the suite below: a fresh
-          # source tree hashes to a new cache key, so the first run on a
-          # new revision starts cold and every stdlib auto-seed would fail
-          # before any download is attempted. Seeding pins the exact
-          # engine-compatible versions the suite builds against.
-          cargo run -q -p cli -- download
+          # imports) with no registry access. Tests that need a registry
+          # run their own local fixture and set their own environment.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             FILTER="$(bash .github/scripts/affected-tests.sh "origin/${{ github.base_ref }}")"
             HEALTH="$(bash .github/scripts/main-health.sh || printf 'MAIN_GREEN\nINFLIGHT_NONE\n')"
