@@ -92,7 +92,7 @@ import { fn __rnx_clock_mono(): Int } from runtime "time";
 | `@std/net` | `TcpStream`, `TcpListener`, TLS, DNS |
 | `@std/io` | Terminal streams with pretty-printing, line input, size queries, and raw mode |
 | `@std/log` | Leveled logging macros writing to stderr, filtered by `RNX_LOG` |
-| `@std/uefi` | Console output for `x86_64-unknown-uefi` firmware applications |
+| `@std/uefi` | Prelude and console output for `x86_64-unknown-uefi` firmware applications |
 | `@std/prelude` | Foundation types (auto-imported) |
 
 Each module has a generated reference page under [its module docs](/docs/@std/simd/overview), rendered from the same `/** */` doc comments you write with `rnx doc`. Every registry package gets the same treatment: `/docs/@scope/name/overview` serves the overview, getting-started, and API reference for any published scoped package, std included, and unscoped packages serve the same pages at `/docs/<name>/overview`. Standard library packages also ship `docs/` guides with each release, readable on the same pages and on the package's Guides tab.
