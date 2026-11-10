@@ -46,15 +46,15 @@ fn grand_tour_interpreter_and_native_binary() {
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
-    // Fresh CI builds may not have the dev shared runtime next to the
-    // compiler, in which case the dev build statically links the archive
-    // by design. Assert the dynamic link only when the shared runtime is
-    // actually available.
+    // The shared runtime is the dev fast path. A release compiler links
+    // the archive statically, and a fresh CI build may not have the shared
+    // runtime next to the compiler at all, so assert the dynamic link only
+    // for a debug compiler when the shared runtime is present.
     let shared = std::path::Path::new(rnx)
         .parent()
         .map(|d| d.join("libruntime_native.so").is_file())
         .unwrap_or(false);
-    if shared {
+    if shared && cfg!(debug_assertions) {
         let deps = std::process::Command::new("readelf")
             .arg("-d")
             .arg(&bin)
