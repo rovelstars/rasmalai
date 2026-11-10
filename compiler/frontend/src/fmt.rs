@@ -842,6 +842,7 @@ impl<'a> Emitter<'a> {
                                     self.toks[j].kind,
                                     Fk::LParen
                                         | Fk::LBrack
+                                        | Fk::Hash
                                         | Fk::Word
                                         | Fk::Num
                                         | Fk::Str

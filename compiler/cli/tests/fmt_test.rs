@@ -75,6 +75,14 @@ fn run_fmt(args: &[&str]) -> std::process::Output {
 const MESSY_SRC: &str = "fn total( xs:Array )  :Int{\n\n\n    let sum=0;\n    let i=0;\n    while(i<xs.length){\n        let j=0;\n        while(j<2){\n            sum=sum+xs[i]*j;\n            j=j+1;\n        }\n        i=i+1;\n    }\n    return sum;\n}\n";
 
 #[test]
+fn test_fmt_keeps_attribute_brackets_tight() {
+    let src = "#[Macro]\nexport fn println(args: Array<Any>) {\n    ioWriteArgs(args, true, 1);\n}\n";
+    let out = fmt(src);
+    assert!(out.contains("#[Macro]"), "{out}");
+    assert!(!out.contains("# [Macro]"), "{out}");
+}
+
+#[test]
 fn test_fmt_idempotency() {
     let once = fmt(MESSY_SRC);
     let twice = fmt(&once);
