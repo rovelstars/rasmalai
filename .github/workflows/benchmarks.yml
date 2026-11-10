@@ -1,20 +1,17 @@
 name: Monthly benchmarks
 
-# Re-measures the benchmark suite on the first of every month, ingests the
-# result into Turso via POST /api/benchmarks, and force-pushes a copy to
-# the orphan benchmarks branch. The homepage Pareto chart reads the API at
-# runtime with a fallback to that branch, so the published chart reflects
-# the current tree without any snapshot committed to main. The branch push
-# is transitional dual-write: delete the Deploy step once the API history
-# covers two monthly runs. Standard runners are noisy neighbors: treat
-# month-to-month deltas as trends, not records.
+# Re-measures the benchmark suite on the first of every month and ingests the
+# result into Turso via POST /api/benchmarks. The homepage Pareto chart reads
+# /api/benchmarks at runtime, so the published numbers track the current tree
+# with no snapshot committed to git. Standard runners are noisy neighbors:
+# treat month-to-month deltas as trends, not records.
 on:
   schedule:
     - cron: "0 0 1 * *"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: benchmarks
@@ -65,14 +62,10 @@ jobs:
           ulimit -c 0
           cargo build --release --bin rnx
 
-      - name: Seed stdlib cache
+      - name: Use the checkout stdlib
         run: |
-          seeded=""
-          for i in 1 2 3; do
-            if ./target/release/rnx download; then seeded=1; break; fi
-            sleep 20
-          done
-          [ -n "$seeded" ] || { echo "stdlib seeding failed 3x, failing loud"; exit 1; }
+          test -f compiler/stdlib/src/prelude/lib.rnx
+          echo "RNX_VENDOR_DIR=$GITHUB_WORKSPACE/compiler/stdlib/src" >> "$GITHUB_ENV"
 
       - name: Run benchmark harness
         run: |
