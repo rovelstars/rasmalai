@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   rust:
-    name: nextest --workspace${{ matrix.total == 1 && '' || format(' ({0}/{1})', matrix.shard, matrix.total) }}
+    name: ${{ matrix.total == 1 && 'nextest --workspace' || format('nextest --workspace ({0}/{1})', matrix.shard, matrix.total) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
