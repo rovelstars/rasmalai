@@ -411,6 +411,68 @@ fn emit_obj_needs_no_target_pack() {
 }
 
 #[test]
+fn build_seals_a_pack_and_installs_it() {
+    let source = crate::scratch::dir("pack-build-source");
+    for (name, bytes) in [
+        ("crt1.o", "crt1".as_bytes()),
+        ("crti.o", "crti".as_bytes()),
+        ("crtn.o", "crtn".as_bytes()),
+        ("libc.a", "libc".as_bytes()),
+        ("libruntime_native.a", "runtime".as_bytes()),
+        ("libclang_rt.builtins-x86_64.a", "builtins".as_bytes()),
+    ] {
+        std::fs::write(source.join(name), bytes).unwrap();
+    }
+    let out = source.join("pack");
+    let cache = cache("build");
+    let build = run(
+        &source,
+        &cache,
+        &[
+            "sysroot",
+            "build",
+            MUSL,
+            "--from",
+            source.to_str().unwrap(),
+            "--runtime",
+            source.join("libruntime_native.a").to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    );
+    assert!(build.status.success(), "{}", combined(&build));
+    assert!(stdout(&build).starts_with(&format!("built {MUSL} sha256:")), "{}", stdout(&build));
+
+    let manifest = std::fs::read_to_string(out.join("sysroot.json")).unwrap();
+    assert!(manifest.contains(&format!("\"target\": \"{MUSL}\"")), "{manifest}");
+    assert!(manifest.contains("\"prelude\": \"@std/prelude\""), "{manifest}");
+    assert!(manifest.contains("\"builtins\": \"libclang_rt.builtins-x86_64.a\""), "{manifest}");
+
+    let installed = install(&cache, &out);
+    let verify = run(&cache, &cache, &["sysroot", "verify", MUSL]);
+    assert!(verify.status.success(), "{}", combined(&verify));
+    assert!(stdout(&verify).contains(&installed), "{}", stdout(&verify));
+
+    let again = run(
+        &source,
+        &cache,
+        &[
+            "sysroot",
+            "build",
+            MUSL,
+            "--from",
+            source.to_str().unwrap(),
+            "--runtime",
+            source.join("libruntime_native.a").to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(again.status.code(), Some(1), "{}", combined(&again));
+    assert!(stderr(&again).contains("--force"), "{}", stderr(&again));
+}
+
+#[test]
 fn host_build_needs_no_pack() {
     let cache = cache("host");
     let (root, main) = project("host", None);
@@ -530,6 +592,7 @@ fn oci_add_installs_a_pack_and_checks_annotations() {
         platform: frontend::oci::platform_for_triple(MUSL),
         generator: "rnx-sysroot 0.2.1".to_string(),
         upstream: format!("musl@sha256:{}", "cd".repeat(32)),
+        source: None,
         bytes: archive,
     }])
     .unwrap();

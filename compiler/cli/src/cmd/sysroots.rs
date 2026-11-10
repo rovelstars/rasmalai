@@ -1,5 +1,5 @@
 use diagnostics::{Code, Diagnostic};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use sysroot::pack::Pack;
 use sysroot::store::Store;
 
@@ -13,6 +13,40 @@ struct PackRow {
 
 pub(super) fn run_sysroot(action: cli::args::SysrootAction) {
     match action {
+        cli::args::SysrootAction::Build {
+            triple,
+            from,
+            runtime,
+            builtins,
+            out,
+            abi,
+            loader,
+            kernel_min,
+            glibc_baseline,
+            prelude,
+            force,
+        } => run_build(
+            triple,
+            from,
+            runtime,
+            builtins,
+            out,
+            abi,
+            loader,
+            kernel_min,
+            glibc_baseline,
+            prelude,
+            force,
+        ),
+        cli::args::SysrootAction::Publish {
+            dir,
+            repo,
+            version,
+            tag,
+            push_url,
+            token,
+            username,
+        } => run_publish(dir, repo, version, tag, push_url, token, username),
         cli::args::SysrootAction::Add {
             spec,
             local,
@@ -29,6 +63,136 @@ pub(super) fn run_sysroot(action: cli::args::SysrootAction) {
 fn fail(err: Diagnostic) -> ! {
     eprintln!("{err}");
     std::process::exit(1);
+}
+
+const SYSROOT_SOURCE: &str = "https://github.com/rovelstars/rasmalai";
+
+#[allow(clippy::too_many_arguments)]
+fn run_build(
+    triple: String,
+    from: Vec<PathBuf>,
+    runtime: Option<PathBuf>,
+    builtins: Option<PathBuf>,
+    out: PathBuf,
+    abi: Option<u32>,
+    loader: Option<String>,
+    kernel_min: Option<String>,
+    glibc_baseline: Option<String>,
+    prelude: Option<String>,
+    force: bool,
+) {
+    let target = match sysroot::target::Target::parse(&triple) {
+        Ok(target) => target,
+        Err(e) => fail(Diagnostic::new(Code::E108, e.to_string())),
+    };
+    let options = sysroot::build::BuildOptions {
+        from,
+        runtime,
+        builtins,
+        loader,
+        kernel_min,
+        glibc_baseline,
+        prelude,
+        abi,
+        force,
+    };
+    match sysroot::build::build(&target, &out, &options) {
+        Ok(built) => println!("built {} {} {}", built.target, built.digest, built.dir.display()),
+        Err(e) => fail(e),
+    }
+}
+
+fn run_publish(
+    dir: Option<PathBuf>,
+    repo: Option<String>,
+    version: Option<String>,
+    tag: Option<String>,
+    push_url: Option<String>,
+    token: Option<String>,
+    username: Option<String>,
+) {
+    let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+    let pack = match Pack::load(&dir) {
+        Ok(pack) => pack,
+        Err(e) => fail(e.diagnostic()),
+    };
+    let repo = repo.unwrap_or_else(frontend::oci::sysroot_oci);
+    let tag = match tag {
+        Some(tag) => tag,
+        None => frontend::oci::sysroot_tag(
+            version.as_deref().unwrap_or(env!("CARGO_PKG_VERSION")),
+            &pack.target.triple,
+        ),
+    };
+    let token = match token.or_else(|| std::env::var(frontend::oci::OCI_TOKEN_ENV).ok()) {
+        Some(token) if !token.trim().is_empty() => token,
+        _ => fail(
+            Diagnostic::new(Code::E108, "target pack push needs a registry token")
+                .with_hint(format!("set {} or pass --token", frontend::oci::OCI_TOKEN_ENV)),
+        ),
+    };
+    let username = username
+        .or_else(|| std::env::var(frontend::oci::OCI_USERNAME_ENV).ok())
+        .filter(|name| !name.trim().is_empty());
+    let (registry, repo_path) = match frontend::oci::split_bare(&repo) {
+        Ok(parts) => parts,
+        Err(e) => fail(e),
+    };
+    let base = push_url
+        .or_else(|| std::env::var(frontend::oci::PUSH_URL_ENV).ok())
+        .unwrap_or_else(|| {
+            format!(
+                "{}://{registry}",
+                frontend::oci::oci_scheme(&registry)
+            )
+        });
+    let bytes = match frontend::oci::archive_pack_dir(&dir) {
+        Ok(bytes) => bytes,
+        Err(e) => fail(e),
+    };
+    let upstream_file = pack
+        .manifest
+        .link
+        .libs
+        .get("c")
+        .and_then(|value| value.as_deref())
+        .or(Some(pack.manifest.runtime.file.as_str()));
+    let upstream_digest = match upstream_file {
+        Some(name) => match pack.resolve_file(name) {
+            Ok(path) => match sysroot::pack::file_sha256(&path) {
+                Ok(digest) => digest,
+                Err(e) => fail(e.diagnostic()),
+            },
+            Err(e) => fail(e.diagnostic()),
+        },
+        None => fail(Diagnostic::new(
+            Code::E124,
+            "target pack names no libc or runtime archive for the upstream annotation",
+        )),
+    };
+    let input = frontend::oci::AssembleInput {
+        role: "sysroot".to_string(),
+        title: "sysroot.tar.gz".to_string(),
+        kind: "sysroot".to_string(),
+        target: pack.target.triple.clone(),
+        platform: frontend::oci::platform_for_triple(&pack.target.triple),
+        generator: format!("rnx-sysroot {}", env!("CARGO_PKG_VERSION")),
+        upstream: format!("{}@{upstream_digest}", pack.manifest.libc),
+        source: Some(SYSROOT_SOURCE.to_string()),
+        bytes,
+    };
+    let assembly = match frontend::oci::assemble_index(&[input]) {
+        Ok(assembly) => assembly,
+        Err(e) => fail(e),
+    };
+    let auth = cli::publish::PushAuth {
+        username: username.as_deref(),
+        token: &token,
+    };
+    match cli::publish::push_assembly_as(&base, &repo_path, &tag, Some(auth), &assembly) {
+        Ok(()) => println!("pushed {repo}:{tag} {}", assembly.digest),
+        Err(e) => fail(e),
+    }
 }
 
 fn parse_spec(spec: &str) -> Result<(String, Option<String>), Diagnostic> {
