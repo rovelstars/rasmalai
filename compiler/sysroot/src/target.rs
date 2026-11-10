@@ -509,6 +509,9 @@ static ALL: LazyLock<Vec<Target>> = LazyLock::new(|| {
         if target.triple == "wasm32-unknown-wasi" {
             target.prelude = "@std/wasi".to_string();
         }
+        if target.triple == "x86_64-unknown-uefi" {
+            target.prelude = "@std/uefi".to_string();
+        }
     }
     targets.sort_by(|a, b| a.triple.cmp(&b.triple));
     targets
@@ -822,6 +825,10 @@ mod tests {
         for target in Target::all() {
             if target.triple == "wasm32-unknown-wasi" {
                 assert_eq!(target.prelude, "@std/wasi", "{}", target.triple);
+                continue;
+            }
+            if target.triple == "x86_64-unknown-uefi" {
+                assert_eq!(target.prelude, "@std/uefi", "{}", target.triple);
                 continue;
             }
             assert_eq!(target.prelude, "@std/prelude", "{}", target.triple);
