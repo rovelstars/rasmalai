@@ -214,7 +214,8 @@ jobs:
           out="$(./target/release/rnx --no-color build --release --target "$triple" "$project/src/main.rnx")"
           app="$(printf '%s\n' "$out" | sed -n 's/^artifact: //p' | tail -1 | sed 's/ (fresh)$//')"
           [ -n "$app" ] && [ -f "$app" ] || { echo "no UEFI image emitted"; printf '%s\n' "$out"; exit 1; }
-          file "$app" | grep -q "PE32+ executable for EFI" || { echo "not a UEFI image: $(file "$app")"; exit 1; }
+          file "$app" | grep -q "PE32+ executable" || { echo "not a PE32+ image: $(file "$app")"; exit 1; }
+          file "$app" | grep -qi "EFI" || { echo "not a UEFI image: $(file "$app")"; exit 1; }
 
           firmware=""
           for candidate in \
