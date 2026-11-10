@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+pub mod build;
 pub mod pack;
 pub mod store;
 pub mod target;
