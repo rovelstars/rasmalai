@@ -180,7 +180,10 @@ export async function analyzeTree(
 	// round is atomic; sources are re-provided every publish because the
 	// isolate VFS is unversioned and must never serve stale dep bytes.
 	const provided = new Set<string>();
-	for (let round = 0; round < 10; round++) {
+	// One round provides one missing module. The prelude reaches the whole
+	// stock stdlib, so the old ten-round ceiling stopped before the graph
+	// closed and reported "dependency resolution did not converge".
+	for (let round = 0; round < 32; round++) {
 		try {
 			const out = parseWasmOut(
 				wasm.analyze_project(JSON.stringify(files), JSON.stringify(entries)),
