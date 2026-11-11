@@ -27,7 +27,7 @@ The package declares the four libraries the app loads directly in
 
 ```rnx
 export default {
-    project: { name: "@std/app", version: "0.3.1" },
+    project: { name: "@std/app", version: "0.3.2" },
     artifacts: "ghcr.io/rovelstars/rnx-stdlib-app",
     dependencies: {
         cpu_cabi: { native: "cpu_cabi", from: "libcpu_cabi.so", version: ">=0.1.0" },
@@ -41,8 +41,9 @@ export default {
 `artifacts` names the OCI image that carries the four runtime libraries. Each
 `from` is the blob title inside that image. `rnx add` verifies the image index
 digest pinned in the lock, downloads only the titles the package declares, and
-checks every blob digest before linking. The image is tagged `latest`, so the
-pinned index digest is what makes an install reproducible.
+checks every blob digest before linking. Installs fetch the index by the digest
+pinned in the lock, so a moved `latest` tag cannot change what an older version
+downloads.
 
 Use `RNX_PREFER_NATIVE=system` to test against host-installed wrappers
 instead of the image.

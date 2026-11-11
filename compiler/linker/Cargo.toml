@@ -1,6 +1,6 @@
 [package]
 name = "linker"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 
 [dependencies]

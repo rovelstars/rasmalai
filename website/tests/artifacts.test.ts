@@ -149,7 +149,7 @@ function countVersions(full: string): number {
 					}
 				});
 			}
-			return new Response(bytes, { status: 200 });
+			return new Response(bytes as BodyInit, { status: 200 });
 		}) as typeof fetch;
 		const res = await fetchArtifactIndex('ghcr.io/rovelstars/rnx-stdlib-app', mock);
 		assert.equal(res.ok, true);
