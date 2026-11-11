@@ -212,6 +212,18 @@ let skipped = 0;
 const isMissingDep = (text) => text.includes('is not preloaded');
 const isServerFailure = (text) => /HTTP 5\d\d/.test(text);
 const failed = new Map();
+
+async function alreadyPublished(full, version) {
+	try {
+		const res = await fetch(`${SITE}/api/v0/packages/${full}/${version}`, {
+			headers: { Accept: 'application/json' },
+			cache: 'no-store'
+		});
+		return res.status === 200;
+	} catch {
+		return false;
+	}
+}
 let pending = [...modules];
 let lastError = null;
 while (pending.length > 0) {
@@ -219,6 +231,12 @@ while (pending.length > 0) {
 	let progressed = false;
 	for (const name of pending) {
 		const full = `@std/${name}`;
+		if (await alreadyPublished(full, cliVersion)) {
+			skipped++;
+			progressed = true;
+			console.log(`publish-std: skip ${full}@${cliVersion} (exists)`);
+			continue;
+		}
 		const brokenDep = [...importDeps(name)].find((dep) => failed.has(dep));
 		if (brokenDep) {
 			failed.set(name, `dependency @std/${brokenDep} failed`);
