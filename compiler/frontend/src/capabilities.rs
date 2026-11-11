@@ -293,19 +293,23 @@ fn is_raw_memory_type(ty: &Type) -> bool {
         })
 }
 
-fn line_col(source: &str, offset: u32) -> (usize, usize) {
-    let offset = (offset as usize).min(source.len());
-    let mut line = 1usize;
-    let mut col = 1usize;
-    for b in source.as_bytes()[..offset].iter() {
-        if *b == b'\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
+fn line_starts(source: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(i + 1);
         }
     }
-    (line, col)
+    starts
+}
+
+fn line_col(source: &str, starts: &[usize], offset: u32) -> (usize, usize) {
+    let offset = (offset as usize).min(source.len());
+    let idx = match starts.binary_search(&offset) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    };
+    (idx + 1, offset - starts[idx] + 1)
 }
 
 fn snippet(source: &str, span: Span) -> String {
@@ -457,6 +461,7 @@ struct FileCtx<'a> {
     path: std::path::PathBuf,
     display: String,
     source: &'a str,
+    line_starts: Vec<usize>,
     aliases: BTreeMap<String, ImportTarget>,
     namespaces: BTreeMap<String, usize>,
     stars: Vec<usize>,
@@ -468,6 +473,8 @@ struct Analyzer<'a> {
     order: Vec<(usize, String)>,
     caps: BTreeSet<Capability>,
     traces: Vec<CallChain>,
+    trace: Vec<(usize, String, Span)>,
+    tail_index: BTreeMap<(usize, String), Option<(usize, String)>>,
     seen_trace: BTreeSet<(usize, String, u32)>,
     fuel: u64,
     fuel_limit: u64,
@@ -485,7 +492,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn node(&self, f: usize, symbol: &str, span: Span) -> CallTraceNode {
-        let (line, col) = line_col(self.files[f].source, span.start);
+        let (line, col) = line_col(self.files[f].source, &self.files[f].line_starts, span.start);
         CallTraceNode {
             file: self.files[f].display.clone(),
             line,
@@ -495,8 +502,23 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn build_tail_index(&mut self) {
+        let mut index: BTreeMap<(usize, String), Option<(usize, String)>> = BTreeMap::new();
+        for (file, name) in self.fns.keys() {
+            let tail = name.rsplit('.').next().unwrap_or(name).to_string();
+            let key = (*file, tail);
+            match index.get_mut(&key) {
+                Some(slot) => *slot = None,
+                None => {
+                    index.insert(key, Some((*file, name.clone())));
+                }
+            }
+        }
+        self.tail_index = index;
+    }
+
     fn origin_node(&self, f: usize, symbol: &str, span: Span) -> CallTraceNode {
-        let (line, col) = line_col(self.files[f].source, span.start);
+        let (line, col) = line_col(self.files[f].source, &self.files[f].line_starts, span.start);
         CallTraceNode {
             file: self.files[f].display.clone(),
             line,
@@ -598,6 +620,7 @@ pub fn analyze_file_graph(
                 path: f.path.clone(),
                 display: f.path.to_string_lossy().replace('\\', "/"),
                 source: f.source,
+                line_starts: line_starts(f.source),
                 aliases: BTreeMap::new(),
                 namespaces: BTreeMap::new(),
                 stars: Vec::new(),
@@ -607,6 +630,8 @@ pub fn analyze_file_graph(
         order: Vec::new(),
         caps: BTreeSet::new(),
         traces: Vec::new(),
+        trace: Vec::new(),
+        tail_index: BTreeMap::new(),
         seen_trace: BTreeSet::new(),
         fuel: total_fuel,
         fuel_limit: total_fuel,
@@ -617,6 +642,7 @@ pub fn analyze_file_graph(
     for (i, input) in files.iter().enumerate() {
         collect_fns(&mut an, i, input.module)?;
     }
+    an.build_tail_index();
     let entries: Vec<(usize, String)> = an
         .order
         .iter()
@@ -634,7 +660,7 @@ pub fn analyze_file_graph(
             f,
             &entry,
             vec![Taint::Param; nparams],
-            vec![origin],
+            &[origin],
             &mut stack,
         )?;
     }
@@ -883,19 +909,11 @@ fn resolve_local<'a>(an: &'a Analyzer<'a>, f: usize, dotted: &str) -> Option<(us
         return None;
     }
     let tail = dotted.rsplit('.').next().unwrap_or(dotted);
-    let mut hit: Option<(usize, &'a FnInfo<'a>)> = None;
-    for ((ff, name), info) in &an.fns {
-        if *ff != f {
-            continue;
-        }
-        if name == tail || name.ends_with(&format!(".{tail}")) {
-            if hit.is_some() {
-                return None;
-            }
-            hit = Some((*ff, info));
-        }
+    let key = (f, tail.to_string());
+    match an.tail_index.get(&key) {
+        Some(Some((ff, name))) => an.fns.get(&(*ff, name.clone())).map(|info| (*ff, info)),
+        _ => None,
     }
-    hit
 }
 
 fn resolve_callee(an: &Analyzer, f: usize, dotted: &str) -> Callee {
@@ -1035,6 +1053,10 @@ fn classify_sink(
     let mutated = |i: usize| matches!(taints.get(i), Some(Taint::Derived));
     let mut chain = |cap: Capability, is_delegated: bool| {
         let mut full = nodes.to_vec();
+        let trace = an.trace.clone();
+        for (tf, sym, span) in &trace {
+            full.push(an.node(*tf, sym, *span));
+        }
         full.push(an.node(f, symbol, call_span));
         an.record(f, cap, is_delegated, full, call_span);
     };
@@ -1148,7 +1170,7 @@ fn enter_fn(
     target_file: usize,
     name: &str,
     arg_taints: Vec<Taint>,
-    nodes: Vec<CallTraceNode>,
+    nodes: &[CallTraceNode],
     stack: &mut Vec<(usize, String)>,
 ) -> Result<(), SecurityDiagnostic> {
     an.burn()?;
@@ -1170,8 +1192,8 @@ fn enter_fn(
         })
         .collect();
     match body {
-        FnBody::Block(b) => walk_block(an, target_file, b, &params, &mut env, &nodes, stack),
-        FnBody::Expr(e) => walk_expr(an, target_file, e, &params, &mut env, &nodes, stack),
+        FnBody::Block(b) => walk_block(an, target_file, b, &params, &mut env, nodes, stack),
+        FnBody::Expr(e) => walk_expr(an, target_file, e, &params, &mut env, nodes, stack),
     }
 }
 
@@ -1553,11 +1575,11 @@ fn visit_call(
                 return Ok(());
             }
             let taints = arg_taints(an, args, env, params)?;
-            let mut full = nodes.to_vec();
-            full.push(an.node(f, &tname, call_span));
+            an.trace.push((f, tname.clone(), call_span));
             stack.push((tf, tname.clone()));
-            let r = enter_fn(an, tf, &tname, taints, full, stack);
+            let r = enter_fn(an, tf, &tname, taints, nodes, stack);
             stack.pop();
+            an.trace.pop();
             return r;
         }
         Callee::Native => return Ok(()),
@@ -1575,10 +1597,10 @@ fn visit_call(
         return Ok(());
     }
     let taints = arg_taints(an, args, env, params)?;
-    let mut full = nodes.to_vec();
-    full.push(an.node(f, &target.1, call_span));
+    an.trace.push((f, target.1.clone(), call_span));
     stack.push(target.clone());
-    let r = enter_fn(an, target.0, &target.1, taints, full, stack);
+    let r = enter_fn(an, target.0, &target.1, taints, nodes, stack);
     stack.pop();
+    an.trace.pop();
     r
 }

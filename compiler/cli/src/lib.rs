@@ -2760,9 +2760,20 @@ fn add_registry_package(
             ),
         ));
     }
-    let analysis = match frontend::security::analyze_dep_dir(&dep_dir) {
-        Ok(analysis) => analysis,
-        Err(e) => return AddResult::Failed(e),
+    let analysis = if dep_cfg.permissions.is_some() || name.starts_with("@std/") {
+        match frontend::security::declared_dep_analysis(
+            &dep_cfg.name,
+            &resolved,
+            dep_cfg.permissions.as_deref(),
+        ) {
+            Ok(analysis) => analysis,
+            Err(e) => return AddResult::Failed(e),
+        }
+    } else {
+        match frontend::security::analyze_dep_dir(&dep_dir) {
+            Ok(analysis) => analysis,
+            Err(e) => return AddResult::Failed(e),
+        }
     };
     let rerun = format!("rnx add {spec} ");
     if let Err(outcome) =
@@ -2811,9 +2822,6 @@ fn add_registry_package(
         Err(e) => return AddResult::Failed(e),
     };
     if let Err(e) = lock.write(root) {
-        return AddResult::Failed(e);
-    }
-    if let Err(e) = frontend::fetch::fetch_all_registry_deps(root) {
         return AddResult::Failed(e);
     }
     match lock.packages.iter().find(|p| p.name == name) {

@@ -938,6 +938,28 @@ pub struct DepAnalysis {
     pub traces: Vec<CallChain>,
 }
 
+// Registry packages were already checked by the publish gate. Their
+// declared permissions are the published contract, so the client does not
+// re-parse the downloaded source just to build the add prompt.
+pub fn declared_dep_analysis(
+    name: &str,
+    version: &str,
+    permissions: Option<&[crate::project::PermissionDecl]>,
+) -> Result<DepAnalysis, Diagnostic> {
+    let mut caps: BTreeSet<Capability> = BTreeSet::new();
+    for p in permissions.unwrap_or(&[]) {
+        caps.insert(parse_cap(&p.perm)?);
+    }
+    let tier = tier_of_caps(&caps);
+    Ok(DepAnalysis {
+        name: name.to_string(),
+        version: version.to_string(),
+        tier,
+        capabilities: caps.iter().map(|c| c.to_string()).collect(),
+        traces: Vec::new(),
+    })
+}
+
 pub fn analyze_dep_dir(dir: &Path) -> Result<DepAnalysis, Diagnostic> {
     let mut memo: BTreeMap<PathBuf, DepAnalysis> = BTreeMap::new();
     let mut stack: Vec<PathBuf> = Vec::new();

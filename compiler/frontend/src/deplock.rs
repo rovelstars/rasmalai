@@ -394,10 +394,22 @@ fn effective_bills(
             edges.insert(n.name.clone(), Vec::new());
             continue;
         }
-        let scan = crate::security::analyze_dep_own(&n.dir)?;
+        // Registry packages already passed the publish gate. Its declared
+        // permissions are the verified contract, so use them instead of
+        // re-parsing the downloaded source. Path and git dependencies still
+        // need the local analyzer.
+        let config = crate::project::ProjectConfig::load_from_dir(&n.dir)?;
+        let declared = config.as_ref().and_then(|c| c.permissions.as_ref());
         let mut set: BTreeSet<crate::capabilities::Capability> = BTreeSet::new();
-        for s in &scan.capabilities {
-            set.insert(crate::security::parse_cap(s)?);
+        if n.source.starts_with("registry:") && (declared.is_some() || n.name.starts_with("@std/")) {
+            for p in declared.into_iter().flatten() {
+                set.insert(crate::security::parse_cap(&p.perm)?);
+            }
+        } else {
+            let scan = crate::security::analyze_dep_own(&n.dir)?;
+            for s in &scan.capabilities {
+                set.insert(crate::security::parse_cap(s)?);
+            }
         }
         own.insert(n.name.clone(), set);
         let mut deps: Vec<String> = n.deps.iter().map(|(d, _)| d.clone()).collect();
