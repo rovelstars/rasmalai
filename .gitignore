@@ -21,8 +21,10 @@ benches/data/benchmarks.json
 website/src/lib/benchmarks/pareto.json
 website/static/data/
 
-# Editor build outputs (wasm built from generated parser.c, see .github/workflows/tree-sitter.yml)
+# Editor build outputs. Zed clones the grammar into grammars/ during a dev
+# install; the grammar itself lives in renhiyama/rasmalai-ext.
 editors/zed/extension.wasm
+editors/zed/grammars/
 
 # Tree-sitter generated outputs (regenerated in CI from grammar.js, see
 # .github/workflows/tree-sitter.yml). The generated parser ships in the
