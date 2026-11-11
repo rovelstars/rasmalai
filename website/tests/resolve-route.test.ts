@@ -152,7 +152,7 @@ describe('resolve route engine filter', () => {
 		const reqs = { requirements: { '@acme/engmemo': '*' } };
 		assert.equal((await call({ ...reqs, engine: '0.2.0' })).status, 200);
 		assert.equal(versionIndexEntries(), 1);
-		assert.equal((await call({ ...reqs, engine: '0.3.0' })).status, 200);
+		assert.equal((await call({ ...reqs, engine: '0.3.1' })).status, 200);
 		assert.equal(versionIndexEntries(), 2);
 		assert.equal((await call(reqs)).status, 200);
 		assert.equal(versionIndexEntries(), 3);

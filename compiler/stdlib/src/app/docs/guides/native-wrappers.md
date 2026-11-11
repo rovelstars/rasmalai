@@ -27,18 +27,25 @@ The package declares the four libraries the app loads directly in
 
 ```rnx
 export default {
-    project: { name: "@std/app", version: "0.3.0" },
+    project: { name: "@std/app", version: "0.3.1" },
+    artifacts: "ghcr.io/rovelstars/rnx-stdlib-app",
     dependencies: {
-        cpu_cabi: { native: "cpu_cabi", system: true, version: ">=0.1.0" },
-        host_cabi: { native: "host_cabi", system: true, version: ">=0.1.0" },
-        parley_cabi: { native: "parley_cabi", system: true, version: ">=0.1.0" },
-        media_cabi: { native: "media_cabi", system: true, version: ">=0.1.0" },
+        cpu_cabi: { native: "cpu_cabi", from: "libcpu_cabi.so", version: ">=0.1.0" },
+        host_cabi: { native: "host_cabi", from: "libhost_cabi.so", version: ">=0.1.0" },
+        parley_cabi: { native: "parley_cabi", from: "libparley_cabi.so", version: ">=0.1.0" },
+        media_cabi: { native: "media_cabi", from: "libmedia_cabi.so", version: ">=0.1.0" },
     },
 }
 ```
 
-`system: true` means `rnx run` resolves the library through the host loader and
-pkg-config file.
+`artifacts` names the OCI image that carries the four runtime libraries. Each
+`from` is the blob title inside that image. `rnx add` verifies the image index
+digest pinned in the lock, downloads only the titles the package declares, and
+checks every blob digest before linking. The image is tagged `latest`, so the
+pinned index digest is what makes an install reproducible.
+
+Use `RNX_PREFER_NATIVE=system` to test against host-installed wrappers
+instead of the image.
 
 ## Build and install
 

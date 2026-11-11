@@ -347,10 +347,16 @@ pub(crate) fn valid_generator(value: &str) -> bool {
 }
 
 pub(crate) fn valid_upstream(value: &str) -> bool {
-    match value.split_once('@') {
-        Some((name, digest)) => valid_name(name) && is_artifact_digest(digest),
-        None => false,
-    }
+    let Some((name, digest)) = value.rsplit_once('@') else {
+        return false;
+    };
+    let name_ok = match name.strip_prefix('@') {
+        Some(rest) => rest
+            .split_once('/')
+            .is_some_and(|(scope, pkg)| valid_name(scope) && valid_name(pkg)),
+        None => valid_name(name),
+    };
+    name_ok && is_artifact_digest(digest)
 }
 
 pub fn valid_title(value: &str) -> bool {
@@ -544,6 +550,21 @@ pub fn select_for_host<'a>(index: &'a OciIndex, os: &str, arch: &str) -> Vec<&'a
         .descriptors
         .iter()
         .filter(|d| descriptor_matches(os, arch, d))
+        .collect();
+    out.sort_by(|a, b| a.digest.cmp(&b.digest));
+    out
+}
+
+pub fn select_for_host_titles<'a>(
+    index: &'a OciIndex,
+    os: &str,
+    arch: &str,
+    titles: &BTreeSet<String>,
+) -> Vec<&'a OciDescriptor> {
+    let mut out: Vec<&OciDescriptor> = index
+        .descriptors
+        .iter()
+        .filter(|d| descriptor_matches(os, arch, d) && titles.contains(&d.title))
         .collect();
     out.sort_by(|a, b| a.digest.cmp(&b.digest));
     out
@@ -1270,9 +1291,35 @@ pub fn ensure_artifacts(
     os: &str,
     arch: &str,
 ) -> Result<usize, Diagnostic> {
+    ensure_artifacts_titles(pkg_dir, bare, asserted, os, arch, None)
+}
+
+pub fn ensure_artifacts_titles(
+    pkg_dir: &Path,
+    bare: &str,
+    asserted: &str,
+    os: &str,
+    arch: &str,
+    titles: Option<&BTreeSet<String>>,
+) -> Result<usize, Diagnostic> {
     let (bytes, _) = fetch_index(bare)?;
     let index = parse_index(bare, "latest", &bytes, asserted)?;
-    let selected = select_for_host(&index, os, arch);
+    let selected = match titles {
+        Some(titles) => select_for_host_titles(&index, os, arch, titles),
+        None => select_for_host(&index, os, arch),
+    };
+    if let Some(titles) = titles
+        && selected.is_empty()
+    {
+        let listed: Vec<String> = titles.iter().cloned().collect();
+        return Err(Diagnostic::new(
+            Code::E108,
+            format!(
+                "artifact image `{bare}` has none of the required titles for {os}/{arch}: {}",
+                listed.join(", ")
+            ),
+        ));
+    }
     let manifests: Vec<(OciDescriptor, Vec<String>)> = selected
         .into_iter()
         .map(|d| {
@@ -1528,6 +1575,15 @@ mod tests {
     }
 
     #[test]
+    fn upstream_accepts_scoped_package_names() {
+        let digest = "ab".repeat(32);
+        assert!(valid_upstream(&format!("@std/app@sha256:{digest}")));
+        assert!(valid_upstream(&format!("sqlite@sha256:{digest}")));
+        assert!(!valid_upstream(&format!("@std@sha256:{digest}")));
+        assert!(!valid_upstream(&format!("@std/app@sha256:xyz")));
+    }
+
+    #[test]
     fn digest_spelling_is_lowercase_hex_only() {
         assert!(is_artifact_digest(&format!("sha256:{}", "ab".repeat(32))));
         assert!(!is_artifact_digest(&format!("sha256:{}", "AB".repeat(32))));
@@ -1540,6 +1596,27 @@ mod tests {
         assert_eq!(oci_scheme("127.0.0.1:8080"), "http");
         assert_eq!(oci_scheme("localhost"), "http");
         assert_eq!(oci_scheme("ghcr.io"), "https");
+    }
+
+    #[test]
+    fn title_filter_downloads_only_requested_blobs() {
+        let a = format!("sha256:{}", "aa".repeat(32));
+        let b = format!("sha256:{}", "bb".repeat(32));
+        let index = format!(
+            "{{\"schemaVersion\": 2, \"manifests\": [{}, {}]}}",
+            descriptor_json(&a, "runtime", "binary", "libcpu_cabi.so", Some(("linux", "amd64"))),
+            descriptor_json(&b, "runtime", "binary", "libhost_cabi.so", Some(("linux", "amd64"))),
+        )
+        .into_bytes();
+        let digest = format!("sha256:{}", Sha256::hexdigest(&index));
+        let parsed = parse_index("example.invalid/org/app", "latest", &index, &digest).unwrap();
+        assert_eq!(select_for_host(&parsed, "linux", "x86_64").len(), 2);
+        let mut titles = BTreeSet::new();
+        titles.insert("libcpu_cabi.so".to_string());
+        let picked = select_for_host_titles(&parsed, "linux", "x86_64", &titles);
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].title, "libcpu_cabi.so");
+        assert_eq!(picked[0].digest, a);
     }
 
     #[test]
@@ -1677,6 +1754,72 @@ mod tests {
             gets.iter().any(|p| p.contains("/blobs/sha256:")),
             "{gets:?}"
         );
+    }
+
+    #[test]
+    fn title_filter_fetches_only_the_requested_blob() {
+        let nonce = BLOB_NONCE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let cpu = format!("cpu blob {nonce}");
+        let host = format!("host blob {nonce}");
+        let inputs = vec![
+            AssembleInput {
+                role: "runtime".to_string(),
+                title: "libcpu_cabi.so".to_string(),
+                kind: "binary".to_string(),
+                target: "x86_64-unknown-linux-gnu".to_string(),
+                platform: Some(("linux".to_string(), "amd64".to_string())),
+                generator: "rnx-publish 0.3.1".to_string(),
+                upstream: format!("app@sha256:{}", "ef".repeat(32)),
+                source: None,
+                bytes: cpu.into_bytes(),
+            },
+            AssembleInput {
+                role: "runtime".to_string(),
+                title: "libhost_cabi.so".to_string(),
+                kind: "binary".to_string(),
+                target: "x86_64-unknown-linux-gnu".to_string(),
+                platform: Some(("linux".to_string(), "amd64".to_string())),
+                generator: "rnx-publish 0.3.1".to_string(),
+                upstream: format!("app@sha256:{}", "ef".repeat(32)),
+                source: None,
+                bytes: host.into_bytes(),
+            },
+        ];
+        let assembly = assemble_index(&inputs).unwrap();
+        let mut files = BTreeMap::new();
+        for (digest, bytes) in &assembly.manifests {
+            files.insert(digest.clone(), bytes.clone());
+        }
+        for (digest, bytes) in &assembly.blobs {
+            files.insert(digest.clone(), bytes.clone());
+        }
+        let origin = start_origin(assembly.index_bytes.clone(), files);
+        let dir = crate::scratch::dir("oci-title-filter");
+        let titles: BTreeSet<String> = ["libcpu_cabi.so".to_string()].into_iter().collect();
+        let written = ensure_artifacts_titles(
+            &dir,
+            &origin.bare,
+            &assembly.digest,
+            "linux",
+            "x86_64",
+            Some(&titles),
+        )
+        .unwrap();
+        assert_eq!(written, 1);
+        assert!(
+            dir.join(".rnx-cache/artifacts/runtime/libcpu_cabi.so").is_file()
+        );
+        assert!(
+            !dir.join(".rnx-cache/artifacts/runtime/libhost_cabi.so").is_file()
+        );
+        let gets = origin.log.lock().unwrap().clone();
+        let manifest_gets: Vec<&String> = gets
+            .iter()
+            .filter(|p| p.contains("/manifests/sha256:"))
+            .collect();
+        assert_eq!(manifest_gets.len(), 1, "{gets:?}");
+        let blob_gets: Vec<&String> = gets.iter().filter(|p| p.contains("/blobs/sha256:")).collect();
+        assert_eq!(blob_gets.len(), 1, "{gets:?}");
     }
 
     #[test]

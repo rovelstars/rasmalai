@@ -48,7 +48,12 @@ fn run_artifact_pipeline(
             std::process::exit(1);
         }
     };
-    if let Err(e) = cli::publish::push_assembly(base, &repo, push_token, &assembly) {
+    let username = std::env::var(frontend::oci::OCI_USERNAME_ENV).ok();
+    let auth = push_token.map(|token| cli::publish::PushAuth {
+        username: username.as_deref(),
+        token,
+    });
+    if let Err(e) = cli::publish::push_assembly_as(base, &repo, "latest", auth, &assembly) {
         eprintln!("{e}");
         std::process::exit(1);
     }

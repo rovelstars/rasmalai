@@ -12,7 +12,7 @@ const BARE_REF_RE = new RegExp(
 const TARGET_PART = '[a-z0-9_]+';
 const TARGET_RE = new RegExp(`^${TARGET_PART}-${TARGET_PART}-${TARGET_PART}(?:-${TARGET_PART})?$`);
 const GENERATOR_RE = /^[A-Za-z0-9._-]+ [0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9._-]+)?$/;
-const UPSTREAM_RE = /^[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$/;
+const UPSTREAM_RE = /^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$/;
 
 const KIND_TO_ROLES: Record<string, string[]> = {
 	binary: ['runtime', 'wasm'],
@@ -99,14 +99,40 @@ export async function fetchArtifactIndex(
 			`E108: artifact ref \`${ref}\` is not a bare OCI repo ref (expected \`ghcr.io/org/name\`)`
 		);
 	}
+	const accept = 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json';
 	let res: Response;
 	try {
-		res = await fetchImpl(target.url, {
-			headers: {
-				Accept: 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json'
-			},
-			cache: 'no-store'
-		});
+		res = await fetchImpl(target.url, { headers: { Accept: accept }, cache: 'no-store' });
+		if (res.status === 401) {
+			const challenge = res.headers.get('www-authenticate') ?? '';
+			const params = new Map(
+				[...challenge.matchAll(/([A-Za-z_]+)="([^"]*)"/g)].map((m) => [m[1], m[2]])
+			);
+			const realm = params.get('realm');
+			if (realm) {
+				const tokenUrl = new URL(realm);
+				const service = params.get('service');
+				const scope = params.get('scope');
+				if (service) tokenUrl.searchParams.set('service', service);
+				if (scope) tokenUrl.searchParams.set('scope', scope);
+				const tokenRes = await fetchImpl(tokenUrl, { cache: 'no-store' });
+				if (tokenRes.ok) {
+					const tokenBody = (await tokenRes.json()) as Record<string, unknown>;
+					const token =
+						typeof tokenBody['token'] === 'string'
+							? tokenBody['token']
+							: typeof tokenBody['access_token'] === 'string'
+								? tokenBody['access_token']
+								: '';
+					if (token) {
+						res = await fetchImpl(target.url, {
+							headers: { Accept: accept, Authorization: `Bearer ${token}` },
+							cache: 'no-store'
+						});
+					}
+				}
+			}
+		}
 	} catch {
 		return fail('unreachable-origin', `E108: artifact origin unreachable (cannot reach \`${target.parts.registry}\`)`);
 	}

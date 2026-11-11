@@ -256,41 +256,106 @@ jobs:
     if: ${{ always() && needs.publish.result == 'success' }}
     needs: publish
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
     # The version being published is not in the registry yet, so @std
     # imports resolve from the checkout. The retry loop still handles a
     # package whose docs were produced before its own deps landed.
     env:
       RNX_VENDOR_DIR: ${{ github.workspace }}/compiler/stdlib/src
+      RNX_OCI_PUSH_URL: https://ghcr.io
+      RNX_OCI_PUSH_USERNAME: ${{ github.actor }}
+      RNX_OCI_PUSH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
 
       - name: Install LLVM 22
         run: |
           wget -qO llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 22
-          sudo apt-get install -y llvm-22-dev libpolly-22-dev
+          sudo apt-get install -y llvm-22-dev libpolly-22-dev binutils
           echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install wrapper dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri libwayland-dev libxkbcommon-dev \
+            libfontconfig1-dev libfreetype-dev fonts-dejavu-core libasound2-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev \
+            libv4l-dev ffmpeg
+
+      - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-x86_64-linux
           save-if: false
 
+      - name: Cache wrapper build tree
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.rnx-cache/wrapper-target
+          key: wrapper-target-${{ runner.os }}-${{ hashFiles('compiler/stdlib/src/app/wrappers/*/Cargo.lock') }}
+
       - name: Build rnx
         run: cargo build --release -p cli
+
+      - name: Build app wrappers
+        run: |
+          set -euo pipefail
+          export WRAPPER_PREFIX="$RUNNER_TEMP/wrappers"
+          sh compiler/stdlib/src/app/tools/build-wrappers.sh
+          dest=compiler/stdlib/src/app/.rnx-cache/publish/x86_64-unknown-linux-gnu/runtime
+          mkdir -p "$dest"
+          for lib in cpu host parley media; do
+            strip --strip-unneeded "$WRAPPER_PREFIX/lib${lib}_cabi.so"
+            cp "$WRAPPER_PREFIX/lib${lib}_cabi.so" "$dest/"
+          done
+          ls -l "$dest"
 
       - uses: actions/setup-node@v5
         with:
           node-version: 24
 
       - name: Publish @std packages
+        id: publish
+        continue-on-error: true
         working-directory: website
         env:
           SITE_URL: ${{ vars.SITE_URL }}
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: node scripts/publish-std.mjs
+
+      - name: Make app artifact image public
+        if: steps.publish.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo '{"visibility":"public"}' | gh api -X PATCH \
+            /orgs/rovelstars/packages/container/rnx-stdlib-app --input - >/dev/null \
+            || echo "warning: could not set rnx-stdlib-app public"
+
+      - name: Retry @std packages
+        id: retry
+        if: steps.publish.outcome == 'failure'
+        continue-on-error: true
+        working-directory: website
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: node scripts/publish-std.mjs
+
+      - name: Require a successful publish
+        if: steps.publish.outcome == 'failure' && steps.retry.outcome == 'failure'
+        run: exit 1

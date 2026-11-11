@@ -215,7 +215,7 @@ pub fn collect_pipeline_inputs(
                 platform: frontend::oci::platform_for_triple(&target),
                 generator: frontend::bindgen::generator_string(),
                 upstream: upstream.clone(),
-                source: None,
+                source: Some("https://github.com/rovelstars/rasmalai".to_string()),
                 bytes,
             });
         }
@@ -281,7 +281,7 @@ pub fn collect_pipeline_inputs(
                 platform: frontend::oci::platform_for_triple(target),
                 generator: format!("rnx-publish {}", env!("CARGO_PKG_VERSION")),
                 upstream,
-                source: None,
+                source: Some("https://github.com/rovelstars/rasmalai".to_string()),
                 bytes,
             });
         }

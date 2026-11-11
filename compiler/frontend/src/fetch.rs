@@ -3021,6 +3021,35 @@ fn cached_artifacts_present(dir: &Path) -> bool {
     cached_artifact_digest(dir).is_some() && crate::oci::project_artifact_cache(dir).is_dir()
 }
 
+fn artifact_titles(cfg: &ProjectConfig) -> Option<std::collections::BTreeSet<String>> {
+    let mut titles = std::collections::BTreeSet::new();
+    for (name, spec) in &cfg.dependencies {
+        let crate::project::DependencySpec::Native {
+            system,
+            version,
+            from,
+            ..
+        } = spec
+        else {
+            continue;
+        };
+        let pin = cfg.native_pins.get(name);
+        let effective = crate::native::effective_choice(
+            *system,
+            version.as_deref(),
+            from.as_deref(),
+            pin,
+            crate::native::NativePrefer::None,
+        );
+        if !effective.system
+            && let Some(title) = effective.from
+        {
+            titles.insert(title);
+        }
+    }
+    (!titles.is_empty()).then_some(titles)
+}
+
 fn ensure_node_artifacts(dir: &Path, node: &ResolveNode, asserted: &str) -> Result<(), Diagnostic> {
     warn_if_yanked(node);
     let cfg = ProjectConfig::load_from_dir(dir)?.ok_or_else(|| {
@@ -3041,7 +3070,15 @@ fn ensure_node_artifacts(dir: &Path, node: &ResolveNode, asserted: &str) -> Resu
             ));
         }
     };
-    crate::oci::ensure_artifacts(dir, bare, asserted, std::env::consts::OS, std::env::consts::ARCH)?;
+    let titles = artifact_titles(&cfg);
+    crate::oci::ensure_artifacts_titles(
+        dir,
+        bare,
+        asserted,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        titles.as_ref(),
+    )?;
     std::fs::write(artifact_marker_path(dir), format!("{asserted}\n")).map_err(|e| {
         Diagnostic::new(Code::E108, format!("cannot write `{}`: {e}", artifact_marker_path(dir).display()))
     })

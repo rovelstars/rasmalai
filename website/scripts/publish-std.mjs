@@ -166,6 +166,12 @@ function renderDependencies(manifest) {
 	return `,\n    dependencies: { ${items.join(', ')} }`;
 }
 
+function renderArtifacts(manifest) {
+	const bare = manifest?.artifacts;
+	if (typeof bare !== 'string' || bare === '') return '';
+	return `,\n    artifacts: ${JSON.stringify(bare)}`;
+}
+
 async function sourceManifest(name) {
 	const src = join(stdDir, name, 'Project.config');
 	if (!existsSync(src)) return null;
@@ -225,6 +231,10 @@ while (pending.length > 0) {
 		cpSync(join(stdDir, name, 'lib.rnx'), join(dir, 'src', 'lib.rnx'));
 		const docsDir = join(stdDir, name, 'docs');
 		if (existsSync(docsDir)) cpSync(docsDir, join(dir, 'docs'), { recursive: true });
+		const stagedArtifacts = join(stdDir, name, '.rnx-cache', 'publish');
+		if (existsSync(stagedArtifacts)) {
+			cpSync(stagedArtifacts, join(dir, '.rnx-cache', 'publish'), { recursive: true });
+		}
 		for (const sub of SUBMODULES[name] ?? []) {
 			cpSync(join(stdDir, name, sub), join(dir, 'src', sub));
 		}
@@ -234,7 +244,7 @@ while (pending.length > 0) {
 			cpSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'));
 			writeFileSync(
 				join(dir, 'Project.config'),
-				`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))},\n        engine: ">=${cliVersion}"\n    },\n    entries: {\n        main: "src/lib.rnx",\n        docs: "docs"\n    }${renderDependencies(manifest)}${renderPermissions(name, manifest)}\n}\n`
+				`export default {\n    project: {\n        name: "${full}",\n        version: "${cliVersion}",\n        description: ${JSON.stringify(moduleBlurb(name))},\n        engine: ">=${cliVersion}"\n    },\n    entries: {\n        main: "src/lib.rnx",\n        docs: "docs"\n    }${renderArtifacts(manifest)}${renderDependencies(manifest)}${renderPermissions(name, manifest)}\n}\n`
 			);
 			rnx(['fmt', join(dir, 'Project.config')], dir);
 			for (const f of [join(dir, 'src', 'lib.rnx'), ...(SUBMODULES[name] ?? []).map((s) => join(dir, 'src', s))]) {

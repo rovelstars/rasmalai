@@ -6,7 +6,7 @@ import { POST as publishPOST } from '../src/routes/api/v0/packages/+server.ts';
 import { GET as readGET } from '../src/routes/api/v0/packages/[...path]/+server.ts';
 import { POST as resolvePOST } from '../src/routes/api/v0/resolve/+server.ts';
 import { clearVersionIndex, getVersionIndexRow } from '../src/lib/server/db.js';
-import { isArtifactDigest } from '../src/lib/server/oci.js';
+import { fetchArtifactIndex, isArtifactDigest, parseArtifactIndex } from '../src/lib/server/oci.js';
 
 let fake: FakeLibsql;
 
@@ -122,6 +122,54 @@ function countVersions(full: string): number {
 		.get(scope, name) as { n: number };
 	return Number(row.n);
 }
+
+	it('fetches a public GHCR index through the anonymous token challenge', async () => {
+		const row = descriptor(
+			`sha256:${'aa'.repeat(32)}`,
+			'runtime',
+			'binary',
+			'libcpu_cabi.so',
+			{ os: 'linux', architecture: 'amd64' }
+		);
+		const bytes = indexBytes([row]);
+		const calls: string[] = [];
+		const mock = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			calls.push(url);
+			if (url.includes('/token')) {
+				return new Response(JSON.stringify({ token: 'anon' }), { status: 200 });
+			}
+			const headers = new Headers(init?.headers);
+			if (!headers.has('Authorization')) {
+				return new Response(null, {
+					status: 401,
+					headers: {
+						'www-authenticate':
+							'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:rovelstars/rnx-stdlib-app:pull"'
+					}
+				});
+			}
+			return new Response(bytes, { status: 200 });
+		}) as typeof fetch;
+		const res = await fetchArtifactIndex('ghcr.io/rovelstars/rnx-stdlib-app', mock);
+		assert.equal(res.ok, true);
+		if (res.ok) assert.equal(res.digest, indexDigest(bytes));
+		assert.ok(calls.some((u) => u.includes('/token?')), calls.join(', '));
+	});
+
+	it('accepts a scoped upstream package name', () => {
+		const row = descriptor(
+			`sha256:${'aa'.repeat(32)}`,
+			'runtime',
+			'binary',
+			'libcpu_cabi.so',
+			{ os: 'linux', architecture: 'amd64' }
+		);
+		(row['annotations'] as Record<string, string>)['run.rasmalai.upstream'] = `@std/app@sha256:${'cd'.repeat(32)}`;
+		const bytes = indexBytes([row]);
+		const parsed = parseArtifactIndex(REF, bytes, indexDigest(bytes));
+		assert.equal(parsed.ok, true);
+	});
 
 before(async () => {
 	fake = await startFakeLibsql();

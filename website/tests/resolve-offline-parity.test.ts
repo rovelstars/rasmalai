@@ -13,10 +13,10 @@ import { seedPackage, seedPayload, type CanonicalPublishPayload } from './publis
 // compiler/frontend/src/fetch.rs, tests `offline_float_*`): the same
 // inventories must pick the same versions. The engine below is the
 // toolchain the CLI resolves with (compiler/frontend/Cargo.toml keeps
-// `version = "0.3.0"`); if that version moves, update ENGINE here and the
+// `version = "0.3.1"`); if that version moves, update ENGINE here and the
 // CLI vectors stay paired.
 
-const ENGINE = '0.3.0';
+const ENGINE = '0.3.1';
 
 let fake: FakeLibsql;
 

@@ -44,10 +44,13 @@ def valid_generator(value):
 
 
 def valid_upstream(value):
-    name, sep, digest = value.partition("@")
-    if not sep or not valid_name(name):
+    name, sep, digest = value.rpartition("@")
+    if not sep or not digest.startswith("sha256:") or not is_hex64(digest[7:]):
         return False
-    return digest.startswith("sha256:") and is_hex64(digest[7:])
+    if name.startswith("@"):
+        scope, slash, pkg = name[1:].partition("/")
+        return bool(slash) and valid_name(scope) and valid_name(pkg)
+    return valid_name(name)
 
 
 def valid_title(value):
