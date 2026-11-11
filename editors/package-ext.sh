@@ -8,8 +8,9 @@ root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
 rm -rf "$out"
 mkdir -p "$out/grammars/rasmalai"
-cp -R "$root/editors/zed/." "$out/"
-rm -rf "$out/target" "$out/extension.wasm" "$out/grammars"
+for item in Cargo.lock Cargo.toml extension.toml languages src; do
+    cp -R "$root/editors/zed/$item" "$out/"
+done
 cp -R "$root/editors/tree-sitter-rasmalai/." "$out/grammars/rasmalai/"
 rm -f "$out/grammars/rasmalai/tree-sitter-rasmalai.wasm"
 cp "$root/LICENSE" "$out/LICENSE"
