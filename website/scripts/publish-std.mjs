@@ -204,6 +204,8 @@ let skipped = 0;
 // pass once its dep exists. A pass that makes no progress while modules
 // remain means a real error, which throws instead of looping forever.
 const isMissingDep = (text) => text.includes('is not preloaded');
+const isServerFailure = (text) => /HTTP 5\d\d/.test(text);
+const failed = new Map();
 let pending = [...modules];
 let lastError = null;
 while (pending.length > 0) {
@@ -211,6 +213,13 @@ while (pending.length > 0) {
 	let progressed = false;
 	for (const name of pending) {
 		const full = `@std/${name}`;
+		const brokenDep = [...importDeps(name)].find((dep) => failed.has(dep));
+		if (brokenDep) {
+			failed.set(name, `dependency @std/${brokenDep} failed`);
+			progressed = true;
+			console.log(`publish-std: skip ${full}@${cliVersion} (dependency @std/${brokenDep} failed)`);
+			continue;
+		}
 		const dir = join(stage, name.replace('/', '_'));
 		mkdirSync(join(dir, 'src'), { recursive: true });
 		cpSync(join(stdDir, name, 'lib.rnx'), join(dir, 'src', 'lib.rnx'));
@@ -255,6 +264,11 @@ while (pending.length > 0) {
 				lastError = new Error(`publish-std: ${full} waiting on an unpublished dep`);
 				next.push(name);
 				console.log(`publish-std: defer ${full}@${cliVersion} (dep not published yet)`);
+			} else if (isServerFailure(text)) {
+				const line = text.split('\n').map((s) => s.trim()).filter(Boolean).find((s) => isServerFailure(s)) ?? 'server error';
+				failed.set(name, line);
+				progressed = true;
+				console.log(`publish-std: failed ${full}@${cliVersion} (${line})`);
 			} else {
 				throw e;
 			}
@@ -265,3 +279,7 @@ while (pending.length > 0) {
 }
 rmSync(stage, { recursive: true, force: true });
 console.log(`publish-std: ${published} published, ${skipped} skipped, ${modules.length} modules`);
+if (failed.size > 0) {
+	const list = [...failed].map(([name, why]) => `@std/${name}: ${why}`).join('; ');
+	throw new Error(`publish-std: ${failed.size} module(s) failed: ${list}`);
+}
