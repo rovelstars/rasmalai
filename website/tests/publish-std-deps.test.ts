@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { startFakeLibsql, type FakeLibsql } from './libsql-fake.js';
 import { POST as publishPOST } from '../src/routes/api/v0/packages/+server.ts';
 
+// The package under test uses a user scope: a first-party @std publish
+// takes the trusted path and skips the isolate analyser.
+//
 // Cross-package analysis: a publish whose tree imports @std/* must
 // analyse against the dependency's published sources (fetched from R2
 // by the server), not fail with "not preloaded". Unknown modules must
@@ -71,7 +74,7 @@ describe('publish cross-package analysis', () => {
 			{ path: 'src/lib.rnx', content: PRELUDE }
 		]));
 		assert.equal(dep.status, 201);
-		const res = await publish('@std/usespre', '0.1.0', frameOf('@std/usespre', '0.1.0', [
+		const res = await publish('@acme/usespre', '0.1.0', frameOf('@acme/usespre', '0.1.0', [
 			{ path: 'src/lib.rnx', content: USES }
 		]));
 		assert.equal(res.status, 201);
@@ -80,7 +83,7 @@ describe('publish cross-package analysis', () => {
 	});
 
 	it('refuses a tree importing an unpublished @std/* dep', async () => {
-		const res = await publish('@std/earlybird', '0.1.0', frameOf('@std/earlybird', '0.1.0', [
+		const res = await publish('@acme/earlybird', '0.1.0', frameOf('@acme/earlybird', '0.1.0', [
 			{
 				path: 'src/lib.rnx',
 				content:
@@ -91,7 +94,7 @@ describe('publish cross-package analysis', () => {
 	});
 
 	it('refuses an unknown standard library module', async () => {
-		const res = await publish('@std/confused', '0.1.0', frameOf('@std/confused', '0.1.0', [
+		const res = await publish('@acme/confused', '0.1.0', frameOf('@acme/confused', '0.1.0', [
 			{
 				path: 'src/lib.rnx',
 				content: 'import { nope } from "@std/nosuchmod";\nexport fn main(): Void {\n}\n'

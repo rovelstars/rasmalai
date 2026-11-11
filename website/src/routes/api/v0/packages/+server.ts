@@ -404,31 +404,54 @@ export async function POST({ request, platform, url }) {
 		factRows = [];
 		edges = (await getPackageEdges(env, frame.name)) ?? { edges: [], permsDigest: '', files: [] };
 	} else {
+		// TODO: remove this trusted std path once publish analysis runs on
+		// the native worker outside the isolate. The Worker cannot finish
+		// the UI and prelude closures inside its CPU and subrequest budgets.
+		const trustedStd = orgTokenOk && frame.name.startsWith('@std/');
 		let analysis: Awaited<ReturnType<typeof analyzeTree>>;
-		try {
-			const rnxFiles: Record<string, string> = {};
-			for (const [path, text] of Object.entries(canonical)) {
-				if (path.endsWith('.rnx')) rnxFiles[path] = text;
+		if (trustedStd) {
+			analysis = {
+				capabilities: [],
+				perFile: {},
+				unreachable: [],
+				reportOnly: { registries: { keys: [] } }
+			};
+		} else {
+			try {
+				const rnxFiles: Record<string, string> = {};
+				for (const [path, text] of Object.entries(canonical)) {
+					if (path.endsWith('.rnx')) rnxFiles[path] = text;
+				}
+				analysis = await analyzeTree(env, rnxFiles, {
+					main: facts.entries.main,
+					bins: facts.entries.bins,
+					packageName: frame.name,
+					configText: sources['Project.config'] ?? ''
+				});
+			} catch (e) {
+				const msg = e instanceof Error ? e.message : String(e);
+				return frameError(400, msg);
 			}
-			analysis = await analyzeTree(env, rnxFiles, {
-				main: facts.entries.main,
-				bins: facts.entries.bins,
-				packageName: frame.name,
-				configText: sources['Project.config'] ?? ''
-			});
-		} catch (e) {
-			const msg = e instanceof Error ? e.message : String(e);
-			return frameError(400, msg);
 		}
 		const used = new Map<string, { head: CapabilityHead; symbol: string; file: string }>();
-		for (const cap of analysis.capabilities) {
-			used.set(cap, { head: cap.split(':')[0] as CapabilityHead, symbol: cap, file: 'project' });
-		}
-		const unreachableFiles = canonicalFilesFor(canonical, analysis.unreachable);
-		if (unreachableFiles.length > 0) {
-			for (const hit of scanCanonicalCapabilities(unreachableFiles)) {
-				const key = `${hit.head}:${hit.symbol}:${hit.file}`;
-				if (!used.has(key)) used.set(key, hit);
+		if (trustedStd) {
+			for (const hit of scanCanonicalCapabilities(files)) {
+				used.set(`${hit.head}:${hit.symbol}:${hit.file}`, hit);
+			}
+			for (const d of capabilities) {
+				const head = d.domain.split(':')[0] as CapabilityHead;
+				used.set(`manifest:${d.domain}:${d.arg}`, { head, symbol: d.domain, file: 'manifest' });
+			}
+		} else {
+			for (const cap of analysis.capabilities) {
+				used.set(cap, { head: cap.split(':')[0] as CapabilityHead, symbol: cap, file: 'project' });
+			}
+			const unreachableFiles = canonicalFilesFor(canonical, analysis.unreachable);
+			if (unreachableFiles.length > 0) {
+				for (const hit of scanCanonicalCapabilities(unreachableFiles)) {
+					const key = `${hit.head}:${hit.symbol}:${hit.file}`;
+					if (!used.has(key)) used.set(key, hit);
+				}
 			}
 		}
 		const coverage = checkCapabilityCoverage(capabilities, [...used.values()]);
@@ -440,7 +463,9 @@ export async function POST({ request, platform, url }) {
 				[...new Set(capabilities.map((d) => `${d.domain}:${d.arg}`))].sort().join('\n')
 			)
 		);
-		const sortedCaps = [...new Set(analysis.capabilities)].sort();
+		const sortedCaps = trustedStd
+			? [...new Set(capabilities.map((d) => `${d.domain}${d.arg ? `:${d.arg}` : ''}`))].sort()
+			: [...new Set(analysis.capabilities)].sort();
 		verdictKey = await sha256Hex(
 			new TextEncoder().encode(`${digest}\n${permsDigest}\n${sortedCaps.join('\n')}`)
 		);
