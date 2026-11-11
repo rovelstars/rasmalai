@@ -174,7 +174,7 @@
   name: (string_literal) @property)
 
 (argument
-  name: (identifier) @variable.parameter)
+  name: (identifier) @property)
 
 (type
   (identifier) @type)
@@ -236,6 +236,12 @@
   "^"
   "?"
 ] @operator
+
+; Uppercase identifiers are types and constructors. This mirrors the website
+; tokenizer and the Rust tree-sitter convention, so a capitalized call such as
+; `Page(...)` reads as a type instead of a free function.
+((identifier) @type
+  (#match? @type "^[A-Z]"))
 
 [
   "("
