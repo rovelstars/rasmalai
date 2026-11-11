@@ -41,9 +41,8 @@ import {
 	type ShellEngine
 } from '../src/lib/playground/shell.ts';
 import { pruneForSave, mergeForLoad } from '../src/lib/playground/ide-store.ts';
-import { computeIndent, dedentForClosing, rnxStream } from '../src/lib/aura/rnx-mode.ts';
-import type { StringStream } from '@codemirror/language';
-import { AURA_KEYWORDS, AURA_TYPES } from '../src/lib/aura/highlight.ts';
+import { computeIndent, dedentForClosing } from '../src/lib/aura/rnx-edit.ts';
+import { RNX_KEYWORDS, RNX_TYPES } from '../src/lib/aura/keywords.gen.ts';
 
 describe('vfs paths', () => {
 	it('normalizes relative paths against cwd', () => {
@@ -347,11 +346,11 @@ describe('ide store hygiene', () => {
 	});
 });
 
-describe('rnx editor mode', () => {
-	it('keeps oracle keyword and type sets in sync with highlight.ts', () => {
-		for (const w of ['fn', 'let', 'import', 'export', 'pass', 'super', 'runtime']) assert.ok(AURA_KEYWORDS.has(w), w);
-		for (const w of ['Int', 'Option', 'String', 'Vec4f']) assert.ok(AURA_TYPES.has(w), w);
-		assert.ok(!AURA_KEYWORDS.has('taken'));
+describe('rnx editing', () => {
+	it('keeps the grammar keyword and type sets in sync', () => {
+		for (const w of ['fn', 'let', 'import', 'export', 'pass', 'super', 'runtime']) assert.ok(RNX_KEYWORDS.has(w), w);
+		for (const w of ['Int', 'Option', 'String', 'Vec4f']) assert.ok(RNX_TYPES.has(w), w);
+		assert.ok(!RNX_KEYWORDS.has('taken'));
 	});
 
 	it('computes electric indentation deterministically', () => {
@@ -362,53 +361,4 @@ describe('rnx editor mode', () => {
 		assert.equal(dedentForClosing(''), '');
 	});
 
-	it('classifies tokens through the shared keyword sets', () => {
-		const classify = (text: string): (string | null)[] => {
-			const words = text.split(' ');
-			const out: (string | null)[] = [];
-			for (const w of words) {
-				let at = 0;
-				const fake = {
-					eatSpace: () => false,
-					sol: () => at === 0,
-					match: (p: string | RegExp, consume?: boolean) => {
-						if (typeof p === 'string') {
-							if (w.slice(at).startsWith(p)) {
-								if (consume !== false) at += p.length;
-								return p;
-							}
-							return null;
-						}
-						const m = p.exec(w.slice(at));
-						if (m && m.index === 0) {
-							if (consume !== false) at += m[0].length;
-							return m[0];
-						}
-						return null;
-					},
-					skipToEnd: () => {
-						at = w.length;
-					},
-					current: () => w.slice(0, at),
-					next: () => {
-						if (at >= w.length) return undefined;
-						return w.charAt(at++);
-					},
-					peek: () => (at < w.length ? w.charAt(at) : undefined),
-					eat: () => undefined
-				};
-				out.push(
-					rnxStream.token(fake as unknown as StringStream, {
-						inBlockComment: false,
-						inString: false,
-						attrDepth: 0,
-						expectFunctionName: false,
-						prev: ''
-					})
-				);
-			}
-			return out;
-		};
-		assert.deepEqual(classify('fn Int hello 42'), ['keyword', 'typeName', 'variableName', 'number']);
-	});
 });

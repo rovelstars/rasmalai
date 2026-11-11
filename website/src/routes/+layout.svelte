@@ -12,7 +12,7 @@
 	import { page } from '$app/state';
 	import Navbar from '$lib/components/Navbar.svelte';
 	import Footer from '$lib/components/Footer.svelte';
-	import { enhanceDocCode } from '$lib/docs/enhance';
+	import { enhanceDocCode, enhanceRnxBlocks } from '$lib/docs/enhance';
 	import { ogImageFor } from '$lib/docs/og';
 	import { canonicalUrl } from '$lib/site';
 	import ogManifest from '../../static/og/manifest.json';
@@ -31,6 +31,7 @@
 	function enhance() {
 		try {
 			enhanceDocCode(document.body);
+			enhanceRnxBlocks(document.body);
 		} catch {
 			/* enhancement is best-effort */
 		}

@@ -1,5 +1,7 @@
 import { marked, type Token, type Tokens } from 'marked';
-import { highlightAura, highlightCode, highlightInlineCode } from '$lib/aura/highlight';
+import { highlightCode } from '$lib/aura/highlight';
+import { rnxSpansToHtml } from '$lib/aura/rnx-captures';
+import { RNX_BLOCK_SPANS } from '$lib/aura/rnx-highlight.gen';
 
 export interface TocEntry {
 	id: string;
@@ -55,9 +57,10 @@ function renderCode(raw: string, lang: string): string {
 			: copy;
 	const body =
 		lang === 'rnx'
-			? `<pre><code>${highlightAura(code)
-					.map((s) => `<span class="${s.cls}">${escHtml(s.text)}</span>`)
-					.join('')}</code></pre>`
+			? (() => {
+					const spans = RNX_BLOCK_SPANS[code];
+					return `<pre><code>${spans ? rnxSpansToHtml(spans) : escHtml(code)}</code></pre>`;
+				})()
 			: (() => {
 					const generic = highlightCode(code, lang);
 					if (generic) {
@@ -276,10 +279,7 @@ const renderer = {
 		return renderCode(text, (lang ?? '').toLowerCase());
 	},
 	codespan({ text }: Tokens.Codespan) {
-		const spans = highlightInlineCode(text)
-			.map((s) => `<span class="${s.cls}">${escHtml(s.text)}</span>`)
-			.join('');
-		return `<code>${spans}</code>`;
+		return `<code>${escHtml(text)}</code>`;
 	},
 	blockquote({ tokens }: Tokens.Blockquote) {
 		const inner = marked.parser(tokens) as string;

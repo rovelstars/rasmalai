@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Play, Pause, SkipBack, SkipForward } from 'lucide-svelte';
-	import { highlightAura } from '$lib/aura/highlight';
+	import { escapeRnxHtml } from '$lib/aura/rnx-captures';
+	import { highlightRnxLines } from '$lib/aura/rnx-treesitter';
 
 	const CW = 8;
 	const CH = 16;
@@ -67,18 +68,8 @@
 	let canvas: HTMLCanvasElement;
 	let host: HTMLDivElement;
 
-	function escHtml(s: string): string {
-		return s
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;')
-			.replace(/"/g, '&quot;');
-	}
-
-	function richLine(text: string): string {
-		return highlightAura(text)
-			.map((s) => `<span class="${s.cls}">${escHtml(s.text)}</span>`)
-			.join('');
+	function plainLine(text: string): string {
+		return `<span class="text-aura-text">${escapeRnxHtml(text)}</span>`;
 	}
 
 	let ctx: CanvasRenderingContext2D | null = null;
@@ -95,7 +86,18 @@
 	let line = $state(1);
 	let gauge = $state('0 freed - 0 pauses');
 
-	let rich = $derived(SCENES[scene].source.map(richLine));
+	let rich = $state<string[]>(SCENES[0].source.map(plainLine));
+
+	$effect(() => {
+		const lines = SCENES[scene].source;
+		let cancelled = false;
+		highlightRnxLines(lines).then((next) => {
+			if (!cancelled) rich = next;
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
 
 	let resizeObserver: ResizeObserver | undefined;
 	let themeObserver: MutationObserver | undefined;

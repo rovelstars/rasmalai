@@ -41,6 +41,16 @@ fn test_vscode_manifest_schema_and_links() {
 }
 
 #[test]
+fn test_zed_highlights_match_the_tree_sitter_query() {
+    let canonical = read_file("tree-sitter-rasmalai/queries/highlights.scm");
+    let zed = read_file("zed/languages/rasmalai/highlights.scm");
+    assert_eq!(
+        zed, canonical,
+        "zed/languages/rasmalai/highlights.scm drifted from the canonical tree-sitter query; run editors/sync-queries.sh"
+    );
+}
+
+#[test]
 fn test_editor_configs_exist_and_reference_rnx_lsp() {
     let helix = read_file("helix/languages.toml");
     assert!(helix.contains("command = \"rnx\""), "{helix}");

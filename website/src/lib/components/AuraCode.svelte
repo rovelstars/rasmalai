@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { highlightAura } from '$lib/aura/highlight';
+	import { cachedRnxSpans, highlightRnxSpans } from '$lib/aura/rnx-treesitter';
+	import { rnxSpansToHtml, type AuraSpan } from '$lib/aura/rnx-captures';
 
 	let { source, showCopy = false, links }: { source: string; showCopy?: boolean; links?: Map<string, string> } = $props();
 
@@ -15,7 +16,20 @@
 		}
 	}
 
-	let spans = $derived(highlightAura(source, links));
+	// svelte-ignore state_referenced_locally
+	let spans = $state<AuraSpan[]>(cachedRnxSpans(source, links));
+
+	$effect(() => {
+		const src = source;
+		const map = links;
+		let cancelled = false;
+		highlightRnxSpans(src, map).then((next) => {
+			if (!cancelled) spans = next;
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
 </script>
 
 <div class="relative">
@@ -29,10 +43,5 @@
 		</button>
 	{/if}
 	<pre
-		class="overflow-x-auto p-4 font-mono text-[13px] leading-relaxed"><code>{#each spans as s}{#if s.href}<a
-					href={s.href}
-					class="{s.cls} doc-symlink">{s.text}</a
-				>{:else}<span
-					class={s.cls}>{s.text}</span
-				>{/if}{/each}</code></pre>
+		class="overflow-x-auto p-4 font-mono text-[13px] leading-relaxed"><code>{@html rnxSpansToHtml(spans)}</code></pre>
 </div>

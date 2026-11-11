@@ -1,5 +1,7 @@
 import { mount, unmount } from 'svelte';
 import RunnableCode from '$lib/components/RunnableCode.svelte';
+import { highlightRnxSpans } from '$lib/aura/rnx-treesitter';
+import { rnxSpansToHtml } from '$lib/aura/rnx-captures';
 
 // Progressively enhances prerendered `rnx` code blocks into interactive
 // RunnableCode islands (edit + inline run). Static header/copy/playground
@@ -27,5 +29,17 @@ export function enhanceDocCode(root: ParentNode) {
 		} catch {
 			el.removeAttribute('data-enhanced');
 		}
+	});
+}
+
+export function enhanceRnxBlocks(root: ParentNode) {
+	const blocks = root.querySelectorAll('div.doc-code[data-lang="rnx"]:not([data-runnable]):not([data-rnx])');
+	blocks.forEach((el) => {
+		el.setAttribute('data-rnx', '1');
+		const code = el.getAttribute('data-code') ?? '';
+		highlightRnxSpans(code).then((spans) => {
+			const target = el.querySelector('pre code');
+			if (target) target.innerHTML = rnxSpansToHtml(spans);
+		});
 	});
 }

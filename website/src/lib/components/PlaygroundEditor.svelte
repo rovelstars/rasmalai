@@ -6,7 +6,8 @@
 	import { autocompletion, type Completion } from '@codemirror/autocomplete';
 	import { linter, type Diagnostic as LintDiagnostic } from '@codemirror/lint';
 	import { bracketMatching, indentOnInput } from '@codemirror/language';
-	import { rnxLanguage, rnxHighlight, computeIndent, dedentForClosing } from '$lib/aura/rnx-mode';
+	import { computeIndent, dedentForClosing } from '$lib/aura/rnx-edit';
+	import { rnxTreeSitter } from '$lib/aura/rnx-treesitter';
 	import { RNX_KEYWORDS, RNX_TYPES } from '$lib/aura/keywords.gen';
 	import { engine } from '$lib/playground/engine.svelte';
 
@@ -167,8 +168,7 @@
 				history(),
 				bracketMatching(),
 				indentOnInput(),
-				rnxLanguage,
-				rnxHighlight(),
+				rnxTreeSitter(),
 				auraEditorTheme,
 				EditorView.lineWrapping,
 				keymap.of([

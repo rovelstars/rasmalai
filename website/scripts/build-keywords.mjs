@@ -2,8 +2,9 @@
 //
 // The grammar (editors/tree-sitter-rasmalai) is the in-workspace authority
 // for which words are reserved. The website must not maintain a second,
-// hand-edited keyword list: every reserved word the tokenizer, the
-// highlighter, and the playground completion fallback know comes from here.
+// hand-edited keyword list: every reserved word the playground completion
+// fallback knows comes from here. Syntax highlighting comes from the
+// tree-sitter query via scripts/build-rnx-highlight.ts.
 //
 // Two deliberate overlays live in this file, not in the grammar:
 // - `comptime` is reserved per requirements/02_SRS.md but has no STRING token

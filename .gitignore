@@ -25,6 +25,10 @@ website/static/data/
 # install; the grammar itself lives in renhiyama/rasmalai-ext.
 editors/zed/extension.wasm
 editors/zed/grammars/
+website/static/rnx.wasm
+website/static/web-tree-sitter.wasm
+website/src/lib/aura/rnx-query.gen.ts
+website/src/lib/aura/rnx-highlight.gen.ts
 
 # Tree-sitter generated outputs (regenerated in CI from grammar.js, see
 # .github/workflows/tree-sitter.yml). The generated parser ships in the

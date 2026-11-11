@@ -406,9 +406,7 @@ describe('generalized docs serving', () => {
 			string,
 			unknown
 		>;
-		assert.ok(
-			String(start['html']).includes('<code><span class="text-aura-text">barewidgets</span></code>')
-		);
+		assert.ok(String(start['html']).includes('<code>barewidgets</code>'));
 		assert.ok(String(start['html']).includes('to your manifest dependencies'));
 		const api = (await bareServerCall('barewidgets', 'api', headers())) as Record<string, unknown>;
 		assert.notEqual(api['mod'], null);

@@ -243,6 +243,16 @@
 ((identifier) @type
   (#match? @type "^[A-Z]"))
 
+; Declaration names stay functions even when capitalized (`Main`, `TaskScreen`).
+(function_declaration
+  name: (identifier) @function)
+
+(method_declaration
+  name: (identifier) @function)
+
+(function_signature
+  name: (identifier) @function)
+
 [
   "("
   ")"

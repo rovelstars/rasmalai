@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { Play, RotateCcw, Copy, Check, Pencil, ExternalLink, LoaderCircle } from 'lucide-svelte';
-	import { highlightAura } from '$lib/aura/highlight';
 	import { highlightCode } from '$lib/aura/highlight';
+	import { cachedRnxSpans, highlightRnxSpans } from '$lib/aura/rnx-treesitter';
+	import { rnxSpansToHtml, type AuraSpan } from '$lib/aura/rnx-captures';
 	import { engine } from '$lib/playground/engine.svelte';
 	import { encodeSnippet } from '$lib/playground/share';
 
@@ -64,11 +65,24 @@
 		return raw;
 	}
 
+	let rnxSpans = $state<AuraSpan[]>([]);
+
+	$effect(() => {
+		if (current.lang !== 'rnx') return;
+		const src = shown;
+		let cancelled = false;
+		rnxSpans = cachedRnxSpans(src);
+		highlightRnxSpans(src).then((next) => {
+			if (!cancelled) rnxSpans = next;
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
+
 	let highlighted = $derived.by(() => {
 		if (current.lang === 'rnx') {
-			return highlightAura(shown)
-				.map((s) => `<span class="${s.cls}">${escHtml(s.text)}</span>`)
-				.join('');
+			return rnxSpansToHtml(rnxSpans.length > 0 ? rnxSpans : cachedRnxSpans(shown));
 		}
 		const spans = highlightCode(shown, highlightLang(current.lang));
 		if (!spans) return escHtml(shown);
