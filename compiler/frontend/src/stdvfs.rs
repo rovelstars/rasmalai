@@ -5,7 +5,9 @@ use std::sync::Mutex;
 
 static VFS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
-pub const MAX_STD_MODULE_BYTES: usize = 2 * 1024 * 1024;
+// TODO: lower this once account management is real and the analyzer can
+// stream a package instead of holding the whole tree in memory.
+pub const MAX_STD_MODULE_BYTES: usize = 5 * 1024 * 1024;
 
 pub fn pin_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()

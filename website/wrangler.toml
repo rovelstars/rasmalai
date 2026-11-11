@@ -8,8 +8,12 @@
 # The limits are the Free plan's, and they are the budgets the code in
 # `src/lib/server` enforces before the platform would have to:
 #
-#   cpu_ms = 10        the CPU one request may spend
+#   cpu_ms = 30000     the CPU one request may spend (raised for the 5 MiB
+#                      stdlib publish analysis)
 #   subrequests = 50   the external calls one request may make
+#
+# TODO: drop the raised CPU ceiling once account management is real and
+# the analyzer streams a package instead of holding the whole tree.
 #
 # Every store round trip, every R2 object read and every R2 object write
 # is one subrequest, so a resolve that needs a deeper closure than the
@@ -29,5 +33,5 @@ compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 
 [limits]
-cpu_ms = 10
+cpu_ms = 30000
 subrequests = 50
