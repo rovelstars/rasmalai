@@ -1,8 +1,8 @@
 name: editors-ext
 
 # Publishes generated editor support to renhiyama/rasmalai-ext.
-# Requires the RASMALAI_EXT_TOKEN secret: a fine-grained token with
-# contents:write on renhiyama/rasmalai-ext.
+# Requires the RASMALAI_EXT_DEPLOY_KEY secret: the private half of a deploy key
+# with write access to renhiyama/rasmalai-ext.
 on:
   release:
     types: [published]
@@ -30,40 +30,58 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
 
+      - name: Skip an already published tag
+        run: |
+          version="${SOURCE_TAG#v}"
+          if git ls-remote --tags https://github.com/renhiyama/rasmalai-ext "refs/tags/v$version" | grep -q .; then
+            echo "v$version is already published"
+            echo "PUBLISHED=1" >> "$GITHUB_ENV"
+          fi
+
       - uses: actions/setup-node@v5
+        if: env.PUBLISHED != '1'
         with:
           node-version: 24
 
       - name: Install tree-sitter CLI
+        if: env.PUBLISHED != '1'
         run: npm install -g tree-sitter-cli
 
       - name: Generate and test the grammar
+        if: env.PUBLISHED != '1'
         working-directory: editors/tree-sitter-rasmalai
         run: |
           tree-sitter generate
           tree-sitter test
 
       - name: Stage the distribution tree
+        if: env.PUBLISHED != '1'
         run: |
           version="${SOURCE_TAG#v}"
           sh editors/package-ext.sh "$RUNNER_TEMP/rasmalai-ext" "$version" "$GITHUB_SHA"
 
       - name: Push the tagged release
+        if: env.PUBLISHED != '1'
         env:
-          EXT_TOKEN: ${{ secrets.RASMALAI_EXT_TOKEN }}
+          DEPLOY_KEY: ${{ secrets.RASMALAI_EXT_DEPLOY_KEY }}
         run: |
           set -eu
-          if [ -z "$EXT_TOKEN" ]; then
-            echo "::error::RASMALAI_EXT_TOKEN is not set"
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error::RASMALAI_EXT_DEPLOY_KEY is not set"
             exit 1
           fi
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/rasmalai-ext"
+          chmod 600 "$HOME/.ssh/rasmalai-ext"
+          ssh-keyscan github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/rasmalai-ext -o IdentitiesOnly=yes"
           version="${SOURCE_TAG#v}"
           cd "$RUNNER_TEMP/rasmalai-ext"
           git init -q
           git checkout -q -b main
           git config user.name "rasmalai-bot"
           git config user.email "bot@rasmalai.dev"
-          git remote add origin "https://x-access-token:$EXT_TOKEN@github.com/renhiyama/rasmalai-ext.git"
+          git remote add origin git@github.com:renhiyama/rasmalai-ext.git
           if git ls-remote --tags origin "refs/tags/v$version" | grep -q .; then
             echo "v$version is already published"
             exit 0
