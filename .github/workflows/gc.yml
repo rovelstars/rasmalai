@@ -1,5 +1,8 @@
 name: Monthly chunk GC
 
+permissions:
+  contents: read
+
 # Sweeps orphaned content chunks past the 30d grace window via
 # POST /api/admin/gc: the endpoint re-verifies liveness, deletes R2 objects,
 # and removes the Turso rows, then returns a scanned/orphans/deleted/r2Deleted
