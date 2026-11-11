@@ -1,8 +1,8 @@
 name: tree-sitter
 
-# Generated parser outputs (src/parser.c, src/grammar.json, src/node-types.json)
-# are NOT committed. They are rebuilt from the canonical grammar.js here,
-# corpus-tested, and published as CI artifacts for npm / zed / vsce packaging.
+# parser.c is generated here and consumed by the editors-ext workflow, which
+# publishes it to the renhiyama/rasmalai-ext distribution repo. Nothing
+# generated is committed to this repository.
 on:
   push:
     branches: [main]
@@ -38,12 +38,6 @@ jobs:
         working-directory: editors/tree-sitter-rasmalai
         run: tree-sitter test
 
-      - name: Sync generated outputs to zed grammar dir
-        run: |
-          cp editors/tree-sitter-rasmalai/src/parser.c editors/zed/grammars/rasmalai/src/parser.c
-          cp editors/tree-sitter-rasmalai/src/grammar.json editors/zed/grammars/rasmalai/src/grammar.json
-          cp editors/tree-sitter-rasmalai/src/node-types.json editors/zed/grammars/rasmalai/src/node-types.json
-
       # NOTE: keyword-table sync (tmLanguage vs grammar.js, the old 56/56 check)
       # stays covered by compiler/cli/tests/{grammar_test,tree_sitter_test}.rs,
       # which run on every push/PR in ci.yml. This workflow does not duplicate
@@ -59,12 +53,6 @@ jobs:
             editors/tree-sitter-rasmalai/queries/
             editors/tree-sitter-rasmalai/test/
             editors/tree-sitter-rasmalai/src/
-
-      - name: Upload zed grammar inputs
-        uses: actions/upload-artifact@v6
-        with:
-          name: zed-grammar-rasmalai
-          path: editors/zed/grammars/rasmalai/
 
 # TODO (publish wiring, not invented here): release.yml only ships native
 # rnx tarballs. Feeding these artifacts into npm publish / vsce packaging

@@ -23,15 +23,13 @@ website/static/data/
 
 # Editor build outputs (wasm built from generated parser.c, see .github/workflows/tree-sitter.yml)
 editors/zed/extension.wasm
-editors/zed/grammars/rasmalai.wasm
 
-# Tree-sitter generated outputs (regenerated in CI from grammar.js, see .github/workflows/tree-sitter.yml)
+# Tree-sitter generated outputs (regenerated in CI from grammar.js, see
+# .github/workflows/tree-sitter.yml). The generated parser ships in the
+# renhiyama/rasmalai-ext distribution repo, never in this one.
 editors/tree-sitter-rasmalai/src/parser.c
 editors/tree-sitter-rasmalai/src/grammar.json
 editors/tree-sitter-rasmalai/src/node-types.json
-editors/zed/grammars/rasmalai/src/parser.c
-editors/zed/grammars/rasmalai/src/grammar.json
-editors/zed/grammars/rasmalai/src/node-types.json
 
 # Web & WASM
 node_modules/

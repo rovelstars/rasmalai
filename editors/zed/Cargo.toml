@@ -1,6 +1,6 @@
 [package]
 name = "rasmalai"
-version = "0.2.0"
+version = "0.3.2"
 edition = "2021"
 
 [lib]
@@ -8,3 +8,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 zed_extension_api = "0.7.0"
+
+[workspace]

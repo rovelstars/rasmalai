@@ -15,6 +15,7 @@ members = [
     "compiler/wasm_playground",
 ]
 exclude = [
+    "editors/zed",
     "compiler/runtime/bundle",
     "compiler/runtime/uefi",
     "compiler/runtime/wasi",
