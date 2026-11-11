@@ -55,21 +55,28 @@ fn version_files(full: &str, version: &str, top: &str) -> VersionFiles {
     let mut entries = Vec::new();
     let mut pairs = Vec::new();
     for (name, bytes) in &files {
-        let hash = Sha256::hexdigest(bytes);
+        let mut chunks = Vec::new();
+        for part in bytes.chunks(512 * 1024) {
+            let hash = Sha256::hexdigest(part);
+            chunks.push(hash.clone());
+            pairs.push((hash, part.to_vec()));
+        }
         entries.push(DigestEntry {
             name: name.clone(),
             size: bytes.len() as u64,
             dir: false,
-            chunks: vec![hash.clone()],
+            chunks,
         });
-        pairs.push((hash, bytes.clone()));
     }
     let rendered: Vec<String> = entries
         .iter()
         .map(|e| {
+            let chunks: Vec<String> = e.chunks.iter().map(|c| format!("\"{c}\"")).collect();
             format!(
-                "{{\"name\": \"{}\", \"size\": {}, \"dir\": false, \"chunks\": [\"{}\"]}}",
-                e.name, e.size, e.chunks[0]
+                "{{\"name\": \"{}\", \"size\": {}, \"dir\": false, \"chunks\": [{}]}}",
+                e.name,
+                e.size,
+                chunks.join(", ")
             )
         })
         .collect();

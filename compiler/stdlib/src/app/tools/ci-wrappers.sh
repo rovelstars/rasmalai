@@ -13,11 +13,11 @@ else
 fi
 prefix=${WRAPPER_PREFIX:-$repo/.rnx-cache/wrappers}
 backend=${RNX_BACKEND:-cranelift}
+# The probes exercise the host-built wrappers, not the published artifact image.
+export RNX_PREFER_NATIVE=system
 
 if [ -z "${RNX_VENDOR_DIR:-}" ]; then
-    stage=${RNX_STAGE_DIR:-$repo/.rnx-cache/std-vendor}
-    "$here/stage-stdlib.sh" "$stage"
-    export RNX_VENDOR_DIR="$stage"
+    export RNX_VENDOR_DIR="$repo/compiler/stdlib/src"
 else
     export RNX_VENDOR_DIR
 fi

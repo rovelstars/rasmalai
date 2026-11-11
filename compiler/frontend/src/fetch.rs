@@ -112,16 +112,6 @@ fn check_local_override(
             ),
         ));
     }
-    if cfg.artifacts.is_some() {
-        return Err(Diagnostic::new(
-            Code::E108,
-            format!(
-                "local source for `{pkg}@{}` declares `artifacts`; vendored OCI artifacts are not supported",
-                cfg.version
-            ),
-        )
-        .with_hint("resolve the package from the registry or drop the `artifacts` table from the vendored Project.config"));
-    }
     if !is_valid_range(range) {
         return Err(Diagnostic::new(
             Code::E108,
@@ -6915,7 +6905,7 @@ mod tests {
     }
 
     #[test]
-    fn vendor_name_mismatch_and_artifacts_fail_closed() {
+    fn vendor_name_mismatch_fails_closed_and_artifacts_stay_local() {
         let (_guard, _dir) = isolate_cache("vendorbad");
         let dead = registry_cfg("http://127.0.0.1:9");
         let empty = BTreeMap::new();
@@ -6949,7 +6939,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(art.join("src").join("main.rnx"), "x\n").unwrap();
-        let err = resolve_registry_package(
+        let (dir, _, version) = resolve_registry_package(
             "@acme/vendor-e",
             "*",
             Some(&dead),
@@ -6958,9 +6948,9 @@ mod tests {
             &[],
             Some(&anchor),
         )
-        .unwrap_err();
-        assert_eq!(err.code, Code::E108);
-        assert!(err.message.contains("artifacts"), "{}", err.message);
+        .unwrap();
+        assert_eq!(version, "1.0.0");
+        assert_eq!(dir, std::fs::canonicalize(&art).unwrap());
     }
 
     #[test]
