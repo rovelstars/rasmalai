@@ -633,50 +633,6 @@ pub class Frame {
         return this.colorV
     }
 
-    /** Swap the theme before the next frame. */
-    pub fn setTheme(th: Theme) {
-        this.theme = th
-        this.forceFull = true
-    }
-
-    /** Device pixel ratio: tags the frame and exposes `Tree.dp` to the view. */
-    pub fn setDpi(d: Float) {
-        this.rootTree.setDensity(d)
-        this.scaleV = Int(d * 1000.0 + 0.5)
-        this.forceFull = true
-    }
-
-    pub fn setTextScale(f: Float) {
-        this.rootTree.setTextScale(f)
-        this.forceFull = true
-    }
-
-    pub fn setSafeArea(top: Int, right: Int, bottom: Int, left: Int) {
-        this.rootTree.setSafeArea(top, right, bottom, left)
-        this.forceFull = true
-    }
-
-    pub fn setKeyboardInset(bottom: Int) {
-        this.rootTree.setKeyboardInset(bottom)
-        this.forceFull = true
-    }
-
-    /** Apply a scene camera to presentation and hit testing. */
-    pub fn setCamera(c: Camera) {
-        this.cameraV = c
-        this.cameraOn = true
-        this.forceFull = true
-    }
-
-    pub fn clearCamera() {
-        this.cameraOn = false
-        this.forceFull = true
-    }
-
-    pub fn camera(): Camera {
-        return this.cameraV
-    }
-
     pub fn damage(): Damage {
         return this.damageList
     }

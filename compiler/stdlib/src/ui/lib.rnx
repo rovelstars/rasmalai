@@ -10185,18 +10185,11 @@ fn monoRichRuns(
                                                         }
 
                                                         pub fn tab(s: String, selected: Bool, onTap: fn(): Void): Node {
-                                                            let node = this.interactive(Role.tab, s, actionId(Action.tap))
-                                                            this.handler[node.id] = this.handlers.length()
-                                                            this.handlers.push(onTap)
-                                                            this.checked[node.id] = selected
-                                                            return node
+                                                            return this.tree.tab(s, selected, onTap)
                                                         }
 
                                                         pub fn menuItem(s: String, onTap: fn(): Void): Node {
-                                                            let node = this.interactive(Role.menuitem, s, actionId(Action.tap))
-                                                            this.handler[node.id] = this.handlers.length()
-                                                            this.handlers.push(onTap)
-                                                            return node
+                                                            return this.tree.menuItem(s, onTap)
                                                         }
 
                                                         /** A horizontal tab strip; the selected tab is underlined. */
