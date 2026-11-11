@@ -256,6 +256,7 @@ while (pending.length > 0) {
 			console.log(`publish-std: published ${full}@${cliVersion}`);
 		} catch (e) {
 			const text = String(e.stdout ?? '') + String(e.stderr ?? '') + String(e.message ?? '');
+			const detail = (String(e.stdout ?? '').trim() || String(e.stderr ?? '').trim()).slice(0, 4000);
 			if (text.includes('409') || text.includes('already published')) {
 				skipped++;
 				progressed = true;
@@ -269,7 +270,9 @@ while (pending.length > 0) {
 				failed.set(name, line);
 				progressed = true;
 				console.log(`publish-std: failed ${full}@${cliVersion} (${line})`);
+				if (detail) console.error(detail);
 			} else {
+				if (detail) console.error(detail);
 				throw e;
 			}
 		}
