@@ -1328,7 +1328,35 @@ pub fn run_files_opt(
     args: Vec<Value>,
     opt_level: u8,
 ) -> RunResult {
-    run_files_cfg(path, entry, args, opt_level, TestBackend::Interpreter, &CompileConfig::default())
+    run_files_cfg(
+        path,
+        entry,
+        args,
+        opt_level,
+        TestBackend::Interpreter,
+        &CompileConfig::default(),
+        frontend::native::NativePrefer::from_env(),
+    )
+}
+
+/// Register the patch wrappers and the bundled artifact directories with the
+/// runtime loader before codegen asks it to resolve foreign symbols.
+pub fn set_native_search_paths(
+    entry: &str,
+    prefer: frontend::native::NativePrefer,
+    native_libs: &[String],
+) -> Result<(), diagnostics::Diagnostic> {
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(dir) = frontend::patch::active_wrappers() {
+        paths.push(dir);
+    }
+    if let Some(root) = frontend::project::find_workspace_root(std::path::Path::new(entry)) {
+        paths.extend(frontend::native::native_search_dirs(&root, prefer, native_libs)?);
+    }
+    if !paths.is_empty() {
+        runtime::native::set_native_search_paths(paths);
+    }
+    Ok(())
 }
 
 fn jit_args(args: &[Value]) -> Result<Vec<i64>, String> {
@@ -1362,6 +1390,7 @@ pub fn run_files_cfg(
     opt_level: u8,
     backend: TestBackend,
     cfg: &CompileConfig,
+    prefer: frontend::native::NativePrefer,
 ) -> RunResult {
     struct AssertStrictGuard {
         prev: bool,
@@ -1388,8 +1417,11 @@ pub fn run_files_cfg(
             };
         }
     };
-    if let Some(dir) = frontend::patch::active_wrappers() {
-        runtime::native::set_native_search_paths(vec![dir]);
+    if let Err(e) = set_native_search_paths(path, prefer, &prog.native_libs) {
+        return RunResult {
+            outcome: RunOutcome::Compile(vec![e]),
+            output: Vec::new(),
+        };
     }
     let mut cmdline = vec![path.to_string()];
     cmdline.extend(args.iter().map(|v| v.display()));

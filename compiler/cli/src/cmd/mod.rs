@@ -604,7 +604,7 @@ pub(super) fn dispatch(
                 run_repl();
             }
             cli::args::Command::Dev { path, entry, no_rerun, mcp } => {
-                run_dev(path, entry, no_rerun, mcp);
+                run_dev(path, entry, no_rerun, mcp, prefer);
             }
             cli::args::Command::Check {
                 paths,

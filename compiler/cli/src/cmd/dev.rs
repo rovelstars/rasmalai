@@ -1,12 +1,12 @@
 
-pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun: bool, mcp: bool) {
+pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun: bool, mcp: bool, prefer: frontend::native::NativePrefer) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let target = cli::resolve_scope_target(path.as_deref(), None).unwrap_or_else(|e| {
                 eprintln!("{e}");
                 std::process::exit(1);
             });
             let entry_file = std::path::PathBuf::from(&target.entry);
-            let mut runner = match cli::dev::DevRunner::new(&entry_file, &entry, no_rerun) {
+            let mut runner = match cli::dev::DevRunner::new(&entry_file, &entry, no_rerun, prefer) {
                 Ok(r) => r,
                 Err(errs) => {
                     let theme = diagnostics::theme::AuraTheme::active();

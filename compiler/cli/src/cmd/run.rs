@@ -69,7 +69,7 @@ pub(super) fn run_run(path: Option<std::path::PathBuf>, entry: String, package: 
             if verbose {
                 eprintln!("rnx: jobs={} memory-cap={} bytes", cfg.jobs, cfg.memory_cap);
             }
-            let out = cli::run_files_cfg(&target.entry, &entry, args, opt_level, backend, &cfg);
+            let out = cli::run_files_cfg(&target.entry, &entry, args, opt_level, backend, &cfg, prefer);
             for line in &out.output {
                 print!("{line}");
             }

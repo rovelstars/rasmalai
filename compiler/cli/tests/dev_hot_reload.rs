@@ -29,7 +29,7 @@ const V3: &str = "fn getValue(): Int { return 3; }\nfn Main(): Int { return getV
 #[test]
 fn test_body_swap_under_watcher() {
     let (_g, f) = fresh_file("swap", V1);
-    let mut runner = DevRunner::new(&f, "Main", true).unwrap_or_else(|e| panic!("{e:?}"));
+    let mut runner = DevRunner::new(&f, "Main", true, frontend::native::NativePrefer::None).unwrap_or_else(|e| panic!("{e:?}"));
     assert_eq!(runner.call("Main", &[]).unwrap(), 1);
     std::fs::write(&f, V2).unwrap();
     match wait_event(&mut runner, Duration::from_secs(10)) {
@@ -43,7 +43,7 @@ fn test_body_swap_under_watcher() {
 #[test]
 fn test_diagnostic_tolerance() {
     let (_g, f) = fresh_file("diag", V2);
-    let mut runner = DevRunner::new(&f, "Main", true).unwrap_or_else(|e| panic!("{e:?}"));
+    let mut runner = DevRunner::new(&f, "Main", true, frontend::native::NativePrefer::None).unwrap_or_else(|e| panic!("{e:?}"));
     assert_eq!(runner.call("Main", &[]).unwrap(), 2);
     std::fs::write(&f, "fn getValue(): Int { return ").unwrap();
     match wait_event(&mut runner, Duration::from_secs(10)) {
@@ -63,7 +63,7 @@ fn test_diagnostic_tolerance() {
 #[test]
 fn test_structural_change_restarts() {
     let (_g, f) = fresh_file("struct", V1);
-    let mut runner = DevRunner::new(&f, "Main", true).unwrap_or_else(|e| panic!("{e:?}"));
+    let mut runner = DevRunner::new(&f, "Main", true, frontend::native::NativePrefer::None).unwrap_or_else(|e| panic!("{e:?}"));
     assert_eq!(runner.call("Main", &[]).unwrap(), 1);
     std::fs::write(&f, "fn getValue(x: Int): Int { return x; }\nfn Main(): Int { return getValue(7); }\n").unwrap();
     match wait_event(&mut runner, Duration::from_secs(10)) {

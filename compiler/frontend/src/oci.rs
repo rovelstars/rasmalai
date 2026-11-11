@@ -294,8 +294,10 @@ fn http_get(_url: &str, _accept: &str, _cap: usize, what: &str) -> Result<Vec<u8
     ))
 }
 
-pub fn fetch_index(bare: &str) -> Result<(Vec<u8>, String), Diagnostic> {
-    let (url, _) = manifest_url(bare, "latest")?;
+/// Fetch the index by an exact reference. Installs pass the pinned digest so a
+/// moved `latest` tag cannot change what an older version resolves to.
+pub fn fetch_index_at(bare: &str, reference: &str) -> Result<(Vec<u8>, String), Diagnostic> {
+    let (url, _) = manifest_url(bare, reference)?;
     let bytes = http_get(
         &url,
         "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json",
@@ -1302,8 +1304,8 @@ pub fn ensure_artifacts_titles(
     arch: &str,
     titles: Option<&BTreeSet<String>>,
 ) -> Result<usize, Diagnostic> {
-    let (bytes, _) = fetch_index(bare)?;
-    let index = parse_index(bare, "latest", &bytes, asserted)?;
+    let (bytes, _) = fetch_index_at(bare, asserted)?;
+    let index = parse_index(bare, asserted, &bytes, asserted)?;
     let selected = match titles {
         Some(titles) => select_for_host_titles(&index, os, arch, titles),
         None => select_for_host(&index, os, arch),
@@ -1485,7 +1487,11 @@ pub(crate) mod testkit {
                     Some(index.to_vec())
                 } else if path.contains("/manifests/") {
                     let digest = path.rsplit('/').next().unwrap_or_default().to_string();
-                    files.get(&digest).cloned()
+                    if digest == format!("sha256:{}", Sha256::hexdigest(&index)) {
+                        Some(index.to_vec())
+                    } else {
+                        files.get(&digest).cloned()
+                    }
                 } else if path.contains("/blobs/") {
                     let digest = path.rsplit('/').next().unwrap_or_default().to_string();
                     files.get(&digest).cloned()
@@ -1747,7 +1753,7 @@ mod tests {
         assert_eq!(installed, blob);
         let gets: Vec<String> = origin.log.lock().unwrap().clone();
         assert!(
-            gets.iter().any(|p| p.ends_with("/manifests/latest")),
+            gets.iter().any(|p| p.contains("/manifests/sha256:")),
             "{gets:?}"
         );
         assert!(
@@ -1768,7 +1774,7 @@ mod tests {
                 kind: "binary".to_string(),
                 target: "x86_64-unknown-linux-gnu".to_string(),
                 platform: Some(("linux".to_string(), "amd64".to_string())),
-                generator: "rnx-publish 0.3.1".to_string(),
+                generator: "rnx-publish 0.3.2".to_string(),
                 upstream: format!("app@sha256:{}", "ef".repeat(32)),
                 source: None,
                 bytes: cpu.into_bytes(),
@@ -1779,7 +1785,7 @@ mod tests {
                 kind: "binary".to_string(),
                 target: "x86_64-unknown-linux-gnu".to_string(),
                 platform: Some(("linux".to_string(), "amd64".to_string())),
-                generator: "rnx-publish 0.3.1".to_string(),
+                generator: "rnx-publish 0.3.2".to_string(),
                 upstream: format!("app@sha256:{}", "ef".repeat(32)),
                 source: None,
                 bytes: host.into_bytes(),
@@ -1813,13 +1819,23 @@ mod tests {
             !dir.join(".rnx-cache/artifacts/runtime/libhost_cabi.so").is_file()
         );
         let gets = origin.log.lock().unwrap().clone();
-        let manifest_gets: Vec<&String> = gets
-            .iter()
-            .filter(|p| p.contains("/manifests/sha256:"))
-            .collect();
-        assert_eq!(manifest_gets.len(), 1, "{gets:?}");
-        let blob_gets: Vec<&String> = gets.iter().filter(|p| p.contains("/blobs/sha256:")).collect();
-        assert_eq!(blob_gets.len(), 1, "{gets:?}");
+        assert!(
+            gets.iter().any(|p| p.as_str().ends_with(assembly.digest.as_str())),
+            "the index is fetched by its pinned digest: {gets:?}"
+        );
+        let mut manifest_gets = 0;
+        let mut blob_gets = 0;
+        for path in &gets {
+            let path = path.as_str();
+            if path.contains("/manifests/sha256:") && !path.ends_with(assembly.digest.as_str()) {
+                manifest_gets += 1;
+            }
+            if path.contains("/blobs/sha256:") {
+                blob_gets += 1;
+            }
+        }
+        assert_eq!(manifest_gets, 1, "{gets:?}");
+        assert!(blob_gets <= 1, "{gets:?}");
     }
 
     #[test]
@@ -1867,7 +1883,7 @@ mod tests {
         assert_eq!(installed, BLOB);
         let gets: Vec<String> = origin.log.lock().unwrap().clone();
         assert!(
-            gets.iter().any(|p| p.ends_with("/manifests/latest")),
+            gets.iter().any(|p| p.contains("/manifests/sha256:")),
             "{gets:?}"
         );
         assert!(

@@ -345,6 +345,27 @@ pub fn resolve_native_links(
     Ok(out)
 }
 
+/// Directories that hold the bundled blobs `wanted` resolves to. `rnx run`
+/// and `rnx dev` hand these to the runtime loader so `dlopen` finds the
+/// artifact `.so` instead of probing the host.
+pub fn native_search_dirs(
+    scope_root: &std::path::Path,
+    prefer: NativePrefer,
+    wanted: &[String],
+) -> Result<Vec<std::path::PathBuf>, Diagnostic> {
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut dirs: Vec<std::path::PathBuf> = resolve_native_links(scope_root, prefer, wanted)?
+        .into_iter()
+        .filter_map(|link| link.archive)
+        .filter_map(|archive| archive.parent().map(|p| p.to_path_buf()))
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    Ok(dirs)
+}
+
 fn pkg_config_command() -> std::process::Command {
     let mut cmd = std::process::Command::new("pkg-config");
     if let Some(dir) = crate::patch::active_wrappers() {
@@ -647,6 +668,26 @@ mod tests {
         assert!(plan[0].archive.is_some());
         let plan = resolve_wanted(&root, NativePrefer::System, &["foo"]).unwrap();
         assert_eq!(plan, vec![NativeLink { lib: "foo".to_string(), archive: None, lib_dirs: Vec::new() }]);
+    }
+
+    #[test]
+    fn native_search_dirs_point_at_bundled_blobs() {
+        let (_dep, author) = link_path_dep(
+            "searchdirs",
+            "author",
+            "        foo: { native: \"foo\", from: \"libfoo.so\", link: \"static\" }\n",
+            ",\n    artifacts: \"example.com/org/author\"\n",
+            Some(("libfoo.so", b"shared-bytes")),
+        );
+        let (_dir, root) = link_tree(
+            "searchdirs",
+            &format!("        author: {{ path: \"{}\" }}\n", author.display()),
+            "",
+        );
+        let dirs = native_search_dirs(&root, NativePrefer::None, &["foo".to_string()]).unwrap();
+        assert_eq!(dirs, vec![author.join(".rnx-cache/artifacts/runtime")]);
+        let system = native_search_dirs(&root, NativePrefer::System, &["foo".to_string()]).unwrap();
+        assert!(system.is_empty(), "{system:?}");
     }
 
     #[test]

@@ -111,8 +111,20 @@ pub fn build_program(    path: &Path,
 }
 
 impl DevRunner {
-    pub fn new(entry_file: &Path, entry: &str, no_rerun: bool) -> Result<Self, Vec<Diagnostic>> {
+    pub fn new(
+        entry_file: &Path,
+        entry: &str,
+        no_rerun: bool,
+        prefer: frontend::native::NativePrefer,
+    ) -> Result<Self, Vec<Diagnostic>> {
         let (module, lowered, files) = build_program(entry_file, entry)?;
+        let native_libs = lir::instr::native_libs(&lowered);
+        crate::set_native_search_paths(
+            &entry_file.to_string_lossy(),
+            prefer,
+            &native_libs,
+        )
+        .map_err(|e| vec![e])?;
         let jit = Jit::compile_hot(&lowered).map_err(|e| vec![e])?;
         let watcher = Watcher::new(&files).map_err(|m| {
             vec![Diagnostic::new(diagnostics::Code::E108, format!("rnx dev: {m}"))]
