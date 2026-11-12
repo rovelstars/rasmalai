@@ -85,6 +85,15 @@ describe('rnx tree-sitter query', () => {
 		assert.equal(clsOf(spans, '"x"'), 'text-aura-orange');
 	});
 
+	it('highlights member calls inside a call trailing block', () => {
+		const source =
+			'fn screen(state: Tasks): View {\n    return Page(title: "Today") {\n        Header {\n            Button("Clear", () => state.clear())\n        }\n    }\n}';
+		const spans = toSpans(source);
+		assert.equal(clsOf(spans, 'clear'), 'text-aura-cyan');
+		assert.equal(clsOf(spans, 'state'), 'text-aura-text');
+		assert.equal(clsOf(spans, 'Button'), 'text-aura-pink');
+	});
+
 	it('links type spans when a link map provides one', () => {
 		const spans = toSpans('fn Main(): View { return Page() }', new Map([['View', '/std/ui#View']]));
 		const view = spans.find((span) => span.text === 'View');
