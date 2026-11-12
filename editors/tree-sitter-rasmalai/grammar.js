@@ -206,7 +206,7 @@ module.exports = grammar({
     ),
 
     trailing_closure_expression: $ => seq(
-      field('function', choice($.identifier, $.member_expression, $.implicit_member_expression)),
+      field('function', choice($.identifier, $.member_expression, $.implicit_member_expression, $.call_expression)),
       field('trailing', $.block),
     ),
 

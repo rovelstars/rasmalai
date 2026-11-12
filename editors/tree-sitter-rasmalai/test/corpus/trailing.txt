@@ -72,3 +72,74 @@ fn pick(c: Bool): Int {
                   (return_statement
                     (expression
                       (number_literal))))))))))))
+
+================================================================================
+Trailing block on a call expression
+================================================================================
+
+fn screen(state: Tasks): View {
+  return Page(title: "Today") {
+    Header {
+      Button("Clear", () => state.clear())
+    }
+    state.clear()
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type
+          (identifier))))
+    (type
+      (identifier))
+    (block
+      (statement
+        (return_statement
+          (expression
+            (trailing_closure_expression
+              (call_expression
+                (identifier)
+                (argument_list
+                  (argument
+                    (identifier)
+                    (expression
+                      (string_literal)))))
+              (block
+                (expression_statement
+                  (expression
+                    (trailing_closure_expression
+                      (identifier)
+                      (block
+                        (expression_statement
+                          (expression
+                            (call_expression
+                              (identifier)
+                              (argument_list
+                                (argument
+                                  (expression
+                                    (string_literal)))
+                                (argument
+                                  (expression
+                                    (arrow_function
+                                      (parameter_list)
+                                      (expression
+                                        (call_expression
+                                          (member_expression
+                                            (expression
+                                              (identifier))
+                                            (identifier))
+                                          (argument_list))))))))))))))
+                (expression_statement
+                  (expression
+                    (call_expression
+                      (member_expression
+                        (expression
+                          (identifier))
+                        (identifier))
+                      (argument_list))))))))))))
