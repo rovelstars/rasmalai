@@ -21,6 +21,7 @@ pub mod fs;
 pub mod net;
 pub mod math;
 pub mod export;
+pub mod dev;
 
 pub use common::*;
 pub use string::*;
@@ -32,3 +33,4 @@ pub use fs::*;
 pub use net::*;
 pub use math::*;
 pub use export::*;
+pub use dev::*;

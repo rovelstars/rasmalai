@@ -60,6 +60,12 @@ impl<'a> Machine<'a> {
                 }
                 Ok(Value::Int(unsafe { crate::native::rnx_clock_monotonic_nanos() } as i64))
             }
+            "__rnx_dev_tick" => {
+                if !args.is_empty() {
+                    return Err(self.native_arity_error(span));
+                }
+                Ok(Value::Int(crate::native::rnx_dev_tick()))
+            }
             "__rnx_black_box" => match args.as_slice() {
                 [v] => Ok(v.clone()),
                 _ => Err(self.native_value_error(span)),

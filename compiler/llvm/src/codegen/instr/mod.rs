@@ -82,6 +82,7 @@ pub(super) struct FnCx<'ctx> {
     pub(super) thread_spawn: FunctionValue<'ctx>,
     pub(super) thread_join: FunctionValue<'ctx>,
     pub(super) clock_mono: FunctionValue<'ctx>,
+    pub(super) dev_tick: FunctionValue<'ctx>,
     pub(super) crypto_random: FunctionValue<'ctx>,
     pub(super) prng_seed: FunctionValue<'ctx>,
     pub(super) prng_next: FunctionValue<'ctx>,

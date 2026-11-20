@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-const DEBOUNCE: Duration = Duration::from_millis(20);
-const EMPTY_RETRY: Duration = Duration::from_millis(5);
+const DEBOUNCE: Duration = Duration::from_millis(5);
+const EMPTY_RETRY: Duration = Duration::from_millis(1);
 
 fn ignored(path: &Path) -> bool {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -25,6 +25,7 @@ pub struct Watcher {
     rx: Receiver<Result<Event, notify::Error>>,
     _watcher: RecommendedWatcher,
     watched: BTreeSet<PathBuf>,
+    dirs: BTreeSet<PathBuf>,
 }
 
 impl Watcher {
@@ -47,11 +48,33 @@ impl Watcher {
                 .watch(d, RecursiveMode::NonRecursive)
                 .map_err(|e| format!("watch {}: {e}", d.display()))?;
         }
-        Ok(Watcher { rx, _watcher: watcher, watched })
+        Ok(Watcher { rx, _watcher: watcher, watched, dirs })
     }
 
     pub fn set_files(&mut self, files: &[PathBuf]) -> Result<(), String> {
-        *self = Self::new(files)?;
+        let watched: BTreeSet<PathBuf> = files
+            .iter()
+            .filter(|p| !ignored(p) && p.exists())
+            .map(|p| canonical(p))
+            .collect();
+        let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+        for f in &watched {
+            let dir = f.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+            dirs.insert(dir);
+        }
+        // Keep the live watcher. Recreating it here drops events that land
+        // between the old subscription ending and the new one starting,
+        // which is exactly the window a save produces.
+        for dir in self.dirs.difference(&dirs) {
+            let _ = self._watcher.unwatch(dir);
+        }
+        for dir in dirs.difference(&self.dirs) {
+            self._watcher
+                .watch(dir, RecursiveMode::NonRecursive)
+                .map_err(|e| format!("watch {}: {e}", dir.display()))?;
+        }
+        self.watched = watched;
+        self.dirs = dirs;
         Ok(())
     }
 

@@ -19,46 +19,124 @@ pub use parallel::lower_parallel;
 use closure::*;
 
 pub fn lower(m: &A::Module) -> Result<Module, Diagnostic> {
-    let mut l = Lower {
-        out: Module::default(),
-        defaults: BTreeMap::new(),
-        param_info: BTreeMap::new(),
-        param_tys: BTreeMap::new(),
-        field_opt: BTreeMap::new(),
-        field_targs: BTreeMap::new(),
-        ret_tys: BTreeMap::new(),
-        nub_fields: BTreeSet::new(),
-        generic_fns: BTreeMap::new(),
-        extensions: BTreeMap::new(),
-        ext_self: BTreeMap::new(),
-        mod_consts: BTreeMap::new(),
-        runtime_alias: BTreeMap::new(),
-        explicit_std_collections: m.explicit_std_collections,
-        macro_fns: m
-            .decls
-            .iter()
-            .filter_map(|d| match &d.node {
-                A::Decl::Fn(f) if f.is_macro => Some(f.name.clone()),
-                _ => None,
-            })
-            .collect(),
-        diags: Vec::new(),
-    };
+    lower_impl(m, None)
+}
+
+/// Reuse LIR bodies from `prev` for functions that did not change. The caller
+/// must pass the names reported by the CLI delta pass, with no declaration,
+/// signature, or type-shape change in between.
+pub fn lower_incremental(
+    m: &A::Module,
+    mut prev: Module,
+    changed: &BTreeSet<String>,
+) -> Result<Module, Diagnostic> {
+    lower_impl(m, Some((&mut prev, changed)))
+}
+
+pub fn expand(m: &A::Module) -> Result<A::Module, Diagnostic> {
+    let trace = std::env::var_os("RNX_DEV_TRACE").is_some();
+    let mut step = std::time::Instant::now();
+    let mut l = Lower::new(m);
     let expanded = l.expand_traits(m);
+    if trace {
+        eprintln!("[rnx dev] lir trait-expand: {}ms", step.elapsed().as_millis());
+        step = std::time::Instant::now();
+    }
     let expanded = l.expand_inheritance(&expanded);
-    l.classes(&expanded)?;
-    l.link_parents(&expanded)?;
-    l.signatures(&expanded)?;
-    l.collect_foreign(&expanded)?;
-    l.collect_consts(&expanded)?;
+    if trace {
+        eprintln!("[rnx dev] lir inherit-expand: {}ms", step.elapsed().as_millis());
+    }
+    if let Some(d) = l.diags.into_iter().next() {
+        return Err(d);
+    }
+    Ok(expanded)
+}
+
+pub fn lower_expanded(m: &A::Module) -> Result<Module, Diagnostic> {
+    lower_expanded_impl(m, None)
+}
+
+pub fn lower_expanded_incremental(
+    m: &A::Module,
+    mut prev: Module,
+    changed: &BTreeSet<String>,
+) -> Result<Module, Diagnostic> {
+    lower_expanded_impl(m, Some((&mut prev, changed)))
+}
+
+fn lower_impl(
+    m: &A::Module,
+    reuse: Option<(&mut Module, &BTreeSet<String>)>,
+) -> Result<Module, Diagnostic> {
+    let expanded = expand(m)?;
+    lower_expanded_impl(&expanded, reuse)
+}
+
+fn lower_expanded_impl(
+    m: &A::Module,
+    reuse: Option<(&mut Module, &BTreeSet<String>)>,
+) -> Result<Module, Diagnostic> {
+    let mut l = Lower::new(m);
+    let trace = std::env::var_os("RNX_DEV_TRACE").is_some();
+    let mut step = std::time::Instant::now();
+    l.classes(m)?;
+    l.link_parents(m)?;
+    l.signatures(m)?;
+    if trace {
+        eprintln!("[rnx dev] lir classes/sigs: {}ms", step.elapsed().as_millis());
+        step = std::time::Instant::now();
+    }
+    l.collect_foreign(m)?;
+    l.collect_consts(m)?;
     l.collect_namespaces();
-    l.link_members(&expanded)?;
-    l.bodies(&expanded)?;
+    l.link_members(m)?;
+    if trace {
+        eprintln!("[rnx dev] lir links: {}ms", step.elapsed().as_millis());
+        step = std::time::Instant::now();
+    }
+    l.bodies(m, reuse)?;
+    if trace {
+        eprintln!("[rnx dev] lir bodies: {}ms", step.elapsed().as_millis());
+        step = std::time::Instant::now();
+    }
     l.synthesize_dtors();
+    if trace {
+        eprintln!("[rnx dev] lir dtors: {}ms", step.elapsed().as_millis());
+    }
     if let Some(d) = l.diags.into_iter().next() {
         return Err(d);
     }
     Ok(l.out)
+}
+
+impl Lower {
+    fn new(m: &A::Module) -> Self {
+        Lower {
+            out: Module::default(),
+            defaults: BTreeMap::new(),
+            param_info: BTreeMap::new(),
+            param_tys: BTreeMap::new(),
+            field_opt: BTreeMap::new(),
+            field_targs: BTreeMap::new(),
+            ret_tys: BTreeMap::new(),
+            nub_fields: BTreeSet::new(),
+            generic_fns: BTreeMap::new(),
+            extensions: BTreeMap::new(),
+            ext_self: BTreeMap::new(),
+            mod_consts: BTreeMap::new(),
+            runtime_alias: BTreeMap::new(),
+            explicit_std_collections: m.explicit_std_collections,
+            macro_fns: m
+                .decls
+                .iter()
+                .filter_map(|d| match &d.node {
+                    A::Decl::Fn(f) if f.is_macro => Some(f.name.clone()),
+                    _ => None,
+                })
+                .collect(),
+            diags: Vec::new(),
+        }
+    }
 }
 
 struct Lower {
@@ -429,10 +507,10 @@ fn simple_of(ty: &LirType) -> Simple {
 }
 
 #[derive(Clone)]
-enum BodySrc {
-    Fn(A::FnDecl),
-    Init(Vec<A::Param>, A::Block),
-    Bare(Vec<A::Param>, A::Block),
+enum BodySrc<'a> {
+    Fn(&'a A::FnDecl),
+    Init(&'a [A::Param], &'a A::Block),
+    Bare(&'a [A::Param], &'a A::Block),
     Closure(PendingClosure),
 }
 
@@ -1245,15 +1323,19 @@ impl Lower {
         }
     }
 
-    fn bodies(&mut self, m: &A::Module) -> Result<(), Diagnostic> {
-        let mut jobs: Vec<(usize, BodySrc)> = Vec::new();
+    fn bodies(
+        &mut self,
+        m: &A::Module,
+        mut reuse: Option<(&mut Module, &BTreeSet<String>)>,
+    ) -> Result<(), Diagnostic> {
+        let mut jobs: Vec<(usize, BodySrc<'_>)> = Vec::new();
         let mut implicit_super: BTreeMap<usize, usize> = BTreeMap::new();
         self.propagate_init_throws(m);
         for decl in &m.decls {
             match &decl.node {
                 A::Decl::Fn(f) => {
                     let id = self.out.fn_index[&f.name];
-                    jobs.push((id, BodySrc::Fn(f.clone())));
+                    jobs.push((id, BodySrc::Fn(f)));
                 }
                 A::Decl::Class { name, members, .. }
                 | A::Decl::Struct { name, members, .. } => {
@@ -1261,26 +1343,23 @@ impl Lower {
                         match &mem.node {
                             A::ClassMember::Method(f) => {
                                 let q = format!("{}.{}", name, f.name);
-                                jobs.push((self.out.fn_index[&q], BodySrc::Fn(f.clone())));
+                                jobs.push((self.out.fn_index[&q], BodySrc::Fn(f)));
                             }
                             A::ClassMember::Init { params, body } => {
                                 let q = format!("{name}.init");
                                 let id = self.out.fn_index[&q];
                                 self.plan_super(m, name, body, mem.span, id, &mut implicit_super);
-                                jobs.push((
-                                    id,
-                                    BodySrc::Init(params.clone(), body.clone()),
-                                ));
+                                jobs.push((id, BodySrc::Init(params.as_slice(), body)));
                             }
                             A::ClassMember::Deinit(body) => {
                                 let q = format!("{name}.deinit");
-                                jobs.push((self.out.fn_index[&q], BodySrc::Bare(vec![], body.clone())));
+                                jobs.push((self.out.fn_index[&q], BodySrc::Bare(&[], body)));
                             }
                             A::ClassMember::OnReload { params, body } => {
                                 let q = format!("{name}.onReload");
                                 jobs.push((
                                     self.out.fn_index[&q],
-                                    BodySrc::Bare(params.clone(), body.clone()),
+                                    BodySrc::Bare(params.as_slice(), body),
                                 ));
                             }
                             _ => {}
@@ -1295,7 +1374,7 @@ impl Lower {
                         if let A::ClassMember::Method(f) = &mem.node {
                             let q = format!("__ext_{tname}__{}", f.name);
                             if let Some(id) = self.out.fn_index.get(&q).copied() {
-                                jobs.push((id, BodySrc::Fn(f.clone())));
+                                jobs.push((id, BodySrc::Fn(f)));
                             }
                         }
                     }
@@ -1303,11 +1382,39 @@ impl Lower {
                 _ => {}
             }
         }
-        let mut queue: Vec<(usize, BodySrc)> = jobs;
+        let named_count = self.out.functions.len();
+        let mut copied: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut queue: Vec<(usize, BodySrc<'_>)> = jobs;
         let mut head = 0;
+        let mut reused = 0usize;
+        let mut lowered = 0usize;
         while head < queue.len() {
             let (id, src) = queue[head].clone();
             head += 1;
+            if let Some((prev, changed)) = reuse.as_mut()
+                && !matches!(src, BodySrc::Closure(_))
+            {
+                let name = self
+                    .out
+                    .functions
+                    .get(id)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_default();
+                if !changed.contains(&name)
+                    && prev.functions.get(id).is_some_and(|f| f.name == name)
+                    && copy_function_with_closures(
+                        &mut **prev,
+                        id,
+                        named_count,
+                        &mut self.out,
+                        &mut copied,
+                    )
+                {
+                    reused += 1;
+                    continue;
+                }
+            }
+            lowered += 1;
             let module = std::mem::replace(&mut self.out, Module::default());
             let prefix = module.functions.get(id).map(|f| format!("{}::", f.name)).unwrap_or_default();
             let mut b = Builder::new(&module, &self.defaults, &self.param_info, &self.param_tys, &self.field_opt, &self.field_targs, &self.ret_tys, &self.nub_fields, &self.generic_fns, &self.extensions, &self.ext_self, &self.mod_consts, &self.runtime_alias, self.explicit_std_collections, &self.macro_fns, id, prefix);
@@ -1383,9 +1490,100 @@ impl Lower {
                 }
             }
         }
+        if std::env::var_os("RNX_DEV_TRACE").is_some() {
+            eprintln!("[rnx dev] lir reuse: {reused} reused, {lowered} lowered");
+        }
         Ok(())
     }
 }
+fn closure_targets(f: &Function) -> BTreeSet<usize> {
+    let mut out = BTreeSet::new();
+    for block in &f.blocks {
+        for ins in &block.instrs {
+            if let Instr::ClosureNew { func, .. } = ins
+                && *func != usize::MAX
+            {
+                out.insert(*func);
+            }
+        }
+    }
+    out
+}
+
+fn patch_closure_targets(f: &mut Function, map: &BTreeMap<usize, usize>) {
+    for block in &mut f.blocks {
+        for ins in &mut block.instrs {
+            if let Instr::ClosureNew { func, .. } = ins
+                && let Some(new) = map.get(func)
+            {
+                *func = *new;
+            }
+        }
+    }
+}
+
+fn empty_function() -> Function {
+    Function {
+        name: String::new(),
+        params: Vec::new(),
+        sig_params: Vec::new(),
+        ret: LirType::Any,
+        throws: false,
+        is_unsafe: false,
+        method_self: false,
+        is_pub: false,
+        is_closure: false,
+        locals: Vec::new(),
+        blocks: Vec::new(),
+    }
+}
+
+fn copy_function_with_closures(
+    prev: &mut Module,
+    old_id: usize,
+    named_count: usize,
+    out: &mut Module,
+    copied: &mut BTreeMap<usize, usize>,
+) -> bool {
+    if copied.contains_key(&old_id) {
+        return true;
+    }
+    if old_id >= prev.functions.len() {
+        return false;
+    }
+    let original = std::mem::replace(&mut prev.functions[old_id], empty_function());
+    let new_id = if old_id < named_count {
+        if out.functions.get(old_id).map(|f| &f.name) != Some(&original.name) {
+            return false;
+        }
+        old_id
+    } else {
+        out.functions.len()
+    };
+    if let Some(existing) = out.fn_index.get(&original.name)
+        && *existing != new_id
+        && old_id >= named_count
+    {
+        return false;
+    }
+    copied.insert(old_id, new_id);
+    if new_id == out.functions.len() {
+        out.functions.push(original.clone());
+    } else {
+        out.functions[new_id] = original.clone();
+    }
+    out.fn_index.insert(original.name.clone(), new_id);
+    for target in closure_targets(&original) {
+        if !copy_function_with_closures(prev, target, named_count, out, copied) {
+            return false;
+        }
+    }
+    let mut patched = original;
+    patch_closure_targets(&mut patched, copied);
+    out.functions[new_id] = patched;
+    true
+}
+
 impl<'a> Builder<'a> {
 
 
@@ -1896,4 +2094,51 @@ impl<'a> Builder<'a> {
         }
     }
 
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::*;
+    use frontend::parser::Parser;
+
+    fn parse(src: &str) -> A::Module {
+        Parser::parse_module(src).expect("test source parses")
+    }
+
+    fn dump(module: &Module, name: &str) -> String {
+        let id = module.fn_index[name];
+        format!("{:?}", module.functions[id])
+    }
+
+    #[test]
+    fn reuses_unchanged_function_bodies() {
+        let old = parse(
+            "fn A(): Int { return 1; }\nfn B(): Int { return A(); }\nfn Main(): Int { return B(); }",
+        );
+        let prev = lower(&old).expect("initial lower");
+        let new = parse(
+            "fn A(): Int { return 2; }\nfn B(): Int { return A(); }\nfn Main(): Int { return B(); }",
+        );
+        let changed = BTreeSet::from(["A".to_string()]);
+        let next = lower_incremental(&new, prev.clone(), &changed).expect("incremental lower");
+        assert_eq!(next.functions.len(), prev.functions.len());
+        assert_eq!(dump(&next, "B"), dump(&prev, "B"));
+        assert_eq!(dump(&next, "Main"), dump(&prev, "Main"));
+        assert_ne!(dump(&next, "A"), dump(&prev, "A"));
+    }
+
+    #[test]
+    fn reuses_methods_and_rebuilds_closure_parents() {
+        let old = parse(
+            "class C { fn run(): Int { return 1; } }\nfn Main(): Int { let f = () => C.run(); return f(); }",
+        );
+        let prev = lower(&old).expect("initial lower");
+        let new = parse(
+            "class C { fn run(): Int { return 2; } }\nfn Main(): Int { let f = () => C.run(); return f(); }",
+        );
+        let changed = BTreeSet::from(["C.run".to_string()]);
+        let next = lower_incremental(&new, prev.clone(), &changed).expect("incremental lower");
+        assert_eq!(dump(&next, "Main"), dump(&prev, "Main"));
+        assert_ne!(dump(&next, "C.run"), dump(&prev, "C.run"));
+    }
 }

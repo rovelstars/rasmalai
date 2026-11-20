@@ -3,6 +3,8 @@ use crate::project::{self, ProjectConfig, RegistryConfig};
 use diagnostics::{Code, Diagnostic, Span};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+use sha2::{Digest, Sha256};
+use std::sync::{Mutex, OnceLock};
 
 pub struct ModuleFile {
     pub path: PathBuf,
@@ -290,7 +292,7 @@ impl ModuleGraph {
             } else {
                 load_std_module_source(&name)?
             };
-            let module = crate::parser::Parser::parse_module(&src)?;
+            let module = parse_cached_one(&src)?;
             for (spec, _) in module_sources(&module.decls) {
                 if is_std_spec(spec) {
                     let rest = std_rest(spec);
@@ -327,12 +329,29 @@ impl ModuleGraph {
         root: &Path,
         extra: &[PathBuf],
     ) -> Result<ModuleGraph, Vec<Diagnostic>> {
+        Self::build_collecting_extra_inner(root, extra, false)
+    }
+
+    pub fn build_collecting_reuse_deps(
+        root: &Path,
+    ) -> Result<ModuleGraph, Vec<Diagnostic>> {
+        Self::build_collecting_extra_inner(root, &[], true)
+    }
+
+    fn build_collecting_extra_inner(
+        root: &Path,
+        extra: &[PathBuf],
+        reuse_deps: bool,
+    ) -> Result<ModuleGraph, Vec<Diagnostic>> {
+        let trace = std::env::var_os("RNX_DEV_TRACE").is_some();
+        let mut step = std::time::Instant::now();
         let root = canonical(root).map_err(|e| vec![e])?;
         let base = root.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
         let entry_ctx = package_ctx_of(&root).map_err(|e| vec![e])?;
         if let Some((r, cfg)) = &entry_ctx {
             crate::patch::apply(r, cfg).map_err(|e| vec![e])?;
         }
+        if trace { eprintln!("[rnx dev] graph setup: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
         let want_prelude = if cfg!(target_arch = "wasm32") {
             crate::stdvfs::std_source("prelude").is_some()
         } else {
@@ -345,6 +364,7 @@ impl ModuleGraph {
             };
             prepare_prelude(entry_root, cfg).map_err(|e| vec![e])?;
         }
+        if trace { eprintln!("[rnx dev] graph prelude: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
         let entry_root = entry_ctx.map(|(r, _)| r);
         let mut order: Vec<ModuleFile> = Vec::new();
         let mut state: BTreeMap<PathBuf, u8> = BTreeMap::new();
@@ -353,11 +373,18 @@ impl ModuleGraph {
             stack.push(r);
         }
         let mut parse_errors: Vec<Diagnostic> = Vec::new();
-        let dep_gen = crate::depcache::begin_build();
+        let dep_gen = if reuse_deps {
+            crate::depcache::reuse_build()
+        } else {
+            crate::depcache::begin_build()
+        };
         let mut edge_log: Vec<LoggedEdge> = Vec::new();
-        if let Some(build_gen) = dep_gen {
+        if !reuse_deps
+            && let Some(build_gen) = dep_gen
+        {
             dep_restore_for_entry(entry_root.as_ref(), build_gen);
         }
+        if trace { eprintln!("[rnx dev] graph deps: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
         visit(
             &root,
             &base,
@@ -370,6 +397,7 @@ impl ModuleGraph {
             &mut edge_log,
         )
         .map_err(|e| vec![e])?;
+        if trace { eprintln!("[rnx dev] graph visit entry: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
         if want_prelude {
             let prelude = selected_prelude()
                 .map(|(spec, _)| prelude_virtual_path(&spec))
@@ -387,6 +415,7 @@ impl ModuleGraph {
             )
             .map_err(|e| vec![e])?;
         }
+        if trace { eprintln!("[rnx dev] graph visit prelude: {}ms", step.elapsed().as_millis()); }
         let mut extras: Vec<PathBuf> = Vec::new();
         for e in extra {
             match canonical(e) {
@@ -416,7 +445,7 @@ impl ModuleGraph {
             .map_err(|e| vec![e])?;
         }
         if parse_errors.is_empty() {
-            if dep_gen.is_some() {
+            if !reuse_deps && dep_gen.is_some() {
                 dep_populate_for_entry(entry_root.as_ref(), &edge_log);
             }
             Ok(ModuleGraph { root, files: order })
@@ -2193,6 +2222,58 @@ fn std_key(path: &Path) -> String {
 fn std_submodule(path: &Path) -> String {
     let s = path.to_string_lossy();
     s.strip_prefix(STD_SCOPE).unwrap_or(&s).to_string()
+}
+
+const PARSE_CACHE_MAX: usize = 64;
+
+struct ParseCache {
+    map: BTreeMap<[u8; 32], (A::Module, u64)>,
+    tick: u64,
+}
+
+fn parse_cache() -> &'static Mutex<ParseCache> {
+    static CACHE: OnceLock<Mutex<ParseCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ParseCache { map: BTreeMap::new(), tick: 0 }))
+}
+
+fn parse_cached(src: &str) -> Result<A::Module, Vec<Diagnostic>> {
+    let mut hasher = Sha256::new();
+    hasher.update(src.as_bytes());
+    let key: [u8; 32] = hasher.finalize().into();
+    {
+        let mut cache = parse_cache().lock().unwrap_or_else(|e| e.into_inner());
+        cache.tick += 1;
+        let tick = cache.tick;
+        if let Some((module, used)) = cache.map.get_mut(&key) {
+            *used = tick;
+            return Ok(module.clone());
+        }
+    }
+    let module = crate::parser::Parser::parse_module_all(src)?;
+    let mut cache = parse_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.tick += 1;
+    let tick = cache.tick;
+    cache.map.insert(key, (module.clone(), tick));
+    if cache.map.len() > PARSE_CACHE_MAX
+        && let Some(old) = cache
+            .map
+            .iter()
+            .min_by_key(|(_, (_, used))| *used)
+            .map(|(key, _)| *key)
+    {
+        cache.map.remove(&old);
+    }
+    Ok(module)
+}
+
+fn parse_cached_one(src: &str) -> Result<A::Module, Diagnostic> {
+    parse_cached(src).map_err(|mut errs| {
+        if errs.is_empty() {
+            Diagnostic::new(Code::E108, "parse failed")
+        } else {
+            errs.remove(0)
+        }
+    })
 }
 
 fn read_source(path: &Path) -> Result<String, Diagnostic> {
@@ -3983,7 +4064,7 @@ impl VisitBackend for LiveBackend {
     fn load(&self, path: &Path) -> LoadResult {
         match read_source(path) {
             Err(e) => LoadResult::Fatal(e),
-            Ok(src) => match crate::parser::Parser::parse_module_all(&src) {
+            Ok(src) => match parse_cached(&src) {
                 Ok(module) => LoadResult::Ready(module),
                 Err(errs) => LoadResult::ParseErrs(tag_file(errs, path)),
             },

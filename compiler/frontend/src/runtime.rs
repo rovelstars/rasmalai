@@ -13,6 +13,7 @@ pub struct RuntimeDecl {
 pub const RUNTIME_MODULES: &[&str] = &[
     "bytes",
     "core",
+    "dev",
     "env",
     "fs",
     "io",
@@ -144,6 +145,7 @@ const RUNTIME_TABLE: &[RuntimeDecl] = &[
     d("__rnx_barrier_wait", "sync", &["Int", "Int"], "Bool", &[]),
     d("__rnx_black_box", "core", &["Any"], "Any", &[]),
     d("__rnx_bool_to_str", "core", &["Bool"], "String", &[]),
+    d("__rnx_dev_tick", "dev", &[], "Int", &[]),
     d("__rnx_bytes_alloc", "bytes", &["Int"], "Int", &[]),
     d("__rnx_bytes_cap", "bytes", &["Int"], "Int", &[]),
     d("__rnx_bytes_copy_within", "bytes", &["Int", "Int", "Int", "Int"], "Void", &[]),

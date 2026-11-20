@@ -481,6 +481,7 @@ pub(super) fn build_module_subset<'ctx>(
     );
     module.add_function("rnx_thread_join", i64t.fn_type(&[i64t.into()], false), None);
     module.add_function("rnx_clock_monotonic_nanos", i64t.fn_type(&[], false), None);
+    module.add_function("rnx_dev_tick", i64t.fn_type(&[], false), None);
     module.add_function(
         "rnx_sleep_nanos",
         void_t.fn_type(&[i64t.into()], false),
@@ -2152,6 +2153,7 @@ fn lower_fn<'a>(
     let thread_spawn = runtime_fn("rnx_thread_spawn")?;
     let thread_join = runtime_fn("rnx_thread_join")?;
     let clock_mono = runtime_fn("rnx_clock_monotonic_nanos")?;
+    let dev_tick = runtime_fn("rnx_dev_tick")?;
     let crypto_random = runtime_fn("rnx_crypto_random_u64")?;
     let prng_seed = runtime_fn("rnx_prng_seed")?;
     let prng_next = runtime_fn("rnx_prng_next")?;
@@ -2493,6 +2495,7 @@ fn lower_fn<'a>(
         thread_spawn,
         thread_join,
         clock_mono,
+        dev_tick,
         crypto_random,
         prng_seed,
         prng_next,

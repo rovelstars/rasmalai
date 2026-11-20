@@ -153,7 +153,7 @@ pub fn check_runtime_sig(
         return Some(
             Diagnostic::new(Code::E108, format!("unknown runtime module `{module}`"))
                 .with_span(span)
-                .with_hint("runtime modules are: bytes, core, env, fs, io, json, math, net, os, process, random, sync, testing, time"),
+                .with_hint("runtime modules are: bytes, core, dev, env, fs, io, json, math, net, os, process, random, sync, testing, time"),
         );
     }
     let Some(decl) = crate::runtime::lookup(&sig.name) else {

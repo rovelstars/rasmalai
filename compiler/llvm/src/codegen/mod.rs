@@ -422,6 +422,10 @@ impl<'ctx> Jit<'ctx> {
                 runtime::native::rnx_clock_monotonic_nanos as *const () as usize,
             ),
             (
+                "rnx_dev_tick",
+                runtime::native::rnx_dev_tick as *const () as usize,
+            ),
+            (
                 "rnx_sleep_nanos",
                 runtime::native::rnx_sleep_nanos as *const () as usize,
             ),

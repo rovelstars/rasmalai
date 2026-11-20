@@ -24,12 +24,46 @@ pub fn check_with_files_and_surface(
     check_with_files_surface_misuse(module, files, cabi_surface, false)
 }
 
+pub fn check_with_files_and_surface_cached(
+    module: &Module,
+    files: &DeclFiles,
+    cabi_surface: Option<&Path>,
+    taint: &mut crate::unsafe_taint::TaintCache,
+    scope: &mut ScopeCache,
+    changed: Option<&std::collections::BTreeSet<String>>,
+) -> Vec<Diagnostic> {
+    check_with_files_surface_misuse_inner(
+        module,
+        files,
+        cabi_surface,
+        false,
+        Some((taint, changed)),
+        Some((scope, changed)),
+    )
+}
+
 pub fn check_with_files_surface_misuse(
     module: &Module,
     files: &DeclFiles,
     cabi_surface: Option<&Path>,
     surface_misuse: bool,
 ) -> Vec<Diagnostic> {
+    check_with_files_surface_misuse_inner(module, files, cabi_surface, surface_misuse, None, None)
+}
+
+fn check_with_files_surface_misuse_inner(
+    module: &Module,
+    files: &DeclFiles,
+    cabi_surface: Option<&Path>,
+    surface_misuse: bool,
+    mut taint: Option<(
+        &mut crate::unsafe_taint::TaintCache,
+        Option<&std::collections::BTreeSet<String>>,
+    )>,
+    mut scope: Option<(&mut ScopeCache, Option<&std::collections::BTreeSet<String>>)>,
+) -> Vec<Diagnostic> {
+    let trace = std::env::var_os("RNX_DEV_TRACE").is_some();
+    let mut step = std::time::Instant::now();
     let mut diags = Vec::new();
     for decl in &module.decls {
         if let Decl::Class { name, members, .. } = &decl.node {
@@ -39,12 +73,22 @@ pub fn check_with_files_surface_misuse(
             tag_new(&mut diags, from, decl_file(files, decl.span));
         }
     }
+    if trace { eprintln!("[rnx dev] sem w104/w109: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
     check_w108(module, &mut diags, files);
     check_cyclic_defaults(module, &mut diags, files);
-    check_scopes(module, &mut diags, files);
+    if trace { eprintln!("[rnx dev] sem cyclic: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
+    check_scopes(module, &mut diags, files, scope.take());
+    if trace { eprintln!("[rnx dev] sem scopes: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
     check_export_cabi(module, &mut diags, files, cabi_surface, surface_misuse);
+    if trace { eprintln!("[rnx dev] sem cabi: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
     let taint_from = diags.len();
-    diags.extend(crate::unsafe_taint::check_module(module));
+    match taint.take() {
+        Some((cache, changed)) => diags.extend(crate::unsafe_taint::check_module_cached(
+            module, cache, changed,
+        )),
+        None => diags.extend(crate::unsafe_taint::check_module(module)),
+    }
+    if trace { eprintln!("[rnx dev] sem taint: {}ms", step.elapsed().as_millis()); }
     for d in &mut diags[taint_from..] {
         if d.file.is_none()
             && let Some(span) = d.span
@@ -388,10 +432,14 @@ fn collect_let_names(module: &Module) -> BTreeSet<String> {
 }
 
 fn run_scope_check<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck<'m> {
-    run_scope_check_with(module, files)
+    run_scope_check_with(module, files, None)
 }
 
-fn run_scope_check_with<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck<'m> {
+fn run_scope_check_with<'m>(
+    module: &'m Module,
+    files: &DeclFiles,
+    mut cache: Option<(&mut ScopeCache, Option<&BTreeSet<String>>)>,
+) -> ScopeCheck<'m> {
     let mut globals = BTreeSet::new();
     let mut consts = BTreeSet::new();
     let mut classes = BTreeSet::new();
@@ -729,6 +777,16 @@ fn run_scope_check_with<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck
         }
     }
     for decl in &module.decls {
+        let key = scope_decl_key(&decl.node);
+        if let Some((cache, changed)) = cache.as_mut()
+            && let Some(key) = key.as_deref()
+            && let Some(changed) = changed
+            && !changed.iter().any(|c| c == key || c.starts_with(&format!("{key}.")))
+            && let Some(cached) = cache.diags.get(key)
+        {
+            checker.diags.extend(cached.clone());
+            continue;
+        }
         let from = checker.diags.len();
         let file = decl_file(files, decl.span);
         match &decl.node {
@@ -803,6 +861,11 @@ fn run_scope_check_with<'m>(module: &'m Module, files: &DeclFiles) -> ScopeCheck
             _ => {}
         }
         tag_new(&mut checker.diags, from, file);
+        if let Some((cache, _)) = cache.as_mut()
+            && let Some(key) = key
+        {
+            cache.diags.insert(key, checker.diags[from..].to_vec());
+        }
     }
     checker
 }
@@ -1014,8 +1077,41 @@ fn check_export_cabi(
     }
 }
 
-fn check_scopes(module: &Module, diags: &mut Vec<Diagnostic>, files: &DeclFiles) {
-    let checker = run_scope_check(module, files);
+#[derive(Default)]
+pub struct ScopeCache {
+    diags: BTreeMap<String, Vec<Diagnostic>>,
+}
+
+impl ScopeCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn clear(&mut self) {
+        self.diags.clear();
+    }
+}
+
+fn scope_decl_key(node: &Decl) -> Option<String> {
+    match node {
+        Decl::Fn(f) => Some(f.name.clone()),
+        Decl::Class { name, .. }
+        | Decl::Struct { name, .. }
+        | Decl::Trait { name, .. }
+        | Decl::Interface { name, .. }
+        | Decl::Enum { name, .. }
+        | Decl::Record { name, .. } => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn check_scopes(
+    module: &Module,
+    diags: &mut Vec<Diagnostic>,
+    files: &DeclFiles,
+    cache: Option<(&mut ScopeCache, Option<&BTreeSet<String>>)>,
+) {
+    let checker = run_scope_check_with(module, files, cache);
     diags.extend(checker.diags);
     diags.sort_by(|a, b| {
         a.code

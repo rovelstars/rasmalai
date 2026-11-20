@@ -8,7 +8,7 @@ use std::path::PathBuf;
     author,
     version,
     about = "Rasmalai systems language compiler and developer toolchain",
-    long_about = "Rasmalai systems language compiler and developer toolchain.\n\n`rnx --version` prints the full build record: version, commit hash, build timestamp, install kind, target triple, and backend versions.",
+    long_about = "Rasmalai systems language compiler and developer toolchain.\n\n`rnx --version` prints the full build record: version, commit hash, build timestamp, install kind, executable path, standard library source, target triple, and backend versions.",
     styles = crate::styles::aura_clap_styles()
 )]
 pub struct Cli {
@@ -67,6 +67,9 @@ pub enum Command {
         /// Serve MCP over stdio alongside the watcher (eval_code, hot_reload, get_diagnostics)
         #[arg(long)]
         mcp: bool,
+        /// Write a PNG of the window after the first frame and after each hot update
+        #[arg(long = "screenshot", value_name = "PATH")]
+        screenshot: Option<PathBuf>,
     },
     /// Compile package or file into a native binary
     Build {

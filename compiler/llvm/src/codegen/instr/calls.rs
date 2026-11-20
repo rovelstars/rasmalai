@@ -3561,6 +3561,23 @@ pub(super) fn lower_calls(
                     }
                     return Ok(());
                 }
+                if n == "__rnx_dev_tick" {
+                    let site = cx.builder.build_call(cx.dev_tick, &[], "").map_err(err)?;
+                    match site.try_as_basic_value() {
+                        ValueKind::Basic(v) => {
+                            if let Some(d) = dst {
+                                store(cx, *d, v)?;
+                            }
+                        }
+                        ValueKind::Instruction(_) => {
+                            return Err(Diagnostic::new(
+                                Code::E108,
+                                "llvm subset: dev tick returned void",
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
                 if n == "__rnx_clock_mono" {
                     let site = cx.builder.build_call(cx.clock_mono, &[], "").map_err(err)?;
                     match site.try_as_basic_value() {

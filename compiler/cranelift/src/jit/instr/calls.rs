@@ -1228,6 +1228,15 @@ impl<M: Module> FnLower<'_, M> {
                         }
                         return Ok(());
                     }
+                    CallTarget::Builtin(n) if n == "__rnx_dev_tick" => {
+                        let callee = self.module.declare_func_in_func(self.dev_tick, &mut b.func);
+                        let inst = b.ins().call(callee, &[]);
+                        let r = b.inst_results(inst)[0];
+                        if let Some(d) = dst {
+                            self.set(b, *d, r);
+                        }
+                        return Ok(());
+                    }
                     CallTarget::Builtin(n) if n == "__rnx_clock_mono" => {
                         let callee = self.module.declare_func_in_func(self.clock_mono, &mut b.func);
                         let inst = b.ins().call(callee, &[]);

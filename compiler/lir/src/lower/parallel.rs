@@ -204,14 +204,14 @@ impl Lower {
     }
 
     fn bodies_parallel(&mut self, m: &A::Module, jobs: usize) -> Result<(), Diagnostic> {
-        let mut queue: Vec<(usize, BodySrc)> = Vec::new();
+        let mut queue: Vec<(usize, BodySrc<'_>)> = Vec::new();
         let mut implicit_super: BTreeMap<usize, usize> = BTreeMap::new();
         self.propagate_init_throws(m);
         for decl in &m.decls {
             match &decl.node {
                 A::Decl::Fn(f) => {
                     let id = self.out.fn_index[&f.name];
-                    queue.push((id, BodySrc::Fn(f.clone())));
+                    queue.push((id, BodySrc::Fn(f)));
                 }
                 A::Decl::Class { name, members, .. }
                 | A::Decl::Struct { name, members, .. } => {
@@ -219,26 +219,23 @@ impl Lower {
                         match &mem.node {
                             A::ClassMember::Method(f) => {
                                 let q = format!("{}.{}", name, f.name);
-                                queue.push((self.out.fn_index[&q], BodySrc::Fn(f.clone())));
+                                queue.push((self.out.fn_index[&q], BodySrc::Fn(f)));
                             }
                             A::ClassMember::Init { params, body } => {
                                 let q = format!("{name}.init");
                                 let id = self.out.fn_index[&q];
                                 self.plan_super(m, name, body, mem.span, id, &mut implicit_super);
-                                queue.push((
-                                    id,
-                                    BodySrc::Init(params.clone(), body.clone()),
-                                ));
+                                queue.push((id, BodySrc::Init(params.as_slice(), body)));
                             }
                             A::ClassMember::Deinit(body) => {
                                 let q = format!("{name}.deinit");
-                                queue.push((self.out.fn_index[&q], BodySrc::Bare(vec![], body.clone())));
+                                queue.push((self.out.fn_index[&q], BodySrc::Bare(&[], body)));
                             }
                             A::ClassMember::OnReload { params, body } => {
                                 let q = format!("{name}.onReload");
                                 queue.push((
                                     self.out.fn_index[&q],
-                                    BodySrc::Bare(params.clone(), body.clone()),
+                                    BodySrc::Bare(params.as_slice(), body),
                                 ));
                             }
                             _ => {}
@@ -253,7 +250,7 @@ impl Lower {
                         if let A::ClassMember::Method(f) = &mem.node {
                             let q = format!("__ext_{tname}__{}", f.name);
                             if let Some(id) = self.out.fn_index.get(&q).copied() {
-                                queue.push((id, BodySrc::Fn(f.clone())));
+                                queue.push((id, BodySrc::Fn(f)));
                             }
                         }
                     }

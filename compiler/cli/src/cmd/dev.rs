@@ -1,5 +1,17 @@
 
-pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun: bool, mcp: bool, prefer: frontend::native::NativePrefer) {
+pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun: bool, mcp: bool, screenshot: Option<std::path::PathBuf>, prefer: frontend::native::NativePrefer) {
+            if std::env::var_os("RNX_VENDOR_DIR").is_none()
+                && let Some(stdlib) = cli::checkout::source_stdlib()
+            {
+                unsafe {
+                    std::env::set_var("RNX_VENDOR_DIR", stdlib);
+                }
+            }
+            if let Some(shot) = screenshot {
+                unsafe {
+                    std::env::set_var("RNX_DEV_SHOT", shot);
+                }
+            }
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let target = cli::resolve_scope_target(path.as_deref(), None).unwrap_or_else(|e| {
                 eprintln!("{e}");
@@ -34,6 +46,7 @@ pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun:
                 }
                 return;
             }
+            println!("[rnx dev] watching {}", entry_file.display());
             match runner.run_entry() {
                 Ok(v) => println!("[rnx dev] {entry}() -> {v}"),
                 Err(e) => {
@@ -41,12 +54,11 @@ pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun:
                     std::process::exit(1);
                 }
             }
-            println!("[rnx dev] watching {}", entry_file.display());
             loop {
                 match runner.poll(std::time::Duration::from_millis(500)) {
                     None => {}
                     Some(cli::dev::DevEvent::Swapped { names, elapsed_ms }) => {
-                        println!("[rnx dev] hot swapped {} in {elapsed_ms}ms", names.join(", "));
+                        println!("[rnx dev] hot swapped {} (build {elapsed_ms}ms)", names.join(", "));
                         if runner.should_rerun() {
                             match runner.run_entry() {
                                 Ok(v) => println!("[rnx dev] {entry}() -> {v}"),

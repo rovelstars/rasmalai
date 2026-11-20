@@ -26,6 +26,7 @@ enum FnBodyKind<'a> {
     Block(&'a Block),
 }
 
+#[derive(Clone)]
 struct BlockUse {
     span: Span,
     ffi: usize,
@@ -36,6 +37,7 @@ struct BlockUse {
     calls: BTreeSet<String>,
 }
 
+#[derive(Clone)]
 struct FnUse {
     span: Span,
     in_unsafe_fn: bool,
@@ -72,6 +74,21 @@ struct Facts<'a> {
     fns: BTreeMap<String, FnEntry<'a>>,
     native: BTreeSet<String>,
     unsafe_fns: BTreeSet<String>,
+}
+
+#[derive(Default)]
+pub struct TaintCache {
+    uses: BTreeMap<String, FnUse>,
+}
+
+impl TaintCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn clear(&mut self) {
+        self.uses.clear();
+    }
 }
 
 fn dotted(expr: &Expr) -> Option<String> {
@@ -599,15 +616,42 @@ fn collect(module: &Module) -> Facts<'_> {
     facts
 }
 
-fn walk_all(facts: &Facts, uses: &mut BTreeMap<String, FnUse>, module: &Module) {
+fn walk_all(
+    facts: &Facts,
+    uses: &mut BTreeMap<String, FnUse>,
+    module: &Module,
+    mut cache: Option<&mut TaintCache>,
+    changed: Option<&BTreeSet<String>>,
+) {
+    let reusable = |cache: &TaintCache, name: &str, span: Span| -> bool {
+        changed.is_some_and(|changed| !changed.contains(name))
+            && cache.uses.get(name).is_some_and(|used| used.span == span)
+    };
     for (name, entry) in &facts.fns {
+        if let Some(cache) = cache.as_deref_mut()
+            && reusable(cache, name, entry.span)
+            && let Some(cached) = cache.uses.get(name)
+        {
+            uses.insert(name.clone(), cached.clone());
+            continue;
+        }
         uses.insert(name.clone(), FnUse::blank(entry.span, entry.is_unsafe));
     }
     for (name, entry) in &facts.fns {
+        if let Some(cache) = cache.as_deref_mut()
+            && reusable(cache, name, entry.span)
+        {
+            continue;
+        }
         let mut depth = Vec::new();
         match entry.body {
             FnBodyKind::Body(b) => walk_body(facts, uses, name, b, &mut depth),
             FnBodyKind::Block(b) => walk_block(facts, uses, name, b, &mut depth),
+        }
+        if let Some(cache) = cache.as_deref_mut()
+            && let Some(entry) = uses.get(name)
+        {
+            cache.uses.insert(name.clone(), entry.clone());
         }
     }
     for decl in &module.decls {
@@ -695,9 +739,17 @@ fn block_lintable(
 }
 
 pub fn check_module(module: &Module) -> Vec<Diagnostic> {
+    check_module_cached(module, &mut TaintCache::default(), None)
+}
+
+pub fn check_module_cached(
+    module: &Module,
+    cache: &mut TaintCache,
+    changed: Option<&BTreeSet<String>>,
+) -> Vec<Diagnostic> {
     let facts = collect(module);
     let mut uses: BTreeMap<String, FnUse> = BTreeMap::new();
-    walk_all(&facts, &mut uses, module);
+    walk_all(&facts, &mut uses, module, Some(cache), changed);
     let tainted = tainted_set(&facts, &uses);
     let mut diags = Vec::new();
     let mut owners: Vec<String> = facts.fns.keys().cloned().collect();
@@ -735,7 +787,7 @@ pub fn check_module(module: &Module) -> Vec<Diagnostic> {
 pub fn boundary_map(module: &Module) -> Vec<Boundary> {
     let facts = collect(module);
     let mut uses: BTreeMap<String, FnUse> = BTreeMap::new();
-    walk_all(&facts, &mut uses, module);
+    walk_all(&facts, &mut uses, module, None, None);
     let tainted = tainted_set(&facts, &uses);
     let mut out = Vec::new();
     for name in facts.fns.keys() {
@@ -767,6 +819,26 @@ mod tests {
             .iter()
             .map(|d| format!("{}:{}", d.code.as_str(), d.message))
             .collect()
+    }
+
+    #[test]
+    fn cache_reanalyzes_changed_functions() {
+        let old = parse(
+            "import { fn f(): Int } from native \"z\"\nfn A(): Int { return 0; }\nfn Main(): Int { return A(); }",
+        );
+        let mut cache = TaintCache::new();
+        let first = check_module_cached(&old, &mut cache, None);
+        assert!(first.iter().all(|d| d.code != Code::E201), "{first:?}");
+
+        let new = parse(
+            "import { fn f(): Int } from native \"z\"\nfn A(): Int { return f(); }\nfn Main(): Int { return A(); }",
+        );
+        let changed = BTreeSet::from(["A".to_string()]);
+        let second = check_module_cached(&new, &mut cache, Some(&changed));
+        assert!(
+            second.iter().any(|d| d.code == Code::E201),
+            "cache must re-walk changed functions: {second:?}"
+        );
     }
 
     #[test]

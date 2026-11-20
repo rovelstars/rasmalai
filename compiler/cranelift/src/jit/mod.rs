@@ -84,6 +84,7 @@ struct RtIds {
     thread_spawn: FuncId,
     thread_join: FuncId,
     clock_mono: FuncId,
+    dev_tick: FuncId,
     crypto_random: FuncId,
     prng_seed: FuncId,
     prng_next: FuncId,
@@ -274,6 +275,7 @@ pub struct Jit {
     rt: RtIds,
     bytes_fns: BTreeMap<String, FuncId>,
     statics: BTreeMap<String, DataId>,
+    static_seq: usize,
     foreign_ids: BTreeMap<(String, String), FuncId>,
     epoch: u64,
 }
@@ -371,6 +373,7 @@ impl Jit {
         let name = self.slot_names.get(slot as usize).cloned().ok_or_else(|| {
             Diagnostic::new(Code::E108, format!("unknown dispatch slot {slot}"))
         })?;
+        self.intern_statics(new_module)?;
         let f_new = new_module.functions.iter().find(|f| f.name == name).ok_or_else(|| {
             Diagnostic::new(Code::E108, format!("hot swap: `{name}` missing from new module"))
         })?;
@@ -440,6 +443,7 @@ impl Jit {
         if self.funcs.contains_key(name) {
             return Err(Diagnostic::new(Code::E108, format!("`{name}` already defined; use hot_swap_function")));
         }
+        self.intern_statics(module)?;
         let f_new = module.functions.iter().find(|f| f.name == name).ok_or_else(|| {
             Diagnostic::new(Code::E108, format!("define: `{name}` missing from module"))
         })?;
@@ -510,6 +514,76 @@ impl Jit {
             out.push((name.clone(), addr, size));
         }
         out
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Resolve a function to its current entry address without holding a
+    /// borrow on the Jit. Long-running dev sessions need this so an update
+    /// can install new code while the old entry is still executing.
+    pub fn entry_addr(&self, name: &str, arity: usize) -> Result<(*const u8, u64), Diagnostic> {
+        if arity > 4 {
+            return Err(Diagnostic::new(Code::E108, "jit arity > 4 pending"));
+        }
+        if self.vec_rets.contains(name) {
+            return Err(Diagnostic::new(
+                Code::E108,
+                format!("jit entry `{name}` must return Int, not a vector"),
+            ));
+        }
+        let id = self.funcs.get(name).copied().ok_or_else(|| {
+            Diagnostic::new(Code::E108, format!("unknown function `{name}`"))
+        })?;
+        let ptr = if self.hot {
+            let slot = self.slots.get(name).copied().ok_or_else(|| {
+                Diagnostic::new(Code::E108, format!("unknown function `{name}`"))
+            })?;
+            let addr = self
+                .table
+                .as_ref()
+                .ok_or_else(|| Diagnostic::new(Code::E108, "hot JIT has no dispatch table"))?[
+                slot as usize
+            ]
+                .load(Ordering::Acquire);
+            addr as *const u8
+        } else {
+            self.module.get_finalized_function(id)
+        };
+        Ok((ptr, self.epoch))
+    }
+
+    /// Call a previously resolved entry address. The caller must have dropped
+    /// any borrow on the Jit so a running dev session can install updates.
+    pub unsafe fn invoke(addr: *const u8, epoch: u64, args: &[i64]) -> i64 {
+        runtime::guard::guard_install();
+        let _residency = runtime::native::JitResidency::enter(epoch);
+        unsafe {
+            match args.len() {
+                0 => {
+                    let f: unsafe extern "C" fn() -> i64 = std::mem::transmute(addr);
+                    f()
+                }
+                1 => {
+                    let f: unsafe extern "C" fn(i64) -> i64 = std::mem::transmute(addr);
+                    f(args[0])
+                }
+                2 => {
+                    let f: unsafe extern "C" fn(i64, i64) -> i64 = std::mem::transmute(addr);
+                    f(args[0], args[1])
+                }
+                3 => {
+                    let f: unsafe extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(addr);
+                    f(args[0], args[1], args[2])
+                }
+                _ => {
+                    let f: unsafe extern "C" fn(i64, i64, i64, i64) -> i64 =
+                        std::mem::transmute(addr);
+                    f(args[0], args[1], args[2], args[3])
+                }
+            }
+        }
     }
 
     pub fn call(&mut self, name: &str, args: &[i64]) -> Result<i64, Diagnostic> {

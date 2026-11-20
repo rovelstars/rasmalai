@@ -376,6 +376,17 @@ pub fn stats() -> (u64, u64, u64) {
     )
 }
 
+/// Reuse the dependency generation from the previous build. Dev rebuilds
+/// only change project sources, so re-restoring every dep product is pure
+/// overhead.
+pub fn reuse_build() -> Option<u64> {
+    if !dep_cache_enabled() {
+        return None;
+    }
+    let build_gen = BUILD_GEN.with(|g| g.get());
+    (build_gen != 0).then_some(build_gen)
+}
+
 pub fn begin_build() -> Option<u64> {
     if !dep_cache_enabled() {
         return None;

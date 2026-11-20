@@ -9,6 +9,7 @@
 //! list; `App.tick` hands that list to the renderer and returns the pixels. No
 //! frame, damage, or present call reaches app code.
 import { ByteBuffer } from "@std/bytes"
+import { fn __rnx_dev_tick(): Int as devTick } from runtime "dev"
 import { Map } from "@std/collections"
 import {
     Build,
@@ -3153,6 +3154,14 @@ pub class App {
         let status = 0
         let presented = 0
         while true {
+            let tick = devTick()
+            if tick == 2 {
+                this.closeRequested = true
+                break
+            }
+            if tick == 1 {
+                this.forceFull = true
+            }
             let f = this.framePresent()
             let dn = f.damage().count()
             let dmg: ByteBuffer = ByteBuffer.allocate(dn * 16)
@@ -3823,6 +3832,14 @@ pub class App {
         if envSocket != "" {
             return this.runSurfaceSocket(envSocket, limit)
         }
+        let devMode = Env.get("RNX_DEV") != ""
+        let devShot = Env.get("RNX_DEV_SHOT")
+        let frameWait = 16
+        let frameWaitLong = 20
+        if devMode {
+            frameWait = 8
+            frameWaitLong = 8
+        }
         let title = ByteBuffer.fromString(this.window.title)
         unsafe {
             let host = hostOpen(
@@ -3841,10 +3858,21 @@ pub class App {
             let count = 0
             let status = 0
             let dirty = true
+            let shotPending = devShot != ""
             while !done {
                 if this.closeRequested {
                     done = true
                     continue
+                }
+                let tick = devTick()
+                if tick == 2 {
+                    this.closeRequested = true
+                    continue
+                }
+                if tick == 1 {
+                    this.forceFull = true
+                    dirty = true
+                    shotPending = true
                 }
                 this.hostFrameHook(this.frames)
                 let gen = hostGeneration(host)
@@ -3883,6 +3911,10 @@ pub class App {
                     } else if rc == 0 {
                         this.rootTree.commit()
                         count += 1
+                        if shotPending && devShot != "" {
+                            shotPending = false
+                            this.capture(devShot)
+                        }
                     } else if rc == -4 || rc == 1 {
                         this.forceFull = true
                         dirty = true
@@ -3895,15 +3927,15 @@ pub class App {
                     continue
                 }
                 let wait = 1
-                if this.animatingFlag || limit > 0 {
+                if this.animatingFlag || limit > 0 || devMode {
                     wait = 0
                 }
                 let ev = 0
                 if wait == 0 {
                     if requested {
-                        ev = hostWaitFrame(host, 20)
+                        ev = hostWaitFrame(host, frameWaitLong)
                     } else {
-                        ev = hostPumpFor(host, 16)
+                        ev = hostPumpFor(host, frameWait)
                     }
                 } else {
                     ev = hostPumpTimeout(host, wait)

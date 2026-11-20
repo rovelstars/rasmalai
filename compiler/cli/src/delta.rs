@@ -1,4 +1,7 @@
+use diagnostics::{decl_file, DeclFiles};
 use frontend::ast as A;
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::collections::BTreeMap;
 
 pub enum Delta {
@@ -43,37 +46,88 @@ struct Tables<'a> {
     fns: BTreeMap<String, &'a A::FnDecl>,
     types: BTreeMap<String, TypeShape>,
     consts: BTreeMap<String, Option<A::Type>>,
+    bodies: BTreeMap<String, String>,
 }
 
-fn collect(m: &A::Module) -> Tables<'_> {
-    let mut t = Tables { fns: BTreeMap::new(), types: BTreeMap::new(), consts: BTreeMap::new() };
+fn collect<'a>(m: &'a A::Module, files: Option<&DeclFiles>, changed: Option<&BTreeSet<PathBuf>>) -> Tables<'a> {
+    let include = |span: diagnostics::Span| -> bool {
+        match (files, changed) {
+            (Some(files), Some(changed)) => decl_file(files, span)
+                .map(|path| changed.contains(&path))
+                .unwrap_or(true),
+            _ => true,
+        }
+    };
+    let mut t = Tables {
+        fns: BTreeMap::new(),
+        types: BTreeMap::new(),
+        consts: BTreeMap::new(),
+        bodies: BTreeMap::new(),
+    };
     for d in &m.decls {
         match &d.node {
             A::Decl::Fn(f) => {
-                t.fns.insert(f.name.clone(), f);
+                if include(d.span) {
+                    t.fns.insert(f.name.clone(), f);
+                    t.bodies.insert(f.name.clone(), format!("{:?}", f.body));
+                }
             }
             A::Decl::Class { name, members, .. }
             | A::Decl::Struct { name, members, .. }
             | A::Decl::Trait { name, members, .. }
             | A::Decl::Interface { name, members, .. } => {
+                if !include(d.span) {
+                    continue;
+                }
                 let (fields, methods) = member_shapes(members);
                 t.types.insert(name.clone(), TypeShape { fields, methods, variants: Vec::new() });
+                for member in members {
+                    if !include(member.span) {
+                        continue;
+                    }
+                    match &member.node {
+                        A::ClassMember::Method(f) => {
+                            t.bodies.insert(format!("{name}.{}", f.name), format!("{:?}", f.body));
+                        }
+                        A::ClassMember::Init { body, .. } => {
+                            t.bodies.insert(format!("{name}.init"), format!("{:?}", body));
+                        }
+                        A::ClassMember::Deinit(body) => {
+                            t.bodies.insert(format!("{name}.deinit"), format!("{:?}", body));
+                        }
+                        A::ClassMember::OnReload { body, .. } => {
+                            t.bodies.insert(format!("{name}.onReload"), format!("{:?}", body));
+                        }
+                        _ => {}
+                    }
+                }
             }
             A::Decl::Enum { name, members, .. } => {
+                if !include(d.span) {
+                    continue;
+                }
                 let variants = members.iter().map(|e| (e.name.clone(), e.payload.clone())).collect();
                 t.types.insert(name.clone(), TypeShape { fields: Vec::new(), methods: Vec::new(), variants });
             }
             A::Decl::Record { name, fields, .. } => {
+                if !include(d.span) {
+                    continue;
+                }
                 let fields = fields.iter().map(|f| (f.name.clone(), Some(f.ty.clone()))).collect();
                 t.types.insert(name.clone(), TypeShape { fields, methods: Vec::new(), variants: Vec::new() });
             }
             A::Decl::Extension { target, members, .. } => {
+                if !include(d.span) {
+                    continue;
+                }
                 let (fields, methods) = member_shapes(members);
                 let key = format!("extension:{target:?}");
                 t.types.insert(key, TypeShape { fields, methods, variants: Vec::new() });
             }
             A::Decl::Const { name, ty, .. } => {
-                t.consts.insert(name.clone(), ty.clone());
+                if include(d.span) {
+                    t.consts.insert(name.clone(), ty.clone());
+                }
             }
             _ => {}
         }
@@ -97,9 +151,14 @@ fn first_diff<V: PartialEq>(a: &BTreeMap<String, V>, b: &BTreeMap<String, V>, wh
     None
 }
 
-pub fn classify(old: &A::Module, new: &A::Module) -> Delta {
-    let a = collect(old);
-    let b = collect(new);
+pub fn classify(
+    old: &A::Module,
+    new: &A::Module,
+    files: Option<&DeclFiles>,
+    changed: Option<&BTreeSet<PathBuf>>,
+) -> Delta {
+    let a = collect(old, files, changed);
+    let b = collect(new, files, changed);
     if let Some(name) = first_diff(&a.types, &b.types, "type") {
         return Delta::Structural { name };
     }
@@ -110,9 +169,8 @@ pub fn classify(old: &A::Module, new: &A::Module) -> Delta {
         return Delta::Structural { name };
     }
     let mut swapped = Vec::new();
-    for (name, f_old) in &a.fns {
-        let f_new = b.fns[name.as_str()];
-        if format!("{:?}", f_old.body) != format!("{:?}", f_new.body) {
+    for (name, body) in &a.bodies {
+        if b.bodies.get(name).is_some_and(|new| new != body) {
             swapped.push(name.clone());
         }
     }
@@ -133,4 +191,63 @@ fn first_diff_by<T>(a: &BTreeMap<String, T>, b: &BTreeMap<String, T>, eq: impl F
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use frontend::parser::Parser;
+
+    fn parse(src: &str) -> A::Module {
+        Parser::parse_module(src).expect("test source parses")
+    }
+
+    #[test]
+    fn body_only_edits_are_pure() {
+        let old = parse("fn Main(): Int { return 1; }");
+        let new = parse("fn Main(): Int { return 2; }");
+        match classify(&old, &new, None, None) {
+            Delta::Pure { swapped } => assert_eq!(swapped, vec!["Main".to_string()]),
+            Delta::Structural { name } => panic!("expected a body swap, got {name}"),
+        }
+    }
+
+    #[test]
+    fn method_body_edits_are_pure_and_qualified() {
+        let old = parse("class C { fn run(): Int { return 1; } }\nfn Main(): Int { return 1; }");
+        let new = parse("class C { fn run(): Int { return 2; } }\nfn Main(): Int { return 1; }");
+        match classify(&old, &new, None, None) {
+            Delta::Pure { swapped } => assert_eq!(swapped, vec!["C.run".to_string()]),
+            Delta::Structural { name } => panic!("expected a method swap, got {name}"),
+        }
+    }
+
+    #[test]
+    fn unchanged_modules_swap_nothing() {
+        let module = parse("fn Main(): Int { return 1; }");
+        match classify(&module, &module.clone(), None, None) {
+            Delta::Pure { swapped } => assert!(swapped.is_empty(), "{swapped:?}"),
+            Delta::Structural { name } => panic!("expected no change, got {name}"),
+        }
+    }
+
+    #[test]
+    fn added_functions_require_a_restart() {
+        let old = parse("fn Main(): Int { return 1; }");
+        let new = parse("fn Main(): Int { return 1; }\nfn Extra(): Int { return 2; }");
+        match classify(&old, &new, None, None) {
+            Delta::Structural { name } => assert!(name.contains("Extra"), "{name}"),
+            Delta::Pure { swapped } => panic!("expected a restart, got {swapped:?}"),
+        }
+    }
+
+    #[test]
+    fn type_shape_changes_require_a_restart() {
+        let old = parse("class C { let x: Int }\nfn Main(): Int { return 1; }");
+        let new = parse("class C { let x: Bool }\nfn Main(): Int { return 1; }");
+        match classify(&old, &new, None, None) {
+            Delta::Structural { name } => assert!(name.contains("type"), "{name}"),
+            Delta::Pure { swapped } => panic!("expected a restart, got {swapped:?}"),
+        }
+    }
 }

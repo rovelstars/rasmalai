@@ -92,7 +92,8 @@ impl Jit {
         step = Instant::now();
         let vec_rets = Self::finalize_module(&mut module, lir, &ids, &table)?;
         timings.finalize = step.elapsed();
-        Ok((Jit { module, funcs: ids, sizes, vec_rets, hot, slots, slot_names, table, versions: BTreeMap::new(), sigs, rt, bytes_fns, statics, foreign_ids, epoch: runtime::native::current_closure_epoch() }, timings))
+        let static_seq = statics.len();
+        Ok((Jit { module, funcs: ids, sizes, vec_rets, hot, slots, slot_names, table, versions: BTreeMap::new(), sigs, rt, bytes_fns, statics, static_seq, foreign_ids, epoch: runtime::native::current_closure_epoch() }, timings))
     }
 
     fn jit_module_for(lir: &LirModule) -> Result<JITModule, Diagnostic> {
@@ -170,6 +171,7 @@ impl Jit {
         builder.symbol("rnx_thread_spawn", runtime::native::rnx_thread_spawn as *const u8);
         builder.symbol("rnx_thread_join", runtime::native::rnx_thread_join as *const u8);
         builder.symbol("rnx_clock_monotonic_nanos", runtime::native::rnx_clock_monotonic_nanos as *const u8);
+        builder.symbol("rnx_dev_tick", runtime::native::rnx_dev_tick as *const u8);
         builder.symbol("rnx_sleep_nanos", runtime::native::rnx_sleep_nanos as *const u8);
         builder.symbol("rnx_crypto_random_u64", runtime::native::rnx_crypto_random_u64 as *const u8);
         builder.symbol("rnx_prng_seed", runtime::native::rnx_prng_seed as *const u8);
@@ -728,6 +730,11 @@ impl Jit {
         let clock_mono = module
             .declare_function("rnx_clock_monotonic_nanos", Linkage::Import, &clock_mono_sig)
             .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_clock_monotonic_nanos: {e}")))?;
+        let mut dev_tick_sig = Signature::new(host_call_conv());
+        dev_tick_sig.returns.push(AbiParam::new(types::I64));
+        let dev_tick = module
+            .declare_function("rnx_dev_tick", Linkage::Import, &dev_tick_sig)
+            .map_err(|e| Diagnostic::new(Code::E108, format!("declare rnx_dev_tick: {e}")))?;
         let mut crypto_random_sig = Signature::new(host_call_conv());
         crypto_random_sig.returns.push(AbiParam::new(types::I64));
         let crypto_random = module
@@ -1493,6 +1500,7 @@ impl Jit {
             thread_spawn,
             thread_join,
             clock_mono,
+            dev_tick,
             crypto_random,
             prng_seed,
             prng_next,
@@ -2015,7 +2023,7 @@ pub(super) fn check_supported(lir: &LirModule, f: &LirFunction) -> Result<(), Di
     Ok(())
 }
 
-fn declare_statics<M: Module>(module: &mut M, lir: &LirModule) -> Result<BTreeMap<String, DataId>, Diagnostic> {
+fn collect_static_texts(lir: &LirModule) -> BTreeSet<String> {
     let mut texts = BTreeSet::new();
     texts.insert(" ".to_string());
     texts.insert("\n".to_string());
@@ -2043,26 +2051,50 @@ fn declare_statics<M: Module>(module: &mut M, lir: &LirModule) -> Result<BTreeMa
             texts.insert(lir::instr::pretty_variant_desc(v));
         }
     }
+    texts
+}
+
+fn define_static<M: Module>(module: &mut M, text: &str, seq: &mut usize) -> Result<DataId, Diagnostic> {
+    let bytes = text.as_bytes();
+    let mut contents = Vec::with_capacity(32 + bytes.len() + 1);
+    contents.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+    contents.extend_from_slice(&if text.is_ascii() { 1u32 } else { 2u32 }.to_le_bytes());
+    contents.extend_from_slice(&0u64.to_le_bytes());
+    contents.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    contents.extend_from_slice(&(text.chars().count() as u64 + 1).to_le_bytes());
+    contents.extend_from_slice(bytes);
+    contents.push(0);
+    let id: DataId = module
+        .declare_data(&format!("rnx_str_{}", *seq), Linkage::Local, false, false)
+        .map_err(|e| Diagnostic::new(Code::E108, format!("declare static str: {e}")))?;
+    *seq += 1;
+    let mut desc = DataDescription::new();
+    desc.init = cranelift_module::Init::Bytes { contents: contents.into() };
+    desc.align = Some(8);
+    module
+        .define_data(id, &desc)
+        .map_err(|e| Diagnostic::new(Code::E108, format!("define static str: {e}")))?;
+    Ok(id)
+}
+
+impl Jit {
+    pub(super) fn intern_statics(&mut self, lir: &LirModule) -> Result<(), Diagnostic> {
+        for text in collect_static_texts(lir) {
+            if self.statics.contains_key(&text) {
+                continue;
+            }
+            let id = define_static(&mut self.module, &text, &mut self.static_seq)?;
+            self.statics.insert(text, id);
+        }
+        Ok(())
+    }
+}
+
+fn declare_statics<M: Module>(module: &mut M, lir: &LirModule) -> Result<BTreeMap<String, DataId>, Diagnostic> {
     let mut out = BTreeMap::new();
-    for (n, text) in texts.into_iter().enumerate() {
-        let bytes = text.as_bytes();
-        let mut contents = Vec::with_capacity(32 + bytes.len() + 1);
-        contents.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
-        contents.extend_from_slice(&if text.is_ascii() { 1u32 } else { 2u32 }.to_le_bytes());
-        contents.extend_from_slice(&0u64.to_le_bytes());
-        contents.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-        contents.extend_from_slice(&(text.chars().count() as u64 + 1).to_le_bytes());
-        contents.extend_from_slice(bytes);
-        contents.push(0);
-        let id: DataId = module
-            .declare_data(&format!("rnx_str_{n}"), Linkage::Local, false, false)
-            .map_err(|e| Diagnostic::new(Code::E108, format!("declare static str: {e}")))?;
-        let mut desc = DataDescription::new();
-        desc.init = cranelift_module::Init::Bytes { contents: contents.into() };
-        desc.align = Some(8);
-        module
-            .define_data(id, &desc)
-            .map_err(|e| Diagnostic::new(Code::E108, format!("define static str: {e}")))?;
+    let mut seq = 0;
+    for text in collect_static_texts(lir) {
+        let id = define_static(module, &text, &mut seq)?;
         out.insert(text, id);
     }
     Ok(out)
@@ -2179,6 +2211,7 @@ pub(super) fn lower_fn<M: Module>(
         thread_spawn: rt.thread_spawn,
         thread_join: rt.thread_join,
         clock_mono: rt.clock_mono,
+        dev_tick: rt.dev_tick,
         crypto_random: rt.crypto_random,
         prng_seed: rt.prng_seed,
         prng_next: rt.prng_next,

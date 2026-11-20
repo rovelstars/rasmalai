@@ -37,10 +37,10 @@ impl<'a> Builder<'a> {
         }
     }
 
-    pub(super) fn lower_init_body(&mut self, params: Vec<A::Param>, body: A::Block) -> Result<(), Diagnostic> {
+    pub(super) fn lower_init_body(&mut self, params: &[A::Param], body: &A::Block) -> Result<(), Diagnostic> {
         self.is_init = true;
         self.throws_fn = self.func.throws;
-        self.bind_params(&params)?;
+        self.bind_params(params)?;
         if let Some(pid) = self.implicit_super {
             if let Some(slf) = self.self_local {
                 self.emit_checked_call(pid, &[], &[slf], crate::instr::UNKNOWN_SPAN)?;
@@ -56,9 +56,9 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    pub(super) fn lower_bare_body(&mut self, params: Vec<A::Param>, body: A::Block) -> Result<(), Diagnostic> {
-        self.bind_params(&params)?;
-        self.lower_block(&body)?;
+    pub(super) fn lower_bare_body(&mut self, params: &[A::Param], body: &A::Block) -> Result<(), Diagnostic> {
+        self.bind_params(params)?;
+        self.lower_block(body)?;
         Ok(())
     }
 

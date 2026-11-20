@@ -41,6 +41,7 @@ pub(super) struct FnLower<'a, M> {
     pub(super) thread_spawn: FuncId,
     pub(super) thread_join: FuncId,
     pub(super) clock_mono: FuncId,
+    pub(super) dev_tick: FuncId,
     pub(super) crypto_random: FuncId,
     pub(super) prng_seed: FuncId,
     pub(super) prng_next: FuncId,
