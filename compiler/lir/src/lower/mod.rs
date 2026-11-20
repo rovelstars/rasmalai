@@ -33,19 +33,22 @@ pub fn lower_incremental(
     lower_impl(m, Some((&mut prev, changed)))
 }
 
+fn stage_trace(step: &mut Option<std::time::Instant>, label: &str) {
+    let Some(start) = *step else {
+        return;
+    };
+    eprintln!("[rnx dev] {label}: {}ms", start.elapsed().as_millis());
+    *step = Some(std::time::Instant::now());
+}
+
 pub fn expand(m: &A::Module) -> Result<A::Module, Diagnostic> {
     let trace = std::env::var_os("RNX_DEV_TRACE").is_some();
-    let mut step = std::time::Instant::now();
+    let mut step = trace.then(std::time::Instant::now);
     let mut l = Lower::new(m);
     let expanded = l.expand_traits(m);
-    if trace {
-        eprintln!("[rnx dev] lir trait-expand: {}ms", step.elapsed().as_millis());
-        step = std::time::Instant::now();
-    }
+    stage_trace(&mut step, "lir trait-expand");
     let expanded = l.expand_inheritance(&expanded);
-    if trace {
-        eprintln!("[rnx dev] lir inherit-expand: {}ms", step.elapsed().as_millis());
-    }
+    stage_trace(&mut step, "lir inherit-expand");
     if let Some(d) = l.diags.into_iter().next() {
         return Err(d);
     }
@@ -78,31 +81,20 @@ fn lower_expanded_impl(
 ) -> Result<Module, Diagnostic> {
     let mut l = Lower::new(m);
     let trace = std::env::var_os("RNX_DEV_TRACE").is_some();
-    let mut step = std::time::Instant::now();
+    let mut step = trace.then(std::time::Instant::now);
     l.classes(m)?;
     l.link_parents(m)?;
     l.signatures(m)?;
-    if trace {
-        eprintln!("[rnx dev] lir classes/sigs: {}ms", step.elapsed().as_millis());
-        step = std::time::Instant::now();
-    }
+    stage_trace(&mut step, "lir classes/sigs");
     l.collect_foreign(m)?;
     l.collect_consts(m)?;
     l.collect_namespaces();
     l.link_members(m)?;
-    if trace {
-        eprintln!("[rnx dev] lir links: {}ms", step.elapsed().as_millis());
-        step = std::time::Instant::now();
-    }
+    stage_trace(&mut step, "lir links");
     l.bodies(m, reuse)?;
-    if trace {
-        eprintln!("[rnx dev] lir bodies: {}ms", step.elapsed().as_millis());
-        step = std::time::Instant::now();
-    }
+    stage_trace(&mut step, "lir bodies");
     l.synthesize_dtors();
-    if trace {
-        eprintln!("[rnx dev] lir dtors: {}ms", step.elapsed().as_millis());
-    }
+    stage_trace(&mut step, "lir dtors");
     if let Some(d) = l.diags.into_iter().next() {
         return Err(d);
     }

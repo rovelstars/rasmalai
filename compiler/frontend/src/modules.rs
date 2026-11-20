@@ -344,14 +344,14 @@ impl ModuleGraph {
         reuse_deps: bool,
     ) -> Result<ModuleGraph, Vec<Diagnostic>> {
         let trace = std::env::var_os("RNX_DEV_TRACE").is_some();
-        let mut step = std::time::Instant::now();
+        let mut step = trace.then(std::time::Instant::now);
         let root = canonical(root).map_err(|e| vec![e])?;
         let base = root.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
         let entry_ctx = package_ctx_of(&root).map_err(|e| vec![e])?;
         if let Some((r, cfg)) = &entry_ctx {
             crate::patch::apply(r, cfg).map_err(|e| vec![e])?;
         }
-        if trace { eprintln!("[rnx dev] graph setup: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
+        trace_step(&mut step, "graph setup");
         let want_prelude = if cfg!(target_arch = "wasm32") {
             crate::stdvfs::std_source("prelude").is_some()
         } else {
@@ -364,7 +364,7 @@ impl ModuleGraph {
             };
             prepare_prelude(entry_root, cfg).map_err(|e| vec![e])?;
         }
-        if trace { eprintln!("[rnx dev] graph prelude: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
+        trace_step(&mut step, "graph prelude");
         let entry_root = entry_ctx.map(|(r, _)| r);
         let mut order: Vec<ModuleFile> = Vec::new();
         let mut state: BTreeMap<PathBuf, u8> = BTreeMap::new();
@@ -384,7 +384,7 @@ impl ModuleGraph {
         {
             dep_restore_for_entry(entry_root.as_ref(), build_gen);
         }
-        if trace { eprintln!("[rnx dev] graph deps: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
+        trace_step(&mut step, "graph deps");
         visit(
             &root,
             &base,
@@ -397,7 +397,7 @@ impl ModuleGraph {
             &mut edge_log,
         )
         .map_err(|e| vec![e])?;
-        if trace { eprintln!("[rnx dev] graph visit entry: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
+        trace_step(&mut step, "graph visit entry");
         if want_prelude {
             let prelude = selected_prelude()
                 .map(|(spec, _)| prelude_virtual_path(&spec))
@@ -415,7 +415,7 @@ impl ModuleGraph {
             )
             .map_err(|e| vec![e])?;
         }
-        if trace { eprintln!("[rnx dev] graph visit prelude: {}ms", step.elapsed().as_millis()); }
+        trace_step(&mut step, "graph visit prelude");
         let mut extras: Vec<PathBuf> = Vec::new();
         for e in extra {
             match canonical(e) {
@@ -2222,6 +2222,14 @@ fn std_key(path: &Path) -> String {
 fn std_submodule(path: &Path) -> String {
     let s = path.to_string_lossy();
     s.strip_prefix(STD_SCOPE).unwrap_or(&s).to_string()
+}
+
+pub(crate) fn trace_step(step: &mut Option<std::time::Instant>, label: &str) {
+    let Some(start) = *step else {
+        return;
+    };
+    eprintln!("[rnx dev] {label}: {}ms", start.elapsed().as_millis());
+    *step = Some(std::time::Instant::now());
 }
 
 const PARSE_CACHE_MAX: usize = 64;

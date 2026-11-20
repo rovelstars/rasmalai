@@ -514,6 +514,7 @@ fn compile_loop(
     mut last_lir: Option<std::sync::Arc<lir::instr::Module>>,
     mut taint: TaintCache,
     mut scope: ScopeCache,
+    mut stamps: Vec<FileStamp>,
     updates: mpsc::Sender<DevUpdate>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -524,7 +525,6 @@ fn compile_loop(
             return;
         }
     };
-    let mut stamps = snapshot(&files);
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         // Notify is the fast path. The stat check catches saves that arrive
         // while a build is running, or that an editor performs as an atomic
@@ -722,8 +722,9 @@ impl DevRunner {
             let entry = entry.to_string();
             let stop = stop.clone();
             let last_lir = Some(std::sync::Arc::new(lowered));
+            let stamps = snapshot(&files);
             std::thread::spawn(move || {
-                compile_loop(entry_file, entry, files, module, expanded, last_lir, taint, scope, tx, stop)
+                compile_loop(entry_file, entry, files, module, expanded, last_lir, taint, scope, stamps, tx, stop)
             })
         };
         Ok(DevRunner {
@@ -734,6 +735,17 @@ impl DevRunner {
             stop,
             compiler: Some(compiler),
         })
+    }
+
+    pub fn call(&mut self, name: &str, args: &[i64]) -> Result<i64, Diagnostic> {
+        ACTIVE.with(|slot| *slot.borrow_mut() = Some(self.state.clone()));
+        runtime::native::dev::install(dev_install_callback);
+        let (addr, epoch) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.jit.entry_addr(name, args.len())?
+        };
+        let result = unsafe { Jit::invoke(addr, epoch, args) };
+        Ok(result)
     }
 
     pub fn run_entry(&mut self) -> Result<i64, Diagnostic> {

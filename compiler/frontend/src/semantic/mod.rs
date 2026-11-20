@@ -63,7 +63,7 @@ fn check_with_files_surface_misuse_inner(
     mut scope: Option<(&mut ScopeCache, Option<&std::collections::BTreeSet<String>>)>,
 ) -> Vec<Diagnostic> {
     let trace = std::env::var_os("RNX_DEV_TRACE").is_some();
-    let mut step = std::time::Instant::now();
+    let mut step = trace.then(std::time::Instant::now);
     let mut diags = Vec::new();
     for decl in &module.decls {
         if let Decl::Class { name, members, .. } = &decl.node {
@@ -73,14 +73,14 @@ fn check_with_files_surface_misuse_inner(
             tag_new(&mut diags, from, decl_file(files, decl.span));
         }
     }
-    if trace { eprintln!("[rnx dev] sem w104/w109: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
+    crate::modules::trace_step(&mut step, "sem w104/w109");
     check_w108(module, &mut diags, files);
     check_cyclic_defaults(module, &mut diags, files);
-    if trace { eprintln!("[rnx dev] sem cyclic: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
+    crate::modules::trace_step(&mut step, "sem cyclic");
     check_scopes(module, &mut diags, files, scope.take());
-    if trace { eprintln!("[rnx dev] sem scopes: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
+    crate::modules::trace_step(&mut step, "sem scopes");
     check_export_cabi(module, &mut diags, files, cabi_surface, surface_misuse);
-    if trace { eprintln!("[rnx dev] sem cabi: {}ms", step.elapsed().as_millis()); step = std::time::Instant::now(); }
+    crate::modules::trace_step(&mut step, "sem cabi");
     let taint_from = diags.len();
     match taint.take() {
         Some((cache, changed)) => diags.extend(crate::unsafe_taint::check_module_cached(
@@ -88,7 +88,7 @@ fn check_with_files_surface_misuse_inner(
         )),
         None => diags.extend(crate::unsafe_taint::check_module(module)),
     }
-    if trace { eprintln!("[rnx dev] sem taint: {}ms", step.elapsed().as_millis()); }
+    crate::modules::trace_step(&mut step, "sem taint");
     for d in &mut diags[taint_from..] {
         if d.file.is_none()
             && let Some(span) = d.span

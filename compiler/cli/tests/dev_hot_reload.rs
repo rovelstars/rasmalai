@@ -77,22 +77,22 @@ fn test_structural_change_restarts() {
 fn test_delta_classify_unit() {
     let old = module_of_src(V1);
     let same = module_of_src("fn getValue(): Int { return 1; }\nfn Main(): Int { return getValue(); }\n");
-    match cli::delta::classify(&old, &same) {
+    match cli::delta::classify(&old, &same, None, None) {
         cli::delta::Delta::Pure { swapped } => assert!(swapped.is_empty(), "{swapped:?}"),
         _ => panic!("identical modules must be pure+empty"),
     }
     let new = module_of_src(V2);
-    match cli::delta::classify(&old, &new) {
+    match cli::delta::classify(&old, &new, None, None) {
         cli::delta::Delta::Pure { swapped } => assert_eq!(swapped, vec!["getValue".to_string()]),
         _ => panic!("body change must be pure"),
     }
     let sig = module_of_src("fn getValue(x: Int): Int { return x; }\nfn Main(): Int { return getValue(1); }\n");
-    match cli::delta::classify(&old, &sig) {
+    match cli::delta::classify(&old, &sig, None, None) {
         cli::delta::Delta::Structural { .. } => {}
         _ => panic!("arity change must be structural"),
     }
     let cls = module_of_src("fn getValue(): Int { return 1; }\nfn Main(): Int { return getValue(); }\nclass P { let x: Int; }\n");
-    match cli::delta::classify(&old, &cls) {
+    match cli::delta::classify(&old, &cls, None, None) {
         cli::delta::Delta::Structural { .. } => {}
         _ => panic!("added class must be structural"),
     }
