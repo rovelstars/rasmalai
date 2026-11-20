@@ -154,7 +154,7 @@ rnx --version
 
 If the steps above did not fix it, file it. A clean repro against the latest toolchain is exactly what maintainers need. Include all four:
 
-1. The full `rnx --version` output, every line. It carries the commit hash, install kind, and target triple.
+1. The full `rnx --version` output, every line. It carries the commit hash, install kind, executable path, standard library source, and target triple.
 2. Your OS and CPU (`uname -sm`, or `$PSVersionTable` on Windows).
 3. The smallest source file that still fails.
 4. The full command and its complete output (with `rnx -v` if it is a compiler crash).

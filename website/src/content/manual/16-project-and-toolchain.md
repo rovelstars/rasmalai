@@ -9,9 +9,13 @@ icon: "Terminal"
 
 ## Installation
 
-One static binary, `rnx`, covers editing, running, testing, formatting, documenting, and shipping. Installation places `rnx` on `PATH`; `rnx --version` confirms the install and prints the build record (commit hash, build timestamp, install kind, target triple, backend versions) after the `rnx <version>` first line. Scaffolding creates the manifest and entry file:
+One static binary, `rnx`, covers editing, running, testing, formatting, documenting, and shipping. Installation places `rnx` on `PATH`; `rnx --version` confirms the install and prints the build record after the `rnx <version>` first line: commit hash, build timestamp, install kind, executable path, standard library source, target triple, and backend versions. The `binary:` line names the running executable, and `stdlib:` names where `@std/*` packages come from: `registry cache`, an `RNX_VENDOR_DIR` override, or a source checkout that is auto-vendored.
 
 Distributors building `rnx` for a managed install set two build-time variables. `RNX_INSTALLATION_MANAGED` carries the reason shown after `install: managed:`, for example how the package was installed and how to upgrade it; unset, the install reads `install: standalone`. `RNX_INSTALLATION_NO_TIMESTAMP` (any non-empty value) leaves the timestamp out, so the record reads `built: unknown`; it wins over `SOURCE_DATE_EPOCH` when both are set.
+
+A binary built from a source checkout auto-selects `<checkout>/compiler/stdlib/src` for `rnx dev` when `RNX_VENDOR_DIR` is unset, so edits under development compile against the checkout instead of the registry cache. `stdlib:` in `rnx --version` shows that path. Builds made in CI, or with `RNX_RELEASE_BUILD` set, bake this fallback off; set `RNX_CHECKOUT_STDLIB=1` to force it on. Release artifacts therefore use the registry cache unless the machine running them also has the build checkout.
+
+Scaffolding creates the manifest and entry file:
 
 ```sh
 rnx init hello
@@ -361,7 +365,7 @@ println!(quote(2.0));
 | Command | Purpose | Key flags |
 |---|---|---|
 | `rnx check` | rapid lexer/parser/module/typecheck, no codegen | `[paths...]`, `-p`, `--json` |
-| `rnx dev` | watch sources, hot-swap function bodies without restart | `[path]`, `--entry F`, `--no-rerun`, `--mcp` |
+| `rnx dev` | watch sources, hot-swap function bodies at frame boundaries; structural edits restart the session | `[path]`, `--entry F`, `--no-rerun`, `--mcp`, `--screenshot <path>` |
 | `rnx repl` | interactive JIT shell | none |
 | `rnx run` | execute program (Cranelift JIT by default) | `--entry F`, `--backend <interpreter\|cranelift\|llvm>`, `-p`, `--context <dir>`, `--locked`, `-O`, `-- <args>` |
 | `rnx build` | link native binary into `.rnx-cache/build/{dev,release}/<name>` | `--release`, `--lib`, `--emit-obj`, `--target`, `--entry F`, `-p`, `--context <dir>`, `--locked`, `-O`, `-g/--debug`, `--deny-perf-lints[=codes]`, `--show-perf-notes`, `--fix[--force]`, `--fix-keep-backup` |
@@ -396,6 +400,10 @@ println!(quote(2.0));
 | `rnx doctor` | check the stdlib cache pin and contents, plus dep product status | `--repair-std`, `--registry <url>` |
 
 Global flags: `--no-color` strips ANSI escapes, `-v` enables pipeline logging, `-q` suppresses banners, `--offline` disables automatic target pack fetch, and `--sysroot <dir>` selects a custom root. `--prefer-system` resolves every native dependency from the host library and `--prefer-bundled` from bundled OCI blobs; the two conflict, and per-dependency `native` pins override either.
+
+`rnx dev` runs the compiler on a worker thread and applies updates on the program's own thread. A function-body edit swaps the compiled body in the dispatch table and keeps live state: the next frame renders the new code, with app state, open windows, and native handles intact. A signature, type-shape, added-declaration, or constant change cannot be patched in place; the running program unwinds, the session recompiles, and `Main` runs again. Broken builds keep the last good program and print diagnostics.
+
+For windowed apps the frame loop is the safe point. `rnx dev` sets `RNX_DEV` so the loop uses a bounded wait and checks for updates several times per second instead of blocking on the next input event. Pass `--screenshot <path>` to write a PNG of the first frame and of each hot update; this is the quickest way to inspect HMR from an agent or a terminal. `--no-rerun` keeps the entry from being called again after a swap, which suits servers and other background services.
 
 `rnx download` with no package names resolves every `@std/<module>` at `*` through the registry in a single round-trip and pins the exact versions (plus the seeding date) to a pin file next to the global cache (`RNX_CACHE_HOME` is honored). With names, it downloads `name` or `name@range` libraries (the same SemVer grammar as dependency requirements, with the engine-range check after resolve) into the global cache. With `--local`, it targets the project-local cache (`.rnx-cache/registry/`) instead, with the pin recorded at `.rnx-cache/std-pin.json`. Global downloads land in the content-addressed store (`store/` under the cache root: chunk blobs plus one verified tree per manifest digest; see [Packages and Registries](/manual/18-packages-and-registries)); `--local` keeps the older per-version project layout instead. The installer runs `rnx download` automatically and keeps going with a warning when offline. `rnx doctor` reports a missing pin file or missing packages; `rnx doctor --repair-std` re-runs the seeding and reports how many packages it repaired. `download` and `doctor` accept `--registry <url>` (or `RNX_REGISTRY`) to point at a registry other than the default, which is how a self-hosted registry seeds its own standard library. With an empty cache and no network, `@std/*` imports fail as `E108` naming the registry instead of falling back silently. There is no embedded fallback: the binary carries no stdlib bytes. To seed or hack on the standard library without a registry instead, run `rnx vendor @std/... --dir <DIR>` from a checkout (see below), then point `RNX_VENDOR_DIR` at the staged directory: `@std/*` imports resolve straight from that tree with zero network, the same local-source override that covers every registry package (see [Packages and Registries](/manual/18-packages-and-registries)). Distributors bundle a pre-seeded cache directory and set `RNX_CACHE_HOME` at it. The stdlib sources in this repository are a workspace of packages, one manifest per module, so `RNX_VENDOR_DIR=<repo>/compiler/stdlib/src` resolves every `@std/*` import from the checkout. Repository development needs no export: the root `.cargo/config.toml` sets `RNX_VENDOR_DIR` to `compiler/stdlib/src` as a relative path, so `cargo run`, `cargo test`, and `cargo nextest` resolve `@std/*` from the checkout. The value is not forced, so an explicit `RNX_VENDOR_DIR` in the environment wins. A `rnx` binary installed from the registry carries no checkout path and resolves `@std/*` from the registry cache; the checkout override applies only to repository development and its tests. With a vendor directory, `@std/<name>` accepts either `<dir>/@std/<name>` or `<dir>/<name>`. No second mechanism exists.
 
@@ -916,6 +924,8 @@ tests and can change or disappear.
   steps.
 - `RNX_CPU_TIER`, `RNX_TASK_STALL_MS`, `RNX_TEST_TLS_CA_DER`, `RNX_BENCH_SCALE`,
   `RNX_TOUR`, `RNX_DEBUG_LIR`: test, benchmark, or regression sentinels.
+- `RNX_DEV`, `RNX_DEV_SHOT`, `RNX_DEV_TRACE`: set by `rnx dev` for the frame-loop
+  safepoint, `--screenshot`, and watcher tracing.
 
 ## MCP server
 

@@ -149,7 +149,7 @@ Five reserved words name behavior specified elsewhere rather than here:
 | `comptime` | marks compile-time evaluation position | reserved; no general compile-time execution beyond manifest `switch` over `target` (see [Packages and Registries](/manual/18-packages-and-registries)) |
 | `native` | declares a foreign C-ABI signature (`from native "lib"`) | [Hardware and FFI](/manual/13-hardware-and-ffi) |
 | `runtime` | imports a compiler runtime shim (`from runtime "core"`) | [Project and Toolchain](/manual/16-project-and-toolchain) |
-| `onReload` | hot-reload hook for `rnx dev` | [Project and Toolchain](/manual/16-project-and-toolchain) |
+| `onReload` | reserved hot-reload hook; declared and lowered, not invoked by the current `rnx dev` | [Project and Toolchain](/manual/16-project-and-toolchain) |
 
 ## Truth values
 
