@@ -5,6 +5,7 @@ mod scratch;
 pub mod args;
 pub mod audit;
 pub mod check;
+pub mod checkout;
 pub mod comptime;
 pub mod delta;
 pub mod dev;

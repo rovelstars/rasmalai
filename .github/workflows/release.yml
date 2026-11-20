@@ -86,6 +86,9 @@ jobs:
       # registry. A tag push publishes @std/* only after every leg is
       # green, so the registry still has the previous version here.
       RNX_VENDOR_DIR: ${{ github.workspace }}/compiler/stdlib/src
+      # Shipped binaries must not fall back to this build machine's
+      # checkout when a user runs them elsewhere.
+      RNX_RELEASE_BUILD: "1"
     steps:
       - uses: actions/checkout@v5
         with:

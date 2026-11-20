@@ -23,6 +23,9 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=RNX_INSTALLATION_MANAGED");
     println!("cargo:rerun-if-env-changed=RNX_INSTALLATION_NO_TIMESTAMP");
+    println!("cargo:rerun-if-env-changed=RNX_CHECKOUT_STDLIB");
+    println!("cargo:rerun-if-env-changed=RNX_RELEASE_BUILD");
+    println!("cargo:rerun-if-env-changed=CI");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     let commit = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -54,6 +57,17 @@ fn main() {
     println!("cargo:rustc-env=RNX_BUILD_TIMESTAMP={built}");
     let reason = std::env::var("RNX_INSTALLATION_MANAGED").unwrap_or_default();
     println!("cargo:rustc-env=RNX_INSTALLATION_MANAGED_REASON={reason}");
+    let checkout = match std::env::var("RNX_CHECKOUT_STDLIB") {
+        Ok(value) => value,
+        Err(_)
+            if std::env::var_os("CI").is_some()
+                || std::env::var_os("RNX_RELEASE_BUILD").is_some() =>
+        {
+            "0".to_string()
+        }
+        Err(_) => "1".to_string(),
+    };
+    println!("cargo:rustc-env=RNX_CHECKOUT_STDLIB={checkout}");
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
     println!("cargo:rustc-env=RNX_TARGET_TRIPLE={target}");
 }

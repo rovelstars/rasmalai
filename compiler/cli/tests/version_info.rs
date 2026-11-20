@@ -19,6 +19,38 @@ fn run(args: &[&str], dir: &std::path::Path) -> (i32, String, String) {
     )
 }
 
+fn hardcoded_rnx_version(text: &str) -> Option<&str> {
+    let mut rest = text;
+    while let Some(pos) = rest.find("rnx ") {
+        let after = &rest[pos + 4..];
+        let end = after
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(after.len());
+        let candidate = &after[..end];
+        let parts: Vec<&str> = candidate.split('.').collect();
+        if parts.len() == 3
+            && parts
+                .iter()
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        {
+            return Some(&rest[pos..pos + 4 + end]);
+        }
+        rest = &after[end..];
+    }
+    None
+}
+
+fn markdown_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            markdown_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "md") {
+            out.push(path);
+        }
+    }
+}
+
 #[test]
 fn test_short_version_is_single_line() {
     let dir = crate::scratch::dir("version-short");
@@ -38,7 +70,15 @@ fn test_long_version_has_build_record() {
         format!("rnx {}", env!("CARGO_PKG_VERSION")),
         "{stdout}"
     );
-    for key in ["commit: ", "built: ", "install: ", "target: ", "llvm: "] {
+    for key in [
+        "commit: ",
+        "built: ",
+        "install: ",
+        "binary: ",
+        "stdlib: ",
+        "target: ",
+        "llvm: ",
+    ] {
         assert!(stdout.contains(key), "{stdout}");
     }
     let install = stdout
@@ -48,5 +88,34 @@ fn test_long_version_has_build_record() {
     assert!(
         install == "standalone" || install.starts_with("managed:"),
         "{stdout}"
+    );
+    let stdlib = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("stdlib: "))
+        .expect("stdlib line");
+    assert!(!stdlib.is_empty(), "{stdout}");
+}
+
+#[test]
+fn docs_do_not_pin_the_cli_version() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("website")
+        .join("src")
+        .join("content");
+    let mut files = Vec::new();
+    markdown_files(&root, &mut files);
+    let mut hits = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        if let Some(hit) = hardcoded_rnx_version(&text) {
+            hits.push(format!("{}: {hit}", file.display()));
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "docs hardcode the rnx version; write `rnx <version>` instead:\n{}",
+        hits.join("\n")
     );
 }
