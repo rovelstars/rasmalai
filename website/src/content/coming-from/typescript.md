@@ -80,11 +80,11 @@ println!(Env.get("MODE"));
 
 ## Ship one file
 
-There are no bundler split-chunks, no runtime flags, and no container layer for the interpreter. `rnx build --release` emits the binary; `rnx dist` thinking is
+There are no bundler split-chunks, no runtime flags, and no container layer for the interpreter. `rnx build` emits the binary; `rnx dist` thinking is
 `scp` thinking:
 
 ```sh
-rnx build app.rnx --release   # stripped ~356 KB binary, zero dependencies
+rnx build app.rnx   # stripped ~356 KB binary, zero dependencies
 ```
 
 Keep the modules and the iteration speed. Lose the runtime.

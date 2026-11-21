@@ -2,7 +2,7 @@ use super::*;
 use sysroot::target::{Arch as TargetArch, Libc as TargetLibc, Os as TargetOs};
 
 fn profile_name(release: bool) -> &'static str {
-    if release { "release" } else { "dev" }
+    if release { "release" } else { "debug" }
 }
 
 fn build_key(
@@ -20,6 +20,7 @@ fn build_key(
     pack_digest: Option<&str>,
     runtime_sha256: &str,
     runtime_abi: u32,
+    bench_harness: Option<&str>,
 ) -> String {
     // Path-dep manifests and path-dep src trees (src/**/*.rnx, skipping
     // target/, .git/, .rnx-cache/) feed the fingerprint. Files outside a
@@ -33,6 +34,10 @@ fn build_key(
     owned.push(std::fs::read(root.join(frontend::project::MANIFEST_FILE)).unwrap_or_default());
     owned.push(std::fs::read(root.join("Project.deplock")).unwrap_or_default());
     owned.push(frontend::cache::hash_src_tree(root));
+    if let Some(filter) = bench_harness {
+        owned.push(b"bench-harness".to_vec());
+        owned.push(filter.as_bytes().to_vec());
+    }
     if let Some(cfg) = &manifest {
         for (name, target) in &cfg.entries.bins {
             owned.push(name.as_bytes().to_vec());
@@ -151,6 +156,7 @@ fn default_out_path(
     root: &std::path::Path,
     release: bool,
     suffix: &str,
+    bench: bool,
 ) -> std::path::PathBuf {
     let stem = frontend::project::load_manifest(root)
         .ok()
@@ -164,9 +170,14 @@ fn default_out_path(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "a.out".to_string())
         });
+    let profile = if bench {
+        "bench".to_string()
+    } else {
+        profile_name(release).to_string()
+    };
     frontend::cache::project_cache_dir(root)
         .join("build")
-        .join(profile_name(release))
+        .join(profile)
         .join(format!("{stem}{suffix}"))
 }
 
@@ -206,7 +217,7 @@ fn env_flag_enabled(name: &str) -> bool {
     }
 }
 
-pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, lib_prefix: Option<String>, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, perf_map: bool, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, context: Option<std::path::PathBuf>, deny_perf_lints: Vec<String>, show_perf_notes: bool, fix: bool, fix_force: bool, fix_keep_backup: bool, expand_macros: bool, verbose: bool, quiet: bool, prefer: frontend::native::NativePrefer) {
+pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release: bool, lib: bool, lib_prefix: Option<String>, emit_obj: bool, target_triple: Option<String>, locked: bool, opt_level: String, time_passes: bool, trace: Option<std::path::PathBuf>, debug: bool, jobs: Option<usize>, memory_cap: Option<u64>, package: Option<String>, context: Option<std::path::PathBuf>, deny_perf_lints: Vec<String>, show_perf_notes: bool, fix: bool, fix_force: bool, fix_keep_backup: bool, expand_macros: bool, bench_harness: Option<String>, verbose: bool, quiet: bool, prefer: frontend::native::NativePrefer) {
             let path = path.map(|p| p.to_string_lossy().into_owned());
             let opt_level = parse_opt_level(&opt_level);
             let deny_raw: Vec<String> = if deny_perf_lints.is_empty() {
@@ -257,7 +268,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             let scope_root = target.scope_root.clone().unwrap_or_else(|| root.clone());
             validate_project_name(&root);
             if verbose {
-                eprintln!("rnx: building {input} ({})", if release { "release" } else { "dev" });
+                eprintln!("rnx: building {input} ({})", if release { "release" } else { "debug" });
             }
             let security_issues =
                 frontend::security::verify_entry(std::path::Path::new(&input));
@@ -368,9 +379,6 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     std::process::exit(1);
                 }
             }
-            if perf_map {
-                eprintln!("warning: --perf-map applies to JIT execution; ignored for `build`");
-            }
             let cfg = cli::CompileConfig {
                 time_passes,
                 trace,
@@ -379,6 +387,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 jobs: cli::resolve_jobs(jobs),
                 memory_cap: cli::resolve_memory_cap(memory_cap),
                 expand_macros,
+                bench_harness,
             };
             if verbose {
                 eprintln!("rnx: jobs={} memory-cap={} bytes", cfg.jobs, cfg.memory_cap);
@@ -575,6 +584,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                         &root,
                         release,
                         if object_wasm { ".wasm" } else { "" },
+                        cfg.bench_harness.is_some(),
                     );
                     if let Some(parent) = path.parent() {
                         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -582,7 +592,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                             std::process::exit(1);
                         }
                     }
-                    let key = build_key(&input, &root, &entry, release, opt_level, compile_target, debug, cfg.jobs, cfg.memory_cap, prefer, &bundled_paths, resolved_pack.as_ref().and_then(|pack| pack.digest.as_deref()), &resolved_runtime.sha256, runtime_abi);
+                    let key = build_key(&input, &root, &entry, release, opt_level, compile_target, debug, cfg.jobs, cfg.memory_cap, prefer, &bundled_paths, resolved_pack.as_ref().and_then(|pack| pack.digest.as_deref()), &resolved_runtime.sha256, runtime_abi, cfg.bench_harness.as_deref());
                     let stamp = match path.file_name().map(|s| s.to_string_lossy().into_owned()) {
                         Some(stem) => path.with_file_name(format!("{stem}.fingerprint")),
                         None => path.with_file_name(".fingerprint"),
@@ -892,7 +902,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 },
                 duration_ms: link_ms,
             });
-            let mode = if release { "release" } else { "dev" };
+            let mode = if release { "release" } else { "debug" };
             let title = format!(
                 "build: {} [{mode}] ({})",
                 cli::package_name_for(&input),
@@ -972,10 +982,10 @@ mod tests {
         let dep_src = dep.join("src").join("lib.rnx");
         std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 1;\n}\n").unwrap();
         let input = main.to_string_lossy().into_owned();
-        let key_before = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[], None, runtime::archive::SHA256, runtime::archive::ABI);
-        assert_eq!(key_before, build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[], None, runtime::archive::SHA256, runtime::archive::ABI));
+        let key_before = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[], None, runtime::archive::SHA256, runtime::archive::ABI, None);
+        assert_eq!(key_before, build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[], None, runtime::archive::SHA256, runtime::archive::ABI, None));
         std::fs::write(&dep_src, "pub fn helper(): Int {\n    return 2;\n}\n").unwrap();
-        let key_after = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[], None, runtime::archive::SHA256, runtime::archive::ABI);
+        let key_after = build_key(&input, &root, "Main", false, 1, None, false, 1, 0, frontend::native::NativePrefer::None, &[], None, runtime::archive::SHA256, runtime::archive::ABI, None);
         assert_ne!(key_before, key_after);
     }
 }

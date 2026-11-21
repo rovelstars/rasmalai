@@ -143,7 +143,7 @@ fn test_dwarf_debug_symbols_present() {
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--emit-obj")
-        .arg("-g")
+        .arg("--debug")
         .arg(&src)
         .output()
         .unwrap();
@@ -154,7 +154,7 @@ fn test_dwarf_debug_symbols_present() {
     assert!(sections.contains(".debug_line"), "no .debug_line:\n{sections}");
     let out = std::process::Command::new(rnx())
         .arg("build")
-        .arg("-g")
+        .arg("--debug")
         .arg(&src)
         .output()
         .unwrap();
@@ -173,8 +173,6 @@ fn test_release_omits_debug_info() {
     let out = std::process::Command::new(rnx())
         .arg("build")
         .arg("--emit-obj")
-        .arg("--release")
-        .arg("-g")
         .arg(&src)
         .output()
         .unwrap();

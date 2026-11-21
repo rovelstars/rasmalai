@@ -22,7 +22,7 @@ and completions ship together:
 ```
 
 ```sh
-rnx build sim.rnx --release
+rnx build sim.rnx
 rnx test
 rnx fmt
 ```

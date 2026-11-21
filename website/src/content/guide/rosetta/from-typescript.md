@@ -73,7 +73,7 @@ println!("listening on {port}");
 No bundler split-chunks, runtime flags, or container layers for the interpreter:
 
 ```sh
-rnx build --release
+rnx build
 ```
 
 You get one stripped native binary with zero dependencies. Next: the [Guide](/guide/01-introduction) from the top, or [Modules and Packages](/guide/08-modules-and-packages) for the manifest and registry.

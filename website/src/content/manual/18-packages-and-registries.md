@@ -478,7 +478,7 @@ Forbidden, each with its own `E108`: function calls, closures, and `fn` declarat
 `tools/rnx-bindgen` turns a C header into a Rasmalai package by dumping the clang AST as JSON, keeping whitelisted functions, transparent structs, and integer defines, and emitting `src/lib.rnx` plus `src/types.rnx`. The full command, flags exactly as the tool defines them:
 
 ```sh
-rnx run --backend cranelift tools/rnx-bindgen/src/main.rnx -- \
+rnx run tools/rnx-bindgen/src/main.rnx -- \
   --header /usr/include/sqlite3.h --native-lib sqlite3 --pkg-name sqlite3 \
   --pkg-version 3.53.4 --prefix sqlite3_ --out packages/sqlite3 \
   --skip sqlite3_carray_bind --skip sqlite3_win32_set_directory

@@ -25,6 +25,7 @@ fn build_debug(main: &std::path::Path) -> String {
     let rnx = env!("CARGO_BIN_EXE_rnx");
     let build = std::process::Command::new(rnx)
         .arg("build")
+        .arg("--debug")
         .arg(main)
         .output()
         .unwrap();
@@ -58,19 +59,13 @@ fn ldd_needed(path: &std::path::Path) -> String {
 }
 
 #[test]
-fn test_dev_dynamic_release_static() {
+fn test_debug_dynamic_release_static() {
     let (_g, main) = write_src(MINI_SRC, "size");
     let dbg = build_debug(&main);
     let rel = build_release(&main);
-    let dbg_size = std::fs::metadata(&dbg).unwrap().len();
-    let rel_size = std::fs::metadata(&rel).unwrap().len();
-    assert!(
-        dbg_size < rel_size,
-        "dynamic dev {dbg_size} should be smaller than static release {rel_size}"
-    );
     assert!(
         ldd_needed(std::path::Path::new(&dbg)).contains("libruntime_native.so"),
-        "dev binary must dynamically link libruntime_native"
+        "debug binary must dynamically link libruntime_native"
     );
     assert!(
         !ldd_needed(std::path::Path::new(&rel)).contains("libruntime_native"),

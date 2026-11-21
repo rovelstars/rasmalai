@@ -78,8 +78,8 @@ pub enum Command {
         /// Entry function name
         #[arg(long, default_value = "Main")]
         entry: String,
-        /// Build with optimizations enabled
-        #[arg(long)]
+        /// Deprecated: builds are optimized by default
+        #[arg(long, hide = true)]
         release: bool,
         /// Build a static library instead of an executable
         #[arg(long)]
@@ -97,22 +97,19 @@ pub enum Command {
         #[arg(long)]
         locked: bool,
         /// Optimization level (0 or 1)
-        #[arg(short = 'O', long = "opt-level", default_value = "1")]
+        #[arg(short = 'O', long = "opt-level", default_value = "1", hide = true)]
         opt_level: String,
         /// Print per-pass compile timings to stderr
-        #[arg(long)]
+        #[arg(long, hide = true)]
         time_passes: bool,
         /// Dump macro expansions before/after to `.rnx-cache/expansions/`
-        #[arg(long)]
+        #[arg(long, hide = true)]
         expand_macros: bool,
         /// Write a Chrome trace event file
-        #[arg(long)]
+        #[arg(long, hide = true)]
         trace: Option<PathBuf>,
-        /// Append JIT symbol entries for perf tooling
-        #[arg(long)]
-        perf_map: bool,
-        /// Emit native debug info (applies to build outputs)
-        #[arg(short = 'g', long = "debug")]
+        /// Build an unoptimized artifact with native debug info
+        #[arg(long = "debug")]
         debug: bool,
         /// Package selection for workspace builds
         #[arg(short = 'p', long = "package")]
@@ -141,6 +138,9 @@ pub enum Command {
         /// Keep .bak backups after a successful fix
         #[arg(long = "fix-keep-backup")]
         fix_keep_backup: bool,
+        /// Build the generated benchmark harness instead of the package entry
+        #[arg(long = "bench-harness", value_name = "FILTER", num_args = 0..=1, default_missing_value = "", hide = true)]
+        bench_harness: Option<String>,
     },
     /// Fast type-check and semantic validation
     Check {
@@ -173,26 +173,23 @@ pub enum Command {
         #[arg(long)]
         locked: bool,
         /// Optimization level (0 or 1)
-        #[arg(short = 'O', long = "opt-level", default_value = "1")]
+        #[arg(short = 'O', long = "opt-level", default_value = "1", hide = true)]
         opt_level: String,
-        /// Execution backend: cranelift (default), interpreter, or llvm
-        #[arg(long, default_value = "cranelift")]
+        /// Differential oracle; not part of the authored workflow
+        #[arg(long, default_value = "cranelift", hide = true)]
         backend: String,
         /// Print per-pass compile timings to stderr
-        #[arg(long)]
+        #[arg(long, hide = true)]
         time_passes: bool,
         /// Dump macro expansions before/after to `.rnx-cache/expansions/`
-        #[arg(long)]
+        #[arg(long, hide = true)]
         expand_macros: bool,
         /// Write a Chrome trace event file
-        #[arg(long)]
+        #[arg(long, hide = true)]
         trace: Option<PathBuf>,
         /// Append JIT symbol entries for perf tooling
-        #[arg(long)]
+        #[arg(long, hide = true)]
         perf_map: bool,
-        /// Accepted for parity with build; ignored for run
-        #[arg(short = 'g', long = "debug")]
-        debug: bool,
         /// Parallel worker count (or RNX_JOBS). Default: available parallelism
         #[arg(long, env = "RNX_JOBS")]
         jobs: Option<usize>,
@@ -428,7 +425,7 @@ pub enum Command {
         #[arg(long)]
         accept_all_caps: bool,
     },
-    /// Run benchmark blocks and report timings
+    /// Time bench blocks in an optimized native build
     Bench {
         /// Package selection
         #[arg(short = 'p', long = "package")]
@@ -436,27 +433,6 @@ pub enum Command {
         /// Run only benchmarks matching this substring
         #[arg(long)]
         filter: Option<String>,
-        /// Execution backend: llvm (default), interpreter, or cranelift
-        #[arg(long, default_value = "llvm")]
-        backend: String,
-        /// Build with optimizations enabled
-        #[arg(long)]
-        release: bool,
-        /// Build without optimizations
-        #[arg(long)]
-        no_release: bool,
-        /// Print per-pass compile timings to stderr
-        #[arg(long)]
-        time_passes: bool,
-        /// Write a Chrome trace event file
-        #[arg(long)]
-        trace: Option<PathBuf>,
-        /// Append JIT symbol entries for perf tooling
-        #[arg(long)]
-        perf_map: bool,
-        /// Accepted for parity with build; ignored for bench
-        #[arg(short = 'g', long = "debug")]
-        debug: bool,
         /// Parallel worker count (or RNX_JOBS). Default: available parallelism
         #[arg(long, env = "RNX_JOBS")]
         jobs: Option<usize>,
@@ -472,10 +448,10 @@ pub enum Command {
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
         /// Optimization level (0 or 1)
-        #[arg(short = 'O', long = "opt-level", default_value = "1")]
+        #[arg(short = 'O', long = "opt-level", default_value = "1", hide = true)]
         opt_level: String,
-        /// Execution backend: cranelift (default), interpreter, or llvm
-        #[arg(long, default_value = "cranelift")]
+        /// Differential oracle; not part of the authored workflow
+        #[arg(long, default_value = "cranelift", hide = true)]
         backend: String,
         /// Match the filter against the full test name instead of by substring
         #[arg(long)]

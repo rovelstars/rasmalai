@@ -26,11 +26,11 @@ step, a cold `rnx build` dev profile lands in
 check` answers with no codegen at all. Release
 runs LLVM `-O3` over per-function sections, then links with section garbage
 collection into a stripped ~356 KB binary. Both modes are measured on the
-proving-ground chart, as `rnx run` and `rnx build sim.rnx --release`:
+proving-ground chart, as `rnx run` and `rnx build sim.rnx`:
 
 ```sh
-rnx run sim.rnx          # Cranelift JIT dev loop
-rnx build sim.rnx --release  # LLVM -O3 AOT binary
+rnx run sim.rnx      # Cranelift JIT, no artifact
+rnx build sim.rnx    # LLVM -O3 AOT binary
 ```
 
 ## SIMD: lanes, not intrinsics

@@ -140,17 +140,18 @@ fn test_lint_fix_renames_unused() {
 }
 
 #[test]
-fn test_run_and_test_default_to_cranelift_backend() {
+fn test_session_commands_hide_engine_selection() {
     let dir = crate::scratch::dir("clap-defaults");
-    let (_, stdout, stderr) = run(&["run", "--help"], &dir);
-    let text = stdout + &stderr;
-    assert!(text.contains("default: cranelift"), "{text}");
-    let (_, stdout, stderr) = run(&["test", "--help"], &dir);
-    let text = stdout + &stderr;
-    assert!(text.contains("default: cranelift"), "{text}");
+    for cmd in ["run", "test", "bench"] {
+        let (_, stdout, stderr) = run(&[cmd, "--help"], &dir);
+        let text = stdout + &stderr;
+        assert!(!text.contains("--backend"), "{cmd} leaks backend selection:\n{text}");
+        assert!(!text.contains("cranelift"), "{cmd} leaks an engine name:\n{text}");
+        assert!(!text.contains("llvm"), "{cmd} leaks an engine name:\n{text}");
+    }
     let (_, stdout, stderr) = run(&["bench", "--help"], &dir);
     let text = stdout + &stderr;
-    assert!(text.contains("default: llvm"), "{text}");
+    assert!(!text.contains("--release"), "bench leaks a profile flag:\n{text}");
 }
 
 #[test]

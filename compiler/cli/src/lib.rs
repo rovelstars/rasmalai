@@ -314,6 +314,9 @@ pub struct CompileConfig {
     pub jobs: usize,
     pub memory_cap: u64,
     pub expand_macros: bool,
+    /// Replace the entry with the generated benchmark harness, keeping only
+    /// bench blocks whose display name contains this filter. Empty means all.
+    pub bench_harness: Option<String>,
 }
 
 impl Default for CompileConfig {
@@ -326,6 +329,7 @@ impl Default for CompileConfig {
             jobs: default_jobs(),
             memory_cap: default_memory_cap(),
             expand_macros: false,
+            bench_harness: None,
         }
     }
 }
@@ -487,7 +491,14 @@ pub fn load_program_cfg(
     profiler.start("typecheck");
     let mut module = module;
     frontend::harness::strip_tests(&mut module);
-    frontend::harness::strip_benches(&mut module);
+    match cfg.bench_harness.as_deref() {
+        Some(filter) => {
+            let filter = (!filter.is_empty()).then_some(filter);
+            let benches = frontend::harness::collect_benches(&module, filter).map_err(|e| vec![e])?;
+            frontend::bench::generate_bench_harness(&mut module, &benches).map_err(|e| vec![e])?;
+        }
+        None => frontend::harness::strip_benches(&mut module),
+    }
     let dump = runtime::comptime::dump_dir_for(&base_dir, cfg.expand_macros);
     let exp_diags = crate::comptime::expand_all(&mut module, &base_dir, dump, Some(&mut profiler));
     let mut exp_errs: Vec<Diagnostic> = Vec::new();
@@ -2270,105 +2281,6 @@ pub fn load_test_program_cfg(
     if let Err(e) =
         frontend::harness::generate_test_harness(&mut module, filter, exact, &display_files)
     {
-        return Err(vec![e]);
-    }
-    let dump = runtime::comptime::dump_dir_for(&base_dir, cfg.expand_macros);
-    let exp_diags = crate::comptime::expand_all(&mut module, &base_dir, dump, Some(&mut profiler));
-    let mut exp_errs: Vec<Diagnostic> = Vec::new();
-    for d in exp_diags {
-        if !d.code.is_warning() {
-            exp_errs.push(d);
-        }
-    }
-    if !exp_errs.is_empty() {
-        return Err(exp_errs);
-    }
-    let mut errors = frontend::desugar::desugar(&mut module);
-    if errors.is_empty() {
-        let decl_files = frontend::modules::merged_decl_files(&graph);
-        let surface = config.cabi_path(pkg_root).filter(|p| p.is_file());
-        for d in frontend::semantic::check_with_files_and_surface(&module, &decl_files, surface.as_deref()) {
-            if !d.code.is_warning() {
-                errors.push(d);
-            }
-        }
-        errors.extend(frontend::security::verify_runtime_imports(&graph));
-    }
-    profiler.stop();
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    profiler.start("lower");
-    let lowered = match lir::lower::lower_parallel(&module, cfg.jobs) {
-        Ok(l) => l,
-        Err(e) => return Err(vec![e]),
-    };
-    profiler.stop();
-    profiler.start("opt_pipeline");
-    let mut lowered = lowered;
-    let opt_timings = lir::opt::optimize_lir_parallel(&mut lowered, opt_level, "Main", cfg.jobs);
-    record_opt_subs(&mut profiler, &opt_timings);
-    profiler.stop();
-    profiler.start("verify");
-    errors.extend(lir::verify::verify_parallel(&lowered, cfg.jobs));
-    profiler.stop();
-    if errors.is_empty() {
-        errors.extend(graph.isolation_errors());
-    }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    Ok((lowered, profiler))
-}
-
-pub fn load_bench_program_opt(
-    pkg_root: &std::path::Path,
-    filter: Option<&str>,
-    opt_level: u8,
-) -> Result<lir::instr::Module, Vec<Diagnostic>> {
-    Ok(load_bench_program_cfg(pkg_root, filter, opt_level, &CompileConfig::default())?.0)
-}
-
-pub fn load_bench_program_cfg(
-    pkg_root: &std::path::Path,
-    filter: Option<&str>,
-    opt_level: u8,
-    cfg: &CompileConfig,
-) -> Result<(lir::instr::Module, frontend::profiler::PassProfiler), Vec<Diagnostic>> {
-    let mut profiler = cfg.profiler();
-    profiler.start("lex_parse");
-    let config = frontend::project::ProjectConfig::load_from_dir(pkg_root)
-        .map_err(|e| vec![e])?
-        .ok_or_else(|| {
-            vec![Diagnostic::new(
-                Code::E108,
-                format!("{}: missing [project] section", pkg_root.display()),
-            )]
-        })?;
-    let entry = config.main_path(pkg_root);
-    let extra = discover_test_files(pkg_root).map_err(|e| vec![e])?;
-    let graph = frontend::modules::ModuleGraph::build_collecting_extra_parallel(&entry, &extra, cfg.jobs)?;
-    let module = match graph.resolve() {
-        Ok(m) => m,
-        Err(e) => return Err(vec![e]),
-    };
-    profiler.stop();
-    let base_dir = runtime::comptime::base_dir_for(&graph.root);
-    let mut total_lines = 0;
-    for f in &graph.files {
-        if let Ok(src) = std::fs::read_to_string(&f.path) {
-            total_lines += src.lines().count();
-        }
-    }
-    profiler.set_lines(total_lines);
-    profiler.start("typecheck");
-    let mut module = module;
-    frontend::harness::strip_tests(&mut module);
-    let benches = match frontend::harness::collect_benches(&module, filter) {
-        Ok(b) => b,
-        Err(e) => return Err(vec![e]),
-    };
-    if let Err(e) = frontend::bench::generate_bench_harness(&mut module, &benches) {
         return Err(vec![e]);
     }
     let dump = runtime::comptime::dump_dir_for(&base_dir, cfg.expand_macros);

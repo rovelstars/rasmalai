@@ -29,8 +29,8 @@ println!(dbl(new Vec4f(1.0, 2.0, 3.0, 4.0)).get(2));
 `Vec4i.splat(3)`), with wrapping integer arithmetic.
 
 > [!NOTE]
-> Everything in this chapter behaves identically on the Cranelift (dev)
-> and LLVM (release) backends. If a result ever differs between the two,
+> Everything in this chapter behaves identically in the Cranelift JIT and
+> in an optimized LLVM artifact. If a result ever differs between the two,
 > that is a compiler bug: please report it.
 
 ## Lane arithmetic

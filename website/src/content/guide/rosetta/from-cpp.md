@@ -18,7 +18,7 @@ One binary replaces the toolchain sprawl. Build, test, format, lint, and docs sh
 ```
 
 ```sh
-rnx build --release
+rnx build
 rnx test
 rnx fmt
 ```

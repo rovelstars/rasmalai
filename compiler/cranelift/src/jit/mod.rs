@@ -12,9 +12,6 @@ pub(super) use std::sync::atomic::{AtomicU64, Ordering};
 
 mod compile;
 mod instr;
-mod object;
-
-pub use object::emit_object;
 
 use self::compile::{check_supported, lower_fn};
 
@@ -352,10 +349,6 @@ impl Jit {
 
     fn compile_inner(lir: &LirModule, hot: bool, spare: usize) -> Result<Jit, Diagnostic> {
         Ok(Self::compile_inner_timed(lir, hot, spare)?.0)
-    }
-
-    pub fn compile_with_timings(lir: &LirModule) -> Result<(Jit, CodegenTimings), Diagnostic> {
-        Self::compile_inner_timed(lir, false, 0)
     }
 
     pub fn compile_with_timings_jobs(lir: &LirModule, jobs: usize) -> Result<(Jit, CodegenTimings), Diagnostic> {

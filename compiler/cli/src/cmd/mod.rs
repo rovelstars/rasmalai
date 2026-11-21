@@ -625,13 +625,12 @@ pub(super) fn dispatch(
                 time_passes,
                 trace,
                 perf_map,
-                debug,
                 jobs,
                 memory_cap,
                 expand_macros,
                 args: rest,
             } => {
-                run_run(path, entry, package, context, locked, opt_level, backend, time_passes, trace, perf_map, debug, jobs, memory_cap, expand_macros, verbose, rest, prefer);
+                run_run(path, entry, package, context, locked, opt_level, backend, time_passes, trace, perf_map, jobs, memory_cap, expand_macros, verbose, rest, prefer);
             }
             cli::args::Command::Explain { code } => {
                 run_explain(code);
@@ -651,7 +650,6 @@ pub(super) fn dispatch(
                 opt_level,
                 time_passes,
                 trace,
-                perf_map,
                 debug,
                 jobs,
                 memory_cap,
@@ -663,8 +661,13 @@ pub(super) fn dispatch(
                 fix_force,
                 fix_keep_backup,
                 expand_macros,
+                bench_harness,
             } => {
-                run_build(path, entry, release, lib, lib_prefix, emit_obj, target_triple, locked, opt_level, time_passes, trace, perf_map, debug, jobs, memory_cap, package, context, deny_perf_lints, show_perf_notes, fix, fix_force, fix_keep_backup, expand_macros, verbose, quiet, prefer);
+                if release && debug {
+                    eprintln!("error: `--debug` and `--release` select opposite builds; `--release` is the default, so drop it");
+                    std::process::exit(2);
+                }
+                run_build(path, entry, !debug, lib, lib_prefix, emit_obj, target_triple, locked, opt_level, time_passes, trace, debug, jobs, memory_cap, package, context, deny_perf_lints, show_perf_notes, fix, fix_force, fix_keep_backup, expand_macros, bench_harness, verbose, quiet, prefer);
             }
             cli::args::Command::Init { name } => {
                 run_init(name);
@@ -750,19 +753,13 @@ pub(super) fn dispatch(
             cli::args::Command::Add { package, path, accept_caps, accept_all_caps } => {
                 run_add(package, path, accept_caps, accept_all_caps);
             }
-            cli::args::Command::Bench {                package,
+            cli::args::Command::Bench {
+                package,
                 filter,
-                backend,
-                release: _,
-                no_release,
-                time_passes,
-                trace,
-                perf_map,
-                debug,
                 jobs,
                 memory_cap,
             } => {
-                run_bench(package, filter, backend, no_release, time_passes, trace, perf_map, debug, jobs, memory_cap, verbose);
+                run_bench(package, filter, jobs, memory_cap, verbose);
             }
             cli::args::Command::Test {
                 filter,

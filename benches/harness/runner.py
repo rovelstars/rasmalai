@@ -110,8 +110,8 @@ MODES = {
 # Exact build step per (language, mode), recorded on every result row. For
 # C the per-bench float flags are appended at build time.
 BUILD = {
-    ("rnx", "dev"): "rnx build (LLVM AOT dev: unoptimized object + linked runnable binary)",
-    ("rnx", "rel"): "rnx build --release (LLVM AOT: program default<O3> host-cpu; runtime archive -O3 generic)",
+    ("rnx", "dev"): "rnx build --debug (LLVM AOT: unoptimized object, debug info, dynamic runtime)",
+    ("rnx", "rel"): "rnx build (LLVM AOT: program default<O3> host-cpu, static runtime archive)",
     ("c", "dev"): "clang -O0",
     ("c", "rel"): "clang -O3 -march=native",
     ("rust", "dev"): "rustc (unoptimized, no LTO)",
@@ -286,7 +286,7 @@ def build_argv(tc, lang, mode, bench, src_path, workdir):
     if lang == "node":
         return ["node", "--check", src_path], False
     if lang == "rnx":
-        flags = ["--release"] if mode == "rel" else []
+        flags = [] if mode == "rel" else ["--debug"]
         return [tc.rnx, "build"] + flags + [src_path], True
     if lang == "c":
         # Strict IEEE-754 everywhere: -ffp-contract=off on every float

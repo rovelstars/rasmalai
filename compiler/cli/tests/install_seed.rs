@@ -530,8 +530,8 @@ fn seeded_cache_builds_offline_against_dead_registry() {
     assert!(out.status.success(), "seeded cache checks with no network\n{}", combined(&out));
     let out = run(&root, &cache, dead, &["build", "src/main.rnx"]);
     assert!(out.status.success(), "seeded cache builds with no network\n{}", combined(&out));
-    let exe = root.join(".rnx-cache").join("build").join("dev").join("probe");
-    assert!(exe.is_file(), "build writes .rnx-cache/build/dev/probe");
+    let exe = root.join(".rnx-cache").join("build").join("release").join("probe");
+    assert!(exe.is_file(), "build writes .rnx-cache/build/release/probe");
     let status = std::process::Command::new(&exe).status().unwrap();
     assert_eq!(status.code(), Some(2), "probe binary runs and returns the clock reading");
 }

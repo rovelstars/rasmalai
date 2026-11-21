@@ -46,26 +46,18 @@ fn grand_tour_interpreter_and_native_binary() {
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
     let bin = String::from_utf8_lossy(&build.stdout).lines().rev().find_map(|l| l.strip_prefix("artifact: ")).map(|s| s.trim().trim_end_matches(" (fresh)").to_string()).expect("build prints artifact path");
-    // The shared runtime is the dev fast path. A release compiler links
-    // the archive statically, and a fresh CI build may not have the shared
-    // runtime next to the compiler at all, so assert the dynamic link only
-    // for a debug compiler when the shared runtime is present.
-    let shared = std::path::Path::new(rnx)
-        .parent()
-        .map(|d| d.join("libruntime_native.so").is_file())
-        .unwrap_or(false);
-    if shared && cfg!(debug_assertions) {
-        let deps = std::process::Command::new("readelf")
-            .arg("-d")
-            .arg(&bin)
-            .output()
-            .expect("readelf");
-        let text = String::from_utf8_lossy(&deps.stdout);
-        assert!(
-            text.contains("libruntime_native.so"),
-            "dev binary does not depend on the shared runtime: {text}"
-        );
-    }
+    // A default build links the runtime archive statically, so the
+    // artifact must not depend on a shared runtime beside the compiler.
+    let deps = std::process::Command::new("readelf")
+        .arg("-d")
+        .arg(&bin)
+        .output()
+        .expect("readelf");
+    let text = String::from_utf8_lossy(&deps.stdout);
+    assert!(
+        !text.contains("libruntime_native.so"),
+        "default build must link the runtime statically: {text}"
+    );
     let run = std::process::Command::new(&bin).current_dir(&dir).output().unwrap();
     assert_eq!(run.status.code().unwrap(), 42);
     assert_eq!(String::from_utf8(run.stdout).unwrap(), EXPECTED);

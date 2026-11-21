@@ -56,16 +56,15 @@ fn test_bench_filter() {
 }
 
 #[test]
-fn test_bench_cross_backend() {
-    let dir = write_project("backends", "b1", SUM_SRC);
-    for backend in ["interpreter", "cranelift", "llvm"] {
-        let out = run_bench(&dir, &["--backend", backend]);
-        assert!(out.status.success(), "{backend}: {}", String::from_utf8_lossy(&out.stderr));
-        let stdout = String::from_utf8(out.stdout).unwrap();
-        let line = line_with(&stdout, "sum_1000")
-            .expect(format!("{backend} no line:\n{stdout}").as_str());
-        assert!(line.contains("ns/iter"), "{backend} bad line: {line}");
-    }
+fn test_bench_runs_in_an_optimized_artifact() {
+    let dir = write_project("artifact", "b1", SUM_SRC);
+    let out = run_bench(&dir, &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let line = line_with(&stdout, "sum_1000").expect(format!("no line:\n{stdout}").as_str());
+    assert!(line.contains("ns/iter"), "bad line: {line}");
+    let artifact = dir.join(".rnx-cache").join("build").join("bench").join("b1");
+    assert!(artifact.is_file(), "bench must leave an artifact at {}", artifact.display());
 }
 
 #[test]

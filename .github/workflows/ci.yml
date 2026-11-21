@@ -132,7 +132,7 @@ jobs:
           RNX_REGISTRY="http://127.0.0.1:9" cargo run -q -p cli --release -- build "${{ runner.temp }}/offline-probe/src/main.rnx" 2>"${{ runner.temp }}/probe-stderr.txt"
           grep -q "using local source" "${{ runner.temp }}/probe-stderr.txt" || { echo "probe build printed no local-source warning"; cat "${{ runner.temp }}/probe-stderr.txt"; exit 1; }
           set +e
-          "${{ runner.temp }}/offline-probe/.rnx-cache/build/dev/probe"
+          "${{ runner.temp }}/offline-probe/.rnx-cache/build/release/probe"
           code=$?
           set -e
           [ "$code" -eq 2 ] || { echo "probe binary returned $code (want 2)"; exit 1; }

@@ -215,7 +215,7 @@ Programs start at the entry file's top-level statements, with no wrapper require
 println!("hello,", "world");
 ```
 
-`Process.exit(code)` terminates immediately with a code, flushing output already written to stdout first; `Process.args()` reads CLI arguments as `Array<String>`. Every element is a `String`, index 0 is the program path, and user arguments follow a `--` separator from index 1. `"5" + 1` concatenates to `"51"`: convert explicitly before doing arithmetic, since `Int()` on a `String` is an `E108` error. A parameterless `Main` ignores extra arguments on every backend; the JIT backends pass declared `Main` parameters as integers only. `rnx build --release` compiles through LLVM `-O3` and links a stripped native executable.
+`Process.exit(code)` terminates immediately with a code, flushing output already written to stdout first; `Process.args()` reads CLI arguments as `Array<String>`. Every element is a `String`, index 0 is the program path, and user arguments follow a `--` separator from index 1. `"5" + 1` concatenates to `"51"`: convert explicitly before doing arithmetic, since `Int()` on a `String` is an `E108` error. A parameterless `Main` ignores extra arguments; the JIT passes declared `Main` parameters as integers only. `rnx build` compiles through LLVM `-O3` and links a stripped native executable. `rnx build --debug` keeps the object unoptimized and emits DWARF line tables.
 
 ## Modules and imports
 
@@ -315,7 +315,7 @@ The surface is exactly the `export fn` declarations physically in that file: a
 surface with no `export fn`, a re-export, or a non-C-representable signature is
 `E108`. A manifest that names a missing file is also `E108`.
 
-A `test fn` takes no parameters and returns nothing. The runner discovers every one in `src/**/*.rnx` and `tests/**/*.rnx`, times each, and reports one line apiece. `assert` takes a `Bool` condition and a `String` message; on false it prints the message and marks that test failed without aborting it. `test fn` blocks are stripped from normal `run`/`build` pipelines. Tests run on the Cranelift JIT by default; pass `--backend interpreter` or `--backend llvm` to exercise the interpreter or AOT codegen. Filter by substring, pass `--exact` for full names. Output captures per test; `--nocapture` streams live.
+A `test fn` takes no parameters and returns nothing. The runner discovers every one in `src/**/*.rnx` and `tests/**/*.rnx`, times each, and reports one line apiece. `assert` takes a `Bool` condition and a `String` message; on false it prints the message and marks that test failed without aborting it. `test fn` blocks are stripped from normal `run`/`build` pipelines. Tests run in the Cranelift JIT. Filter by substring, pass `--exact` for full names. Output captures per test; `--nocapture` streams live.
 
 ```rnx
 test fn addsUp() {
@@ -328,7 +328,7 @@ test fn startsEmpty() {
 }
 ```
 
-`bench` blocks report timings instead of pass/fail; `blackBox` from `@std/testing` wraps values the optimizer must not fold away. `rnx bench` runs them (LLVM release by default, filterable, backend-selectable).
+`bench` blocks report timings instead of pass/fail; `blackBox` from `@std/testing` wraps values the optimizer must not fold away. `rnx bench` builds the package as an optimized artifact with the bench harness as the entry, then runs it, so the numbers describe the shipped code path rather than the JIT. Pass `--filter` to run a subset.
 
 ```rnx
 import { Vec4f } from "@std/simd";
@@ -367,10 +367,10 @@ println!(quote(2.0));
 | `rnx check` | rapid lexer/parser/module/typecheck, no codegen | `[paths...]`, `-p`, `--json` |
 | `rnx dev` | watch sources, hot-swap function bodies at frame boundaries; structural edits restart the session | `[path]`, `--entry F`, `--no-rerun`, `--mcp`, `--screenshot <path>` |
 | `rnx repl` | interactive JIT shell | none |
-| `rnx run` | execute program (Cranelift JIT by default) | `--entry F`, `--backend <interpreter\|cranelift\|llvm>`, `-p`, `--context <dir>`, `--locked`, `-O`, `-- <args>` |
-| `rnx build` | link native binary into `.rnx-cache/build/{dev,release}/<name>` | `--release`, `--lib`, `--emit-obj`, `--target`, `--entry F`, `-p`, `--context <dir>`, `--locked`, `-O`, `-g/--debug`, `--deny-perf-lints[=codes]`, `--show-perf-notes`, `--fix[--force]`, `--fix-keep-backup` |
-| `rnx test` | run `test fn` blocks (Cranelift JIT by default) | `[filter]`, `-p`, `--backend`, `-O`, `--exact` |
-| `rnx bench` | time `bench` blocks (LLVM release by default) | `--filter`, `-p`, `--backend`, `--release/--no-release` |
+| `rnx run` | compile in memory and run once (Cranelift JIT) | `--entry F`, `-p`, `--context <dir>`, `--locked`, `-- <args>` |
+| `rnx build` | write an optimized native binary to `.rnx-cache/build/release/<name>` | `--debug`, `--lib`, `--emit-obj`, `--target`, `--entry F`, `-p`, `--context <dir>`, `--locked`, `--deny-perf-lints[=codes]`, `--show-perf-notes`, `--fix[--force]`, `--fix-keep-backup` |
+| `rnx test` | run `test fn` blocks in the JIT | `[filter]`, `-p`, `--exact`, `--nocapture` |
+| `rnx bench` | build an optimized artifact and time `bench` blocks | `[filter]`, `-p` |
 | `rnx doc` | docs to `target/doc` (HTML or `--json`) | `-p`, `--open`, `--no-deps`, `--all`/`--private`, `--json`, `--stdlib`, `--out-dir` |
 | `rnx lint` | static checks over sources | `[paths...]`, `-p`, `--sarif`, `--json`, `--deny-warnings`, `--fix` |
 | `rnx fmt` | format `.rnx` sources | `[paths...]`, `--check`, `--diff` |
@@ -537,15 +537,15 @@ The pipeline replays `rnx task bindgen`, assembles one manifest per target plus 
 
 Every new failure here reports `E108` with the cause in the message; no new diagnostic codes were added.
 
-## Optimization levels, profiling, and linking
+## Sessions, artifacts, and linking
 
-`rnx run`, `rnx build`, and `rnx test` accept `-O/--opt-level <0|1>` (default 1). Level 1 folds integer constants, prunes constant branches and unreachable blocks, compacts jump trampolines, and removes dead side-effect-free assignments; level 0 leaves the LIR intact.
+Commands fall into two groups. Sessions (`rnx dev`, `rnx run`, `rnx test`, `rnx repl`) compile in memory with the Cranelift JIT and never write a binary. Artifacts (`rnx build`, `rnx bench`) compile through LLVM and write a file on disk. Both optimize by default. No command lists an engine or optimization switch in its help: pick the command for the job.
 
-Profiling and debug flags (`build`, `run`, `bench`): `--time-passes` prints a pass timing table to stderr, `--trace <path>` writes a Perfetto trace JSON file, and `--perf-map` writes `/tmp/perf-<pid>.map` for JIT backends. `build -g|--debug` emits DWARF line tables (`--release` strips them).
+`rnx build` emits an LLVM object for the host target, runs the standard LLVM `default<O3>` pipeline over per-function `.text.<name>` (and `.rodata.<name>`) sections, links it against the embedded native runtime archive with mold first, then LLD, then the system linker, and marks the output executable. `--debug` instead emits an unoptimized object with DWARF line tables and links the shared runtime. The program's `Main` return value becomes the process exit code. `--lib` and `--emit-obj` keep their usual meanings. Rebuilding identical sources with identical flags yields byte-identical binaries. Mach-O targets use `__TEXT,__text` and `__TEXT,__const` section names and the in-house linker described under macOS below.
 
-`rnx build` emits an LLVM object for the host target, links it against the embedded native runtime archive with mold first, then LLD, then the system linker, and marks the output executable. The program's `Main` return value becomes the process exit code. `--release` forces the LIR pipeline to level 1, runs the standard LLVM `default<O3>` pipeline over per-function `.text.<name>` (and `.rodata.<name>`) sections, and links with `-Wl,--gc-sections -s` to drop dead runtime code and the symbol table; rebuilding identical sources with identical flags yields byte-identical binaries. Mach-O targets use `__TEXT,__text` and `__TEXT,__const` section names and the in-house linker described under macOS below.
+Compiler-internal flags stay available for debugging the toolchain but are hidden from `--help`: `--opt-level <0|1>`, `--backend <interpreter|cranelift|llvm>`, `--time-passes`, `--trace <path>`, `--perf-map`, and `--expand-macros`.
 
-Exit code is `0` on success, `1` on compile errors, thrown errors, or fatals. An uncaught throw prints as `Uncaught exception: <value>` on stderr, followed by a `Stack trace:` listing when the stop site is known; `println!()` output goes to stdout on every backend (interpreter, Cranelift dev, LLVM release) through the shared `rnx_print_*` runtime symbols. `rnx run` prints only program output; the `Main` return value is not echoed. Performance warnings (`P201`, `P202`, `P203`) print to stderr after a successful build; performance notes (`P101`/`P102`) print only with `--show-perf-notes` (or `RNX_SHOW_PERF_NOTES=1`). `--deny-perf-lints` exits `1` when a denied warning is present without changing the built binary, and unknown codes exit `2`. `rnx build --fix` attempts the proven automatic rewrite for fixable `P201` ZeroInit cases (preview diff, `.bak` backup, re-parse plus rebuild plus output comparison, byte-for-byte rollback on any failure); anything else is refused with `no autofix available`.
+Exit code is `0` on success, `1` on compile errors, thrown errors, or fatals. An uncaught throw prints as `Uncaught exception: <value>` on stderr, followed by a `Stack trace:` listing when the stop site is known; `println!()` output goes to stdout on both the JIT and AOT paths through the shared `rnx_print_*` runtime symbols. `rnx run` prints only program output; the `Main` return value is not echoed. Performance warnings (`P201`, `P202`, `P203`) print to stderr after a successful build; performance notes (`P101`/`P102`) print only with `--show-perf-notes` (or `RNX_SHOW_PERF_NOTES=1`). `--deny-perf-lints` exits `1` when a denied warning is present without changing the built binary, and unknown codes exit `2`. `rnx build --fix` attempts the proven automatic rewrite for fixable `P201` ZeroInit cases (preview diff, `.bak` backup, re-parse plus rebuild plus output comparison, byte-for-byte rollback on any failure); anything else is refused with `no autofix available`.
 
 ## Editors and language servers
 
@@ -755,7 +755,7 @@ rnx sysroot build wasm32-unknown-wasi \
   --runtime compiler/runtime/wasi/target/wasm32-unknown-unknown/release/libruntime_native.a \
   --out /tmp/wasi-pack
 rnx sysroot add --local /tmp/wasi-pack wasm32-unknown-wasi
-rnx build --target wasm32-unknown-wasi --release
+rnx build --target wasm32-unknown-wasi
 ```
 
 Node 26 no longer runs a `.wasm` file as a WASI program, so both hosts go through the same ten-line preview 1 runner:
@@ -839,7 +839,7 @@ fn Main(): Int {
 }
 ```
 
-Built with `rnx build --target x86_64-unknown-uefi --release`, that program becomes a PE32+ image that boots under OVMF. See [Sysroots and target packs](#sysroots-and-target-packs) above for the pack, the runtime archive, and the qemu command.
+Built with `rnx build --target x86_64-unknown-uefi`, that program becomes a PE32+ image that boots under OVMF. See [Sysroots and target packs](#sysroots-and-target-packs) above for the pack, the runtime archive, and the qemu command.
 
 All sysroot lookups sort directory entries and hash bytes, never mtimes.
 

@@ -14,13 +14,14 @@ checksums across configurations and report wall time with peak RSS.
 ## One point per (language, mode)
 
 A row in `benchmarks.json` is a single configuration, not a single
-language. Languages whose toolchain has a real dev/release switch are
-measured twice, so `rnx dev` and `rnx release` can be read against each
-other directly on the chart:
+language. Languages whose toolchain has a real debug/release switch are measured
+twice, so the rnx debug artifact and release artifact can be read against
+each other directly on the chart. The rnx debug row is an unoptimized
+artifact, not the `rnx dev` hot-reload session:
 
 | language | dev | rel |
 | --- | --- | --- |
-| rnx | `rnx build` (LLVM AOT dev: unoptimized object + linked runnable binary) | `rnx build --release` (LLVM `-O3` AOT) |
+| rnx | `rnx build --debug` (LLVM AOT: unoptimized object, debug info) | `rnx build` (LLVM `-O3` AOT, static runtime) |
 | c | `clang -O0` | `clang -O3 -march=native` |
 | rust | `rustc` (unoptimized) | `rustc -C opt-level=3 -C codegen-units=1` |
 | dart | `dart compile kernel` (JIT snapshot) | `dart compile exe` (AOT native) |
@@ -70,7 +71,7 @@ python3 benches/harness/runner.py [--benches fib,matmul] [--langs rnx,c]
                                   [--runs 5] [--out benches/data/benchmarks.json]
 ```
 
-Per language: release build + run (`rnx build --release`, `clang -O3
+Per language: release build + run (`rnx build`, `clang -O3
 -march=native`, `rustc -C opt-level=3 -C codegen-units=1`, `go build`,
 `node`, `javac` + `java`, `dart compile exe`). C float benches
 (mandelbrot, nbody, spectral) add `-ffp-contract=off` so every language
@@ -86,7 +87,7 @@ evaluate strictly. One deliberate exception: the rnx mandelbrot
   backends agree on the FMA value bit-for-bit, all other languages
   agree on the strict value. Pixel coordinates stay strict `Float` in
   the rnx source so only the loop rounding differs. `build_ms` is benchmark source to runnable
-artifact (`rnx build` dev profile: unoptimized LLVM object plus link, `-O0` /
+artifact (`rnx build --debug`: unoptimized LLVM object with debug info, `-O0` /
 unoptimized compiles, `javac`); Dart's dev step is a JIT snapshot
 (`dart compile kernel`) rather than a dev binary, and Node has no compile
 step at all, so it runs the `node --check` parse check - each result row

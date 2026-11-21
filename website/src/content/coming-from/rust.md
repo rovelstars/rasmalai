@@ -167,11 +167,10 @@ try {
 
 ## Builds
 
-`cargo check` warms up; `rnx check` finishes. The dev loop runs
-unoptimized LLVM codegen: a cold dev build lands in 35-60 ms on the
-current baseline
-(`benches/data/benchmarks.json`, 2026-09-29, seven workloads), a hot-reload
-swap turns around in about 7 ms, and `rnx check` typechecks with no codegen
-at all. Release costs no extra build time and buys the optimized binary; the
-proving-ground chart plots both as `rnx dev` and `rnx release`. Keep your mental
+`cargo check` warms up; `rnx check` finishes. The edit loop runs the
+Cranelift JIT: `rnx run` compiles in memory and never writes a binary, a
+hot-reload swap turns around in about 7 ms, and `rnx check` typechecks with
+no codegen at all. `rnx build` writes the optimized LLVM artifact, and
+`rnx build --debug` writes an unoptimized one with symbols when you need a
+debugger. The proving-ground chart plots both artifacts. Keep your mental
 model of ownership. Lose the wait.

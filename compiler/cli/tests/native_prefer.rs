@@ -136,7 +136,7 @@ fn run_bin(bin: &str) -> String {
 #[test]
 fn bundled_blob_links_statically_by_default() {
     let fx = fixture("default", true);
-    let out = build(&fx.main, &[]);
+    let out = build(&fx.main, &["--debug"]);
     let bin = artifact_of(&out);
     assert_eq!(run_bin(&bin), "42\n");
     #[cfg(unix)]
@@ -157,7 +157,7 @@ fn bundled_blob_links_statically_by_default() {
 #[test]
 fn prefer_bundled_links_statically() {
     let fx = fixture("flag-bundled", true);
-    let out = build(&fx.main, &["--prefer-bundled"]);
+    let out = build(&fx.main, &["--prefer-bundled", "--debug"]);
     let bin = artifact_of(&out);
     assert_eq!(run_bin(&bin), "42\n");
     #[cfg(unix)]
