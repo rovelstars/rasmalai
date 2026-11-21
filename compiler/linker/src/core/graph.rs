@@ -936,12 +936,21 @@ pub fn icf_fold(g: &mut Graph, parsed: &[Object]) -> Result<(), LinkError> {
         pos.insert(*id, p);
     }
     let mut base: Vec<u64> = Vec::with_capacity(ids.len());
-    let mut sigs: Vec<Vec<(u64, u32, i64, u64, Option<(Option<usize>, u64)>)>> = Vec::with_capacity(ids.len());
+    let mut sigs: Vec<Vec<(u64, u32, i64, u64, Option<(bool, usize, u64, u64)>)>> = Vec::with_capacity(ids.len());
     for (_id, h, rl) in built {
         base.push(h);
         let mut v = Vec::with_capacity(rl.len());
         for (off, kind, add, tid, target) in rl {
-            let t = target.map(|(to, ts, tv)| (pos.get(&(to, ts)).copied(), tv));
+            let t = target.map(|(to, ts, tv)| {
+                // Only text folds by equivalence. Two zero-initialized statics
+                // have identical bytes but independent state, so folding their
+                // readers would alias one map onto another.
+                let text = g.objs[to].classes.get(ts as usize).copied() == Some(SecClass::Text);
+                match pos.get(&(to, ts)).copied() {
+                    Some(p) => (text, p, tv, 0),
+                    None => (false, 0, tv, ((to as u64) << 32) | ts as u64),
+                }
+            });
             v.push((off, kind, add, tid, t));
         }
         sigs.push(v);
@@ -955,8 +964,13 @@ pub fn icf_fold(g: &mut Graph, parsed: &[Object]) -> Result<(), LinkError> {
                 let mut sig: Vec<(u64, u32, i64, u64)> = Vec::with_capacity(sigs[p].len());
                 for (off, kind, add, tid, target) in sigs[p].iter() {
                     let tid = match target {
-                        Some((Some(tp), tv)) => keys[*tp] ^ tv.wrapping_mul(0x9e3779b97f4a7c15),
-                        Some((None, tv)) => tv.wrapping_mul(0x9e3779b97f4a7c15),
+                        Some((true, tp, tv, _)) => {
+                            keys[*tp] ^ tv.wrapping_mul(0x9e3779b97f4a7c15)
+                        }
+                        Some((false, tp, tv, ident)) => ident
+                            .wrapping_mul(0x9e3779b97f4a7c15)
+                            ^ tv.wrapping_mul(0x100000001b3)
+                            ^ (*tp as u64).wrapping_mul(0x100000001b3),
                         None => *tid,
                     };
                     sig.push((*off, *kind, *add, tid));
