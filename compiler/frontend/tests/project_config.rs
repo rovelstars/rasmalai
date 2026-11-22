@@ -2,7 +2,7 @@
 #[path = "../../testkit/scratch.rs"]
 mod scratch;
 
-use frontend::project::eval::{ConfigTarget, ConfigValue, eval_module};
+use frontend::config::eval::{ConfigTarget, ConfigValue, eval_module};
 use frontend::project::{self, DependencySpec};
 use frontend::parser::Parser;
 
@@ -464,4 +464,62 @@ fn capabilities_reject_an_unknown_name() {
             && issue.message.contains("telepathy")),
         "{issues:?}"
     );
+}
+
+#[test]
+fn config_reader_matches_the_sandboxed_subset() {
+    let src = "const base = { a: 1, b: true }\n\
+               const lib = target.os == \"windows\" ? \"zlibstatic\" : \"z\"\n\
+               export default {\n\
+                   native: switch (target.os) { case \"windows\": lib default: \"posix\" },\n\
+                   deps: { ...base, z: lib },\n\
+                   list: [1, 2, 3]\n\
+               }\n";
+    let value = frontend::config::parse_with(src, target("windows", "x86_64")).unwrap();
+    assert_eq!(value.get("native"), Some(&ConfigValue::String("zlibstatic".into())));
+    assert_eq!(
+        value.get("deps").and_then(|d| d.get("z")),
+        Some(&ConfigValue::String("zlibstatic".into()))
+    );
+    assert_eq!(
+        value.get("deps").and_then(|d| d.get("a")),
+        Some(&ConfigValue::Int(1))
+    );
+}
+
+#[test]
+fn config_reader_rejects_code_outside_the_subset() {
+    for src in [
+        "export default { x: f() }",
+        "import { Map } from \"@std/collections\";\nexport default {}",
+        "export default { x: 1.5 }",
+        "export default { x: \"a{b}\" }",
+        "let x = 1\nexport default {}",
+    ] {
+        assert!(
+            frontend::config::parse_with(src, linux()).is_err(),
+            "accepted forbidden document: {src}"
+        );
+    }
+}
+
+#[test]
+fn config_writer_matches_the_documented_canonical_form() {
+    let src = "export default { name: \"demo\", count: 2, flag: true, nested: { x: 1 }, list: [\"a\", \"b\"] }";
+    let value = frontend::config::parse_with(src, linux()).unwrap();
+    let want = "export default {\n    name: \"demo\",\n    count: 2,\n    flag: true,\n    nested: {\n        x: 1,\n    },\n    list: [\"a\", \"b\"],\n}\n";
+    assert_eq!(frontend::config::write(&value), want);
+}
+
+#[test]
+fn config_writer_round_trips_and_quotes_keywords() {
+    let src = "export default {\n    project: { name: \"demo\" },\n    list: [1, 2],\n    default: true\n}\n";
+    let value = frontend::config::parse_with(src, linux()).unwrap();
+    let text = frontend::config::write(&value);
+    assert!(text.starts_with("export default {\n"), "{text}");
+    assert!(text.contains("    project: {\n        name: \"demo\",\n    },"), "{text}");
+    assert!(text.contains("    list: [1, 2],"), "{text}");
+    assert!(text.contains("    \"default\": true,"), "{text}");
+    let again = frontend::config::parse_with(&text, linux()).unwrap();
+    assert_eq!(value, again);
 }

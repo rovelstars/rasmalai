@@ -1,0 +1,1296 @@
+//! Read and write the `.config` document format.
+//!
+//! A `.config` document is the sandboxed subset of rnx used by
+//! `Project.config` and `Project.deplock`: `const` bindings and exactly
+//! one `export default` that evaluates to an object. Values are strings,
+//! integers, booleans, objects, and arrays. The same expressions the
+//! toolchain allows are allowed here: ternaries, `switch`, `target.os`,
+//! `target.arch`, `target.env`, field access, and array or object spread.
+//!
+//! Parsing is data-only. Function calls, closures, imports, loops,
+//! bindings other than `const`, floats, interpolation, and every other
+//! language feature fail with an error that names the offset. Nothing in
+//! the document runs; the result is plain values.
+//!
+//! Objects are `ConfigObject` values over an insertion-ordered `Map`,
+//! arrays are `ConfigList`, and scalars stay `String`, `Int`, and `Bool`.
+//! `Config.stringify` renders a canonical document with four-space
+//! indentation, bare keys where the grammar allows them, and resolved
+//! values, so a parse-then-write round trip is stable. `Config.parse`
+//! stops the program on an invalid document; `Config.tryParse` returns a
+//! `Result` when the caller wants to recover.
+//!
+//! The module never touches the filesystem. Read the text with
+//! `@std/fs`, pass it to `Config.parse`, and write the result back the
+//! same way. That keeps configuration parsing usable in targets and
+//! sandboxes where file access is unavailable.
+//!
+//! ```rnx
+//! import { Config } from "@std/config";
+//!
+//! let doc = Config.parse("export default { app: { name: \"demo\", port: 8080 } }");
+//! let app = doc.object("app");
+//! println!(app?.text("name"), app?.number("port"));
+//! println!(Config.stringify(doc));
+//! ```
+import {
+    Map
+} from "@std/collections";
+import {
+    ByteBuffer
+} from "@std/bytes";
+import {
+    OS
+} from "@std/os";
+
+/**
+* One parsed `.config` object. Fields keep the order the document wrote
+* them in, and `set` on an existing key replaces the value without moving
+* the field.
+* @example
+* import { Config } from "@std/config";
+*
+* let doc = Config.parse("export default { name: \"demo\" }");
+* println!(doc.text("name"));
+*/
+export class ConfigObject {
+    let fields: Map<String, Any> = new Map<String, Any>();
+
+    /** Field count. */
+    fn len(): Int {
+        return this.fields.len();
+    }
+
+    /** Field names in document order. */
+    fn keys(): Array<String> {
+        return this.fields.keys();
+    }
+
+    /** Raw field value, or `null` when the field is absent. */
+    fn get(key: String): Any? {
+        return this.fields.get(key);
+    }
+
+    /** Whether the object holds `key`. */
+    fn has(key: String): Bool {
+        return this.fields.has(key);
+    }
+
+    /** Set a field, replacing an existing value in place. */
+    fn set(key: String, value: Any): Void {
+        this.fields.set(key, value);
+    }
+
+    /** Remove a field and report whether it existed. */
+    fn remove(key: String): Bool {
+        return this.fields.delete(key);
+    }
+
+    /** Nested object at `key`, or `null` when absent or another type. */
+    fn object(key: String): ConfigObject? {
+        return Config.asObject(this.fields.get(key));
+    }
+
+    /** Nested array at `key`, or `null` when absent or another type. */
+    fn list(key: String): ConfigList? {
+        return Config.asList(this.fields.get(key));
+    }
+
+    /** String at `key`, or `null` when absent or another type. */
+    fn text(key: String): String? {
+        return Config.asText(this.fields.get(key));
+    }
+
+    /** Integer at `key`, or `null` when absent or another type. */
+    fn number(key: String): Int? {
+        return Config.asNumber(this.fields.get(key));
+    }
+
+    /** Boolean at `key`, or `null` when absent or another type. */
+    fn flag(key: String): Bool? {
+        return Config.asFlag(this.fields.get(key));
+    }
+}
+
+/**
+* One parsed `.config` array. Items keep document order.
+* @example
+* import { Config } from "@std/config";
+*
+* let doc = Config.parse("export default { ports: [8080, 8081] }");
+* let ports = doc.list("ports");
+* println!(ports?.number(0));
+*/
+export class ConfigList {
+    let items: Array<Any> = [];
+
+    /** Item count. */
+    fn len(): Int {
+        return this.items.len();
+    }
+
+    /** Raw item at `index`, or `null` when out of range. */
+    fn get(index: Int): Any? {
+        if index < 0 || index >= this.items.len() {
+            return null;
+        }
+        return this.items[index];
+    }
+
+    /** Append an item. */
+    fn push(value: Any): Void {
+        this.items.push(value);
+    }
+
+    /** Object at `index`, or `null` when absent or another type. */
+    fn object(index: Int): ConfigObject? {
+        return Config.asObject(this.get(index));
+    }
+
+    /** Nested array at `index`, or `null` when absent or another type. */
+    fn list(index: Int): ConfigList? {
+        return Config.asList(this.get(index));
+    }
+
+    /** String at `index`, or `null` when absent or another type. */
+    fn text(index: Int): String? {
+        return Config.asText(this.get(index));
+    }
+
+    /** Integer at `index`, or `null` when absent or another type. */
+    fn number(index: Int): Int? {
+        return Config.asNumber(this.get(index));
+    }
+
+    /** Boolean at `index`, or `null` when absent or another type. */
+    fn flag(index: Int): Bool? {
+        return Config.asFlag(this.get(index));
+    }
+}
+
+/**
+* Parser and writer for the sandboxed `.config` format. All members are
+* static.
+*
+* `parse` evaluates `target` against the host OS, architecture, and ABI
+* environment. `parseWith` takes those three strings explicitly, which is
+* what reproducible tooling should do. `tryParse` and `tryParseWith`
+* return an error string instead of aborting the program.
+*
+* Parsing is pure: the module reads no files and executes no document
+* code. A document that uses a forbidden construct fails before any value
+* is returned.
+* @example
+* import { Config } from "@std/config";
+*
+* let text = "export default { project: { name: \"demo\" } }";
+* let doc = Config.parse(text);
+* println!(doc.object("project")?.text("name"));
+* println!(Config.stringify(doc));
+*/
+export class Config {
+    /**
+    * Parse a document against the host target. An invalid document stops
+    * the program with the parse error; use `tryParse` to recover instead.
+    */
+    static parse(text: String): ConfigObject {
+        try {
+            let parser = new ConfigParser(text, OS.platform(), OS.arch(), Config.hostEnv());
+            return parser.parseDocument();
+        } catch (e) {
+            throw e;
+        }
+    }
+
+    /**
+    * Parse a document against explicit `target` values. An invalid
+    * document stops the program with the parse error; use `tryParseWith`
+    * to recover instead.
+    */
+    static parseWith(text: String, os: String, arch: String, env: String): ConfigObject {
+        try {
+            let parser = new ConfigParser(text, os, arch, env);
+            return parser.parseDocument();
+        } catch (e) {
+            throw e;
+        }
+    }
+
+    /**
+    * Parse a document against the host target.
+    * @returns `Ok` with the root object, or `Err` with a message that
+    * names the line and column.
+    */
+    static tryParse(text: String): Result<ConfigObject, String> {
+        return Config.tryParseWith(text, OS.platform(), OS.arch(), Config.hostEnv());
+    }
+
+    /**
+    * Parse a document against explicit `target` values.
+    * @returns `Ok` with the root object, or `Err` with a message that
+    * names the line and column.
+    */
+    static tryParseWith(text: String, os: String, arch: String, env: String): Result<ConfigObject, String> {
+        try {
+            let parser = new ConfigParser(text, os, arch, env);
+            return Result.Ok<ConfigObject, String>(parser.parseDocument());
+        } catch (e) {
+            return Result.Err<ConfigObject, String>(e as String);
+        }
+    }
+
+    /**
+    * Render a canonical `export default` document with four-space
+    * indentation and resolved values.
+    */
+    static stringify(root: ConfigObject): String {
+        return "export default " + Config.render(root, 0) + "\n";
+    }
+
+    /** Narrow a value to `ConfigObject`. */
+    static asObject(value: Any?): ConfigObject? {
+        if value == null {
+            return null;
+        }
+        let v: Any = value;
+        if typeOf(v) == "ConfigObject" {
+            return v as ConfigObject;
+        }
+        return null;
+    }
+
+    /** Narrow a value to `ConfigList`. */
+    static asList(value: Any?): ConfigList? {
+        if value == null {
+            return null;
+        }
+        let v: Any = value;
+        if typeOf(v) == "ConfigList" {
+            return v as ConfigList;
+        }
+        return null;
+    }
+
+    /** Narrow a value to `String`. */
+    static asText(value: Any?): String? {
+        if value == null {
+            return null;
+        }
+        let v: Any = value;
+        if typeOf(v) == "String" {
+            return v as String;
+        }
+        return null;
+    }
+
+    /** Narrow a value to `Int`. */
+    static asNumber(value: Any?): Int? {
+        if value == null {
+            return null;
+        }
+        let v: Any = value;
+        if typeOf(v) == "Int" {
+            return v as Int;
+        }
+        return null;
+    }
+
+    /** Narrow a value to `Bool`. */
+    static asFlag(value: Any?): Bool? {
+        if value == null {
+            return null;
+        }
+        let v: Any = value;
+        if typeOf(v) == "Bool" {
+            return v as Bool;
+        }
+        return null;
+    }
+
+    /** Structural equality over parsed values. */
+    static equal(a: Any, b: Any): Bool {
+        let ka = typeOf(a);
+        let kb = typeOf(b);
+        if ka != kb {
+            return false;
+        }
+        if ka == "String" {
+            return (a as String) == (b as String);
+        }
+        if ka == "Int" {
+            return (a as Int) == (b as Int);
+        }
+        if ka == "Bool" {
+            return (a as Bool) == (b as Bool);
+        }
+        if ka == "ConfigList" {
+            let la = a as ConfigList;
+            let lb = b as ConfigList;
+            if la.len() != lb.len() {
+                return false;
+            }
+            let i = 0;
+            while i < la.len() {
+                let av = la.get(i);
+                let bv = lb.get(i);
+                if av == null || bv == null {
+                    if av != bv {
+                        return false;
+                    }
+                } else if !Config.equal(av, bv) {
+                    return false;
+                }
+                i = i + 1;
+            }
+            return true;
+        }
+        if ka == "ConfigObject" {
+            let oa = a as ConfigObject;
+            let ob = b as ConfigObject;
+            if oa.len() != ob.len() {
+                return false;
+            }
+            for key in oa.keys() {
+                if !ob.has(key) {
+                    return false;
+                }
+                let av = oa.get(key);
+                let bv = ob.get(key);
+                if av == null || bv == null {
+                    if av != bv {
+                        return false;
+                    }
+                } else if !Config.equal(av, bv) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static fn hostEnv(): String {
+        let platform = OS.platform();
+        if platform == "windows" {
+            return "msvc";
+        }
+        if platform == "linux" {
+            return "gnu";
+        }
+        return "";
+    }
+
+    private static fn render(value: Any, indent: Int): String {
+        let kind = typeOf(value);
+        if kind == "String" {
+            return Config.renderText(value as String);
+        }
+        if kind == "Int" {
+            return (value as Int).toString();
+        }
+        if kind == "Bool" {
+            return (value as Bool) ? "true" : "false";
+        }
+        if kind == "ConfigObject" {
+            return Config.renderObject(value as ConfigObject, indent);
+        }
+        if kind == "ConfigList" {
+            return Config.renderList(value as ConfigList, indent);
+        }
+        return "";
+    }
+
+    private static fn renderObject(obj: ConfigObject, indent: Int): String {
+        let keys = obj.keys();
+        if keys.len() == 0 {
+            return "{}";
+        }
+        let out = "\{\n";
+        for key in keys {
+            let value = obj.get(key);
+            if value != null {
+                out = out + Config.spaces(indent + 4) + Config.renderKey(key) + ": " + Config.render(value, indent + 4) + ",\n";
+            }
+        }
+        return out + Config.spaces(indent) + "}";
+    }
+
+    private static fn renderList(list: ConfigList, indent: Int): String {
+        if list.len() == 0 {
+            return "[]";
+        }
+        let flat = true;
+        let i = 0;
+        while i < list.len() {
+            let item = list.get(i);
+            if item != null {
+                let kind = typeOf(item);
+                if kind == "ConfigObject" || kind == "ConfigList" {
+                    flat = false;
+                }
+            }
+            i = i + 1;
+        }
+        if flat {
+            let inline = "[";
+            let j = 0;
+            while j < list.len() {
+                if j > 0 {
+                    inline = inline + ", ";
+                }
+                let item = list.get(j);
+                if item != null {
+                    inline = inline + Config.render(item, indent);
+                }
+                j = j + 1;
+            }
+            return inline + "]";
+        }
+        let out = "[\n";
+        let k = 0;
+        while k < list.len() {
+            let item = list.get(k);
+            if item != null {
+                out = out + Config.spaces(indent + 4) + Config.render(item, indent + 4) + ",\n";
+            }
+            k = k + 1;
+        }
+        return out + Config.spaces(indent) + "]";
+    }
+
+    private static fn renderKey(key: String): String {
+        if Config.bareKey(key) {
+            return key;
+        }
+        return Config.renderText(key);
+    }
+
+    private static fn renderText(text: String): String {
+        let out = "\"";
+        let i = 0;
+        while i < text.length() {
+            let cp = text.charCodeAt(i);
+            let ch = text.slice(i, i + 1);
+            if ch == "\"" {
+                out = out + "\\\"";
+            } else if ch == "\\" {
+                out = out + "\\\\";
+            } else if cp == 10 {
+                out = out + "\\n";
+            } else if cp == 9 {
+                out = out + "\\t";
+            } else if cp == 123 {
+                out = out + "\\\{";
+            } else if cp < 32 || cp == 127 {
+                out = out + "\\u\{" + Config.hex(cp) + "}";
+            } else {
+                out = out + ch;
+            }
+            i = i + 1;
+        }
+        return out + "\"";
+    }
+
+    private static fn bareKey(key: String): Bool {
+        if key.length() == 0 {
+            return false;
+        }
+        let first = key.charCodeAt(0);
+        let startOk = (first >= 65 && first <= 90) || (first >= 97 && first <= 122) || first == 95;
+        if !startOk {
+            return false;
+        }
+        let i = 1;
+        while i < key.length() {
+            let c = key.charCodeAt(i);
+            let part = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95;
+            if !part {
+                return false;
+            }
+            i = i + 1;
+        }
+        return !Config.keyword(key);
+    }
+
+    private static fn keyword(word: String): Bool {
+        if word == "true" || word == "false" || word == "null" || word == "this" || word == "super" {
+            return true;
+        }
+        if word == "class" || word == "struct" || word == "record" || word == "trait" || word == "interface" {
+            return true;
+        }
+        if word == "extension" || word == "enum" || word == "fn" || word == "init" || word == "new" {
+            return true;
+        }
+        if word == "deinit" || word == "onReload" || word == "extends" || word == "with" || word == "let" {
+            return true;
+        }
+        if word == "const" || word == "static" || word == "if" || word == "else" || word == "for" {
+            return true;
+        }
+        if word == "while" || word == "in" || word == "return" || word == "break" || word == "continue" {
+            return true;
+        }
+        if word == "try" || word == "catch" || word == "finally" || word == "throw" || word == "throws" {
+            return true;
+        }
+        if word == "defer" || word == "guard" || word == "switch" || word == "case" || word == "default" {
+            return true;
+        }
+        if word == "do" || word == "fallthrough" || word == "is" || word == "import" || word == "export" {
+            return true;
+        }
+        if word == "from" || word == "as" || word == "public" || word == "pub" || word == "private" {
+            return true;
+        }
+        if word == "unsafe" || word == "comptime" || word == "native" || word == "runtime" {
+            return true;
+        }
+        if word == "async" || word == "await" || word == "pass" {
+            return true;
+        }
+        return false;
+    }
+
+    static fn box(value: Any): Any {
+        return value;
+    }
+
+    private static fn spaces(count: Int): String {
+        let out = "";
+        let i = 0;
+        while i < count {
+            out = out + " ";
+            i = i + 1;
+        }
+        return out;
+    }
+
+    private static fn hex(value: Int): String {
+        if value == 0 {
+            return "0";
+        }
+        let digits = "0123456789abcdef";
+        let n = value;
+        let out = "";
+        while n > 0 {
+            let d = n % 16;
+            out = digits.slice(d, d + 1) + out;
+            n = n / 16;
+        }
+        return out;
+    }
+
+    static fn fromCodePoint(cp: Int): String throws {
+        if cp < 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) {
+            throw "invalid unicode scalar";
+        }
+        let bytes: Array<Int> = [];
+        if cp <= 0x7f {
+            bytes.push(cp);
+        } else if cp <= 0x7ff {
+            bytes.push(0xc0 | (cp >> 6));
+            bytes.push(0x80 | (cp & 0x3f));
+        } else if cp <= 0xffff {
+            bytes.push(0xe0 | (cp >> 12));
+            bytes.push(0x80 | ((cp >> 6) & 0x3f));
+            bytes.push(0x80 | (cp & 0x3f));
+        } else {
+            bytes.push(0xf0 | (cp >> 18));
+            bytes.push(0x80 | ((cp >> 12) & 0x3f));
+            bytes.push(0x80 | ((cp >> 6) & 0x3f));
+            bytes.push(0x80 | (cp & 0x3f));
+        }
+        let buf = ByteBuffer.fromArray(bytes);
+        return buf.readString(0, buf.length());
+    }
+}
+
+private class ConfigParser {
+    let src: String;
+    let pos: Int = 0;
+    let constants: Map<String, Any> = new Map<String, Any>();
+    let os: String;
+    let arch: String;
+    let env: String;
+
+    init(src: String, os: String, arch: String, env: String) {
+        this.src = src;
+        this.os = os;
+        this.arch = arch;
+        this.env = env;
+    }
+
+    fn parseDocument(): ConfigObject throws {
+        let root: Any = 0;
+        let has_root = false;
+        while true {
+            this.skip();
+            if this.eof() {
+                break;
+            }
+            if this.matchWord("const") {
+                this.skip();
+                let name = this.readIdent();
+                if name.length() == 0 {
+                    this.fail("expected a `const` name");
+                }
+                if this.constants.has(name) {
+                    this.fail("duplicate config constant `" + name + "`");
+                }
+                this.skip();
+                this.expect(61, "`=`");
+                let value = this.parseExpr();
+                this.constants.set(name, value);
+            } else if this.matchWord("export") {
+                if has_root {
+                    this.fail("duplicate `export default` in configuration file");
+                }
+                this.skip();
+                this.expectWord("default");
+                let value = this.parseExpr();
+                root = value;
+                has_root = true;
+            } else {
+                this.fail("expected `const` or `export default`");
+            }
+        }
+        if !has_root {
+            this.fail("configuration file needs `export default \{ ... }`");
+        }
+        if typeOf(root) != "ConfigObject" {
+            this.fail("configuration `export default` must be an object");
+        }
+        return root as ConfigObject;
+    }
+
+    private fn fail(message: String): Any throws {
+        throw this.location() + ": " + message;
+    }
+
+    private fn location(): String {
+        let line = 1;
+        let column = 1;
+        let i = 0;
+        while i < this.pos && i < this.src.length() {
+            if this.src.charCodeAt(i) == 10 {
+                line = line + 1;
+                column = 1;
+            } else {
+                column = column + 1;
+            }
+            i = i + 1;
+        }
+        return "config parse error at line " + line.toString() + ", column " + column.toString();
+    }
+
+    private fn eof(): Bool {
+        return this.pos >= this.src.length();
+    }
+
+    private fn code(): Int {
+        if this.eof() {
+            return -1;
+        }
+        return this.src.charCodeAt(this.pos);
+    }
+
+    private fn peek(offset: Int): Int {
+        let at = this.pos + offset;
+        if at < 0 || at >= this.src.length() {
+            return -1;
+        }
+        return this.src.charCodeAt(at);
+    }
+
+    private fn at(code: Int): Bool {
+        return this.code() == code;
+    }
+
+    private fn bump(): Void {
+        this.pos = this.pos + 1;
+    }
+
+    private fn eat(code: Int): Bool {
+        if this.at(code) {
+            this.bump();
+            return true;
+        }
+        return false;
+    }
+
+    private fn expect(code: Int, what: String): Bool throws {
+        if !this.eat(code) {
+            this.fail("expected " + what);
+        }
+        return true;
+    }
+
+    private fn skip(): Bool throws {
+        while !this.eof() {
+            let c = this.code();
+            if c == 32 || c == 9 || c == 10 || c == 13 {
+                this.bump();
+            } else if c == 47 && this.peek(1) == 47 {
+                while !this.eof() && this.code() != 10 {
+                    this.bump();
+                }
+            } else if c == 47 && this.peek(1) == 42 {
+                this.pos = this.pos + 2;
+                let closed = false;
+                while !this.eof() {
+                    if this.code() == 42 && this.peek(1) == 47 {
+                        this.pos = this.pos + 2;
+                        closed = true;
+                        break;
+                    }
+                    this.bump();
+                }
+                if !closed {
+                    this.fail("unterminated block comment");
+                }
+            } else {
+                return true;
+            }
+        }
+        return true;
+    }
+
+    private fn identStart(code: Int): Bool {
+        return (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code == 95;
+    }
+
+    private fn identPart(code: Int): Bool {
+        return this.identStart(code) || (code >= 48 && code <= 57);
+    }
+
+    private fn digit(code: Int): Bool {
+        return code >= 48 && code <= 57;
+    }
+
+    private fn readIdent(): String {
+        let start = this.pos;
+        while this.identPart(this.code()) {
+            this.bump();
+        }
+        return this.src.slice(start, this.pos);
+    }
+
+    private fn peekWord(word: String): Bool {
+        let end = this.pos + word.length();
+        if end > this.src.length() {
+            return false;
+        }
+        if this.src.slice(this.pos, end) != word {
+            return false;
+        }
+        if end < this.src.length() && this.identPart(this.src.charCodeAt(end)) {
+            return false;
+        }
+        return true;
+    }
+
+    private fn matchWord(word: String): Bool {
+        if this.peekWord(word) {
+            this.pos = this.pos + word.length();
+            return true;
+        }
+        return false;
+    }
+
+    private fn expectWord(word: String): Bool throws {
+        if !this.matchWord(word) {
+            this.fail("expected `" + word + "`");
+        }
+        return true;
+    }
+
+    private fn matchCode(a: Int, b: Int): Bool {
+        if this.code() == a && this.peek(1) == b {
+            this.pos = this.pos + 2;
+            return true;
+        }
+        return false;
+    }
+
+    private fn matchEllipsis(): Bool {
+        if this.code() == 46 && this.peek(1) == 46 && this.peek(2) == 46 {
+            this.pos = this.pos + 3;
+            return true;
+        }
+        return false;
+    }
+
+    private fn readString(): String throws {
+        this.expect(34, "`\"`");
+        let out = "";
+        while !this.eof() {
+            let c = this.code();
+            if c == 34 {
+                this.bump();
+                return out;
+            }
+            if c == 92 {
+                this.bump();
+                let e = this.code();
+                if e == 110 {
+                    out = out + "\n";
+                    this.bump();
+                } else if e == 116 {
+                    out = out + "\t";
+                    this.bump();
+                } else if e == 34 {
+                    out = out + "\"";
+                    this.bump();
+                } else if e == 92 {
+                    out = out + "\\";
+                    this.bump();
+                } else if e == 123 {
+                    out = out + "\{";
+                    this.bump();
+                } else if e == 117 {
+                    out = out + this.readUnicodeEscape();
+                } else {
+                    this.fail("bad escape in string");
+                }
+            } else if c == 123 {
+                this.fail("string interpolation is not permitted in configuration files");
+            } else if c == 36 && this.peek(1) == 123 {
+                this.fail("string interpolation is not permitted in configuration files");
+            } else {
+                out = out + this.src.slice(this.pos, this.pos + 1);
+                this.bump();
+            }
+        }
+        this.fail("unterminated string");
+        return out;
+    }
+
+    private fn readUnicodeEscape(): String throws {
+        this.bump();
+        this.expect(123, "`\{`");
+        let start = this.pos;
+        while this.hexDigit(this.code()) {
+            this.bump();
+        }
+        if this.pos == start || this.pos - start > 6 {
+            this.fail("bad unicode escape (expected `\\u\{1-6 hex digits}`)");
+        }
+        let text = this.src.slice(start, this.pos);
+        this.expect(125, "`}`");
+        let cp = this.hexValue(text);
+        return Config.fromCodePoint(cp);
+    }
+
+    private fn baseDigit(base: Int): Bool {
+        if base == 16 {
+            return this.hexDigit(this.code());
+        }
+        return this.digit(this.code());
+    }
+
+    private fn hexDigit(code: Int): Bool {
+        return this.digit(code) || (code >= 97 && code <= 102) || (code >= 65 && code <= 70);
+    }
+
+    private fn digitValue(c: Int): Int {
+        if c >= 48 && c <= 57 {
+            return c - 48;
+        }
+        if c >= 97 && c <= 102 {
+            return c - 87;
+        }
+        return c - 55;
+    }
+
+    private fn hexValue(text: String): Int {
+        let out = 0;
+        let i = 0;
+        while i < text.length() {
+            let c = text.charCodeAt(i);
+            let d = this.digitValue(c);
+            out = out * 16 + d;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    private fn readInt(): Int throws {
+        let base = 10;
+        if this.code() == 48 && (this.peek(1) == 120 || this.peek(1) == 88) {
+            base = 16;
+            this.pos = this.pos + 2;
+        } else if this.code() == 48 && (this.peek(1) == 98 || this.peek(1) == 66) {
+            base = 2;
+            this.pos = this.pos + 2;
+        }
+        let digits_start = this.pos;
+        while this.code() == 95 || this.baseDigit(base) {
+            this.bump();
+        }
+        if this.pos == digits_start {
+            this.fail("expected an integer");
+        }
+        if this.code() == 46 || this.code() == 101 || this.code() == 69 {
+            this.fail("float literals are not permitted in configuration files");
+        }
+        let text = this.src.slice(digits_start, this.pos);
+        let n = 0;
+        let i = 0;
+        while i < text.length() {
+            let c = text.charCodeAt(i);
+            if c == 95 {
+                i = i + 1;
+                continue;
+            }
+            let d = this.digitValue(c);
+            if d >= base {
+                this.fail("bad digit in integer literal");
+            }
+            n = n * base + d;
+            i = i + 1;
+        }
+        return n;
+    }
+
+    private fn parseExpr(): Any throws {
+        return this.parseTernary();
+    }
+
+    private fn parseTernary(): Any throws {
+        let cond = this.parseOr();
+        this.skip();
+        if this.eat(63) {
+            let yes = this.parseExpr();
+            this.skip();
+            this.expect(58, "`:`");
+            let no = this.parseExpr();
+            if typeOf(cond) != "Bool" {
+                this.fail("non-boolean conditions");
+            }
+            if cond as Bool {
+                return yes;
+            }
+            return no;
+        }
+        return cond;
+    }
+
+    private fn parseOr(): Any throws {
+        let left = this.parseAnd();
+        while true {
+            this.skip();
+            if !this.matchCode(124, 124) {
+                return left;
+            }
+            let right = this.parseAnd();
+            if typeOf(left) != "Bool" || typeOf(right) != "Bool" {
+                this.fail("non-boolean `||` operands");
+            }
+            left = (left as Bool) || (right as Bool);
+        }
+        return left;
+    }
+
+    private fn parseAnd(): Any throws {
+        let left = this.parseEquality();
+        while true {
+            this.skip();
+            if !this.matchCode(38, 38) {
+                return left;
+            }
+            let right = this.parseEquality();
+            if typeOf(left) != "Bool" || typeOf(right) != "Bool" {
+                this.fail("non-boolean `&&` operands");
+            }
+            left = (left as Bool) && (right as Bool);
+        }
+        return left;
+    }
+
+    private fn parseEquality(): Any throws {
+        let left = this.parseUnary();
+        while true {
+            this.skip();
+            if this.matchCode(61, 61) {
+                let right = this.parseUnary();
+                left = Config.equal(left, right);
+            } else if this.matchCode(33, 61) {
+                let right = this.parseUnary();
+                left = !Config.equal(left, right);
+            } else {
+                return left;
+            }
+        }
+        return left;
+    }
+
+    private fn parseUnary(): Any throws {
+        this.skip();
+        if this.eat(33) {
+            let value = this.parseUnary();
+            if typeOf(value) != "Bool" {
+                this.fail("non-boolean `!` operands");
+            }
+            return Config.box(!(value as Bool));
+        }
+        if this.eat(45) {
+            let value = this.parseUnary();
+            if typeOf(value) != "Int" {
+                this.fail("non-integer negation");
+            }
+            return Config.box(-(value as Int));
+        }
+        return this.parsePostfix();
+    }
+
+    private fn parsePostfix(): Any throws {
+        this.skip();
+        let saved = this.pos;
+        if this.matchWord("target") {
+            this.skip();
+            if this.eat(46) {
+                this.skip();
+                let field = this.readIdent();
+                if field == "os" {
+                    return this.os;
+                }
+                if field == "arch" {
+                    return this.arch;
+                }
+                if field == "env" {
+                    return this.env;
+                }
+                this.fail("unknown `target` property `" + field + "` (expected `os`, `arch`, or `env`)");
+            }
+            this.pos = saved;
+        }
+        let value = this.parsePrimary();
+        while true {
+            this.skip();
+            if !this.eat(46) {
+                return value;
+            }
+            this.skip();
+            let field = this.readIdent();
+            if field.length() == 0 {
+                this.fail("expected a field name after `.`");
+            }
+            if typeOf(value) != "ConfigObject" {
+                this.fail("member access on non-objects");
+            }
+            let obj = value as ConfigObject;
+            let next = obj.get(field);
+            if next == null {
+                this.fail("unknown field `" + field + "`");
+            }
+            value = next;
+        }
+        return value;
+    }
+
+    private fn parsePrimary(): Any throws {
+        this.skip();
+        let c = this.code();
+        if c == 34 {
+            return this.readString();
+        }
+        if c == 40 {
+            this.bump();
+            let value = this.parseExpr();
+            this.skip();
+            this.expect(41, "`)`");
+            return value;
+        }
+        if c == 91 {
+            return this.parseArray();
+        }
+        if c == 123 {
+            return this.parseObject();
+        }
+        if this.peekWord("switch") {
+            return this.parseSwitch();
+        }
+        if this.peekWord("true") {
+            this.matchWord("true");
+            return Config.box(true);
+        }
+        if this.peekWord("false") {
+            this.matchWord("false");
+            return Config.box(false);
+        }
+        if this.digit(c) {
+            return Config.box(this.readInt());
+        }
+        if this.identStart(c) {
+            let name = this.readIdent();
+            let value = this.constants.get(name);
+            if value == null {
+                this.fail("unknown config name `" + name + "`");
+            }
+            return value;
+        }
+        this.fail("expected a configuration value");
+        return Config.box(0);
+    }
+
+    private fn parseArray(): Any throws {
+        this.expect(91, "`[`");
+        let list = new ConfigList();
+        while true {
+            this.skip();
+            if this.eat(93) {
+                return Config.box(list);
+            }
+            if this.matchEllipsis() {
+                let value = this.parseExpr();
+                if typeOf(value) != "ConfigList" {
+                    this.fail("spreading non-arrays");
+                }
+                let items = value as ConfigList;
+                let i = 0;
+                while i < items.len() {
+                    let item = items.get(i);
+                    if item != null {
+                        list.push(item);
+                    }
+                    i = i + 1;
+                }
+            } else {
+                list.push(this.parseExpr());
+            }
+            this.skip();
+            if this.eat(44) {
+                continue;
+            }
+            this.skip();
+            this.expect(93, "`]`");
+            return Config.box(list);
+        }
+        return Config.box(list);
+    }
+
+    private fn parseObject(): Any throws {
+        this.expect(123, "`\{`");
+        let obj = new ConfigObject();
+        while true {
+            this.skip();
+            if this.eat(125) {
+                return Config.box(obj);
+            }
+            if this.matchEllipsis() {
+                let value = this.parseExpr();
+                if typeOf(value) != "ConfigObject" {
+                    this.fail("spreading non-objects");
+                }
+                let other = value as ConfigObject;
+                for key in other.keys() {
+                    let item = other.get(key);
+                    if item != null {
+                        obj.set(key, item);
+                    }
+                }
+            } else {
+                let key = "";
+                if this.at(34) {
+                    key = this.readString();
+                } else {
+                    let name = this.readIdent();
+                    if name.length() == 0 {
+                        this.fail("expected a field name");
+                    }
+                    key = name;
+                }
+                this.skip();
+                this.expect(58, "`:`");
+                let value = this.parseExpr();
+                obj.set(key, value);
+            }
+            this.skip();
+            if this.eat(44) {
+                continue;
+            }
+            this.skip();
+            this.expect(125, "`}`");
+            return Config.box(obj);
+        }
+        return Config.box(obj);
+    }
+
+    private fn parseSwitch(): Any throws {
+        this.expectWord("switch");
+        this.skip();
+        this.expect(40, "`(`");
+        let subject = this.parseExpr();
+        this.skip();
+        this.expect(41, "`)`");
+        this.skip();
+        this.expect(123, "`\{`");
+        let chosen: Any = 0;
+        let matched = false;
+        while true {
+            this.skip();
+            if this.eat(125) {
+                break;
+            }
+            if this.matchWord("case") {
+                this.skip();
+                let hit: Bool;
+                if this.matchWord("_") {
+                    hit = true;
+                } else {
+                    let pattern = this.parseLiteral();
+                    hit = Config.equal(subject, pattern);
+                }
+                this.skip();
+                this.expect(58, "`:`");
+                let arm = this.parseExpr();
+                if hit && !matched {
+                    chosen = arm;
+                    matched = true;
+                }
+            } else if this.matchWord("default") {
+                this.skip();
+                this.expect(58, "`:`");
+                let arm = this.parseExpr();
+                if !matched {
+                    chosen = arm;
+                    matched = true;
+                }
+            } else {
+                this.fail("expected `case` or `default`");
+            }
+        }
+        if !matched {
+            this.fail("no match arm matched the target");
+        }
+        return chosen;
+    }
+
+    private fn parseLiteral(): Any throws {
+        this.skip();
+        let c = this.code();
+        if c == 34 {
+            return this.readString();
+        }
+        if c == 45 {
+            this.bump();
+            this.skip();
+            if !this.digit(this.code()) {
+                this.fail("case patterns must be strings, integers, booleans, or `_`");
+            }
+            return Config.box(-this.readInt());
+        }
+        if this.digit(c) {
+            return Config.box(this.readInt());
+        }
+        if this.matchWord("true") {
+            return Config.box(true);
+        }
+        if this.matchWord("false") {
+            return Config.box(false);
+        }
+        this.fail("case patterns must be strings, integers, booleans, or `_`");
+        return Config.box(0);
+    }
+}

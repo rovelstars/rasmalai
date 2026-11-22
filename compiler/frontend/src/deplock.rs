@@ -1,7 +1,6 @@
 use crate::checksum::compute_package_checksum;
-use crate::project::{ProjectConfig};
-use crate::project::eval::{ConfigTarget, ConfigValue, eval_module};
-use crate::parser::Parser;
+use crate::config::{ConfigValue, parse};
+use crate::project::ProjectConfig;
 use diagnostics::{Code, Diagnostic};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -758,9 +757,7 @@ impl ProjectDepLock {
     }
 
     pub fn parse(text: &str) -> Result<ProjectDepLock, String> {
-        let module = Parser::parse_module(text).map_err(|e| e.message.clone())?;
-        let value =
-            eval_module(&module, ConfigTarget::host()).map_err(|e| e.message.clone())?;
+        let value = parse(text)?;
         let top = match &value {
             ConfigValue::Object(_) => &value,
             _ => return Err("lockfile `export default` must be an object".to_string()),

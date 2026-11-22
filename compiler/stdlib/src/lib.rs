@@ -4,6 +4,7 @@ pub const MODULES: &[&str] = &[
     "async",
     "simd",
     "collections",
+    "config",
     "math",
     "fs",
     "bytes",

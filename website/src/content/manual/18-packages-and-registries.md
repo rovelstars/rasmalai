@@ -473,6 +473,8 @@ Allowed: strings, integers, and booleans; records (and map literals) and arrays;
 
 Forbidden, each with its own `E108`: function calls, closures, and `fn` declarations; indexing and casts; float literals; string interpolation (plain strings are fine); `import`, re-export, and export-list statements; type declarations (`struct`, `class`, `enum`, and the rest); `let` bindings (use `const`); loops and any other statement; member access on non-objects; `target` properties outside `os`, `arch`, and `env`; spreading a non-array into an array or a non-object into a record; duplicate `const` names and duplicate `export default`. Arithmetic operators other than the comparisons above are rejected as arithmetic.
 
+Programs read and write this same subset at runtime with [`@std/config`](/docs/@std/config/overview). `Config.parse` evaluates the document against the host target, `Config.parseWith` takes `os`, `arch`, and `env` explicitly, and `Config.stringify` renders canonical text. The package takes and returns strings, so file access stays with the caller and the parser works in targets that have no filesystem.
+
 ## End to end: sqlite3 via rnx-bindgen
 
 `tools/rnx-bindgen` turns a C header into a Rasmalai package by dumping the clang AST as JSON, keeping whitelisted functions, transparent structs, and integer defines, and emitting `src/lib.rnx` plus `src/types.rnx`. The full command, flags exactly as the tool defines them:

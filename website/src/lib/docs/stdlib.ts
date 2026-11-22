@@ -121,6 +121,14 @@ let obj = JSON.parseObject("\{\"count\": 41}");
 println!(obj.get("count"));
 `;
 
+const QUICKSTART_CONFIG = `import { Config } from "@std/config";
+
+
+let doc = Config.parse("export default \\{ name: \\"demo\\", port: 8080 }");
+println!(doc.text("name"), doc.number("port"));
+println!(Config.stringify(doc));
+`;
+
 const QUICKSTART_NET = `import { TcpListener } from "@std/net";
 
 
@@ -162,6 +170,15 @@ export const STD_MODULES: StdModuleMeta[] = [
 		whenToUse:
 			'Reach for @std/async when a function returns a value later: an async fn returns a Promise, await settles it, and the combinators in this package run several promises together. The stock prelude re-exports the types, so desktop programs need no import.',
 		capabilities: ['Promise', 'PromiseWithResolvers', 'PromiseResult', 'all/allSettled/race combinators']
+	},
+	{
+		name: 'config',
+		tagline: 'Parse and write the sandboxed .config document format.',
+		primaryExport: 'Config',
+		whenToUse:
+			'Reach for @std/config when a program reads or writes Project.config-style data: parse with Config.parse or Config.parseWith, navigate the ConfigObject and ConfigList trees, then render canonical text with Config.stringify. The package takes and returns strings, so @std/fs stays a separate choice.',
+		capabilities: ['Config.parse/tryParse', 'target.os/arch/env evaluation', 'Canonical stringify', 'No filesystem dependency'],
+		quickstart: QUICKSTART_CONFIG
 	},
 	{
 		name: 'bytes',

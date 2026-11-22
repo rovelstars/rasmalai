@@ -171,9 +171,9 @@ fn mcp_prompts_teach_new_for_classes() {
 }
 
 const EXPECTED_MODULES: &[&str] = &[
-    "prelude", "foundation", "async", "simd", "math", "collections", "fs", "bytes", "time",
-    "random", "sync", "env", "process", "os", "testing", "web", "json", "net", "io", "log",
-    "uefi", "wasi", "ui", "app",
+    "prelude", "foundation", "async", "simd", "math", "collections", "config", "fs", "bytes",
+    "time", "random", "sync", "env", "process", "os", "testing", "web", "json", "net", "io",
+    "log", "uefi", "wasi", "ui", "app",
 ];
 
 #[test]
@@ -196,8 +196,8 @@ fn stdlib_module_list_matches_docs() {
         assert!(manual.contains(m), "manual/16 must list @std/{m}");
     }
     assert!(
-        manual.contains("Twenty-four modules"),
-        "manual/16 must count twenty-two"
+        manual.contains("Twenty-five modules"),
+        "manual/16 must count twenty-five"
     );
     let stdlib_ts =
         std::fs::read_to_string(crate_dir().join("../../website/src/lib/docs/stdlib.ts")).unwrap();

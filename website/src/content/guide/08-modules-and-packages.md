@@ -69,12 +69,13 @@ import { fn __rnx_clock_mono(): Int } from runtime "time";
 
 ## The standard library is seeded, not embedded
 
-`@std/` imports resolve from a global cache the installer seeds. Nothing to install by hand, versions pinned automatically. Twenty-one modules ship with the compiler:
+`@std/` imports resolve from a global cache the installer seeds. Nothing to install by hand, versions pinned automatically. Twenty-five modules ship with the compiler:
 
 | Module | What it holds |
 |---|---|
 | `@std/foundation` | Foundation types and Array/String extensions, with no io or log dependency |
 | `@std/collections` | Generic `Map<K, V>` and `Set<T>` |
+| `@std/config` | Parser and writer for the sandboxed `.config` document format |
 | `@std/async` | `Promise`, `PromiseWithResolvers`, `PromiseResult` |
 | `@std/sync` | `AtomicInt`, `Mutex`, `Channel`, `Barrier` |
 | `@std/fs` | `File` and `Path` with text and binary I/O, one-shot operations with `*Async` pool twins, and `mmap` |
@@ -93,6 +94,7 @@ import { fn __rnx_clock_mono(): Int } from runtime "time";
 | `@std/io` | Terminal streams with pretty-printing, line input, size queries, and raw mode |
 | `@std/log` | Leveled logging macros writing to stderr, filtered by `RNX_LOG` |
 | `@std/uefi` | Prelude and console output for `x86_64-unknown-uefi` firmware applications |
+| `@std/wasi` | Prelude and runtime surface for `wasm32-unknown-wasi` |
 | `@std/ui` | Declarative View values, layout, controls, text, themes, and accessibility |
 | `@std/app` | Native window, frame clock, input, routing, and the headless Driver |
 | `@std/prelude` | Foundation types (auto-imported) |
@@ -120,7 +122,7 @@ On a Linux box that prints something like `linux 16` followed by `0 true`. That 
 
 ## The project manifest
 
-`Project.config` is an `.rnx` module exporting a default object. It declares the package name, version, and entry file. Dependencies use SemVer ranges, local paths, or git pins:
+`Project.config` is an `.rnx` module exporting a default object. It declares the package name, version, and entry file. Dependencies use SemVer ranges, local paths, or git pins. The manifest language is the sandboxed subset described in [Packages and Registries](/manual/18-packages-and-registries); programs that read or write the same format at runtime use [`@std/config`](/docs/@std/config/overview):
 
 ```rnx
 export default {

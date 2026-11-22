@@ -10,6 +10,7 @@ pub mod cache;
 pub mod capabilities;
 pub mod checksum;
 pub mod check;
+pub mod config;
 pub mod depcache;
 pub mod deplock;
 pub mod fetch;

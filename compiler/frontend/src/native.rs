@@ -504,7 +504,7 @@ pub fn check_owner_version(dep: &str, owner_version: &str, constraint: &str) -> 
     ))
 }
 
-pub fn triple_target(triple: &str) -> Option<crate::project::eval::ConfigTarget> {
+pub fn triple_target(triple: &str) -> Option<crate::config::ConfigTarget> {
     let parts: Vec<&str> = triple.split('-').collect();
     if parts.len() < 3 || parts.len() > 4 {
         return None;
@@ -512,7 +512,7 @@ pub fn triple_target(triple: &str) -> Option<crate::project::eval::ConfigTarget>
     if parts.iter().any(|p| p.is_empty()) {
         return None;
     }
-    Some(crate::project::eval::ConfigTarget {
+    Some(crate::config::ConfigTarget {
         os: parts[2].to_string(),
         arch: parts[0].to_string(),
         env: parts.get(3).unwrap_or(&"").to_string(),

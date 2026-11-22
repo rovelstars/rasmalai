@@ -1,4 +1,3 @@
-pub mod eval;
 pub mod redact;
 
 use diagnostics::{Code, Diagnostic};
@@ -399,12 +398,11 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-use self::eval::{ConfigTarget, ConfigValue, eval_module};
+use crate::config::{ConfigTarget, ConfigValue, eval_module, parse_with};
 use crate::parser::Parser;
 
 fn eval_config_text_with(text: &str, target: ConfigTarget) -> Result<ConfigValue, String> {
-    let module = Parser::parse_module(text).map_err(|e| e.message.clone())?;
-    eval_module(&module, target).map_err(|e| e.message.clone())
+    parse_with(text, target)
 }
 
 fn obj_get<'a>(v: &'a ConfigValue, key: &str) -> Option<&'a ConfigValue> {
@@ -2852,7 +2850,7 @@ pub fn format_manifest_text(text: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::eval::{ConfigTarget, eval_module};
+    use crate::config::eval::{ConfigTarget, ConfigValue, eval_module};
 
     fn target() -> ConfigTarget {
         ConfigTarget {
@@ -3463,7 +3461,7 @@ mod tests {
         .unwrap()
         .0
         .unwrap();
-        assert_eq!(v.get("project").and_then(|p| p.get("name")), Some(&eval::ConfigValue::String("demo".to_string())));
+        assert_eq!(v.get("project").and_then(|p| p.get("name")), Some(&ConfigValue::String("demo".to_string())));
         assert_eq!(
             c.dependencies["json"],
             DependencySpec::Semver { version: "1.2.0".to_string(), link: crate::license::LinkPreference::Auto }
