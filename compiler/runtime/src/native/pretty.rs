@@ -42,10 +42,6 @@ static ENUM_SCHEMA: std::sync::LazyLock<
     std::sync::Mutex<std::collections::BTreeMap<(u64, u64), (String, Vec<String>)>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
 
-static ENUM_INST: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::BTreeMap<usize, (u64, u64)>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
-
 static NAMESPACES: std::sync::LazyLock<
     std::sync::Mutex<std::collections::BTreeMap<u64, (String, Vec<(String, String)>)>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
@@ -86,19 +82,26 @@ pub unsafe extern "C" fn rnx_note_fields(idx: u64, desc: *const u8) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rnx_note_enum(ptr: *mut u8, enu: u64, variant: u64, desc: *const u8) {
+pub unsafe extern "C" fn rnx_note_enum(_ptr: *mut u8, enu: u64, variant: u64, desc: *const u8) {
     if desc.is_null() {
         return;
+    }
+    let key = (enu, variant);
+    {
+        let schema = ENUM_SCHEMA.lock().unwrap_or_else(|e| e.into_inner());
+        if schema.contains_key(&key) {
+            return;
+        }
     }
     let text = native_str(desc);
     let (name, kinds) = match text.split_once(':') {
         Some((n, rest)) => (n.trim().to_string(), rest.split(',').map(|s| s.trim().to_string()).collect()),
         None => (text.trim().to_string(), Vec::new()),
     };
-    ENUM_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()).insert((enu, variant), (name, kinds));
-    if !ptr.is_null() {
-        ENUM_INST.lock().unwrap_or_else(|e| e.into_inner()).insert(ptr as usize, (enu, variant));
-    }
+    ENUM_SCHEMA
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, (name, kinds));
 }
 
 #[unsafe(no_mangle)]
@@ -175,7 +178,6 @@ fn unescape(s: &str) -> String {
 
 pub(crate) fn pretty_untrack(ptr: usize) {
     ARRAY_KIND.lock().unwrap_or_else(|e| e.into_inner()).remove(&ptr);
-    ENUM_INST.lock().unwrap_or_else(|e| e.into_inner()).remove(&ptr);
 }
 
 fn array_kind_of(ptr: usize) -> Option<(u64, u64)> {
@@ -191,7 +193,11 @@ fn enum_schema_of(enu: u64, variant: u64) -> Option<(String, Vec<String>)> {
 }
 
 fn enum_inst_of(ptr: usize) -> Option<(u64, u64)> {
-    ENUM_INST.lock().unwrap_or_else(|e| e.into_inner()).get(&ptr).copied()
+    let word = read_word(ptr as *const u8, 8);
+    if word & (1u64 << 63) == 0 {
+        return None;
+    }
+    Some((word & !(1u64 << 63), read_word(ptr as *const u8, 16)))
 }
 
 fn namespace_of(idx: u64) -> Option<(String, Vec<(String, String)>)> {

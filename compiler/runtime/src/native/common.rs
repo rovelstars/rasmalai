@@ -83,6 +83,10 @@ pub const TAG_PTR: u32 = 4;
 
 pub(crate) const HEADER_LEN: usize = 16;
 pub(crate) const MIN_ALIGN: usize = 8;
+// High bit of the stored align word. `rnx_heap_track` sets it so `rnx_free`
+// can skip the tracking registries for allocations that were never tracked
+// (strings, array backing stores, Any boxes).
+pub(crate) const TRACKED_BIT: u64 = 1 << 63;
 
 pub(crate) fn body_layout(size: usize, align: usize) -> Option<Layout> {
     Layout::from_size_align(size.wrapping_add(HEADER_LEN), align.max(MIN_ALIGN)).ok()
@@ -109,8 +113,24 @@ pub unsafe extern "C" fn rnx_alloc(size: usize, align: usize) -> *mut u8 {
         }
         (base as *mut u64).write_unaligned(size as u64);
         (base.add(8) as *mut u64).write_unaligned(layout.align() as u64);
-        LIVE_ALLOCS.fetch_add(1, Ordering::SeqCst);
+        LIVE_ALLOCS.fetch_add(1, Ordering::Relaxed);
         base.add(HEADER_LEN)
+    }
+}
+
+pub(crate) unsafe fn mark_tracked(ptr: *mut u8) {
+    unsafe {
+        let at = ptr.sub(HEADER_LEN).add(8) as *mut u64;
+        let word = at.read_unaligned();
+        at.write_unaligned(word | TRACKED_BIT);
+    }
+}
+
+pub(crate) unsafe fn clear_tracked(ptr: *mut u8) {
+    unsafe {
+        let at = ptr.sub(HEADER_LEN).add(8) as *mut u64;
+        let word = at.read_unaligned();
+        at.write_unaligned(word & !TRACKED_BIT);
     }
 }
 
@@ -119,19 +139,23 @@ pub unsafe extern "C" fn rnx_free(ptr: *mut u8, size: usize) {
     if ptr.is_null() {
         return;
     }
-    heap_untrack(ptr);
     unsafe {
         let base = ptr.sub(HEADER_LEN);
-        let (stored_size, stored_align) = read_header(base);
+        let (stored_size, align_word) = read_header(base);
+        let align_word = align_word as u64;
         if stored_size != size {
             rnx_panic(
                 b"rnx_free size mismatch\0".as_ptr(),
                 "rnx_free size mismatch".len(),
             );
         }
+        if align_word & TRACKED_BIT != 0 {
+            heap_untrack(ptr);
+        }
+        let stored_align = (align_word & !TRACKED_BIT) as usize;
         if let Ok(layout) = Layout::from_size_align(size.wrapping_add(HEADER_LEN), stored_align) {
             dealloc(base, layout);
-            LIVE_ALLOCS.fetch_sub(1, Ordering::SeqCst);
+            LIVE_ALLOCS.fetch_sub(1, Ordering::Relaxed);
         }
     }
 }

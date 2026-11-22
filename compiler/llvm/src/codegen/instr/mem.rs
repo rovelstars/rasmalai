@@ -209,11 +209,18 @@ pub(super) fn lower_mem(
             let one = i32t.const_int(1, false);
             let zero32 = i32t.const_zero();
             let zero64 = cx.context.i64_type().const_zero();
+            // Offset 8 is the class-id slot for objects; enums use it to
+            // record which enum they belong to. The high bit tells the two
+            // apart, so enum instances need no side registry entry.
+            let enu_word = cx
+                .context
+                .i64_type()
+                .const_int((*enu as u64) | (1u64 << 63), false);
             let raw = load(cx, *dst)?;
             for (off, word) in [
                 (0usize, BasicValueEnum::from(one)),
                 (4, BasicValueEnum::from(zero32)),
-                (8, BasicValueEnum::from(zero64)),
+                (8, BasicValueEnum::from(enu_word)),
             ] {
                 let at = byte_ptr(cx, raw, off)?;
                 cx.builder.build_store(at, word).map_err(err)?;
@@ -462,28 +469,26 @@ pub(super) fn lower_mem(
                 cx.builder
                     .build_call(cx.closure_release, &[ptr.into()], "")
                     .map_err(err)?;
-            } else if matches!(fty, LirType::Obj(_)) {
-                let ptr = as_ptr(cx, old)?;
-                let (n, dtor) = match &fty {
-                    LirType::Obj(name) => match lir.class_index.get(name) {
-                        Some(fci) => {
-                            let size = instance_size(lir.classes[*fci].fields.len()) as u64;
-                            let n = cx.context.i64_type().const_int(size, false);
-                            let dtor = field_dtor_ptr(cx, lir, *obj, *field)?;
-                            (n, dtor)
-                        }
+            } else if let LirType::Obj(name) = &fty {
+                if lir.interface_index.contains_key(name) {
+                    any_release_val(cx, old)?;
+                } else {
+                    let ptr = as_ptr(cx, old)?;
+                    let size = match lir.class_index.get(name) {
+                        Some(fci) => instance_size(lir.classes[*fci].fields.len()) as u64,
                         None => {
                             return Err(Diagnostic::new(
                                 Code::E108,
                                 "llvm subset: unknown field class",
                             ));
                         }
-                    },
-                    _ => return Err(Diagnostic::new(Code::E108, "llvm subset: unreachable")),
-                };
-                cx.builder
-                    .build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "")
-                    .map_err(err)?;
+                    };
+                    let n = cx.context.i64_type().const_int(size, false);
+                    let dtor = field_dtor_ptr(cx, lir, *obj, *field)?;
+                    cx.builder
+                        .build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "")
+                        .map_err(err)?;
+                }
             }
         }
         Instr::GetFieldByName {
@@ -624,28 +629,26 @@ pub(super) fn lower_mem(
                 cx.builder
                     .build_call(cx.closure_release, &[ptr.into()], "")
                     .map_err(err)?;
-            } else if matches!(fty, LirType::Obj(_)) {
-                let ptr = as_ptr(cx, old)?;
-                let (n, dtor) = match &fty {
-                    LirType::Obj(name) => match lir.class_index.get(name) {
-                        Some(fci) => {
-                            let size = instance_size(lir.classes[*fci].fields.len()) as u64;
-                            let n = cx.context.i64_type().const_int(size, false);
-                            let dtor = field_dtor_ptr(cx, lir, *obj, fi)?;
-                            (n, dtor)
-                        }
+            } else if let LirType::Obj(name) = &fty {
+                if lir.interface_index.contains_key(name) {
+                    any_release_val(cx, old)?;
+                } else {
+                    let ptr = as_ptr(cx, old)?;
+                    let size = match lir.class_index.get(name) {
+                        Some(fci) => instance_size(lir.classes[*fci].fields.len()) as u64,
                         None => {
                             return Err(Diagnostic::new(
                                 Code::E108,
                                 "llvm subset: unknown field class",
                             ));
                         }
-                    },
-                    _ => return Err(Diagnostic::new(Code::E108, "llvm subset: unreachable")),
-                };
-                cx.builder
-                    .build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "")
-                    .map_err(err)?;
+                    };
+                    let n = cx.context.i64_type().const_int(size, false);
+                    let dtor = field_dtor_ptr(cx, lir, *obj, fi)?;
+                    cx.builder
+                        .build_call(cx.release, &[ptr.into(), n.into(), dtor.into()], "")
+                        .map_err(err)?;
+                }
             }
         }
         Instr::GenRefOf { dst, obj, .. } => {
@@ -1225,6 +1228,10 @@ pub(super) fn lower_mem(
                     let n = cx.context.i64_type().const_int(size, false);
                     let dtor = enum_dtor_ptr(cx, lir, ei)?;
                     (n, dtor)
+                }
+                LirType::Obj(name) if lir.interface_index.contains_key(&name) => {
+                    any_release_val(cx, v)?;
+                    return Ok(());
                 }
                 LirType::Obj(name) => match lir.class_index.get(&name) {
                     Some(fci) => {

@@ -96,9 +96,10 @@ impl<M: Module> FnLower<'_, M> {
                 let one = b.ins().iconst(types::I32, 1);
                 let zero32 = b.ins().iconst(types::I32, 0);
                 let zero64 = b.ins().iconst(types::I64, 0);
+                let enu_word = b.ins().iconst(types::I64, (*enu as i64) | (1i64 << 63));
                 b.ins().store(MemFlagsData::trusted(), one, ptr, 0);
                 b.ins().store(MemFlagsData::trusted(), zero32, ptr, 4);
-                b.ins().store(MemFlagsData::trusted(), zero64, ptr, 8);
+                b.ins().store(MemFlagsData::trusted(), enu_word, ptr, 8);
                 let tag = b.ins().iconst(types::I64, *variant as i64);
                 b.ins().store(MemFlagsData::trusted(), tag, ptr, 16);
                 for (i, (l, ty)) in payload.iter().zip(ptys.iter()).enumerate() {
@@ -261,12 +262,18 @@ impl<M: Module> FnLower<'_, M> {
                 } else if matches!(fty, LirType::Closure) {
                     let callee = self.module.declare_func_in_func(self.closure_release, &mut b.func);
                     b.ins().call(callee, &[old]);
-                } else if matches!(fty, LirType::Obj(_)) {
-                    let size = self.field_obj_size(*obj, *field)?;
-                    let dtor = self.field_dtor_addr(b, *obj, *field)?;
-                    let callee = self.module.declare_func_in_func(self.release, &mut b.func);
-                    let n = b.ins().iconst(types::I64, size as i64);
-                    b.ins().call(callee, &[old, n, dtor]);
+                } else if let LirType::Obj(name) = &fty {
+                    if self.lir.interface_index.contains_key(name) {
+                        // The concrete class behind an interface field varies,
+                        // so ask the heap registry for its size and dtor.
+                        self.any_release_val(b, old);
+                    } else {
+                        let size = self.field_obj_size(*obj, *field)?;
+                        let dtor = self.field_dtor_addr(b, *obj, *field)?;
+                        let callee = self.module.declare_func_in_func(self.release, &mut b.func);
+                        let n = b.ins().iconst(types::I64, size as i64);
+                        b.ins().call(callee, &[old, n, dtor]);
+                    }
                 } else if matches!(fty, LirType::Enum(_)) {
                     let (n, dtor) = match &fty {
                         LirType::Enum(ei) => {
@@ -360,18 +367,17 @@ impl<M: Module> FnLower<'_, M> {
                 } else if matches!(fty, LirType::Closure) {
                     let callee = self.module.declare_func_in_func(self.closure_release, &mut b.func);
                     b.ins().call(callee, &[old]);
-                } else if matches!(fty, LirType::Obj(_)) {
-                    let (n, dtor) = match &fty {
-                        LirType::Obj(name) => {
-                            let fci = self.lir.class_index.get(name).copied().ok_or("unknown field class".to_string())?;
-                            let size = instance_size(self.lir.classes[fci].fields.len());
-                            let dtor = self.dtor_for_class(b, fci)?;
-                            (b.ins().iconst(types::I64, size as i64), dtor)
-                        }
-                        _ => return Err("unreachable".to_string()),
-                    };
-                    let callee = self.module.declare_func_in_func(self.release, &mut b.func);
-                    b.ins().call(callee, &[old, n, dtor]);
+                } else if let LirType::Obj(name) = &fty {
+                    if self.lir.interface_index.contains_key(name) {
+                        self.any_release_val(b, old);
+                    } else {
+                        let fci = self.lir.class_index.get(name).copied().ok_or("unknown field class".to_string())?;
+                        let size = instance_size(self.lir.classes[fci].fields.len());
+                        let dtor = self.dtor_for_class(b, fci)?;
+                        let n = b.ins().iconst(types::I64, size as i64);
+                        let callee = self.module.declare_func_in_func(self.release, &mut b.func);
+                        b.ins().call(callee, &[old, n, dtor]);
+                    }
                 }
         Ok(())
     }
@@ -763,6 +769,8 @@ impl<M: Module> FnLower<'_, M> {
                 } else if matches!(fty, LirType::Closure) {
                     let callee = self.module.declare_func_in_func(self.closure_release, &mut b.func);
                     b.ins().call(callee, &[v]);
+                } else if matches!(&fty, LirType::Obj(name) if self.lir.interface_index.contains_key(name)) {
+                    self.any_release_val(b, v);
                 } else {
                     let size = self.field_obj_size(*obj, *field)?;
                     let dtor = self.field_dtor_addr(b, *obj, *field)?;

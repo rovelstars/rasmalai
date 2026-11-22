@@ -306,6 +306,12 @@ pub(crate) fn gkey_canon_float(bits: u64) -> u64 {
 }
 
 pub(crate) fn gkey_of(rep: u64) -> GKey {
+    // Scalar values stay unboxed when a generic call forwards them straight to
+    // the native map. An untagged 8-aligned word is then a key by value, not a
+    // box, and checking the box set would take a lock for every lookup.
+    if rep & ANY_BOX_MASK == 0 {
+        return GKey { kind: GKEY_OBJ, bits: rep, text: None };
+    }
     match any_box_addr(rep) {
         Some(addr) => {
             let payload = unsafe { ((addr as *const u8).add(8) as *const u64).read_unaligned() };
@@ -327,6 +333,9 @@ pub(crate) fn gkey_of(rep: u64) -> GKey {
 }
 
 pub(crate) fn gval_of(rep: u64) -> GVal {
+    if rep & ANY_BOX_MASK == 0 {
+        return GVal { kind: GKEY_OBJ, bits: rep };
+    }
     match any_box_addr(rep) {
         Some(_) => {
             let kind = match (rep & ANY_BOX_MASK) as u32 {
@@ -346,6 +355,9 @@ pub(crate) fn gval_is_box(v: &GVal) -> bool {
 }
 
 pub(crate) fn gval_retain(v: &GVal) {
+    if v.bits < MIN_HEAP_ADDR {
+        return;
+    }
     if gval_is_box(v) {
         unsafe { rnx_any_retain(v.bits) };
         return;
@@ -356,6 +368,9 @@ pub(crate) fn gval_retain(v: &GVal) {
 }
 
 pub(crate) fn gkey_retain(krepr: u64) {
+    if krepr < MIN_HEAP_ADDR {
+        return;
+    }
     if krepr != 0 && any_box_addr(krepr).is_some() {
         unsafe { rnx_any_retain(krepr) };
         return;
@@ -366,6 +381,9 @@ pub(crate) fn gkey_retain(krepr: u64) {
 }
 
 pub(crate) fn gkey_release(krepr: u64) {
+    if krepr < MIN_HEAP_ADDR {
+        return;
+    }
     if krepr != 0 && any_box_addr(krepr).is_some() {
         unsafe { rnx_any_release(krepr) };
         return;
@@ -376,6 +394,9 @@ pub(crate) fn gkey_release(krepr: u64) {
 }
 
 pub(crate) fn gval_release(v: &GVal) {
+    if v.bits < MIN_HEAP_ADDR {
+        return;
+    }
     if gval_is_box(v) {
         unsafe { rnx_any_release(v.bits) };
         return;
@@ -2549,14 +2570,16 @@ pub const HEAP_OBJ: u64 = 3;
 pub const HEAP_ENUM: u64 = 4;
 pub const HEAP_BOX: u64 = 5;
 
+#[derive(Clone, Copy)]
 pub(crate) struct TrackInfo {
     kind: u64,
     aux1: u64,
     aux2: u64,
 }
 
-static HEAP_TRACK: std::sync::LazyLock<std::sync::Mutex<std::collections::BTreeMap<usize, TrackInfo>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+static HEAP_TRACK: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<usize, TrackInfo>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 pub(crate) fn heap_kind_of(any: u64) -> Option<u64> {
     heap_tracked(any).map(|t| t.kind)
@@ -2576,14 +2599,14 @@ pub(crate) fn gmap_live_ptr(handle: *mut u8) -> *mut u8 {
 }
 
 pub(crate) fn heap_tracked(any: u64) -> Option<TrackInfo> {
-    if any & ANY_BOX_MASK != 0 {
+    if any < MIN_HEAP_ADDR || any & ANY_BOX_MASK != 0 {
         return None;
     }
     HEAP_TRACK
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&(any as usize))
-        .map(|t| TrackInfo { kind: t.kind, aux1: t.aux1, aux2: t.aux2 })
+        .copied()
 }
 
 #[unsafe(no_mangle)]
@@ -2595,6 +2618,7 @@ pub unsafe extern "C" fn rnx_heap_track(ptr: *mut u8, kind: u64, aux1: u64, aux2
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(ptr as usize, TrackInfo { kind, aux1, aux2 });
+    unsafe { super::common::mark_tracked(ptr) };
 }
 
 pub(crate) fn heap_track_len() -> usize {
@@ -2605,11 +2629,16 @@ pub(crate) fn heap_untrack(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    HEAP_TRACK
+    let removed = HEAP_TRACK
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&(ptr as usize));
-    super::pretty::pretty_untrack(ptr as usize);
+    if let Some(info) = removed {
+        if info.kind == HEAP_ARRAY {
+            super::pretty::pretty_untrack(ptr as usize);
+        }
+    }
+    unsafe { super::common::clear_tracked(ptr) };
 }
 
 pub(crate) fn heap_destroy(ptr: *mut u8, info: &TrackInfo) {
@@ -2661,8 +2690,12 @@ pub(crate) fn any_box_marker(tag: u32) -> u64 {
     }
 }
 
+// The host allocator never returns an address in the null page, so a value
+// below this bound is a scalar (map key, small Int), not a box or object.
+pub(crate) const MIN_HEAP_ADDR: u64 = 0x1000;
+
 pub(crate) fn any_box_addr(any: u64) -> Option<usize> {
-    if any & ANY_BOX_MASK == 0 {
+    if any < MIN_HEAP_ADDR || any & ANY_BOX_MASK == 0 {
         return None;
     }
     let addr = (any & !ANY_BOX_MASK) as usize;
@@ -2765,7 +2798,11 @@ pub unsafe extern "C" fn rnx_obj_class(ptr: *const u8) -> u64 {
     if any_box_addr(ptr as u64).is_some() {
         return 0;
     }
-    unsafe { ((ptr.add(8)) as *const u64).read_unaligned() }
+    let word = unsafe { ((ptr.add(8)) as *const u64).read_unaligned() };
+    if word & (1u64 << 63) != 0 {
+        return 0;
+    }
+    word
 }
 
 thread_local! {
