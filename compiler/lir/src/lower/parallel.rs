@@ -155,35 +155,7 @@ impl Lower {
         out.result?;
         for p in out.pending {
             let cid = self.out.functions.len();
-            let mut params: Vec<LirType> = p
-                .params
-                .iter()
-                .map(|x| {
-                    x.ty.as_ref()
-                        .map(|t| resolve_ty(&self.out, t))
-                        .unwrap_or(LirType::Any)
-                })
-                .collect();
-            for c in &p.captures {
-                params.push(c.ty.clone());
-            }
-            self.out.functions.push(Function {
-                name: p.name.clone(),
-                params: params.clone(),
-                sig_params: params.clone(),
-                ret: p
-                    .ret
-                    .as_ref()
-                    .map(|t| resolve_ty(&self.out, t))
-                    .unwrap_or(LirType::Any),
-                throws: p.throws,
-                is_unsafe: false,
-                method_self: false,
-                is_pub: false,
-                is_closure: false,
-                locals: params,
-                blocks: vec![],
-            });
+            self.out.functions.push(closure_function(&self.out, &p));
             self.out.fn_index.insert(p.name.clone(), cid);
             queue.push((cid, BodySrc::Closure(p)));
         }

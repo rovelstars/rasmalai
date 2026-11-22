@@ -165,6 +165,20 @@ println!(s is Summarizable);
 
 There are no fat pointers or vtables in the ABI: the compiler resolves the runtime class id to a direct static call per implementation. `is` tests interface membership, and `typeOf` on an interface-typed value reports the concrete class. Calls through an interface work identically on every backend.
 
+A field may be typed by an interface. It holds any implementing instance, keeps that instance alive, and releases it through its runtime class when the owner is destroyed:
+
+```rnx
+class Slot {
+    let shape: Shape;
+    init(shape: Shape) { this.shape = shape; }
+}
+
+let slot = new Slot(new Square(3));
+println!(slot.shape.area());
+```
+
+The concrete class can differ between instances of the same owner: a scene graph can hold squares, text, and groups behind one interface field without a variant per kind.
+
 ## Summary
 
 - `Iterable<T>` + `Iterator<T>` drive `for..in`; `next()` yields `T?` with `null` at exhaustion.

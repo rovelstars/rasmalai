@@ -79,6 +79,17 @@ assert(nums.map((n) => n * 2)[2] == 6, "inferred map");
 assert(apply(5, (n) => n * 2) == 10, "inferred HOF");
 ```
 
+A generic function can take a `fn`-typed parameter and call it with the type parameter. The closure keeps its concrete signature at the call site, and its scalar result is boxed when the erased callee returns it as `Any`:
+
+```rnx
+fn twice<T>(v: T, f: fn(T): T): T {
+    return f(f(v));
+}
+
+assert(twice(2, (n: Int) => n + 3) == 8, "generic closure");
+assert(twice("ab", (s: String) => s + "!") == "ab!!", "generic string");
+```
+
 Closures capture `this` strongly by default, like any other value. A closure stored on its own object requires `fn decay(this)`, the weak opt-in; see [Cycles and Handles](/manual/12-cycles-and-handles).
 
 ## Trailing blocks

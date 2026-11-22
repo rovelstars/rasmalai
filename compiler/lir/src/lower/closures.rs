@@ -55,8 +55,9 @@ impl<'a> Builder<'a> {
             argv.push(c.src);
         }
         let dst = self.local(LirType::Closure);
+        let erase_ret = self.closure_erase_ret.last().copied().unwrap_or(false);
         let ret_ty = ret.as_ref().map(|t| self.resolve_here(t)).unwrap_or(LirType::Any);
-        if Self::any_box_tag(&ret_ty).is_some() {
+        if !erase_ret && Self::any_box_tag(&ret_ty).is_some() {
             self.closure_ret.insert(dst, ret_ty);
         }
         let ix = self.blocks[self.current].len();
@@ -73,6 +74,7 @@ impl<'a> Builder<'a> {
             params: params.to_vec(),
             param_hints: self.closure_hints.last().cloned().unwrap_or_default(),
             ret: ret.clone(),
+            erase_ret,
             throws,
             body: body.clone(),
             captures: caps,
@@ -160,6 +162,19 @@ impl<'a> Builder<'a> {
             out.push(self.resolve_here(pt));
         }
         Some(out)
+    }
+
+    pub(super) fn erases_generic_ret(&self, fname: &str, decl: &A::Type) -> bool {
+        let Some(ret) = decl.fn_sig.as_ref().and_then(|s| s.ret.as_deref()) else {
+            return false;
+        };
+        if ret.fn_sig.is_some() || !ret.args.is_empty() || !ret.tuple.is_empty() || ret.path.len() != 1 {
+            return false;
+        }
+        let name = &ret.path[0];
+        self.generic_fns
+            .get(fname)
+            .is_some_and(|g| g.tparams.iter().any(|p| p == name))
     }
 
     pub(super) fn closure_hint_for(

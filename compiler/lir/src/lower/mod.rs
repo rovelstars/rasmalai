@@ -512,6 +512,7 @@ struct PendingClosure {
     params: Vec<A::Param>,
     param_hints: Vec<LirType>,
     ret: Option<A::Type>,
+    erase_ret: bool,
     throws: bool,
     body: A::FnBody,
     captures: Vec<Capture>,
@@ -527,6 +528,37 @@ struct Capture {
     src: Local,
     is_this: bool,
     ret: Option<LirType>,
+}
+
+fn closure_function(out: &Module, p: &PendingClosure) -> Function {
+    let mut params: Vec<LirType> = p
+        .params
+        .iter()
+        .map(|x| x.ty.as_ref().map(|t| resolve_ty(out, t)).unwrap_or(LirType::Any))
+        .collect();
+    for c in &p.captures {
+        params.push(c.ty.clone());
+    }
+    Function {
+        name: p.name.clone(),
+        params: params.clone(),
+        sig_params: params.clone(),
+        // A closure passed to an erased generic parameter returns `Any` so a
+        // scalar result is boxed; otherwise the generic callee would return
+        // raw bits that the `Any` printer dereferences as a pointer.
+        ret: if p.erase_ret {
+            LirType::Any
+        } else {
+            p.ret.as_ref().map(|t| resolve_ty(out, t)).unwrap_or(LirType::Any)
+        },
+        throws: p.throws,
+        is_unsafe: false,
+        method_self: false,
+        is_pub: false,
+        is_closure: false,
+        locals: params,
+        blocks: vec![],
+    }
 }
 
 fn shell(
@@ -635,6 +667,7 @@ struct Builder<'a> {
     closure_seq: usize,
     closure_prefix: String,
     closure_hints: Vec<Vec<LirType>>,
+    closure_erase_ret: Vec<bool>,
     closure_ret: BTreeMap<Local, LirType>,
     closure_captures: BTreeSet<Local>,
     child_sink: Option<Local>,
@@ -1446,27 +1479,7 @@ impl Lower {
             r?;
             for p in pending {
                 let cid = self.out.functions.len();
-                let mut params: Vec<LirType> = p
-                    .params
-                    .iter()
-                    .map(|x| x.ty.as_ref().map(|t| resolve_ty(&self.out, t)).unwrap_or(LirType::Any))
-                    .collect();
-                for c in &p.captures {
-                    params.push(c.ty.clone());
-                }
-                self.out.functions.push(Function {
-                    name: p.name.clone(),
-                    params: params.clone(),
-                    sig_params: params.clone(),
-                    ret: p.ret.as_ref().map(|t| resolve_ty(&self.out, t)).unwrap_or(LirType::Any),
-                    throws: p.throws,
-                    is_unsafe: false,
-                    method_self: false,
-                    is_pub: false,
-                    is_closure: false,
-                    locals: params,
-                    blocks: vec![],
-                });
+                self.out.functions.push(closure_function(&self.out, &p));
                 self.out.fn_index.insert(p.name.clone(), cid);
                 queue.push((cid, BodySrc::Closure(p)));
             }

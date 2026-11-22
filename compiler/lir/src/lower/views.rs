@@ -216,7 +216,15 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    pub(super) fn emit_any_crossing(&mut self, dst: Local, src: Local, span: Span) -> bool {
+    pub(super) fn source_is_bound(&self, src: Local) -> bool {
+        !self.moved.contains(&src)
+            && self
+                .scopes
+                .iter()
+                .any(|scope| scope.values().any(|(l, _, _)| *l == src))
+    }
+
+    pub(super) fn emit_any_crossing(&mut self, dst: Local, src: Local, span: Span, keep_source: bool) -> bool {
         if dst == src {
             return false;
         }
@@ -235,7 +243,13 @@ impl<'a> Builder<'a> {
                     self.emit_any_unbox(dst, src, span);
                     return true;
                 }
-                LirType::Array(_) | LirType::Obj(_) => {
+                LirType::Array(_) | LirType::Obj(_) | LirType::Enum(_) | LirType::Closure => {
+                    // A named source keeps its own reference, so the owning
+                    // destination needs a new one. An unnamed temporary has no
+                    // scope release, so ownership transfers instead.
+                    if keep_source {
+                        self.nub_retain(src, span);
+                    }
                     return false;
                 }
                 _ => return false,

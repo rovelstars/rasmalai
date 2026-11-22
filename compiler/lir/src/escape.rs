@@ -84,8 +84,27 @@ impl<'a> EscapeCtx<'a> {
         let alias = collect_aliases(callee);
         let proot = find_root(&alias, param as Local);
         let member = |l: Local| find_root(&alias, l) == proot;
+        let owned = |l: Local| {
+            matches!(
+                callee.locals.get(l as usize),
+                Some(LirType::Obj(_))
+                    | Some(LirType::Str)
+                    | Some(LirType::Array(_))
+                    | Some(LirType::Enum(_))
+                    | Some(LirType::Closure)
+            )
+        };
         for block in &callee.blocks {
             for ins in &block.instrs {
+                // A cast or copy into an owning local transfers ownership, and
+                // the callee's cleanup will release it. The callee may do this
+                // before release insertion runs, so the Cast itself is the
+                // signal that the argument must live on the heap.
+                if let Instr::Cast {  dst, src , ..} | Instr::Copy { dst, src , ..} = ins {
+                    if member(*src) && owned(*dst) {
+                        return false;
+                    }
+                }
                 if self.instr_leaks(ins, member) {
                     return false;
                 }
@@ -126,6 +145,11 @@ impl<'a> EscapeCtx<'a> {
                 _ => args.iter().any(|a| member(*a)),
             },
             Instr::SetField {  value , ..} | Instr::SetFieldByName { value , ..} => member(*value),
+            // A callee that releases the argument has taken ownership. Stack
+            // promotion would hand it an address it then tries to free.
+            Instr::Release {  obj , ..}
+            | Instr::ReleaseAs {  obj , ..}
+            | Instr::ReleaseField {  obj , ..} => member(*obj),
             Instr::ArraySet {  value , ..} => member(*value),
             Instr::ArrayPush {  value , ..} => member(*value),
             Instr::EnumNew {  payload , ..} => payload.iter().any(|p| member(*p)),
@@ -690,6 +714,23 @@ mod tests {
         let roots = fresh_array_roots(&module.functions[fi]);
         let distinct: BTreeSet<Local> = roots.values().copied().collect();
         assert_eq!(distinct.len(), 1, "{roots:?}");
+    }
+
+    #[test]
+    fn any_param_narrowing_escapes() {
+        let src = "class C { let v: Int; init(v: Int) { this.v = v; } }\n\
+fn take(a: Any): Int { let c = a as C; return c.v; }\n\
+fn F(): Int { let x = new C(7); return take(x); }\n";
+        let mut module = lowered_func(src, "F").0;
+        let fi = module.functions.iter().position(|f| f.name == "F").expect("F");
+        assert!(!optimize_stack_allocations(&mut module, fi));
+        // The cast inside `take` hands ownership to a local it releases, so
+        // the argument cannot live on F's stack.
+        assert!(!module.functions[fi]
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::StackAlloc { .. })));
     }
 
     #[test]

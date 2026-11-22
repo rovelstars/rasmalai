@@ -77,7 +77,7 @@ impl<'a> Builder<'a> {
                 self.lower_propagate(inner, span)
             }
             A::Expr::Coalesce { lhs, rhs }  => self.lower_coalesce(lhs, rhs, span),
-            A::Expr::OptChain { base, field }  => self.lower_opt_access(base, field, &[], span),
+            A::Expr::OptChain { base, field }  => self.lower_opt_access(base, field, &[], false, span),
             A::Expr::OptCall { base, field, args }  => {
                 if self.collect_sink.is_some() && self.method_may_throw(base, field) {
                     return self.fail(self.err(
@@ -86,7 +86,7 @@ impl<'a> Builder<'a> {
                         span,
                     ));
                 }
-                self.lower_opt_access(base, field, args, span)
+                self.lower_opt_access(base, field, args, true, span)
             }
             A::Expr::Switch { scrutinee, cases, default }  => self.lower_expr_switch(scrutinee, cases, default, span),
             A::Expr::Tuple(items)  => self.lower_expr_tuple(items, span),
@@ -2138,6 +2138,7 @@ impl<'a> Builder<'a> {
         base: &A::Spanned<A::Expr>,
         field: &str,
         args: &[A::CallArg],
+        is_call: bool,
         span: Span,
     ) -> Result<(Local, Simple), Diagnostic> {
         let (v, _) = self.lower_expr(&base.node, base.span)?;
@@ -2158,12 +2159,14 @@ impl<'a> Builder<'a> {
         self.set_term(Terminator::BrIf { span, cond: is_null, then_bb: none_bb, else_bb: some_bb });
         self.set_current(some_bb);
         let vt = self.func.locals[v as usize].clone();
-        let inner_ty = self.precise.get(&v).cloned().unwrap_or(vt);
+        let inner_ty = self.precise.get(&v).cloned().unwrap_or_else(|| vt.clone());
         let synth = format!("$opt{}", self.synth_seq);
         self.synth_seq += 1;
         self.push_scope();
         self.def(synth.clone(), v, simple_of(&inner_ty), inner_ty.clone());
-        let access: A::Expr = if args.is_empty() {
+        // `?.field` and `?.method()` both arrive with zero arguments; the
+        // node kind, not the argument count, decides which one this is.
+        let access: A::Expr = if !is_call {
             A::Expr::Member {
                 base: Box::new(A::Spanned { node: A::Expr::Ident(synth.clone()), span }),
                 field: field.to_string(),

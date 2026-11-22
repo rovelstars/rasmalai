@@ -1204,6 +1204,9 @@ impl<'a> Builder<'a> {
             let mut seed: BTreeMap<String, LirType> = BTreeMap::new();
             let ptys = self.param_tys.get(&fname).cloned().unwrap_or_default();
             for (i, a) in args.iter().enumerate() {
+                let erase = ptys
+                    .get(i)
+                    .is_some_and(|(_, d)| self.erases_generic_ret(&fname, d));
                 let hint = match &a.value.node {
                     A::Expr::Closure { params, body, .. } => {
                         let h = self.closure_hint_for(&fname, i, &prefix);
@@ -1219,6 +1222,7 @@ impl<'a> Builder<'a> {
                 let pushed = hint.is_some();
                 if let Some(h) = hint {
                     self.closure_hints.push(h);
+                    self.closure_erase_ret.push(erase);
                 }
                 let decl = ptys.get(i).map(|(_, t)| t.clone());
                 let v = match decl {
@@ -1227,6 +1231,7 @@ impl<'a> Builder<'a> {
                 };
                 if pushed {
                     self.closure_hints.pop();
+                    self.closure_erase_ret.pop();
                 }
                 let actual = self.func.locals.get(v as usize).cloned().unwrap_or(LirType::Any);
                 let decl = ptys.get(i).map(|(_, t)| t.clone()).unwrap_or_else(|| A::Type::named("Any"));
@@ -1256,6 +1261,9 @@ impl<'a> Builder<'a> {
                         a.value.span,
                     ));
                 }
+                let erase = ptys
+                    .get(idx)
+                    .is_some_and(|(_, d)| self.erases_generic_ret(&fname, d));
                 let hint = match &a.value.node {
                     A::Expr::Closure { params, body, .. } => {
                         let h = self.closure_hint_for(&fname, idx, &[]);
@@ -1271,6 +1279,7 @@ impl<'a> Builder<'a> {
                 let pushed = hint.is_some();
                 if let Some(h) = hint {
                     self.closure_hints.push(h);
+                    self.closure_erase_ret.push(erase);
                 }
                 let decl = ptys.get(idx).map(|(_, t)| t.clone());
                 let (v, _) = match decl {
@@ -1279,6 +1288,7 @@ impl<'a> Builder<'a> {
                 };
                 if pushed {
                     self.closure_hints.pop();
+                    self.closure_erase_ret.pop();
                 }
                 slots[idx] = Some(v);
             } else {
@@ -1299,6 +1309,9 @@ impl<'a> Builder<'a> {
                         span,
                     ));
                 }
+                let erase = ptys
+                    .get(pos)
+                    .is_some_and(|(_, d)| self.erases_generic_ret(&fname, d));
                 let hint = match &a.value.node {
                     A::Expr::Closure { params, body, .. } => {
                         let h = self.closure_hint_for(&fname, pos, &[]);
@@ -1314,6 +1327,7 @@ impl<'a> Builder<'a> {
                 let pushed = hint.is_some();
                 if let Some(h) = hint {
                     self.closure_hints.push(h);
+                    self.closure_erase_ret.push(erase);
                 }
                 let decl = ptys.get(pos).map(|(_, t)| t.clone());
                 let (v, _) = match decl {
@@ -1322,6 +1336,7 @@ impl<'a> Builder<'a> {
                 };
                 if pushed {
                     self.closure_hints.pop();
+                    self.closure_erase_ret.pop();
                 }
                 slots[pos] = Some(v);
                 pos += 1;

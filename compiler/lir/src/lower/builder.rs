@@ -105,6 +105,7 @@ impl<'a> Builder<'a> {
             closure_seq: 0,
             closure_prefix: prefix,
             closure_hints: Vec::new(),
+            closure_erase_ret: Vec::new(),
             closure_ret: BTreeMap::new(),
             closure_captures: BTreeSet::new(),
             child_sink: None,
@@ -352,7 +353,9 @@ impl<'a> Builder<'a> {
                 self.moved.insert(src);
             }
         }
-        if self.emit_any_crossing(dst, src, span) {
+        let keep_source = self.func.locals.get(src as usize) == Some(&LirType::Any)
+            && self.source_is_bound(src);
+        if self.emit_any_crossing(dst, src, span, keep_source) {
             return;
         }
         self.emit(Instr::Copy { span, dst, src });
@@ -364,7 +367,15 @@ impl<'a> Builder<'a> {
                 self.func.locals.get(dst as usize),
                 Some(LirType::Obj(_)) | Some(LirType::Str) | Some(LirType::Array(_)) | Some(LirType::Enum(_))
             );
-            if dto {
+            // A named source keeps its reference for the destination to hold;
+            // an unnamed temporary transfers its reference instead.
+            let narrows_any = self.func.locals.get(src as usize) == Some(&LirType::Any)
+                && matches!(
+                    self.func.locals.get(dst as usize),
+                    Some(LirType::Obj(_)) | Some(LirType::Array(_)) | Some(LirType::Enum(_)) | Some(LirType::Closure)
+                );
+            let keep_source = narrows_any && self.source_is_bound(src);
+            if dto && !keep_source {
                 self.moved.insert(src);
             }
         }
@@ -383,7 +394,9 @@ impl<'a> Builder<'a> {
             });
             return;
         }
-        if self.emit_any_crossing(dst, src, span) {
+        let keep_source = self.func.locals.get(src as usize) == Some(&LirType::Any)
+            && self.source_is_bound(src);
+        if self.emit_any_crossing(dst, src, span, keep_source) {
             return;
         }
         self.emit(Instr::Cast { span, dst, src });
