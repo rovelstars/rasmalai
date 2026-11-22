@@ -32,7 +32,7 @@ fn run(dir: &Path, level: Option<&str>) -> Output {
 fn clean_stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr)
         .lines()
-        .filter(|line| !line.starts_with("warning: using local source for `@std/"))
+        .filter(|line| !line.starts_with("warning: using local"))
         .map(|line| format!("{line}\n"))
         .collect()
 }

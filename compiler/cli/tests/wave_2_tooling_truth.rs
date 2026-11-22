@@ -44,7 +44,7 @@ fn check_matches_run_on_lowering_failure() {
     assert_eq!(run.status.code(), Some(1), "run must reject lowering failures");
     fn scrub(text: &str) -> String {
         text.lines()
-            .filter(|l| !l.starts_with("warning: using local source for `@std/"))
+            .filter(|l| !l.starts_with("warning: using local"))
             .collect::<Vec<_>>()
             .join("\n")
     }

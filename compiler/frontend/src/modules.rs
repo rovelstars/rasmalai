@@ -639,6 +639,7 @@ impl ModuleGraph {
         let explicit_std_collections = self
             .reachable_packages(&base)
             .contains("@std/collections");
+        crate::fetch::warn_local_overrides();
         Ok(A::Module {
             inner_attrs: root_attrs,
             decls: merged,

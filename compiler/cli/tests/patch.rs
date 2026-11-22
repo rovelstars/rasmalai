@@ -83,13 +83,11 @@ fn path_vendor_patch_resolves_offline() {
     assert!(ok, "{stderr}{stdout}");
     assert!(stdout.contains("patch-path-ok 7"), "{stdout}");
     assert!(
-        stderr.contains(&format!("{}/@std/prelude", vendor.display())),
+        stderr.contains(&vendor.display().to_string()),
         "{stderr}"
     );
-    assert!(
-        stderr.contains(&format!("{}/hello", vendor.display())),
-        "{stderr}"
-    );
+    assert!(stderr.contains("@std/prelude"), "{stderr}");
+    assert!(stderr.contains("hello@"), "{stderr}");
 }
 
 #[test]
@@ -149,5 +147,5 @@ fn git_vendor_patch_resolves_offline() {
     assert!(ok, "{stderr}{stdout}");
     assert!(stdout.contains("patch-git-ok 7"), "{stdout}");
     assert!(stderr.contains(".rnx-cache/patches/git"), "{stderr}");
-    assert!(stderr.contains("/hello"), "{stderr}");
+    assert!(stderr.contains("hello@"), "{stderr}");
 }

@@ -112,6 +112,7 @@ pub(super) fn run_download(packages: Vec<String>, local: bool, registry: Option<
     if let Ok(mut ui) = live.lock() {
         ui.finish();
     }
+    frontend::fetch::warn_local_overrides();
     match result {
         Ok(fetched) => {
             if local {
@@ -202,6 +203,7 @@ fn run_stdlib_seed(
         let result = super::with_status(quiet, "Fetching the standard library", || {
             frontend::stdlib_seed::seed_stdlib_cache_local(&scope, default, overrides)
         });
+        frontend::fetch::warn_local_overrides();
         match result {
             Ok(report) => {
                 if report.packages.is_empty() {
@@ -230,6 +232,7 @@ fn run_stdlib_seed(
     let result = super::with_status(quiet, "Fetching the standard library", || {
         frontend::stdlib_seed::seed_stdlib_cache(default, overrides)
     });
+    frontend::fetch::warn_local_overrides();
     match result {
         Ok(report) => {
             if report.packages.is_empty() {

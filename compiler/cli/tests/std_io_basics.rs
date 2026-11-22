@@ -254,7 +254,7 @@ fn std_io_piped_stdin_stdout() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     let stderr: String = stderr
         .lines()
-        .filter(|l| !l.starts_with("warning: using local source for `@std/"))
+        .filter(|l| !l.starts_with("warning: using local"))
         .map(|l| format!("{l}\n"))
         .collect();
     assert_eq!(stderr, "edone\n", "run stderr");

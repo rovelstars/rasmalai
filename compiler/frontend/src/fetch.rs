@@ -28,51 +28,98 @@ fn override_marks() -> &'static std::sync::Mutex<BTreeSet<String>> {
     MARKS.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()))
 }
 
-fn override_roots() -> &'static std::sync::Mutex<BTreeSet<PathBuf>> {
-    static ROOTS: std::sync::OnceLock<std::sync::Mutex<BTreeSet<PathBuf>>> =
+fn pending_overrides() -> &'static std::sync::Mutex<BTreeMap<String, (String, PathBuf)>> {
+    static PENDING: std::sync::OnceLock<
+        std::sync::Mutex<BTreeMap<String, (String, PathBuf)>>,
+    > = std::sync::OnceLock::new();
+    PENDING.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
+fn warned_roots() -> &'static std::sync::Mutex<BTreeSet<PathBuf>> {
+    static WARNED: std::sync::OnceLock<std::sync::Mutex<BTreeSet<PathBuf>>> =
         std::sync::OnceLock::new();
-    ROOTS.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()))
+    WARNED.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()))
+}
+
+fn override_root(dir: &Path) -> PathBuf {
+    for ancestor in dir.ancestors() {
+        if ancestor.file_name().and_then(|name| name.to_str()) == Some("@std") {
+            return ancestor.parent().unwrap_or(ancestor).to_path_buf();
+        }
+    }
+    dir.parent().unwrap_or(dir).to_path_buf()
+}
+
+fn quoted(theme: &diagnostics::theme::AuraTheme, text: &str) -> String {
+    if theme.enabled {
+        theme.paint(diagnostics::theme::AuraColor::Cyan, text)
+    } else {
+        theme.paint(diagnostics::theme::AuraColor::Cyan, &format!("`{text}`"))
+    }
 }
 
 pub(crate) fn note_local_override(full: &str, version: &str, dir: &Path) {
     let key = format!("{full}@{version} from {}", dir.display());
-    {
-        let mut marks = override_marks().lock().unwrap_or_else(|e| e.into_inner());
-        if !marks.insert(key) {
-            return;
-        }
+    override_marks()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key);
+    pending_overrides()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(full.to_string(), (version.to_string(), dir.to_path_buf()));
+}
+
+pub fn warn_local_overrides() {
+    let pending = {
+        let mut pending = pending_overrides().lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *pending)
+    };
+    if pending.is_empty() {
+        return;
     }
-    let root = dir.parent().unwrap_or(dir);
-    {
-        let mut roots = override_roots().lock().unwrap_or_else(|e| e.into_inner());
-        if !roots.insert(root.to_path_buf()) {
-            return;
-        }
+    let mut by_root: BTreeMap<PathBuf, Vec<(String, String)>> = BTreeMap::new();
+    for (full, (version, dir)) in pending {
+        by_root
+            .entry(override_root(&dir))
+            .or_default()
+            .push((full, version));
     }
     let theme = diagnostics::theme::AuraTheme::active();
-    eprintln!(
-        "{} using local source for {}{} from {} ({}; registry cache overridden)",
-        theme.paint(
-            diagnostics::theme::AuraColor::Orange,
-            "warning:"
-        ),
-        theme.paint(
-            diagnostics::theme::AuraColor::Cyan,
-            &format!("`{full}`")
-        ),
-        theme.paint(
+    for (root, mut packages) in by_root {
+        {
+            let mut warned = warned_roots().lock().unwrap_or_else(|e| e.into_inner());
+            if !warned.insert(root.clone()) {
+                continue;
+            }
+        }
+        packages.sort();
+        let mut line = String::new();
+        line.push_str(&theme.paint(diagnostics::theme::AuraColor::Orange, "warning:"));
+        line.push_str(" using local packages from ");
+        line.push_str(&quoted(&theme, &root.display().to_string()));
+        line.push(':');
+        for (i, (full, version)) in packages.iter().enumerate() {
+            line.push_str(if i == 0 { " " } else { ", " });
+            if theme.enabled {
+                line.push_str(&theme.paint(diagnostics::theme::AuraColor::Cyan, full));
+                line.push_str(&theme.paint(
+                    diagnostics::theme::AuraColor::Muted,
+                    &format!("@{version}"),
+                ));
+            } else {
+                line.push_str(&theme.paint(
+                    diagnostics::theme::AuraColor::Cyan,
+                    &format!("`{full}@{version}`"),
+                ));
+            }
+        }
+        line.push_str(&theme.paint(
             diagnostics::theme::AuraColor::Muted,
-            &format!("@{version}")
-        ),
-        theme.paint(
-            diagnostics::theme::AuraColor::Cyan,
-            &format!("`{}`", dir.display())
-        ),
-        theme.paint(
-            diagnostics::theme::AuraColor::Muted,
-            "further local packages in this tree are silent"
-        )
-    );
+            " (registry cache overridden)",
+        ));
+        eprintln!("{line}");
+    }
 }
 
 pub fn local_override_used(full: &str) -> bool {

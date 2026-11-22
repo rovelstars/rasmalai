@@ -54,7 +54,7 @@ fn argv_forwards_identically_on_all_backends() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let unexpected: Vec<&str> = stderr
             .lines()
-            .filter(|l| !l.starts_with("warning: using local source for `@std/"))
+            .filter(|l| !l.starts_with("warning: using local"))
             .collect();
         assert!(
             unexpected.is_empty(),

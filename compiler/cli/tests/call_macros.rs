@@ -18,7 +18,7 @@ fn run(args: &[&str], dir: &Path) -> Output {
 fn clean_stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr)
         .lines()
-        .filter(|l| !l.starts_with("warning: using local source"))
+        .filter(|l| !l.starts_with("warning: using local"))
         .collect::<Vec<_>>()
         .join("\n")
 }
