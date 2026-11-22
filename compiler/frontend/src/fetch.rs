@@ -28,15 +28,51 @@ fn override_marks() -> &'static std::sync::Mutex<BTreeSet<String>> {
     MARKS.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()))
 }
 
+fn override_roots() -> &'static std::sync::Mutex<BTreeSet<PathBuf>> {
+    static ROOTS: std::sync::OnceLock<std::sync::Mutex<BTreeSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    ROOTS.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()))
+}
+
 pub(crate) fn note_local_override(full: &str, version: &str, dir: &Path) {
     let key = format!("{full}@{version} from {}", dir.display());
-    let mut marks = override_marks().lock().unwrap_or_else(|e| e.into_inner());
-    if marks.insert(key) {
-        eprintln!(
-            "warning: using local source for `{full}@{version}` from `{}` (registry cache overridden)",
-            dir.display()
-        );
+    {
+        let mut marks = override_marks().lock().unwrap_or_else(|e| e.into_inner());
+        if !marks.insert(key) {
+            return;
+        }
     }
+    let root = dir.parent().unwrap_or(dir);
+    {
+        let mut roots = override_roots().lock().unwrap_or_else(|e| e.into_inner());
+        if !roots.insert(root.to_path_buf()) {
+            return;
+        }
+    }
+    let theme = diagnostics::theme::AuraTheme::active();
+    eprintln!(
+        "{} using local source for {}{} from {} ({}; registry cache overridden)",
+        theme.paint(
+            diagnostics::theme::AuraColor::Orange,
+            "warning:"
+        ),
+        theme.paint(
+            diagnostics::theme::AuraColor::Cyan,
+            &format!("`{full}`")
+        ),
+        theme.paint(
+            diagnostics::theme::AuraColor::Muted,
+            &format!("@{version}")
+        ),
+        theme.paint(
+            diagnostics::theme::AuraColor::Cyan,
+            &format!("`{}`", dir.display())
+        ),
+        theme.paint(
+            diagnostics::theme::AuraColor::Muted,
+            "further local packages in this tree are silent"
+        )
+    );
 }
 
 pub fn local_override_used(full: &str) -> bool {
