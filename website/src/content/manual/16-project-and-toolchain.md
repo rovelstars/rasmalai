@@ -340,6 +340,16 @@ bench "vec add" {
 }
 ```
 
+## Terminal output
+
+`rnx` keeps machine output on stdout and status on stderr. Piping stdout never changes the shape of a result line, and it never turns on cursor movement: a live block appears only when stderr is a terminal. This is what keeps `rnx build | grep artifact` and CI logs stable.
+
+Color follows the usual rules. `--color=auto` is the default, `--color=always` keeps escapes in a pipe, and `--color=never` or `--no-color` strips them. `NO_COLOR`, `TERM=dumb`, and `CLICOLOR=0` turn color off; `CLICOLOR_FORCE` and `FORCE_COLOR` turn it on for a pipe. The 256-color and truecolor paths are chosen from `COLORTERM`.
+
+`rnx test`, `rnx bench`, `rnx build`, `rnx check`, `rnx download`, and `rnx fetch` draw one small block while work is in flight: a spinner, the current item, a count, and elapsed time. The block is cleared before any permanent line, so failures and summaries are never overwritten. In a terminal, a passing test rolls through the block and only the summary remains; failures always print in full. `RNX_NO_PROGRESS=1` disables the block, and `--quiet` keeps only results and errors.
+
+Wording follows one rule: labels and command names stay lowercase (`artifact:`, `tests:`, `bench`, `build`), while a sentence starts with a capital and ends with a period. `rnx test` ends with a `tests:` summary; `rnx bench` ends with `Ran N benchmark blocks in X.` and reports each result as `bench <name> ... <mean> ns/iter (+/- <sd>) [<iters> iters]`.
+
 ## Documentation
 
 A `/** */` block documents the item that follows it: first paragraph of description, then one tag per line: `@param <name>`, `@returns`, `@throws`, `@example`, `@see`. `//!` lines document the module itself. Plain `//` remarks never attach to items. `pub` items without `/** */` docs warn as `L004` under `rnx lint`.
@@ -874,6 +884,7 @@ listed at the end and are not part of the public contract.
 | `RNX_JOBS` | available parallelism | Parallel worker count. |
 | `RNX_MEMORY_CAP` | min(50% RAM, 8 GB) | Build memory cap. Accepts bytes or `KB`/`MB`/`GB` suffixes. |
 | `RNX_SHOW_PERF_NOTES` | off | `1` shows P101/P102 performance notes. |
+| `RNX_NO_PROGRESS` | unset | Any non-empty value disables live progress blocks; results stay line based. |
 | `RNX_DENY_PERF_LINTS` | unset | Comma list of P-codes to promote to errors. `--deny-perf-lints` wins. |
 | `RNX_LINK_TIME` | off | Any non-empty value prints linker phase timings to stderr. |
 | `RNX_INSTALLATION_MANAGED` | unset | Build-time reason shown after `install: managed:`. Distributors only. |

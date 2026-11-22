@@ -102,6 +102,7 @@ pub fn seed_stdlib_cache_local(
         default_registry,
         overrides,
         &have,
+        &|_, _| {},
     )
     .map_err(|e| seed_error(&base, e))?;
     finish_seed(&base, fetched, &requirements, &project_pin_path(scope_root))

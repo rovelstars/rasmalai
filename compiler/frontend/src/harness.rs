@@ -317,6 +317,7 @@ pub fn synthesize_main(names: &[String], files: &[(String, String)]) -> A::Spann
             let whole = format!("whole_{base}");
             let frac = format!("frac_{base}");
             let fracs = format!("fracs_{base}");
+            stmts.push(print_stmt(vec![concat(vec![strlit("  ↻ "), strlit(&padded)])]));
             stmts.push(stmt(A::Stmt::Var {
                 mutable: true,
                 is_static: false,

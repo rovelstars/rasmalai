@@ -466,7 +466,7 @@ fn update_all_reports_old_to_new() {
     let out = run(&root, &cache, &["update"]);
     assert!(out.status.success(), "{}", combined(&out));
     assert!(
-        combined(&out).contains("updated @acme/widget 1.2.0 -> 1.3.0"),
+        combined(&out).contains("Updated @acme/widget from 1.2.0 to 1.3.0."),
         "{}",
         combined(&out)
     );
@@ -502,7 +502,7 @@ fn update_named_only_moves_named() {
     let out = run(&root, &cache, &["update", "@acme/widget"]);
     assert!(out.status.success(), "{}", combined(&out));
     assert!(
-        combined(&out).contains("updated @acme/widget 1.2.0 -> 1.3.0"),
+        combined(&out).contains("Updated @acme/widget from 1.2.0 to 1.3.0."),
         "{}",
         combined(&out)
     );
@@ -541,7 +541,7 @@ fn update_latest_selector_pins_digest() {
     let out = run(&root, &cache, &["update", "@acme/widget@latest"]);
     assert!(out.status.success(), "{}", combined(&out));
     assert!(
-        combined(&out).contains("updated @acme/widget 1.2.0 -> 1.3.0"),
+        combined(&out).contains("Updated @acme/widget from 1.2.0 to 1.3.0."),
         "{}",
         combined(&out)
     );
@@ -602,7 +602,7 @@ fn update_keeps_consumer_native_override() {
     let out = run(&root, &cache, &["update"]);
     assert!(out.status.success(), "{}", combined(&out));
     assert!(
-        combined(&out).contains("updated @acme/widget 1.2.0 -> 1.3.0"),
+        combined(&out).contains("Updated @acme/widget from 1.2.0 to 1.3.0."),
         "{}",
         combined(&out)
     );
@@ -639,7 +639,7 @@ fn update_picks_highest_engine_compatible() {
     let out = run(&root, &cache, &["update"]);
     assert!(out.status.success(), "{}", combined(&out));
     assert!(
-        combined(&out).contains("updated @acme/widget 1.2.0 -> 1.2.5"),
+        combined(&out).contains("Updated @acme/widget from 1.2.0 to 1.2.5."),
         "{}",
         combined(&out)
     );
@@ -727,7 +727,7 @@ fn update_major_hold_names_move_and_respects_engine_filter() {
     let out = run(&root, &cache, &["update"]);
     assert!(out.status.success(), "{}", combined(&out));
     assert!(
-        combined(&out).contains("held @acme/widget at 1.2.0 (major move to 2.0.0 needs --major)"),
+        combined(&out).contains("Held @acme/widget at 1.2.0; moving to 2.0.0 needs --major."),
         "{}",
         combined(&out)
     );
@@ -736,7 +736,7 @@ fn update_major_hold_names_move_and_respects_engine_filter() {
     let out = run(&root, &cache, &["update", "--major"]);
     assert!(out.status.success(), "{}", combined(&out));
     assert!(
-        combined(&out).contains("updated @acme/widget 1.2.0 -> 2.0.0"),
+        combined(&out).contains("Updated @acme/widget from 1.2.0 to 2.0.0."),
         "{}",
         combined(&out)
     );

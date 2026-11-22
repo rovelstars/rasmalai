@@ -139,6 +139,10 @@ fn bench_block(display: &str, internal: &str) -> Vec<A::Spanned<A::Stmt>> {
     let ctr = varname(&base, "i");
     let t0 = varname(&base, "t0");
     let mut stmts = vec![
+        expr_stmt(macro_call(
+            "std.io.println",
+            vec![strlit(&format!("  ↻ bench {display}"))],
+        )),
         var(&iters, "Int", intlit(1)),
         var(&dt, "Int", intlit(0)),
         var(&t0, "Int", intlit(0)),

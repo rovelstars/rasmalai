@@ -81,11 +81,7 @@ pub fn render_bus(
     for (i, step) in steps.iter().enumerate() {
         let last = i + 1 == steps.len();
         let branch = if last { "└──" } else { "├──" };
-        let node = if last {
-            theme.paint(AuraColor::Green, "●")
-        } else {
-            theme.paint(AuraColor::Cyan, "○")
-        };
+        let node = theme.paint(AuraColor::Green, "✓");
         let mut detail = step.detail.clone();
         if detail.chars().count() > detail_width {
             detail = detail.chars().take(detail_width).collect();
@@ -117,8 +113,10 @@ pub fn render_bus(
         + plain_bytes_len(size_bytes);
     let dashes = BUS_WIDTH.saturating_sub(badge_plain_len + 1);
     out.push_str(&badge);
-    out.push(' ');
-    out.push_str(&theme.paint(AuraColor::Muted, &"─".repeat(dashes)));
+    if dashes > 0 {
+        out.push(' ');
+        out.push_str(&theme.paint(AuraColor::Muted, &"─".repeat(dashes)));
+    }
     out.push('\n');
     let total_num = format!("{:>6.2}", total_ms);
     let total_styled = format!(
@@ -145,6 +143,13 @@ fn pad_left(styled: &str, plain: usize) -> String {
 }
 
 pub fn colorize_test_line(theme: &AuraTheme, line: &str) -> String {
+    if let Some(rest) = line.strip_prefix("  ↻") {
+        return format!(
+            "  {}{}",
+            theme.paint(AuraColor::Cyan, "↻"),
+            theme.paint(AuraColor::Muted, rest)
+        );
+    }
     if let Some(rest) = line.strip_prefix("  ✓") {
         return format!(
             "  {}{}",
@@ -173,7 +178,37 @@ pub fn colorize_test_line(theme: &AuraTheme, line: &str) -> String {
     if !line.starts_with(' ') && !line.is_empty() && line.contains("::") && !line.contains(' ') {
         return theme.paint(AuraColor::Cyan, line);
     }
+    if let Some(rest) = line.strip_prefix("tests: ") {
+        let mut out = String::from("tests: ");
+        let mut parts = rest.splitn(2, ',');
+        if let Some(passed) = parts.next() {
+            let (num, tail) = split_leading_number(passed);
+            out.push_str(&theme.paint(AuraColor::Green, num));
+            out.push_str(&theme.paint(AuraColor::Muted, tail));
+        }
+        if let Some(failed) = parts.next() {
+            out.push_str(&theme.paint(AuraColor::Muted, ","));
+            let (num, tail) = split_leading_number(failed);
+            let color = if num.trim() == "0" {
+                AuraColor::Green
+            } else {
+                AuraColor::Red
+            };
+            out.push_str(&theme.paint(color, num));
+            out.push_str(&theme.paint(AuraColor::Muted, tail));
+        }
+        return out;
+    }
     line.to_string()
+}
+
+fn split_leading_number(text: &str) -> (&str, &str) {
+    let start = text.find(|c: char| c.is_ascii_digit()).unwrap_or(text.len());
+    let digits = text[start..]
+        .find(|c: char| !c.is_ascii_digit())
+        .map(|i| start + i)
+        .unwrap_or(text.len());
+    (&text[..digits], &text[digits..])
 }
 
 fn paint_duration_tail(theme: &AuraTheme, rest: &str) -> String {
@@ -241,8 +276,8 @@ mod tests {
             Some(4.8),
         );
         assert!(out.contains("┌─ build: miner [release] (x86_64-linux)"), "{out}");
-        assert!(out.contains("├── ○ parse"), "{out}");
-        assert!(out.contains("└── ● link"), "{out}");
+        assert!(out.contains("├── ✓ parse"), "{out}");
+        assert!(out.contains("└── ✓ link"), "{out}");
         assert!(out.contains("artifact: bin/miner [356 KB]"), "{out}");
         assert!(out.contains("total:"), "{out}");
         assert!(out.contains("peak:     4.80 MB"), "{out}");

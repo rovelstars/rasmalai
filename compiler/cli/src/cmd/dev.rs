@@ -37,7 +37,7 @@ pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun:
                     .enable_all()
                     .build()
                     .unwrap_or_else(|e| {
-                        eprintln!("cannot start async runtime: {e}");
+                        eprintln!("error: cannot start the async runtime: {e}");
                         std::process::exit(1);
                     });
                 if let Err(e) = rt.block_on(cli::mcp::serve_with_dev(link)) {
@@ -46,11 +46,11 @@ pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun:
                 }
                 return;
             }
-            println!("[rnx dev] watching {}", entry_file.display());
+            println!("Watching {} for changes. Press Ctrl-C to stop.", entry_file.display());
             match runner.run_entry() {
-                Ok(v) => println!("[rnx dev] {entry}() -> {v}"),
+                Ok(v) => println!("{entry}() returned {v}."),
                 Err(e) => {
-                    eprintln!("[rnx dev] entry failed: {e:?}");
+                    eprintln!("Entry failed: {e:?}");
                     std::process::exit(1);
                 }
             }
@@ -58,23 +58,23 @@ pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun:
                 match runner.poll(std::time::Duration::from_millis(500)) {
                     None => {}
                     Some(cli::dev::DevEvent::Swapped { names, elapsed_ms }) => {
-                        println!("[rnx dev] hot swapped {} (build {elapsed_ms}ms)", names.join(", "));
+                        println!("Hot swapped {} in {elapsed_ms} ms.", names.join(", "));
                         if runner.should_rerun() {
                             match runner.run_entry() {
-                                Ok(v) => println!("[rnx dev] {entry}() -> {v}"),
-                                Err(e) => eprintln!("[rnx dev] entry failed: {e:?}"),
+                                Ok(v) => println!("{entry}() returned {v}."),
+                                Err(e) => eprintln!("Entry failed: {e:?}"),
                             }
                         }
                     }
                     Some(cli::dev::DevEvent::Restarted { reason }) => {
-                        println!("[rnx dev] structural change detected in {reason} -> restarting");
+                        println!("Rebuilt after a structural change in {reason}.");
                         match runner.run_entry() {
-                            Ok(v) => println!("[rnx dev] {entry}() -> {v}"),
-                            Err(e) => eprintln!("[rnx dev] entry failed: {e:?}"),
+                            Ok(v) => println!("{entry}() returned {v}."),
+                            Err(e) => eprintln!("Entry failed: {e:?}"),
                         }
                     }
                     Some(cli::dev::DevEvent::Broken { count }) => {
-                        eprintln!("[rnx dev] {count} error(s); keeping last valid build");
+                        eprintln!("Build failed with {count} error(s); keeping the last good build.");
                     }
                 }
             }

@@ -520,9 +520,32 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             }
             let wall = std::time::Instant::now();
             let theme = diagnostics::theme::AuraTheme::active();
+            let live_theme = diagnostics::theme::AuraTheme::for_stream(diagnostics::theme::Stream::Stderr);
+            let live_on = !quiet && cli::term::live_supported();
+            let live = std::sync::Arc::new(std::sync::Mutex::new(cli::term::Live::new(quiet)));
+            let compile_ticker = live_on.then(|| {
+                let live = live.clone();
+                let name = cli::package_name_for(&input);
+                let detail = format!("{}, {effective}", profile_name(release));
+                cli::term::Ticker::start(move |frame| {
+                    if let Ok(mut ui) = live.lock() {
+                        ui.set(vec![cli::term::row(
+                            &live_theme,
+                            cli::term::Mark::Running(frame),
+                            &format!("Compiling {name}"),
+                            &detail,
+                            cli::term::width(),
+                        )]);
+                    }
+                })
+            });
             let built = match cli::build_files_staged_cfg(&input, &entry, release, opt_level, compile_target, &cfg) {
                 Ok(b) => b,
                 Err(errs) => {
+                    drop(compile_ticker);
+                    if let Ok(mut ui) = live.lock() {
+                        ui.finish();
+                    }
                     eprint!(
                         "{}",
                         cli::report::render_compile_errors(
@@ -534,6 +557,10 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     std::process::exit(1);
                 }
             };
+            drop(compile_ticker);
+            if let Ok(mut ui) = live.lock() {
+                ui.finish();
+            }
             let perf_diags: Vec<diagnostics::Diagnostic> = built
                 .perf_diags
                 .iter()
@@ -686,6 +713,22 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 ),
                 allow_write: std::path::Path::new(&out_path).is_file(),
             };
+            let link_ticker = live_on.then(|| {
+                let live = live.clone();
+                let name = cli::package_name_for(&input);
+                let detail = format!("{}, {effective}", profile_name(release));
+                cli::term::Ticker::start(move |frame| {
+                    if let Ok(mut ui) = live.lock() {
+                        ui.set(vec![cli::term::row(
+                            &live_theme,
+                            cli::term::Mark::Running(frame),
+                            &format!("Linking {name}"),
+                            &detail,
+                            cli::term::width(),
+                        )]);
+                    }
+                })
+            });
             let link_result = if object_macho {
                 let mut user_objects = user_objects;
                 user_objects.extend(foreign_libs);
@@ -853,6 +896,10 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     }
                 }
             };
+            drop(link_ticker);
+            if let Ok(mut ui) = live.lock() {
+                ui.finish();
+            }
             if let Err(e) = link_result {
                 match &e {
                     linker::LinkError::Pack(_) => eprintln!(

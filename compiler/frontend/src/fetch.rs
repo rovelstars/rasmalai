@@ -795,6 +795,19 @@ pub fn download_packages(
     overrides: &BTreeMap<String, RegistryConfig>,
     scope_root: Option<&Path>,
 ) -> Result<Vec<FetchedPackage>, Diagnostic> {
+    download_packages_with(requirements, default_registry, overrides, scope_root, &|_, _| {})
+}
+
+/// Same as [`download_packages`], calling `on_fetched` from each worker as a
+/// package lands. The callback must be thread-safe and must not print to the
+/// same stream as a live block without its own lock.
+pub fn download_packages_with(
+    requirements: &BTreeMap<String, String>,
+    default_registry: Option<&RegistryConfig>,
+    overrides: &BTreeMap<String, RegistryConfig>,
+    scope_root: Option<&Path>,
+    on_fetched: &(dyn Fn(&str, &str) + Send + Sync),
+) -> Result<Vec<FetchedPackage>, Diagnostic> {
     let _origin = origin_direct_guard();
     let (root, have) = match scope_root {
         Some(scope) => {
@@ -807,9 +820,18 @@ pub fn download_packages(
         }
         None => (store_root(), scan_cache_have()),
     };
-    Ok(ensure_registry_requirements_in(&root, requirements, default_registry, overrides, &have)?
+    Ok(
+        ensure_registry_requirements_in(
+            &root,
+            requirements,
+            default_registry,
+            overrides,
+            &have,
+            on_fetched,
+        )?
         .into_iter()
-        .collect())
+        .collect(),
+    )
 }
 
 fn registry_scope(full: &str) -> Option<&str> {
@@ -4077,6 +4099,7 @@ pub fn ensure_registry_requirements(
         default_registry,
         overrides,
         have,
+        &|_, _| {},
     )
 }
 
@@ -4086,6 +4109,7 @@ pub fn ensure_registry_requirements_in(
     default_registry: Option<&RegistryConfig>,
     overrides: &BTreeMap<String, RegistryConfig>,
     have: &[HaveEntry],
+    on_fetched: &(dyn Fn(&str, &str) + Send + Sync),
 ) -> Result<Vec<FetchedPackage>, Diagnostic> {
     let mut by_base: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for (full, range) in requirements {
@@ -4136,6 +4160,9 @@ pub fn ensure_registry_requirements_in(
                         break;
                     };
                 let got = ensure_node(cache_root, base, &api_base, node, &share, &auth);
+                    if got.is_ok() {
+                        on_fetched(&node.full, &node.version);
+                    }
                     let mut slot = slots[i].lock().unwrap_or_else(|e| e.into_inner());
                     *slot = Some(got);
                 });

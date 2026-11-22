@@ -1,3 +1,4 @@
+use diagnostics::theme::{AuraColor, AuraTheme};
 use std::path::Path;
 
 pub const SHORT: &str = env!("CARGO_PKG_VERSION");
@@ -25,13 +26,27 @@ pub fn display_built(built: &str) -> &str {
     if built.is_empty() { "unknown" } else { built }
 }
 
-pub fn stdlib_label(vendor: Option<&str>, checkout: Option<&Path>) -> String {
+pub struct StdlibLabel {
+    pub kind: &'static str,
+    pub path: Option<String>,
+}
+
+pub fn stdlib_label(vendor: Option<&str>, checkout: Option<&Path>) -> StdlibLabel {
     if let Some(dir) = vendor.map(str::trim).filter(|dir| !dir.is_empty()) {
-        return format!("{dir} (RNX_VENDOR_DIR)");
+        return StdlibLabel {
+            kind: "vendor directory",
+            path: Some(dir.to_string()),
+        };
     }
     match checkout {
-        Some(path) => format!("{} (source checkout; @std/* auto-vendored)", path.display()),
-        None => "registry cache".to_string(),
+        Some(path) => StdlibLabel {
+            kind: "source checkout",
+            path: Some(path.display().to_string()),
+        },
+        None => StdlibLabel {
+            kind: "registry cache",
+            path: None,
+        },
     }
 }
 
@@ -42,22 +57,55 @@ pub struct BuildRecord<'a> {
     pub install: &'a str,
     pub binary: &'a str,
     pub stdlib: &'a str,
+    pub stdlib_path: Option<&'a str>,
     pub target: &'a str,
     pub llvm: &'a str,
 }
 
+fn field(out: &mut String, theme: &AuraTheme, name: &str, value: &str) {
+    let padded = format!("{name:<7}");
+    out.push_str("  ");
+    out.push_str(&theme.paint(AuraColor::Muted, &padded));
+    out.push(' ');
+    out.push_str(value);
+    out.push('\n');
+}
+
 pub fn render_long(r: &BuildRecord<'_>) -> String {
-    format!(
-        "{}\ncommit: {}\nbuilt: {}\ninstall: {}\nbinary: {}\nstdlib: {}\ntarget: {}\nllvm: {}",
-        r.version,
-        display_commit(r.commit),
-        display_built(r.built),
-        r.install,
-        r.binary,
-        r.stdlib,
-        r.target,
-        r.llvm
-    )
+    render_long_with(&AuraTheme::active(), r)
+}
+
+pub fn render_long_with(theme: &AuraTheme, r: &BuildRecord<'_>) -> String {
+    let theme = *theme;
+    let mut out = String::new();
+    out.push_str(&theme.paint(AuraColor::Purple, r.version));
+    out.push_str("\n\n");
+    field(&mut out, &theme, "commit", &theme.paint(AuraColor::Cyan, display_commit(r.commit)));
+    field(&mut out, &theme, "built", display_built(r.built));
+    field(&mut out, &theme, "install", r.install);
+    field(&mut out, &theme, "binary", r.binary);
+    let stdlib_color = if r.stdlib == "registry cache" {
+        AuraColor::Muted
+    } else {
+        AuraColor::Green
+    };
+    let padded = format!("{:<7}", "stdlib");
+    out.push_str("  ");
+    out.push_str(&theme.paint(AuraColor::Muted, &padded));
+    out.push(' ');
+    out.push_str(&theme.paint(stdlib_color, r.stdlib));
+    out.push('\n');
+    if let Some(path) = r.stdlib_path {
+        out.push_str("          ");
+        out.push_str(&theme.paint(AuraColor::Muted, path));
+        out.push('\n');
+    }
+    field(&mut out, &theme, "target", r.target);
+    field(&mut out, &theme, "llvm", r.llvm);
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 pub fn long_version() -> String {
@@ -75,7 +123,8 @@ pub fn long_version() -> String {
         built: BUILD_TIMESTAMP,
         install: &install_kind_label(Some(INSTALL_REASON)),
         binary: &binary,
-        stdlib: &stdlib,
+        stdlib: stdlib.kind,
+        stdlib_path: stdlib.path.as_deref(),
         target: TARGET_TRIPLE,
         llvm: llvm::LLVM_VERSION,
     })
@@ -93,6 +142,7 @@ mod tests {
             install,
             binary: "/home/dev/.cargo/bin/rnx",
             stdlib: "registry cache",
+            stdlib_path: None,
             target: "x86_64-unknown-linux-gnu",
             llvm: "llvm22",
         }
@@ -129,66 +179,88 @@ mod tests {
 
     #[test]
     fn stdlib_labels_name_the_source() {
-        assert_eq!(stdlib_label(None, None), "registry cache");
+        let registry = stdlib_label(None, None);
+        assert_eq!(registry.kind, "registry cache");
+        assert_eq!(registry.path, None);
+        let vendor = stdlib_label(Some("/src/stdlib"), None);
+        assert_eq!(vendor.kind, "vendor directory");
+        assert_eq!(vendor.path.as_deref(), Some("/src/stdlib"));
+        assert_eq!(stdlib_label(Some("  "), None).kind, "registry cache");
+        let checkout = stdlib_label(None, Some(Path::new("/repo/compiler/stdlib/src")));
+        assert_eq!(checkout.kind, "source checkout");
         assert_eq!(
-            stdlib_label(Some("/src/stdlib"), None),
-            "/src/stdlib (RNX_VENDOR_DIR)"
+            checkout.path.as_deref(),
+            Some("/repo/compiler/stdlib/src")
         );
-        assert_eq!(stdlib_label(Some("  "), None), "registry cache");
-        assert_eq!(
-            stdlib_label(None, Some(Path::new("/repo/compiler/stdlib/src"))),
-            "/repo/compiler/stdlib/src (source checkout; @std/* auto-vendored)"
+        let both = stdlib_label(
+            Some("/vendor"),
+            Some(Path::new("/repo/compiler/stdlib/src")),
         );
-        assert_eq!(
-            stdlib_label(
-                Some("/vendor"),
-                Some(Path::new("/repo/compiler/stdlib/src"))
-            ),
-            "/vendor (RNX_VENDOR_DIR)"
-        );
+        assert_eq!(both.kind, "vendor directory");
+        assert_eq!(both.path.as_deref(), Some("/vendor"));
     }
 
     #[test]
     fn long_shape_standalone() {
-        let text = render_long(&record("94399f4", "standalone"));
+        let text = render_long_with(&AuraTheme::plain(), &record("94399f4", "standalone"));
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 8);
+        assert_eq!(lines.len(), 9);
         assert_eq!(lines[0], "0.2.0");
-        assert_eq!(lines[1], "commit: 94399f4");
-        assert_eq!(lines[2], "built: 2026-10-26T00:00:00Z");
-        assert_eq!(lines[3], "install: standalone");
-        assert_eq!(lines[4], "binary: /home/dev/.cargo/bin/rnx");
-        assert_eq!(lines[5], "stdlib: registry cache");
-        assert_eq!(lines[6], "target: x86_64-unknown-linux-gnu");
-        assert_eq!(lines[7], "llvm: llvm22");
+        assert_eq!(lines[1], "");
+        assert_eq!(lines[2], "  commit  94399f4");
+        assert_eq!(lines[3], "  built   2026-10-26T00:00:00Z");
+        assert_eq!(lines[4], "  install standalone");
+        assert_eq!(lines[5], "  binary  /home/dev/.cargo/bin/rnx");
+        assert_eq!(lines[6], "  stdlib  registry cache");
+        assert_eq!(lines[7], "  target  x86_64-unknown-linux-gnu");
+        assert_eq!(lines[8], "  llvm    llvm22");
         assert_eq!(format!("rnx {text}").lines().next().unwrap(), "rnx 0.2.0");
     }
 
     #[test]
-    fn long_shape_managed_and_unknown_commit() {
-        let text = render_long(&record("", "managed:managed by apt: apt upgrade rnx"));
+    fn long_shape_puts_the_stdlib_path_below_its_kind() {
+        let mut rec = record("94399f4", "standalone");
+        rec.stdlib = "source checkout";
+        rec.stdlib_path = Some("/repo/compiler/stdlib/src");
+        let text = render_long_with(&AuraTheme::plain(), &rec);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 8);
+        assert_eq!(lines[6], "  stdlib  source checkout");
+        assert_eq!(lines[7], "          /repo/compiler/stdlib/src");
+        assert_eq!(lines[8], "  target  x86_64-unknown-linux-gnu");
+        assert_eq!(lines[9], "  llvm    llvm22");
+    }
+
+    #[test]
+    fn long_shape_managed_and_unknown_commit() {
+        let text = render_long_with(
+            &AuraTheme::plain(),
+            &record("", "managed:managed by apt: apt upgrade rnx"),
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 9);
         assert_eq!(lines[0], "0.2.0");
-        assert_eq!(lines[1], "commit: unknown");
-        assert_eq!(lines[3], "install: managed:managed by apt: apt upgrade rnx");
+        assert_eq!(lines[2], "  commit  unknown");
+        assert_eq!(lines[4], "  install managed:managed by apt: apt upgrade rnx");
     }
 
     #[test]
     fn long_shape_unknown_built_from_opt_out() {
         let mut rec = record("94399f4", "standalone");
         rec.built = "";
-        let text = render_long(&rec);
+        let text = render_long_with(&AuraTheme::plain(), &rec);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 8);
-        assert_eq!(lines[2], "built: unknown");
+        assert_eq!(lines.len(), 9);
+        assert_eq!(lines[3], "  built   unknown");
     }
 
     #[test]
     fn install_kind_empty_reason_is_standalone() {
         assert_eq!(install_kind_label(Some("")), "standalone");
-        let text = render_long(&record("94399f4", &install_kind_label(None)));
-        assert!(text.lines().any(|l| l == "install: standalone"), "{text}");
+        let text = render_long_with(
+            &AuraTheme::plain(),
+            &record("94399f4", &install_kind_label(None)),
+        );
+        assert!(text.lines().any(|l| l == "  install standalone"), "{text}");
     }
 
     #[test]

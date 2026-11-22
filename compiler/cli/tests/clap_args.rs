@@ -201,3 +201,124 @@ fn test_no_color_strips_escapes() {
     assert!(!stdout.contains('\x1b'), "{stdout}");
     assert!(!stderr.contains('\x1b'), "{stderr}");
 }
+
+#[test]
+fn piped_test_output_stays_line_based() {
+    let root = proj(
+        "pipedtest",
+        &[
+            ("src/main.rnx", "fn Main(): Int {\n    return 0;\n}\n"),
+            (
+                "tests/t.rnx",
+                "test fn test_ok() {\n    assert(true, \"ok\");\n}\n",
+            ),
+        ],
+    );
+    let (code, stdout, stderr) = run(&["test"], &root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("tests: 1 passed, 0 failed in "), "{stdout}");
+    assert!(!stdout.contains('\x1b'), "piped stdout carried escapes: {stdout:?}");
+    assert!(!stderr.contains('\x1b'), "piped stderr carried escapes: {stderr:?}");
+    assert!(!stdout.contains('\r'), "piped stdout carried cursor returns: {stdout:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn tty_test_output_redraws_a_live_block() {    if std::process::Command::new("script")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skip: util-linux script is unavailable");
+        return;
+    }
+    let root = proj(
+        "ttytest",
+        &[
+            ("src/main.rnx", "fn Main(): Int {\n    return 0;\n}\n"),
+            (
+                "tests/t.rnx",
+                "test fn test_ok() {\n    assert(true, \"ok\");\n}\n",
+            ),
+        ],
+    );
+    let command = format!("{} test", rnx());
+    let out = std::process::Command::new("script")
+        .args(["-qec", &command, "/dev/null"])
+        .current_dir(root.path())
+        .env("TERM", "xterm-256color")
+        .env_remove("NO_COLOR")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned()
+        + &String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success(),
+        "status {:?}\n{text}",
+        out.status
+    );
+    assert!(
+        text.contains("tests: ")
+            && text.contains("passed")
+            && text.contains("failed in "),
+        "{text}"
+    );
+    assert!(text.contains("\x1b["), "no color on a TTY: {text:?}");
+    assert!(
+        text.contains("\x1b[J") || text.contains("\x1b[2K"),
+        "no live block redraw: {text:?}"
+    );
+}
+
+#[test]
+fn forced_color_keeps_a_pipe_line_based() {
+    let root = proj(
+        "forcedcolor",
+        &[
+            ("src/main.rnx", "fn Main(): Int {\n    return 0;\n}\n"),
+            (
+                "tests/t.rnx",
+                "test fn test_ok() {\n    assert(true, \"ok\");\n}\n",
+            ),
+        ],
+    );
+    let (code, stdout, stderr) = run(&["--color=always", "test"], &root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("\x1b["), "forced color missing: {stdout:?}");
+    assert!(
+        !stdout.contains("\x1b[J") && !stdout.contains("\x1b[2K"),
+        "cursor control leaked into a pipe: {stdout:?}"
+    );
+    assert!(!stdout.contains('\r'), "carriage return leaked: {stdout:?}");
+}
+
+#[test]
+fn terminal_color_policy_is_explicit() {
+    let dir = crate::scratch::dir("clap-color");
+    let exec = |args: &[&str], envs: &[(&str, &str)]| {
+        let mut cmd = std::process::Command::new(rnx());
+        cmd.args(args).current_dir(dir.path());
+        cmd.env_remove("NO_COLOR").env_remove("CLICOLOR").env_remove("CLICOLOR_FORCE").env_remove("FORCE_COLOR").env("TERM", "xterm-256color");
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (stdout, stderr) = exec(&["--color=always", "explain", "E108"], &[]);
+    assert!(stdout.contains("\x1b["), "{stdout}{stderr}");
+    let (stdout, _) = exec(&["--color=never", "explain", "E108"], &[]);
+    assert!(!stdout.contains('\x1b'), "{stdout}");
+    let (stdout, _) = exec(&["explain", "E108"], &[("NO_COLOR", "1")]);
+    assert!(!stdout.contains('\x1b'), "{stdout}");
+    let (stdout, _) = exec(&["explain", "E108"], &[("TERM", "dumb")]);
+    assert!(!stdout.contains('\x1b'), "{stdout}");
+    let (stdout, _) = exec(&["explain", "E108"], &[("CLICOLOR_FORCE", "1")]);
+    assert!(stdout.contains("\x1b["), "{stdout}");
+}

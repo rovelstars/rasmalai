@@ -10,10 +10,18 @@ pub(super) fn run_init(name: Option<String>) {
             });
             match cli::init_project(name, &cwd) {
                 Ok(root) => {
-                    println!("Initialized project `{name}` in {}", root.display());
-                    println!("  manifest: Project.config");
-                    println!("  entries.main: src/main.rnx");
-                    println!("Next: cd {name} && rnx run");
+                    let theme = diagnostics::theme::AuraTheme::active();
+                    println!(
+                        "Initialized project {} in {}.",
+                        theme.paint(diagnostics::theme::AuraColor::Purple, &format!("`{name}`")),
+                        root.display()
+                    );
+                    println!("  manifest  Project.config");
+                    println!("  entry     src/main.rnx");
+                    println!(
+                        "{} cd {name} && rnx run",
+                        theme.paint(diagnostics::theme::AuraColor::Purple, "Next:")
+                    );
                 }
                 Err(e) => {
                     eprintln!("error: {e}");

@@ -267,7 +267,7 @@ fn fix_on_clean_reports_nothing_to_do() {
     let pre = std::fs::read(&main).unwrap();
     let (code, stdout, stderr) = build(&root, &["--fix"]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("no performance lints to fix"), "{stdout}");
+    assert!(stdout.contains("No performance lints to fix."), "{stdout}");
     assert!(stdout.contains("artifact: "), "{stdout}");
     assert_eq!(std::fs::read(&main).unwrap(), pre);
     let _ = std::fs::remove_dir_all(&root);

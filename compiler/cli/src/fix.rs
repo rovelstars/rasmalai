@@ -1232,7 +1232,7 @@ pub fn run_fix(req: &FixRequest) -> FixOutcome {
     }
     if plans.is_empty() {
         if refusals.is_empty() {
-            println!("no performance lints to fix");
+            println!("No performance lints to fix.");
             return FixOutcome::Done;
         }
         for r in &refusals {

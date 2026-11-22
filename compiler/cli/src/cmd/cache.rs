@@ -1,44 +1,61 @@
+use diagnostics::theme::{AuraColor, AuraTheme};
 use frontend::cache;
 
+fn size(theme: &AuraTheme, bytes: u64) -> String {
+    cli::telemetry::fmt_bytes(theme, bytes)
+}
+
+fn row(theme: &AuraTheme, label: &str, amount: &str, detail: &str) {
+    let label = format!("{label:<9}");
+    let amount = format!("{amount:>10}");
+    println!(
+        "{}{}{}{}",
+        theme.paint(AuraColor::Purple, &label),
+        theme.paint(AuraColor::Orange, &amount),
+        if detail.is_empty() { "" } else { "  " },
+        theme.paint(AuraColor::Muted, detail)
+    );
+}
+
 pub(super) fn run_cache(action: cli::args::CacheAction) {
+    let theme = AuraTheme::active();
     match action {
         cli::args::CacheAction::Prune { max_bytes } => {
             let cap = max_bytes.unwrap_or(cache::DEFAULT_RETENTION_BYTES);
             let global = cache::global_cache_dir();
             match cache::prune_lru(&global, cap) {
-                Ok(freed) => {
-                    println!(
-                        "pruned {} bytes from {} (usage now {} bytes)",
-                        freed,
-                        global.display(),
-                        cache::cache_usage_bytes(&global)
-                    );
-                }
+                Ok(freed) => println!(
+                    "Pruned {} from the global cache; usage is now {}.",
+                    size(&theme, freed),
+                    size(&theme, cache::cache_usage_bytes(&global))
+                ),
                 Err(e) => {
                     eprintln!("error: cannot prune {}: {e}", global.display());
                     std::process::exit(1);
                 }
             }
             let freed_old = frontend::fetch::prune_old_registry_tree();
-            println!("removed old registry/ tree ({} bytes freed)", freed_old);
+            if freed_old > 0 {
+                println!(
+                    "Removed the old registry tree, freeing {}.",
+                    size(&theme, freed_old)
+                );
+            }
             let freed_objects = frontend::products::prune_global_objects_lru(cap);
             println!(
-                "pruned {} product-object bytes (usage now {} bytes)",
-                freed_objects,
-                frontend::products::global_objects_usage_bytes()
+                "Pruned {} of product objects; usage is now {}.",
+                size(&theme, freed_objects),
+                size(&theme, frontend::products::global_objects_usage_bytes())
             );
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let root = frontend::project::find_project_root(&cwd).unwrap_or(cwd);
             let project = cache::project_cache_dir(&root);
             match cache::prune_lru(&project, cap) {
-                Ok(freed) => {
-                    println!(
-                        "pruned {} bytes from {} (usage now {} bytes)",
-                        freed,
-                        project.display(),
-                        cache::cache_usage_bytes(&project)
-                    );
-                }
+                Ok(freed) => println!(
+                    "Pruned {} from the project cache; usage is now {}.",
+                    size(&theme, freed),
+                    size(&theme, cache::cache_usage_bytes(&project))
+                ),
                 Err(e) => {
                     eprintln!("error: cannot prune {}: {e}", project.display());
                     std::process::exit(1);
@@ -47,22 +64,40 @@ pub(super) fn run_cache(action: cli::args::CacheAction) {
         }
         cli::args::CacheAction::Status => {
             let global = cache::global_cache_dir();
-            println!("global: {} ({} bytes)", global.display(), cache::cache_usage_bytes(&global));
-            println!(
-                "store: {} ({} bytes)",
-                frontend::fetch::store_root().display(),
-                frontend::fetch::store_usage_bytes()
+            row(
+                &theme,
+                "global",
+                &size(&theme, cache::cache_usage_bytes(&global)),
+                &global.display().to_string(),
+            );
+            row(
+                &theme,
+                "store",
+                &size(&theme, frontend::fetch::store_usage_bytes()),
+                &frontend::fetch::store_root().display().to_string(),
             );
             let (product_files, product_bytes) = frontend::products::products_usage();
-            println!("products: {product_files} files ({product_bytes} bytes)");
-            println!(
-                "product objects: {} bytes",
-                frontend::products::global_objects_usage_bytes()
+            row(
+                &theme,
+                "products",
+                &size(&theme, product_bytes),
+                &format!("{} files", cli::term::human_count(product_files as u64)),
+            );
+            row(
+                &theme,
+                "objects",
+                &size(&theme, frontend::products::global_objects_usage_bytes()),
+                "",
             );
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let root = frontend::project::find_project_root(&cwd).unwrap_or(cwd);
             let project = cache::project_cache_dir(&root);
-            println!("project: {} ({} bytes)", project.display(), cache::cache_usage_bytes(&project));
+            row(
+                &theme,
+                "project",
+                &size(&theme, cache::cache_usage_bytes(&project)),
+                &project.display().to_string(),
+            );
         }
     }
 }
@@ -92,7 +127,11 @@ pub(super) fn run_clean(package: Option<String>) {
     };
     let cache_dir = cache::project_cache_dir(&root);
     match cache::clean_dir(&cache_dir) {
-        Ok(freed) => println!("cleaned {} ({} bytes freed)", cache_dir.display(), freed),
+        Ok(freed) => println!(
+            "Cleaned {}, freeing {}.",
+            cache_dir.display(),
+            size(&AuraTheme::active(), freed)
+        ),
         Err(e) => {
             eprintln!("error: cannot clean {}: {e}", cache_dir.display());
             std::process::exit(1);

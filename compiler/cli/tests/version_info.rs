@@ -70,20 +70,16 @@ fn test_long_version_has_build_record() {
         format!("rnx {}", env!("CARGO_PKG_VERSION")),
         "{stdout}"
     );
-    for key in [
-        "commit: ",
-        "built: ",
-        "install: ",
-        "binary: ",
-        "stdlib: ",
-        "target: ",
-        "llvm: ",
-    ] {
-        assert!(stdout.contains(key), "{stdout}");
+    for key in ["commit", "built", "install", "binary", "stdlib", "target", "llvm"] {
+        assert!(
+            stdout.lines().any(|l| l.trim_start().starts_with(&format!("{key} "))),
+            "missing {key} in:\n{stdout}"
+        );
     }
     let install = stdout
         .lines()
-        .find_map(|l| l.strip_prefix("install: "))
+        .find_map(|l| l.trim_start().strip_prefix("install "))
+        .map(str::trim)
         .expect("install line");
     assert!(
         install == "standalone" || install.starts_with("managed:"),
@@ -91,7 +87,8 @@ fn test_long_version_has_build_record() {
     );
     let stdlib = stdout
         .lines()
-        .find_map(|l| l.strip_prefix("stdlib: "))
+        .find_map(|l| l.trim_start().strip_prefix("stdlib "))
+        .map(str::trim)
         .expect("stdlib line");
     assert!(!stdlib.is_empty(), "{stdout}");
 }

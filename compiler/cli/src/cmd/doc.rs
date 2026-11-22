@@ -12,7 +12,7 @@ pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: b
                 match cli::generate_stdlib_docs_json(&dir) {
                     Ok(path) => {
                         if !quiet {
-                            println!("docs written to {}", path.display());
+                            println!("Docs written to {}.", path.display());
                         }
                     }
                     Err(e) => {
@@ -26,7 +26,7 @@ pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: b
                 match cli::generate_docs_json(&cwd, package.as_deref(), no_deps, include_private) {
                     Ok(path) => {
                         if !quiet {
-                            println!("docs written to {}", path.display());
+                            println!("Docs written to {}.", path.display());
                         }
                     }
                     Err(e) => {
@@ -39,7 +39,7 @@ pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: b
             match cli::generate_docs(&cwd, package.as_deref(), no_deps, include_private) {
                 Ok(index) => {
                     if !quiet {
-                        println!("docs written to {}", index.display());
+                        println!("Docs written to {}.", index.display());
                     }
                     if open && open_browser(&index).is_err() {
                         eprintln!("warning: could not open {}", index.display());

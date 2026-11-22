@@ -207,14 +207,17 @@ pub fn run_lint(
     let mut diags = Vec::new();
     for root in &roots {
         if !root.exists() {
-            return fail(format!("path not found: {}\n", root.display()));
+            return fail(format!("Path not found: {}\n", root.display()));
         }
         diags.extend(frontend::lint::lint_package(root));
     }
     if fix {
         let fixed = apply_renames(&diags);
         if fixed > 0 {
-            stderr.push_str(&format!("Fixed {fixed} findings\n"));
+            stderr.push_str(&format!(
+                "Fixed {fixed} finding{}.\n",
+                if fixed == 1 { "" } else { "s" }
+            ));
             diags.clear();
             for root in &roots {
                 diags.extend(frontend::lint::lint_package(root));

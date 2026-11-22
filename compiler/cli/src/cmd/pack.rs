@@ -39,7 +39,7 @@ pub(super) fn run_pack(package: Option<String>, out_dir: Option<std::path::PathB
                         println!("│  archive:   {show}");
                         println!("│  checksum:  {digest}");
                         println!("│  size:      {size_show} ({kind})");
-                        println!("└─ status: ready for publishing");
+                        println!("└─ status: ready to publish");
                     }
                 }
                 Err(e) => {

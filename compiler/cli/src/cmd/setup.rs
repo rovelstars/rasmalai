@@ -197,7 +197,7 @@ fn setup_vscode() {
     let source = find_in_checkout("vscode")
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "<checkout>/editors/vscode".to_string());
-    println!("vscode: no packaged .vsix found; manual install:");
+    println!("vscode: no packaged .vsix found");
     println!("  1. package the extension: cd {source} && npx vsce package");
     println!("  2. install it: code --install-extension rasmalai-*.vsix");
     println!("  3. ensure `rnx` is on PATH, then reload VS Code and open a .rnx file.");
@@ -209,7 +209,7 @@ fn setup_zed() {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "<checkout>/editors/zed".to_string());
-    println!("zed: dev-extension install (no registry package exists):");
+    println!("zed: dev-extension install (no registry package exists)");
     println!("  1. Zed > Extensions > Install Dev Extension > select {path}");
     println!("  2. add to ~/.config/zed/settings.json:");
     println!("{ZED_SETTINGS_SNIPPET}");

@@ -3,16 +3,28 @@ pub(super) fn run_update(
     major: bool,
     package: Option<String>,
     prefer: frontend::native::NativePrefer,
+    quiet: bool,
 ) {
-    match cli::update_scope_with(None, package.as_deref(), packages, major, prefer) {
+    let result = super::with_status(quiet, "Updating dependencies", || {
+        cli::update_scope_with(None, package.as_deref(), packages, major, prefer)
+    });
+    match result {
         Ok(summary) => {
+            let theme = diagnostics::theme::AuraTheme::active();
             for change in &summary.updated {
-                println!("updated {} {} -> {}", change.name, change.old, change.new);
+                println!(
+                    "Updated {} from {} to {}.",
+                    theme.paint(diagnostics::theme::AuraColor::Cyan, &change.name),
+                    theme.paint(diagnostics::theme::AuraColor::Muted, &change.old),
+                    theme.paint(diagnostics::theme::AuraColor::Green, &change.new)
+                );
             }
             for held in &summary.held {
                 println!(
-                    "held {} at {} (major move to {} needs --major)",
-                    held.name, held.old, held.new
+                    "Held {} at {}; moving to {} needs --major.",
+                    theme.paint(diagnostics::theme::AuraColor::Cyan, &held.name),
+                    theme.paint(diagnostics::theme::AuraColor::Muted, &held.old),
+                    held.new
                 );
             }
             if summary.updated.is_empty() && summary.held.is_empty() {

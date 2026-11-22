@@ -594,17 +594,17 @@ impl ReplSession {
             ":exit" | ":quit" => Some(ReplOut::Exit),
             ":reset" => {
                 self.reset_state();
-                Some(ReplOut::Lines(vec!["session reset".to_string()]))
+                Some(ReplOut::Lines(vec!["Session reset.".to_string()]))
             }
             ":clear" => {
                 self.reset_state();
-                Some(ReplOut::Lines(vec!["\x1b[2J\x1b[Hsession reset".to_string()]))
+                Some(ReplOut::Lines(vec!["\x1b[2J\x1b[HSession reset.".to_string()]))
             }
             ":help" => Some(ReplOut::Lines(vec![
-                ":exit, :quit  exit the repl".to_string(),
-                ":reset       drop all definitions".to_string(),
-                ":clear       clear screen and reset".to_string(),
-                ":type <expr> print the static type (Any when unannotated)".to_string(),
+                ":exit, :quit  Exit the REPL.".to_string(),
+                ":reset        Drop all definitions.".to_string(),
+                ":clear        Clear the screen and reset.".to_string(),
+                ":type <expr>  Print the static type (Any when unannotated).".to_string(),
             ])),
             _ => None,
         }
@@ -1133,8 +1133,26 @@ impl Default for ReplSession {
 }
 
 pub fn run_interactive() {
-    println!("Rasmalai v{} ({}, cranelift-jit)", env!("CARGO_PKG_VERSION"), std::env::consts::ARCH);
-    println!("Type \":exit\" to quit, \":help\" for directives.");
+    let theme = diagnostics::theme::AuraTheme::active();
+    println!(
+        "{} {}",
+        theme.paint(
+            diagnostics::theme::AuraColor::Purple,
+            &format!("Rasmalai v{}", env!("CARGO_PKG_VERSION"))
+        ),
+        theme.paint(
+            diagnostics::theme::AuraColor::Muted,
+            &format!("(JIT, {})", std::env::consts::ARCH)
+        )
+    );
+    println!(
+        "{}",
+        theme.paint(
+            diagnostics::theme::AuraColor::Muted,
+            "Type :exit to quit, :help for directives."
+        )
+    );
+    println!();
     let mut editor = match rustyline::DefaultEditor::new() {
         Ok(e) => e,
         Err(e) => {

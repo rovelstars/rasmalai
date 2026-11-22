@@ -495,11 +495,39 @@ fn backend_name(backend: &cli::TestBackend) -> &'static str {
     }
 }
 
+pub(super) fn with_status<T>(quiet: bool, label: &str, f: impl FnOnce() -> T) -> T {
+    let theme = diagnostics::theme::AuraTheme::for_stream(diagnostics::theme::Stream::Stderr);
+    let live = std::sync::Arc::new(std::sync::Mutex::new(cli::term::Live::new(quiet)));
+    let ticker = (!quiet && cli::term::live_supported()).then(|| {
+        let live = live.clone();
+        let label = label.to_string();
+        cli::term::Ticker::start(move |frame| {
+            if let Ok(mut ui) = live.lock() {
+                ui.set(vec![cli::term::row(
+                    &theme,
+                    cli::term::Mark::Running(frame),
+                    &label,
+                    "",
+                    cli::term::width(),
+                )]);
+            }
+        })
+    });
+    let out = f();
+    drop(ticker);
+    if let Ok(mut ui) = live.lock() {
+        ui.finish();
+    }
+    out
+}
+
 fn bus_name(stage: &str) -> &str {
     match stage {
         "lex_parse" => "parse",
         "typecheck" => "typecheck",
-        "lower" => "ir-lower",
+        "syntax_expand" => "expand",
+        "comptime_expand" => "comptime",
+        "lower" => "lower",
         "opt_pipeline" => "opt",
         "verify" => "verify",
         "codegen" => "codegen",
@@ -511,9 +539,11 @@ fn bus_detail(stage: &str) -> &str {
     match stage {
         "lex_parse" => "lex & parse sources",
         "typecheck" => "soundness & borrow analysis",
-        "lower" => "lir lowering",
+        "syntax_expand" => "syntax macro expansion",
+        "comptime_expand" => "compile-time evaluation",
+        "lower" => "LIR lowering",
         "opt_pipeline" => "optimization pipeline",
-        "verify" => "ir verification",
+        "verify" => "IR verification",
         "codegen" => "native object emission",
         _ => "",
     }
@@ -689,26 +719,26 @@ pub(super) fn dispatch(
                 run_fmt(paths, check, diff);
             }
             cli::args::Command::Lock { package, target } => {
-                run_lock(package, target, prefer);
+                run_lock(package, target, prefer, quiet);
             }
             cli::args::Command::Update { packages, major, package } => {
-                run_update(packages, major, package, prefer);
+                run_update(packages, major, package, prefer, quiet);
             }
             cli::args::Command::Fetch { package } => {
-                run_fetch(package);
+                run_fetch(package, quiet);
             }
             cli::args::Command::Install { package } => {
-                run_lock(package.clone(), None, prefer);
-                run_fetch(package);
+                run_lock(package.clone(), None, prefer, quiet);
+                run_fetch(package, quiet);
             }
             cli::args::Command::X { package, bin, yes, args } => {
                 run_x(package, bin, yes, args);
             }
             cli::args::Command::Download { packages, local, registry } => {
-                run_download(packages, local, registry);
+                run_download(packages, local, registry, quiet);
             }
             cli::args::Command::Doctor { repair_std, registry } => {
-                run_doctor(repair_std, registry);
+                run_doctor(repair_std, registry, quiet);
             }
             cli::args::Command::Doc {
                 package,
@@ -759,7 +789,7 @@ pub(super) fn dispatch(
                 jobs,
                 memory_cap,
             } => {
-                run_bench(package, filter, jobs, memory_cap, verbose);
+                run_bench(package, filter, jobs, memory_cap, verbose, quiet);
             }
             cli::args::Command::Test {
                 filter,

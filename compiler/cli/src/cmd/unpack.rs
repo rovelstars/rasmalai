@@ -10,7 +10,13 @@ pub(super) fn run_unpack(archive: Option<String>, out_dir: Option<String>) {
                 std::path::Path::new(&dest),
             ) {
                 Ok((n, bytes)) => {
-                    println!("Extracted {n} files ({bytes} bytes) into {dest}");
+                    let theme = diagnostics::theme::AuraTheme::active();
+                    println!(
+                        "Extracted {} file{} ({}) into {dest}.",
+                        cli::term::human_count(n as u64),
+                        if n == 1 { "" } else { "s" },
+                        cli::telemetry::fmt_bytes(&theme, bytes)
+                    );
                 }
                 Err(e) => {
                     eprintln!("{e}");

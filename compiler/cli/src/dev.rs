@@ -133,7 +133,7 @@ impl DevState {
         self.module = module.clone();
         if std::env::var_os("RNX_DEV_TRACE").is_some() {
             eprintln!(
-                "[rnx dev] install {}: {}ms",
+                "dev: install {} in {} ms",
                 done.join(", "),
                 started.elapsed().as_millis()
             );
@@ -156,7 +156,7 @@ impl DevState {
                         Ok((done, install_ms)) => {
                             if !done.is_empty() {
                                 eprintln!(
-                                    "[rnx dev] hot swapped {} (build {elapsed_ms}ms, install {install_ms}ms, detect->apply {}ms)",
+                                    "dev: hot swapped {} (build {elapsed_ms} ms, install {install_ms} ms, detect to apply {} ms)",
                                     done.join(", "),
                                     detected.elapsed().as_millis()
                                 );
@@ -186,7 +186,7 @@ impl DevState {
                     return 2;
                 }
                 DevUpdate::Broken { count } => {
-                    eprintln!("[rnx dev] {count} error(s); keeping last valid build");
+                    eprintln!("Build failed with {count} error(s); keeping the last good build.");
                 }
             }
         }
@@ -205,7 +205,7 @@ pub struct DevRunner {
 
 fn dev_timing(label: &str, step: &mut Instant) {
     if std::env::var_os("RNX_DEV_TRACE").is_some() {
-        eprintln!("[rnx dev] build {label}: {}ms", step.elapsed().as_millis());
+        eprintln!("dev: build {label} in {} ms", step.elapsed().as_millis());
         *step = Instant::now();
     }
 }
@@ -225,7 +225,7 @@ fn build_module(path: &Path, reuse_deps: bool) -> Result<BuiltModule, Vec<Diagno
     };
     dev_timing("graph", &mut step);
     if std::env::var_os("RNX_DEV_TRACE").is_some() {
-        eprintln!("[rnx dev] graph files: {}", graph.files.len());
+        eprintln!("dev: graph files {}", graph.files.len());
     }
     let mut module = graph.resolve().map_err(|e| vec![e])?;
     dev_timing("resolve", &mut step);
@@ -311,7 +311,7 @@ fn lower_built(built: &BuiltModule, entry: &str) -> Result<lir::instr::Module, V
     let lowered = lir::lower::lower(&built.module).map_err(|e| vec![e])?;
     dev_timing("lower", &mut step);
     if std::env::var_os("RNX_DEV_TRACE").is_some() {
-        eprintln!("[rnx dev] lowered functions: {}", lowered.functions.len());
+        eprintln!("dev: lowered functions {}", lowered.functions.len());
     }
     finish_lowered(lowered, built, entry, step)
 }
@@ -521,7 +521,7 @@ fn compile_loop(
     let mut watcher = match Watcher::new(&files) {
         Ok(watcher) => watcher,
         Err(err) => {
-            eprintln!("[rnx dev] {err}");
+            eprintln!("dev: {err}");
             return;
         }
     };
@@ -545,12 +545,12 @@ fn compile_loop(
         }
         let detected = Instant::now();
         if std::env::var_os("RNX_DEV_TRACE").is_some() {
-            eprintln!("[rnx dev] change detected");
+            eprintln!("dev: change detected");
         }
         while watcher.poll(Duration::from_millis(5)).is_some() {}
         let started = Instant::now();
         if std::env::var_os("RNX_DEV_TRACE").is_some() {
-            eprintln!("[rnx dev] build start");
+            eprintln!("dev: build start");
         }
         let module = match build_module(&entry_file, true) {
             Ok(module) => module,
@@ -571,7 +571,7 @@ fn compile_loop(
         let delta_started = Instant::now();
         let delta = delta::classify(&last, &module.module, Some(&decl_files), changed_paths);
         if std::env::var_os("RNX_DEV_TRACE").is_some() {
-            eprintln!("[rnx dev] delta: {}ms", delta_started.elapsed().as_millis());
+            eprintln!("dev: delta {} ms", delta_started.elapsed().as_millis());
         }
         let changed: Option<std::collections::BTreeSet<String>> = match &delta {
             Delta::Pure { swapped } => Some(swapped.iter().cloned().collect()),
@@ -613,7 +613,7 @@ fn compile_loop(
             }
         }
         if std::env::var_os("RNX_DEV_TRACE").is_some() {
-            eprintln!("[rnx dev] patch: {}ms", patch_started.elapsed().as_millis());
+            eprintln!("dev: patch {} ms", patch_started.elapsed().as_millis());
         }
         let lowered = if patched {
             match (owned, &changed) {
@@ -781,7 +781,7 @@ impl DevRunner {
                         Ok((names, install_ms)) => {
                             if std::env::var_os("RNX_DEV_TRACE").is_some() {
                                 eprintln!(
-                                    "[rnx dev] detect->apply {}ms",
+                                    "dev: detect to apply {} ms",
                                     detected.elapsed().as_millis()
                                 );
                             }
@@ -871,7 +871,7 @@ impl DevRunner {
                                 Ok(()) => done.push(name.clone()),
                                 Err(e) => {
                                     drop(state);
-                                    eprintln!("[rnx dev] swap of `{name}` failed ({e:?}); restarting");
+                                    eprintln!("dev: swap of `{name}` failed ({e:?}); restarting");
                                     return (
                                         self.restart(
                                             format!("swap of `{name}` failed"),
@@ -928,13 +928,13 @@ impl Drop for DevRunner {
 fn rerun(runner: &mut DevRunner) {
     let entry = runner.entry_name().to_string();
     match runner.run_entry() {
-        Ok(v) => eprintln!("[rnx dev] {entry}() -> {v}"),
-        Err(e) => eprintln!("[rnx dev] entry failed: {e:?}"),
+        Ok(v) => eprintln!("{entry}() returned {v}."),
+        Err(e) => eprintln!("Entry failed: {e:?}"),
     }
 }
 
 pub fn run_watch_loop(mut runner: DevRunner, commands: Option<mpsc::Receiver<DevCommand>>) {
-    eprintln!("[rnx dev] watching {}", runner.entry_file().display());
+    eprintln!("Watching {} for changes. Press Ctrl-C to stop.", runner.entry_file().display());
     rerun(&mut runner);
     loop {
         if let Some(rx) = commands.as_ref() {
@@ -974,13 +974,13 @@ pub fn run_watch_loop(mut runner: DevRunner, commands: Option<mpsc::Receiver<Dev
         match runner.poll(Duration::from_millis(50)) {
             None => {}
             Some(DevEvent::Swapped { names, elapsed_ms }) => {
-                eprintln!("[rnx dev] hot swapped {} (build {elapsed_ms}ms)", names.join(", "));
+                eprintln!("Hot swapped {} in {elapsed_ms} ms.", names.join(", "));
                 if runner.should_rerun() {
                     rerun(&mut runner);
                 }
             }
             Some(DevEvent::Restarted { reason }) => {
-                eprintln!("[rnx dev] structural change detected in {reason} -> restarting");
+                eprintln!("Rebuilt after a structural change in {reason}.");
                 rerun(&mut runner);
             }
             Some(DevEvent::Broken { .. }) => {}

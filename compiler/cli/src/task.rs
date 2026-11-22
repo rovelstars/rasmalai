@@ -1280,6 +1280,7 @@ fn run_file(ctx: &ExecCtx<'_>, node: &GraphNode, path: &Path) -> Result<(), Diag
 }
 
 fn execute(node: &GraphNode, ctx: &ExecCtx<'_>) -> Result<(), Diagnostic> {
+    let theme = diagnostics::theme::AuraTheme::active();
     match &node.body {
         GraphBody::Group { children, strategy, on_failure } => {
             execute_group(node, children, *strategy, *on_failure, ctx)
@@ -1290,17 +1291,28 @@ fn execute(node: &GraphNode, ctx: &ExecCtx<'_>) -> Result<(), Diagnostic> {
         }
         GraphBody::File { path } => {
             if up_to_date(ctx.reg, node, ctx.force) {
-                println!("{}: up to date", node_label(ctx.reg, node));
+                task_status(&theme, &node_label(ctx.reg, node), "up to date");
                 return Ok(());
             }
+            let started = std::time::Instant::now();
             run_file(ctx, node, path)?;
-            finish_incremental(ctx, node)
+            finish_incremental(ctx, node)?;
+            task_status(
+                &theme,
+                &node_label(ctx.reg, node),
+                &format!(
+                    "ok in {}",
+                    crate::term::human_duration_ms(started.elapsed().as_secs_f64() * 1000.0)
+                ),
+            );
+            Ok(())
         }
         GraphBody::Steps { legs } => {
             if up_to_date(ctx.reg, node, ctx.force) {
-                println!("{}: up to date", node_label(ctx.reg, node));
+                task_status(&theme, &node_label(ctx.reg, node), "up to date");
                 return Ok(());
             }
+            let started = std::time::Instant::now();
             for leg in legs {
                 for step in &leg.steps {
                     match step {
@@ -1309,9 +1321,26 @@ fn execute(node: &GraphNode, ctx: &ExecCtx<'_>) -> Result<(), Diagnostic> {
                     }
                 }
             }
-            finish_incremental(ctx, node)
+            finish_incremental(ctx, node)?;
+            task_status(
+                &theme,
+                &node_label(ctx.reg, node),
+                &format!(
+                    "ok in {}",
+                    crate::term::human_duration_ms(started.elapsed().as_secs_f64() * 1000.0)
+                ),
+            );
+            Ok(())
         }
     }
+}
+
+fn task_status(theme: &diagnostics::theme::AuraTheme, label: &str, detail: &str) {
+    println!(
+        "{}  {}",
+        theme.paint(diagnostics::theme::AuraColor::Purple, label),
+        theme.paint(diagnostics::theme::AuraColor::Muted, detail)
+    );
 }
 
 fn finish_incremental(ctx: &ExecCtx<'_>, node: &GraphNode) -> Result<(), Diagnostic> {

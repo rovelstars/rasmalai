@@ -1,10 +1,55 @@
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 static FORCE_PLAIN: AtomicBool = AtomicBool::new(false);
 
 pub fn force_plain_output() {
     FORCE_PLAIN.store(true, Ordering::Relaxed);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorMode {
+    Auto,
+    Always,
+    Never,
+}
+
+static COLOR_MODE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_color_mode(mode: ColorMode) {
+    let code = match mode {
+        ColorMode::Auto => 0,
+        ColorMode::Always => 1,
+        ColorMode::Never => 2,
+    };
+    COLOR_MODE.store(code, Ordering::Relaxed);
+}
+
+pub fn color_mode() -> ColorMode {
+    match COLOR_MODE.load(Ordering::Relaxed) {
+        1 => ColorMode::Always,
+        2 => ColorMode::Never,
+        _ => ColorMode::Auto,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stream {
+    Stdout,
+    Stderr,
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| {
+            let v = v.trim();
+            !v.is_empty() && v != "0"
+        })
+        .unwrap_or(false)
+}
+
+fn env_off(name: &str) -> bool {
+    std::env::var(name).map(|v| v.trim() == "0").unwrap_or(false)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,13 +107,36 @@ impl AuraTheme {
     }
 
     pub fn active() -> AuraTheme {
+        AuraTheme::for_stream(Stream::Stdout)
+    }
+
+    pub fn for_stream(stream: Stream) -> AuraTheme {
         if FORCE_PLAIN.load(Ordering::Relaxed) {
             return AuraTheme::plain();
         }
-        if std::env::var_os("NO_COLOR").is_some() {
-            return AuraTheme::plain();
-        }
-        if !std::io::stdout().is_terminal() {
+        let enabled = match color_mode() {
+            ColorMode::Never => false,
+            // An explicit request wins over environment hints, which is what
+            // makes `--color=always` usable when stdout is a pipe or a test.
+            ColorMode::Always => true,
+            ColorMode::Auto => {
+                if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+                    false
+                } else if std::env::var("TERM").map(|t| t == "dumb").unwrap_or(false) {
+                    false
+                } else if env_off("CLICOLOR") {
+                    false
+                } else if env_truthy("CLICOLOR_FORCE") || env_truthy("FORCE_COLOR") {
+                    true
+                } else {
+                    match stream {
+                        Stream::Stdout => std::io::stdout().is_terminal(),
+                        Stream::Stderr => std::io::stderr().is_terminal(),
+                    }
+                }
+            }
+        };
+        if !enabled {
             return AuraTheme::plain();
         }
         let colorterm = std::env::var("COLORTERM").unwrap_or_default();
@@ -142,5 +210,15 @@ mod tests {
     #[test]
     fn plain_theme_passes_text_through() {
         assert_eq!(AuraTheme::plain().paint(AuraColor::Red, "x"), "x");
+    }
+
+    #[test]
+    fn explicit_color_mode_overrides_tty_detection() {
+        let previous = color_mode();
+        set_color_mode(ColorMode::Always);
+        assert!(AuraTheme::for_stream(Stream::Stdout).enabled);
+        set_color_mode(ColorMode::Never);
+        assert!(!AuraTheme::for_stream(Stream::Stdout).enabled);
+        set_color_mode(previous);
     }
 }

@@ -27,6 +27,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RNX_RELEASE_BUILD");
     println!("cargo:rerun-if-env-changed=CI");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    // The baked commit and timestamp must follow new commits, not just changes
+    // to this script. Watch HEAD and the branch refs it points at.
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/refs/heads");
     let commit = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()

@@ -2,6 +2,13 @@ use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 use std::path::PathBuf;
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorWhen {
+    Auto,
+    Always,
+    Never,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "rnx",
@@ -9,15 +16,20 @@ use std::path::PathBuf;
     version,
     about = "Rasmalai systems language compiler and developer toolchain",
     long_about = "Rasmalai systems language compiler and developer toolchain.\n\n`rnx --version` prints the full build record: version, commit hash, build timestamp, install kind, executable path, standard library source, target triple, and backend versions.",
+    after_help = "Examples:\n  rnx init hello && cd hello && rnx run\n  rnx test --filter parser\n  rnx bench --filter map\n  rnx doc --open",
     styles = crate::styles::aura_clap_styles()
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Strip all ANSI color escapes from terminal output
+    /// Strip all ANSI color escapes from terminal output (same as `--color=never`)
     #[arg(long, global = true)]
     pub no_color: bool,
+
+    /// When to use color: `auto`, `always` (keep escapes in a pipe), or `never`
+    #[arg(long, global = true, value_name = "WHEN", default_value = "auto")]
+    pub color: ColorWhen,
 
     /// Enable verbose diagnostic and pipeline logging
     #[arg(short, long, global = true)]

@@ -1,9 +1,9 @@
 
-pub(super) fn run_fetch(package: Option<String>) {
+pub(super) fn run_fetch(package: Option<String>, quiet: bool) {
             match cli::fetch_scope(package.as_deref()) {
                 Ok(fetched) => {
                     if fetched.is_empty() {
-                        println!("No git dependencies to fetch");
+                        println!("No git dependencies to fetch.");
                     }
                     for (name, _, rev) in &fetched {
                         println!("Fetched {name} ({rev})");
@@ -14,7 +14,10 @@ pub(super) fn run_fetch(package: Option<String>) {
                     std::process::exit(1);
                 }
             }
-            match fetch_registry_deps(package.as_deref()) {
+            let result = super::with_status(quiet, "Fetching dependencies", || {
+                fetch_registry_deps(package.as_deref())
+            });
+            match result {
                 Ok(fetched) => {
                     for (name, version) in &fetched {
                         println!("Fetched {name}@{version}");

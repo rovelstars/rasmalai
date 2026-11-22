@@ -20,6 +20,7 @@ pub mod repl;
 pub mod report;
 pub mod task;
 pub mod telemetry;
+pub mod term;
 pub mod test_runner;
 pub mod unpack;
 pub mod version;
@@ -207,7 +208,7 @@ pub fn explain(code: &str) -> Option<(String, String)> {
         Code::E005 => "use `.` for namespacing and member access; write explicit type arguments as `f<T>(x)`",
         Code::E105 => "arrow expressions do not use `fn`. Use `(x) => x * 2` or declare a named function `fn mul(x) { ... }`",
         Code::E107 => "break the import cycle; move shared items to a leaf module",
-        Code::E108 => "read the message span; the message names the specific cause",
+        Code::E108 => "change the construct the message names; E108 reports a shape or type mismatch",
         Code::E109 => "move the `await` into an `async fn` or remove it",
         Code::E110 => "use `for x in range` or `while`/`do-while`; strided loops use `(a..b).stride(n)`",
         Code::E111 => "use `await` or `promise.wait()` instead of calling `poll()` directly",
