@@ -128,9 +128,11 @@ jobs:
           EOF
           # The checkout alone (empty cache, dead registry for this one
           # command) resolves through the local-source override and
-          # warns once per package.
+          # prints one warning listing every local package.
           RNX_REGISTRY="http://127.0.0.1:9" cargo run -q -p cli --release -- build "${{ runner.temp }}/offline-probe/src/main.rnx" 2>"${{ runner.temp }}/probe-stderr.txt"
-          grep -q "using local source" "${{ runner.temp }}/probe-stderr.txt" || { echo "probe build printed no local-source warning"; cat "${{ runner.temp }}/probe-stderr.txt"; exit 1; }
+          warnings=$(grep -c "using local packages from" "${{ runner.temp }}/probe-stderr.txt" || true)
+          [ "$warnings" -eq 1 ] || { echo "probe build printed $warnings local-source warnings (want 1)"; cat "${{ runner.temp }}/probe-stderr.txt"; exit 1; }
+          grep -q "@std/time@" "${{ runner.temp }}/probe-stderr.txt" || { echo "local-source warning omits @std/time"; cat "${{ runner.temp }}/probe-stderr.txt"; exit 1; }
           set +e
           "${{ runner.temp }}/offline-probe/.rnx-cache/build/release/probe"
           code=$?
