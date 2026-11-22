@@ -195,6 +195,7 @@ pub fn run_lint(
 ) -> LintOutcome {
     let mut stdout = String::new();
     let mut stderr = String::new();
+    let theme = diagnostics::theme::AuraTheme::active();
     let fail = |stderr: String| LintOutcome {
         code: 1,
         stdout: String::new(),
@@ -215,7 +216,12 @@ pub fn run_lint(
         let fixed = apply_renames(&diags);
         if fixed > 0 {
             stderr.push_str(&format!(
-                "Fixed {fixed} finding{}.\n",
+                "{} {} finding{}.\n",
+                theme.paint(diagnostics::theme::AuraColor::Purple, "Fixed"),
+                theme.paint(
+                    diagnostics::theme::AuraColor::Orange,
+                    &fixed.to_string()
+                ),
                 if fixed == 1 { "" } else { "s" }
             ));
             diags.clear();
@@ -258,7 +264,13 @@ pub fn run_lint(
         stdout.push_str(&diagnostics::diagnostics_to_json(&items));
         stdout.push('\n');
     } else if diags.is_empty() {
-        stderr.push_str("No lint issues found.\n");
+        stderr.push_str(&format!(
+            "{}\n",
+            theme.paint(
+                diagnostics::theme::AuraColor::Green,
+                "No lint issues found."
+            )
+        ));
     } else {
         for diag in &diags {
             let path = diag.file.clone().unwrap_or_else(|| PathBuf::from("<input>"));

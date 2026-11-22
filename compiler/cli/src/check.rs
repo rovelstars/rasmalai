@@ -422,7 +422,11 @@ pub fn run_check(
     }
     if !json && !quiet && !failed {
         for name in &pending_ok {
-            stderr.push_str(&format!("Checked {name} (ok)\n"));
+            stderr.push_str(&format!(
+                "Checked {} ({})\n",
+                theme.paint(diagnostics::theme::AuraColor::Cyan, name),
+                theme.paint(diagnostics::theme::AuraColor::Green, "ok")
+            ));
         }
     }
     if json {

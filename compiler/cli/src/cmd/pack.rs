@@ -13,6 +13,7 @@ pub(super) fn run_pack(package: Option<String>, out_dir: Option<std::path::PathB
             };
             let out = out_dir
                 .unwrap_or_else(|| targets.root.join("target").join("package"));
+            let theme = diagnostics::theme::AuraTheme::active();
             match cli::pack_targets(&targets, &out, gzip) {
                 Ok(done) => {
                     for (name, tar) in done {
@@ -35,11 +36,40 @@ pub(super) fn run_pack(package: Option<String>, out_dir: Option<std::path::PathB
                             format!("{size} B")
                         };
                         let kind = if gzip { "compressed" } else { "uncompressed" };
-                        println!("┌─ pack: {name} [v{version}]");
-                        println!("│  archive:   {show}");
-                        println!("│  checksum:  {digest}");
-                        println!("│  size:      {size_show} ({kind})");
-                        println!("└─ status: ready to publish");
+                        println!(
+                            "{} {} {}",
+                            theme.paint(diagnostics::theme::AuraColor::Muted, "┌─"),
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Purple,
+                                &format!("pack: {name}")
+                            ),
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Muted,
+                                &format!("[v{version}]")
+                            )
+                        );
+                        println!(
+                            "│  {}   {}",
+                            theme.paint(diagnostics::theme::AuraColor::Muted, "archive:"),
+                            theme.paint(diagnostics::theme::AuraColor::Cyan, &show)
+                        );
+                        println!(
+                            "│  {}  {}",
+                            theme.paint(diagnostics::theme::AuraColor::Muted, "checksum:"),
+                            theme.paint(diagnostics::theme::AuraColor::Muted, &digest)
+                        );
+                        println!(
+                            "│  {}      {} ({})",
+                            theme.paint(diagnostics::theme::AuraColor::Muted, "size:"),
+                            theme.paint(diagnostics::theme::AuraColor::Orange, &size_show),
+                            theme.paint(diagnostics::theme::AuraColor::Muted, kind)
+                        );
+                        println!(
+                            "{} {} {}",
+                            theme.paint(diagnostics::theme::AuraColor::Muted, "└─"),
+                            theme.paint(diagnostics::theme::AuraColor::Muted, "status:"),
+                            theme.paint(diagnostics::theme::AuraColor::Green, "ready to publish")
+                        );
                     }
                 }
                 Err(e) => {

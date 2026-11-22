@@ -186,7 +186,15 @@ impl DevState {
                     return 2;
                 }
                 DevUpdate::Broken { count } => {
-                    eprintln!("Build failed with {count} error(s); keeping the last good build.");
+                    let theme = diagnostics::theme::AuraTheme::active();
+                    eprintln!(
+                        "{} with {} error(s); keeping the last good build.",
+                        theme.paint(diagnostics::theme::AuraColor::Red, "Build failed"),
+                        theme.paint(
+                            diagnostics::theme::AuraColor::Orange,
+                            &count.to_string()
+                        )
+                    );
                 }
             }
         }
@@ -927,14 +935,37 @@ impl Drop for DevRunner {
 
 fn rerun(runner: &mut DevRunner) {
     let entry = runner.entry_name().to_string();
+    let theme = diagnostics::theme::AuraTheme::active();
     match runner.run_entry() {
-        Ok(v) => eprintln!("{entry}() returned {v}."),
-        Err(e) => eprintln!("Entry failed: {e:?}"),
+        Ok(v) => eprintln!(
+            "{}() returned {}.",
+            theme.paint(diagnostics::theme::AuraColor::Cyan, &entry),
+            theme.paint(
+                diagnostics::theme::AuraColor::Orange,
+                &v.to_string()
+            )
+        ),
+        Err(e) => eprintln!(
+            "{} {e:?}",
+            theme.paint(diagnostics::theme::AuraColor::Red, "Entry failed:")
+        ),
     }
 }
 
 pub fn run_watch_loop(mut runner: DevRunner, commands: Option<mpsc::Receiver<DevCommand>>) {
-    eprintln!("Watching {} for changes. Press Ctrl-C to stop.", runner.entry_file().display());
+    let theme = diagnostics::theme::AuraTheme::active();
+    eprintln!(
+        "{} {} for changes. {}",
+        theme.paint(diagnostics::theme::AuraColor::Purple, "Watching"),
+        theme.paint(
+            diagnostics::theme::AuraColor::Cyan,
+            &runner.entry_file().display().to_string()
+        ),
+        theme.paint(
+            diagnostics::theme::AuraColor::Muted,
+            "Press Ctrl-C to stop."
+        )
+    );
     rerun(&mut runner);
     loop {
         if let Some(rx) = commands.as_ref() {
@@ -974,13 +1005,28 @@ pub fn run_watch_loop(mut runner: DevRunner, commands: Option<mpsc::Receiver<Dev
         match runner.poll(Duration::from_millis(50)) {
             None => {}
             Some(DevEvent::Swapped { names, elapsed_ms }) => {
-                eprintln!("Hot swapped {} in {elapsed_ms} ms.", names.join(", "));
+                eprintln!(
+                    "{} {} in {} ms.",
+                    theme.paint(diagnostics::theme::AuraColor::Purple, "Hot swapped"),
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Cyan,
+                        &names.join(", ")
+                    ),
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Orange,
+                        &elapsed_ms.to_string()
+                    )
+                );
                 if runner.should_rerun() {
                     rerun(&mut runner);
                 }
             }
             Some(DevEvent::Restarted { reason }) => {
-                eprintln!("Rebuilt after a structural change in {reason}.");
+                eprintln!(
+                    "{} after a structural change in {}.",
+                    theme.paint(diagnostics::theme::AuraColor::Purple, "Rebuilt"),
+                    theme.paint(diagnostics::theme::AuraColor::Cyan, &reason)
+                );
                 rerun(&mut runner);
             }
             Some(DevEvent::Broken { .. }) => {}

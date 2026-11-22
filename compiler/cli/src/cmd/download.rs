@@ -118,7 +118,12 @@ pub(super) fn run_download(packages: Vec<String>, local: bool, registry: Option<
                 let scope = scope.as_ref().unwrap();
                 println!(
                     "Downloaded into {}.",
-                    frontend::fetch::project_registry_root(scope).display()
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Cyan,
+                        &frontend::fetch::project_registry_root(scope)
+                            .display()
+                            .to_string()
+                    )
                 );
                 let std: Vec<(String, String)> = fetched
                     .iter()
@@ -135,9 +140,15 @@ pub(super) fn run_download(packages: Vec<String>, local: bool, registry: Option<
                         Ok(report) => {
                             println!(
                                 "Pinned {} package{} to {}.",
-                                report.packages.len(),
+                                theme.paint(
+                                    diagnostics::theme::AuraColor::Orange,
+                                    &report.packages.len().to_string()
+                                ),
                                 plural(report.packages.len() as u64),
-                                report.pin_path.display()
+                                theme.paint(
+                                    diagnostics::theme::AuraColor::Cyan,
+                                    &report.pin_path.display().to_string()
+                                )
                             );
                         }
                         Err(e) => {
@@ -148,7 +159,11 @@ pub(super) fn run_download(packages: Vec<String>, local: bool, registry: Option<
                 }
             }
             for f in &fetched {
-                println!("Downloaded {}@{}", f.name, f.version);
+                println!(
+                    "Downloaded {}@{}",
+                    theme.paint(diagnostics::theme::AuraColor::Cyan, &f.name),
+                    theme.paint(diagnostics::theme::AuraColor::Muted, &f.version)
+                );
             }
         }
         Err(e) => {
@@ -181,6 +196,7 @@ fn run_stdlib_seed(
     local: bool,
     quiet: bool,
 ) {
+    let theme = diagnostics::theme::AuraTheme::active();
     if local {
         let scope = local_scope_root();
         let result = super::with_status(quiet, "Fetching the standard library", || {
@@ -189,10 +205,17 @@ fn run_stdlib_seed(
         match result {
             Ok(report) => {
                 if report.packages.is_empty() {
-                    println!("Standard library cache is up to date.");
+                    println!(
+                        "Standard library cache is {}.",
+                        theme.paint(diagnostics::theme::AuraColor::Green, "up to date")
+                    );
                 } else {
                     for (name, version) in &report.packages {
-                        println!("Downloaded {name}@{version}");
+                        println!(
+                            "Downloaded {}@{}",
+                            theme.paint(diagnostics::theme::AuraColor::Cyan, name),
+                            theme.paint(diagnostics::theme::AuraColor::Muted, version)
+                        );
                     }
                 }
                 finish_local_seed(&scope, &report);
@@ -210,10 +233,17 @@ fn run_stdlib_seed(
     match result {
         Ok(report) => {
             if report.packages.is_empty() {
-                println!("Standard library cache is up to date.");
+                println!(
+                    "Standard library cache is {}.",
+                    theme.paint(diagnostics::theme::AuraColor::Green, "up to date")
+                );
             } else {
                 for (name, version) in &report.packages {
-                    println!("Downloaded {name}@{version}");
+                    println!(
+                        "Downloaded {}@{}",
+                        theme.paint(diagnostics::theme::AuraColor::Cyan, name),
+                        theme.paint(diagnostics::theme::AuraColor::Muted, version)
+                    );
                 }
             }
             finish_global_seed(&report);
@@ -226,11 +256,18 @@ fn run_stdlib_seed(
 }
 
 pub(super) fn finish_global_seed(report: &frontend::stdlib_seed::StdSeedReport) {
+    let theme = diagnostics::theme::AuraTheme::active();
     println!(
         "Pinned {} package{} to {}.",
-        report.packages.len(),
+        theme.paint(
+            diagnostics::theme::AuraColor::Orange,
+            &report.packages.len().to_string()
+        ),
         plural(report.packages.len() as u64),
-        report.pin_path.display()
+        theme.paint(
+            diagnostics::theme::AuraColor::Cyan,
+            &report.pin_path.display().to_string()
+        )
     );
     if let Ok(cwd) = std::env::current_dir()
         && let Some(scope_root) = frontend::project::find_workspace_root(&cwd)
@@ -275,11 +312,18 @@ fn plural(n: u64) -> &'static str {
 }
 
 fn finish_local_seed(scope: &std::path::Path, report: &frontend::stdlib_seed::StdSeedReport) {
+    let theme = diagnostics::theme::AuraTheme::active();
     println!(
         "Pinned {} package{} to {}.",
-        report.packages.len(),
+        theme.paint(
+            diagnostics::theme::AuraColor::Orange,
+            &report.packages.len().to_string()
+        ),
         plural(report.packages.len() as u64),
-        report.pin_path.display()
+        theme.paint(
+            diagnostics::theme::AuraColor::Cyan,
+            &report.pin_path.display().to_string()
+        )
     );
     let pre = frontend::products::precompile_scope(scope);
     if pre.entries > 0 {
@@ -294,6 +338,7 @@ fn finish_local_seed(scope: &std::path::Path, report: &frontend::stdlib_seed::St
 }
 
 pub(super) fn repair_stdlib(registry: Option<String>, quiet: bool) {
+    let theme = diagnostics::theme::AuraTheme::active();
     let (default, overrides) = registry_from_flag(registry.as_deref());
     let before: std::collections::BTreeSet<String> = frontend::fetch::scan_cache_have()
         .iter()
@@ -312,12 +357,22 @@ pub(super) fn repair_stdlib(registry: Option<String>, quiet: bool) {
             if repaired == 0 {
                 println!(
                     "stdlib cache: {} packages, nothing missing.",
-                    report.packages.len()
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Orange,
+                        &report.packages.len().to_string()
+                    )
                 );
             } else {
                 println!(
-                    "stdlib cache: repaired {repaired} of {} packages.",
-                    report.packages.len()
+                    "stdlib cache: repaired {} of {} packages.",
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Orange,
+                        &repaired.to_string()
+                    ),
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Orange,
+                        &report.packages.len().to_string()
+                    )
                 );
             }
             match frontend::products::precompile_std() {

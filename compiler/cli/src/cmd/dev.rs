@@ -46,9 +46,28 @@ pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun:
                 }
                 return;
             }
-            println!("Watching {} for changes. Press Ctrl-C to stop.", entry_file.display());
+            let theme = diagnostics::theme::AuraTheme::active();
+            println!(
+                "{} {} for changes. {}",
+                theme.paint(diagnostics::theme::AuraColor::Purple, "Watching"),
+                theme.paint(
+                    diagnostics::theme::AuraColor::Cyan,
+                    &entry_file.display().to_string()
+                ),
+                theme.paint(
+                    diagnostics::theme::AuraColor::Muted,
+                    "Press Ctrl-C to stop."
+                )
+            );
             match runner.run_entry() {
-                Ok(v) => println!("{entry}() returned {v}."),
+                Ok(v) => println!(
+                    "{}() returned {}.",
+                    theme.paint(diagnostics::theme::AuraColor::Cyan, &entry),
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Orange,
+                        &v.to_string()
+                    )
+                ),
                 Err(e) => {
                     eprintln!("Entry failed: {e:?}");
                     std::process::exit(1);
@@ -58,23 +77,62 @@ pub(super) fn run_dev(path: Option<std::path::PathBuf>, entry: String, no_rerun:
                 match runner.poll(std::time::Duration::from_millis(500)) {
                     None => {}
                     Some(cli::dev::DevEvent::Swapped { names, elapsed_ms }) => {
-                        println!("Hot swapped {} in {elapsed_ms} ms.", names.join(", "));
+                        println!(
+                            "{} {} in {} ms.",
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Purple,
+                                "Hot swapped"
+                            ),
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Cyan,
+                                &names.join(", ")
+                            ),
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Orange,
+                                &elapsed_ms.to_string()
+                            )
+                        );
                         if runner.should_rerun() {
                             match runner.run_entry() {
-                                Ok(v) => println!("{entry}() returned {v}."),
+                                Ok(v) => println!(
+                    "{}() returned {}.",
+                    theme.paint(diagnostics::theme::AuraColor::Cyan, &entry),
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Orange,
+                        &v.to_string()
+                    )
+                ),
                                 Err(e) => eprintln!("Entry failed: {e:?}"),
                             }
                         }
                     }
                     Some(cli::dev::DevEvent::Restarted { reason }) => {
-                        println!("Rebuilt after a structural change in {reason}.");
+                        println!(
+                            "{} after a structural change in {}.",
+                            theme.paint(diagnostics::theme::AuraColor::Purple, "Rebuilt"),
+                            theme.paint(diagnostics::theme::AuraColor::Cyan, &reason)
+                        );
                         match runner.run_entry() {
-                            Ok(v) => println!("{entry}() returned {v}."),
+                            Ok(v) => println!(
+                    "{}() returned {}.",
+                    theme.paint(diagnostics::theme::AuraColor::Cyan, &entry),
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Orange,
+                        &v.to_string()
+                    )
+                ),
                             Err(e) => eprintln!("Entry failed: {e:?}"),
                         }
                     }
                     Some(cli::dev::DevEvent::Broken { count }) => {
-                        eprintln!("Build failed with {count} error(s); keeping the last good build.");
+                        eprintln!(
+                            "{} with {} error(s); keeping the last good build.",
+                            theme.paint(diagnostics::theme::AuraColor::Red, "Build failed"),
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Orange,
+                                &count.to_string()
+                            )
+                        );
                     }
                 }
             }

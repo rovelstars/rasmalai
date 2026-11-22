@@ -159,10 +159,19 @@ fn run_artifact(artifact: &Path, pkg_root: &Path, verbose: bool, quiet: bool, fi
     }
     if !quiet {
         eprintln!(
-            "Ran {} benchmark block{} in {}.",
-            done,
+            "{} {} benchmark block{} in {}.",
+            theme.paint(diagnostics::theme::AuraColor::Purple, "Ran"),
+            theme.paint(
+                diagnostics::theme::AuraColor::Orange,
+                &done.to_string()
+            ),
             if done == 1 { "" } else { "s" },
-            cli::term::human_duration_ms(started.elapsed().as_secs_f64() * 1000.0)
+            theme.paint(
+                diagnostics::theme::AuraColor::Orange,
+                &cli::term::human_duration_ms(
+                    started.elapsed().as_secs_f64() * 1000.0
+                )
+            )
         );
     }
     0

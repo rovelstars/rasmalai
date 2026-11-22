@@ -8,7 +8,17 @@ pub(super) fn run_lock(
         cli::lock_scope_with_target(None, package.as_deref(), prefer, target.as_deref())
     });
     match result {
-        Ok(count) => println!("Locked {count} packages to Project.deplock"),
+        Ok(count) => {
+            let theme = diagnostics::theme::AuraTheme::active();
+            println!(
+                "{} {} packages to Project.deplock",
+                theme.paint(diagnostics::theme::AuraColor::Purple, "Locked"),
+                theme.paint(
+                    diagnostics::theme::AuraColor::Orange,
+                    &count.to_string()
+                )
+            );
+        }
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);

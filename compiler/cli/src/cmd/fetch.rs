@@ -1,12 +1,23 @@
 
 pub(super) fn run_fetch(package: Option<String>, quiet: bool) {
+            let theme = diagnostics::theme::AuraTheme::active();
             match cli::fetch_scope(package.as_deref()) {
                 Ok(fetched) => {
                     if fetched.is_empty() {
-                        println!("No git dependencies to fetch.");
+                        println!(
+                            "{}",
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Muted,
+                                "No git dependencies to fetch."
+                            )
+                        );
                     }
                     for (name, _, rev) in &fetched {
-                        println!("Fetched {name} ({rev})");
+                        println!(
+                            "Fetched {} ({})",
+                            theme.paint(diagnostics::theme::AuraColor::Cyan, name),
+                            theme.paint(diagnostics::theme::AuraColor::Muted, rev)
+                        );
                     }
                 }
                 Err(e) => {
@@ -20,7 +31,11 @@ pub(super) fn run_fetch(package: Option<String>, quiet: bool) {
             match result {
                 Ok(fetched) => {
                     for (name, version) in &fetched {
-                        println!("Fetched {name}@{version}");
+                        println!(
+                            "Fetched {}@{}",
+                            theme.paint(diagnostics::theme::AuraColor::Cyan, name),
+                            theme.paint(diagnostics::theme::AuraColor::Muted, version)
+                        );
                     }
                 }
                 Err(e) => {
@@ -34,7 +49,18 @@ pub(super) fn run_fetch(package: Option<String>, quiet: bool) {
                     if report.entries > 0 {
                         println!(
                             "Precompiled {} dep products ({} entries in {} projects)",
-                            report.populated, report.entries, report.projects
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Orange,
+                                &report.populated.to_string()
+                            ),
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Orange,
+                                &report.entries.to_string()
+                            ),
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Orange,
+                                &report.projects.to_string()
+                            )
                         );
                     }
                 }

@@ -28,13 +28,17 @@ pub(super) fn run_doctor(repair_std: bool, registry: Option<String>, quiet: bool
                 match frontend::products::std_products_summary() {
                     Some((files, pkgs)) if files > 0 => {
                         println!(
-                            "stdlib products: precompiled ({} files across {} packages)",
+                            "stdlib products: {} ({} files across {} packages)",
+                            theme.paint(diagnostics::theme::AuraColor::Green, "precompiled"),
                             cli::term::human_count(files as u64),
                             cli::term::human_count(pkgs as u64)
                         );
                     }
                     _ => {
-                        println!("stdlib products: absent");
+                        println!(
+                            "stdlib products: {}",
+                            theme.paint(diagnostics::theme::AuraColor::Orange, "absent")
+                        );
                         println!(
                             "  {}",
                             theme.paint(
@@ -70,6 +74,7 @@ pub(super) fn run_doctor(repair_std: bool, registry: Option<String>, quiet: bool
 }
 
 fn print_product_status() {
+    let theme = AuraTheme::active();
     let plain = AuraTheme::plain();
     let (files, bytes) = frontend::products::products_usage();
     println!(
@@ -90,15 +95,23 @@ fn print_product_status() {
             Some(version) => {
                 println!(
                     "dep {}@{}: {}",
-                    status.pkg,
-                    version,
-                    if status.present { "cached" } else { "absent" }
+                    theme.paint(diagnostics::theme::AuraColor::Cyan, &status.pkg),
+                    theme.paint(diagnostics::theme::AuraColor::Muted, version),
+                    if status.present {
+                        theme.paint(diagnostics::theme::AuraColor::Green, "cached")
+                    } else {
+                        theme.paint(diagnostics::theme::AuraColor::Orange, "absent")
+                    }
                 );
             }
             None => {
                 println!(
-                    "dep {}: unpinned (a floating range never caches)",
-                    status.pkg
+                    "dep {}: {}",
+                    theme.paint(diagnostics::theme::AuraColor::Cyan, &status.pkg),
+                    theme.paint(
+                        diagnostics::theme::AuraColor::Muted,
+                        "unpinned (a floating range never caches)"
+                    )
                 );
             }
         }

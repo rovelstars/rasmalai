@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: bool, json: bool, out_dir: Option<std::path::PathBuf>, stdlib: bool, quiet: bool) {
             let include_private = all;
+            let theme = diagnostics::theme::AuraTheme::active();
             let cwd = std::env::current_dir().unwrap_or_else(|e| {
                 eprintln!("error: cannot read working directory: {e}");
                 std::process::exit(1);
@@ -12,7 +13,17 @@ pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: b
                 match cli::generate_stdlib_docs_json(&dir) {
                     Ok(path) => {
                         if !quiet {
-                            println!("Docs written to {}.", path.display());
+                            println!(
+                                "{} {}.",
+                                theme.paint(
+                                    diagnostics::theme::AuraColor::Purple,
+                                    "Docs written to"
+                                ),
+                                theme.paint(
+                                    diagnostics::theme::AuraColor::Cyan,
+                                    &path.display().to_string()
+                                )
+                            );
                         }
                     }
                     Err(e) => {
@@ -26,7 +37,17 @@ pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: b
                 match cli::generate_docs_json(&cwd, package.as_deref(), no_deps, include_private) {
                     Ok(path) => {
                         if !quiet {
-                            println!("Docs written to {}.", path.display());
+                            println!(
+                                "{} {}.",
+                                theme.paint(
+                                    diagnostics::theme::AuraColor::Purple,
+                                    "Docs written to"
+                                ),
+                                theme.paint(
+                                    diagnostics::theme::AuraColor::Cyan,
+                                    &path.display().to_string()
+                                )
+                            );
                         }
                     }
                     Err(e) => {
@@ -39,7 +60,17 @@ pub(super) fn run_doc(package: Option<String>, open: bool, no_deps: bool, all: b
             match cli::generate_docs(&cwd, package.as_deref(), no_deps, include_private) {
                 Ok(index) => {
                     if !quiet {
-                        println!("Docs written to {}.", index.display());
+                        println!(
+                            "{} {}.",
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Purple,
+                                "Docs written to"
+                            ),
+                            theme.paint(
+                                diagnostics::theme::AuraColor::Cyan,
+                                &index.display().to_string()
+                            )
+                        );
                     }
                     if open && open_browser(&index).is_err() {
                         eprintln!("warning: could not open {}", index.display());
