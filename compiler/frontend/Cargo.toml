@@ -11,6 +11,7 @@ sysroot = { path = "../sysroot" }
 rayon = "1.12"
 flate2 = "1"
 tar = "0.4"
+serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

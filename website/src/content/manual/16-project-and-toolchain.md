@@ -176,6 +176,31 @@ Version requirements follow SemVer 2.0: `^1.2.0` permits compatible minor and pa
 
 An alias points one package name at another package: `{ alias: "@uefi/prelude" }`. The target may be declared in the same `dependencies` table, which wins, or pinned inline with `version: "0.2.2"`, which fetches it from the registry. Without either, the locked version is used and a missing pin fails as `E115`. `alias` cannot combine with another source key. Chains are allowed up to 16 links, and a cycle fails as `E108` with the full chain. See [Packages and Registries](/manual/18-packages-and-registries) for the worked example and the lock representation.
 
+## Rust dependencies
+
+A `rust:` entry names a Rust crate built locally with the installed `cargo` and `rustc`. Cargo resolves versions, features, git sources, build scripts, and the minimum supported Rust version. rnx generates a bridge project under `.rnx-cache/rust-bridge/<key>/` and asks Cargo for its graph. Nothing is published and no wrapper checkout is committed.
+
+```rnx
+export default {
+    project: { name: "app", version: "0.1.0" },
+    dependencies: {
+        wgpu: { rust: "0.20", features: ["trace"] },
+        parley: { rust: { git: "https://github.com/linebender/parley", rev: "abc123" } },
+        serde: { rust: "1", package: "serde_crate", default_features: false }
+    }
+}
+```
+
+A string `rust` value is a crates.io version. The table form accepts `version`, `git` with optional `rev`, and `registry`. `registry` names a Cargo registry already configured in `~/.cargo/config.toml`. `package` gives the Cargo crate name when it differs from the rnx name. `features` adds Cargo features, and `default_features: false` turns off crate defaults. A git entry has no `version`, and `link: "dynamic"` is rejected because Rust source entries link statically. `monomorphs` lists concrete Rust type tuples for generic functions. `scale` with `["f64"]` becomes `scaleF64` on the rnx side and `rnx_<package>_scaleF64` in the bridge. Trait bounds are resolved by Rust.
+
+`rnx lock` writes the resolved Cargo graph into the `rust` section of `Project.deplock`: package names, versions, sources, checksums, features, the `Cargo.lock` digest, the rustc version, and the LLVM version. A declaration change without a new lock fails verification with `E108`.
+
+Cross-language inlining requires the same LLVM version on both sides. rnx compares `rustc -vV` with its own LLVM when locking. A mismatch prints a warning and selects a native-archive bridge, where calls stay out of line. `RNX_STRICT_RUST_LLVM=1` turns that warning into an error. rnx's runtime remains written in Rust for now, and two Rust runtimes in the final image are accepted; the runtime rewrite is future work.
+
+`rnx build` compiles the bridge with Cargo into a staticlib and cdylib and generates C ABI exports from rustdoc JSON for public functions. On release x86_64-Linux-glibc builds where rustc's LLVM matches rnx's LLVM, rnx emits its own code as bitcode, builds the bridge with `-Clinker-plugin-lto`, and links both with rust-lld using LLVM LTO. Otherwise rnx links a native archive through its in-house linker; Rust symbols other than the generated exports are internalized so the bridge's std does not collide with rnx's runtime. `RNX_RUST_LTO=0` forces the native path. The bridge forwards allocations to `rnx_alloc` and panics to `rnx_panic`.
+
+rustdoc JSON supplies the public surface and inline doc comments. Function and method names convert to camelCase, types to PascalCase, and monomorphizations get deterministic suffixes. Generated wrapper files are staged under `.rnx-cache/rust-bridge/wrappers/`. An import of a `rust:` dependency name resolves to its generated wrapper, so `import { addNumbers } from "probe"` calls the Rust function directly. The wrapper uses native FFI and raw memory, so the project must approve `unsafe:ffi` and `unsafe:raw_memory`; `rnx lock` records both capabilities for a package with Rust dependencies.
+
 | Requirement | Matches | Skips |
 |---|---|---|
 | `^1.2.0` | `>=1.2.0`, same major | `2.0.0`, prereleases |

@@ -552,6 +552,7 @@ fn compiler_emitted_aarch64_object_links_and_runs() {
         1,
         Some("aarch64-unknown-linux-gnu"),
         &cfg,
+        false,
     ) {
         Ok(built) => built,
         Err(diags) => panic!("compile aarch64 object: {diags:?}"),

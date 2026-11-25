@@ -17,6 +17,7 @@ const STD_TOPS = [
 	'async',
 	'simd',
 	'collections',
+	'config',
 	'math',
 	'fs',
 	'bytes',

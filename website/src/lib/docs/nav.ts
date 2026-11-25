@@ -185,6 +185,7 @@ export const STDLIB = [
 	'async',
 	'simd',
 	'collections',
+	'config',
 	'math',
 	'fs',
 	'bytes',

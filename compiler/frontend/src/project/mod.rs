@@ -8,12 +8,33 @@ pub const MANIFEST_FILE: &str = "Project.config";
 pub const DEFAULT_ENTRY: &str = "src/main.rnx";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustSource {
+    CratesIo,
+    Registry(String),
+    Git { url: String, rev: Option<String> },
+}
+
+impl RustSource {
+    pub fn describe(&self) -> String {
+        match self {
+            RustSource::CratesIo => "crates.io".to_string(),
+            RustSource::Registry(name) => format!("registry:{name}"),
+            RustSource::Git { url, rev } => match rev {
+                Some(rev) => format!("git:{url}#{rev}"),
+                None => format!("git:{url}"),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencySpec {
     Semver { version: String, link: crate::license::LinkPreference },
     Path { path: PathBuf, link: crate::license::LinkPreference },
     Git { git: String, rev: String, link: crate::license::LinkPreference },
     Url { version: String, url: String, checksum: Option<String>, link: crate::license::LinkPreference },
     Native { lib: String, system: bool, path: Option<PathBuf>, version: Option<String>, from: Option<String>, link: crate::license::LinkPreference },
+    Rust { package: Option<String>, source: RustSource, version: Option<String>, features: Vec<String>, default_features: bool, monomorphs: Vec<Vec<String>>, link: crate::license::LinkPreference },
     Alias { package: String, version: Option<String> },
 }
 
@@ -546,6 +567,151 @@ fn parse_dependency(name: &str, val: &ConfigValue) -> Result<DependencySpec, Str
             let has_url = has("url");
             let has_version = has("version");
             let has_native = has("native");
+            let has_rust = has("rust");
+            if has_rust {
+                if has_path || has_url || has_version || has_native {
+                    return Err(format!("dependency `{name}`: `rust` cannot mix with `path`, `url`, `version`, or `native`"));
+                }
+                let package = match obj_get(val, "package") {
+                    Some(ConfigValue::String(s)) if !s.is_empty()
+                        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') => Some(s.clone()),
+                    Some(_) => return Err(format!("dependency `{name}`: rust `package` must be a non-empty crate name")),
+                    None => None,
+                };
+                let read_version = |v: Option<&ConfigValue>| -> Result<Option<String>, String> {
+                    match v {
+                        None => Ok(None),
+                        Some(ConfigValue::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
+                        Some(_) => return Err(format!("dependency `{name}`: rust `version` must be a non-empty string")),
+                    }
+                };
+                let read_registry = |v: Option<&ConfigValue>| -> Result<Option<String>, String> {
+                    match v {
+                        None => Ok(None),
+                        Some(ConfigValue::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
+                        Some(_) => return Err(format!("dependency `{name}`: rust `registry` must be a non-empty string")),
+                    }
+                };
+                let read_git = |v: Option<&ConfigValue>| -> Result<Option<String>, String> {
+                    match v {
+                        None => Ok(None),
+                        Some(ConfigValue::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
+                        Some(_) => return Err(format!("dependency `{name}`: rust `git` must be a non-empty URL")),
+                    }
+                };
+                let read_rev = |v: Option<&ConfigValue>| -> Result<Option<String>, String> {
+                    match v {
+                        None => Ok(None),
+                        Some(ConfigValue::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
+                        Some(_) => return Err(format!("dependency `{name}`: rust `rev` must be a non-empty string")),
+                    }
+                };
+                let (version, registry, git, rev) = match obj_get(val, "rust") {
+                    Some(ConfigValue::String(s)) => {
+                        if s.is_empty() {
+                            return Err(format!("dependency `{name}`: rust version must not be empty"));
+                        }
+                        (
+                            Some(s.clone()),
+                            read_registry(obj_get(val, "registry"))?,
+                            read_git(obj_get(val, "git"))?,
+                            read_rev(obj_get(val, "rev"))?,
+                        )
+                    }
+                    Some(inner @ ConfigValue::Object(inner_fields)) => {
+                        for (key, _) in inner_fields {
+                            if !["version", "registry", "git", "rev"].contains(&key.as_str()) {
+                                return Err(format!("dependency `{name}`: unknown rust field `{key}` (expected `version`, `registry`, `git`, or `rev`)"));
+                            }
+                        }
+                        for key in ["registry", "git", "rev"] {
+                            if obj_get(val, key).is_some() {
+                                return Err(format!("dependency `{name}`: declare rust `{key}` inside the `rust` table, not next to it"));
+                            }
+                        }
+                        (
+                            read_version(inner.get("version"))?,
+                            read_registry(inner.get("registry"))?,
+                            read_git(inner.get("git"))?,
+                            read_rev(inner.get("rev"))?,
+                        )
+                    }
+                    Some(_) => {
+                        return Err(format!("dependency `{name}`: `rust` must be a version string or an inline table"));
+                    }
+                    None => return Err(format!("dependency `{name}`: missing `rust` field")),
+                };
+                if git.is_some() && registry.is_some() {
+                    return Err(format!("dependency `{name}`: rust `git` and `registry` cannot combine"));
+                }
+                if rev.is_some() && git.is_none() {
+                    return Err(format!("dependency `{name}`: rust `rev` requires a `git` source"));
+                }
+                if version.is_none() && git.is_none() {
+                    return Err(format!("dependency `{name}`: rust dependency needs a version or a git source"));
+                }
+                let source = match git {
+                    Some(url) => RustSource::Git { url, rev },
+                    None => match registry {
+                        Some(name) => RustSource::Registry(name),
+                        None => RustSource::CratesIo,
+                    },
+                };
+                let features = match obj_get(val, "features") {
+                    Some(ConfigValue::Array(items)) => {
+                        let mut out = Vec::with_capacity(items.len());
+                        for item in items {
+                            match item {
+                                ConfigValue::String(s) if !s.is_empty() => out.push(s.clone()),
+                                _ => return Err(format!("dependency `{name}`: rust `features` must hold non-empty strings")),
+                            }
+                        }
+                        out
+                    }
+                    Some(_) => return Err(format!("dependency `{name}`: rust `features` must be an array")),
+                    None => Vec::new(),
+                };
+                let default_features = match (obj_get(val, "default_features"), obj_get(val, "default-features")) {
+                    (Some(_), Some(_)) => {
+                        return Err(format!("dependency `{name}`: use `default_features`, not both spellings"));
+                    }
+                    (Some(ConfigValue::Bool(b)), None) | (None, Some(ConfigValue::Bool(b))) => *b,
+                    (Some(_), None) | (None, Some(_)) => {
+                        return Err(format!("dependency `{name}`: rust `default_features` must be a boolean"));
+                    }
+                    (None, None) => true,
+                };
+                let monomorphs = match obj_get(val, "monomorphs") {
+                    Some(ConfigValue::Array(entries)) => {
+                        let mut out = Vec::with_capacity(entries.len());
+                        for entry in entries {
+                            let ConfigValue::Array(types) = entry else {
+                                return Err(format!("dependency `{name}`: `monomorphs` entries must be arrays of Rust type names"));
+                            };
+                            let mut names = Vec::with_capacity(types.len());
+                            for ty in types {
+                                match ty {
+                                    ConfigValue::String(s) if !s.is_empty()
+                                        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':' || c == '<' || c == '>' || c == ',') => names.push(s.clone()),
+                                    _ => return Err(format!("dependency `{name}`: `monomorphs` type names must be non-empty Rust type paths")),
+                                }
+                            }
+                            if names.is_empty() {
+                                return Err(format!("dependency `{name}`: `monomorphs` entries must not be empty"));
+                            }
+                            out.push(names);
+                        }
+                        out
+                    }
+                    Some(_) => return Err(format!("dependency `{name}`: `monomorphs` must be an array of arrays")),
+                    None => Vec::new(),
+                };
+                let link = parse_link_value(name, val)?;
+                if link == crate::license::LinkPreference::Dynamic {
+                    return Err(format!("dependency `{name}`: `link: \"dynamic\"` needs a native dependency (rust dependencies link statically)"));
+                }
+                return Ok(DependencySpec::Rust { package, source, version, features, default_features, monomorphs, link });
+            }
             if has_native {
                 if has_git || has_url {
                     return Err(format!("dependency `{name}`: `native` must not mix with `git` or `url`"));
@@ -1570,7 +1736,7 @@ const PROJECT_KEYS: &[&str] = &["name", "version", "description", "engine", "tar
 const ENTRIES_KEYS: &[&str] = &["main", "lib", "cabi", "docs", "bins"];
 const REGISTRY_KEYS: &[&str] = &["url", "token_env", "ca_cert"];
 const WORKSPACE_KEYS: &[&str] = &["members"];
-const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system", "from", "link", "alias"];
+const DEP_KEYS: &[&str] = &["path", "git", "rev", "tag", "branch", "version", "url", "checksum", "native", "system", "from", "link", "alias", "rust", "registry", "features", "default_features", "default-features", "package", "monomorphs"];
 const TOP_LEVEL_KEYS: &[&str] = &["project", "entries", "dependencies", "permissions", "keywords", "registry", "registries", "workspace", "artifacts", "native", "patch", "tasks", "bindgen", "license", "capabilities"];
 
 fn span_line(text: &str, offset: u32) -> usize {
@@ -1997,6 +2163,48 @@ pub fn is_package_name(full: &str) -> bool {
 
 fn dep_to_rnx(spec: &DependencySpec) -> String {
     match spec {
+        DependencySpec::Rust { package, source, version, features, default_features, monomorphs, link } => {
+            let rust_val = match source {
+                RustSource::Git { url, rev } => {
+                    let mut s = format!("{{ git: {}", crate::deplock::rnx_string(url));
+                    if let Some(rev) = rev {
+                        s.push_str(&format!(", rev: {}", crate::deplock::rnx_string(rev)));
+                    }
+                    s.push_str(" }");
+                    s
+                }
+                _ => crate::deplock::rnx_string(version.as_deref().unwrap_or("")),
+            };
+            let mut s = format!("{{ rust: {rust_val}");
+            if let Some(package) = package {
+                s.push_str(&format!(", package: {}", crate::deplock::rnx_string(package)));
+            }
+            if let RustSource::Registry(name) = source {
+                s.push_str(&format!(", registry: {}", crate::deplock::rnx_string(name)));
+            }
+            if !features.is_empty() {
+                let items: Vec<String> = features.iter().map(|f| crate::deplock::rnx_string(f)).collect();
+                s.push_str(&format!(", features: [{}]", items.join(", ")));
+            }
+            if !default_features {
+                s.push_str(", default_features: false");
+            }
+            if !monomorphs.is_empty() {
+                let groups: Vec<String> = monomorphs
+                    .iter()
+                    .map(|types| {
+                        let items: Vec<String> = types.iter().map(|ty| crate::deplock::rnx_string(ty)).collect();
+                        format!("[{}]", items.join(", "))
+                    })
+                    .collect();
+                s.push_str(&format!(", monomorphs: [{}]", groups.join(", ")));
+            }
+            if *link != crate::license::LinkPreference::Auto {
+                s.push_str(&format!(", link: {}", crate::deplock::rnx_string(link.as_str())));
+            }
+            s.push_str(" }");
+            s
+        }
         DependencySpec::Semver { version, link } => {
             if *link == crate::license::LinkPreference::Auto {
                 crate::deplock::rnx_string(version)
@@ -2522,6 +2730,7 @@ pub fn validate_manifest_text(text: &str, root: Option<&Path>) -> Vec<ManifestIs
                 Ok(DependencySpec::Semver { .. }) => {}
                 Ok(DependencySpec::Url { .. }) => {}
                 Ok(DependencySpec::Native { .. }) => {}
+                Ok(DependencySpec::Rust { .. }) => {}
                 Ok(DependencySpec::Alias { .. }) => {}
                 Err(msg) => out.push(ManifestIssue {
                     line: 0,

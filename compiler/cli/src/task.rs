@@ -331,6 +331,7 @@ impl TaskRegistry {
                     );
                 }
                 frontend::project::DependencySpec::Native { .. } => {}
+                frontend::project::DependencySpec::Rust { .. } => {}
                 frontend::project::DependencySpec::Alias { package, .. } => {
                     unresolved.insert(
                         dep_name.to_string(),

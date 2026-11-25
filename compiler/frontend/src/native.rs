@@ -147,8 +147,10 @@ fn offline_dep_dir(
             let dir = crate::fetch::find_cached_package_dir(&base, dep_name, &pinned)?;
             std::fs::canonicalize(&dir).ok()
         }
-        crate::project::DependencySpec::Url { .. } | crate::project::DependencySpec::Native { .. } => None,
-        crate::project::DependencySpec::Alias { .. } => None,
+        crate::project::DependencySpec::Url { .. }
+        | crate::project::DependencySpec::Native { .. }
+        | crate::project::DependencySpec::Rust { .. }
+        | crate::project::DependencySpec::Alias { .. } => None,
     };
     if offline.is_some() {
         return offline;

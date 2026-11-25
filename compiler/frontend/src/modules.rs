@@ -1,5 +1,5 @@
 use crate::ast as A;
-use crate::project::{self, ProjectConfig, RegistryConfig};
+use crate::project::{self, Entries, ProjectConfig, RegistryConfig};
 use diagnostics::{Code, Diagnostic, Span};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -3027,6 +3027,40 @@ fn resolve_dep_source(
                 "cannot import native system dependency `{requested}` (`{lib}`) as a module; call it with `from native \"{lib}\"`"
             ),
         )),
+        crate::project::DependencySpec::Rust { .. } => {
+            let path = crate::rustdep::rustdoc::wrapper_path(&scope_root, requested)
+                .or_else(|| crate::rustdep::rustdoc::wrapper_path(&proj_root, requested))
+                .ok_or_else(|| {
+                    Diagnostic::new(
+                        Code::E108,
+                        format!("no generated wrapper for rust dependency `{requested}`"),
+                    )
+                    .with_hint("run `rnx lock` or `rnx build` first to generate the Rust bridge wrappers")
+                })?;
+            let dir = path.parent().unwrap_or_else(|| proj_root.as_ref()).to_path_buf();
+            let file = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let generated = ProjectConfig {
+                name: requested.to_string(),
+                version: "0.0.0".to_string(),
+                description: String::new(),
+                engine: String::new(),
+                targets: Vec::new(),
+                capabilities: Vec::new(),
+                entries: Entries { main: file, ..Default::default() },
+                registry: None,
+                registries: BTreeMap::new(),
+                dependencies: BTreeMap::new(),
+                permissions: None,
+                keywords: Vec::new(),
+                artifacts: None,
+                license: None,
+                native_pins: BTreeMap::new(),
+                patch: None,
+                tasks: BTreeMap::new(),
+                bindgen: None,
+            };
+            Ok((dir, generated, "rust".to_string()))
+        }
         crate::project::DependencySpec::Alias { .. } => Err(Diagnostic::new(
             Code::E108,
             format!("cannot resolve package `{requested}`: unresolved alias"),
@@ -3262,6 +3296,15 @@ fn dep_spec_string(spec: &crate::project::DependencySpec) -> String {
         ),
         crate::project::DependencySpec::Alias { package, version } => {
             format!("alias:{package}@{}", version.as_deref().unwrap_or("*"))
+        }
+        crate::project::DependencySpec::Rust { source, version, features, default_features, .. } => {
+            format!(
+                "rust:{}:{}:{}:{}",
+                source.describe(),
+                version.as_deref().unwrap_or(""),
+                features.join(","),
+                default_features
+            )
         }
     }
 }

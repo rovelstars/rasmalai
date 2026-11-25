@@ -190,6 +190,7 @@ const KNOWN_ATTRS: &[&str] = &[
     "AllowUnsafe",
     "PgoScenario",
     "Macro",
+    "Monomorph",
 ];
 
 pub fn is_syntax_macro(name: &str) -> bool {

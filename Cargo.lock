@@ -902,6 +902,7 @@ dependencies = [
  "rayon",
  "reqwest",
  "ring",
+ "serde_json",
  "sha2",
  "stdlib",
  "sysroot",

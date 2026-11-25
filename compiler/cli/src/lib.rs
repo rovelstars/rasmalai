@@ -1620,7 +1620,7 @@ pub fn build_files_cfg(
     target: Option<&str>,
     cfg: &CompileConfig,
 ) -> Result<Vec<u8>, Vec<Diagnostic>> {
-    let mut out = build_files_staged_units(path, entry, release, opt_level, target, cfg, Some(1))?.objects;
+    let mut out = build_files_staged_units(path, entry, release, opt_level, target, cfg, Some(1), false)?.objects;
     if out.len() != 1 {
         return Err(vec![Diagnostic::new(
             Code::E108,
@@ -1653,8 +1653,9 @@ pub fn build_files_staged_cfg(
     opt_level: u8,
     target: Option<&str>,
     cfg: &CompileConfig,
+    emit_bitcode: bool,
 ) -> Result<BuildOutput, Vec<Diagnostic>> {
-    build_files_staged_units(path, entry, release, opt_level, target, cfg, None)
+    build_files_staged_units(path, entry, release, opt_level, target, cfg, None, emit_bitcode)
 }
 
 fn build_files_staged_units(
@@ -1665,6 +1666,7 @@ fn build_files_staged_units(
     target: Option<&str>,
     cfg: &CompileConfig,
     units_override: Option<usize>,
+    emit_bitcode: bool,
 ) -> Result<BuildOutput, Vec<Diagnostic>> {
     let opt_level = if release { opt_level.max(1) } else { opt_level };
     let mut prog = load_program_cfg(path, opt_level, entry, cfg)?;
@@ -1687,6 +1689,24 @@ fn build_files_staged_units(
             .or_else(|| Some(anchor.to_path_buf()))
     };
     prog.profiler.start("codegen");
+    if emit_bitcode {
+        let bytes = llvm::codegen::emit_bitcode(&prog.lir, "rnx_module", entry, opt, target)
+            .map_err(|e| vec![e])?;
+        prog.profiler.stop();
+        prog.profiler.finish();
+        let stages = prog
+            .profiler
+            .records()
+            .iter()
+            .map(|(name, _, dur_ns)| (name.to_string(), *dur_ns as f64 / 1_000_000.0))
+            .collect();
+        return Ok(BuildOutput {
+            objects: vec![bytes],
+            stages,
+            native_libs: prog.native_libs,
+            perf_diags: prog.perf_diags,
+        });
+    }
     let out = match cache_root {
         Some(root) => {
             let host = linker::host_triple().0;
@@ -2034,6 +2054,20 @@ pub fn lock_scope_with_target(
         if !targets.contains(&chosen.triple) {
             targets.push(chosen.triple);
         }
+    }
+    if let Some(graph) = &lock.rust
+        && !frontend::rustdep::toolchain::llvm_compatible(&graph.llvm_version, llvm::LLVM_VERSION_TRIPLET)
+    {
+        let warning = frontend::rustdep::toolchain::llvm_fallback_warning(
+            &graph.llvm_version,
+            llvm::LLVM_VERSION_TRIPLET,
+        );
+        let strict = std::env::var("RNX_STRICT_RUST_LLVM")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        if strict {
+            return Err(Diagnostic::new(Code::E108, warning));
+        }
+        eprintln!("{warning}");
     }
     lock.pin_sysroots(&targets);
     let count = lock.packages.len();
@@ -2928,6 +2962,7 @@ fn record_lock_entry(
             version: frontend::deplock::LOCK_VERSION,
             packages: Vec::new(),
             sysroots: Default::default(),
+            rust: None,
         },
     );
     let checksum = frontend::checksum::compute_package_checksum(dep_dir)?;

@@ -1228,7 +1228,7 @@ fn range_admits_pre(range: &str, current: (u64, u64, u64, &str)) -> bool {
     b.0 == current.0 && b.1 == current.1 && b.2 == current.2
 }
 
-pub(crate) fn engine_satisfied(range: &str, current: &str) -> bool {
+pub fn engine_satisfied(range: &str, current: &str) -> bool {
     let Some(v) = parse_semver(current.trim()) else {
         return false;
     };

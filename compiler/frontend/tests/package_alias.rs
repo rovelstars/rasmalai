@@ -205,6 +205,7 @@ fn lock_alias_source_mismatch_is_rejected() {
     let lock = ProjectDepLock {
         version: frontend::deplock::LOCK_VERSION,
         sysroots: Default::default(),
+        rust: None,
         packages: vec![LockedPackage {
             name: "@std/prelude".to_string(),
             alias: Some("@uefi/prelude".to_string()),

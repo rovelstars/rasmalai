@@ -22,7 +22,7 @@ fn build_objects(path: &Path, release: bool, jobs: usize) -> Vec<Vec<u8>> {
     let mut cfg = cli::CompileConfig::default();
     cfg.jobs = jobs;
     cfg.memory_cap = u64::MAX;
-    cli::build_files_staged_cfg(path.to_str().unwrap(), "Main", release, 1, None, &cfg)
+    cli::build_files_staged_cfg(path.to_str().unwrap(), "Main", release, 1, None, &cfg, false)
         .unwrap_or_else(|e| panic!("build {}: {e:?}", path.display()))
         .objects
 }
@@ -600,7 +600,7 @@ fn dev_objects(dir: &Path, tag: &str, src: &str) -> Vec<Vec<u8>> {
     let mut cfg = cli::CompileConfig::default();
     cfg.jobs = 1;
     cfg.memory_cap = u64::MAX;
-    cli::build_files_staged_cfg(path.to_str().unwrap(), "Main", false, 1, None, &cfg)
+    cli::build_files_staged_cfg(path.to_str().unwrap(), "Main", false, 1, None, &cfg, false)
         .unwrap_or_else(|e| panic!("build {}: {e:?}", path.display()))
         .objects
 }
@@ -933,7 +933,7 @@ fn musl_target_codegen_emits_objects() {
     cfg.jobs = 1;
     cfg.memory_cap = u64::MAX;
     let built =
-        cli::build_files_staged_cfg(path.to_str().unwrap(), "Main", false, 1, Some(MUSL_TRIPLE), &cfg)
+        cli::build_files_staged_cfg(path.to_str().unwrap(), "Main", false, 1, Some(MUSL_TRIPLE), &cfg, false)
             .unwrap_or_else(|e| panic!("musl codegen failed: {e:?}"));
     assert!(!built.objects.is_empty());
     let _ = dir;

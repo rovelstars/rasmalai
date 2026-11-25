@@ -332,6 +332,7 @@ mod tests {
         ProjectDepLock {
             version: crate::deplock::LOCK_VERSION,
             sysroots: Default::default(),
+            rust: None,
             packages: vec![crate::deplock::LockedPackage {
                 name: "@acme/widget".to_string(),
                 alias: None,
@@ -441,6 +442,7 @@ mod tests {
         let lock = ProjectDepLock {
             version: crate::deplock::LOCK_VERSION,
             sysroots: Default::default(),
+            rust: None,
             packages: vec![crate::deplock::LockedPackage {
                 name: "@acme/widget".to_string(),
                 alias: None,

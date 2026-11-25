@@ -48,6 +48,7 @@ impl std::fmt::Display for LinkError {
 impl std::error::Error for LinkError {}
 
 pub mod core;
+pub mod lto;
 pub mod macho;
 pub mod native;
 pub mod pe;

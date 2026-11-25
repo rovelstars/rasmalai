@@ -52,7 +52,10 @@ fn test_zero_external_dependencies_in_core() {
     // - frontend/flate2 + frontend/tar: OCI patch layers are gzip-compressed
     //   tar archives. They are extracted in-process with traversal checks;
     //   both crates are pure Rust and compile for wasm32.
-    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2"), ("frontend", "rayon"), ("frontend", "libc"), ("lir", "rayon"), ("lir", "sha2"), ("frontend", "tempfile"), ("lir", "tempfile"), ("runtime", "tempfile"), ("frontend", "ring"), ("frontend", "flate2"), ("frontend", "tar")];
+    // - frontend/serde_json: rustdoc JSON is the only supported surface for
+    //   Rust dependency discovery. Parsing it by hand would be a second,
+    //   incorrect JSON grammar. The exact crate is already locked for the CLI.
+    let allowed: &[(&str, &str)] = &[("runtime", "mio"), ("runtime", "serde_json"), ("runtime", "serde"), ("frontend", "sha2"), ("frontend", "rayon"), ("frontend", "libc"), ("lir", "rayon"), ("lir", "sha2"), ("frontend", "tempfile"), ("lir", "tempfile"), ("runtime", "tempfile"), ("frontend", "ring"), ("frontend", "flate2"), ("frontend", "tar"), ("frontend", "serde_json")];
     for krate in ["frontend", "lir", "runtime", "diagnostics", "stdlib"] {
         let path = root.join(krate).join("Cargo.toml");
         assert!(path.is_file(), "missing {}", path.display());

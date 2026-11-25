@@ -1649,6 +1649,29 @@ fn mark_pure_runtime_fns(context: &Context, module: &LlModule) {
     }
 }
 
+pub fn emit_bitcode(
+    lir: &Module,
+    name: &str,
+    entry: &str,
+    opt: OptLevel,
+    target: Option<&str>,
+) -> Result<Vec<u8>, Diagnostic> {
+    check_build(lir, entry)?;
+    let context = Context::create();
+    let release = opt == OptLevel::Release;
+    let version = version_target_for(target, release);
+    let (module, funcs) = build_module(&context, lir, name, release, None, version.as_deref())?;
+    rename_entry_for_glue(&funcs, entry);
+    synthesize_glue(&context, &module, &funcs, lir, entry, release)?;
+    module.verify().map_err(|e| {
+        Diagnostic::new(Code::E108, format!("llvm verify failed for `{name}`: {e}"))
+    })?;
+    let (triple_ref, machine) = make_machine(target, opt)?;
+    module.set_triple(&triple_ref);
+    module.set_data_layout(&machine.get_target_data().get_data_layout());
+    Ok(module.write_bitcode_to_memory().as_slice().to_vec())
+}
+
 pub fn emit_object(
     lir: &Module,
     name: &str,

@@ -90,6 +90,20 @@ assert(twice(2, (n: Int) => n + 3) == 8, "generic closure");
 assert(twice("ab", (s: String) => s + "!") == "ab!!", "generic string");
 ```
 
+The default erases type parameters to `Any`. To get native functions with concrete signatures instead, list the concrete types with `#[Monomorph(...)]`. Each entry produces one function with a deterministic suffix: `Int` becomes `I32`, `Float` becomes `F64`.
+
+```rnx
+#[Monomorph(Int, Float)]
+fn scale<T>(value: T, by: T): T {
+    return value * by;
+}
+
+assert(scaleI32(6, 7) == 42, "integer monomorph");
+assert(scaleF64(1.5, 2.0) == 3.0, "float monomorph");
+```
+
+A monomorphized call resolves trait methods on the concrete type through the normal class and extension rules. The attribute must list a whole number of type-tuples matching the function's type parameters; a mismatch fails with `E108`. Call the generated name directly, since call-site inference for these functions is not implemented.
+
 Closures capture `this` strongly by default, like any other value. A closure stored on its own object requires `fn decay(this)`, the weak opt-in; see [Cycles and Handles](/manual/12-cycles-and-handles).
 
 ## Trailing blocks

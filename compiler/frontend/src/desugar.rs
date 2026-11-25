@@ -32,6 +32,7 @@ pub fn desugar_with_files(module: &mut Module, files: &DeclFiles) -> Vec<Diagnos
         }
         tag_new(&mut diags, from, file);
     }
+    crate::monomorph::expand(&mut module.decls, &mut diags);
     diags
 }
 

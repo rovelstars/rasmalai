@@ -302,6 +302,34 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             let object_coff = selected_target.object == sysroot::target::ObjectFormat::Coff;
             let object_macho = selected_target.object == sysroot::target::ObjectFormat::MachO;
             let object_wasm = selected_target.object == sysroot::target::ObjectFormat::Wasm;
+            let lto_enabled = {
+                use frontend::rustdep::graph::requests_from_config;
+                use frontend::rustdep::toolchain::{detect_toolchain, llvm_compatible};
+                let configs: Vec<frontend::project::ProjectConfig> =
+                    match frontend::project::load_manifest(&scope_root).ok().flatten() {
+                        Some(m) => match &m.workspace {
+                            Some(ws) => frontend::project::resolve_workspace_members(&scope_root, ws)
+                                .ok()
+                                .map(|members| members.values().map(|(_, cfg)| cfg.clone()).collect())
+                                .unwrap_or_default(),
+                            None => m.project.clone().into_iter().collect(),
+                        },
+                        None => Vec::new(),
+                    };
+                let has_rust = configs.iter().any(|cfg| !requests_from_config(cfg).is_empty());
+                let opted_out = std::env::var("RNX_RUST_LTO")
+                    .is_ok_and(|value| value == "0" || value.eq_ignore_ascii_case("off"));
+                release
+                    && !opted_out
+                    && !lib
+                    && !object_wasm
+                    && !object_coff
+                    && !object_macho
+                    && has_rust
+                    && detect_toolchain()
+                        .map(|toolchain| llvm_compatible(&toolchain.llvm, llvm::LLVM_VERSION_TRIPLET))
+                        .unwrap_or(false)
+            };
             if lib && object_wasm {
                 eprintln!(
                     "{}",
@@ -539,7 +567,7 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                     }
                 })
             });
-            let built = match cli::build_files_staged_cfg(&input, &entry, release, opt_level, compile_target, &cfg) {
+            let built = match cli::build_files_staged_cfg(&input, &entry, release, opt_level, compile_target, &cfg, lto_enabled) {
                 Ok(b) => b,
                 Err(errs) => {
                     drop(compile_ticker);
@@ -633,22 +661,88 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
             };
             let target = linker::TargetTriple(effective.to_string());
             let link_start = std::time::Instant::now();
-            let foreign_libs: Vec<linker::LinkInput> = link_plan
+            let rust_bridge = {
+                use frontend::rustdep::artifact::build_bridge;
+                use frontend::rustdep::bridge::{BridgeInputs, BridgeProfile, bridge_cache_key};
+                use frontend::rustdep::graph::{requests_from_config, requests_from_configs, verify_rust_graph};
+                use frontend::rustdep::toolchain::{detect_toolchain, llvm_compatible, llvm_fallback_warning};
+
+                let manifest = frontend::project::load_manifest(&scope_root).ok().flatten();
+                let configs: Vec<frontend::project::ProjectConfig> = match &manifest {
+                    Some(m) => match &m.workspace {
+                        Some(ws) => frontend::project::resolve_workspace_members(&scope_root, ws)
+                            .ok()
+                            .map(|members| members.values().map(|(_, cfg)| cfg.clone()).collect())
+                            .unwrap_or_default(),
+                        None => m.project.clone().into_iter().collect(),
+                    },
+                    None => Vec::new(),
+                };
+                let configs: Vec<&frontend::project::ProjectConfig> = configs.iter().collect();
+                let has_rust = configs.iter().any(|cfg| !requests_from_config(cfg).is_empty());
+                if !has_rust {
+                    None
+                } else {
+                    let bridge_result = (|| -> Result<frontend::rustdep::artifact::BridgeArtifact, diagnostics::Diagnostic> {
+                        let lock = frontend::deplock::ProjectDepLock::load(&scope_root).ok().flatten();
+                        let graph = lock.as_ref().and_then(|l| l.rust.as_ref());
+                        for cfg in &configs {
+                            verify_rust_graph(cfg, graph)?;
+                        }
+                        let toolchain = detect_toolchain()
+                            .map_err(|e| diagnostics::Diagnostic::new(diagnostics::Code::E108, e))?;
+                        let compatible = llvm_compatible(&toolchain.llvm, llvm::LLVM_VERSION_TRIPLET);
+                        if !compatible {
+                            eprintln!(
+                                "{}",
+                                llvm_fallback_warning(&toolchain.llvm, llvm::LLVM_VERSION_TRIPLET)
+                            );
+                        }
+                        let profile = if release { BridgeProfile::Release } else { BridgeProfile::Dev };
+                        let inputs = BridgeInputs {
+                            requests: requests_from_configs(&configs),
+                            rustc_version: toolchain.rustc.clone(),
+                            llvm_version: toolchain.llvm.clone(),
+                            host: toolchain.host.clone(),
+                            profile,
+                            allocator_forwarding: true,
+                            lto: lto_enabled,
+                        };
+                        let key = bridge_cache_key(&inputs);
+                        let artifact = build_bridge(&scope_root, &key, &inputs, &toolchain)?;
+                        Ok(artifact)
+                    })();
+                    match bridge_result {
+                        Ok(path) => Some(path),
+                        Err(e) => {
+                            eprintln!("{e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            };
+            let mut foreign_libs: Vec<linker::LinkInput> = link_plan
                 .iter()
+                .filter(|n| n.lib != frontend::rustdep::artifact::NATIVE_LIB_NAME)
                 .map(|n| match &n.archive {
                     Some(path) => linker::LinkInput::ArchivePath(path.clone()),
                     None => linker::LinkInput::Lib(n.lib.clone()),
                 })
                 .collect();
-            let bundled_archives: Vec<linker::LinkInput> = link_plan
+            let mut bundled_archives: Vec<linker::LinkInput> = link_plan
                 .iter()
+                .filter(|n| n.lib != frontend::rustdep::artifact::NATIVE_LIB_NAME)
                 .filter_map(|n| n.archive.clone().map(linker::LinkInput::ArchivePath))
                 .collect();
             let system_lib_names: Vec<String> = link_plan
                 .iter()
-                .filter(|n| n.archive.is_none())
+                .filter(|n| n.archive.is_none() && n.lib != frontend::rustdep::artifact::NATIVE_LIB_NAME)
                 .map(|n| n.lib.clone())
                 .collect();
+            if let Some(artifact) = &rust_bridge {
+                foreign_libs.push(linker::LinkInput::ArchivePath(artifact.static_path.clone()));
+                bundled_archives.push(linker::LinkInput::ArchivePath(artifact.static_path.clone()));
+            }
             let mut system_lib_dirs: Vec<std::path::PathBuf> = link_plan
                 .iter()
                 .filter(|n| n.archive.is_none())
@@ -795,7 +889,14 @@ pub(super) fn run_build(path: Option<std::path::PathBuf>, entry: String, release
                 )
                 .map(|_| ())
             } else if native {
-                if release {
+                if release && lto_enabled {
+                    let mut inputs = user_objects;
+                    inputs.push(resolved_runtime.archive_input());
+                    inputs.extend(rust_bridge.as_ref().map(|artifact| {
+                        linker::LinkInput::ArchivePath(artifact.static_path.clone())
+                    }));
+                    linker::lto::link_lto(&inputs, std::path::Path::new(&out_path), &target)
+                } else if release {
                     let mut inputs = user_objects;
                     inputs.push(resolved_runtime.archive_input());
                     inputs.extend(foreign_libs);

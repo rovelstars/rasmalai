@@ -1,6 +1,7 @@
 use crate::checksum::compute_package_checksum;
 use crate::config::{ConfigValue, parse};
 use crate::project::ProjectConfig;
+use crate::rustdep::graph::{self, RustGraph};
 use diagnostics::{Code, Diagnostic};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ pub struct ProjectDepLock {
     pub version: u32,
     pub packages: Vec<LockedPackage>,
     pub sysroots: BTreeMap<String, String>,
+    pub rust: Option<RustGraph>,
 }
 
 struct PkgNode {
@@ -116,7 +118,8 @@ fn requested_link(spec: &crate::project::DependencySpec) -> crate::license::Link
         | crate::project::DependencySpec::Path { link, .. }
         | crate::project::DependencySpec::Git { link, .. }
         | crate::project::DependencySpec::Url { link, .. }
-        | crate::project::DependencySpec::Native { link, .. } => *link,
+        | crate::project::DependencySpec::Native { link, .. }
+        | crate::project::DependencySpec::Rust { link, .. } => *link,
         crate::project::DependencySpec::Alias { .. } => crate::license::LinkPreference::Auto,
     }
 }
@@ -227,6 +230,9 @@ fn collect_into(
                 deps.push((node_name, String::new()));
                 continue;
             }
+            if matches!(spec, crate::project::DependencySpec::Rust { .. }) {
+                continue;
+            }
             let want_link = requested_link(spec);
             if want_link == crate::license::LinkPreference::Dynamic {
                 return Err(Diagnostic::new(
@@ -275,6 +281,12 @@ fn collect_into(
                 }
                 crate::project::DependencySpec::Native { .. } => {
                     unreachable!("native dependencies are recorded above")
+                }
+                crate::project::DependencySpec::Rust { .. } => {
+                    return Err(Diagnostic::new(
+                        Code::E108,
+                        format!("rust dependency `{dep_name}` reached the rnx package resolver; it must be resolved by Cargo"),
+                    ));
                 }
                 crate::project::DependencySpec::Alias { .. } => {
                     unreachable!("aliases are resolved before source dispatch")
@@ -351,6 +363,15 @@ fn collect_graph(
     Ok(nodes.into_values().collect())
 }
 
+fn resolve_rust_graph(root: &Path, configs: &[&ProjectConfig]) -> Result<Option<RustGraph>, Diagnostic> {
+    if !configs.iter().any(|config| !graph::requests_from_config(config).is_empty()) {
+        return Ok(None);
+    }
+    let toolchain = crate::rustdep::toolchain::detect_toolchain()
+        .map_err(|e| Diagnostic::new(Code::E108, e))?;
+    graph::resolve_rust_graph_with_requests(root, graph::requests_from_configs(configs), &toolchain)
+}
+
 fn collect_workspace_graph(
     ws_root: &Path,
     members: &BTreeMap<String, (PathBuf, ProjectConfig)>,
@@ -409,6 +430,14 @@ fn effective_bills(
             for s in &scan.capabilities {
                 set.insert(crate::security::parse_cap(s)?);
             }
+        }
+        if config.as_ref().is_some_and(|config| {
+            config.dependencies.values().any(|spec| {
+                matches!(spec, crate::project::DependencySpec::Rust { .. })
+            })
+        }) {
+            set.insert(crate::security::parse_cap("unsafe:ffi")?);
+            set.insert(crate::security::parse_cap("unsafe:raw_memory")?);
         }
         own.insert(n.name.clone(), set);
         let mut deps: Vec<String> = n.deps.iter().map(|(d, _)| d.clone()).collect();
@@ -469,6 +498,7 @@ fn nodes_to_lock(nodes: Vec<PkgNode>) -> Result<ProjectDepLock, Diagnostic> {
         version: LOCK_VERSION,
         packages,
         sysroots: BTreeMap::new(),
+        rust: None,
     })
 }
 
@@ -632,7 +662,9 @@ impl ProjectDepLock {
         overrides: &BTreeMap<String, String>,
     ) -> Result<ProjectDepLock, Diagnostic> {
         let have = existing_have(root);
-        nodes_to_lock(collect_graph(root, config, &have, prefer, overrides, &BTreeMap::new())?)
+        let mut lock = nodes_to_lock(collect_graph(root, config, &have, prefer, overrides, &BTreeMap::new())?)?;
+        lock.rust = resolve_rust_graph(root, &[config])?;
+        Ok(lock)
     }
 
     pub fn resolve_workspace(
@@ -657,7 +689,10 @@ impl ProjectDepLock {
         overrides: &BTreeMap<String, String>,
     ) -> Result<ProjectDepLock, Diagnostic> {
         let have = existing_have(ws_root);
-        nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, overrides, &BTreeMap::new())?)
+        let mut lock = nodes_to_lock(collect_workspace_graph(ws_root, members, &have, prefer, overrides, &BTreeMap::new())?)?;
+        let configs: Vec<&ProjectConfig> = members.values().map(|(_, config)| config).collect();
+        lock.rust = resolve_rust_graph(ws_root, &configs)?;
+        Ok(lock)
     }
 
     pub fn pin_sysroots(&mut self, targets: &[String]) {
@@ -706,6 +741,7 @@ impl ProjectDepLock {
         out.push_str(",\n    packages: [");
         if self.packages.is_empty() {
             out.push_str("],\n");
+            append_rust(&mut out, &self.rust);
             append_sysroots(&mut out, &self.sysroots);
             return out;
         }
@@ -752,6 +788,7 @@ impl ProjectDepLock {
             out.push('\n');
         }
         out.push_str("    ],\n");
+        append_rust(&mut out, &self.rust);
         append_sysroots(&mut out, &self.sysroots);
         out
     }
@@ -804,7 +841,17 @@ impl ProjectDepLock {
             Some(_) => return Err("field `sysroots` must be an object".to_string()),
             None => {}
         }
-        Ok(ProjectDepLock { version, packages, sysroots })
+        let rust = match top.get("rust") {
+            Some(value) => Some(graph::parse_rust_graph(value)?),
+            None => None,
+        };
+        Ok(ProjectDepLock { version, packages, sysroots, rust })
+    }
+}
+
+fn append_rust(out: &mut String, rust: &Option<RustGraph>) {
+    if let Some(graph) = rust {
+        out.push_str(&graph::rust_graph_to_rnx(graph));
     }
 }
 
@@ -938,6 +985,7 @@ pub fn verify_lock_with(
 ) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
     check_nodes(collect_graph(root, config, &have, prefer, &BTreeMap::new(), &registry_pins(lock))?, lock)?;
+    graph::verify_rust_graph(config, lock.rust.as_ref())?;
     verify_sysroots(lock)
 }
 
@@ -957,6 +1005,9 @@ pub fn verify_workspace_lock_with(
 ) -> Result<(), Diagnostic> {
     let have = lock_have(Some(lock));
     check_nodes(collect_workspace_graph(ws_root, members, &have, prefer, &BTreeMap::new(), &registry_pins(lock))?, lock)?;
+    for (_, config) in members.values() {
+        graph::verify_rust_graph(config, lock.rust.as_ref())?;
+    }
     verify_sysroots(lock)
 }
 
@@ -1757,7 +1808,7 @@ mod tests {
             tier: "pure".to_string(),
             capabilities: Vec::new(),
         };
-        ProjectDepLock { version: LOCK_VERSION, packages: vec![app, widget], sysroots: BTreeMap::new() }
+        ProjectDepLock { version: LOCK_VERSION, packages: vec![app, widget], sysroots: BTreeMap::new(), rust: None }
     }
 
     #[test]

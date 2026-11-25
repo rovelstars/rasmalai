@@ -378,6 +378,7 @@ pub fn publish_facts(text: &str) -> Result<PublishFacts, Diagnostic> {
             super::DependencySpec::Path { .. }
             | super::DependencySpec::Git { .. }
             | super::DependencySpec::Native { .. }
+            | super::DependencySpec::Rust { .. }
             | super::DependencySpec::Alias { .. } => {}
         }
     }

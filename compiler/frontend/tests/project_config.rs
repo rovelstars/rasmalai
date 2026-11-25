@@ -164,6 +164,7 @@ fn lockfile_round_trip_is_sorted_and_stable() {
     let lock = ProjectDepLock {
         version: 2,
         sysroots: Default::default(),
+        rust: None,
         packages: vec![
             LockedPackage {
                 name: "app".to_string(),
@@ -356,6 +357,7 @@ fn lock_alias_round_trips() {
     let lock = ProjectDepLock {
         version: 2,
         sysroots: Default::default(),
+        rust: None,
         packages: vec![LockedPackage {
             name: "@std/prelude".to_string(),
             alias: Some("@uefi/prelude".to_string()),

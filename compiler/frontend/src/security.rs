@@ -584,7 +584,9 @@ fn dep_dirs(root: &Path, config: &ProjectConfig) -> Vec<DepDir> {
                     git_cache_dir(root, name)
                 }
             }
-            DependencySpec::Semver { .. } | DependencySpec::Url { .. } => None,
+            DependencySpec::Semver { .. }
+            | DependencySpec::Url { .. }
+            | DependencySpec::Rust { .. } => None,
             DependencySpec::Native { path, .. } => path.as_ref().map(|p| root.join(p)),
             DependencySpec::Alias { .. } => {
                 let scope_root =
@@ -1028,7 +1030,8 @@ fn analyze_dep_effective(
             }
             project::DependencySpec::Semver { .. }
             | project::DependencySpec::Url { .. }
-            | project::DependencySpec::Native { .. } => {}
+            | project::DependencySpec::Native { .. }
+            | project::DependencySpec::Rust { .. } => {}
             project::DependencySpec::Alias { .. } => {
                 let scope_root =
                     project::find_workspace_root(dir).unwrap_or_else(|| dir.to_path_buf());
